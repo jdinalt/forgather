@@ -1,0 +1,59 @@
+-- import 'common/trainer/base_trainer.yaml' as base_trainer
+-- set experiment.TRAINER
+{{ base_trainer.trainer() }}
+-- endset
+
+-- set experiment.TRAINING_ARGS
+    overwrite_output_dir: False
+    per_device_train_batch_size: 16
+    per_device_eval_batch_size: 16
+    learning_rate: 1.0e-3
+    num_train_epochs: 1
+    eval_steps: 500
+    logging_steps: 500
+    seed: 42
+    eval_strategy: "steps"
+    save_strategy: "no"
+    logging_strategy: "steps"
+    lr_scheduler_type: "constant"
+-- endset
+
+--set experiment.ACCEL_TRAINER_ARGS
+    device_placement: True
+    dataloader_config: !callable:accelerate:DataLoaderConfiguration
+        kwargs:
+            dispatch_batches: False
+            split_batches: False
+-- endset
+
+--set experiment.HF_TRAINER_ARGS
+    accelerator_config:
+        dispatch_batches: False
+        split_batches: False
+    ddp_find_unused_parameters: False
+    report_to: "none"
+    logging_nan_inf_filter: False
+-- endset
+
+-- macro defaults__trainer_callbacks()
+    - !callable:aiws.default_callbacks:JsonLogger []
+    - !callable:aiws.tb_logger:TBLogger
+        args: [ *summary_writer ]
+        kwargs:
+            date: "{{ utcnow }}"
+            name: "{{ experiment.EXPERIMENT_NAME }}"
+            description: "{{ experiment.EXPERIMENT_DESCRIPTION }}"
+            args: {{script_args}}
+            world_size: {{world_size}}
+            config: !callable:pp_config
+-- endmacro
+-- set experiment.trainer_callbacks = defaults__trainer_callbacks
+
+--set experiment.DATA_COLLATOR
+!callable:transformers:DataCollatorForLanguageModeling
+    args:
+        - *tokenizer
+    kwargs:
+        mlm: False
+        return_tensors: pt
+-- endset

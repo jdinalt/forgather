@@ -1,0 +1,11 @@
+-- import 'common/trainer/hf_trainer.yaml' as hf_trainer
+-- set experiment = namespace()
+-- include 'project_defaults.yaml'
+-- set experiment.EXPERIMENT_NAME = 'HF Trainer'
+-- set experiment.EXPERIMENT_DESCRIPTION = 'Train with the Huggingface Trainer'
+-- set experiment.SAVE_MODEL = True
+-- set experiment.TRAINER
+{{ hf_trainer.trainer() }}
+-- endset
+
+-- include 'common/causal_lm/base_train.yaml'

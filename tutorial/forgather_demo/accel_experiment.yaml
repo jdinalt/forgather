@@ -1,0 +1,11 @@
+-- import 'common/trainer/accel_trainer.yaml' as accel_trainer
+-- set experiment = namespace()
+-- include 'project_defaults.yaml'
+-- set experiment.EXPERIMENT_NAME = 'Multi-GPU'
+-- set experiment.EXPERIMENT_DESCRIPTION = 'Try training on multiple GPUs'
+-- set experiment.SAVE_MODEL = True
+-- set experiment.TRAINER
+{{ accel_trainer.trainer() }}
+-- endset
+
+-- include 'common/causal_lm/base_train.yaml'

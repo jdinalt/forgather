@@ -1,0 +1,25 @@
+-- from 'common/helpers.yaml' import custom_model
+-- set MODEL_PATH = path_join('vanilla_transformer', 'vanilla_transformer.py')
+-- set MODEL_CLS = 'VanillaTransformer'
+-- set MODEL_CONFIG_CLS = 'VanillaTransformerConfig'
+-- set TOKENIZER_NAME = 'tiny_stories_2k'
+
+# Define tokenizer
+-- macro tokenizer(tokenizers_dir)
+!callable:transformers:AutoTokenizer.from_pretrained
+    - "{{path_join(tokenizers_dir, TOKENIZER_NAME)}}"
+-- endmacro
+
+# Model configuration
+--set CONFIG
+    vocab_size: !callable:forgather.construct:get_attr [ *tokenizer, vocab_size ]
+    hidden_size: 128
+    dim_feedforward: 512
+    num_attention_heads: 1
+    num_hidden_layers: 2
+-- endset
+
+# Define custom model
+-- macro model(model_src_dir, model_args)
+{{ custom_model(path_join(model_src_dir, MODEL_PATH), MODEL_CLS, MODEL_CONFIG_CLS, model_args) }}
+-- endmacro

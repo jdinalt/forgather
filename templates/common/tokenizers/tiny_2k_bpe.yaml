@@ -1,0 +1,7 @@
+-- set dataset_id = 'roneneldan/TinyStories'
+-- set model_max_length = 2048
+-- set vocab_size = 2000
+-- set dataset_split = 'train'
+
+-- include 'common/tokenizers/causal_bpe.yaml'
+tokenizer_name: "tiny_stories_2k"

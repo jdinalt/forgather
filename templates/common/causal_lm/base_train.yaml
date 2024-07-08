@@ -1,0 +1,78 @@
+-- set config = namespace()
+-- set config.OUTPUT_DIR = path_join(experiment.MODELS_DIR, experiment.MODEL_NAME)
+-- set config.LOGGING_DIR = path_join(config.OUTPUT_DIR, "runs", experiment.EXPERIMENT_NAME + '_' + time_ns)
+-- set config.DATASET_PATH = path_join(experiment.DATASETS_DIR, experiment.DATASET)
+# {{ experiment.EXPERIMENT_NAME }}
+# {{ utcnow }}
+# Description: {{experiment.EXPERIMENT_DESCRIPTION}}
+# World Size: {{ world_size }}
+# Hostname: {{ hostname }}
+# Script Args:: {{ script_args }}
+
+# experiment.TOKENIZERS_DIR: "{{ experiment.TOKENIZERS_DIR }}"
+# experiment.DATASETS_DIR: "{{ experiment.DATASETS_DIR }}"
+# experiment.MODEL_SRC_DIR: "{{ experiment.MODEL_SRC_DIR }}"
+# experiment.MODELS_DIR: "{{ experiment.MODELS_DIR }}"
+
+# experiment.DATASET: "{{ experiment.DATASET }}"
+# experiment.EXPERIMENT_NAME: "{{ experiment.EXPERIMENT_NAME }}"
+# experiment.EXPERIMENT_DESCRIPTION: "{{ experiment.EXPERIMENT_DESCRIPTION }}"
+# experiment.MODEL_NAME: "{{experiment.MODEL_NAME}}"
+# experiment.CREATE_NEW_MODEL: {{ experiment.CREATE_NEW_MODEL }}
+# experiment.SAVE_MODEL: {{ experiment.SAVE_MODEL }}
+
+# config.OUTPUT_DIR: path = "{{ config.OUTPUT_DIR }}"
+# config.DATASET_PATH: path = "{{ config.DATASET_PATH }}"
+# config.LOGGING_DIR: path = "{{ config.LOGGING_DIR }}"
+
+-- if experiment.CREATE_NEW_MODEL
+# experiment.tokenizer
+.define: &tokenizer {{ experiment.tokenizer(experiment.TOKENIZERS_DIR) }}
+.define: &model_config
+{{ experiment.MODEL_CONFIG }}
+# experiment.model
+.define: &model {{ experiment.model(experiment.MODEL_SRC_DIR, "model_config") }}
+-- else
+# Tokenizer
+.define: &tokenizer !callable:transformers:AutoTokenizer.from_pretrained
+    - "{{ config.OUTPUT_DIR }}"
+# Model
+.define: &model !callable:transformers:AutoModel.from_pretrained
+    args: [ "{{ config.OUTPUT_DIR }}" ]
+    kwargs: { trust_remote_code: True }
+-- endif
+.define: &summary_writer !callable:torch.utils.tensorboard:SummaryWriter
+    - "{{ config.LOGGING_DIR }}"
+.define: &dataset !callable:datasets:load_from_disk [ "{{ config.DATASET_PATH }}" ]
+.define: &train_dataset !callable:forgather.construct:get_item [ *dataset, "train" ]
+.define: &eval_dataset !callable:forgather.construct:get_item [ *dataset, "validation" ]
+.define: &data_collator {{ experiment.DATA_COLLATOR }}
+.define: &training_args
+
+# Training args
+{{ experiment.TRAINING_ARGS }}
+    output_dir: "{{ config.OUTPUT_DIR }}"
+    logging_dir: "{{ config.LOGGING_DIR }}"
+
+# Callbacks
+.define: &callbacks
+{{ experiment.trainer_callbacks() }}
+
+# Accel trainer args
+.define:  &accel_trainer_args
+{{ experiment.ACCEL_TRAINER_ARGS }}
+
+# HF Trainer args
+.define: &hf_trainer_args 
+{{ experiment.HF_TRAINER_ARGS }}
+
+# Trainer
+.define: &trainer {{ experiment.TRAINER }}
+
+# Final Configuraiton
+output_dir: "{{ config.OUTPUT_DIR }}"
+logging_dir: "{{config.LOGGING_DIR}}"
+experiment_name: "{{ experiment.EXPERIMENT_NAME }}"
+experiment_description: "{{ experiment.EXPERIMENT_DESCRIPTION }}"
+trainer: *trainer
+do_save: {{ experiment.SAVE_MODEL }}

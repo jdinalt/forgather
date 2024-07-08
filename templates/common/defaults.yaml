@@ -1,0 +1,5 @@
+-- include 'common/trainer/defaults.yaml'
+-- set experiment.MODEL_NAME = "test_model"
+-- set experiment.EXPERIMENT_DESCRIPTION = 'Unspecified'
+-- set experiment.CREATE_NEW_MODEL = True
+-- set experiment.SAVE_MODEL = False

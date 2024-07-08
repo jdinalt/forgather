@@ -1,0 +1,64 @@
+## Define special tokens
+-- set pad_token = "<|PAD|>"
+-- set bos_token = "<|BOS|>"
+-- set eos_token = "<|EOS|>"
+-- set unk_token = "<|UNK|>"
+
+## This should match the position in special_tokens_List
+-- set bos_token_id = 0
+
+## Arguments to template:
+
+# BPE Tokenizer Definition for Causal Model
+# {{ utcnow }}
+# dataset_id: '{{ dataset_id }}'
+# dataset_split: '{{ dataset_split }}
+# model_max_length: '{{ model_max_length }}'
+# vocab_size: '{{ vocab_size }}'
+
+trainer_args: &trainer_args
+    model: !callable:tokenizers:models.BPE
+        kwargs:
+            cache_capacity: 16
+            unk_token: "{{ unk_token }}"
+            byte_fallback: True
+    normalizer: !callable:tokenizers:normalizers.NFC []
+    pre_tokenizer: !callable:tokenizers:pre_tokenizers.ByteLevel []
+    decoder: !callable:tokenizers:decoders.ByteLevel []
+
+    # Automatically add bos token to sequence start
+    post_processor: !callable:tokenizers:processors.TemplateProcessing
+        single: "{{ bos_token }} $A"
+        special_tokens: [[ "{{ bos_token }}", {{ bos_token_id }} ]]
+    trainer: !callable:tokenizers.trainers:BpeTrainer
+        kwargs:
+            vocab_size: {{ vocab_size }}
+            initial_alphabet: !callable:tokenizers:pre_tokenizers.ByteLevel.alphabet []
+            special_tokens:
+                - "{{ bos_token }}"
+                - "{{ pad_token }}"
+                - "{{ eos_token }}"
+                - "{{ unk_token }}"
+            show_progress: False
+    dataset: !callable:forgather.construct:get_item
+        - !callable:datasets:load_dataset [ "{{ dataset_id }}" ]
+        - "{{ dataset_split }}"
+
+# aiws.tokenizer_trainer.TokenizerTrainer args
+trainer: !callable:aiws.tokenizer_trainer:TokenizerTrainer
+    kwargs: *trainer_args 
+
+# Args to transformers.PreTrainedTokenizerFast()
+pretrained_tokenizer_fast_args:
+    bos_token: "{{ bos_token }}"
+    eos_token: "{{ eos_token }}"
+    unk_token: "{{ unk_token }}"
+    pad_token: "{{ pad_token }}"
+    return_special_tokens_mask: False
+    model_max_length: {{ model_max_length }}
+    padding_side: "right"
+    truncation_side: "right"
+    # chat_template: str; a Jinja template string
+    # additional_special_tokens: List[str]
+    # clean_up_tokenization_spaces: True
+    # split_special_tokens: False

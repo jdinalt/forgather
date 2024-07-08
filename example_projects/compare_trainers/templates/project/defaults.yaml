@@ -1,0 +1,60 @@
+-- import 'common/trainer/base_trainer.yaml' as base_trainer
+-- set experiment.ASSETS_DIR = path_join("..", "..")
+-- set experiment.TOKENIZERS_DIR = path_join(experiment.ASSETS_DIR, "tokenizers")
+-- set experiment.DATASETS_DIR = path_join(experiment.ASSETS_DIR, "datasets")
+-- set experiment.MODEL_SRC_DIR = path_join(experiment.ASSETS_DIR, "model_zoo", "models")
+-- set experiment.MODELS_DIR = "output_models"
+
+-- set experiment.MODEL_NAME = "test_model"
+-- set experiment.DATASET = "tiny_stories_tokenized"
+-- set experiment.CREATE_NEW_MODEL = True
+-- set experiment.SAVE_MODEL = False
+-- import 'models/attention_only/attnonly.yaml' as model_def
+
+# Default common trainer arguments
+-- set experiment.TRAINING_ARGS
+    overwrite_output_dir: False
+    per_device_train_batch_size: 96
+    per_device_eval_batch_size: 96
+    learning_rate: 1.0e-3
+    num_train_epochs: 1
+    eval_steps: 150
+    logging_steps: 50
+    max_steps: 500
+    warmup_steps: 0
+    seed: 42
+    eval_strategy: "steps"
+    save_strategy: "no"
+    logging_strategy: "steps"
+    # linear, cosine, cosine_with_restarts, polynomial, constant, constant_with_warmup,
+    # inverse_sqrt, reduce_lr_on_plateau
+    # https://huggingface.co/docs/transformers/v4.35.0/en/main_classes/optimizer_schedules
+    lr_scheduler_type: "constant"
+-- endset
+
+--set experiment.ACCEL_TRAINER_ARGS
+    # Additional default arguments for the AccelTrainer class
+    device_placement: True
+    #mixed_precision: bf16
+    dataloader_config: !callable:accelerate:DataLoaderConfiguration
+        kwargs:
+            dispatch_batches: False
+            split_batches: False
+-- endset
+
+# Additional default arguments for the HF trainer
+--set experiment.HF_TRAINER_ARGS
+    accelerator_config:
+        dispatch_batches: False
+        split_batches: False
+    ddp_find_unused_parameters: False
+    save_steps: 100000
+    report_to: "none"
+    logging_nan_inf_filter: False
+-- endset
+
+-- set experiment.MODEL_CONFIG
+{{ model_def.CONFIG }}
+-- endset
+-- set experiment.model = model_def.model
+-- set experiment.tokenizer = model_def.tokenizer

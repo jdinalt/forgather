@@ -1,0 +1,11 @@
+-- set experiment = namespace()
+-- include 'project_defaults.yaml'
+-- set experiment.EXPERIMENT_NAME = 'Three Layers'
+
+-- set experiment.MODEL_CONFIG
+{{ experiment.MODEL_CONFIG }}
+    # The single variable under study.
+    num_hidden_layers: 3
+-- endset
+
+-- include 'common/causal_lm/base_train.yaml'
