@@ -1,0 +1,40 @@
+-- import 'common/trainer/accel_trainer.yaml' as accel_trainer
+
+-- set experiment = namespace()
+-- include 'common/defaults.yaml'
+-- include 'paths.yaml'
+-- set experiment.DATASET = "tiny_stories_tokenized"
+
+-- set experiment.MODEL_NAME = "test_model"
+-- import 'common/models/vanilla_transformer/tiny_d128_l2.yaml' as model_def
+-- set experiment.EXPERIMENT_DESCRIPTION = 'Test Templates'
+
+-- set experiment.TRAINING_ARGS
+{{ experiment.TRAINING_ARGS }}
+    overwrite_output_dir: True
+    per_device_train_batch_size: 32
+    per_device_eval_batch_size: 32
+    learning_rate: 1.0e-3
+    num_train_epochs: 1
+    eval_steps: 200
+    logging_steps: 100
+    max_steps: 2000
+-- endset
+
+-- set experiment.MODEL_CONFIG
+{{ model_def.CONFIG }}
+    hidden_size: 128
+-- endset
+
+-- set experiment.model = model_def.model
+-- set experiment.tokenizer = model_def.tokenizer
+-- set experiment.SAVE_MODEL = True
+
+-- set experiment.EXPERIMENT_NAME = 'Multi-GPU'
+-- set experiment.EXPERIMENT_DESCRIPTION = 'Try training on multiple GPUs'
+-- set experiment.SAVE_MODEL = True
+-- set experiment.TRAINER
+{{ accel_trainer.trainer() }}
+-- endset
+
+-- include 'trainer_config.yaml'

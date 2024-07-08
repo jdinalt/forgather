@@ -1,0 +1,31 @@
+## Meta-configuration
+##
+## This is intended to be loaded without 'search_path' having been set,
+## thus all paths are relative to this file.
+##
+## It is the first config file to load, as it provides the information needed
+## to load the rest of the configuration.
+-- set project_templates = 'templates'
+## Get paths from project paths definition
+-- set experiment = namespace()
+-- include path_join(project_templates, 'paths.yaml')
+project_templates: "{{ experiment.PROJ_TEMPLATES_DIR }}"
+templates: "{{ experiment.TEMPLATES_DIR }}"
+tokenizer_dir: "{{ experiment.TOKENIZERS_DIR }}"
+datasets_dir: "{{ experiment.DATASETS_DIR }}"
+assets_dir: "{{ experiment.ASSETS_DIR }}"
+search_paths:
+    - "{{ experiment.PROJ_TEMPLATES_DIR }}"
+    - "{{ experiment.TEMPLATES_DIR }}"
+    - "{{ experiment.MODEL_ZOO_DIR }}"
+whitelist_path: "{{ path_join(experiment.PROJ_TEMPLATES_DIR, 'whitelist.yaml') }}"
+model_src_dir: "{{ experiment.MODEL_SRC_DIR }}"
+script_dir: "{{ experiment.SCRIPTS_DIR }}"
+train_script_path: "{{ path_join(experiment.SCRIPTS_DIR, 'train_script.py') }}"
+models_dir: "{{ experiment.MODELS_DIR }}"
+
+# Additonal project meta-data
+dataset_id: "roneneldan/TinyStories"
+tokenizer_def: "{{ path_join(experiment.TEMPLATES_DIR, 'common', 'tokenizers', 'tiny_2k_bpe.yaml') }}"
+tokenizer_path: "{{ path_join(experiment.TOKENIZERS_DIR, 'tiny_stories_2k') }}"
+tokenizers_whitelist: "{{  path_join(experiment.TEMPLATES_DIR, 'common', 'tokenizers', 'whitelist.yaml') }}"

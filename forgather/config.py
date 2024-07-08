@@ -47,8 +47,8 @@ def format_line_numbers(text: str) -> str:
     return ''.join(map(lambda x: f"{x[0]+1:>6}: {x[1]}\n", enumerate(text.split('\n'))))
 
 class ConfigText(str):
-    def with_line_numbers(self):
-        return format_line_numbers(self)
+    def with_line_numbers(self, show_line_numbers=True):
+        return format_line_numbers(self) if show_line_numbers else self
 
 def fconfig(obj, indent_level=2):
     """
@@ -309,6 +309,8 @@ def enumerate_whitelist_exceptions(config: Any, whitelist: Container = set()):
     Without specifying the whitelist, this tests against the empty-set, which shows
     all unique import-specs.
     """
+    assert isinstance(whitelist, Container), "The whitelist must be a 'Container'; use load_whitelist_as_set()"
+    assert not isinstance(config, str), "The input config should be a parsed config; use load_config()"
     print(fconfig(Latent.validate_whitelist(config, set())))
 
 def materialize_config(
