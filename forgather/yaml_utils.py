@@ -11,8 +11,15 @@ def callable_constructor(loader, tag_suffix, node):
     """
     if isinstance(node, yaml.MappingNode):
         value = loader.construct_mapping(node, deep=True)
-        args = value.get("args", tuple())
-        kwargs = value.get("kwargs", dict())
+        kwargs = value.get("kwargs", None)
+        # Treat missing kwargs key as shorthand to use the value.
+        # Shorthand for args is a sequence []
+        if kwargs is None:
+            kwargs = value
+            args = tuple()
+        else:
+            args = value.get("args", tuple())
+        
     elif isinstance(node, yaml.SequenceNode):
         args = loader.construct_sequence(node, deep=True)
         kwargs = {}
@@ -23,6 +30,11 @@ def callable_constructor(loader, tag_suffix, node):
     assert isinstance(kwargs, dict), f"Expected dict, but found {type(kwargs)}"
     tag_suffix = tag_suffix[1:]
     return Latent(tag_suffix, *args, **kwargs)
+
+def tuple_constructor(loader, node):
+    assert isinstance(node, yaml.SequenceNode)
+    value = loader.construct_sequence(node, deep=True)
+    return tuple(value)
 
 def load_depth_first(stream, Loader=yaml.SafeLoader):
     """

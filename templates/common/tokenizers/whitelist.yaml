@@ -6,5 +6,6 @@
 - 'tokenizers:pre_tokenizers.ByteLevel.alphabet'
 - 'datasets:load_dataset'
 - 'forgather.construct:get_item'
+- 'forgather.construct:values'
 - 'tokenizers:processors.TemplateProcessing'
 - 'tokenizers.trainers:BpeTrainer'

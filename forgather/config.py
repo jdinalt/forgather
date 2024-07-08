@@ -19,6 +19,7 @@ from .dynamic import normalize_import_spec
 from .yaml_utils import (
     callable_constructor,
     load_depth_first,
+    tuple_constructor
 )
 from .utils import DiagnosticEnum
 
@@ -88,6 +89,13 @@ def fconfig(obj, indent_level=2):
         return s
     else:
         return pformat(obj)
+
+def pconfig(*args):
+    """
+    Print a config
+    """
+    for arg in args:
+        print(fconfig(arg))
 
 class LoadConfigOutput(NamedTuple):
     config: Any
@@ -254,6 +262,7 @@ def load_config(
         config, preprocess=preprocess, search_path=search_path,
         load_method=load_method, pp_kwargs=kwargs)
     yaml.SafeLoader.add_multi_constructor("!callable", callable_constructor)
+    yaml.SafeLoader.add_constructor("!tuple", tuple_constructor)
     try:
         loaded_config = load_depth_first(load_out.config, Loader=yaml.SafeLoader)
     # The line numbers in the Yaml error will only make sense with the preproessed data

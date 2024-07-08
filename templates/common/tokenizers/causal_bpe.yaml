@@ -4,7 +4,7 @@
 -- set eos_token = "<|EOS|>"
 -- set unk_token = "<|UNK|>"
 
-## This should match the position in special_tokens_List
+## This should match the position in special_tokens_map
 -- set bos_token_id = 0
 
 ## Arguments to template:
@@ -16,39 +16,53 @@
 # model_max_length: '{{ model_max_length }}'
 # vocab_size: '{{ vocab_size }}'
 
+special_tokens_map: &special_tokens_map
+    bos: "{{ bos_token }}" # Beginning of Sequence; the first token in a sequence
+    pad: "{{ pad_token }}" # Padding, used to pad out samples in a batch.
+    eos: "{{ eos_token }}" # End of Sequence; typically is used to stop generation.
+    unk: "{{ unk_token }}" # Unknown; used when a symbol can't be represented.
+
+# TokenizerTrainer args
+# aiws.tokenizer_trainer.TokenizerTrainer
 trainer_args: &trainer_args
+    # https://huggingface.co/docs/tokenizers/api/trainers#tokenizers.trainers.BpeTrainer
     model: !callable:tokenizers:models.BPE
-        kwargs:
-            cache_capacity: 16
-            unk_token: "{{ unk_token }}"
-            byte_fallback: True
+        cache_capacity: 16
+        unk_token: "{{ unk_token }}"
+        byte_fallback: True
+
+    # https://huggingface.co/docs/tokenizers/api/normalizers#tokenizers.normalizers.NFC
     normalizer: !callable:tokenizers:normalizers.NFC []
+
+    # https://huggingface.co/docs/tokenizers/api/pre-tokenizers#tokenizers.pre_tokenizers.ByteLevel
     pre_tokenizer: !callable:tokenizers:pre_tokenizers.ByteLevel []
+
+    # https://huggingface.co/docs/tokenizers/api/decoders#tokenizers.decoders.ByteLevel
     decoder: !callable:tokenizers:decoders.ByteLevel []
 
     # Automatically add bos token to sequence start
+    # https://huggingface.co/docs/tokenizers/api/post-processors#tokenizers.processors.TemplateProcessing
     post_processor: !callable:tokenizers:processors.TemplateProcessing
-        single: "{{ bos_token }} $A"
-        special_tokens: [[ "{{ bos_token }}", {{ bos_token_id }} ]]
+        single: "<bos> $A"
+        special_tokens: [ !tuple [ "<bos>", {{ bos_token_id }} ] ]
+
+    # https://huggingface.co/docs/tokenizers/api/trainers#tokenizers.trainers.BpeTrainer
     trainer: !callable:tokenizers.trainers:BpeTrainer
-        kwargs:
-            vocab_size: {{ vocab_size }}
-            initial_alphabet: !callable:tokenizers:pre_tokenizers.ByteLevel.alphabet []
-            special_tokens:
-                - "{{ bos_token }}"
-                - "{{ pad_token }}"
-                - "{{ eos_token }}"
-                - "{{ unk_token }}"
-            show_progress: False
+        vocab_size: {{ vocab_size }}
+        # Start the vocabulary with tokens for all 8-bit bytes.
+        initial_alphabet: !callable:tokenizers:pre_tokenizers.ByteLevel.alphabet []
+        # Convert special tokes map to list
+        special_tokens: !callable:forgather.construct:values [ *special_tokens_map ]
+        # The TokenizerTrainer class handles this.
+        show_progress: False
+
+    # The dataset to use '{{ dataset_id }}'
     dataset: !callable:forgather.construct:get_item
         - !callable:datasets:load_dataset [ "{{ dataset_id }}" ]
         - "{{ dataset_split }}"
 
-# aiws.tokenizer_trainer.TokenizerTrainer args
-trainer: !callable:aiws.tokenizer_trainer:TokenizerTrainer
-    kwargs: *trainer_args 
-
 # Args to transformers.PreTrainedTokenizerFast()
+# https://huggingface.co/docs/transformers/main_classes/tokenizer#transformers.PreTrainedTokenizerFast
 pretrained_tokenizer_fast_args:
     bos_token: "{{ bos_token }}"
     eos_token: "{{ eos_token }}"
