@@ -189,29 +189,50 @@ class Latent:
     And speaking of __slots__ causing incompatible internal object layout issues, now that I am
     aware of this esoteric feature...
     """
-    __slots__ = ("constructor", "args", "kwargs", "obj")
+    __slots__ = ("constructor", "args", "kwargs", "as_callable", "is_singleton", "singleton")
 
-    def __init__(self, constructor: Callable | str, /, *args, **kwargs):
+    def __init__(
+        self,
+        constructor: Callable | str,
+        /, *args,
+        as_callable=False,
+        is_singleton=False,
+        **kwargs
+    ):
         assert isinstance(constructor, str) or isinstance(constructor, Callable)
+        assert isinstance(as_callable, bool)
+        assert isinstance(is_singleton, bool)
         self.constructor = constructor
-        # Args are initially a tuple. We need it to be mutable.
-        self.args = list(args)
+        self.args = args
         self.kwargs = kwargs
-        self.obj = None
+
+        # When this attribute is True, the object will not be materialized, unless it is the 
+        # root of the graph. This can be useful for passing a Latent object to another 
+        # Latent object, as-is -- for example, as a factory object.
+        self.as_callable = as_callable
+
+        # A 'singleton' latent object always returns the same instance of the object,
+        # otherwise, a new instance is created on each materialization.
+        self.is_singleton = is_singleton
+
+        # The object's singleton instance of the materialized object.
+        self.singleton = None
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({repr(self.constructor)}, *{repr(self.args)}, **{repr(self.kwargs)})"
+        return (f"{self.__class__.__name__}({repr(self.constructor)}, *{repr(self.args)}, "
+                f"**{repr(self.kwargs)}, as_callable={self.as_callable}, is_singleton={self.is_singleton})"
+        )
 
-    def __iter__(self) -> MappingNode:
+    def __iter__(self) -> '_Latent':
         """
-        Iteration over latent yields all nodes but self in a depth first traversal.
+        Iteration over Laent yields all nodes via depth first traversal.
 
-        See Latent.generate(), as this has limited utility on its own.
+        See also: Latent.generate()
         """
-        for node in Latent.generate(self.args):
-            yield node
-        for node in Latent.generate(self.kwargs):
-            yield node
+        for latent in Latent.generate(self.args):
+            yield latent
+        for latent in Latent.generate(self.kwargs):
+            yield latent
 
     def __call__(self, *, whitelist: Container=None, **mapping):
         """
@@ -228,6 +249,7 @@ class Latent:
     """
     @staticmethod
     def materialize(obj: Any, *, whitelist: Container=None, **mapping):
+        
         if whitelist is not None:
             invalid_set = Latent.validate_whitelist(obj, whitelist)
             if len(invalid_set):
@@ -235,7 +257,7 @@ class Latent:
                     f"The following dynamic imports were not found in the whitelist: {pformat(invalid_set)}")
         Latent._resolve_standins(obj, **mapping)
         Latent._resolve_dynamic_imports(obj)
-        return Latent._construct_all(obj)
+        return Latent._materialize(obj, dict())
         
     """
     Walk the graph, checking each constructor against the whitelist, and return the set of disallowed objects.
@@ -243,8 +265,7 @@ class Latent:
     @staticmethod
     def validate_whitelist(obj: Any, whitelist: Container) -> Set[str]:
         invalid_set = set()
-        for node in Latent.generate([obj]):
-            latent = node.child
+        for latent in Latent.generate([obj]):
             # If not plausibly an import spec, skip it
             if not isinstance(latent.constructor, str) or not ':' in latent.constructor:
                 continue
@@ -253,60 +274,80 @@ class Latent:
                 invalid_set.add(import_spec)
         return invalid_set
 
-    """
-    Return a generator for walking the graph of Latent objects.
-
-    The yielded type, Latent.MappingNode, provides the indirection required modify the 
-    references of the parent node.
-
-    Example: Replace all notes with their repr() string...
-    ```
-    container = [ 1, Latent("a"), { "foo": Latent("b"), "bar": Latent("c", Latent("d")) } ]
-    print(container)
-    > [1, Latent('a', *[], **{}), {'foo': Latent('b', *[], **{}), 'bar': Latent('c', *[Latent('d', *[], **{})], **{})}]
-    for node in Latent.generate(container):
-        node.child = repr(node.child)
-    print(container)
-    > [1, "Latent('a', *[], **{})", {'foo': "Latent('b', *[], **{})", 'bar': 'Latent(\'c\', *["Latent(\'d\', *[], **{})"], **{})'}]
-    ```
-    """
     @staticmethod
-    def generate(obj) -> MappingNode:
-        """
-        Construct a generator for walking a graph of Latent objects
+    def _materialize(obj: Any, idmap: dict[int, Any], level: int=0):
+        if isinstance(obj, list):
+            return [ Latent._materialize(value, idmap, level+1) for value in obj ]
+        elif isinstance(obj, dict):
+            return { key: Latent._materialize(value, idmap, level+1) for key, value in obj.items() }
+        elif isinstance(obj, tuple):
+            return tuple( Latent._materialize(value, idmap, level+1) for value in obj )
+        elif isinstance(obj, Latent):
+            # If flagged 'as_callable,' and not the root node, skip materialization.
+            if obj.as_callable and level > 0:
+                return obj
+            # Have we already constructed this object?
+            value = idmap.get(id(obj), None)
+            if value is not None:
+                return value
 
-        This performs a depth first traversal of the graph.
+            # If the object has already been constructed
+            if obj.singleton is not None:
+                idmap[id(obj)] = obj.singleton
+                return obj.singleton
+
+            # The object has not yet been constructed. Verify that the 
+            # constructor has been resolved.
+            if not isinstance(obj.constructor, Callable):
+                if isinstance(obj.constructor, str) and ':' not in obj.constructor:
+                    raise LatentException(
+                        f"Found unresolved symbol '{obj.constructor}' in Latent: {obj}"
+                        +" This is likely either a missing stand-in or a syntax error."
+                    )
+                else:
+                    raise LatentException(
+                        f"Constructor must be Callable, but found [{type(obj.constructor)}] {obj.constructor}"
+                        + "; see _resolve_dynamic_imports() and _resolve_standins()")
+
+            # Materialize the arguments
+            args = Latent._materialize(obj.args, idmap, level+1)
+            kwargs = Latent._materialize(obj.kwargs, idmap, level+1)
+            
+            # Materialize the object
+            value = obj.constructor(*args, **kwargs)
+            
+            # Cache materialized object
+            idmap[id(obj)] = value
+
+            # If the object is a singleton, add the instance to the node.
+            if obj.is_singleton:
+                obj.singleton = value
+            return value
+        # We return the original reference for everything else, which means that
+        # there will only be a single instance of all other object types.
+        else:
+            return obj
+        
+    @staticmethod
+    def generate(obj) -> '_Latent':
+        
         """
-        if isinstance(obj, MutableSequence):
-            generator = enumerate(obj)
-        elif isinstance(obj, MutableMapping):
-            generator = obj.items()
+        Iterate over all Latent objects in graph
+        """
+        # Supported sequence types
+        if isinstance(obj, list) or isinstance(obj, Latent) or isinstance(obj, tuple):
+            generator = obj
+        # Supported mapping types
+        elif isinstance(obj, dict):
+            generator = obj.values()
         else:
             return
-        for key, value in generator:
-            if isinstance(value, Latent):
-                for node in value:
-                    yield node
-                yield Latent.MappingNode(obj, key)
-            else:
-                for node in Latent.generate(value):
-                    yield node
-
-    def _construct(self):
-        """
-        If the object has not been constructed, construct it
-
-        Note: This is not recursive and it will not work if all of the constructors have not been resolved first.
-        """
-        if self.obj is not None:
-            return self.obj
-        if not isinstance(self.constructor, Callable):
-            raise LatentException(
-                f"Constructor must be Callable, but found [{type(self.constructor)}] {self.constructor}"
-                + "; see resolve_dynamic_imports() and resolve_standins()")
+        for value in generator:
+            for latent in Latent.generate(value):
+                yield latent
         
-        self.obj = self.constructor(*self.args, **self.kwargs)
-        return self.obj 
+        if isinstance(obj, Latent):
+            yield obj
 
     @staticmethod
     def _resolve_dynamic_imports(obj: Any):
@@ -314,8 +355,7 @@ class Latent:
         Try to resolve all dynamic imports, replacing the constructor string with the 
         corresponding Callable.
         """
-        for node in Latent.generate([obj]):
-            latent = node.child
+        for latent in Latent.generate(obj):
             # If not plausibly an import spec, skip it
             if not isinstance(latent.constructor, str) or not ':' in latent.constructor:
                 continue
@@ -330,27 +370,11 @@ class Latent:
         """
         Replace all stand-ins with the corresonding Callables from the mapping.
         """
-        for node in Latent.generate([obj]):
-            latent = node.child
+        for latent in Latent.generate(obj):
             if not isinstance(latent.constructor, str) or ':' in latent.constructor:
                 continue
-            try:
-                value = mapping[latent.constructor]
-            except KeyError:
-                raise LatentException(f"Key '{latent.constructor}' was not found in mapping.")
-            if not isinstance(value, Callable):
-                raise LatentException(
-                    f"Mapping for key '{latent.constructor}' is not a Callable: [{type(value)}] {value}")
-            latent.constructor = value
-
-    @staticmethod
-    def _construct_all(obj: Any):
-        """
-        Recursively construct all Latent objects in the graph
-
-        This assumes that all constructors have been fully resolved.
-        """
-        indirect_obj = [obj]
-        for node in Latent.generate(indirect_obj):
-            node.child = node.child._construct()
-        return indirect_obj[0]
+            value = mapping.get(latent.constructor, None)
+            # If we found the key in the map...
+            # and either the value has not been set OR the node is not a singleton, then set the value
+            if value is not None and (latent.singleton is None or not latent.is_singleton):
+                latent.singleton = value
