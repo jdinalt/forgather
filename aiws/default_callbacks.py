@@ -135,7 +135,8 @@ class JsonLogger(TrainerCallback):
     def on_train_begin(self, args, state, control, **kwargs):
         if not state.is_world_process_zero or args.logging_dir is None:
             return
-        
+
+        os.makedirs(args.logging_dir, exist_ok=True)
         self.log_path = os.path.join(args.logging_dir, "trainer_logs.json")
         self.log_file = open(self.log_path, 'x')
         self.log_file.write("[\n")

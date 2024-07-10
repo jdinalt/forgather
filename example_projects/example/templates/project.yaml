@@ -1,0 +1,5 @@
+{%- extends "configs/default_train_script.yaml" %}
+
+{%- block base_directories %}
+{%- include 'directories.yaml' %}
+{% endblock base_directories -%}

@@ -1,6 +1,0 @@
--- macro model_zoo_list(model_zoo_dir)
-- {{ path_join(model_zoo_dir, 'attention_only', 'attnonly.py') }}:TransformerConfig
-- {{ path_join(model_zoo_dir, 'attention_only', 'attnonly.py') }}:TransformerModel
-- {{ path_join(model_zoo_dir, 'vanilla_transformer', 'vanilla_transformer.py') }}:VanillaTransformerConfig
-- {{ path_join(model_zoo_dir, 'vanilla_transformer', 'vanilla_transformer.py') }}:VanillaTransformer
--- endmacro

@@ -1,0 +1,52 @@
+{%- set model_def = namespace() %}
+{%- from 'inc/formatting.jinja' import h2, h3, sep %}
+{%- block model_meta_config %}
+-- set model_def.name = "Base Custom Model"
+-- set model_def.description = "A custom model definition."
+{%- block model_custom_definition required %}
+{#- # Define the following variables
+-- set model_def.cls = '<model class>'
+-- set model_def.cfg_cls = '<model configuration class>'
+-- set model_def.tokenizer_path_or_id = '<path to existing tokenizer>'
+-- set model_def.config_path = '<path to model config source>'
+-- set model_def.model_path = '<path to model source>'
+#}
+{% endblock model_custom_definition %}
+{% endblock model_meta_config %}
+
+{%- block model_header %}
+# Name: {{ model_def.name }}
+# Description: {{ model_def.description }}
+
+# model_def.cls = "{{ model_def.cls }}"
+# model_def.cfg_cls = "{{ model_def.cfg_cls }}"
+# model_def.tokenizer_path_or_id = "{{ model_def.tokenizer_path_or_id }}"
+# model_def.config_path = "{{ model_def.config_path }}"
+# model_def.model_path = "{{ model_def.model_path }}"
+{% endblock model_header %}
+
+{{ h3('Tokenizer') }}
+
+{% block model_tokenizer %}
+# Load a tokenizer from a file or hub id
+.define: &tokenizer !callable:transformers:AutoTokenizer.from_pretrained
+    - "{{ model_def.tokenizer_path_or_id }}"
+{% endblock model_tokenizer %}
+
+{{ h3('Model Config') }}
+
+{% block model_config %}
+{#- # When overriding, define this anchor. #}
+.define: &model_config {}
+{% endblock model_config %}
+
+{{ h3('Model Constructor') }}
+
+{% block model_constructor %}
+# Custom transformer model; registers for AutoClass and will save code with weights.
+.define: &model !callable:aiws.construct:register_for_auto_class
+    - !callable:{{ model_def.model_path }}:{{ model_def.cls }}
+        - !callable:aiws.construct:register_for_auto_class
+            - !callable:{{ model_def.config_path }}:{{ model_def.cfg_cls }}
+                <<: *model_config
+{% endblock model_constructor -%}

@@ -1,0 +1,114 @@
+{%- set ns = namespace() %}
+{%- from 'inc/formatting.jinja' import h2, sep %}
+
+{%- block experiment_defaults %}
+{%- set ns.EXPERIMENT_NAME = "Anonymous Experiment" %}
+{%- set ns.EXPERIMENT_DESCRIPTION = "None" %}
+{% set ns.MODEL_NAME = "anonymous_model" %}
+{% endblock experiment_defaults -%}
+
+{%- block base_directories required %}
+{#- ### Define these directories in your project ###
+# The relative locations of the project and assests from CWD
+-- set ns.ASSETS_DIR = path_join('..', '..')
+-- set ns.PROJECT_DIR = '.'
+
+# The locations of your project templates
+-- set ns.PROJ_TEMPLATES_DIR = path_join(ns.PROJECT_DIR, 'templates')
+
+# The location of the main templates library
+-- set ns.TEMPLATES_DIR = path_join(ns.ASSETS_DIR, 'templates')
+
+# Where are training scripts stored?
+-- set ns.SCRIPTS_DIR = path_join(ns.ASSETS_DIR, 'scripts')
+
+#############################################
+# The following are REQUIRED by the templates.
+# Where are models to be stored?
+-- set ns.MODELS_DIR = path_join(ns.PROJECT_DIR, 'output_models')
+
+# Where are tokenizers to be stored?
+-- set ns.TOKENIZERS_DIR = path_join(ns.ASSETS_DIR, 'tokenizers')
+
+# Where are datasets to be stored?
+-- set ns.DATASETS_DIR = path_join(ns.ASSETS_DIR, 'datasets')
+
+# Where is model source code stored?
+-- set ns.MODEL_SOURCE_DIR = path_join(ns.ASSETS_DIR, 'model_zoo')
+-#}
+{% endblock base_directories -%}
+
+{%- block train_directories %}
+{%- set ns.OUTPUT_DIR = path_join(ns.MODELS_DIR, ns.MODEL_NAME) %}
+{%- set ns.LOGGING_DIR = path_join(ns.OUTPUT_DIR, "runs", ns.EXPERIMENT_NAME + '_' + time_ns) %}
+{% endblock train_directories -%}
+
+{{ h2('Experiment') }}
+
+{% block header %}
+# {{ ns.EXPERIMENT_NAME }}
+# {{ utcnow }}
+# Description: {{ns.EXPERIMENT_DESCRIPTION}}
+# Model: {{ ns.MODEL_NAME }}
+# World Size: {{ world_size }}
+# Hostname: {{ hostname }}
+# Script Args: {{ script_args }}
+{% endblock header %}
+
+{{ h2('Config Vars') }}
+
+{% block variable_listing %}
+# ns.TOKENIZERS_DIR: "{{ ns.TOKENIZERS_DIR }}"
+# ns.MODELS_DIR: "{{ ns.MODELS_DIR }}"
+# ns.DATASETS_DIR: "{{ ns.DATASETS_DIR }}"
+# ns.SCRIPTS_DIR: "{{ ns.SCRIPTS_DIR }}"
+# ns.MODEL_SOURCE_DIR: "{{ ns.MODEL_SOURCE_DIR }}"
+# ns.OUTPUT_DIR: "{{ ns.OUTPUT_DIR }}"
+{% endblock variable_listing %}
+
+{{ h2('Additional Dependencies') }}
+
+{% block pre_model_setup %}
+# Undefined
+{% endblock pre_model_setup %}
+
+{{ h2('Model') }}
+{% block model_definition required %}
+{% endblock model_definition %}
+
+{{ h2('Datasets') }}
+{% block dataset_definition required %}
+{% endblock dataset_definition %}
+
+{{ h2('Trainer Callbacks') }}
+{% block trainer_callbacks %}
+
+.define: &trainer_callbacks {}
+{% endblock trainer_callbacks %}
+
+{{ h2('Data Collator') }}
+{% block datacollator %}
+
+.define: &data_collator null
+{% endblock datacollator %}
+
+{{ h2('Trainer') }}
+{% block trainer_definition required %}
+{% endblock trainer_definition %}
+
+{{ h2('Pre Config') }}
+
+{% block pre_config %}
+# Undefined
+{% endblock pre_config %}
+
+{{ h2('Configuration') }}
+
+{% block output_configuration required %}
+{% endblock output_configuration %}
+
+{{ h2('Post Config') }}
+
+{% block trailer %}
+# Undefined
+{% endblock trailer %}

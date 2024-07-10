@@ -1,0 +1,41 @@
+{%- set trainer_def = namespace() %}
+{%- from 'inc/formatting.jinja' import h2, h3, sep %}
+{%- block trainer_meta_config %}
+-- set trainer_def.name = "Base Trainer"
+-- set trainer_def.description = "A ML model trainer"
+{%- block trainer_vars %}
+{#- # Define vars like this
+-- set trainer_def.foo = '<bar>'
+#}
+{% endblock trainer_vars %}
+{% endblock trainer_meta_config %}
+
+{%- block trainer_header %}
+# Name: {{ trainer_def.name }}
+# Description: {{ trainer_def.description }}
+{% endblock trainer_header %}
+
+{{ h3('Trainer Args') }}
+
+{% block trainer_args %}
+.define: &trainer_args
+    output_dir: "{{ ns.OUTPUT_DIR }}"
+    logging_dir: "{{ ns.LOGGING_DIR }}"
+    overwrite_output_dir: True
+    per_device_train_batch_size: 16
+    per_device_eval_batch_size: 16
+    learning_rate: 1.0e-3
+    num_train_epochs: 1
+    eval_steps: 500
+    logging_steps: 500
+    seed: 42
+    eval_strategy: "steps"
+    save_strategy: "no"
+    logging_strategy: "steps"
+    lr_scheduler_type: "constant"
+{%- endblock trainer_args %}
+
+{{ h3('Trainer Constructor') }}
+
+{% block trainer_constructor required %}
+{% endblock trainer_constructor -%}

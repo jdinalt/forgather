@@ -1,0 +1,36 @@
+{%- set dataset_def = namespace() %}
+{%- from 'inc/formatting.jinja' import h2, h3, sep %}
+{%- block dataset_meta_config %}
+-- set dataset_def.name = "Local Dataset"
+-- set dataset_def.description = "Load dataset from a local file-system"
+-- set dataset_def.dataset_train_split = "train"
+-- set dataset_def.dataset_validation_split = "validation"
+{%- block dataset_definition required %}
+{#- # Define the following variables
+-- set dataset_def.dataset_name_or_path = "<local path to dataset or hub id>"
+#}
+{% endblock dataset_definition -%}
+{% endblock dataset_meta_config -%}
+
+
+{%- block dataset_header %}
+# Name: {{ dataset_def.name }}
+# Description: {{ dataset_def.description }}
+
+# dataset_def.dataset_name_or_path = "{{ dataset_def.dataset_name_or_path }}"
+# dataset_def.dataset_train_split = "{{ dataset_def.dataset_train_split }}"
+# dataset_def.dataset_validation_split = "{{ dataset_def.dataset_validation_split }}"
+{% endblock dataset_header %}
+
+{{ h3('Load Datasets') }}
+
+{% block dataset_loader %}
+.define: &dataset !callable:datasets:load_from_disk [ "{{ dataset_def.dataset_name_or_path }}" ]
+{% endblock dataset_loader %}
+
+{{ h3('Get Splits') }}
+
+{% block dataset_splits %}
+.define: &train_dataset !callable:forgather.construct:get_item [ *dataset, "{{ dataset_def.dataset_train_split }}" ]
+.define: &eval_dataset !callable:forgather.construct:get_item [ *dataset, "{{ dataset_def.dataset_validation_split }}" ]
+{% endblock dataset_splits -%}

@@ -1,0 +1,10 @@
+{%- extends 'trainers/trainer.yaml' %}
+{%- block trainer_meta_config %}
+{{ super() }}
+{%- set trainer_def.name = "Custom " + trainer_def.name %}
+{% endblock trainer_meta_config %}
+
+{% block trainer_args %}
+{{ super() }}
+    max_steps: 2000
+{% endblock trainer_args %}

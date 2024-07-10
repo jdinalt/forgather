@@ -1,0 +1,17 @@
+{%- extends 'project.yaml' %}
+
+{%- block experiment_defaults %}
+{{ super() }}
+-- set ns.EXPERIMENT_NAME = "The latest example"
+-- set ns.EXPERIMENT_DESCRIPTION = "It's not supid, it's advanced!"
+-- set ns.CREATE_NEW_MODEL = True
+-- set ns.SAVE_MODEL = True
+{% endblock experiment_defaults -%}
+
+{%- block construct_new_model %}
+-- include 'model_config.yaml'
+{% endblock construct_new_model -%}
+
+{%- block trainer_definition %}
+-- include 'trainer_config.yaml'
+{% endblock trainer_definition -%}

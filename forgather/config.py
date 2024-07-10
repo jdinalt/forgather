@@ -50,7 +50,7 @@ class ConfigText(str):
     def with_line_numbers(self, show_line_numbers=True):
         return format_line_numbers(self) if show_line_numbers else self
 
-def fconfig(obj, indent_level=2):
+def fconfig(obj, sort_items=True, indent_level=2):
     """
     Recursively pretty-format a configuration
     """
@@ -68,7 +68,10 @@ def fconfig(obj, indent_level=2):
         return fconfig(tuple(obj))
     elif isinstance(obj, Mapping):
         s = ''
-        for key, value in  obj.items():
+        items = obj.items()
+        if sort_items:
+            items = dict(sorted(items)).items()
+        for key, value in items:
             fmt_value = fconfig(value, indent_level)
             if '\n' in fmt_value or len(fmt_value) > 80:
                 s += f"{key}:\n" + indent_block(fmt_value) + '\n'
@@ -77,7 +80,7 @@ def fconfig(obj, indent_level=2):
         return s[:-1]
     elif isinstance(obj, Sequence):
         s = ''
-        for value in obj:
+        for value in sorted(obj) if sort_items else obj:
             s += '- ' + fconfig(value, indent_level) + '\n'
         return s[:-1]
     elif isinstance(obj, Latent):
@@ -90,12 +93,11 @@ def fconfig(obj, indent_level=2):
     else:
         return pformat(obj)
 
-def pconfig(*args):
+def pconfig(obj, /, *args, **kwargs):
     """
     Print a config
     """
-    for arg in args:
-        print(fconfig(arg))
+    print(fconfig(obj, *args, **kwargs))
 
 class LoadConfigOutput(NamedTuple):
     config: Any
@@ -158,6 +160,18 @@ def __add_exception_notes(error: Exception, *args):
     # Fallback to generic exception, which at least should chain them.
     raise Exception(note)
 
+def _os_path_join(*args):
+    """
+    Calling os.path.join() on jinja's Undefined types results in a difficult to
+    diagnose exepction, as it does not show what is undefined or provide context.
+
+    This is just a wrapper for better diagnostics on undefined paths.
+    """
+    for arg in args:
+        if isinstance(arg, jinja2.Undefined):
+            raise arg._fail_with_undefined_error("Undefined path passed to path_join")
+    return os.path.join(*args)
+
 def preprocess_config(
     config:  os.PathLike | str, *,
     search_path: str | List[str] = '.',
@@ -168,18 +182,28 @@ def preprocess_config(
     Preprocess a configuration file
     """
     load_method = LoadMethod(load_method)
+
+    # If given a file path, implicilty prepend the file's directory to the search path.
+    if load_method != LoadMethod.FROM_STRING:
+        config_dir = os.path.dirname(config)
+        assert config_dir is not None
+        if isinstance(search_path, str):
+            search_path = [config_dir, search_path]
+        else:
+            search_path = [config_dir, *search_path]
+    
     environment = SandboxedEnvironment(
         loader = jinja2.FileSystemLoader(searchpath=search_path),
         line_comment_prefix="##",
         line_statement_prefix='--',
         auto_reload=True,
         undefined=jinja2.StrictUndefined,
+        trim_blocks=True,
     )
     environment.globals["now"] = datetime.datetime.now().strftime(TIME_FORMAT)
     environment.globals["utcnow"] = datetime.datetime.utcnow().strftime(TIME_FORMAT)
     environment.globals["time_ns"] = str(time.time_ns())
-    environment.globals["path_join"] = os.path.join
-    environment.globals["dirname"] = os.path.dirname
+    environment.globals["path_join"] = _os_path_join
 
     match load_method:
         case LoadMethod.FROM_STRING:
@@ -311,7 +335,7 @@ def enumerate_whitelist_exceptions(config: Any, whitelist: Container = set()):
     """
     assert isinstance(whitelist, Container), "The whitelist must be a 'Container'; use load_whitelist_as_set()"
     assert not isinstance(config, str), "The input config should be a parsed config; use load_config()"
-    print(fconfig(Latent.validate_whitelist(config, set())))
+    print(fconfig(Latent.validate_whitelist(config, whitelist)))
 
 def materialize_config(
     config: Any,

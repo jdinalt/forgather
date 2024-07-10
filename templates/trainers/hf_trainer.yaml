@@ -1,0 +1,28 @@
+{%- extends 'trainers/trainer.yaml' %}
+{%- block trainer_meta_config %}
+{{ super() }}
+-- set trainer_def.name = "transformers.Trainer"
+-- set trainer_def.description = "Huggingface Transformers Trainer"
+{% endblock trainer_meta_config %}
+
+{% block trainer_args %}
+{{ super() }}
+    accelerator_config:
+        dispatch_batches: False
+        split_batches: False
+    ddp_find_unused_parameters: False
+    report_to: "none"
+    logging_nan_inf_filter: False
+{% endblock trainer_args %}
+
+{% block trainer_constructor %}
+.define: &trainer !callable:transformers:Trainer
+    model: *model
+    args: !callable:transformers:TrainingArguments
+        <<: *trainer_args
+    data_collator: *data_collator
+    train_dataset: *train_dataset
+    eval_dataset: *eval_dataset
+    tokenizer: *tokenizer
+    callbacks: *trainer_callbacks
+{% endblock trainer_constructor -%}

@@ -1,0 +1,31 @@
+{%- set model_def = namespace() %}
+{%- from 'inc/formatting.jinja' import h2, h3, sep %}
+{%- block model_meta_config %}
+-- set model_def.name = "Custom Model Loader"
+-- set model_def.description = "Load a pre-trained custom model."
+{%- block model_custom_definition %}
+-- set model_def.model_path = ns.OUTPUT_DIR
+{% endblock model_custom_definition %}
+{% endblock model_meta_config %}
+
+{%- block model_header %}
+# Name: {{ model_def.name }}
+# Description: {{ model_def.description }}
+
+# model_def.model_path = "{{ model_def.model_path }}"
+{% endblock model_header %}
+
+{{ h3('Tokenizer') }}
+
+{% block model_tokenizer %}
+.define: &tokenizer !callable:transformers:AutoTokenizer.from_pretrained
+    - "{{ model_def.model_path }}"
+{% endblock model_tokenizer %}
+
+{{ h3('Model') }}
+
+{% block model_constructor %}
+.define: &model !callable:transformers:AutoModel.from_pretrained
+    args: [ "{{ model_def.model_path }}" ]
+    kwargs: { trust_remote_code: True }
+{% endblock model_constructor -%}
