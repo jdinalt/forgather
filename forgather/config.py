@@ -6,13 +6,17 @@ from collections.abc import Sequence, Mapping
 from types import NoneType
 from enum import Enum
 import os
+import sys
 import yaml
 import datetime
 import time
 import platform
+import re
+from importlib.metadata import version
 
 from pprint import pformat
 import jinja2
+from jinja2.ext import Extension
 from jinja2.sandbox import SandboxedEnvironment
 from . import Latent
 from .dynamic import normalize_import_spec
@@ -40,7 +44,7 @@ class InvalidLoadMethod(Exception):
 class WhitelistError(Exception):
     pass
 
-DEFAULT_LOAD_METHOD = LoadMethod.FROM_FILE
+DEFAULT_LOAD_METHOD = LoadMethod.FROM_FILE_SEARCH
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 def format_line_numbers(text: str) -> str:
@@ -65,14 +69,14 @@ def fconfig(obj, sort_items=True, indent_level=2):
     elif isinstance(obj, str):
         return f"'{obj}'"
     elif isinstance(obj, Set):
-        return fconfig(tuple(obj))
+        return fconfig(tuple(obj), sort_items, indent_level)
     elif isinstance(obj, Mapping):
         s = ''
         items = obj.items()
         if sort_items:
             items = dict(sorted(items)).items()
         for key, value in items:
-            fmt_value = fconfig(value, indent_level)
+            fmt_value = fconfig(value, sort_items, indent_level)
             if '\n' in fmt_value or len(fmt_value) > 80:
                 s += f"{key}:\n" + indent_block(fmt_value) + '\n'
             else:
@@ -80,15 +84,24 @@ def fconfig(obj, sort_items=True, indent_level=2):
         return s[:-1]
     elif isinstance(obj, Sequence):
         s = ''
-        for value in sorted(obj) if sort_items else obj:
-            s += '- ' + fconfig(value, indent_level) + '\n'
+        items = obj
+        if sort_items:
+            sortable = True
+            for value in items:
+                if not isinstance(value, str):
+                    sortable = False
+                    break
+            if sortable:
+                items = sorted(items)
+        for value in items:
+            s += '- ' + fconfig(value, sort_items, indent_level) + '\n'
         return s[:-1]
     elif isinstance(obj, Latent):
         s = f"Latent '{obj.constructor}'"
         if len(obj.args): 
-            s += '\n' + indent_block(fconfig(obj.args, indent_level))
+            s += '\n' + indent_block(fconfig(obj.args, sort_items, indent_level))
         if len(obj.kwargs): 
-            s += '\n' + indent_block(fconfig(obj.kwargs, indent_level))
+            s += '\n' + indent_block(fconfig(obj.kwargs, sort_items, indent_level))
         return s
     else:
         return pformat(obj)
@@ -172,14 +185,130 @@ def _os_path_join(*args):
             raise arg._fail_with_undefined_error("Undefined path passed to path_join")
     return os.path.join(*args)
 
+class CustomLoader(jinja2.FileSystemLoader):
+    """
+    Custom Jinja2 loader which can split a file template into multiple named sub-templates
+
+    ```
+    Main template
+    ##--- my_template_label ---
+    Sub template, named 'my_template_label'
+    ```
+
+    As Jinja2 does not allow extending imported templates, this makes it easier to extend multiple
+    parent templates in the same file. Witout this, each must be in a seperate file.
+
+    This just makes things a little easier to work with.
+    """
+    split_on = re.compile(r'\n#\s*-{3,}\s*([\w./]+)\s*-{3,}\n')
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.templates = {}
+
+    def get_source(self, environment, template_name):
+        if (template_info := self.templates.get(template_name)) is None:
+            source, filename, uptodate = super().get_source(environment, template_name)
+            main_template = next(iter := self.split_templates(source))
+            for sub in iter:
+                self.templates[sub[0]] = (sub[1], uptodate)
+            return main_template[1], filename, uptodate
+        return template_info[0], template_name, template_info[1]
+
+    def split_templates(self, template):
+        prev = 0
+        name = None
+        for match in self.split_on.finditer(template):
+            yield (name, template[prev:match.start()])
+            name = match.group(1)
+            prev = match.end()
+        yield(name, template[prev:])
+
+class LineStatementProcessor(Extension):
+    newline_re = re.compile(r'(\n|\r\n|\r)')
+    full_line_comment = re.compile(r'\s*##(.*)')
+    line_comment = re.compile(r'(.*)\s+#{2,}.*')
+    line_statement = re.compile(r'\s*--\s(.*)')
+    lstrip_line_statement = re.compile(r'\s*<<\s(.*)')
+    rstrip_line_statement = re.compile(r'\s*>>\s(.*)')
+    line_print = re.compile(r'\s*==\s(.*)')
+    rstrip_line_print = re.compile(r'\s*=>\s(.*)')
+
+    # Jinja comments add a blank line to the output. This makes it very difficult to
+    # format things the way you would like /and/ use Jinja comments. The preprocessor
+    # strips Jinja comments, which would otherwise add empty lines, from the input
+    # to keep things tidy.
+    #
+    # If anything goes wrong, this can make things very difficult to debug, as Jinja
+    # will report the wrong line numbers.
+    # 
+    # The work-around is thins flag. When set to True, line-comments are not removed,
+    # thus preserving line-numbers. Once things are working, you can turn it off, as
+    # to preserve formatting.
+    preserve_line_numbers: bool = False
+
+    # The preprocessor converts the syntactic-sugrar coated line-statements into
+    # regular Jinja statements. Asside from stipping comments, as mentioned above,
+    # this /should/ have little impact on the outcome, but it can be useful to 
+    # see the translated input for diagnostics. Setting this to True results in
+    # uber-verbose output, where every pre-processed input template is dumped to
+    # stdout for analysis.
+    pp_verbose: bool = False
+
+    def preprocess(self, source, name, filename=None):
+        source = "\n".join(self.pp_generate(source))
+        if LineStatementProcessor.pp_verbose:
+            print(f"{' '+name+' ':-^80}")
+            print(format_line_numbers(source))
+        return source
+
+    def pp_generate(self, source):
+        for line in self.newline_re.split(source)[::2]:
+            # Completely delete full comment lines
+            if (match := self.full_line_comment.fullmatch(line)) is not None:
+                if LineStatementProcessor.preserve_line_numbers:
+                    line = r'{# ' + match[1] + r' #}'
+                else:
+                    continue
+            # Delete training comments to end-of-line
+            elif (match := self.line_comment.fullmatch(line)) is not None:
+                line = match[1]
+            # Convert line-stantement to regular syntax line-statements
+            if (match := self.line_statement.fullmatch(line)) is not None:
+                line = r'{% ' + match[1] + r' %}'
+            # Left trim
+            elif (match := self.lstrip_line_statement.fullmatch(line)) is not None:
+                line = r'{%- ' + match[1] + r' %}'
+            # Right trim
+            elif (match := self.rstrip_line_statement.fullmatch(line)) is not None:
+                line = r'{% ' + match[1] + r' -%}'
+            # Line print
+            elif (match := self.line_print.fullmatch(line)) is not None:
+                line = r'{{ ' + match[1] + r' }}'
+            elif (match := self.rstrip_line_print.fullmatch(line)) is not None:
+                line = r'{{ ' + match[1] + r' -}}'
+            yield line
+
+version_info = { 
+    "python": sys.version
+} | {
+        lib: version(lib) for lib in (
+            "torch",
+            "transformers",
+            "accelerate",
+        )
+}
+
 def preprocess_config(
     config:  os.PathLike | str, *,
     search_path: str | List[str] = '.',
     load_method: LoadMethod = DEFAULT_LOAD_METHOD,
+    preserve_line_numbers=False,
+    pp_verbose=False,
     **kwargs,
 ) -> str:
     """
-    Preprocess a configuration file
+    Preprocess a configuration file with Jinja2
     """
     load_method = LoadMethod(load_method)
 
@@ -193,39 +322,47 @@ def preprocess_config(
             search_path = [config_dir, *search_path]
     
     environment = SandboxedEnvironment(
-        loader = jinja2.FileSystemLoader(searchpath=search_path),
-        line_comment_prefix="##",
-        line_statement_prefix='--',
+        loader = CustomLoader(searchpath=search_path),
+        extensions = [ LineStatementProcessor ],
         auto_reload=True,
         undefined=jinja2.StrictUndefined,
         trim_blocks=True,
     )
+    
     environment.globals["now"] = datetime.datetime.now().strftime(TIME_FORMAT)
     environment.globals["utcnow"] = datetime.datetime.utcnow().strftime(TIME_FORMAT)
     environment.globals["time_ns"] = str(time.time_ns())
     environment.globals["path_join"] = _os_path_join
+    environment.globals["versions"] = version
 
+    # Set class-level debug flags
+    # There's not easy to to pass arguments...
+    LineStatementProcessor.preserve_line_numbers = preserve_line_numbers
+    LineStatementProcessor.pp_verbose = pp_verbose
+    
     match load_method:
         case LoadMethod.FROM_STRING:
             jinja_template = environment.from_string(config)
         case LoadMethod.FROM_FILE_SEARCH:
-            jinja_template = environment.get_template(config)
+            jinja_template = environment.get_template(os.path.basename(config))
         case LoadMethod.FROM_FILE:
             with open(config, 'r') as f:
                 config_text = f.read()
             jinja_template = environment.from_string(config_text)
         case _:
             raise InvalidLoadMethod
-
+    
+    # Some configs expect the caller to set these values. We set them here to
+    # allow them to run, but the callers should set these, if the configs expect them.
     default_args = dict(
         script_args='N/A',
         world_size=1,
         rank=0,
         local_rank=0,
         hostname=platform.node(),
+        versions=version_info,
     )
-    
-    return ConfigText(jinja_template.render(**(default_args | kwargs)).strip())
+    return ConfigText(jinja_template.render(**(default_args | kwargs)))
 
 def __load(config, *, preprocess, search_path, load_method, pp_kwargs) -> LoadConfigOutput:
     pp_config = config

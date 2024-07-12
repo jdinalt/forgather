@@ -1,0 +1,43 @@
+## The project defines the defaults
+-- extends 'project.yaml'
+
+-- block experiment_metadata
+    == super()
+    ## Experiment Metadata
+    -- set ns.EXPERIMENT_NAME = "My ML Science Project"
+    -- set ns.EXPERIMENT_DESCRIPTION = "It's not supid, it's advanced!"
+
+    ## Initialize a new model from scratch
+    -- set ns.CREATE_NEW_MODEL = True
+
+    ## Save model, when training is complete
+    -- set ns.SAVE_MODEL = True
+-- endblock experiment_metadata
+
+## Override defult model definition
+-- block construct_new_model
+    ## Actual details are in split below.
+    -- include 'experiment.model_config'
+-- endblock construct_new_model
+
+
+
+#--- experiment.model_config ---
+
+## Choose am model definition:
+-- extends 'models/tiny_d128_l2.yaml'
+
+## Change the name of the model
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Custom " + model_def.name
+-- endblock model_meta_config
+
+## Override values from base definition
+-- block model_config
+    == super()
+    ## Add label, showing where the override came from
+    
+    # {{ ns.EXPERIMENT_NAME }} Overrides
+    hidden_size: 256
+-- endblock model_config

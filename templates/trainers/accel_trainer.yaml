@@ -1,20 +1,24 @@
-{%- extends 'trainers/trainer.yaml' %}
-{%- block trainer_meta_config %}
-{{ super() }}
--- set trainer_def.name = "aiws.accel_trainer:AccelTrainer"
--- set trainer_def.description = "A lightweight, extensible trainer w/ Accelerate support"
-{% endblock trainer_meta_config %}
+-- extends 'trainers/trainer.yaml'
+-- block trainer_meta_config
+    == super()
+    -- set trainer_def.name = "aiws.accel_trainer:AccelTrainer"
+    -- set trainer_def.description = "A lightweight, extensible trainer w/ Accelerate support"
+-- endblock trainer_meta_config
 
-{% block trainer_args %}
-{{ super() }}
+
+-- block trainer_args
+    == super()
+    
+    # Accel Trainer Defaults
     accelerator_args:
         device_placement: True
         dataloader_config: !callable:accelerate:DataLoaderConfiguration
             dispatch_batches: False
             split_batches: False
-{% endblock trainer_args %}
+<< endblock trainer_args
 
-{% block trainer_constructor %}
+
+-- block trainer_constructor
 .define: &trainer !callable:aiws.accel_trainer:AccelTrainer
     model: *model
     args: !callable:aiws.accel_trainer:AccelTrainingArguments
@@ -24,4 +28,4 @@
     eval_dataset: *eval_dataset
     tokenizer: *tokenizer
     callbacks: *trainer_callbacks
-{% endblock trainer_constructor -%}
+<< endblock trainer_constructor

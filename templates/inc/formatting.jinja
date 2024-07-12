@@ -1,3 +1,8 @@
-{%- macro h2(name='') %}{{ "{:#^40}".format(' ' + name + ' ') }}{% endmacro %}
-{%- macro h3(name='') %}{{ '#**** ' + name + ' ****' }}{% endmacro %}
-{%- macro sep() %}{{ "{:#^40}".format('') }}{% endmacro %}
+{%- macro h2(name='Heading 2') %}{{ "{:#^40}".format(' ' + name + ' ') }}{% endmacro %}
+{%- macro h3(name='Heading 3') %}{{ '# **' + name + '**' }}{% endmacro %}
+{%- macro sep() %}{{ '#' + "{:-^39}".format('') }}{% endmacro %}
+{%- macro h1(name='Title') %}
+== sep()
+{{ '# ' + "{:^39}".format(' ' + name + ' ') }}
+== sep()
+{%- endmacro %}

@@ -1,18 +1,20 @@
-{%- extends 'models/custom_model.yaml' %}
-{%- block model_meta_config %}
-{{ super() }}
--- set model_def.name = "Vanilla Transformer"
--- set model_def.description = "A very basic transformer model"
-{%- block model_custom_definition %}
--- set model_def.cls = 'VanillaTransformer'
--- set model_def.cfg_cls = 'VanillaTransformerConfig'
--- set model_def.tokenizer_path_or_id = path_join(ns.TOKENIZERS_DIR, 'tiny_stories_2k')
--- set model_def.config_path = path_join(ns.MODEL_SOURCE_DIR, 'vanilla_transformer', 'vanilla_transformer.py')
--- set model_def.model_path = model_def.config_path
-{% endblock model_custom_definition %}
-{% endblock model_meta_config %}
+-- extends 'models/custom_model.yaml'
 
-{%- block model_config %}
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Vanilla Transformer"
+    -- set model_def.description = "A very basic transformer model"
+    -- block model_custom_definition
+        -- set model_def.cls = 'VanillaTransformer'
+        -- set model_def.cfg_cls = 'VanillaTransformerConfig'
+        -- set model_def.tokenizer_path_or_id = path_join(ns.TOKENIZERS_DIR, 'tiny_stories_2k')
+        -- set model_def.config_path = path_join(ns.MODEL_SOURCE_DIR, 'vanilla_transformer', 'vanilla_transformer.py')
+        -- set model_def.model_path = model_def.config_path
+    -- endblock model_custom_definition
+-- endblock model_meta_config
+
+-- block model_config
 .define: &model_config
+    #  Vanilla Transformer Defaults
     vocab_size: !callable:forgather.construct:get_attr [ *tokenizer, vocab_size ]
-{%- endblock model_config %}
+<< endblock model_config

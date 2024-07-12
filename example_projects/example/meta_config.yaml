@@ -5,8 +5,7 @@
 ##
 ## It is the first config file to load, as it provides the information needed
 ## to load the rest of the configuration.
-
-{%- set ns = namespace() %}
+-- set ns = namespace()
 -- include path_join('templates', 'directories.yaml')
 assets_dir: "{{ ns.ASSETS_DIR }}"
 project_dir: "{{ ns.PROJECT_DIR }}"

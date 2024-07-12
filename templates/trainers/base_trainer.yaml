@@ -1,24 +1,29 @@
-{%- set trainer_def = namespace() %}
-{%- from 'inc/formatting.jinja' import h2, h3, sep %}
-{%- block trainer_meta_config %}
--- set trainer_def.name = "Base Trainer"
--- set trainer_def.description = "A ML model trainer"
-{%- block trainer_vars %}
-{#- # Define vars like this
--- set trainer_def.foo = '<bar>'
-#}
-{% endblock trainer_vars %}
-{% endblock trainer_meta_config %}
+-- set trainer_def = namespace()
+-- from 'inc/formatting.jinja' import h2, h3, sep
+-- filter trim()
+-- block trainer_meta_config
+    -- set trainer_def.name = "Base Trainer"
+    -- set trainer_def.description = "A ML model trainer"
+    -- block trainer_vars
+        ## Define vars like this
+        ## -- set trainer_def.foo = '<bar>'
+        ##
+    << endblock trainer_vars
+<< endblock trainer_meta_config
 
-{%- block trainer_header %}
+-- block trainer_header
 # Name: {{ trainer_def.name }}
 # Description: {{ trainer_def.description }}
-{% endblock trainer_header %}
+<< endblock trainer_header
+-- endfilter ## trim()
 
-{{ h3('Trainer Args') }}
 
-{% block trainer_args %}
+== h3('Trainer Args')
+
+-- filter trim()
+-- block trainer_args
 .define: &trainer_args
+    # Base Trainer Defaults
     output_dir: "{{ ns.OUTPUT_DIR }}"
     logging_dir: "{{ ns.LOGGING_DIR }}"
     overwrite_output_dir: True
@@ -33,9 +38,14 @@
     save_strategy: "no"
     logging_strategy: "steps"
     lr_scheduler_type: "constant"
-{%- endblock trainer_args %}
+<< endblock trainer_args
+-- endfilter
 
-{{ h3('Trainer Constructor') }}
 
-{% block trainer_constructor required %}
-{% endblock trainer_constructor -%}
+== h3('Trainer Constructor')
+
+-- filter trim()
+-- block trainer_constructor required
+## .define: &trainer
+<< endblock trainer_constructor
+-- endfilter

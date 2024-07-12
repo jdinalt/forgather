@@ -12,37 +12,6 @@ class LatentException(Exception):
     pass
 
 class Latent:
-    class MappingNode:
-        """
-        An indirection descriptor object which provides an abstraction
-        for updating the reference held by the parent ojbect (a Sequence or Mapping).
-        """
-        class IndirectDescriptor:
-            def __get__(self, obj, type=None):
-                if obj is None:
-                    return None
-                mapping = getattr(obj, "mapping")
-                key = getattr(obj, "key")
-                return mapping.__getitem__(key)
-                
-            def __set__(self, obj, value):
-                mapping = getattr(obj, "mapping")
-                key = getattr(obj, "key")
-                mapping.__setitem__(key, value)
-                
-            def __delete__(self, obj):
-                mapping = getattr(obj, "mapping")
-                key = getattr(obj, "key")
-                mapping.__delitem__(key)
-        
-        child = IndirectDescriptor()
-    
-        def __init__(self, mapping, key):
-            self.mapping = mapping
-            self.key = key
-    
-        def __str__(self):
-            return f"{type(self.mapping).__name__}[{key}] -> {self.mapping[self.key]}"
     """
     A Latent [object] abstracts what to create from when to create it
 

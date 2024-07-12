@@ -1,11 +1,12 @@
-{%- extends 'trainers/base_trainer.yaml' %}
-{%- block trainer_meta_config %}
-{{ super() }}
--- set trainer_def.name = "aiws.trainer.Trainer"
--- set trainer_def.description = "A lightweight, extensible trainer; does not support multiple GPUs"
-{% endblock trainer_meta_config %}
+-- extends 'trainers/base_trainer.yaml'
+-- block trainer_meta_config
+    == super()
+    -- set trainer_def.name = "aiws.trainer.Trainer"
+    -- set trainer_def.description = "A lightweight, extensible trainer; does not support multiple GPUs"
+-- endblock trainer_meta_config
 
-{% block trainer_constructor %}
+
+-- block trainer_constructor
 .define: &trainer !callable:aiws.trainer:Trainer
     model: *model
     args: !callable:aiws.trainer_types:TrainingArguments
@@ -15,4 +16,4 @@
     eval_dataset: *eval_dataset
     tokenizer: *tokenizer
     callbacks: *trainer_callbacks
-{% endblock trainer_constructor -%}
+<< endblock trainer_constructor
