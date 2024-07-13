@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class ConversionDescriptor:
     def __init__(self, cls, *, default):
         self._cls = cls
@@ -16,6 +17,7 @@ class ConversionDescriptor:
 
     def __set__(self, obj, value):
         setattr(obj, self._name, self._cls(value))
+
 
 class DiagnosticEnum(Enum):
     @classmethod

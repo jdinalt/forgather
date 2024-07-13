@@ -12,21 +12,23 @@ from transformers import (
     AutoModelForCausalLM,
 )
 
+
 # We will abstract out the causal loss function for reuse.
 def causal_loss(logits, labels):
     # Shift so that tokens < n predict n
     shift_logits = logits[..., :-1, :].contiguous()
     shift_labels = labels[..., 1:].contiguous()
-    
+
     loss = torch.nn.functional.cross_entropy(
         shift_logits.view(-1, shift_logits.size(-1)),
         shift_labels.view(-1),
         # labels with this value are ignored when computing loss
         ignore_index=-100,
-        reduction='mean',
+        reduction="mean",
     )
-    
+
     return loss.nan_to_num()
+
 
 class FeedforwardLayer(nn.Module):
     def __init__(self, d_model, d_feedforward):
@@ -44,6 +46,7 @@ class FeedforwardLayer(nn.Module):
         x = self.linear2(x)
         return x
 
+
 class MultiheadAttention(nn.Module):
     def __init__(
         self,
@@ -53,7 +56,7 @@ class MultiheadAttention(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
-        
+
         assert d_model % num_heads == 0, "d_model must be evenly divisible by num_heads"
 
         # The dimension of each head.
@@ -77,38 +80,53 @@ class MultiheadAttention(nn.Module):
     def forward(self, qkv):
         # qkv: (batch_size, seq_len, d_qkv)
         batch_size, seq_len, d_qkv = qkv.shape
-        
+
         # Feed the inputs through the K, Q, V matrices.
-        query, key, value = self.query_linear(qkv), self.key_linear(qkv), self.value_linear(qkv)
+        query, key, value = (
+            self.query_linear(qkv),
+            self.key_linear(qkv),
+            self.value_linear(qkv),
+        )
 
         # Split projections into multiple heads and swap position of sequence / heads dimension
-        query = query.view(batch_size, seq_len, self.num_heads, self.d_head).transpose(1, 2)
+        query = query.view(batch_size, seq_len, self.num_heads, self.d_head).transpose(
+            1, 2
+        )
         key = key.view(batch_size, seq_len, self.num_heads, self.d_head).transpose(1, 2)
-        value = value.view(batch_size, seq_len, self.num_heads, self.d_head).transpose(1, 2)
-        
+        value = value.view(batch_size, seq_len, self.num_heads, self.d_head).transpose(
+            1, 2
+        )
+
         # Compute attention scores
         scores = torch.matmul(query, key.transpose(-2, -1)) * self.dot_product_scale
 
         # Mask future positions from the past
-        causal_mask = torch.triu(torch.full((seq_len, seq_len), True, device=qkv.device), diagonal=1)
-        scores.masked_fill_(causal_mask, float('-inf'))
-        
+        causal_mask = torch.triu(
+            torch.full((seq_len, seq_len), True, device=qkv.device), diagonal=1
+        )
+        scores.masked_fill_(causal_mask, float("-inf"))
+
         # Calculate the attention weights; avoid NANs that might emerge from zeros in softmax's denominator
         attention_weights = torch.softmax(scores, dim=-1).clamp(min=1e-10)
-        
+
         # Use the attention weights to get a weighted combination of value vectors
         attended_values = torch.matmul(attention_weights, value)
-        
+
         # Concatenate attention heads and project to original embedding size using the output linear layer
-        attended_values = attended_values.transpose(1, 2).contiguous().view(batch_size, seq_len, d_qkv)
+        attended_values = (
+            attended_values.transpose(1, 2)
+            .contiguous()
+            .view(batch_size, seq_len, d_qkv)
+        )
 
         # Project the concatenated output through the output matrix.
         if self.num_heads != 1:
             output = self.output_linear(attended_values)
         else:
             output = attended_values
-        
+
         return output
+
 
 # Standard transformer layer, from original paper.
 class TransformerLayer(nn.Module):
@@ -143,8 +161,9 @@ class TransformerLayer(nn.Module):
 
         # Combine residual and ff output, then normalize again.
         x = self.norm2(residual + x)
-        
+
         return x
+
 
 # A vanilla positional encoder
 class PositionalEncoder(nn.Module):
@@ -152,28 +171,32 @@ class PositionalEncoder(nn.Module):
         super().__init__()
         self.d_embed = d_embed
         self.max_seq = max_seq
-        
+
         weight = torch.zeros(max_seq, d_embed)
         position = torch.arange(0, max_seq, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_embed, 2).float() * (-math.log(10000.0) / d_embed))
+        div_term = torch.exp(
+            torch.arange(0, d_embed, 2).float() * (-math.log(10000.0) / d_embed)
+        )
         weight[:, 0::2] = torch.sin(position * div_term)
         weight[:, 1::2] = torch.cos(position * div_term)
         weight = weight.unsqueeze(0)
-        self.register_buffer('weight', weight)
+        self.register_buffer("weight", weight)
 
     def forward(self, x):
         seq_len = x.size(-2)
         return x + self.weight[:, :seq_len]
 
+
 # Huggingface model type string
 model_type = "simple-causal-transformer"
+
 
 # Huggingface config class.
 # Huggingface 'PreTrainedModel' objects are passed a derivative of this class
 # when constructed. This is required, if your model will derive from PreTrainedModel.
 class VanillaTransformerConfig(PretrainedConfig):
     model_type = model_type
-    
+
     def __init__(
         # All of these MUST have defaults, even if unused.
         self,
@@ -182,8 +205,7 @@ class VanillaTransformerConfig(PretrainedConfig):
         max_sequence_length=2048,
         dim_feedforward=512,
         num_attention_heads=1,
-        num_hidden_layers = 4,
-        
+        num_hidden_layers=4,
         **kwargs,
     ):
         # These are the canonical names used by Huggingface
@@ -193,35 +215,41 @@ class VanillaTransformerConfig(PretrainedConfig):
         self.dim_feedforward = dim_feedforward
         self.num_attention_heads = num_attention_heads
         self.num_hidden_layers = num_hidden_layers
-        
+
         super().__init__(**kwargs)
+
 
 # The formward method of this model is designed to be compatible with the HuggingFace Trainer and Tokenizer classes.
 # This is essentially a wrapper for a Pytorch transformer model, which implements the HF API.
 class VanillaTransformer(PreTrainedModel):
     config_class = VanillaTransformerConfig
-    model_type = 'Transformer'
-    
+    model_type = "Transformer"
+
     def __init__(self, config):
         super().__init__(config)
         self.vocab_size = config.vocab_size
         self.d_model = config.hidden_size
-        
+
         self.embedding = nn.Embedding(self.vocab_size, self.d_model)
-        self.positional_encoder = PositionalEncoder(d_embed=config.hidden_size, max_seq=config.max_sequence_length)
-        self.layers = nn.ModuleList([
-            TransformerLayer(
-                d_model=config.hidden_size,
-                attention=MultiheadAttention(
+        self.positional_encoder = PositionalEncoder(
+            d_embed=config.hidden_size, max_seq=config.max_sequence_length
+        )
+        self.layers = nn.ModuleList(
+            [
+                TransformerLayer(
                     d_model=config.hidden_size,
-                    num_heads=config.num_attention_heads,
-                ),
-                feedforward=FeedforwardLayer(
-                    d_model=config.hidden_size,
-                    d_feedforward=config.dim_feedforward,
-                ),
-            ) for _ in range(config.num_hidden_layers)
-        ])
+                    attention=MultiheadAttention(
+                        d_model=config.hidden_size,
+                        num_heads=config.num_attention_heads,
+                    ),
+                    feedforward=FeedforwardLayer(
+                        d_model=config.hidden_size,
+                        d_feedforward=config.dim_feedforward,
+                    ),
+                )
+                for _ in range(config.num_hidden_layers)
+            ]
+        )
         self.output_projection = nn.Linear(config.hidden_size, config.vocab_size)
         self.reset_parameters()
         self.post_init()
@@ -245,16 +273,16 @@ class VanillaTransformer(PreTrainedModel):
         # Pass the input through each of the layers.
         for layer in self.layers:
             x = layer(x)
-        
+
         # Convert embeddings to log-probabilities of next token-id
         logits = self.output_projection(x)
-        
+
         # Compute loss.
         if labels is not None:
             loss = causal_loss(logits, labels)
         else:
             loss = None
-        
+
         if return_dict:
             return CausalLMOutput(loss=loss, logits=logits)
         elif loss is not None:
@@ -273,6 +301,7 @@ class VanillaTransformer(PreTrainedModel):
             "attention_mask": attention_mask,
         }
         return model_inputs
+
 
 AutoConfig.register(model_type, VanillaTransformerConfig)
 AutoModelForCausalLM.register(VanillaTransformerConfig, VanillaTransformer)

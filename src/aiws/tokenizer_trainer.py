@@ -8,6 +8,7 @@ from tqdm.auto import tqdm
 
 from datasets import Dataset
 
+
 class TokenizerTrainer:
     def __init__(
         self,
@@ -19,7 +20,7 @@ class TokenizerTrainer:
         trainer,
         dataset: Dataset,
     ):
-    
+
         tokenizer = Tokenizer(model)
         tokenizer.normalizer = normalizer
         tokenizer.pre_tokenizer = pre_tokenizer
@@ -29,7 +30,7 @@ class TokenizerTrainer:
         self.tokenizer = tokenizer
         self.trainer = trainer
         self.train_dataset = dataset
-        #self.output_dir = output_dir
+        # self.output_dir = output_dir
 
     def train(self, batch_size=1000):
         total_samples = len(self.train_dataset)
@@ -38,24 +39,22 @@ class TokenizerTrainer:
         print(f"total_samples: {total_samples}")
         print(f"batch_size: {batch_size}")
         print(f"steps: {steps}")
-        
+
         def batch_iterator():
-            train_progress_bar = tqdm(
-                total=steps,
-                dynamic_ncols=True
-            )
+            train_progress_bar = tqdm(total=steps, dynamic_ncols=True)
             try:
                 for i in range(0, total_samples, batch_size):
-                    yield self.train_dataset[i : i + batch_size]['text']
+                    yield self.train_dataset[i : i + batch_size]["text"]
                     train_progress_bar.update()
             finally:
                 train_progress_bar.close()
-        
+
         start_time = time.time()
-        
+
         self.tokenizer.train_from_iterator(
-            batch_iterator(), trainer=self.trainer, length=steps)
-        
+            batch_iterator(), trainer=self.trainer, length=steps
+        )
+
         runtime = round(time.time() - start_time, 2)
         samples_per_second = round(total_samples / runtime, 2)
         print("**** Training Completed ****")

@@ -7,19 +7,21 @@ from accelerate import Accelerator
 from .trainer_types import TrainingArguments, TrainerState
 from .trainer import Trainer
 
+
 @dataclass(kw_only=True)
 class AccelTrainingArguments(TrainingArguments):
     accelerator_args: dict = None
+
 
 class AccelTrainer(Trainer):
     """
     Modify the base Trainer to use the Accelerate library.
     """
-    
+
     def _post_init(self) -> None:
         super()._post_init()
         self.accelerator = Accelerator(**self.args.accelerator_args)
-        
+
         # Accel uses a special device target
         self.device = self.accelerator.device
         # Update process info
@@ -29,9 +31,15 @@ class AccelTrainer(Trainer):
 
     def _prepare(self, train_dataset, eval_dataset) -> None:
         super()._prepare(train_dataset, eval_dataset)
-        
-        #Wrap relevant componens with accelerator
-        self.train_dataloader, self.eval_dataloader, self.model, self.optimizer, self.lr_scheduler = self.accelerator.prepare(
+
+        # Wrap relevant componens with accelerator
+        (
+            self.train_dataloader,
+            self.eval_dataloader,
+            self.model,
+            self.optimizer,
+            self.lr_scheduler,
+        ) = self.accelerator.prepare(
             self.train_dataloader,
             self.eval_dataloader,
             self.model,
@@ -62,15 +70,16 @@ class AccelTrainer(Trainer):
         state = super()._init_state()
         # Split-batches option divides the requested batch size by the number of GPUs
         if self.args.accelerator_args["dataloader_config"].split_batches:
-            state.train_batch_size = self.args.per_device_train_batch_size // state.num_processes
+            state.train_batch_size = (
+                self.args.per_device_train_batch_size // state.num_processes
+            )
         else:
             state.train_batch_size = self.args.per_device_train_batch_size
         return state
 
     def unwrapped_model(self):
         return self.accelerator.unwrap_model(self.model)
-        
+
     def _save(self, output_dir):
         self.accelerator.wait_for_everyone()
         super()._save(output_dir)
-        

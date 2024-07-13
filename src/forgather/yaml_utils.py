@@ -5,6 +5,7 @@ from loguru import logger
 
 from .latent import Latent
 
+
 def callable_constructor(loader, tag_suffix, node):
     """
     A Yaml constuctor for Latent objects -- which are all Callables
@@ -19,7 +20,7 @@ def callable_constructor(loader, tag_suffix, node):
             args = tuple()
         else:
             args = value.get("args", tuple())
-        
+
     elif isinstance(node, yaml.SequenceNode):
         args = loader.construct_sequence(node, deep=True)
         kwargs = {}
@@ -31,10 +32,12 @@ def callable_constructor(loader, tag_suffix, node):
     tag_suffix = tag_suffix[1:]
     return Latent(tag_suffix, *args, **kwargs)
 
+
 def tuple_constructor(loader, node):
     assert isinstance(node, yaml.SequenceNode)
     value = loader.construct_sequence(node, deep=True)
     return tuple(value)
+
 
 def load_depth_first(stream, Loader=yaml.SafeLoader):
     """

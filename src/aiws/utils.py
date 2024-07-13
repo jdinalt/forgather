@@ -3,11 +3,12 @@ from typing import Callable
 from pprint import pformat
 from enum import Enum
 
+
 def alt_repr(obj):
     """
     Alternative __repr__ implementation for objects which have
     not implemented it for their class.
-    
+
     Some object are relatively opaque. This should expose more info.
     """
     # If __repr__ is a wrapper, they have not implemented it.
@@ -15,18 +16,19 @@ def alt_repr(obj):
         attrs = {}
         for key in dir(obj):
             # Ignore protected, private, etc.
-            if key.startswith('_'):
+            if key.startswith("_"):
                 continue
             value = getattr(obj, key)
 
             # Ignore methods and other callables.
             if isinstance(value, Callable):
                 continue
-            
+
             attrs[key] = value
         return pformat(attrs)
     else:
         return repr(obj)
+
 
 def format_train_info(
     args,
@@ -53,16 +55,18 @@ def format_train_info(
         total_train_samples = f"{total_train_samples:,}"
         total_examples = f"{total_examples:,}"
     else:
-        # TODO: The HF Trainer does not pass these values. Is there a way to compute this 
+        # TODO: The HF Trainer does not pass these values. Is there a way to compute this
         # from the available information?
         total_train_batch_size = "Unavailable"
         total_train_samples = "Unavailable"
         total_examples = "Unavailable"
-    
+
     total_parameters = sum(t.numel() for t in model.parameters())
-    trainable_parameters = sum(t.numel() if t.requires_grad else 0 for t in model.parameters())
+    trainable_parameters = sum(
+        t.numel() if t.requires_grad else 0 for t in model.parameters()
+    )
     num_params = lambda x: f"{x/1000000:.1f}M"
-    
+
     info = {
         "total_examples": f"{total_examples}",
         "total_train_samples": f"{total_examples}",
@@ -87,6 +91,7 @@ def format_train_info(
     }
     return info, extra_info
 
+
 def format_mapping(mapping):
     """
     Format a mapping for pretty-printing
@@ -94,7 +99,7 @@ def format_mapping(mapping):
     This is intended for formatting the mappings returned by format_train_info() as strings
     for console logging, but may be useful for formatting other datatypes as well.
     """
-    s = ''
+    s = ""
     for key, value in mapping.items():
         if isinstance(value, int):
             value = f"{value:,}"
@@ -107,6 +112,7 @@ def format_mapping(mapping):
         else:
             s += f"{key}: {value}\n"
     return s
+
 
 class ConversionDescriptor:
     """
@@ -127,6 +133,7 @@ class ConversionDescriptor:
     > Data(color=<Color.BLUE: 'blue'>)
     ```
     """
+
     def __init__(self, cls, *, default):
         self._cls = cls
         self._default = default
@@ -142,10 +149,12 @@ class ConversionDescriptor:
     def __set__(self, obj, value):
         setattr(obj, self._name, self._cls(value))
 
+
 class DiagnosticEnum(Enum):
     """
     An extension to Enum which provides better diagnostic info when an invalid value is set.
     """
+
     @classmethod
     def _missing_(cls, value):
         raise ValueError(

@@ -7,6 +7,7 @@ from jinja2 import FileSystemLoader, StrictUndefined, Undefined
 from jinja2.ext import Extension
 from jinja2.sandbox import SandboxedEnvironment
 
+
 class PPLoader(FileSystemLoader):
     """
     Custom Jinja2 loader which can split a file template into multiple named sub-templates
@@ -22,8 +23,9 @@ class PPLoader(FileSystemLoader):
 
     This just makes things a little easier to work with.
     """
-    split_on = re.compile(r'\n#\s*-{3,}\s*([\w./]+)\s*-{3,}\n')
-    
+
+    split_on = re.compile(r"\n#\s*-{3,}\s*([\w./]+)\s*-{3,}\n")
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.templates = {}
@@ -41,10 +43,11 @@ class PPLoader(FileSystemLoader):
         prev = 0
         name = None
         for match in self.split_on.finditer(template):
-            yield (name, template[prev:match.start()])
+            yield (name, template[prev : match.start()])
             name = match.group(1)
             prev = match.end()
-        yield(name, template[prev:])
+        yield (name, template[prev:])
+
 
 def _os_path_join(*args):
     """
@@ -58,15 +61,16 @@ def _os_path_join(*args):
             raise arg._fail_with_undefined_error("Undefined path passed to path_join")
     return os.path.join(*args)
 
+
 class LineStatementProcessor(Extension):
-    newline_re = re.compile(r'(\n|\r\n|\r)')
-    full_line_comment = re.compile(r'\s*##(.*)')
-    line_comment = re.compile(r'(.*)\s+#{2,}.*')
-    line_statement = re.compile(r'\s*--\s(.*)')
-    lstrip_line_statement = re.compile(r'\s*<<\s(.*)')
-    rstrip_line_statement = re.compile(r'\s*>>\s(.*)')
-    line_print = re.compile(r'\s*==\s(.*)')
-    rstrip_line_print = re.compile(r'\s*=>\s(.*)')
+    newline_re = re.compile(r"(\n|\r\n|\r)")
+    full_line_comment = re.compile(r"\s*##(.*)")
+    line_comment = re.compile(r"(.*)\s+#{2,}.*")
+    line_statement = re.compile(r"\s*--\s(.*)")
+    lstrip_line_statement = re.compile(r"\s*<<\s(.*)")
+    rstrip_line_statement = re.compile(r"\s*>>\s(.*)")
+    line_print = re.compile(r"\s*==\s(.*)")
+    rstrip_line_print = re.compile(r"\s*=>\s(.*)")
 
     # Jinja comments add a blank line to the output. This makes it very difficult to
     # format things the way you would like /and/ use Jinja comments. The preprocessor
@@ -75,7 +79,7 @@ class LineStatementProcessor(Extension):
     #
     # If anything goes wrong, this can make things very difficult to debug, as Jinja
     # will report the wrong line numbers.
-    # 
+    #
     # The work-around is thins flag. When set to True, line-comments are not removed,
     # thus preserving line-numbers. Once things are working, you can turn it off, as
     # to preserve formatting.
@@ -83,7 +87,7 @@ class LineStatementProcessor(Extension):
 
     # The preprocessor converts the syntactic-sugrar coated line-statements into
     # regular Jinja statements. Asside from stipping comments, as mentioned above,
-    # this /should/ have little impact on the outcome, but it can be useful to 
+    # this /should/ have little impact on the outcome, but it can be useful to
     # see the translated input for diagnostics. Setting this to True results in
     # uber-verbose output, where every pre-processed input template is dumped to
     # stdout for analysis.
@@ -101,7 +105,7 @@ class LineStatementProcessor(Extension):
             # Completely delete full comment lines
             if (match := self.full_line_comment.fullmatch(line)) is not None:
                 if LineStatementProcessor.preserve_line_numbers:
-                    line = r'{# ' + match[1] + r' #}'
+                    line = r"{# " + match[1] + r" #}"
                 else:
                     continue
             # Delete training comments to end-of-line
@@ -109,49 +113,54 @@ class LineStatementProcessor(Extension):
                 line = match[1]
             # Convert line-stantement to regular syntax line-statements
             if (match := self.line_statement.fullmatch(line)) is not None:
-                line = r'{% ' + match[1] + r' %}'
+                line = r"{% " + match[1] + r" %}"
             # Left trim
             elif (match := self.lstrip_line_statement.fullmatch(line)) is not None:
-                line = r'{%- ' + match[1] + r' %}'
+                line = r"{%- " + match[1] + r" %}"
             # Right trim
             elif (match := self.rstrip_line_statement.fullmatch(line)) is not None:
-                line = r'{% ' + match[1] + r' -%}'
+                line = r"{% " + match[1] + r" -%}"
             # Line print
             elif (match := self.line_print.fullmatch(line)) is not None:
-                line = r'{{ ' + match[1] + r' }}'
+                line = r"{{ " + match[1] + r" }}"
             elif (match := self.rstrip_line_print.fullmatch(line)) is not None:
-                line = r'{{ ' + match[1] + r' -}}'
+                line = r"{{ " + match[1] + r" -}}"
             yield line
+
 
 class PPEnvironment(SandboxedEnvironment):
     TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
-    
+
     def __init__(
         self,
         *args,
-        loader = None,
-        searchpath = None,
-        extensions = [],
-        auto_reload = True,
-        trim_blocks = True,
-        undefined = StrictUndefined,
+        loader=None,
+        searchpath=None,
+        extensions=[],
+        auto_reload=True,
+        trim_blocks=True,
+        undefined=StrictUndefined,
         **kwargs,
     ):
-        assert loader is not None or searchpath is not None, "Either a loader or searchpath must be specified"
+        assert (
+            loader is not None or searchpath is not None
+        ), "Either a loader or searchpath must be specified"
         if loader is None:
             loader = PPLoader(searchpath)
-        
+
         extensions.insert(0, LineStatementProcessor)
         super().__init__(
             *args,
-            loader = loader,
-            extensions = extensions,
-            auto_reload = auto_reload,
-            trim_blocks = trim_blocks,
-            undefined = undefined,
-            **kwargs
+            loader=loader,
+            extensions=extensions,
+            auto_reload=auto_reload,
+            trim_blocks=trim_blocks,
+            undefined=undefined,
+            **kwargs,
         )
         self.globals["now"] = lambda: datetime.datetime.now().strftime(self.TIME_FORMAT)
-        self.globals["utcnow"] = lambda: datetime.datetime.utcnow().strftime(self.TIME_FORMAT)
+        self.globals["utcnow"] = lambda: datetime.datetime.utcnow().strftime(
+            self.TIME_FORMAT
+        )
         self.globals["time_ns"] = lambda: str(time.time_ns())
         self.globals["path_join"] = _os_path_join

@@ -14,15 +14,18 @@ from .utils import ConversionDescriptor, DiagnosticEnum
 OUTPUTDIR_NAME = "tmp_trainer"
 LR_SCHEDULER_NAME = "constant"
 
+
 class TrainOutput(NamedTuple):
     global_step: int
     training_loss: float
     metrics: Dict[str, float]
 
+
 class IntervalStrategy(DiagnosticEnum):
     NO = "no"
     STEPS = "steps"
     EPOCH = "epoch"
+
 
 @dataclass(kw_only=True)
 class TrainerState:
@@ -32,6 +35,7 @@ class TrainerState:
     Not all values are implemented at present.
     See: https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_callback.py#
     """
+
     logging_steps: int
     eval_steps: int
     train_batch_size: int
@@ -43,7 +47,7 @@ class TrainerState:
     is_world_process_zero: bool = True
     log_history: list[Dict[str, float]] = field(default_factory=lambda: [])
     save_steps: int = 0
-    
+
     # Unimplemented in Trainer; included for consistency with HF Trainer
     num_input_tokens_seen: int = 0
     total_flos: float = 0.0
@@ -52,6 +56,7 @@ class TrainerState:
     is_hyper_param_search: bool = False
     stateful_callbacks: List["TrainerCallback"] = field(default_factory=lambda: [])
 
+
 @dataclass(slots=True)
 class TrainerControl:
     """
@@ -59,11 +64,13 @@ class TrainerControl:
     This is the same API as used by the HF Trainer class, for compatibility.
     This is only partially implemented at present.
     """
+
     should_training_stop: bool = False
     should_epoch_stop: bool = False
     should_save: bool = False
     should_evaluate: bool = False
     should_log: bool = False
+
 
 @dataclass(kw_only=True)
 class TrainingArguments:
@@ -74,9 +81,9 @@ class TrainingArguments:
     As a minimal sub-set, this should not be "everything-for-everyone."
     Additional arguments can be added via sub-classing.
     """
+
     per_device_train_batch_size: int = field(
-        default=16,
-        metadata={"help": "The training batch size used on each device."}
+        default=16, metadata={"help": "The training batch size used on each device."}
     )
     output_dir: str = OUTPUTDIR_NAME
     overwrite_output_dir: bool = False
@@ -93,12 +100,15 @@ class TrainingArguments:
     device: Any = None
     logging_dir: str = None
 
-    eval_strategy: ConversionDescriptor = (
-        ConversionDescriptor(IntervalStrategy, default=IntervalStrategy.NO))
-    logging_strategy: ConversionDescriptor = (
-        ConversionDescriptor(IntervalStrategy, default=IntervalStrategy.STEPS))
-    save_strategy: ConversionDescriptor = (
-        ConversionDescriptor(IntervalStrategy, default=IntervalStrategy.STEPS))
+    eval_strategy: ConversionDescriptor = ConversionDescriptor(
+        IntervalStrategy, default=IntervalStrategy.NO
+    )
+    logging_strategy: ConversionDescriptor = ConversionDescriptor(
+        IntervalStrategy, default=IntervalStrategy.STEPS
+    )
+    save_strategy: ConversionDescriptor = ConversionDescriptor(
+        IntervalStrategy, default=IntervalStrategy.STEPS
+    )
 
     logging_first_step: bool = False
     eval_delay: int = 0
@@ -106,7 +116,10 @@ class TrainingArguments:
 
     def __post_init__(self):
         if self.logging_dir is None:
-            self.logging_dir = os.path.join(self.output_dir, "runs", f"{time.time_ns()}_{platform.node()}")
+            self.logging_dir = os.path.join(
+                self.output_dir, "runs", f"{time.time_ns()}_{platform.node()}"
+            )
+
 
 class AbstractBaseTrainer(ABC):
     """
@@ -118,17 +131,20 @@ class AbstractBaseTrainer(ABC):
 
     A "Trainer," at a minimum, should be able to "train," "evaluate', and "save" models.
     """
+
     @abstractmethod
-    def train(self, **kwargs) -> TrainOutput:
-        ...
+    def train(self, **kwargs) -> TrainOutput: ...
     @abstractmethod
-    def evaluate(self, eval_dataset: Optional[Dataset] = None, **kwargs) -> dict[str, float]:
+    def evaluate(
+        self, eval_dataset: Optional[Dataset] = None, **kwargs
+    ) -> dict[str, float]:
         """
         Perform evaluation, either from the default eval dataset or from a specified dataset.
 
         Returns: A dictionary of metrics.
         """
         ...
+
     @abstractmethod
     def save_model(self, output_dir: Optional[os.PathLike | str] = None) -> None:
         """
@@ -136,10 +152,12 @@ class AbstractBaseTrainer(ABC):
         """
         ...
 
+
 class ExtensibleTrainer(AbstractBaseTrainer):
     """
     A slightly extended abstract Trainer, which supports the TrainerCallback API.
     """
+
     @abstractmethod
     def add_callback(self, callback):
         """
@@ -147,6 +165,7 @@ class ExtensibleTrainer(AbstractBaseTrainer):
         Either a type (instantiate it) or an instance
         """
         ...
+
     @abstractmethod
     def pop_callback(self, callback):
         """
@@ -154,12 +173,14 @@ class ExtensibleTrainer(AbstractBaseTrainer):
         Remove the first match and return it
         """
         ...
+
     def remove_callback(self, callback):
         """
         Like pop, but don't return it.
         This seems redundant, but API consistency...
         """
         self.pop_callback(self, callback)
+
 
 class TrainerCallback(ABC):
     """
@@ -168,31 +189,130 @@ class TrainerCallback(ABC):
     Not all callbacks are implemented at present.
     See: https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_callback.py#
     """
-    def on_init_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+
+    def on_init_end(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         pass
-    def on_train_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+
+    def on_train_begin(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         pass
-    def on_train_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+
+    def on_train_end(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         pass
-    def on_epoch_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+
+    def on_epoch_begin(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         pass
-    def on_epoch_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+
+    def on_epoch_end(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         pass
-    def on_step_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+
+    def on_step_begin(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         pass
-    def on_optimizer_step(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+
+    def on_optimizer_step(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         pass
-    def on_substep_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+
+    def on_substep_end(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         pass
-    def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+
+    def on_step_end(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         pass
-    def on_evaluate(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+
+    def on_evaluate(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         pass
-    def on_predict(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, metrics, **kwargs):
+
+    def on_predict(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        metrics,
+        **kwargs,
+    ):
         pass
-    def on_save(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+
+    def on_save(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         pass
-    def on_log(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+
+    def on_log(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         pass
-    def on_prediction_step(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+
+    def on_prediction_step(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
         pass

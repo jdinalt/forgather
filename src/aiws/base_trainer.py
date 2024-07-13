@@ -1,5 +1,9 @@
 from typing import (
-    Callable, Optional, List, Type, Dict,
+    Callable,
+    Optional,
+    List,
+    Type,
+    Dict,
 )
 from types import NoneType
 import os
@@ -21,27 +25,29 @@ from .trainer_types import (
 
 WEIGHTS_NAME = "pytorch_model.bin"
 
+
 class BaseTrainer(ExtensibleTrainer):
     """
     Implements the common aspects of the ExtensibleTrainer class,
         but is also an abstract-base-class, with the meat of the "trainer"
         implementation needing to be filled in.
     """
+
     @classmethod
     def default_callbacks(cls):
         """
         Returns a list of default callbacks
         """
         return []
-    
+
     def __init__(
         self,
         model: PreTrainedModel | torch.nn.Module = None,
         args: Optional[dict | TrainingArguments] = None,
-        data_collator = None,
-        train_dataset = None,
-        eval_dataset = None,
-        tokenizer = None,
+        data_collator=None,
+        train_dataset=None,
+        eval_dataset=None,
+        tokenizer=None,
         model_init: Optional[Callable[[], PreTrainedModel]] = None,
         callbacks: List = [],
     ):
@@ -66,7 +72,7 @@ class BaseTrainer(ExtensibleTrainer):
         self.is_local_process_zero = True
         self.is_world_process_zero = True
         self.num_processes = 1
-        
+
         self._post_init()
         self._validate_dirs()
         self._dispatch_event("on_init_end")
@@ -93,20 +99,22 @@ class BaseTrainer(ExtensibleTrainer):
         self.model = self.model.to(self.device)
         return self._train_loop()
 
-    def evaluate(self, eval_dataset: Optional[Dataset] = None, **kwargs) -> dict[str, float]:
+    def evaluate(
+        self, eval_dataset: Optional[Dataset] = None, **kwargs
+    ) -> dict[str, float]:
         """
         The main entry point to evaluate the model.
         """
         if eval_dataset is None:
             eval_dataset = self.eval_dataset
         else:
-            assert(isinstance(eval_dataset, Dataset))
+            assert isinstance(eval_dataset, Dataset)
 
         self._prepare(train_dataset=None, eval_dataset=eval_dataset)
         self.model = self.model.to(self.device)
         return self._eval_loop()
 
-    def save_model(self, output_dir: os.PathLike | str=None) -> None:
+    def save_model(self, output_dir: os.PathLike | str = None) -> None:
         """
         Save model and tokenizer to output_dir
         """
@@ -115,12 +123,13 @@ class BaseTrainer(ExtensibleTrainer):
         if output_dir is None:
             output_dir = self.args.output_dir
         if not self.args.overwrite_output_dir and self.model_exists(output_dir):
-            raise Exception("Would overwrite output model in output directory. "
-                f"Set 'args.overwrite_output_dir' to override: {output_dir}")
+            raise Exception(
+                "Would overwrite output model in output directory. "
+                f"Set 'args.overwrite_output_dir' to override: {output_dir}"
+            )
         os.makedirs(output_dir, exist_ok=True)
         self._save(output_dir)
 
-    
     def add_callback(self, callback):
         if isinstance(callback, type):
             callback = callback()
@@ -137,7 +146,7 @@ class BaseTrainer(ExtensibleTrainer):
 
     def log(self, logs: Dict[str, float]):
         self.state.log_history.append(logs)
-        
+
         self._dispatch_event(
             "on_log",
             logs=logs,
@@ -150,10 +159,10 @@ class BaseTrainer(ExtensibleTrainer):
         This method should return the base model, given the wrapped model.
         """
         return self.model
-    
+
     def model_exists(self, output_dir):
         """
-        Return True, if a saved model exists in the output_dir 
+        Return True, if a saved model exists in the output_dir
         """
         output_artifacts = (
             WEIGHTS_NAME,
@@ -165,7 +174,7 @@ class BaseTrainer(ExtensibleTrainer):
             if os.path.exists(os.path.join(output_dir, artifact_name)):
                 return True
         return False
-    
+
     def _validate_dirs(self):
         if not self.is_local_process_zero:
             return
@@ -179,7 +188,9 @@ class BaseTrainer(ExtensibleTrainer):
                         "to override."
                     )
                 else:
-                     logger.warning(f"Model exists in output dir '{output_dir}' and model may be overwritten!")
+                    logger.warning(
+                        f"Model exists in output dir '{output_dir}' and model may be overwritten!"
+                    )
         else:
             logger.info(f"Creating output directory: {output_dir}")
             os.makedirs(output_dir, exist_ok=True)
@@ -212,7 +223,7 @@ class BaseTrainer(ExtensibleTrainer):
             # If handler is undefined, skip to next.
             if event_handler is None:
                 continue
-            
+
             new_control = event_handler(
                 self.args,
                 self.state,
@@ -232,19 +243,21 @@ class BaseTrainer(ExtensibleTrainer):
 
     def _save_checkpoint(self):
         logger.warning("Trainer._save_checkpoint() is unimplemented!")
-    
+
     @abstractmethod
     def _post_init(self) -> None:
         """
         This hook is intended to be used for an implementation which needs to wrap the components,
         load things to devices, etc.
-        
+
         For example, Torch DDP and Accelerate.
         """
         ...
 
     @abstractmethod
-    def _prepare(self, train_dataset: Dataset | NoneType, eval_dataset: Dataset | NoneType) -> None:
+    def _prepare(
+        self, train_dataset: Dataset | NoneType, eval_dataset: Dataset | NoneType
+    ) -> None:
         """
         Prepare for training and/or evaluation
 

@@ -2,6 +2,7 @@
 A Collection on object construction helpers for use with forgather.config
 """
 
+
 def register_for_auto_class(object, /, *args, **kwargs):
     """
     Register an object as a HF AutoClass

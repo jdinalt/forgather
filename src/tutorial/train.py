@@ -14,10 +14,7 @@ from tqdm.auto import tqdm
 import evaluate
 import numpy as np
 import transformers
-from transformers import (
-    set_seed,
-    default_data_collator
-)
+from transformers import set_seed, default_data_collator
 
 from accelerate import Accelerator
 
@@ -29,10 +26,13 @@ from tutorial_code.trainer_callback import (
 )
 
 from transformers.utils import ExplicitEnum
+
+
 class IntervalStrategy(ExplicitEnum):
     NO = "no"
     STEPS = "steps"
     EPOCH = "epoch"
+
 
 @dataclass
 class TrainingArguments:
@@ -40,6 +40,7 @@ class TrainingArguments:
     Stores training arguments, independent of model/dataset/etc.
     Can init with dictionary: TrainingArguments(**my_dict)
     """
+
     per_device_train_batch_size: int = 16
     per_device_eval_batch_size: int = 16
     max_steps: int = -1
@@ -50,21 +51,20 @@ class TrainingArguments:
     seed: int = -1
     lr_scheduler_name: str = "constant"
     num_warmup_steps: int = 0
-    device: str = 'cpu'
+    device: str = "cpu"
 
     # For compatibility with NotebookProgressCallback, which requires this attribute
     # Note: Even though the arguments specify epochs, internally this is always
     # converted to steps.
     eval_strategy: IntervalStrategy = IntervalStrategy.STEPS
 
+
 def default_optimizer_factory(params, training_args):
     """
     Construct the default optimizer
     """
-    return torch.optim.AdamW(
-        params,
-        lr=training_args.learning_rate
-    )
+    return torch.optim.AdamW(params, lr=training_args.learning_rate)
+
 
 def default_lr_scheduler_factory(optimizer, num_training_steps, training_args):
     """
@@ -77,6 +77,7 @@ def default_lr_scheduler_factory(optimizer, num_training_steps, training_args):
         num_training_steps=num_training_steps,
     )
 
+
 def default_data_collator_factory(tokenizer, training_arguments):
     """
     Construct the default learning-rate scheduler
@@ -84,16 +85,18 @@ def default_data_collator_factory(tokenizer, training_arguments):
     return DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
         mlm=False,
-        return_tensors='pt',
+        return_tensors="pt",
     )
 
+
 class PeriodicFunction:
-    '''
+    """
     A periodic function caller, which calls 'f' every 'period' steps
-    '''
+    """
+
     def __init__(self, period: int, f: Callable):
         self.period = period
-        assert(period > 0)
+        assert period > 0
         self.f = f
         self.reset()
 
@@ -108,26 +111,28 @@ class PeriodicFunction:
 
     def count(self) -> int:
         return self.counter
-    
+
+
 class Trainer:
     """
     This transformer trainer is a simplified version of the HF Trainer class
     The intent is to hopefully make the workings of such a class more comprehensible and
     easier to customize.
     """
+
     def __init__(
         self,
         model,
         tokenizer,
         train_dataset,
         eval_dataset,
-        callbacks = [ ProgressCallback() ],
-        training_arguments: TrainingArguments=TrainingArguments(),
+        callbacks=[ProgressCallback()],
+        training_arguments: TrainingArguments = TrainingArguments(),
         data_collator_factory=default_data_collator_factory,
-        optimizer_factory=default_optimizer_factory, 
+        optimizer_factory=default_optimizer_factory,
         lr_scheduler_factory=default_lr_scheduler_factory,
     ):
-        #print(training_arguments)
+        # print(training_arguments)
         self.args = training_arguments
         self.model = model
         self.tokenizer = tokenizer
@@ -138,27 +143,29 @@ class Trainer:
         if self.args.seed != -1:
             set_seed(self.args.seed)
 
-        data_collator=data_collator_factory(tokenizer, self.args)
+        data_collator = data_collator_factory(tokenizer, self.args)
 
         self.train_dataloader = DataLoader(
             train_dataset,
             batch_size=self.args.per_device_train_batch_size,
             collate_fn=data_collator,
             drop_last=True,
-            #pin_memory=True,
+            # pin_memory=True,
         )
-        
+
         self.eval_dataloader = DataLoader(
             eval_dataset,
             batch_size=self.args.per_device_eval_batch_size,
             collate_fn=data_collator,
             drop_last=True,
-            #pin_memory=True,
+            # pin_memory=True,
         )
 
         self._update_training_steps()
         self.optimizer = optimizer_factory(self.model.parameters(), self.args)
-        self.lr_scheduler = lr_scheduler_factory(self.optimizer, self.max_steps, self.args)
+        self.lr_scheduler = lr_scheduler_factory(
+            self.optimizer, self.max_steps, self.args
+        )
         self.state = None
         self._prepare()
         self._dispatch_event("on_init_end")
@@ -169,21 +176,21 @@ class Trainer:
         This value can potentially change when using parallel training.
         Should this occur, update the value be calling this again.
         """
-         # The number of training steps in a single epoch
+        # The number of training steps in a single epoch
         self.epoch_train_steps = len(self.train_dataloader)
-        
+
         # If limit is specified, constrain to limit.
         if self.args.max_steps >= 0:
             self.max_steps = min(self.args.max_steps, self.epoch_train_steps)
         else:
             # The total number of training steps in all epochs
             self.max_steps = self.args.num_train_epochs * self.epoch_train_steps
-            
+
     def _prepare(self) -> None:
         """
         This hook is intended to be used for an implementation which needs to wrap the components,
         load things to devices, etc.
-        
+
         For example, Torch DDP and Accelerate.
         """
         self.model = self.model.to(self.device)
@@ -223,31 +230,33 @@ class Trainer:
                 loss = self._train_step(self._prepare_batch(batch))
                 total_loss = self._accumulate_loss(total_loss, loss)
                 self.state.global_step += 1
-                
+
                 # Compute epoch as continous value from steps
-                self.state.epoch = float(self.state.global_step) / float(self.epoch_train_steps)
-                
+                self.state.epoch = float(self.state.global_step) / float(
+                    self.epoch_train_steps
+                )
+
                 # Log every 'log_steps'
                 periodic_log.step(total_loss, periodic_log.count())
-                
+
                 # Eval every 'eval_steps'
                 periodic_eval.step()
-                
+
                 # Stop, if requested by callback.
                 control = self._dispatch_event("on_step_end")
                 if control is not None and control.should_training_stop:
                     break
-                
+
                 # Break both loops when we reach the target global steps
                 if self.state.global_step >= self.max_steps:
                     break
-                    
-            else: # Continue, if loop exits normally
+
+            else:  # Continue, if loop exits normally
                 control = self._dispatch_event("on_epoch_end")
                 if control is not None and control.should_epoch_stop:
                     break
                 continue
-            break # Break, if inner-loop breaks
+            break  # Break, if inner-loop breaks
         # Training complete
         self._log_step(total_loss, periodic_log.count())
         self.train_time = datetime.timedelta(seconds=time.perf_counter() - start_time)
@@ -262,7 +271,7 @@ class Trainer:
             loss, _, _ = self._prediction_step(self._prepare_batch(batch))
             total_loss = self._accumulate_loss(total_loss, loss)
             self._dispatch_event("on_prediction_step")
-        metrics = { "eval_loss": (total_loss / step).item() }
+        metrics = {"eval_loss": (total_loss / step).item()}
         self._dispatch_event("on_evaluate", metrics=metrics)
         return metrics
 
@@ -302,7 +311,7 @@ class Trainer:
         if log_steps == 0:
             return
         mean_loss = (total_loss / log_steps).item()
-        
+
         # Reset training loss and log step counter
         total_loss -= total_loss
 
@@ -312,7 +321,7 @@ class Trainer:
         }
 
         self.state.log_history.append(logs)
-        
+
         self._dispatch_event(
             "on_log",
             logs=logs,
@@ -334,7 +343,7 @@ class Trainer:
             logging_steps=self.args.log_steps,
             eval_steps=self.args.eval_steps,
             num_train_epochs=int(self.args.num_train_epochs),
-            train_batch_size=self.train_dataloader.batch_size
+            train_batch_size=self.train_dataloader.batch_size,
         )
 
     def _accumulate_loss(self, total_loss: Tensor, loss: Tensor) -> Tensor:
@@ -352,7 +361,7 @@ class Trainer:
             # If handler is undefined, skip to next.
             if event_handler is None:
                 continue
-            
+
             new_control = event_handler(
                 self.args,
                 self.state,
@@ -370,10 +379,12 @@ class Trainer:
                 control = new_control
         return control
 
+
 class AccelTrainer(Trainer):
     """
     Modify the base Trainer to use the Accelerate library.
     """
+
     def __init__(self, accelerator_args={}, *args, **kwargs):
         self.accelerator_args = accelerator_args
         super().__init__(*args, **kwargs)
@@ -384,7 +395,13 @@ class AccelTrainer(Trainer):
         Wrap relevant componens with accelerator
         """
         self.accelerator = Accelerator(**self.accelerator_args)
-        self.train_dataloader, self.eval_dataloader, self.model, self.optimizer, self.lr_scheduler = self.accelerator.prepare(
+        (
+            self.train_dataloader,
+            self.eval_dataloader,
+            self.model,
+            self.optimizer,
+            self.lr_scheduler,
+        ) = self.accelerator.prepare(
             self.train_dataloader,
             self.eval_dataloader,
             self.model,
@@ -396,7 +413,6 @@ class AccelTrainer(Trainer):
         # Accel uses a special device target
         self.device = self.accelerator.device
         self.accelerator.wait_for_everyone()
-        
 
     def _backward(self, loss):
         self.accelerator.backward(loss)

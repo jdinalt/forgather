@@ -3,6 +3,7 @@ from torch import nn, Tensor
 import torch.nn.init as init
 from torch.nn import functional as F
 
+
 class BigramLM(nn.Module):
     def __init__(
         self,
@@ -10,9 +11,8 @@ class BigramLM(nn.Module):
         # the embeddings are vectors, each of size d_model. This parameter is sometimes referred to a the model's
         # "hidden" dimension.
         d_model,
-
         # This is the vocabulary size of the model, which should match the size of the model's tokenizer.
-        vocab_size
+        vocab_size,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -26,14 +26,16 @@ class BigramLM(nn.Module):
         # it has an input size of d_model and an output size of vocab_size.
         self.output_projection = nn.Linear(self.d_model, self.vocab_size)
 
-    def forward(self, input_ids: Tensor, labels: Tensor=None, attention_mask: Tensor=None):
+    def forward(
+        self, input_ids: Tensor, labels: Tensor = None, attention_mask: Tensor = None
+    ):
         # input_ids (batch_size, seq_len):
         #    This contains batches of sequences of token-ids, representing the input text.
         # labels (batch_size, seq_len): If given these are the ground-truth targets the model is striving to predict.
         #    For a causal model, these are identical to the input-ids, with a special value of -100
         #    reserved for padding, which are not scored.
         # attention_mask: The Huggingface APIs pass this in, although we don't use it.
-        
+
         # Convert input_ids to embeddings.
         x = self.embedding(input_ids)
 
@@ -71,7 +73,7 @@ class BigramLM(nn.Module):
             shift_labels.view(-1),
             # labels with this value are ignored when computing loss
             ignore_index=-100,
-            reduction='mean',
+            reduction="mean",
         )
 
         # Allowing the model to return NaN can cause problems, so we convert these values to a number.

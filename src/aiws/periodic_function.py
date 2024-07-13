@@ -1,10 +1,12 @@
 from typing import Callable
 from .trainer_types import IntervalStrategy
 
+
 class PeriodicFunction:
-    '''
+    """
     A periodic function caller, which calls 'f' every 'period' steps
-    '''
+    """
+
     def __init__(
         self,
         strategy: IntervalStrategy,
@@ -24,8 +26,8 @@ class PeriodicFunction:
                 self.period = epoch_period
             case _:
                 pass
-        assert(self.period > 0)
-        if first_step >=0:
+        assert self.period > 0
+        if first_step >= 0:
             self.counter = first_step % self.period
         else:
             first_step = period - 1

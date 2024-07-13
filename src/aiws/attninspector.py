@@ -1,11 +1,12 @@
 from aiws.dotdict import DotDict
 
+
 class AttnInspector:
     def num_heads(self):
         return None
 
     def head_dims(self):
-        return DotDict({ "query": None, "key": None })
+        return DotDict({"query": None, "key": None})
 
     def alibi_slopes(self):
         return None
@@ -14,10 +15,11 @@ class AttnInspector:
         return None
 
     def weights(self, head=None):
-        return DotDict({ "query": None, "key": None, "value": None, "output": None })
+        return DotDict({"query": None, "key": None, "value": None, "output": None})
 
     def biases(self, head=None):
-        return DotDict({ "query": None, "key": None, "value": None, "output": None })
+        return DotDict({"query": None, "key": None, "value": None, "output": None})
+
 
 class LayerInspector:
     def attention(self):
@@ -25,6 +27,7 @@ class LayerInspector:
 
     def feedforward(self):
         return None
+
 
 class ModelInspector:
     def embedding(self):
