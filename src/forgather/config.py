@@ -8,17 +8,13 @@ from enum import Enum
 import os
 import sys
 import yaml
-import datetime
-import time
 import platform
-import re
+
 from importlib.metadata import version
 
 from pprint import pformat
-import jinja2
-from jinja2.ext import Extension
-from jinja2.sandbox import SandboxedEnvironment
-from . import Latent
+from .latent import Latent
+from .preprocess import PPEnvironment
 from .dynamic import normalize_import_spec
 from .yaml_utils import (
     callable_constructor,
@@ -30,13 +26,11 @@ from .utils import DiagnosticEnum
 class LoadMethod(DiagnosticEnum):
     """
     FROM_STRING: The 'config' is interpreted as as string.
-    FROM_FILE: The 'config' is interpreted as an exact file path.
-    FROM_FILE_SEARCH: The 'config' is interpreted as a file path which
+    FROM_FILE: The 'config' is interpreted as a file path which
         may be relative to any of the provided paths in 'search_paths'
     """
     FROM_STRING = "from_string"
     FROM_FILE = "from_file"
-    FROM_FILE_SEARCH = "from_file_search"
 
 class InvalidLoadMethod(Exception):
     pass
@@ -44,8 +38,7 @@ class InvalidLoadMethod(Exception):
 class WhitelistError(Exception):
     pass
 
-DEFAULT_LOAD_METHOD = LoadMethod.FROM_FILE_SEARCH
-TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+DEFAULT_LOAD_METHOD = LoadMethod.FROM_FILE
 
 def format_line_numbers(text: str) -> str:
     return ''.join(map(lambda x: f"{x[0]+1:>6}: {x[1]}\n", enumerate(text.split('\n'))))
@@ -173,122 +166,6 @@ def __add_exception_notes(error: Exception, *args):
     # Fallback to generic exception, which at least should chain them.
     raise Exception(note)
 
-def _os_path_join(*args):
-    """
-    Calling os.path.join() on jinja's Undefined types results in a difficult to
-    diagnose exepction, as it does not show what is undefined or provide context.
-
-    This is just a wrapper for better diagnostics on undefined paths.
-    """
-    for arg in args:
-        if isinstance(arg, jinja2.Undefined):
-            raise arg._fail_with_undefined_error("Undefined path passed to path_join")
-    return os.path.join(*args)
-
-class CustomLoader(jinja2.FileSystemLoader):
-    """
-    Custom Jinja2 loader which can split a file template into multiple named sub-templates
-
-    ```
-    Main template
-    ##--- my_template_label ---
-    Sub template, named 'my_template_label'
-    ```
-
-    As Jinja2 does not allow extending imported templates, this makes it easier to extend multiple
-    parent templates in the same file. Witout this, each must be in a seperate file.
-
-    This just makes things a little easier to work with.
-    """
-    split_on = re.compile(r'\n#\s*-{3,}\s*([\w./]+)\s*-{3,}\n')
-    
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.templates = {}
-
-    def get_source(self, environment, template_name):
-        if (template_info := self.templates.get(template_name)) is None:
-            source, filename, uptodate = super().get_source(environment, template_name)
-            main_template = next(iter := self.split_templates(source))
-            for sub in iter:
-                self.templates[sub[0]] = (sub[1], uptodate)
-            return main_template[1], filename, uptodate
-        return template_info[0], template_name, template_info[1]
-
-    def split_templates(self, template):
-        prev = 0
-        name = None
-        for match in self.split_on.finditer(template):
-            yield (name, template[prev:match.start()])
-            name = match.group(1)
-            prev = match.end()
-        yield(name, template[prev:])
-
-class LineStatementProcessor(Extension):
-    newline_re = re.compile(r'(\n|\r\n|\r)')
-    full_line_comment = re.compile(r'\s*##(.*)')
-    line_comment = re.compile(r'(.*)\s+#{2,}.*')
-    line_statement = re.compile(r'\s*--\s(.*)')
-    lstrip_line_statement = re.compile(r'\s*<<\s(.*)')
-    rstrip_line_statement = re.compile(r'\s*>>\s(.*)')
-    line_print = re.compile(r'\s*==\s(.*)')
-    rstrip_line_print = re.compile(r'\s*=>\s(.*)')
-
-    # Jinja comments add a blank line to the output. This makes it very difficult to
-    # format things the way you would like /and/ use Jinja comments. The preprocessor
-    # strips Jinja comments, which would otherwise add empty lines, from the input
-    # to keep things tidy.
-    #
-    # If anything goes wrong, this can make things very difficult to debug, as Jinja
-    # will report the wrong line numbers.
-    # 
-    # The work-around is thins flag. When set to True, line-comments are not removed,
-    # thus preserving line-numbers. Once things are working, you can turn it off, as
-    # to preserve formatting.
-    preserve_line_numbers: bool = False
-
-    # The preprocessor converts the syntactic-sugrar coated line-statements into
-    # regular Jinja statements. Asside from stipping comments, as mentioned above,
-    # this /should/ have little impact on the outcome, but it can be useful to 
-    # see the translated input for diagnostics. Setting this to True results in
-    # uber-verbose output, where every pre-processed input template is dumped to
-    # stdout for analysis.
-    pp_verbose: bool = False
-
-    def preprocess(self, source, name, filename=None):
-        source = "\n".join(self.pp_generate(source))
-        if LineStatementProcessor.pp_verbose:
-            print(f"{' '+name+' ':-^80}")
-            print(format_line_numbers(source))
-        return source
-
-    def pp_generate(self, source):
-        for line in self.newline_re.split(source)[::2]:
-            # Completely delete full comment lines
-            if (match := self.full_line_comment.fullmatch(line)) is not None:
-                if LineStatementProcessor.preserve_line_numbers:
-                    line = r'{# ' + match[1] + r' #}'
-                else:
-                    continue
-            # Delete training comments to end-of-line
-            elif (match := self.line_comment.fullmatch(line)) is not None:
-                line = match[1]
-            # Convert line-stantement to regular syntax line-statements
-            if (match := self.line_statement.fullmatch(line)) is not None:
-                line = r'{% ' + match[1] + r' %}'
-            # Left trim
-            elif (match := self.lstrip_line_statement.fullmatch(line)) is not None:
-                line = r'{%- ' + match[1] + r' %}'
-            # Right trim
-            elif (match := self.rstrip_line_statement.fullmatch(line)) is not None:
-                line = r'{% ' + match[1] + r' -%}'
-            # Line print
-            elif (match := self.line_print.fullmatch(line)) is not None:
-                line = r'{{ ' + match[1] + r' }}'
-            elif (match := self.rstrip_line_print.fullmatch(line)) is not None:
-                line = r'{{ ' + match[1] + r' -}}'
-            yield line
-
 version_info = { 
     "python": sys.version
 } | {
@@ -303,8 +180,6 @@ def preprocess_config(
     config:  os.PathLike | str, *,
     search_path: str | List[str] = '.',
     load_method: LoadMethod = DEFAULT_LOAD_METHOD,
-    preserve_line_numbers=False,
-    pp_verbose=False,
     **kwargs,
 ) -> str:
     """
@@ -320,35 +195,14 @@ def preprocess_config(
             search_path = [config_dir, search_path]
         else:
             search_path = [config_dir, *search_path]
-    
-    environment = SandboxedEnvironment(
-        loader = CustomLoader(searchpath=search_path),
-        extensions = [ LineStatementProcessor ],
-        auto_reload=True,
-        undefined=jinja2.StrictUndefined,
-        trim_blocks=True,
-    )
-    
-    environment.globals["now"] = datetime.datetime.now().strftime(TIME_FORMAT)
-    environment.globals["utcnow"] = datetime.datetime.utcnow().strftime(TIME_FORMAT)
-    environment.globals["time_ns"] = str(time.time_ns())
-    environment.globals["path_join"] = _os_path_join
-    environment.globals["versions"] = version
 
-    # Set class-level debug flags
-    # There's not easy to to pass arguments...
-    LineStatementProcessor.preserve_line_numbers = preserve_line_numbers
-    LineStatementProcessor.pp_verbose = pp_verbose
+    environment = PPEnvironment(searchpath = search_path)
     
     match load_method:
         case LoadMethod.FROM_STRING:
             jinja_template = environment.from_string(config)
-        case LoadMethod.FROM_FILE_SEARCH:
-            jinja_template = environment.get_template(os.path.basename(config))
         case LoadMethod.FROM_FILE:
-            with open(config, 'r') as f:
-                config_text = f.read()
-            jinja_template = environment.from_string(config_text)
+            jinja_template = environment.get_template(os.path.basename(config))
         case _:
             raise InvalidLoadMethod
     
@@ -363,26 +217,6 @@ def preprocess_config(
         versions=version_info,
     )
     return ConfigText(jinja_template.render(**(default_args | kwargs)))
-
-def __load(config, *, preprocess, search_path, load_method, pp_kwargs) -> LoadConfigOutput:
-    pp_config = config
-    if preprocess:
-        # Let Jinja handle it
-        config = pp_config = preprocess_config(
-            config, search_path=search_path, load_method=load_method, **pp_kwargs)
-    else:
-        match load_method:
-            case LoadMethod.FROM_STRING:
-                config = ConfigText(pp_config)
-            case LoadMethod.FROM_FILE:
-                with open(pp_config, 'r') as file:
-                    config = ConfigText(file.read())
-            case LoadMethod.FROM_FILE_SEARCH:
-                # TODO: Implement search path
-                raise NotImplementedError("FROM_FILE_SEARCH has not been implemeted for this function yet. ")
-            case _:
-                raise InvalidLoadMethod()
-    return LoadConfigOutput(config, pp_config)
 
 def load_config(
     config: os.PathLike | str, *,
@@ -419,22 +253,23 @@ def load_config(
         
     """
     load_method = LoadMethod(load_method)
-    load_out = __load(
+    pp_config = preprocess_config(
         config, preprocess=preprocess, search_path=search_path,
-        load_method=load_method, pp_kwargs=kwargs)
+        load_method=load_method, **kwargs)
+
     yaml.SafeLoader.add_multi_constructor("!callable", callable_constructor)
     yaml.SafeLoader.add_constructor("!tuple", tuple_constructor)
     try:
-        loaded_config = load_depth_first(load_out.config, Loader=yaml.SafeLoader)
+        loaded_config = load_depth_first(pp_config, Loader=yaml.SafeLoader)
     # The line numbers in the Yaml error will only make sense with the preproessed data
     # Be helpful and prepend the context to the exception.
     except Exception as error:
-        raise __add_exception_notes(error, load_out)
+        raise __add_exception_notes(error, pp_config)
         
     # Filter hidden keys when dictionary type
     if isinstance(loaded_config, dict):
         loaded_config = dict(filter(lambda item: not item[0].startswith('.'), loaded_config.items()))
-    return LoadConfigOutput(loaded_config, load_out.pp_config)
+    return LoadConfigOutput(loaded_config, pp_config)
 
 def load_whitelist_as_set(
     config: os.PathLike | str, *,

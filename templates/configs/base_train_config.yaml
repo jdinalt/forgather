@@ -44,7 +44,7 @@
 
 -- block train_directories
     -- set ns.OUTPUT_DIR = path_join(ns.MODELS_DIR, ns.MODEL_NAME)
-    -- set ns.LOGGING_DIR = path_join(ns.OUTPUT_DIR, "runs", ns.EXPERIMENT_NAME + '_' + time_ns)
+    -- set ns.LOGGING_DIR = path_join(ns.OUTPUT_DIR, "runs", ns.EXPERIMENT_NAME + '_' + time_ns())
 -- endblock train_directories
 
 ################################
@@ -54,7 +54,7 @@
 == h1(ns.EXPERIMENT_NAME)
 -- filter trim()
 -- block header
-# {{ utcnow }}
+# {{ utcnow() }}
 # Description: {{ ns.EXPERIMENT_DESCRIPTION }}
 # Model: {{ ns.MODEL_NAME }}
 # World Size: {{ world_size }}
