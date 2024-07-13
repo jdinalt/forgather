@@ -1,62 +1,37 @@
 from typing import (
     Any,
     Callable,
-    Iterable,
-    Optional,
     List,
-    Type,
-    Set,
     Dict,
-    Container,
     Sequence,
-    NamedTuple,
     Set,
 )
 from collections.abc import Sequence, Mapping
-from types import NoneType
-from enum import Enum
 import os
 import sys
-import yaml
+from yaml import SafeLoader
 import platform
+from pathlib import Path
 
 from importlib.metadata import version
+from jinja2 import Environment, meta
 
 from pprint import pformat
 from .latent import Latent
 from .preprocess import PPEnvironment
-from .dynamic import normalize_import_spec
 from .yaml_utils import callable_constructor, load_depth_first, tuple_constructor
-from .utils import DiagnosticEnum
-
-
-class LoadMethod(DiagnosticEnum):
-    """
-    FROM_STRING: The 'config' is interpreted as as string.
-    FROM_FILE: The 'config' is interpreted as a file path which
-        may be relative to any of the provided paths in 'search_paths'
-    """
-
-    FROM_STRING = "from_string"
-    FROM_FILE = "from_file"
-
-
-class InvalidLoadMethod(Exception):
-    pass
-
-
-class WhitelistError(Exception):
-    pass
-
-
-DEFAULT_LOAD_METHOD = LoadMethod.FROM_FILE
 
 
 def format_line_numbers(text: str) -> str:
+    """Format a string with line-numbers"""
     return "".join(map(lambda x: f"{x[0]+1:>6}: {x[1]}\n", enumerate(text.split("\n"))))
 
 
 class ConfigText(str):
+    """
+    A simple str sub-class, which can fromat the string with line-numbers
+    """
+
     def with_line_numbers(self, show_line_numbers=True):
         return format_line_numbers(self) if show_line_numbers else self
 
@@ -64,6 +39,8 @@ class ConfigText(str):
 def fconfig(obj, sort_items=True, indent_level=2):
     """
     Recursively pretty-format a configuration
+
+    TODO: Rewrite using reprlib
     """
 
     def indent_block(block):
@@ -73,8 +50,10 @@ def fconfig(obj, sort_items=True, indent_level=2):
 
     if isinstance(obj, ConfigText):
         return obj.with_line_numbers()
-    elif isinstance(obj, LoadConfigOutput) or isinstance(obj, MaterializedOutput):
-        return str(obj)
+    elif isinstance(obj, Config):
+        return fconfig(
+            dict(config=obj.config, pp_config=obj.pp_config), sort_items, indent_level
+        )
     elif isinstance(obj, str):
         return f"'{obj}'"
     elif isinstance(obj, Set):
@@ -123,25 +102,7 @@ def pconfig(obj, /, *args, **kwargs):
     print(fconfig(obj, *args, **kwargs))
 
 
-class LoadConfigOutput(NamedTuple):
-    config: Any
-    pp_config: ConfigText | NoneType
-
-    def __str__(self):
-        return fconfig(self._asdict())
-
-
-class MaterializedOutput(NamedTuple):
-    config: Any
-    pp_config: ConfigText | NoneType
-    whitelist: Container
-    pp_whitelist: ConfigText | NoneType
-
-    def __str__(self):
-        return fconfig(self._asdict())
-
-
-def __add_exception_notes(error: Exception, *args):
+def _add_exception_notes(error: Exception, *args):
     """
     Add a note to an exception.
 
@@ -187,238 +148,179 @@ def __add_exception_notes(error: Exception, *args):
     raise Exception(note)
 
 
-version_info = {"python": sys.version} | {
-    lib: version(lib)
-    for lib in (
-        "torch",
-        "transformers",
-        "accelerate",
-    )
-}
-
-
-def preprocess_config(
-    config: os.PathLike | str,
-    *,
-    search_path: str | List[str] = ".",
-    load_method: LoadMethod = DEFAULT_LOAD_METHOD,
-    **kwargs,
-) -> str:
-    """
-    Preprocess a configuration file with Jinja2
-    """
-    load_method = LoadMethod(load_method)
-
-    # If given a file path, implicilty prepend the file's directory to the search path.
-    if load_method != LoadMethod.FROM_STRING:
-        config_dir = os.path.dirname(config)
-        assert config_dir is not None
-        if isinstance(search_path, str):
-            search_path = [config_dir, search_path]
-        else:
-            search_path = [config_dir, *search_path]
-
-    environment = PPEnvironment(searchpath=search_path)
-
-    match load_method:
-        case LoadMethod.FROM_STRING:
-            jinja_template = environment.from_string(config)
-        case LoadMethod.FROM_FILE:
-            jinja_template = environment.get_template(os.path.basename(config))
-        case _:
-            raise InvalidLoadMethod
-
-    # Some configs expect the caller to set these values. We set them here to
-    # allow them to run, but the callers should set these, if the configs expect them.
-    default_args = dict(
+def default_pp_globals():
+    return dict(
         script_args="N/A",
         world_size=1,
         rank=0,
         local_rank=0,
         hostname=platform.node(),
-        versions=version_info,
-    )
-    return ConfigText(jinja_template.render(**(default_args | kwargs)))
-
-
-def load_config(
-    config: os.PathLike | str,
-    *,
-    preprocess: bool = True,
-    search_path: str | List[str] = ".",
-    load_method: LoadMethod = DEFAULT_LOAD_METHOD,
-    **kwargs,
-) -> LoadConfigOutput:
-    """
-    Load Jinja/Yaml configuration
-
-    Input may be text (str) or a file-path to process.
-    Optionally preprocess the input with Jinja2, then process with Yaml.
-
-    See 'preprocess_config()' for preprocessing details.
-
-    The Yaml SafeLoader is modified to have to additional tag constructors:
-        !object:<import-spec>
-            Construct Latent object from import-spec. The object is not
-            immediatly instantiated until Latent.materialize(object, whitelist) is called
-            on it, where 'whitelist' specifies which constructors are allowed.
-        !getitem: [ object, key ]
-            Equivalent to Python 'obect[key],' but does is latent, like !object and
-            is not resolved until materialized.
-
-    Args:
-        config: A configuration string or file-path
-        preprocess: Preprocess the config. with Jinja2
-        search_path: List of search paths to find file.
-        load_method:
-            from_string: 'config' is a string
-            from_file: 'config' is a path
-    Returns:
-
-    """
-    load_method = LoadMethod(load_method)
-    pp_config = preprocess_config(
-        config,
-        preprocess=preprocess,
-        search_path=search_path,
-        load_method=load_method,
-        **kwargs,
-    )
-
-    yaml.SafeLoader.add_multi_constructor("!callable", callable_constructor)
-    yaml.SafeLoader.add_constructor("!tuple", tuple_constructor)
-    try:
-        loaded_config = load_depth_first(pp_config, Loader=yaml.SafeLoader)
-    # The line numbers in the Yaml error will only make sense with the preproessed data
-    # Be helpful and prepend the context to the exception.
-    except Exception as error:
-        raise __add_exception_notes(error, pp_config)
-
-    # Filter hidden keys when dictionary type
-    if isinstance(loaded_config, dict):
-        loaded_config = dict(
-            filter(lambda item: not item[0].startswith("."), loaded_config.items())
-        )
-    return LoadConfigOutput(loaded_config, pp_config)
-
-
-def load_whitelist_as_set(
-    config: os.PathLike | str,
-    *,
-    preprocess: bool = True,
-    search_path: str | List[str] = ".",
-    load_method: LoadMethod = DEFAULT_LOAD_METHOD,
-) -> Set[str]:
-    """
-    Load a whitelist configuration from a file or string
-
-    This is essentially just load_config, but it normalizes the paths in the whitelist
-    and converts the list to a set, to improve search performance.
-    """
-    load_method = LoadMethod(load_method)
-    load_out = load_config(
-        config, preprocess=preprocess, search_path=search_path, load_method=load_method
-    )
-    # Convert paths to normalized form
-    if not isinstance(load_out.config, Sequence):
-        raise WhitelistError(
-            "The whitelist must resolve to a Sequence\n" + str(load_out)
-        )
-    try:
-        whitelist = set(map(normalize_import_spec, load_out.config))
-    except Exception as error:
-        raise __add_exception_notes(error, load_out)
-    return LoadConfigOutput(whitelist, load_out.pp_config)
-
-
-def enumerate_whitelist_exceptions(config: Any, whitelist: Container = set()):
-    """
-    Print all import-specs not matching the whitelist
-
-    This is useful for determining which imports a configuration uses and/or which are
-    missing from the whitelist.
-
-    Without specifying the whitelist, this tests against the empty-set, which shows
-    all unique import-specs.
-    """
-    assert isinstance(
-        whitelist, Container
-    ), "The whitelist must be a 'Container'; use load_whitelist_as_set()"
-    assert not isinstance(
-        config, str
-    ), "The input config should be a parsed config; use load_config()"
-    print(fconfig(Latent.validate_whitelist(config, whitelist)))
-
-
-def materialize_config(
-    config: Any,
-    whitelist: Container | os.PathLike | str = None,
-    preprocess: bool = True,
-    search_path: str | List[str] = ".",
-    load_method: LoadMethod = DEFAULT_LOAD_METHOD,
-    pp_kwargs: Dict[str, Any] = {},
-    kwargs: Dict[str, Any] = {},
-) -> MaterializedOutput:
-    """
-    Materialize the Latent objects in the configuration
-
-    This can take an instantiated, but Latent, configuration; a preprocessed configuration string,
-    or a path to a configuraiton file.
-    """
-    load_method = LoadMethod(load_method)
-    if isinstance(whitelist, str):
-        whitelist_out = load_whitelist_as_set(
-            whitelist,
-            preprocess=preprocess,
-            search_path=search_path,
-            load_method=load_method,
-        )
-    else:
-        whitelist_out = LoadConfigOutput(whitelist, None)
-
-    if isinstance(config, str) or isinstance(config, os.PathLike):
-        config_out = load_config(
-            config,
-            preprocess=preprocess,
-            search_path=search_path,
-            load_method=load_method,
-            **pp_kwargs,
-        )
-    else:
-        config_out = LoadConfigOutput(config, None)
-
-    if whitelist_out.config is not None:
-        invalid_set = Latent.validate_whitelist(config_out.config, whitelist_out.config)
-        if len(invalid_set):
-            raise WhitelistError(
-                "The following import-specs were not found in the whitelist:\n\n"
-                + pformat(invalid_set)
-                + "\n\n"
-                + str(
-                    MaterializedOutput(
-                        None,
-                        config_out.pp_config,
-                        whitelist_out.config,
-                        whitelist_out.pp_config,
-                    )
-                )
+        uname=platform.uname(),
+        versions={"python": platform.python_version()}
+        | {
+            lib: version(lib)
+            for lib in (
+                "torch",
+                "transformers",
+                "accelerate",
             )
-    try:
-        kwargs["pp_config"] = lambda: config_out.pp_config
-        materialized_config = Latent.materialize(config_out.config, **kwargs)
-    except Exception as error:
-        raise __add_exception_notes(
-            error,
-            MaterializedOutput(
-                config,
-                config_out.pp_config,
-                whitelist_out.config,
-                whitelist_out.pp_config,
-            ),
-        )
-    return MaterializedOutput(
-        materialized_config,
-        config_out.pp_config,
-        whitelist_out.config,
-        whitelist_out.pp_config,
+        },
     )
+
+
+# We will be adding custom YAML tags to the loader; create a new class,
+# as we don't want these applied to all instances of SafeLoader.
+class ConfigLoader(SafeLoader):
+    pass
+
+
+ConfigLoader.add_multi_constructor("!callable", callable_constructor)
+ConfigLoader.add_constructor("!tuple", tuple_constructor)
+
+
+class Config:
+    """Congiguration Container w/ orginal pre-processed data"""
+
+    def __init__(self, config, pp_config):
+        self.config = config
+        self.pp_config = pp_config
+
+    def __repr__(self):
+        return (
+            f"{type(self).__name__}(config={self.config}, pp_config={self.pp_config})"
+        )
+
+    def materialize(self, **kwargs):
+        """
+        Materialize the configuration
+
+        This is essentially just a wrapper for Latent.materialize(), but we feed the
+        preprocessed config into the configuration for logging and run this in a
+        try block, which will dump the pre-processed context on exception.
+        """
+        try:
+            kwargs["pp_config"] = lambda: config_out.pp_config
+            materialized_config = Latent.materialize(self.config, **kwargs)
+            if isinstance(materialized_config, dict):
+                materialized_config = ConfigDict(materialized_config)
+            return materialized_config
+        except Exception as error:
+            raise _add_exception_notes(error, self.pp_config)
+
+
+class ConfigDict(dict):
+    """
+    A simple dictionary wrapper for a configuration
+
+    This filters out ".key" dictionary keys and exposes the keys
+    as properties to make it cleaner to access the keys.
+    """
+
+    def __getattr__(self, name):
+        return self[name]
+
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+    def __init__(self, dct):
+        iter = filter(lambda item: not item[0].startswith("."), dct.items())
+        for key, value in iter:
+            self[key] = value
+
+
+class ConfigEnvironment:
+    """
+    Contains the configuration envrionment
+    """
+
+    def __init__(
+        self,
+        searchpath: List[str | os.PathLike] | str | os.PathLike = Path("."),
+        pp_environment: Environment = None,
+        globals: Dict[str, Any] = {},
+    ):
+        # Implicitly add CWD to search path
+        if isinstance(searchpath, str) or isinstance(searchpath, os.PathLike):
+            searchpath = [Path("."), searchpath]
+        else:
+            searchpath.insert(0, Path("."))
+
+        if pp_environment is None:
+            pp_environment = PPEnvironment(searchpath=searchpath)
+        self.pp_environment = pp_environment
+        self.pp_environment.globals |= globals
+
+    def preprocess(
+        self,
+        config_path: os.PathLike | str,
+        /,
+        **kwargs,
+    ) -> ConfigText:
+        """
+        Preprocess a configuration file and return it
+
+        returns: ConfigText, a 'str' sub-type with a 'with_line_numbers()' method.
+        """
+        template = self.pp_environment.get_template(config_path)
+        return ConfigText(template.render(**kwargs))
+
+    def preprocess_from_string(
+        self,
+        config: str,
+        /,
+        **kwargs,
+    ) -> ConfigText:
+        """
+        Preprocess a configuration in a string and return it.
+        """
+        template = self.pp_environment.from_string(config)
+        return ConfigText(template.render(**kwargs))
+
+    def load(
+        self,
+        config_path: os.PathLike | str,
+        /,
+        **kwargs,
+    ) -> Config:
+        """
+        Preprocess and parse a configuration file
+        """
+        pp_config = self.preprocess(config_path, **kwargs)
+        return self.load_from_ppstring(pp_config)
+
+    def load_from_string(
+        self,
+        config: str,
+        /,
+        **kwargs,
+    ) -> Config:
+        """
+        Preprocess and load a configuration from a string
+        """
+        pp_config = self.preprocess_from_string(config, **kwargs)
+        return self.load_from_ppstring(pp_config)
+
+    def load_from_ppstring(self, pp_config: str) -> Config:
+        """
+        Load a configuration from a preprocessed string.
+        """
+        try:
+            loaded_config = load_depth_first(pp_config, Loader=ConfigLoader)
+        except Exception as error:
+            raise _add_exception_notes(error, pp_config)
+        if isinstance(loaded_config, dict):
+            loaded_config = ConfigDict(loaded_config)
+        return Config(loaded_config, pp_config)
+
+
+def load_config(config_path: str | os.PathLike) -> ConfigDict:
+    """
+    Just load a simple configuration and return it
+
+    This is intended for loading a very basic configuration, like a meta-config.
+
+    The search path is relative to the CWD and returns a ConfigDict.
+    """
+    environment = ConfigEnvironment()
+    config = environment.load(config_path)
+    return config.config

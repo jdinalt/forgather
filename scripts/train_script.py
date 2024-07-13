@@ -197,25 +197,22 @@ def load_config(args):
     # We will set it again, from the config, later to the user specified value.
     set_seed(42)
 
-    config_out = cfg.materialize_config(
-        config=config_path,
-        whitelist=whitelist_path,
-        search_path=search_path,
-        load_method=cfg.LoadMethod.FROM_FILE,
-        pp_kwargs=dict(
-            script_args=pformat(args),
-            world_size=os.environ['WORLD_SIZE'],
-            rank=int(os.environ['RANK']),
-            local_rank=int(os.environ['LOCAL_RANK']),
-            hostname=platform.node(),
-        )
+    env_globals = cfg.default_pp_globals() | dict(
+        script_args=pformat(args),
+        world_size=os.environ['WORLD_SIZE'],
+        rank=int(os.environ['RANK']),
+        local_rank=int(os.environ['LOCAL_RANK']),
+        hostname=platform.node(),
     )
-    try:
-        config = TrainingScriptConfig(**config_out.config)
-    except:
-        raise TrainingScriptConfigError(
-            "Unable to construct TrainingScriptConfig from config dictionary\n\n" + str(config_out))
-    return config, config_out.pp_config
+
+    config_environ = cfg.ConfigEnvironment(
+        searchpath=search_path,
+        globals=env_globals,
+    )
+
+    loaded_config = config_environ.load(config_path)
+    config = TrainingScriptConfig(**loaded_config.materialize())
+    return config, loaded_config.pp_config
     
 def write_configuration_log(args, config, preprocessed_config):
     if config.logging_dir is None:

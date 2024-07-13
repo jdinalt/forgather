@@ -1,4 +1,3 @@
-# source: https://stackoverflow.com/questions/2352181/how-to-use-a-dot-to-access-members-of-dictionary
 class DotDict(dict):
     """dot.notation access to dictionary attributes"""
 

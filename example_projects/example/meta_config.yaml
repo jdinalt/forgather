@@ -18,6 +18,7 @@ tokenizer_dir: "{{ ns.TOKENIZERS_DIR }}"
 datasets_dir: "{{ ns.DATASETS_DIR }}"
 scripts_dir: "{{ ns.SCRIPTS_DIR }}"
 model_src_dir: "{{ ns.MODEL_SOURCE_DIR }}"
+src_dir: "{{ ns.SOURCE_DIR }}"
 
 search_paths:
     - "{{ ns.PROJ_TEMPLATES_DIR }}"
