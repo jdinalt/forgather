@@ -1,5 +1,7 @@
-from typing import Any, Callable, Union, Container, Set
+from typing import Any, Callable, Union, Container, Tuple
 from collections.abc import MutableSequence, MutableMapping
+from types import NoneType
+from itertools import chain
 
 from pprint import pformat
 
@@ -204,17 +206,6 @@ class Latent:
             f"**{repr(self.kwargs)}, as_callable={self.as_callable}, is_singleton={self.is_singleton})"
         )
 
-    def __iter__(self) -> "_Latent":
-        """
-        Iteration over Laent yields all nodes via depth first traversal.
-
-        See also: Latent.generate()
-        """
-        for latent in Latent.generate(self.args):
-            yield latent
-        for latent in Latent.generate(self.kwargs):
-            yield latent
-
     def __call__(self, *, whitelist: Container = None, **mapping):
         """
         Alias for calling materialize() on self
@@ -230,33 +221,10 @@ class Latent:
     """
 
     @staticmethod
-    def materialize(obj: Any, *, whitelist: Container = None, **mapping):
-
-        if whitelist is not None:
-            invalid_set = Latent.validate_whitelist(obj, whitelist)
-            if len(invalid_set):
-                raise LatentException(
-                    f"The following dynamic imports were not found in the whitelist: {pformat(invalid_set)}"
-                )
+    def materialize(obj: Any, **mapping):
         Latent._resolve_standins(obj, **mapping)
         Latent._resolve_dynamic_imports(obj)
         return Latent._materialize(obj, dict())
-
-    """
-    Walk the graph, checking each constructor against the whitelist, and return the set of disallowed objects.
-    """
-
-    @staticmethod
-    def validate_whitelist(obj: Any, whitelist: Container) -> Set[str]:
-        invalid_set = set()
-        for latent in Latent.generate([obj]):
-            # If not plausibly an import spec, skip it
-            if not isinstance(latent.constructor, str) or not ":" in latent.constructor:
-                continue
-            import_spec = normalize_import_spec(latent.constructor)
-            if import_spec not in whitelist:
-                invalid_set.add(import_spec)
-        return invalid_set
 
     @staticmethod
     def _materialize(obj: Any, idmap: dict[int, Any], level: int = 0):
@@ -317,24 +285,33 @@ class Latent:
             return obj
 
     @staticmethod
-    def generate(obj) -> "_Latent":
+    def all_items(value, key=None, level=0) -> Tuple[int, int | str | NoneType, Any]:
         """
-        Iterate over all Latent objects in graph
+        Iterate over all objects in graph
+
+        yields tuple(level: int, key: int|str|NoneType, value: Any)
         """
+        yield (level, key, value)
+
         # Supported sequence types
-        if isinstance(obj, list) or isinstance(obj, Latent) or isinstance(obj, tuple):
-            generator = obj
+        if isinstance(value, list) or isinstance(value, tuple):
+            generator = enumerate(value)
         # Supported mapping types
-        elif isinstance(obj, dict):
-            generator = obj.values()
+        elif isinstance(value, dict):
+            generator = value.items()
+        elif isinstance(value, Latent):
+            generator = chain(enumerate(value.args), value.kwargs.items())
         else:
             return
-        for value in generator:
-            for latent in Latent.generate(value):
-                yield latent
+        for k, v in generator:
+            yield from Latent.all_items(v, k, level + 1)
 
-        if isinstance(obj, Latent):
-            yield obj
+    @staticmethod
+    def all_latents(value: Any) -> "_Latent":
+        for _, _, value in filter(
+            lambda x: isinstance(x[2], Latent), Latent.all_items(value)
+        ):
+            yield value
 
     @staticmethod
     def _resolve_dynamic_imports(obj: Any):
@@ -342,7 +319,7 @@ class Latent:
         Try to resolve all dynamic imports, replacing the constructor string with the
         corresponding Callable.
         """
-        for latent in Latent.generate(obj):
+        for latent in Latent.all_latents(obj):
             # If not plausibly an import spec, skip it
             if not isinstance(latent.constructor, str) or not ":" in latent.constructor:
                 continue
@@ -358,7 +335,7 @@ class Latent:
         """
         Replace all stand-ins with the corresonding Callables from the mapping.
         """
-        for latent in Latent.generate(obj):
+        for latent in Latent.all_latents(obj):
             if not isinstance(latent.constructor, str) or ":" in latent.constructor:
                 continue
             value = mapping.get(latent.constructor, None)

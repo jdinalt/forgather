@@ -38,7 +38,7 @@
     ## -- set ns.DATASETS_DIR = path_join(ns.ASSETS_DIR, 'datasets')
     ##
     ## Where is model source code stored?
-    ##-- set ns.MODEL_SOURCE_DIR = path_join(ns.ASSETS_DIR, 'model_zoo')
+    ## -- set ns.MODEL_SOURCE_DIR = path_join(ns.ASSETS_DIR, 'model_zoo')
 -- endblock base_directories
 
 

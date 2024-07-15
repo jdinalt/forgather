@@ -3,28 +3,23 @@ from typing import (
     Callable,
     List,
     Dict,
-    Sequence,
     Set,
+    Iterator,
+    Tuple,
 )
 from collections.abc import Sequence, Mapping
 import os
 import sys
 from yaml import SafeLoader
-import platform
 from pathlib import Path
 
-from importlib.metadata import version
 from jinja2 import Environment, meta
 
 from pprint import pformat
 from .latent import Latent
 from .preprocess import PPEnvironment
 from .yaml_utils import callable_constructor, load_depth_first, tuple_constructor
-
-
-def format_line_numbers(text: str) -> str:
-    """Format a string with line-numbers"""
-    return "".join(map(lambda x: f"{x[0]+1:>6}: {x[1]}\n", enumerate(text.split("\n"))))
+from .utils import format_line_numbers, add_exception_notes
 
 
 class ConfigText(str):
@@ -34,6 +29,36 @@ class ConfigText(str):
 
     def with_line_numbers(self, show_line_numbers=True):
         return format_line_numbers(self) if show_line_numbers else self
+
+
+class Config:
+    """Congiguration Container w/ orginal pre-processed data"""
+
+    def __init__(self, config, pp_config):
+        self.config = config
+        self.pp_config = pp_config
+
+    def __repr__(self):
+        return (
+            f"{type(self).__name__}(config={self.config}, pp_config={self.pp_config})"
+        )
+
+    def materialize(self, **kwargs):
+        """
+        Materialize the configuration
+
+        This is essentially just a wrapper for Latent.materialize(), but we feed the
+        preprocessed config into the configuration for logging and run this in a
+        try block, which will dump the pre-processed context on exception.
+        """
+        try:
+            kwargs["pp_config"] = lambda: config_out.pp_config
+            materialized_config = Latent.materialize(self.config, **kwargs)
+            if isinstance(materialized_config, dict):
+                materialized_config = ConfigDict(materialized_config)
+            return materialized_config
+        except Exception as error:
+            raise add_exception_notes(error, self.pp_config)
 
 
 def fconfig(obj, sort_items=True, indent_level=2):
@@ -102,72 +127,6 @@ def pconfig(obj, /, *args, **kwargs):
     print(fconfig(obj, *args, **kwargs))
 
 
-def _add_exception_notes(error: Exception, *args):
-    """
-    Add a note to an exception.
-
-    Python 3.11 supports adding additional details to exceptions via notes.
-    Unfortunately, our present target is Python 3.10...
-
-    We will try to add a note to an exception anyway via adding it to something
-    in the exception which will be printed with the exception.
-
-    This is most definitely a hack, but it's the 'least-bad-thing,' as the line
-    numbers reported by Yaml will likely correspond to a pre-processed Yaml file,
-    making the line-numbers relatively useless, unless you have access to the
-    preprocessed data, with line-numbers.
-
-    Ideally, at some later point, when we upgrade to a newer version of Python, this
-    should be replaced with the native method of adding notes.
-    """
-    note = ""
-    for arg in args:
-        note += "\n\n" + str(arg)
-
-    # Some Yaml exceptions have a 'note' attribute, which will be printed with
-    # the exception. If it has this, use it.
-    if hasattr(error, "note"):
-        if isinstance(error, str):
-            error.note += note
-        else:
-            error.note = note
-        return error
-    # Try appending the note to the first str in the exception's args.
-    else:
-        # Not all exception have a string in the first arg. For example, "yaml.MarkedYAMLError"
-        # We try to be generic here by find the first string in args, but it's impossible to
-        # know if there could be side effects -- probably not, but committed to Python 3.10 at present,
-        # so "add_not() is not an option, so do the least-bad-thing.
-        error_args = list(error.args)
-        for i, arg in enumerate(error_args):
-            if isinstance(arg, str):
-                error_args[i] += "\n" + note
-                error.args = tuple(error_args)
-                return error
-    # Fallback to generic exception, which at least should chain them.
-    raise Exception(note)
-
-
-def default_pp_globals():
-    return dict(
-        script_args="N/A",
-        world_size=1,
-        rank=0,
-        local_rank=0,
-        hostname=platform.node(),
-        uname=platform.uname(),
-        versions={"python": platform.python_version()}
-        | {
-            lib: version(lib)
-            for lib in (
-                "torch",
-                "transformers",
-                "accelerate",
-            )
-        },
-    )
-
-
 # We will be adding custom YAML tags to the loader; create a new class,
 # as we don't want these applied to all instances of SafeLoader.
 class ConfigLoader(SafeLoader):
@@ -176,36 +135,6 @@ class ConfigLoader(SafeLoader):
 
 ConfigLoader.add_multi_constructor("!callable", callable_constructor)
 ConfigLoader.add_constructor("!tuple", tuple_constructor)
-
-
-class Config:
-    """Congiguration Container w/ orginal pre-processed data"""
-
-    def __init__(self, config, pp_config):
-        self.config = config
-        self.pp_config = pp_config
-
-    def __repr__(self):
-        return (
-            f"{type(self).__name__}(config={self.config}, pp_config={self.pp_config})"
-        )
-
-    def materialize(self, **kwargs):
-        """
-        Materialize the configuration
-
-        This is essentially just a wrapper for Latent.materialize(), but we feed the
-        preprocessed config into the configuration for logging and run this in a
-        try block, which will dump the pre-processed context on exception.
-        """
-        try:
-            kwargs["pp_config"] = lambda: config_out.pp_config
-            materialized_config = Latent.materialize(self.config, **kwargs)
-            if isinstance(materialized_config, dict):
-                materialized_config = ConfigDict(materialized_config)
-            return materialized_config
-        except Exception as error:
-            raise _add_exception_notes(error, self.pp_config)
 
 
 class ConfigDict(dict):
@@ -307,13 +236,27 @@ class ConfigEnvironment:
         try:
             loaded_config = load_depth_first(pp_config, Loader=ConfigLoader)
         except Exception as error:
-            raise _add_exception_notes(error, pp_config)
+            raise add_exception_notes(error, pp_config)
         if isinstance(loaded_config, dict):
             loaded_config = ConfigDict(loaded_config)
         return Config(loaded_config, pp_config)
 
+    def find_referenced_templates(
+        self, template_name: os.PathLike | str, level=0
+    ) -> Iterator[Tuple[int, str, str]]:
+        environment = self.pp_environment
+        source, filename, _ = environment.loader.get_source(environment, template_name)
+        yield (level, template_name, filename)
+        ast = environment.parse(source, name=template_name, filename=filename)
+        iter = meta.find_referenced_templates(ast)
+        for template in iter:
+            if template is None:
+                continue
+            for t in self.find_referenced_templates(template, level + 1):
+                yield t
 
-def load_config(config_path: str | os.PathLike) -> ConfigDict:
+
+def load_config(config_path: str | os.PathLike, /, **kwargs) -> ConfigDict:
     """
     Just load a simple configuration and return it
 
@@ -322,5 +265,5 @@ def load_config(config_path: str | os.PathLike) -> ConfigDict:
     The search path is relative to the CWD and returns a ConfigDict.
     """
     environment = ConfigEnvironment()
-    config = environment.load(config_path)
+    config = environment.load(config_path, **kwargs)
     return config.config

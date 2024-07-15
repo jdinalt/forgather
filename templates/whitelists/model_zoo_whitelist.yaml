@@ -1,7 +1,0 @@
-{% macro zoo_exception(name, cfg_cls, model_cls) %}
-- {{ path_join(ns.MODEL_SOURCE_DIR, name, name + '.py') }}:{{ cfg_cls }}
-- {{ path_join(ns.MODEL_SOURCE_DIR, name, name + '.py') }}:{{ model_cls }}
-{% endmacro %}
-
-{{ zoo_exception('attention_only', 'TransformerConfig', 'TransformerModel') }}
-{{- zoo_exception('vanilla_transformer', 'VanillaTransformerConfig', 'VanillaTransformer') }}

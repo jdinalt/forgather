@@ -7,6 +7,8 @@ from jinja2 import FileSystemLoader, StrictUndefined, Undefined
 from jinja2.ext import Extension
 from jinja2.sandbox import SandboxedEnvironment
 
+from .utils import format_line_numbers
+
 
 class PPLoader(FileSystemLoader):
     """
@@ -35,9 +37,9 @@ class PPLoader(FileSystemLoader):
             source, filename, uptodate = super().get_source(environment, template_name)
             main_template = next(iter := self.split_templates(source))
             for sub in iter:
-                self.templates[sub[0]] = (sub[1], uptodate)
+                self.templates[sub[0]] = (sub[1], filename, uptodate)
             return main_template[1], filename, uptodate
-        return template_info[0], template_name, template_info[1]
+        return template_info
 
     def split_templates(self, template):
         prev = 0
@@ -49,6 +51,12 @@ class PPLoader(FileSystemLoader):
         yield (name, template[prev:])
 
 
+def _raise_on_undefined(*args):
+    for arg in args:
+        if isinstance(arg, Undefined):
+            raise arg._fail_with_undefined_error("Undefined argument")
+
+
 def _os_path_join(*args):
     """
     Calling os.path.join() on jinja's Undefined types results in a difficult to
@@ -56,22 +64,21 @@ def _os_path_join(*args):
 
     This is just a wrapper for better diagnostics on undefined paths.
     """
-    for arg in args:
-        if isinstance(arg, Undefined):
-            raise arg._fail_with_undefined_error("Undefined path passed to path_join")
+    _raise_on_undefined(*args)
     return os.path.join(*args)
+
+
+def _os_path_normpath(*args):
+    _raise_on_undefined(*args)
+    return os.path.normpath(*args)
 
 
 class LineStatementProcessor(Extension):
     newline_re = re.compile(r"(\n|\r\n|\r)")
     full_line_comment = re.compile(r"\s*##(.*)")
     line_comment = re.compile(r"(.*)\s+#{2,}.*")
-    line_statement = re.compile(r"\s*--\s(.*)")
-    lstrip_line_statement = re.compile(r"\s*<<\s(.*)")
-    rstrip_line_statement = re.compile(r"\s*>>\s(.*)")
-    line_print = re.compile(r"\s*==\s(.*)")
-    rstrip_line_print = re.compile(r"\s*=>\s(.*)")
 
+    line_statement = re.compile(r"\s*(--|<<|>>|==|=>)\s(.*)")
     # Jinja comments add a blank line to the output. This makes it very difficult to
     # format things the way you would like /and/ use Jinja comments. The preprocessor
     # strips Jinja comments, which would otherwise add empty lines, from the input
@@ -83,7 +90,7 @@ class LineStatementProcessor(Extension):
     # The work-around is thins flag. When set to True, line-comments are not removed,
     # thus preserving line-numbers. Once things are working, you can turn it off, as
     # to preserve formatting.
-    preserve_line_numbers: bool = False
+    preserve_line_numbers: bool = True
 
     # The preprocessor converts the syntactic-sugrar coated line-statements into
     # regular Jinja statements. Asside from stipping comments, as mentioned above,
@@ -103,28 +110,29 @@ class LineStatementProcessor(Extension):
     def pp_generate(self, source):
         for line in self.newline_re.split(source)[::2]:
             # Completely delete full comment lines
-            if (match := self.full_line_comment.fullmatch(line)) is not None:
+            if (re_match := self.full_line_comment.fullmatch(line)) is not None:
                 if LineStatementProcessor.preserve_line_numbers:
-                    line = r"{# " + match[1] + r" #}"
+                    line = r"{# " + r" #}"
                 else:
                     continue
             # Delete training comments to end-of-line
-            elif (match := self.line_comment.fullmatch(line)) is not None:
-                line = match[1]
-            # Convert line-stantement to regular syntax line-statements
-            if (match := self.line_statement.fullmatch(line)) is not None:
-                line = r"{% " + match[1] + r" %}"
-            # Left trim
-            elif (match := self.lstrip_line_statement.fullmatch(line)) is not None:
-                line = r"{%- " + match[1] + r" %}"
-            # Right trim
-            elif (match := self.rstrip_line_statement.fullmatch(line)) is not None:
-                line = r"{% " + match[1] + r" -%}"
-            # Line print
-            elif (match := self.line_print.fullmatch(line)) is not None:
-                line = r"{{ " + match[1] + r" }}"
-            elif (match := self.rstrip_line_print.fullmatch(line)) is not None:
-                line = r"{{ " + match[1] + r" -}}"
+            elif (re_match := self.line_comment.fullmatch(line)) is not None:
+                line = re_match[1]
+
+            if (re_match := self.line_statement.fullmatch(line)) is not None:
+                match re_match[1]:
+                    case "--":
+                        line = r"{% " + re_match[2] + r" %}"
+                    case "<<":
+                        line = r"{%- " + re_match[2] + r" %}"
+                    case ">>":
+                        line = r"{% " + re_match[2] + r" -%}"
+                    case "==":
+                        line = r"{{ " + re_match[2] + r" }}"
+                    case "=>":
+                        line = r"{{ " + re_match[2] + r" -}}"
+                    case _:
+                        pass
             yield line
 
 
@@ -164,3 +172,4 @@ class PPEnvironment(SandboxedEnvironment):
         )
         self.globals["time_ns"] = lambda: str(time.time_ns())
         self.globals["path_join"] = _os_path_join
+        self.globals["normpath"] = _os_path_normpath

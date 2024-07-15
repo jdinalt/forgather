@@ -4,8 +4,13 @@
 ## Set Project level defaults
 -- block experiment_metadata
     == super()
-    -- set ns.EXPERIMENT_NAME = "Project Name"
-    -- set ns.EXPERIMENT_DESCRIPTION = "An example configuration"
+    -- set ns.EXPERIMENT_NAME = "Control"
+    -- set ns.EXPERIMENT_DESCRIPTION = "This is the control configuration for the experiment."
+    -- set ns.CREATE_NEW_MODEL = True
+    -- set ns.SAVE_MODEL = False
+
+    ## Use dynamic inheritance for trainer type
+    -- set ns.TRAINER = "trainers/trainer.yaml"
 -- endblock experiment_metadata
 
 
@@ -14,21 +19,19 @@
 -- endblock base_directories
 
 
-# Override default trainer definition
 -- block trainer_definition
     -- include 'project.trainer_config'
 -- endblock trainer_definition
 
 
-# Override default model defintion
 -- block construct_new_model
     -- include 'project.model_config'
 -- endblock construct_new_model
 
-#-------------------- project.trainer_config --------------------
-## Select one-of:
-## trainers/( trainer.yaml | accel_trainer.yaml | hf_trainer.yaml )
--- extends 'trainers/trainer.yaml'
+
+##########################################
+#--- project.trainer_config ---
+-- extends ns.TRAINER
 
 
 -- block trainer_meta_config
@@ -45,14 +48,21 @@
     per_device_eval_batch_size: 64
     logging_steps: 100
     eval_steps: 250
+    max_steps: 2000
 -- endblock trainer_args
 
-#-------------------- project.model_config --------------------
+
+##########################################
+#--- project.model_config ---
 -- extends 'models/tiny_d128_l2.yaml'
+
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Custom " + model_def.name
+-- endblock model_meta_config
+
 
 -- block model_config
     == super()
-    
-    # Project Overrides
-    hidden_size: 256
 -- endblock model_config

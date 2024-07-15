@@ -14,30 +14,35 @@
     -- set ns.SAVE_MODEL = True
 -- endblock experiment_metadata
 
-## Override defult model definition
+
+## Override default project definition
+-- block trainer_definition
+    -- include 'experiment.trainer_config'
+-- endblock trainer_definition
+
+
+## Override default project definition
 -- block construct_new_model
-    ## Actual details are in split below.
     -- include 'experiment.model_config'
 -- endblock construct_new_model
 
+## The next line defines a new template within the same file.
+#-------------------- experiment.trainer_config --------------------
+-- extends 'project.trainer_config'
 
-
-#--- experiment.model_config ---
-
-## Choose am model definition:
--- extends 'models/tiny_d128_l2.yaml'
-
-## Change the name of the model
--- block model_meta_config
+-- block trainer_args
     == super()
-    -- set model_def.name = "Custom " + model_def.name
--- endblock model_meta_config
-
-## Override values from base definition
--- block model_config
-    == super()
-    ## Add label, showing where the override came from
     
     # {{ ns.EXPERIMENT_NAME }} Overrides
-    hidden_size: 256
+    max_steps: 1000
+-- endblock trainer_args
+
+#-------------------- experiment.model_config --------------------
+-- extends 'project.model_config'
+
+-- block model_config
+    == super()
+    
+    # {{ ns.EXPERIMENT_NAME }} Overrides
+    num_hidden_layers: 3
 -- endblock model_config

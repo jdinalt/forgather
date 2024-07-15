@@ -1,5 +1,0 @@
-## Defines which types may be constructed by the configuration
--- set ns = namespace()
--- include "directories.yaml"
--- include "whitelists/global_whitelist.yaml"
--- include "whitelists/model_zoo_whitelist.yaml"

@@ -97,13 +97,6 @@ def parse_args(args=None):
         help="Path to yaml configuration file"
     )
     parser.add_argument(
-        '-w',
-        '--whitelist',
-        type=str,
-        default="whitelist.yaml",
-        help="A yaml list of allowed object constructors."
-    )
-    parser.add_argument(
         '-I', '--include',
         required=False,
         action='append',
@@ -134,6 +127,13 @@ def parse_args(args=None):
         help="Add sys.path for relative imports"
     )
     parser.add_argument(
+        '-p',
+        '--project-dir',
+        type=str,
+        default='.',
+        help="The relative path to the project directory."
+    )
+    parser.add_argument(
         '-d',
         '--dryrun',
         action='store_true',
@@ -143,13 +143,15 @@ def parse_args(args=None):
     args = parser.parse_args(args)
     logger.info(f"args: {args}")
 
-    # We only resolve these modules after we know where to look for them.
+    # We only resolve these modules after we know where to look for them.pconfig
     if args.syspath is not None:
         sys.path.insert(0, args.syspath)
     # We only resolve these modules after we know where to look for them.
-    global cfg
-    import forgather.config as cfg
-
+    global ConfigEnvironment, base_preprocessor_globals, format_line_numbers
+    from forgather.utils import format_line_numbers
+    from forgather.config import ConfigEnvironment
+    from aiws.config import base_preprocessor_globals
+    
     return args
 
 @dataclass(kw_only=True, slots=True)
@@ -188,7 +190,7 @@ class TrainingScriptConfigError(Exception):
 def load_config(args):
     config_path = args.config
     search_path = args.include
-    whitelist_path = args.whitelist
+    project_directory = args.project_dir
     
     # While unlikely, it's possible that some object instantiated via
     # the YAML config could make use of random numbers. Make sure that
@@ -197,20 +199,21 @@ def load_config(args):
     # We will set it again, from the config, later to the user specified value.
     set_seed(42)
 
-    env_globals = cfg.default_pp_globals() | dict(
+    env_globals = base_preprocessor_globals() | dict(
         script_args=pformat(args),
+        project_directory=project_directory,
         world_size=os.environ['WORLD_SIZE'],
         rank=int(os.environ['RANK']),
         local_rank=int(os.environ['LOCAL_RANK']),
-        hostname=platform.node(),
+        
     )
 
-    config_environ = cfg.ConfigEnvironment(
+    cfg_environment = ConfigEnvironment(
         searchpath=search_path,
         globals=env_globals,
     )
 
-    loaded_config = config_environ.load(config_path)
+    loaded_config = cfg_environment.load(config_path)
     config = TrainingScriptConfig(**loaded_config.materialize())
     return config, loaded_config.pp_config
     
@@ -284,7 +287,7 @@ def main():
 
     logger.info("*" * 40)
     logger.info(f"Training started with world-size of {get_world_size()}")
-    logger.debug(f"preprocessed-config:\n{cfg.format_line_numbers(preprocessed_config)}")
+    logger.debug(f"preprocessed-config:\n{format_line_numbers(preprocessed_config)}")
     logger.debug(f"config:\n{pformat(config)}")
     logger.info("*" * 40)
 

@@ -1,5 +1,0 @@
--- import "common/whitelist.yaml" as global_whitelist
--- import "models/model_zoo_whitelist.yaml" as model_zoo_whitelist
--- set model_zoo_dir = path_join('..', '..', 'model_zoo')
-{{ global_whitelist.all -}}
-{{ model_zoo_whitelist.model_zoo_list(model_zoo_dir) }}

@@ -2,11 +2,11 @@
 -- from 'inc/formatting.jinja' import h2, sep
 
 
--- block experiment_defaults
+-- block experiment_metadata
     == super()
     -- set ns.CREATE_NEW_MODEL = True
     -- set ns.SAVE_MODEL = False
--- endblock experiment_defaults
+-- endblock experiment_metadata
 
 
 -- block variable_listing

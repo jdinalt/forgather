@@ -6,7 +6,7 @@
     -- set model_def.description = "A custom model definition."
 << endblock model_meta_config
 
-<< block model_custom_definition required
+-- block model_custom_definition required
 ## Define the following variables
 ##  -- set model_def.cls = '<model class>'
 ##  -- set model_def.cfg_cls = '<model configuration class>'

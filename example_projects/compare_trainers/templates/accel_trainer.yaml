@@ -1,0 +1,12 @@
+## The project defines the defaults
+-- extends 'project.yaml'
+
+-- block experiment_metadata
+    == super()
+    ## Experiment Metadata
+    -- set ns.EXPERIMENT_NAME = "Accel Trainer"
+    -- set ns.EXPERIMENT_DESCRIPTION = "Change trainer to accelerate implementation"
+
+    ## Override trainer
+    -- set ns.TRAINER = "trainers/accel_trainer.yaml"
+-- endblock experiment_metadata
