@@ -1,0 +1,9 @@
+## The project defines the defaults
+-- extends 'project.yaml'
+
+-- block experiment_metadata
+    == super()
+    ## Experiment Metadata
+    -- set ns.EXPERIMENT_NAME = "Control"
+    -- set ns.EXPERIMENT_DESCRIPTION = "Baseline with tiny_2k_bpe tokenizer definition."
+-- endblock experiment_metadata

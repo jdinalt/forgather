@@ -1,0 +1,29 @@
+-- extends 'tokenizers/custom_tokenizer.yaml'
+
+-- block tokenizer_meta_config
+    == super()
+    -- set model_def.name = "Custom BPE Tokenizer"
+    -- set model_def.description = "A custom BPE tokenizer definition."
+## -- set tok_def.output_dir = "my/output/dir"
+-- endblock tokenizer_meta_config
+
+
+-- block tokenizer_trainer
+    == super()
+    model: !callable:tokenizers:models.BPE
+        cache_capacity: 16
+        unk_token: "{{ tok_def.unk_token }}"
+        byte_fallback: True
+    normalizer: !callable:tokenizers:normalizers.NFC []
+    pre_tokenizer: !callable:tokenizers:pre_tokenizers.ByteLevel []
+    decoder: !callable:tokenizers:decoders.ByteLevel []
+    # Automatically add bos token to sequence start
+    post_processor: !callable:tokenizers:processors.TemplateProcessing
+        single: "<bos> $A"
+        special_tokens: [ !tuple [ "<bos>", {{ tok_def.bos_token_id }} ] ]
+    trainer: !callable:tokenizers.trainers:BpeTrainer
+        vocab_size: {{ tok_def.vocab_size }}
+        initial_alphabet: !callable:tokenizers:pre_tokenizers.ByteLevel.alphabet []
+        special_tokens: !callable:forgather.construct:values [ *special_tokens_map ]
+        show_progress: False
+<< endblock tokenizer_trainer

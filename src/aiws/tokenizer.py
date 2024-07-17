@@ -12,6 +12,7 @@ from datasets import Dataset
 class TokenizerTrainer:
     def __init__(
         self,
+        *,
         model,
         normalizer,
         pre_tokenizer,
@@ -19,6 +20,8 @@ class TokenizerTrainer:
         decoder,
         trainer,
         dataset: Dataset,
+        args=None,
+        output_dir=None,
     ):
 
         tokenizer = Tokenizer(model)
@@ -30,7 +33,12 @@ class TokenizerTrainer:
         self.tokenizer = tokenizer
         self.trainer = trainer
         self.train_dataset = dataset
-        # self.output_dir = output_dir
+        self.args = args
+        self.output_dir = output_dir
+
+    def __call__(self):
+        self.train()
+        self.save_model()
 
     def train(self, batch_size=1000):
         total_samples = len(self.train_dataset)
@@ -61,8 +69,26 @@ class TokenizerTrainer:
         print(f"runtime: {runtime}")
         print(f"samples_per_second: {samples_per_second}")
 
+    def save_model(self, output_dir: str | os.PathLike = None):
+        if output_dir is None:
+            output_dir = self.output_dir
+        assert output_dir is not None
+        tokenizer = self.as_pretrained_tokenizer_fast()
+        tokenizer.save_pretrained(output_dir)
+
     def as_pretrained_tokenizer_fast(self, **kwargs):
+        if len(kwargs) == 0:
+            kwargs = self.args
+        assert kwargs is not None
         return PreTrainedTokenizerFast(
             tokenizer_object=self.tokenizer,
             **kwargs,
         )
+
+
+def train_tokenizer(**kwargs):
+    trainer = TokenizerTrainer(**kwargs)
+    trainer.train()
+    trainer.save_model()
+    # Release the resources
+    del trainer

@@ -97,88 +97,6 @@ def display_filelink(path, title="", name=None):
     display.display(display.Markdown(md))
 
 
-def training_loop(project_directory, config_template_path):
-    """
-    A mini-training-loop for use with accelerate.notebook_launcher
-
-    project_directory: The location of the project directory, relative to CWD
-    config_template_path: Path to a configuration template in the project
-    ```
-    from accelerate import notebook_launcher
-    from aiws.notebooks import training_loop
-
-    notebook_launcher(
-        training_loop,
-        args=(project_directory, config_template_path,),
-        num_processes=2
-    )
-    ```
-    """
-    import os
-    from forgather.config import load_config, ConfigEnvironment, fconfig, pconfig
-    from aiws.config import base_preprocessor_globals
-    from transformers import set_seed
-
-    # Ensure that initialization is deterministic.
-    set_seed(42)
-
-    # Get Torch Distributed parameters from environ.
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    rank = int(os.environ.get("RANK", 0))
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-
-    # Load meta-config
-    meta_config_path = os.path.join(project_directory, "meta_config.yaml")
-    metacfg = load_config(meta_config_path, project_directory=project_directory)
-
-    # Initialize the pre-processor globals
-    pp_globals = base_preprocessor_globals() | dict(
-        project_directory=project_directory,
-        world_size=world_size,
-        rank=rank,
-        local_rank=local_rank,
-    )
-
-    # Create configuration envrionment
-    cfg_environment = ConfigEnvironment(
-        searchpath=metacfg.search_paths, globals=pp_globals
-    )
-
-    # Load the target configuration
-    loaded_config = cfg_environment.load(config_template_path)
-
-    # Materialize the configuration
-    config = loaded_config.materialize()
-
-    # In a distriubted environment, we only want one process to print messages
-    is_main_process = local_rank == 0
-
-    if is_main_process:
-        print("**** Training Started *****")
-        print(f"experiment_name: {config.experiment_name}")
-        print(f"experiment_description: {config.experiment_description}")
-        print(f"output_dir: {config.output_dir}")
-        print(f"logging_dir: {config.logging_dir}")
-
-    # This is where the actual 'loop' is.
-    metrics = config.trainer.train().metrics
-
-    if is_main_process:
-        print("**** Training Completed *****")
-        print(metrics)
-
-    metrics = config.trainer.evaluate()
-
-    if is_main_process:
-        print("**** Evaluation Completed *****")
-        print(metrics)
-
-    if config.do_save:
-        config.trainer.save_model()
-        if is_main_process:
-            print(f"Model saved to: {config.trainer.args.output_dir}")
-
-
 def get_train_cmdline(meta_config, nproc="gpu", cuda_devices=None):
     includes = "".join(f"-I '{inc}' " for inc in meta_config.search_paths)
     s = (
@@ -223,7 +141,7 @@ def make_train_script(
             config_template_path = r"${@}"
         else:
             config_template_path = os.path.join(
-                meta_config.project_templates, config_template
+                meta_config.experiment_dir, config_template
             )
         cmdline = get_train_cmdline(meta_config, nproc, cuda_devices)
 
@@ -234,6 +152,26 @@ def make_train_script(
             )
     finally:
         os.chdir(prev_cwd)
+
+
+def list_templates(path, title=""):
+    """
+    List all templates within the specified directory in md format
+    """
+    md = f"{title}"
+    for file in os.listdir(path=path):
+        if not file.endswith(".yaml"):
+            continue
+        md += f"- [{file}]({os.path.join(path, file)})\n"
+    display.display(display.Markdown(md))
+
+
+def show_project_readme(meta_config):
+    md_path = os.path.join(meta_config.project_dir, "README.md")
+    if os.path.exists(md_path):
+        with open(md_path, "r") as f:
+            md = f.read()
+    display.display(display.Markdown(md))
 
 
 def delete_dir(target, prompt):

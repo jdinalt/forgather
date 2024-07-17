@@ -1,4 +1,5 @@
 -- extends 'models/vanilla_transformer.yaml'
+
 -- block model_meta_config
     == super()
     -- set model_def.name = "Tiny-d128-2L"

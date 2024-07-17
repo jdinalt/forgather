@@ -18,149 +18,6 @@ class LatentException(Exception):
 class Latent:
     """
     A Latent [object] abstracts what to create from when to create it
-
-    Example:
-    ```
-    from forgather import Latent
-
-    latent_tensor = Latent("torch:Tensor", [1 ,2, 3])
-    print(latent_tensor)
-    > Latent('torch:Tensor', *([1, 2, 3],), **{})
-
-    # ... some time later
-    tensor = latent_tensor()
-    print(tensor)
-    > tensor([1., 2., 3.])
-    ```
-
-    This can also extend to graphs of objects:
-    ```
-    data = dict(
-        total = Latent("torch:sum", Latent("torch:Tensor", [1 ,2, 3]))
-    )
-    print(data)
-    > {'total': Latent('torch:sum', *(Latent('torch:Tensor', *([1, 2, 3],), **{}),), **{})}
-
-    Latent.materialize(data)
-    print(data)
-    > {'total': tensor(6.)}
-    ```
-
-    In addion to modules within the current system path, you can specify the target
-    symbol via a path to a Python file:
-    ```
-    latent = Latent("../../aiws/utils.py:format_mapping", dict(foo="bar", baz=2.0))
-    print(latent())
-    > foo: bar
-    > baz: 2.0
-    ```
-
-    You can restrict which types of objects can be materialized:
-    ```
-    whitelist = set((
-        "torch:Tensor",
-    ))
-    print(latent_tensor(whitelist=whitelist))
-    # Success!
-    > tensor([1., 2., 3.])
-
-    latent = Latent("../../aiws/utils.py:format_mapping", dict(foo="bar", baz=2.0))
-    print(latent(whitelist=whitelist))
-    # Failure!
-    > LatentException: The following dynamic imports were not found in the whitelist: {'/home/dinalt/ai_assets/aiworkshop/aiws/utils.py:format_mapping'}
-
-    # Alternatively...
-    invalid_set = validate_whitelist(data, whitelist)
-    if len(invalid_set):
-        # Show all disallowed types in the graph
-        print(f"Disallowed: {invalid_set}")
-    > Disallowed: {'torch:sum'}
-    ```
-
-    After an object has been materialized, subsequent 'materializations' return the
-    same object instance:
-    ```
-    latent_tensor = Latent("torch:Tensor", [1 ,2, 3])
-    tensor = latent_tensor()
-    assert(id(tensor) == id(latent_tensor()))
-    ```
-
-    Finally, you can inject arguments at the point of materialization:
-    ```
-    import torch
-    deferred_sum = Latent("torch:sum", Latent("sum_input"))
-    deferred_sum(sum_input=lambda: torch.tensor([1 ,2, 3]))
-    > tensor(6)
-    ```
-
-    How is this useful?
-
-    A fair question. The primary intended use-case is for safely constructing objects from a
-    configuration file. Consider the case where a configuration file may define objects which
-    can take a considerable amount of time to construct (i.e. processing a dataset).
-
-    In this case, its useful to allow the complete file to be parsed before attempting a
-    lengthy task, as there may still be errors present which will cause the operation to
-    abort. It's much better to first fully parse the file, validate the safety of
-    the all the types, and only then then, materialize the definiton. This is far less
-    painful than having to fix a single error, wait for the long operation to complete (again)
-    and then hit another error. Fun times...
-
-    Allowing deferal can also avoid materializing expensive objects which are not needed, as per
-    runtime logic. For example, a definition may define several datasets, where-as only a single
-    one is actually selected, contingent upon 'whatever.'
-
-    If an object is never materialized, this also avoids loading the associated modules.
-
-    Finally, this allows one two lazilly construct objects in whatever order makes sense.
-
-    Background:
-
-    This project started as a 'Lazy' object implementation, where the Lazy objects were
-    specified as they are now, but would self-materialize on their first non-trivial access.
-
-    For example, getting an attribute or using the subscript operator.
-
-    When this occurred, the Lazy object would "transmute" into the real one by replacing the
-    object __dict__ and __class__ with those of the newly instantiated object.
-
-    Superficially, this worked. The problem is that there are many corner cases where it does not.
-    An example is when a Lazy object was passed into something which checks its type with
-    "isinstance()," before rejecting it.
-
-    This led to a deep-dive down the rabbit hole of the Python Data Model:
-    https://docs.python.org/3/reference/datamodel.html
-
-    For lack of clarity, I even ended up diving into the 'C' code, which constitues
-    the reference version of Python.
-
-    There are two main issues:
-    1. Not all Python objects have the same representation internally, thus making it impossible
-    to just replace the __dict__ and __class__ values. This does not work for many internal types
-    or for types which make uses of the "slots" feature.
-
-    2. Many Python operations bypass attribute lookup, so it's not possible to intercept everything
-    from one central place. For example, when implementing the __getattribute__ method, Python
-    bypasses calling it for performance reasons. These can only be intercepted by defining every
-    corresponding dunder method at the class level.
-
-    The first problem can be solved by 'wrapping' the object, should transmutation fail. This is
-    not ideal, as it adds an additional layers of indirection to most accesses and consequent to
-    issue 2, the only way to intercept every possible access is to override every conveivable
-    dunder method at the class level.
-
-    While in theory this is possible, the list of all possible dunder methods (which can bypass
-    ___getattribute__) it long, poorly documented, and a moving target. You can see where this
-    has led with the 'wrapd' Python package.
-
-    All of this ammounts to a big mantainance nightmare using a fragile implementation which
-    depends upon poorly documented internal implementation details to function properly.
-
-    So now the objects are Latent, rather than Lazy. Rather than becomming the materialized object,
-    they return it. The code-base is far smaller and easier to understand and maintain.
-
-    And speaking of __slots__ causing incompatible internal object layout issues, now that I am
-    aware of this esoteric feature...
     """
 
     __slots__ = (
@@ -206,11 +63,11 @@ class Latent:
             f"**{repr(self.kwargs)}, as_callable={self.as_callable}, is_singleton={self.is_singleton})"
         )
 
-    def __call__(self, *, whitelist: Container = None, **mapping):
+    def __call__(self, **mapping):
         """
         Alias for calling materialize() on self
         """
-        return Latent.materialize(self, whitelist=whitelist, **mapping)
+        return Latent.materialize(self, **mapping)
 
     """
     Traverse the graph of objects, replacing all Latent objects with concrete instances

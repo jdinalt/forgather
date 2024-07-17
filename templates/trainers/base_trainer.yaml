@@ -33,7 +33,6 @@
     num_train_epochs: 1
     eval_steps: 500
     logging_steps: 500
-    seed: 42
     eval_strategy: "steps"
     save_strategy: "no"
     logging_strategy: "steps"

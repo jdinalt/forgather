@@ -1,13 +1,13 @@
 ## This template defines a rough outline for training configurations to follow
 ## The details should be filled in via a "child" template
 -- set ns = namespace()
--- from 'inc/formatting.jinja' import h1, h2
+-- from 'inc/formatting.jinja' import h1, h2, h3
 -- filter trim()
 
 -- block experiment_metadata
-    -- set ns.EXPERIMENT_NAME = "Anonymous Experiment"
+    -- set ns.EXPERIMENT_NAME = "Undefined"
     -- set ns.EXPERIMENT_DESCRIPTION = "Undefined"
-    -- set ns.MODEL_NAME = "anonymous_model"
+    -- set ns.MODEL_NAME = "default_model"
 -- endblock experiment_metadata
 
 
@@ -95,7 +95,8 @@
 
 -- filter trim()
 -- block model_definition required
-## Undefined
+## .define: &tokenizer
+## .define: &model
 -- endblock model_definition
 -- endfilter
 
@@ -103,17 +104,11 @@
 == h2('Datasets')
 
 -- filter trim()
--- block dataset_definition required
-## Undefined
-<< endblock dataset_definition
+-- block datasets_definition required
+## .define: &train_dataset
+## .define: &eval_dataset
+<< endblock datasets_definition
 -- endfilter
-
-
-== h2('Trainer Callbacks')
-
--- block trainer_callbacks
-.define: &trainer_callbacks []
--- endblock trainer_callbacks
 
 
 == h2('Data Collator')
@@ -125,16 +120,23 @@
 -- endfilter
 
 
+== h2('Trainer Callbacks')
+
+-- block trainer_callbacks
+.define: &trainer_callbacks []
+-- endblock trainer_callbacks
+
+
 == h2('Trainer')
 
 -- filter trim()
 -- block trainer_definition required
-## Undefined
+## .define: &trainer
 << endblock trainer_definition
 -- endfilter
 
 
-== h2('Pre Config')
+== h2('Pre-Config')
 
 -- filter trim()
 -- block pre_config
@@ -143,7 +145,7 @@
 -- endfilter
 
 
-== h1('Configuration Output')
+== h1('TrainingScriptConfig')
 -- filter trim()
 -- block output_configuration required
 ## Undefined
@@ -151,7 +153,7 @@
 -- endfilter
 
 
-== h2('Post Config')
+== h2('Post-Config')
 
 -- block trailer
 # Undefined

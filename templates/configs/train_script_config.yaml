@@ -6,29 +6,24 @@
     == super()
     -- set ns.CREATE_NEW_MODEL = True
     -- set ns.SAVE_MODEL = False
+    -- set ns.TRAIN = True
+    -- set ns.EVAL = False
 -- endblock experiment_metadata
 
 
 -- block variable_listing
     == super()
-# ns.LOGGING_DIR: path = "{{ ns.LOGGING_DIR }}"
-# ns.CREATE_NEW_MODEL: path = {{ ns.CREATE_NEW_MODEL }}
-# ns.SAVE_MODEL: path = {{ ns.SAVE_MODEL }}
+# ns.LOGGING_DIR: "{{ ns.LOGGING_DIR }}"
+# ns.CREATE_NEW_MODEL: {{ ns.CREATE_NEW_MODEL }}
+# ns.SAVE_MODEL: {{ ns.SAVE_MODEL }}
 -- endblock variable_listing
-
-
--- block pre_model_setup
-# Experiment tracking: Tensorboard SummaryWriter
-.define: &summary_writer !callable:torch.utils.tensorboard:SummaryWriter
-    - "{{ ns.LOGGING_DIR }}"
--- endblock pre_model_setup
 
 
 -- block model_definition
 -- filter trim()
     -- if ns.CREATE_NEW_MODEL
         -- block construct_new_model
-            -- include 'models/custom_model.yaml'
+# Undefined
         << endblock construct_new_model
     -- else
         -- block load_model
@@ -39,26 +34,8 @@
 -- endblock model_definition
 
 
--- block dataset_definition
-    -- include 'datasets/tiny_stories_pretokenized_2k.yaml'
--- endblock dataset_definition
-
-
 -- block trainer_callbacks
-.define: &trainer_callbacks
-    # Log training metrics to JSON fiie.
-    - !callable:aiws.default_callbacks:JsonLogger []
-    # Log configuration and metrics to Tensorboard file
-    - !callable:aiws.tb_logger:TBLogger
-        args: [ *summary_writer ]
-        kwargs:
-            date: "{{ utcnow }}"
-            name: "{{ ns.EXPERIMENT_NAME }}"
-            description: "{{ ns.EXPERIMENT_DESCRIPTION }}"
-            args: {{script_args}}
-            world_size: {{world_size}}
-            config: !callable:pp_config
-            versions: {{ versions }}
+    -- include 'callbacks/loggers.yaml'
 << endblock trainer_callbacks
 
 
@@ -84,4 +61,6 @@ experiment_name: "{{ ns.EXPERIMENT_NAME }}"
 experiment_description: "{{ ns.EXPERIMENT_DESCRIPTION }}"
 trainer: *trainer
 do_save: {{ ns.SAVE_MODEL }}
+do_train: {{ ns.TRAIN }}
+do_eval: {{ ns.EVAL }}
 -- endblock output_configuration

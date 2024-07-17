@@ -12,14 +12,22 @@ def callable_constructor(loader, tag_suffix, node):
     """
     if isinstance(node, yaml.MappingNode):
         value = loader.construct_mapping(node, deep=True)
+
+        args = value.get("args", None)
         kwargs = value.get("kwargs", None)
-        # Treat missing kwargs key as shorthand to use the value.
-        # Shorthand for args is a sequence []
-        if kwargs is None:
-            kwargs = value
+        # Only args
+        if len(value) == 1 and args is not None:
+            kwargs = {}
+        # Only kwargs
+        elif len(value) == 1 and kwargs is not None:
             args = tuple()
+        # Exactly args and kwargs
+        elif len(value) == 2 and args is not None and kwargs is not None:
+            pass
+        # Everything else; use the value as shorthand for kwargs
         else:
-            args = value.get("args", tuple())
+            args = tuple()
+            kwargs = value
 
     elif isinstance(node, yaml.SequenceNode):
         args = loader.construct_sequence(node, deep=True)

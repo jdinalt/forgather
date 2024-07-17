@@ -1,0 +1,27 @@
+## Meta-configuration
+##
+## This is intended to be loaded without 'search_path' having been set,
+## thus all paths are relative to this file.
+##
+## It is the first config file to load, as it provides the information needed
+## to load the rest of the configuration.
+-- set ns = namespace()
+-- include path_join(project_directory, 'templates', 'directories.yaml')
+project_dir: "{{ ns.PROJECT_DIR }}"
+assets_dir: "{{ ns.ASSETS_DIR }}"
+experiment_dir: "{{ ns.EXPERIMENT_DIR }}"
+
+project_templates: "{{ ns.PROJ_TEMPLATES_DIR }}"
+templates: "{{ ns.TEMPLATES_DIR }}"
+model_dir: "{{ ns.MODELS_DIR }}"
+tokenizer_dir: "{{ ns.TOKENIZERS_DIR }}"
+datasets_dir: "{{ ns.DATASETS_DIR }}"
+scripts_dir: "{{ ns.SCRIPTS_DIR }}"
+model_src_dir: "{{ ns.MODEL_SOURCE_DIR }}"
+src_dir: "{{ ns.SOURCE_DIR }}"
+
+search_paths:
+    - "{{ ns.PROJ_TEMPLATES_DIR }}"
+    - "{{ ns.TEMPLATES_DIR }}"
+whitelist_path: "{{ path_join(ns.PROJ_TEMPLATES_DIR, 'whitelist.yaml') }}"
+train_script_path: "{{ path_join(ns.SCRIPTS_DIR, 'train_script.py') }}"

@@ -1,7 +1,18 @@
--- set dataset_id = 'roneneldan/TinyStories'
--- set model_max_length = 2048
--- set vocab_size = 2000
--- set dataset_split = 'train'
+-- extends 'tokenizers/bpe.yaml'
 
--- include 'common/tokenizers/causal_bpe.yaml'
-tokenizer_name: "tiny_stories_2k"
+-- block tokenizer_meta_config
+    == super()
+    -- set tok_def.name = "Tiny Stories 2K BPE"
+    -- set tok_def.description = "A BPE tokenizer trained of Tiny Stories with a 2K vocabulary size."
+    -- set tok_def.output_dir = path_join(ns.TOKENIZERS_DIR, 'tiny_stories_2k')
+    -- set tok_def.dataset_id = 'roneneldan/TinyStories'
+    -- set tok_def.dataset_split = 'train'
+    -- set tok_def.template_path = path_join(ns.TEMPLATES_DIR, 'tokenizers', 'tiny_2k_bpe.yaml')
+-- endblock tokenizer_meta_config
+
+
+-- block tokenizer_custom_definition
+    == super()
+    -- set tok_def.model_max_length = 2048
+    -- set tok_def.vocab_size = 2000
+-- endblock tokenizer_custom_definition

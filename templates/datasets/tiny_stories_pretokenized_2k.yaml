@@ -1,10 +1,8 @@
--- extends 'datasets/base_dataset_loader.yaml'
+-- extends 'datasets/pretokenized_dataset.yaml'
 
--- block dataset_meta_config
+-- block datasets_meta_config
     == super()
-    -- set dataset_def.name = "Tiny Stories 2K"
-    -- set dataset_def.description = "Tiny Stories dataset, pre-tokenized with the tiny_2k tokenizer."
-    -- block dataset_definition
-        -- set dataset_def.dataset_name_or_path = path_join(ns.DATASETS_DIR, 'tiny_stories_tokenized')
-    -- endblock dataset_definition
--- endblock dataset_meta_config
+    -- set datasets_def.name = "Tiny Stories 2K"
+    -- set datasets_def.description = "Tiny Stories dataset, pre-tokenized with the tiny_2k tokenizer."
+    -- set datasets_def.dataset_name_or_path = path_join(ns.DATASETS_DIR, 'tiny_stories_tokenized')
+-- endblock datasets_meta_config

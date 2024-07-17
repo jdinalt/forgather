@@ -14,6 +14,11 @@
 -- endblock base_directories
 
 
+-- block datasets_definition
+    -- include 'datasets/tiny_stories_pretokenized_2k.yaml'
+-- endblock datasets_definition
+
+
 # Override default trainer definition
 -- block trainer_definition
     -- include 'project.trainer_config'
@@ -44,7 +49,7 @@
     per_device_train_batch_size: 64
     per_device_eval_batch_size: 64
     logging_steps: 100
-    eval_steps: 250
+    eval_steps: 500
 -- endblock trainer_args
 
 #-------------------- project.model_config --------------------

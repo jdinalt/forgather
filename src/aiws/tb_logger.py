@@ -19,13 +19,13 @@ class TBLogger(TrainerCallback):
         super().__init__()
         self.summary_writer = summary_writer
         self.last_step = -1
-        self.experiment = self.mapping_as_markdown(kwargs)
+        self.kwargs = self.mapping_as_markdown(kwargs)
 
     def on_train_begin(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
             return
-        if len(self.experiment):
-            self.summary_writer.add_text("experiment", self.experiment)
+        if len(self.kwargs):
+            self.summary_writer.add_text("experiment", self.kwargs)
 
         info, extra_info = format_train_info(args, state, control, **kwargs)
         self.summary_writer.add_text(

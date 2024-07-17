@@ -1,6 +1,7 @@
-"""
-A Collection on object construction helpers for use with forgather.config
-"""
+from typing import Callable, List, Any
+import os
+
+from .distributed import main_process_first
 
 
 def register_for_auto_class(object, /, *args, **kwargs):
@@ -30,3 +31,31 @@ def register_for_auto_class(object, /, *args, **kwargs):
     """
     object.register_for_auto_class(*args, **kwargs)
     return object
+
+
+@main_process_first()
+def build_rule(
+    target: str | os.PathLike,
+    recipe: Callable,
+    prerequisites: List[str | os.PathLike],
+    loader: Callable,
+) -> Any:
+    assert isinstance(recipe, Callable)
+    assert isinstance(loader, Callable)
+
+    if os.path.exists(target):
+        build_target = False
+        target_mtime = os.path.getmtime(target)
+        for dependency in prerequisites:
+            dep_mtime = os.path.getmtime(dependency)
+            if target_mtime < dep_mtime:
+                build_target = True
+                break
+    else:
+        build_target = True
+
+    if build_target:
+        output = recipe()
+        if output is not None:
+            return output
+    return loader()

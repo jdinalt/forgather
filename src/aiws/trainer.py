@@ -98,7 +98,7 @@ class Trainer(BaseTrainer):
 
     @classmethod
     def default_callbacks(cls):
-        return [ProgressCallback(), InfoCallback()]
+        return [ProgressCallback()]
 
     def __init__(
         self,

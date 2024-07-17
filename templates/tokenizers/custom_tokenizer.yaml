@@ -1,0 +1,124 @@
+-- set tok_def = namespace()
+-- from 'inc/formatting.jinja' import h3
+-- filter trim()
+
+-- block tokenizer_meta_config required
+## The following args are required
+##    -- set tok_def.name = 'Custom Tokenizer'
+##    -- set tok_def.description = 'A custom tokenizer definition.'
+##    -- set tok_def.dataset_id = 'dataset_id'
+##    -- set tok_def.dataset_split = 'train'
+##    -- set tok_def.output_dir = path_join(ns.TOKENIZERS_DIR, 'custom_tokenizer')
+##    -- set tok_def.template_path = path_join(ns.TEMPLATES, 'tokenizers', 'custom_tokenizer.yaml')
+-- endblock tokenizer_meta_config
+
+-- block tokenizer_custom_definition
+    -- set tok_def.model_max_length = 2048
+    -- set tok_def.vocab_size = 32000
+## Define special tokens
+    -- set tok_def.pad_token = "<|PAD|>"
+    -- set tok_def.bos_token = "<|BOS|>"
+    -- set tok_def.eos_token = "<|EOS|>"
+    -- set tok_def.unk_token = "<|UNK|>"
+## This should match the position in special_tokens_map
+    -- set tok_def.bos_token_id = 0
+-- endblock tokenizer_custom_definition
+
+
+-- endfilter ## trim()
+-- block tokenizer_header
+# Custom Tokenizer Definition
+# Name: {{ tok_def.name }}
+# Description: {{ tok_def.description }}
+
+# model_max_length: '{{ tok_def.model_max_length }}'
+# vocab_size: '{{ tok_def.vocab_size }}'
+# dataset_id: '{{ tok_def.dataset_id }}'
+# dataset_split: '{{ tok_def.dataset_split }}'
+# output_dir: '{{ tok_def.output_dir }}'
+<< endblock tokenizer_header
+
+
+== h3('Special Tokens Map')
+
+-- filter trim()
+-- block tokenizer_special_tokens_map
+.define: &special_tokens_map
+    bos: "{{ tok_def.bos_token }}" # Beginning of Sequence; the first token in a sequence
+    pad: "{{ tok_def.pad_token }}" # Padding, used to pad out samples in a batch.
+    eos: "{{ tok_def.eos_token }}" # End of Sequence; typically is used to stop generation.
+    unk: "{{ tok_def.unk_token }}" # Unknown; used when a symbol can't be represented.
+<< endblock tokenizer_special_tokens_map
+-- endfilter
+
+
+== h3('Pretrained Tokenizer Fast Args')
+
+-- filter trim()
+-- block tokenizer_args
+## Args to transformers.PreTrainedTokenizerFast()
+## https://huggingface.co/docs/transformers/main_classes/tokenizer#transformers.PreTrainedTokenizerFast
+.define: &tokenizer_args
+    bos_token: "{{ tok_def.bos_token }}"
+    eos_token: "{{ tok_def.eos_token }}"
+    unk_token: "{{ tok_def.unk_token }}"
+    pad_token: "{{ tok_def.pad_token }}"
+    return_special_tokens_mask: False
+    model_max_length: {{ tok_def.model_max_length }}
+    padding_side: "right"
+    truncation_side: "right"
+<< endblock tokenizer_args
+-- endfilter
+
+
+== h3('Tokenizer Training Dataset')
+
+-- filter trim()
+## This directly loads the entire dataset
+## For large datasets, a subset should be selected.
+-- block tokenizer_dataset
+    .define: &tokenizer_dataset !callable:forgather.construct:get_item
+        - !callable:datasets:load_dataset [ "{{ tok_def.dataset_id }}" ]
+        - "{{ tok_def.dataset_split }}"
+<< endblock tokenizer_dataset
+-- endfilter
+
+
+== h3('Tokenizer Trainer')
+
+-- filter trim()
+-- block tokenizer_trainer
+.define: &tokenizer_trainer !callable:aiws.tokenizer:train_tokenizer
+    as_callable: True
+    output_dir: "{{ tok_def.output_dir }}"
+    dataset: *tokenizer_dataset
+    args: *tokenizer_args
+## The following additional args are required.
+## See: https://huggingface.co/docs/tokenizers/
+##  model:
+##  normalizer:
+##  pre_tokenizer:
+##  decoder:
+##  post_processor:
+##  trainer:
+<< endblock tokenizer_trainer
+-- endfilter
+
+
+== h3('Tokenizer Constructor')
+
+-- filter trim()
+-- block tokenizer_constructor
+.define: &tokenizer !callable:aiws.construct:build_rule
+    target: "{{ path_join(tok_def.output_dir, 'tokenizer.json') }}"
+    recipe: *tokenizer_trainer
+    prerequisites:
+        - "{{ tok_def.template_path }}"
+    loader: !callable:transformers:AutoTokenizer.from_pretrained
+        args:
+            - "{{ tok_def.output_dir }}"
+        kwargs:
+            as_callable: True
+        
+<< endblock tokenizer_constructor
+-- endfilter

@@ -3,7 +3,6 @@ import argparse
 from argparse import RawTextHelpFormatter
 import random
 import sys
-from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional, Union, List, Type
 import types
 import importlib
@@ -17,7 +16,7 @@ from pprint import pformat
 import numpy as np
 from loguru import logger
 import torch
-import torch.distributed as dist
+import torch.distributed as distributed
 from torch.distributed.elastic.multiprocessing.errors import record
 from torch.distributed import get_rank, get_world_size
 import transformers
@@ -31,7 +30,6 @@ DEFAULT_ENVIRON = (
     ("LOCAL_WORLD_SIZE", "1"),
     ("MASTER_ADDR", "localhost"),
     ("MASTER_PORT", "29501"),
-    ("TORCH_DISTRIBUTED_DEBUG", "DETAIL"),
 )
 
 def init_process(args):
@@ -41,7 +39,7 @@ def init_process(args):
     This is called before torch-distributed and logging have been initialized.
     """
     # https://pytorch.org/docs/stable/distributed.html
-    assert torch.distributed.is_available(), "This script requires Torch Distributed"
+    assert distributed.is_available(), "This script requires Torch Distributed"
 
     # See: https://pytorch.org/docs/stable/elastic/run.html
     if "LOCAL_RANK" not in os.environ:
@@ -61,6 +59,13 @@ def init_process(args):
         f"global rank={global_rank}, local rank={local_rank}, "
         f"default_device={torch.cuda.current_device()}"
     )
+    # Instantiating 'transformers.TrainingArguments' initializes torch-distributed.
+    # Skip, if it has already performed the initialization.
+    if not distributed.is_initialized():
+        logger.info("Initializing torch.distributed")
+        distributed.init_process_group(backend=args.torch_backend)
+    else:
+        logger.info("Torch distributed has already been initialized.")
 
 def init_logging(args):
     if int(os.environ['RANK']) == 0:
@@ -134,6 +139,12 @@ def parse_args(args=None):
         help="The relative path to the project directory."
     )
     parser.add_argument(
+        '--torch-backend',
+        type=str,
+        default=None,
+        help="The torch backend to use."
+    )
+    parser.add_argument(
         '-d',
         '--dryrun',
         action='store_true',
@@ -148,64 +159,28 @@ def parse_args(args=None):
         sys.path.insert(0, args.syspath)
     # We only resolve these modules after we know where to look for them.
     global ConfigEnvironment, base_preprocessor_globals, format_line_numbers
+    global TrainingScriptConfig
+    
     from forgather.utils import format_line_numbers
     from forgather.config import ConfigEnvironment
     from aiws.config import base_preprocessor_globals
-    
+    from aiws.training_loop import TrainingScriptConfig
     return args
-
-@dataclass(kw_only=True, slots=True)
-class TrainingScriptConfig:
-    output_dir: Union[os.PathLike, str]
-    trainer: Any
-    experiment_name: str = ""
-    experiment_description: str = ""
-    logging_dir: Union[os.PathLike, str] = None
-    seed: int = 42
-    do_save: bool = True
-    do_train: bool = True
-    do_eval: bool = True
-    log_file: str = "training.log"
-    nccl_debug: bool = None
-    nccl_ignore_disabled_p2p = True
-    torch_backend: str = "nccl"
-        
-    def __post_init__(self):
-        if int(os.environ['RANK']) == 0:
-            self.validate_dirs()
-
-    def validate_dirs(self):
-        """
-        Ensure that output directory exists and make it more difficult to accidentally
-        overwrite a model directory.
-        """ 
-        for dir in (self.output_dir, self.logging_dir):
-            if dir is not None and not os.path.isdir(dir):
-                logger.info(f"Creating directory: {dir}")
-                os.makedirs(dir, exist_ok=True)
 
 class TrainingScriptConfigError(Exception):
     pass
+
 
 def load_config(args):
     config_path = args.config
     search_path = args.include
     project_directory = args.project_dir
-    
-    # While unlikely, it's possible that some object instantiated via
-    # the YAML config could make use of random numbers. Make sure that
-    # all processes are using the same seed.
-    #
-    # We will set it again, from the config, later to the user specified value.
-    set_seed(42)
-
     env_globals = base_preprocessor_globals() | dict(
         script_args=pformat(args),
         project_directory=project_directory,
         world_size=os.environ['WORLD_SIZE'],
         rank=int(os.environ['RANK']),
         local_rank=int(os.environ['LOCAL_RANK']),
-        
     )
 
     cfg_environment = ConfigEnvironment(
@@ -214,31 +189,17 @@ def load_config(args):
     )
 
     loaded_config = cfg_environment.load(config_path)
-    config = TrainingScriptConfig(**loaded_config.materialize())
-    return config, loaded_config.pp_config
-    
+    return loaded_config
+
+
 def write_configuration_log(args, config, preprocessed_config):
     if config.logging_dir is None:
         return
     log_name = config.experiment_name + '_' + str(time.time_ns()) + ".yaml"
     config_log = os.path.join(config.logging_dir, log_name)
     
-    with open(config_log, 'x') as file:
+    with open(config_log, 'w') as file:
         file.write(preprocessed_config)
-
-def init_torch_distributed(config):
-    if config.nccl_debug is not None:
-        os.environ["NCCL_DEBUG"] = config.nccl_debug
-    if config.nccl_ignore_disabled_p2p:
-        os.environ["NCCL_IGNORE_DISABLED_P2P"] = "1"
-    
-    # Instantiating 'transformers.TrainingArguments' initializes torch-distributed.
-    # Skip, if it has already performed the initialization.
-    if not torch.distributed.is_initialized():
-        logger.info("Initializing torch.distributed")
-        dist.init_process_group(backend=config.torch_backend)
-    else:
-        logger.info("Torch distributed has already been initialized.")
 
 def set_seed(seed):
     """
@@ -251,7 +212,7 @@ def set_seed(seed):
 def train(config):
     trainer = config.trainer
     train_output = trainer.train()
-    torch.distributed.barrier()
+    distributed.barrier()
     if hasattr(trainer, "log_metrics"):
         metrics = train_output.metrics
         trainer.log_metrics("train", metrics)
@@ -276,26 +237,23 @@ def main():
     args = parse_args()
     init_process(args)
     init_logging(args)
-    
-    config, preprocessed_config = load_config(args)
-    set_seed(config.seed)
-    init_torch_distributed(config)
-
-    # Add output to specified logfile as well.
-    if get_rank() == 0 and config.log_file is not None and config.logging_dir is not None:
-        logger.add(os.path.join(config.logging_dir, config.log_file))
+    loaded_config = load_config(args)
+    config = TrainingScriptConfig(**loaded_config.config)
 
     logger.info("*" * 40)
     logger.info(f"Training started with world-size of {get_world_size()}")
-    logger.debug(f"preprocessed-config:\n{format_line_numbers(preprocessed_config)}")
+    logger.debug(f"preprocessed-config:\n{format_line_numbers(loaded_config.pp_config)}")
     logger.debug(f"config:\n{pformat(config)}")
     logger.info("*" * 40)
 
+    # Materialize the trainer
+    config.trainer = config.trainer(pp_config=loaded_config.pp_config)
+    
     if args.dryrun:
         sys.exit(0)
 
     logger.debug(config)
-    write_configuration_log(args, config, preprocessed_config)
+    write_configuration_log(args, config, loaded_config.pp_config)
 
     if config.do_train:
         train(config)

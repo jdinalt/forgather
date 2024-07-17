@@ -1,0 +1,19 @@
+-- set callbacks_ns = namespace()
+-- from 'inc/formatting.jinja' import h3
+-- filter trim()
+
+== h3('Dependencies')
+
+-- block callback_dependencies
+## Undefined
+<< endblock callback_dependencies
+-- endfilter
+
+
+== h3('Callback List')
+
+-- filter trim()
+-- block callback_list
+.define: &trainer_callbacks
+<< endblock callback_list
+-- endfilter

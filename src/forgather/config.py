@@ -43,25 +43,8 @@ class Config:
             f"{type(self).__name__}(config={self.config}, pp_config={self.pp_config})"
         )
 
-    def materialize(self, **kwargs):
-        """
-        Materialize the configuration
 
-        This is essentially just a wrapper for Latent.materialize(), but we feed the
-        preprocessed config into the configuration for logging and run this in a
-        try block, which will dump the pre-processed context on exception.
-        """
-        try:
-            kwargs["pp_config"] = lambda: config_out.pp_config
-            materialized_config = Latent.materialize(self.config, **kwargs)
-            if isinstance(materialized_config, dict):
-                materialized_config = ConfigDict(materialized_config)
-            return materialized_config
-        except Exception as error:
-            raise add_exception_notes(error, self.pp_config)
-
-
-def fconfig(obj, sort_items=True, indent_level=2):
+def fconfig(obj, sort_items=True, indent_level=2, visited=set()):
     """
     Recursively pretty-format a configuration
 
@@ -110,11 +93,15 @@ def fconfig(obj, sort_items=True, indent_level=2):
             s += "- " + fconfig(value, sort_items, indent_level) + "\n"
         return s[:-1]
     elif isinstance(obj, Latent):
-        s = f"Latent '{obj.constructor}'"
-        if len(obj.args):
-            s += "\n" + indent_block(fconfig(obj.args, sort_items, indent_level))
-        if len(obj.kwargs):
-            s += "\n" + indent_block(fconfig(obj.kwargs, sort_items, indent_level))
+        if id(obj) in visited:
+            s = f"Latent *{id(obj)}"
+        else:
+            visited.add(id(obj))
+            s = f"Latent &{id(obj)} '{obj.constructor}'"
+            if len(obj.args):
+                s += "\n" + indent_block(fconfig(obj.args, sort_items, indent_level))
+            if len(obj.kwargs):
+                s += "\n" + indent_block(fconfig(obj.kwargs, sort_items, indent_level))
         return s
     else:
         return pformat(obj)
