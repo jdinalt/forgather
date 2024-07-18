@@ -72,8 +72,6 @@ def init_logging(args):
         log_level = args.log_level
         # TODO: Is there a version which takes a string?
         transformers.utils.logging.set_verbosity_info()
-        if args.debug_ctor:
-            logger.enable("aiws.latent")
     else:
         log_level = args.secondary_log_level
 
@@ -96,23 +94,10 @@ def parse_args(args=None):
         )
     )
     parser.add_argument(
-        'config',
+        'config_template',
         type=str,
-        metavar="config-file",
-        help="Path to yaml configuration file"
-    )
-    parser.add_argument(
-        '-I', '--include',
-        required=False,
-        action='append',
-        metavar="include-path",
-        #default=[os.getcwd()],
-        help="One or more search paths for Jinja2 include files used in configuration file."
-    )
-    parser.add_argument(
-        '--debug-ctor',
-        action='store_true',
-        help="Enable dynamic constructor debugging."
+        metavar="config-template",
+        help="Configuration Template Name"
     )
     parser.add_argument(
         '-l', '--log-level',
@@ -159,11 +144,11 @@ def parse_args(args=None):
         sys.path.insert(0, args.syspath)
     # We only resolve these modules after we know where to look for them.
     global ConfigEnvironment, base_preprocessor_globals, format_line_numbers
-    global TrainingScriptConfig
+    global TrainingScriptConfig, MetaConfig
     
     from forgather.utils import format_line_numbers
     from forgather.config import ConfigEnvironment
-    from aiws.config import base_preprocessor_globals
+    from aiws.config import base_preprocessor_globals, MetaConfig
     from aiws.training_loop import TrainingScriptConfig
     return args
 
@@ -172,10 +157,13 @@ class TrainingScriptConfigError(Exception):
 
 
 def load_config(args):
-    config_path = args.config
-    search_path = args.include
+    config_template = args.config_template
     project_directory = args.project_dir
-    env_globals = base_preprocessor_globals() | dict(
+
+    meta = MetaConfig(project_directory)
+    config_template_path = os.path.join(meta.config_prefix, config_template)
+    
+    pp_globals = base_preprocessor_globals() | dict(
         script_args=pformat(args),
         project_directory=project_directory,
         world_size=os.environ['WORLD_SIZE'],
@@ -183,12 +171,12 @@ def load_config(args):
         local_rank=int(os.environ['LOCAL_RANK']),
     )
 
-    cfg_environment = ConfigEnvironment(
-        searchpath=search_path,
-        globals=env_globals,
+    environment = ConfigEnvironment(
+        searchpath=meta.searchpath,
+        globals = pp_globals,
     )
 
-    loaded_config = cfg_environment.load(config_path)
+    loaded_config = environment.load(config_template_path)
     return loaded_config
 
 

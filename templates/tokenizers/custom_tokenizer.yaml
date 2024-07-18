@@ -9,7 +9,6 @@
 ##    -- set tok_def.dataset_id = 'dataset_id'
 ##    -- set tok_def.dataset_split = 'train'
 ##    -- set tok_def.output_dir = path_join(ns.TOKENIZERS_DIR, 'custom_tokenizer')
-##    -- set tok_def.template_path = path_join(ns.TEMPLATES, 'tokenizers', 'custom_tokenizer.yaml')
 -- endblock tokenizer_meta_config
 
 -- block tokenizer_custom_definition
@@ -112,8 +111,6 @@
 .define: &tokenizer !callable:aiws.construct:build_rule
     target: "{{ path_join(tok_def.output_dir, 'tokenizer.json') }}"
     recipe: *tokenizer_trainer
-    prerequisites:
-        - "{{ tok_def.template_path }}"
     loader: !callable:transformers:AutoTokenizer.from_pretrained
         args:
             - "{{ tok_def.output_dir }}"

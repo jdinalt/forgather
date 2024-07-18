@@ -1,0 +1,36 @@
+-- extends "train_scripts/base_language_model.yaml"
+-- from 'inc/formatting.jinja' import h2, sep
+
+-- block model_definition
+-- filter trim()
+    -- if ns.CREATE_NEW_MODEL
+        -- block construct_new_model
+# Undefined
+        << endblock construct_new_model
+    -- else
+        -- block load_model
+            -- include 'models/load_custom_model.yaml'
+        << endblock load_model
+    -- endif
+-- endfilter
+-- endblock model_definition
+
+
+-- block trainer_callbacks
+    -- include 'callbacks/loggers.yaml'
+<< endblock trainer_callbacks
+
+
+-- block datacollator
+.define: &data_collator !callable:transformers:DataCollatorForLanguageModeling
+    args:
+        - *tokenizer
+    kwargs:
+        mlm: False
+        return_tensors: pt
+-- endblock datacollator
+
+
+-- block trainer_definition
+    -- include 'trainers/trainer.yaml'
+-- endblock trainer_definition

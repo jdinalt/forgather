@@ -1,0 +1,9 @@
+-- set main_dir = path_join('..', '..')
+
+searchdir:
+    - "templates"
+    - "{{ path_join(main_dir, 'templates') }}"
+
+config_prefix: "experiments"
+system_path: "{{ path_join(main_dir, 'src') }}"
+train_script: "{{ path_join(main_dir, 'scripts', 'train_script.py') }}"

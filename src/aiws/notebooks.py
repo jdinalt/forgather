@@ -1,4 +1,6 @@
 import os
+from dataclasses import fields
+from typing import Iterator, Tuple
 
 from forgather.dynamic import parse_module_name_or_path, parse_dynamic_import_spec
 from forgather import Latent
@@ -34,22 +36,26 @@ def find_file_specs(config):
         yield spec
 
 
-def display_meta_config(path, meta_config, title=""):
+def display_meta(meta, title=""):
     md = f"{title}"
-    md += f"[{path}]({path})\n"
-    for level, key, value in Latent.all_items(meta_config):
-        if level == 0:
-            continue
-        level -= 1
-        if not isinstance(value, str):
-            value = str(type(value))
-        else:
-            value = f"'{value}'"
+    md += f"Project Directory: {meta.project_dir}\n\n"
+    md += f"Meta Config: [{meta.meta_path}]({meta.meta_path})\n\n"
+    md += f"Template Search Paths:\n"
+    for path in meta.searchpath:
+        relpath = os.path.relpath(path)
+        md += f"- [{relpath}]({relpath})\n"
+    display.display(display.Markdown(md))
 
-        if isinstance(key, str):
-            md += f"{' ' * 4 * level}- {key}: {value}\n"
-        elif isinstance(key, int):
-            md += f"{' ' * 4 * level}- {value}\n"
+
+def list_templates(templates: Iterator[Tuple[str, str]], title: str = ""):
+    """
+    Given a template iterator, display a list of templates
+
+    The iterator is expected to yield (template_name, template_path)
+    """
+    md = f"{title}"
+    for template_name, template_path in templates:
+        md += f"- [{template_name}]({template_path})\n"
     display.display(display.Markdown(md))
 
 
@@ -78,7 +84,7 @@ def display_referenced_templates(environment, template, title=""):
         with open(path, "r") as f:
             data = f.read()
 
-        md += f"#### [{name}]({path})\n" f"```yaml\n{data}\n```\n---\n"
+        md += f"#### [{name}]({os.path.relpath(path)})\n" f"```yaml\n{data}\n```\n---\n"
 
     display.display(display.Markdown(md))
 
@@ -97,11 +103,10 @@ def display_filelink(path, title="", name=None):
     display.display(display.Markdown(md))
 
 
-def get_train_cmdline(meta_config, nproc="gpu", cuda_devices=None):
-    includes = "".join(f"-I '{inc}' " for inc in meta_config.search_paths)
+def get_train_cmdline(meta, nproc="gpu", cuda_devices=None):
     s = (
-        f"torchrun --standalone --nproc-per-node '{nproc}' '{meta_config.train_script_path}'"
-        + f" {includes} -p '{meta_config.project_dir}' -s '{meta_config.src_dir}'"
+        f"torchrun --standalone --nproc-per-node '{nproc}' '{meta.train_script}'"
+        + f" -p '{meta.project_dir}' -s '{meta.system_path}'"
     )
     if cuda_devices is not None:
         s = f"CUDA_VISIBLE_DEVICES='{cuda_devices}' " + s
@@ -128,25 +133,21 @@ def make_train_script(
         i.e. If you wish to only CUDA 0 and 1, then "0,1"
     """
     import stat
-    from forgather.config import load_config
+    from aiws.config import MetaConfig
 
     prev_cwd = os.getcwd()
+
     try:
         os.chdir(project_directory)
         project_directory = "."
-        meta_config_path = "meta_config.yaml"
-        meta_config = load_config(meta_config_path, project_directory=project_directory)
+        meta = MetaConfig(project_directory)
 
         if config_template is None:
-            config_template_path = r"${@}"
-        else:
-            config_template_path = os.path.join(
-                meta_config.experiment_dir, config_template
-            )
-        cmdline = get_train_cmdline(meta_config, nproc, cuda_devices)
+            config_template = r"${@}"
+        cmdline = get_train_cmdline(meta, nproc, cuda_devices)
 
         with open(script_name, "w") as f:
-            f.write("#!/bin/bash\n" + cmdline + f' "{config_template_path}"\n')
+            f.write("#!/bin/bash\n" + cmdline + f' "{config_template}"\n')
             os.chmod(
                 f.fileno(), stat.S_IREAD | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
             )
@@ -154,20 +155,8 @@ def make_train_script(
         os.chdir(prev_cwd)
 
 
-def list_templates(path, title=""):
-    """
-    List all templates within the specified directory in md format
-    """
-    md = f"{title}"
-    for file in os.listdir(path=path):
-        if not file.endswith(".yaml"):
-            continue
-        md += f"- [{file}]({os.path.join(path, file)})\n"
-    display.display(display.Markdown(md))
-
-
-def show_project_readme(meta_config):
-    md_path = os.path.join(meta_config.project_dir, "README.md")
+def show_project_readme(project_dir):
+    md_path = os.path.join(project_dir, "README.md")
     if os.path.exists(md_path):
         with open(md_path, "r") as f:
             md = f.read()

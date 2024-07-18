@@ -29,7 +29,7 @@ class TrainingScriptConfig:
                 os.makedirs(dir, exist_ok=True)
 
 
-def training_loop(project_directory, config_template_path, backend=None):
+def training_loop(project_directory, config_template, backend=None):
     """
     A mini-training-loop for use with accelerate.notebook_launcher
 
@@ -54,8 +54,8 @@ def training_loop(project_directory, config_template_path, backend=None):
     """
     import os
     from forgather.config import load_config, ConfigEnvironment, fconfig, pconfig
-    from aiws.config import base_preprocessor_globals
-    from torch.distributed import init_process_group
+    from aiws.config import base_preprocessor_globals, MetaConfig
+    from torch.distributed import init_process_group, barrier
 
     # Get Torch Distributed parameters from environ.
     # Provide single-process defautls, if variables are not set.
@@ -68,8 +68,8 @@ def training_loop(project_directory, config_template_path, backend=None):
         init_process_group(backend=backend)
 
     # Load meta-config
-    meta_config_path = os.path.join(project_directory, "meta_config.yaml")
-    metacfg = load_config(meta_config_path, project_directory=project_directory)
+    meta = MetaConfig(project_directory)
+    config_template_path = os.path.join(meta.config_prefix, config_template)
 
     # Initialize the pre-processor globals
     pp_globals = base_preprocessor_globals() | dict(
@@ -80,12 +80,13 @@ def training_loop(project_directory, config_template_path, backend=None):
     )
 
     # Create configuration envrionment
-    cfg_environment = ConfigEnvironment(
-        searchpath=metacfg.search_paths, globals=pp_globals
+    environment = ConfigEnvironment(
+        searchpath=meta.searchpath,
+        globals=pp_globals,
     )
 
     # Load the target configuration
-    loaded_config = cfg_environment.load(config_template_path)
+    loaded_config = environment.load(config_template_path)
     config = TrainingScriptConfig(**loaded_config.config)
 
     # In a distriubted environment, we only want one process to print messages
@@ -104,6 +105,8 @@ def training_loop(project_directory, config_template_path, backend=None):
     if config.do_train:
         # This is where the actual 'loop' is.
         metrics = config.trainer.train().metrics
+        if world_size > 1:
+            barrier()
 
         if is_main_process:
             print("**** Training Completed *****")

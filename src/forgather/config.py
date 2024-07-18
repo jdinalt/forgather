@@ -156,10 +156,10 @@ class ConfigEnvironment:
         globals: Dict[str, Any] = {},
     ):
         # Implicitly add CWD to search path
-        if isinstance(searchpath, str) or isinstance(searchpath, os.PathLike):
-            searchpath = [Path("."), searchpath]
-        else:
-            searchpath.insert(0, Path("."))
+        # if isinstance(searchpath, str) or isinstance(searchpath, os.PathLike):
+        #    searchpath = [Path("."), searchpath]
+        # else:
+        #    searchpath.insert(0, Path("."))
 
         if pp_environment is None:
             pp_environment = PPEnvironment(searchpath=searchpath)

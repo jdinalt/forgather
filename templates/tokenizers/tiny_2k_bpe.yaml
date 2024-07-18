@@ -7,7 +7,6 @@
     -- set tok_def.output_dir = path_join(ns.TOKENIZERS_DIR, 'tiny_stories_2k')
     -- set tok_def.dataset_id = 'roneneldan/TinyStories'
     -- set tok_def.dataset_split = 'train'
-    -- set tok_def.template_path = path_join(ns.TEMPLATES_DIR, 'tokenizers', 'tiny_2k_bpe.yaml')
 -- endblock tokenizer_meta_config
 
 

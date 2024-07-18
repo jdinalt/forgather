@@ -1,5 +1,5 @@
 ## Project level definitions and overrides go here.
--- extends "configs/train_script_config.yaml"
+-- extends "train_scripts/causal_language_model.yaml"
 
 -- block experiment_metadata
     == super()
@@ -9,7 +9,8 @@
 
 
 -- block base_directories
-    -- include 'directories.yaml'
+    -- set ASSETS_DIR = normpath(path_join(project_directory, '..', '..'))
+    -- include 'paths/default_paths.yaml'
 -- endblock base_directories
 
 

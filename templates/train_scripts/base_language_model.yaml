@@ -8,37 +8,19 @@
     -- set ns.EXPERIMENT_NAME = "Undefined"
     -- set ns.EXPERIMENT_DESCRIPTION = "Undefined"
     -- set ns.MODEL_NAME = "default_model"
+    -- set ns.CREATE_NEW_MODEL = True
+    -- set ns.SAVE_MODEL = False
+    -- set ns.TRAIN = True
+    -- set ns.EVAL = False
 -- endblock experiment_metadata
 
 
 -- block base_directories required
-    ## Define these directories in your project ###
-    ## The relative locations of the project and assests from CWD
-    ## -- set ns.ASSETS_DIR = path_join('..', '..')
-    ## -- set ns.PROJECT_DIR = '.'
-    ##
-    ## The locations of your project templates
-    ## -- set ns.PROJ_TEMPLATES_DIR = path_join(ns.PROJECT_DIR, 'templates')
-    ##
-    ## The location of the main templates library
-    ## set ns.TEMPLATES_DIR = path_join(ns.ASSETS_DIR, 'templates')
-    ##
-    ## Where are training scripts stored?
-    ##-- set ns.SCRIPTS_DIR = path_join(ns.ASSETS_DIR, 'scripts')
-    ##
-    ## **************************************************
-    ## The following are REQUIRED by the templates.
-    ## Where are models to be stored?
-    ## -- set ns.MODELS_DIR = path_join(ns.PROJECT_DIR, 'output_models')
-    ##
-    ## Where are tokenizers to be stored?
-    ## -- set ns.TOKENIZERS_DIR = path_join(ns.ASSETS_DIR, 'tokenizers')
-    ##
-    ## Where are datasets to be stored?
-    ## -- set ns.DATASETS_DIR = path_join(ns.ASSETS_DIR, 'datasets')
-    ##
-    ## Where is model source code stored?
-    ## -- set ns.MODEL_SOURCE_DIR = path_join(ns.ASSETS_DIR, 'model_zoo')
+    ## -- set ns.PROJECT_DIR
+    ## -- set ns.MODEL_ZOO_DIR
+    ## -- set ns.MODELS_DIR
+    ## -- set ns.TOKENIZERS_DIR
+    ## -- set ns.DATASETS_DIR
 -- endblock base_directories
 
 
@@ -72,12 +54,16 @@
 
 -- filter trim()
 -- block variable_listing
-# ns.TOKENIZERS_DIR: "{{ ns.TOKENIZERS_DIR }}"
+# ns.PROJECT_DIR: "{{ ns.PROJECT_DIR }}"
 # ns.MODELS_DIR: "{{ ns.MODELS_DIR }}"
+# ns.TOKENIZERS_DIR: "{{ ns.TOKENIZERS_DIR }}"
 # ns.DATASETS_DIR: "{{ ns.DATASETS_DIR }}"
-# ns.SCRIPTS_DIR: "{{ ns.SCRIPTS_DIR }}"
-# ns.MODEL_SOURCE_DIR: "{{ ns.MODEL_SOURCE_DIR }}"
 # ns.OUTPUT_DIR: "{{ ns.OUTPUT_DIR }}"
+# ns.LOGGING_DIR: "{{ ns.LOGGING_DIR }}"
+# ns.CREATE_NEW_MODEL: {{ ns.CREATE_NEW_MODEL }}
+# ns.SAVE_MODEL: {{ ns.SAVE_MODEL }}
+# ns.TRAIN: {{ ns.TRAIN }}
+# ns.EVAL: {{ ns.EVAL }}
 << endblock variable_listing
 -- endfilter
 
@@ -136,25 +122,16 @@
 -- endfilter
 
 
-== h2('Pre-Config')
-
+== h1('Configuration Output')
 -- filter trim()
--- block pre_config
-# Undefined
--- endblock pre_config
--- endfilter
-
-
-== h1('TrainingScriptConfig')
--- filter trim()
--- block output_configuration required
-## Undefined
+-- block output_configuration
+output_dir: "{{ ns.OUTPUT_DIR }}"
+logging_dir: "{{ns.LOGGING_DIR}}"
+experiment_name: "{{ ns.EXPERIMENT_NAME }}"
+experiment_description: "{{ ns.EXPERIMENT_DESCRIPTION }}"
+trainer: *trainer
+do_save: {{ ns.SAVE_MODEL }}
+do_train: {{ ns.TRAIN }}
+do_eval: {{ ns.EVAL }}
 -- endblock output_configuration
 -- endfilter
-
-
-== h2('Post-Config')
-
--- block trailer
-# Undefined
--- endblock trailer
