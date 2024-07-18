@@ -33,6 +33,16 @@ def register_for_auto_class(object, /, *args, **kwargs):
     return object
 
 
+def add_special_tokens(tokenizer, token_map):
+    """
+    Add additional special tokens to a tokenizer
+
+    Useful when a predefined tokenizer is missing a required token.
+    """
+    tokenizer.add_special_tokens(token_map)
+    return tokenizer
+
+
 @main_process_first()
 def build_rule(
     target: str | os.PathLike,
@@ -59,3 +69,41 @@ def build_rule(
         if output is not None:
             return output
     return loader()
+
+
+torch_dtype_map = None
+
+
+def torch_dtype(type: str):
+    global torch_dtype_map
+    if torch_dtype_map is None:
+        import torch
+
+        torch_dtype_map = {
+            "float32": torch.float32,
+            "float": torch.float,
+            "float64": torch.float64,
+            "double": torch.double,
+            "float16": torch.float16,
+            "half": torch.half,
+            "bfloat16": torch.bfloat16,
+            "complex32": torch.complex32,
+            "complex64": torch.complex64,
+            "complex128": torch.complex128,
+            "uint8": torch.uint8,
+            "uint16": torch.uint16,
+            "uint32": torch.uint32,
+            "uint64": torch.uint64,
+            "int8": torch.int8,
+            "int16": torch.int16,
+            "int32": torch.int32,
+            "int64": torch.int64,
+            "bool": torch.bool,
+            "quint8": torch.quint8,
+            "qint8": torch.qint8,
+            "qint32": torch.qint32,
+            "quint4x2": torch.quint4x2,
+            "float8_e4m3fn": torch.float8_e4m3fn,
+            "float8_e5m2": torch.float8_e5m2,
+        }
+    return torch_dtype_map[type]

@@ -62,7 +62,7 @@
     eos_token: "{{ tok_def.eos_token }}"
     unk_token: "{{ tok_def.unk_token }}"
     pad_token: "{{ tok_def.pad_token }}"
-    return_special_tokens_mask: False
+    return_special_tokens_mask: True
     model_max_length: {{ tok_def.model_max_length }}
     padding_side: "right"
     truncation_side: "right"

@@ -1,4 +1,4 @@
-from typing import Sequence, Mapping, Hashable
+from typing import Sequence, Mapping, Hashable, Sized
 
 
 # A simple constructor which simply gets the key from the object.
@@ -20,6 +20,10 @@ def values(obj: Mapping):
 
 def keys(obj: Mapping):
     return list(obj.keys())
+
+
+def length(obj: Sized):
+    return len(obj)
 
 
 def items(obj: Mapping):

@@ -131,6 +131,9 @@ class Trainer(BaseTrainer):
             self.device = (
                 torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
             )
+        # Override for debug.
+        if self.args.use_cpu:
+            self.device = "cpu"
 
     def _prepare(self, train_dataset, eval_dataset) -> None:
         """

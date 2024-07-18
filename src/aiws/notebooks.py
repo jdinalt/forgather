@@ -55,7 +55,7 @@ def list_templates(templates: Iterator[Tuple[str, str]], title: str = ""):
     """
     md = f"{title}"
     for template_name, template_path in templates:
-        md += f"- [{template_name}]({template_path})\n"
+        md += f"- [{template_name}]({os.path.relpath(template_path)})\n"
     display.display(display.Markdown(md))
 
 
@@ -63,7 +63,7 @@ def display_referenced_templates_tree(environment, path, title=""):
     s = f"{title}"
     # Yields # tuple(level: int, name: str, path: str)
     for level, name, path in environment.find_referenced_templates(path):
-        s += f"{' ' * 4 * level}- [{name}]({path})\n"
+        s += f"{' ' * 4 * level}- [{name}]({os.path.relpath(path)})\n"
     display.display(display.Markdown(s))
 
 

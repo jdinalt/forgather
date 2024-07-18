@@ -113,6 +113,7 @@ class TrainingArguments:
     logging_first_step: bool = False
     eval_delay: int = 0
     save_total_limit: int = 2
+    use_cpu: bool = False
 
     def __post_init__(self):
         if self.logging_dir is None:

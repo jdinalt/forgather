@@ -3,11 +3,16 @@
 -- filter trim()
 
 -- block datasets_meta_config
+-- set datasets_ns.name = "Undefined"
+-- set datasets_ns.description = ""
+-- set datasets_ns.source = ""
 -- set datasets_ns.train_dataset_split = "train"
 -- set datasets_ns.eval_dataset_split = "validation"
 ## The callable used for loading
 -- set datasets_ns.train_load_method = "datasets:load_dataset"
 -- set datasets_ns.eval_load_method = "datasets:load_dataset"
+-- set datasets_ns.train_select = 1.0
+-- set datasets_ns.eval_select = 1.0
 ## The following args are required
 ## -- set datasets_ns.train_dataset_id = "dataset_id_or_path"
 ## -- set datasets_ns.eval_dataset_id = "dataset_id_or_path"
@@ -24,8 +29,11 @@
 
 -- endfilter
 -- block datasets_header
+# Name: {{ datasets_ns.name }}
+# Define: {{ datasets_ns.description }}
+# Source: {{ datasets_ns.source }}
 # Train Dataset: "{{ datasets_ns.train_dataset_id }}" : "{{ datasets_ns.train_dataset_split }}"
-# Eval Dataset: "{{ datasets_ns.eval_dataset_id }}" : "{{ datasets_ns.eval_dataset_id }}"
+# Eval Dataset: "{{ datasets_ns.eval_dataset_id }}" : "{{ datasets_ns.eval_dataset_split }}"
 << endblock datasets_header
 
 
@@ -38,6 +46,7 @@
         - "{{ datasets_ns.train_dataset_id }}"
 << endblock load_train_dataset
 -- endfilter
+
 
 -- filter trim()
 
@@ -64,16 +73,40 @@
 -- endfilter
 
 
+== h3('Tokenize Args')
+
+-- filter trim()
+-- block tokenize_args
+## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
+.define: &tokenize_args
+    truncation: True
+<< endblock tokenize_args
+-- endfilter
+
+
 == h3('Tokenized Datasets')
 
 -- filter trim()
 -- block datasets
+    -- filter trim()
+    -- block tokenize_train
 .define: &train_dataset !callable:aiws.datasets:tokenize_dataset
     dataset: *train_dataset_split
     tokenizer: *tokenizer
+    select: {{ datasets_ns.train_select }}
+    <<: *tokenize_args
+    << endblock tokenize_train
+    -- endfilter
 
+
+    -- filter trim()
+    -- block tokenize_eval
 .define: &eval_dataset !callable:aiws.datasets:tokenize_dataset
     dataset: *eval_dataset_split
     tokenizer: *tokenizer
+    select: {{ datasets_ns.eval_select }}
+    <<: *tokenize_args
+    << endblock tokenize_eval
+    -- endfilter
 << endblock datasets
 -- endfilter

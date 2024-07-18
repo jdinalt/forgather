@@ -1,4 +1,4 @@
--- extends 'models/custom_model.yaml'
+-- extends 'models/custom_causal_lm.yaml'
 
 -- block model_meta_config
     == super()
@@ -16,5 +16,5 @@
 -- block model_config
 .define: &model_config
     #  Vanilla Transformer Defaults
-    vocab_size: !callable:forgather.construct:get_attr [ *tokenizer, vocab_size ]
+    vocab_size: !callable:forgather.construct:length [ *tokenizer ]
 << endblock model_config

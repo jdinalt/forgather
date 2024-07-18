@@ -1,0 +1,11 @@
+-- extends 'datasets/base_datasets.yaml'
+
+-- block datasets_meta_config
+    == super()
+    -- set datasets_ns.name = "TinyStories"
+    -- set datasets_ns.description = "Dataset containing synthetically generated (by GPT-3.5 and GPT-4) short stories that only use a small vocabulary."
+    -- set datasets_ns.source = "https://arxiv.org/abs/2305.07759"
+    -- set datasets_ns.train_dataset_id = "roneneldan/TinyStories"
+    -- set datasets_ns.eval_dataset_id = "roneneldan/TinyStories"
+    -- set datasets_ns.eval_select = 500
+-- endblock datasets_meta_config

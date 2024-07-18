@@ -1,0 +1,40 @@
+-- set model_def = namespace()
+-- from 'inc/formatting.jinja' import h2, h3, sep
+-- filter trim()
+-- block model_meta_config
+    -- set model_def.name = "Base Language Model"
+    -- set model_def.description = ""
+<< endblock model_meta_config
+
+
+-- block model_header
+# Name: {{ model_def.name }}
+# Description: {{ model_def.description }}
+<< endblock model_header
+-- endfilter ## trim()
+
+
+== h3('Tokenizer')
+
+-- filter trim()
+-- block model_tokenizer required
+## Undefined
+<< endblock model_tokenizer
+-- endfilter
+
+
+== h3('Model Config')
+
+-- filter trim()
+-- block model_config
+<< endblock model_config
+-- endfilter
+
+
+== h3('Model Constructor')
+
+-- filter trim()
+-- block model_constructor required
+## Undefined
+<< endblock model_constructor
+-- endfilter

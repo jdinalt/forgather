@@ -1,0 +1,17 @@
+-- extends 'models/causal_lm_from_pretrained.yaml'
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = ns.MODEL_NAME
+    -- set model_def.description = "Load locally save model from disk."
+    -- set model_def.model_id_or_path = ns.OUTPUT_DIR
+<< endblock model_meta_config
+
+
+-- block model_constructor
+.define: &model !callable:transformers:AutoModelForCausalLM.from_pretrained
+    args: [ "{{ model_def.model_id_or_path }}" ]
+    kwargs:
+        trust_remote_code: True
+        <<: *model_constructor_args
+<< endblock model_constructor

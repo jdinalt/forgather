@@ -1,0 +1,8 @@
+-- extends 'project.yaml'
+
+-- block experiment_metadata
+    == super()
+    -- set ns.EXPERIMENT_DESCRIPTION = "Default model"
+    -- set ns.SAVE_MODEL = True
+    -- set ns.CREATE_NEW_MODEL = False
+-- endblock experiment_metadata

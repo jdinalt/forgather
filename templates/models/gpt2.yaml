@@ -1,0 +1,26 @@
+-- extends "models/causal_lm_from_config.yaml"
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "OpenAI GPT2"
+    -- set model_def.description = ""
+    -- set model_def.source = "https://huggingface.co/docs/transformers/v4.42.0/en/model_doc/gpt2"
+    -- set model_def.gpt2_model_id = "openai-community/gpt2"
+<< endblock model_meta_config
+
+
+-- block model_tokenizer
+## The base-tokenizer is missing the PAD token, so we add it here.
+.define: &tokenizer !callable:aiws.construct:add_special_tokens
+    tokenizer:
+        !callable:transformers:AutoTokenizer.from_pretrained
+        - "{{ model_def.tokenizer_path_or_id }}"
+    token_map:
+        pad_token: "[PAD]"
+<< endblock model_tokenizer
+
+
+-- block model_custom_definition
+    -- set model_def.model_config_id = model_def.gpt2_model_id
+    -- set model_def.tokenizer_path_or_id = model_def.gpt2_model_id
+<< endblock model_custom_definition

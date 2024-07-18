@@ -37,6 +37,7 @@
     save_strategy: "no"
     logging_strategy: "steps"
     lr_scheduler_type: "constant"
+    ## use_cpu: True ; Set in config for debugging
 << endblock trainer_args
 -- endfilter
 

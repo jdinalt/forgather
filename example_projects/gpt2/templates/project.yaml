@@ -1,11 +1,13 @@
 ## Project level definitions and overrides go here.
 -- extends "train_scripts/causal_language_model.yaml"
+-- from "model_ctor/args.yaml" import use_flash_attn2
 
 ## Set Project level defaults
 -- block experiment_metadata
     == super()
-    -- set ns.EXPERIMENT_NAME = "Project Name"
-    -- set ns.EXPERIMENT_DESCRIPTION = "An example configuration"
+    -- set ns.EXPERIMENT_NAME = "GPT2 From Scratch"
+    -- set ns.EXPERIMENT_DESCRIPTION = "Train the base GPT2 model from scratch."
+    -- set ns.SAVE_MODEL = True
 -- endblock experiment_metadata
 
 
@@ -13,6 +15,14 @@
     -- set ASSETS_DIR = normpath(path_join(project_directory, '..', '..'))
     -- include 'paths/default_paths.yaml'
 -- endblock base_directories
+
+
+## Enables flash-attention2
+## Disable this block, if your hardware does not support this.
+-- block model_constructor_args
+.define: &model_constructor_args
+    == use_flash_attn2
+-- endblock model_constructor_args
 
 
 -- block datasets_definition
@@ -31,9 +41,13 @@
     -- include 'project.model_config'
 -- endblock construct_new_model
 
+#-------------------- project.model_config --------------------
+-- extends "models/gpt2.yaml"
+
+
 #-------------------- project.trainer_config --------------------
 ## Select one-of:
-## trainers/( trainer.yaml | accel_trainer.yaml | hf_trainer.yaml )
+## trainers/( trainer.yaml | accel_trainer.yaml | trainer.yaml )
 -- extends 'trainers/trainer.yaml'
 
 
@@ -45,20 +59,12 @@
 
 -- block trainer_args
     == super()
-    
     # Project Overrides
-    per_device_train_batch_size: 64
-    per_device_eval_batch_size: 64
+    per_device_train_batch_size: 4
+    per_device_eval_batch_size: 4
     logging_steps: 100
-    eval_steps: 500
+    eval_steps: 1000
+    learning_rate: 1.0e-3
+    lr_scheduler_type: "cosine"
+    max_steps: 2000
 -- endblock trainer_args
-
-#-------------------- project.model_config --------------------
--- extends 'models/tiny_d128_l2.yaml'
-
--- block model_config
-    == super()
-    
-    # Project Overrides
-    hidden_size: 256
--- endblock model_config

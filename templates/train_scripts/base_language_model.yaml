@@ -80,6 +80,13 @@
 == h2('Model')
 
 -- filter trim()
+-- block model_constructor_args
+## .define: &model_constructor_args
+-- endblock model_constructor_args
+-- endfilter
+
+
+-- filter trim()
 -- block model_definition required
 ## .define: &tokenizer
 ## .define: &model

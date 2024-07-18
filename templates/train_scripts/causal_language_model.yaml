@@ -1,15 +1,21 @@
 -- extends "train_scripts/base_language_model.yaml"
 -- from 'inc/formatting.jinja' import h2, sep
 
+
+-- block model_constructor_args
+.define: &model_constructor_args {}
+-- endblock model_constructor_args
+
+
 -- block model_definition
 -- filter trim()
     -- if ns.CREATE_NEW_MODEL
         -- block construct_new_model
-# Undefined
+# Undefined model constructor
         << endblock construct_new_model
     -- else
         -- block load_model
-            -- include 'models/load_custom_model.yaml'
+            -- include 'models/load_local_model.yaml'
         << endblock load_model
     -- endif
 -- endfilter
@@ -22,6 +28,9 @@
 
 
 -- block datacollator
+# Data collator for causal model
+# Batches are dynamically padded to longest sequence
+# labels are set to input_ids, with pad tokens set to -100
 .define: &data_collator !callable:transformers:DataCollatorForLanguageModeling
     args:
         - *tokenizer
