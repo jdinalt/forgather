@@ -48,7 +48,7 @@
 #-------------------- project.trainer_config --------------------
 ## Select one-of:
 ## trainers/( trainer.yaml | accel_trainer.yaml | trainer.yaml )
--- extends 'trainers/trainer.yaml'
+-- extends 'trainers/accel_trainer.yaml'
 
 
 -- block trainer_meta_config

@@ -1,11 +1,13 @@
 ## Project level definitions and overrides go here.
 -- extends "train_scripts/causal_language_model.yaml"
+-- from "model_ctor/args.yaml" import use_flash_attn2
 
 ## Set Project level defaults
 -- block experiment_metadata
     == super()
-    -- set ns.EXPERIMENT_NAME = "Project Name"
-    -- set ns.EXPERIMENT_DESCRIPTION = "An example configuration"
+    -- set ns.EXPERIMENT_NAME = "Micro Llama"
+    -- set ns.EXPERIMENT_DESCRIPTION = "Train a tiny LLama model from scratch."
+    -- set ns.SAVE_MODEL = True
 -- endblock experiment_metadata
 
 
@@ -15,8 +17,16 @@
 -- endblock base_directories
 
 
+-- block model_constructor_args
+# Enables flash-attention2
+# Disable this block if your hardware does not support flash-attn2.
+.define: &model_constructor_args
+    == use_flash_attn2
+-- endblock model_constructor_args
+
+
 -- block datasets_definition
-    -- include 'project.datasets'
+    -- include 'datasets/tiny_stories_pretokenized_2k.yaml'
 -- endblock datasets_definition
 
 
@@ -31,18 +41,13 @@
     -- include 'project.model_config'
 -- endblock construct_new_model
 
-#-------------------- project.datasets --------------------
--- extends 'datasets/base_datasets.yaml'
+#-------------------- project.model_config --------------------
+-- extends "models/micro_llama.yaml"
 
--- block datasets_meta_config
-    == super()
-    -- set datasets_ns.train_dataset_id = "roneneldan/TinyStories"
-    -- set datasets_ns.eval_dataset_id = "roneneldan/TinyStories"
--- endblock datasets_meta_config
 
 #-------------------- project.trainer_config --------------------
 ## Select one-of:
-## trainers/( trainer.yaml | accel_trainer.yaml | hf_trainer.yaml )
+## trainers/( trainer.yaml | accel_trainer.yaml | trainer.yaml )
 -- extends 'trainers/accel_trainer.yaml'
 
 
@@ -54,13 +59,12 @@
 
 -- block trainer_args
     == super()
-    
     # Project Overrides
     per_device_train_batch_size: 64
     per_device_eval_batch_size: 64
     logging_steps: 100
     eval_steps: 500
+    ##learning_rate: 1.0e-3
+    ##lr_scheduler_type: "cosine"
+    max_steps: 2000
 -- endblock trainer_args
-
-#-------------------- project.model_config --------------------
--- extends 'models/tiny_d128_l2.yaml'

@@ -4,6 +4,6 @@ searchdir:
     - "templates"
     - "{{ path_join(main_dir, 'templates') }}"
 
-config_prefix: "experiments"
+config_prefix: "configs"
 system_path: "{{ path_join(main_dir, 'src') }}"
 train_script: "{{ path_join(main_dir, 'scripts', 'train_script.py') }}"

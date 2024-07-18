@@ -20,13 +20,11 @@
 -- endblock datasets_definition
 
 
-# Override default trainer definition
 -- block trainer_definition
     -- include 'project.trainer_config'
 -- endblock trainer_definition
 
 
-# Override default model defintion
 -- block construct_new_model
     -- include 'project.model_config'
 -- endblock construct_new_model
