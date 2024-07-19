@@ -1,0 +1,20 @@
+-- extends 'projects/tiny_experiment.yaml'
+
+-- block experiment_metadata
+    == super()
+    -- set ns.EXPERIMENT_NAME = "Exclude Params"
+    -- set ns.EXPERIMENT_DESCRIPTION = "Exclude bias and layer norm from weight_decay."
+-- endblock experiment_metadata
+
+-- block trainer_definition
+    -- include 'experiment.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- experiment.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+-- block trainer_constructor
+    == super()
+    # Add custom optimizer factory, which excludes the selected parameters.
+    optimizer_factory: !callable:{{ path_join(ns.PROJECT_DIR , 'optifactory.py') }}:OptiFactory
+<< endblock trainer_constructor

@@ -6,6 +6,13 @@ import re
 from jinja2 import FileSystemLoader, StrictUndefined, Undefined
 from jinja2.ext import Extension
 from jinja2.sandbox import SandboxedEnvironment
+from platformdirs import (
+    user_data_dir,
+    user_cache_dir,
+    user_config_dir,
+    site_data_dir,
+    site_config_dir,
+)
 
 from .utils import format_line_numbers
 
@@ -173,3 +180,10 @@ class PPEnvironment(SandboxedEnvironment):
         self.globals["time_ns"] = lambda: str(time.time_ns())
         self.globals["path_join"] = _os_path_join
         self.globals["normpath"] = _os_path_normpath
+        self.globals["user_home_dir"] = os.path.expanduser("~")
+        # https://pypi.org/project/platformdirs/
+        self.globals["user_data_dir"] = user_data_dir
+        self.globals["user_cache_dir"] = user_cache_dir
+        self.globals["user_config_dir"] = user_config_dir
+        self.globals["site_data_dir"] = site_data_dir
+        self.globals["site_config_dir"] = site_config_dir

@@ -12,6 +12,6 @@
     # {{ model_def.name }} Defaults
     hidden_size: 128
     dim_feedforward: 512
-    num_attention_heads: 1
-    num_hidden_layers: 2
+    num_attention_heads: 2
+    num_hidden_layers: 4
 << endblock model_config

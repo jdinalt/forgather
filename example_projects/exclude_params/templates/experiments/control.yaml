@@ -1,0 +1,7 @@
+-- extends 'projects/tiny_experiment.yaml'
+
+-- block experiment_metadata
+    == super()
+    -- set ns.EXPERIMENT_NAME = "Control"
+    -- set ns.EXPERIMENT_DESCRIPTION = ""
+-- endblock experiment_metadata

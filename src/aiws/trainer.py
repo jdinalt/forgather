@@ -41,11 +41,11 @@ class TrainerState(BaseTrainerState):
 
 
 # For compatible with return-type of HF Trainer.
-def default_optimizer_factory(params, training_args):
+def default_optimizer_factory(model, training_args):
     """
     Construct the default optimizer
     """
-    return torch.optim.AdamW(params, lr=training_args.learning_rate)
+    return torch.optim.AdamW(model.parameters, lr=training_args.learning_rate)
 
 
 def default_lr_scheduler_factory(optimizer, num_training_steps, training_args):
@@ -159,9 +159,7 @@ class Trainer(BaseTrainer):
             )
             self._update_training_steps()
             if self.optimizer is None:
-                self.optimizer = self.optimizer_factory(
-                    self.model.parameters(), self.args
-                )
+                self.optimizer = self.optimizer_factory(self.model, self.args)
             if self.lr_scheduler is None:
                 self.lr_scheduler = self.lr_scheduler_factory(
                     self.optimizer, self.max_steps, self.args
