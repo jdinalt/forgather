@@ -6,12 +6,19 @@
     -- set model_def.description = "A Plain Vanilla Transformer with 2 layers, d=128, and a 2k tiny_stories tokenizer." 
 -- endblock model_meta_config
 
+
+-- block model_tokenizer
+.define: &tokenizer !callable:transformers:AutoTokenizer.from_pretrained
+    - "{{ path_join(ns.TOKENIZERS_DIR, 'tiny_stories_2k') }}"
+<< endblock model_tokenizer
+
+
 -- block model_config
     == super()
     
     # {{ model_def.name }} Defaults
     hidden_size: 128
     dim_feedforward: 512
-    num_attention_heads: 2
-    num_hidden_layers: 4
+    num_attention_heads: 1
+    num_hidden_layers: 2
 << endblock model_config

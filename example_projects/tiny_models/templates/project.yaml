@@ -1,0 +1,8 @@
+-- extends 'projects/tiny.yaml'
+
+-- block trainer_definition
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'

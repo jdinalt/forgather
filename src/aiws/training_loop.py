@@ -5,14 +5,19 @@ import os
 
 @dataclass(kw_only=True)
 class TrainingScriptConfig:
-    output_dir: os.PathLike | str
-    logging_dir: os.PathLike | str
-    experiment_name: str = "Undefined"
-    experiment_description: str = "Undefined"
-    trainer: Any
-    do_save: bool = False
+    experiment_name: str = ""
+    experiment_description: str = ""
+    project_dir: str = ""
+    models_dir: str = ""
+    tokenizers_dir: str = ""
+    datasets_dir: str = ""
+    model_zoo_dir: str = ""
+    do_save: bool = True
     do_train: bool = True
     do_eval: bool = False
+    output_dir: str
+    logging_dir: str
+    trainer: Any
 
     def __post_init__(self):
         if int(os.environ.get("RANK", 0)) == 0:
@@ -27,6 +32,16 @@ class TrainingScriptConfig:
             if dir is not None and not os.path.isdir(dir):
                 print(f"Creating directory: {dir}")
                 os.makedirs(dir, exist_ok=True)
+
+
+def set_seed(seed: int):
+    from torch import manual_seed as torch_seed
+    from numpy.random import seed as np_seed
+    from random import seed as py_seed
+
+    torch_seed(seed)
+    np_seed(seed)
+    py_seed(seed)
 
 
 def training_loop(project_directory, config_template, backend=None):
@@ -56,6 +71,8 @@ def training_loop(project_directory, config_template, backend=None):
     from forgather.config import load_config, ConfigEnvironment, fconfig, pconfig
     from aiws.config import base_preprocessor_globals, MetaConfig
     from torch.distributed import init_process_group, barrier
+
+    set_seed(42)
 
     # Get Torch Distributed parameters from environ.
     # Provide single-process defautls, if variables are not set.

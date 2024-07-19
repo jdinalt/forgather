@@ -66,5 +66,4 @@
     eval_steps: 1000
     learning_rate: 1.0e-3
     lr_scheduler_type: "cosine"
-    max_steps: 2000
 -- endblock trainer_args

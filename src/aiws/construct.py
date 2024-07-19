@@ -47,8 +47,8 @@ def add_special_tokens(tokenizer, token_map):
 def build_rule(
     target: str | os.PathLike,
     recipe: Callable,
-    prerequisites: List[str | os.PathLike],
     loader: Callable,
+    prerequisites: List[str | os.PathLike] = [],
 ) -> Any:
     assert isinstance(recipe, Callable)
     assert isinstance(loader, Callable)

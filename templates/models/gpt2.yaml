@@ -1,13 +1,11 @@
--- extends "models/causal_lm_from_config.yaml"
+-- extends "models/abstract/causal_lm_from_config.yaml"
 
 -- block model_meta_config
     == super()
     -- set model_def.name = "OpenAI GPT2"
     -- set model_def.description = ""
     -- set model_def.source = "https://huggingface.co/docs/transformers/v4.42.0/en/model_doc/gpt2"
-    -- set model_def.gpt2_model_id = "openai-community/gpt2"
-    -- set model_def.model_config_id = model_def.gpt2_model_id
-    -- set model_def.tokenizer_path_or_id = model_def.gpt2_model_id
+    -- set model_def.model_config_cls = 'transformers:GPT2Config'
 << endblock model_meta_config
 
 
@@ -16,7 +14,16 @@
 .define: &tokenizer !callable:aiws.construct:add_special_tokens
     tokenizer:
         !callable:transformers:AutoTokenizer.from_pretrained
-        - "{{ model_def.tokenizer_path_or_id }}"
+        - "openai-community/gpt2"
     token_map:
         pad_token: "[PAD]"
 << endblock model_tokenizer
+
+
+-- block model_config
+# https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/configuration_gpt2.py
+    == super()
+    n_positions: !callable:forgather.construct:get_attr [ *tokenizer, 'model_max_length' ]
+    bos_token_id: !callable:forgather.construct:get_attr [ *tokenizer, 'bos_token_id' ]
+    eos_token_id: !callable:forgather.construct:get_attr [ *tokenizer, 'eos_token_id' ]
+<< endblock model_config

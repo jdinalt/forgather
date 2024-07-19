@@ -1,0 +1,26 @@
+-- extends "models/llama.yaml"
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Tiny Llama"
+    -- set model_def.description = "A very small llama with a TinyStories 2K vocabulary."
+    -- set model_def.model_config_cls = 'transformers:LlamaConfig'
+    -- set model_def.source = "https://github.com/huggingface/transformers/tree/main/src/transformers/models/llama"
+<< endblock model_meta_config
+
+
+-- block model_tokenizer
+.define: &tokenizer !callable:transformers:AutoTokenizer.from_pretrained
+    - "{{ path_join(ns.TOKENIZERS_DIR, 'tiny_stories_2k') }}"
+<< endblock model_tokenizer
+
+
+-- block model_config
+    == super()
+    hidden_size: 256
+    intermediate_size: 1024
+    num_attention_heads: 2
+    num_key_value_heads: 2
+    num_hidden_layers: 4
+    attention_dropout: 0.0
+<< endblock model_config

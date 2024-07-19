@@ -3,6 +3,7 @@
 
 
 -- block model_constructor_args
+# https://huggingface.co/docs/transformers/en/model_doc/auto
 .define: &model_constructor_args {}
 -- endblock model_constructor_args
 
@@ -15,7 +16,7 @@
         << endblock construct_new_model
     -- else
         -- block load_model
-            -- include 'models/load_local_model.yaml'
+            -- include 'models/abstract/load_model.yaml'
         << endblock load_model
     -- endif
 -- endfilter
@@ -31,6 +32,7 @@
 # Data collator for causal model
 # Batches are dynamically padded to longest sequence
 # labels are set to input_ids, with pad tokens set to -100
+# https://huggingface.co/docs/transformers/en/main_classes/data_collator#transformers.DataCollatorForLanguageModeling
 .define: &data_collator !callable:transformers:DataCollatorForLanguageModeling
     args:
         - *tokenizer

@@ -17,8 +17,7 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "Tiny-d128-2L-1k"
-    -- set model_def.description = "Tiny-d128-2L with a 1k tokenizer" 
+    -- set model_def.description = "Tiny model with 1k tokenizer" 
 -- endblock model_meta_config
 
 ## Replace default tokenizer with custom tokenizer
@@ -33,7 +32,6 @@
     == super()
     -- set tok_def.name = "tiny_1k_bpe"
     -- set tok_def.description = "Smaller tiny tokenizer" 
-    -- set tok_def.template_path = path_join(ns.EXPERIMENT_DIR, '1k.yaml')
     -- set tok_def.output_dir = path_join(ns.TOKENIZERS_DIR, 'tiny_stories_1k')
 -- endblock tokenizer_meta_config
 

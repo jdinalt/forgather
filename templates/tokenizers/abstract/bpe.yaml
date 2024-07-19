@@ -1,4 +1,4 @@
--- extends 'tokenizers/custom_tokenizer.yaml'
+-- extends 'tokenizers/abstract/custom_tokenizer.yaml'
 
 -- block tokenizer_meta_config
     == super()

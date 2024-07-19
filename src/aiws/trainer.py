@@ -45,7 +45,7 @@ def default_optimizer_factory(model, training_args):
     """
     Construct the default optimizer
     """
-    return torch.optim.AdamW(model.parameters, lr=training_args.learning_rate)
+    return torch.optim.AdamW(model.parameters(), lr=training_args.learning_rate)
 
 
 def default_lr_scheduler_factory(optimizer, num_training_steps, training_args):

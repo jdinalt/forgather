@@ -1,3 +1,3 @@
-## Example Project
+## GPT2
 
-This is a simple example project which can be used as a template.
+Train the baseline GPT2 model on Tiny Stories dataset.

@@ -1,0 +1,30 @@
+-- extends "models/abstract/causal_lm_from_config.yaml"
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Llama"
+    -- set model_def.description = "Llama model"
+    -- set model_def.source = ""
+    -- set model_def.model_config_cls = 'transformers:LlamaConfig'
+<< endblock model_meta_config
+
+
+-- block model_tokenizer
+## Select a 'llama-2' tokenizer
+.define: !callable:transformers:AutoTokenizer.from_pretrained
+    args:
+        - "TheBloke/Llama-2-7B-GPTQ"
+    kwargs:
+        legacy: False
+        model_max_length: 4096
+<< endblock model_tokenizer
+
+
+-- block model_config
+# https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/configuration_llama.py
+    == super()
+    max_position_embeddings: !callable:forgather.construct:get_attr [ *tokenizer, 'model_max_length' ]
+    pad_token_id: !callable:forgather.construct:get_attr [ *tokenizer, 'pad_token_id' ]
+    bos_token_id: !callable:forgather.construct:get_attr [ *tokenizer, 'bos_token_id' ]
+    eos_token_id: !callable:forgather.construct:get_attr [ *tokenizer, 'eos_token_id' ]
+<< endblock model_config

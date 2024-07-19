@@ -24,6 +24,7 @@
 -- block trainer_args
 .define: &trainer_args
     # Base Trainer Defaults
+    # https://huggingface.co/docs/transformers/en/main_classes/trainer#transformers.TrainingArguments
     output_dir: "{{ ns.OUTPUT_DIR }}"
     logging_dir: "{{ ns.LOGGING_DIR }}"
     overwrite_output_dir: True

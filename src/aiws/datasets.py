@@ -38,6 +38,7 @@ def tokenize_dataset(
     elif isinstance(select, int):
         dataset = dataset.select(range(0, select))
 
+    print("*** Tokenizing Dataset ***")
     tokenized_data = dataset.map(
         map_fn,
         batched=True,

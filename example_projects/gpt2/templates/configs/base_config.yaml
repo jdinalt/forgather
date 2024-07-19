@@ -1,7 +1,0 @@
--- extends 'project.yaml'
-
--- block experiment_metadata
-    == super()
-    -- set ns.SAVE_MODEL = True
-    -- set ns.CREATE_NEW_MODEL = True
--- endblock experiment_metadata

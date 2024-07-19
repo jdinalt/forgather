@@ -1,0 +1,26 @@
+-- extends "models/gpt2.yaml"
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "OpenAI Tiny GPT2"
+    -- set model_def.description = "A tiny GPT2 with the TinyStories 2K tokenizer"
+    -- set model_def.source = "https://github.com/huggingface/transformers/tree/main/src/transformers/models/gpt2"
+<< endblock model_meta_config
+
+
+-- block model_tokenizer
+.define: &tokenizer !callable:transformers:AutoTokenizer.from_pretrained
+    - "{{ path_join(ns.TOKENIZERS_DIR, 'tiny_stories_2k') }}"
+<< endblock model_tokenizer
+
+
+-- block model_config
+    == super()
+    n_embd: 256
+    n_inner: 1024
+    n_head: 2
+    n_layer: 4
+    attn_pdrop: 0.0
+    embd_pdrop: 0.0
+    resid_pdrop: 0.0
+<< endblock model_config

@@ -135,6 +135,12 @@ def parse_args(args=None):
         action='store_true',
         help="Proccess configuration and exit without train, eval, save, etc."
     )
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=42,
+        help="Set the random seed to this value before loading the configuration."
+    )
 
     args = parser.parse_args(args)
     logger.info(f"args: {args}")
@@ -223,6 +229,7 @@ def save(config):
 @record # Improves diagnostics for distributed training
 def main():
     args = parse_args()
+    set_seed(args.seed)
     init_process(args)
     init_logging(args)
     loaded_config = load_config(args)

@@ -1,0 +1,39 @@
+-- extends 'models/abstract/base_language_model.yaml'
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "HF Language Model"
+    -- set model_def.description = "A newly initialized HF language model"
+    -- set model_def.source = ""
+##  -- set model_def.model_config_cls = '<model configuration cls>'
+<< endblock model_meta_config
+
+
+-- block model_header
+    == super()
+
+# model_def.source = "{{ model_def.source }}"
+# model_def.model_config_cls = "{{ model_def.model_config_cls }}"
+<< endblock model_header
+
+
+##-- block model_tokenizer
+##.define: &tokenizer !callable:transformers:AutoTokenizer.from_pretrained
+##    - "tokenizer_path_or_id"
+##<< endblock model_tokenizer
+
+
+-- block model_config
+.define: &model_config !callable:{{ model_def.model_config_cls }}
+    vocab_size: !callable:forgather.construct:length [ *tokenizer ]
+<< endblock model_config
+
+
+-- block model_constructor
+# Custom transformer model; registers for AutoClass and will save code with weights.
+.define: &model !callable:transformers:AutoModelForCausalLM.from_config
+    args:
+        - *model_config
+    kwargs:
+        <<: *model_constructor_args
+<< endblock model_constructor

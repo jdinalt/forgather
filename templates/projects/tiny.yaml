@@ -6,8 +6,8 @@
 
 -- block experiment_metadata
     == super()
-    -- set ns.EXPERIMENT_NAME = "Tiny Experiment Projects"
-    -- set ns.EXPERIMENT_DESCRIPTION = "A template for running tiny model experiments."
+    -- set ns.EXPERIMENT_NAME = "Tiny Experiments"
+    -- set ns.EXPERIMENT_DESCRIPTION = "A project template for running tiny model experiments."
 -- endblock experiment_metadata
 
 
@@ -23,16 +23,16 @@
 
 
 -- block trainer_definition
-    -- include 'project.trainer_config'
+    -- include 'tiny.trainer_config'
 -- endblock trainer_definition
 
 
 -- block construct_new_model
-    -- include 'project.model_config'
+    -- include 'tiny.model_config'
 -- endblock construct_new_model
 
 
-#-------------------- project.trainer_config --------------------
+#-------------------- tiny.trainer_config --------------------
 -- extends 'trainers/trainer.yaml'
 
 -- block trainer_meta_config
@@ -51,5 +51,5 @@
     max_steps: 4000
 -- endblock trainer_args
 
-#-------------------- project.model_config --------------------
--- extends 'models/tiny_d128_l2.yaml'
+#-------------------- tiny.model_config --------------------
+-- extends 'models/tiny/tiny.yaml'

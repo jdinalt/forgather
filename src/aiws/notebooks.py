@@ -160,7 +160,7 @@ def show_project_readme(project_dir):
     if os.path.exists(md_path):
         with open(md_path, "r") as f:
             md = f.read()
-    display.display(display.Markdown(md))
+        display.display(display.Markdown(md))
 
 
 def delete_dir(target, prompt):

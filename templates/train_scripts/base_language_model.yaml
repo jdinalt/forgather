@@ -9,7 +9,7 @@
     -- set ns.EXPERIMENT_DESCRIPTION = "Undefined"
     -- set ns.MODEL_NAME = "default_model"
     -- set ns.CREATE_NEW_MODEL = True
-    -- set ns.SAVE_MODEL = False
+    -- set ns.SAVE_MODEL = True
     -- set ns.TRAIN = True
     -- set ns.EVAL = False
 -- endblock experiment_metadata
@@ -132,10 +132,15 @@
 == h1('Configuration Output')
 -- filter trim()
 -- block output_configuration
-output_dir: "{{ ns.OUTPUT_DIR }}"
-logging_dir: "{{ns.LOGGING_DIR}}"
 experiment_name: "{{ ns.EXPERIMENT_NAME }}"
 experiment_description: "{{ ns.EXPERIMENT_DESCRIPTION }}"
+project_dir: "{{ ns.PROJECT_DIR }}"
+models_dir: "{{ ns.MODELS_DIR }}"
+tokenizers_dir: "{{ ns.TOKENIZERS_DIR }}"
+datasets_dir: "{{ ns.DATASETS_DIR }}"
+model_zoo_dir: "{{ ns.MODEL_ZOO_DIR }}"
+output_dir: "{{ ns.OUTPUT_DIR }}"
+logging_dir: "{{ns.LOGGING_DIR}}" 
 trainer: *trainer
 do_save: {{ ns.SAVE_MODEL }}
 do_train: {{ ns.TRAIN }}

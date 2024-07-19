@@ -8,7 +8,7 @@
     -- block experiment_info
 # Additional data to record to experiment loggers
 .define: &experiment_info
-    date: "{{ utcnow }}"
+    date: "{{ utcnow() }}"
     name: "{{ ns.EXPERIMENT_NAME }}"
     description: "{{ ns.EXPERIMENT_DESCRIPTION }}"
     args: {{script_args}}
