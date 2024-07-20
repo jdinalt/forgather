@@ -23,7 +23,7 @@ class AccelTrainer(Trainer):
         self.accelerator = Accelerator(**self.args.accelerator_args)
 
         # Accel uses a special device target
-        self.device = self.accelerator.device
+        self.args.device = self.accelerator.device
         # Update process info
         self.is_local_process_zero = self.accelerator.is_local_main_process
         self.is_world_process_zero = self.accelerator.is_main_process

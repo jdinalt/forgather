@@ -14,7 +14,7 @@ from .trainer_types import (
 )
 
 
-class ProgressCallback(TrainerCallback):
+class ProgressCallback:
     """
     A TQDM progress-bar callback class based upon:
     https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_callback.py
@@ -93,7 +93,7 @@ class ProgressCallback(TrainerCallback):
             return format_mapping(record)
 
 
-class InfoCallback(TrainerCallback):
+class InfoCallback:
     def on_train_begin(
         self,
         args: TrainingArguments,

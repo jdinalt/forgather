@@ -127,13 +127,13 @@ class Trainer(BaseTrainer):
         # Holds the mean loss for the most recent train log-step
         self.mean_train_loss = float("NaN")
         # If unspecified, set a default device
-        if self.device is None:
-            self.device = (
+        if self.args.device is None:
+            self.args.device = (
                 torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
             )
         # Override for debug.
         if self.args.use_cpu:
-            self.device = "cpu"
+            self.args.device = "cpu"
 
     def _prepare(self, train_dataset, eval_dataset) -> None:
         """
@@ -237,7 +237,7 @@ class Trainer(BaseTrainer):
         The inner evaluation loop
         """
         with set_train(self.model, False):
-            total_loss = torch.zeros(1, device=self.device)
+            total_loss = torch.zeros(1, device=self.args.device)
             step = 0
             for step, batch in enumerate(self.eval_dataloader):
                 loss, _, _ = self._prediction_step(self._prepare_batch(batch))
@@ -330,9 +330,9 @@ class Trainer(BaseTrainer):
             first_step=self.args.eval_delay,
         )
         # Tracks mean loss for each log-step
-        log_step_loss = torch.zeros(1, device=self.device)
+        log_step_loss = torch.zeros(1, device=self.args.device)
         # Tracks mean loss for whole session.
-        total_loss = torch.zeros(1, device=self.device)
+        total_loss = torch.zeros(1, device=self.args.device)
 
         return PrivateTrainerState(
             start_time=start_time,
@@ -406,7 +406,7 @@ class Trainer(BaseTrainer):
         Performs any required steps to ready the data for the model to process.
         For example, normal torch training requires moving the batch to the target device.
         """
-        return {k: v.to(self.device) for k, v in batch.items()}
+        return {k: v.to(self.args.device) for k, v in batch.items()}
 
     def _reduce_loss(self, loss: Tensor) -> Tensor:
         return loss

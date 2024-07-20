@@ -68,7 +68,6 @@ class BaseTrainer(ExtensibleTrainer):
         self.optimizer = None
         self.lr_scheduler = None
         self.state = None
-        self.device = self.args.device
         self.is_local_process_zero = True
         self.is_world_process_zero = True
         self.num_processes = 1
@@ -96,7 +95,7 @@ class BaseTrainer(ExtensibleTrainer):
         The main entry point to start training the model.
         """
         self._prepare(train_dataset=self.train_dataset, eval_dataset=self.eval_dataset)
-        self.model = self.model.to(self.device)
+        self.model = self.model.to(self.args.device)
         return self._train_loop()
 
     def evaluate(
@@ -111,7 +110,7 @@ class BaseTrainer(ExtensibleTrainer):
             assert isinstance(eval_dataset, Dataset)
 
         self._prepare(train_dataset=None, eval_dataset=eval_dataset)
-        self.model = self.model.to(self.device)
+        self.model = self.model.to(self.args.device)
         return self._eval_loop()
 
     def save_model(self, output_dir: os.PathLike | str = None) -> None:
@@ -225,9 +224,9 @@ class BaseTrainer(ExtensibleTrainer):
                 continue
 
             new_control = event_handler(
-                self.args,
-                self.state,
-                control,
+                args=self.args,
+                state=self.state,
+                control=control,
                 model=self.model,
                 tokenizer=self.tokenizer,
                 optimizer=self.optimizer,

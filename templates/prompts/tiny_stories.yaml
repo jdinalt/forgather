@@ -1,0 +1,26 @@
+.define: &testprompts
+    - "Alice was so tired when she got back home so she went"
+    - "Jack and Lily liked to watch the moon at night. They noticed that the moon changed its shape every night. Sometimes the moon was big and round, and sometimes it was"
+    - "Jack and Lily saw a rainbow after a rainy day.They were amazed by the colors. Jack said, \"Look, Lily. A rainbow has"
+    - "Jack wanted to read a book, so he went to"
+    - "\"Can cows fly?\" Alice asked her mother."
+    - "\"What do birds like to eat?\" Tom asked his mother."
+    - "\"What language do they speak in France?\" Tom asked his mother."
+    - "If I throw a ball up in the air, eventually it will"
+    - "It was winter and cold outside so his mother told him, \"You should"
+    - "Lily likes cats and dogs. She asked her mom for a dog and her mom said no, so instead she asked"
+    - "Jack told Mary, \"If you give me your banana, I'll give you my apple.\" Mary gave Jack her Banana, so"
+    - "On weekends Jack went to visit his grandmother whereas on weekdays he would go to school. Last weekend, when Jack was on his way to"
+    - "Lily and Ben were having an argument. Ben said that cake is much better than ice cream and Lily said that"
+    - "Lily and Ben are having an argument. They are trying to decide between the park and the swimming pool. Ben says, \"I want to go to the park\". Lily says"
+    - "Jack's mother was not home, and his father was at home. When Jack came home, he said hello to"
+    - "Lily doesn't like swimming. When her father wants to take her to the swimming pool, she says"
+    - "Both Ben and Lily wanted cake. Father said that there was only one piece of cake left. They"
+    - "Ben went to visit Lily in her house, but she was not at home. Ben knocked on the door,"
+
+.define: &generation_config
+    do_sample: True
+    top_k: 20
+    top_p: 0.9
+    temperature: 0.7
+    repitition_penalty: 1.15

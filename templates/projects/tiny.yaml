@@ -17,8 +17,14 @@
 -- endblock base_directories
 
 
+-- block pre_model_setup
+    == super()
+    -- include "prompts/tiny_stories.yaml"
+-- endblock pre_model_setup
+
+
 -- block datasets_definition
-    -- include 'datasets/tiny_stories_pretokenized_2k.yaml'
+    -- include 'datasets/tiny_stories.yaml'
 -- endblock datasets_definition
 
 
@@ -31,6 +37,16 @@
     -- include 'tiny.model_config'
 -- endblock construct_new_model
 
+
+-- block trainer_callbacks
+    == super()
+    - !callable:aiws.textgen_callback:TextgenCallback
+        summary_writer: *summary_writer
+        prompts: *testprompts
+        generation_config: *generation_config
+        max_new_tokens: 40
+        generation_steps: 1000
+<< endblock trainer_callbacks
 
 #-------------------- tiny.trainer_config --------------------
 -- extends 'trainers/trainer.yaml'

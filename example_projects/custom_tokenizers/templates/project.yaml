@@ -2,7 +2,7 @@
 
 -- block experiment_metadata
     == super()
-    -- set ns.SAVE_MODEL = False
+    -- set ns.SAVE_MODEL = True
 -- endblock experiment_metadata
 
 
@@ -16,13 +16,7 @@
 -- endblock construct_new_model
 
 #-------------------- project.datasets --------------------
--- extends 'datasets/base_datasets.yaml'
-
--- block datasets_meta_config
-    == super()
-    -- set datasets_ns.train_dataset_id = "roneneldan/TinyStories"
-    -- set datasets_ns.eval_dataset_id = "roneneldan/TinyStories"
--- endblock datasets_meta_config
+-- extends 'datasets/tiny_stories.yaml'
 
 #-------------------- project.model_config --------------------
 -- extends 'models/tiny/tiny.yaml'

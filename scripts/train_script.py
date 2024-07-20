@@ -1,24 +1,14 @@
 import os
 import argparse
 from argparse import RawTextHelpFormatter
-import random
 import sys
 from typing import Any, Callable, Iterable, Optional, Union, List, Type
 import types
-import importlib
-import time
-import datetime
-import platform
-import yaml
-import gc
 
-from pprint import pformat
-import numpy as np
 from loguru import logger
 import torch
 import torch.distributed as distributed
 from torch.distributed.elastic.multiprocessing.errors import record
-from torch.distributed import get_rank, get_world_size
 import transformers
 import datasets
 
@@ -59,13 +49,6 @@ def init_process(args):
         f"global rank={global_rank}, local rank={local_rank}, "
         f"default_device={torch.cuda.current_device()}"
     )
-    # Instantiating 'transformers.TrainingArguments' initializes torch-distributed.
-    # Skip, if it has already performed the initialization.
-    if not distributed.is_initialized():
-        logger.info("Initializing torch.distributed")
-        distributed.init_process_group(backend=args.torch_backend)
-    else:
-        logger.info("Torch distributed has already been initialized.")
 
 def init_logging(args):
     if int(os.environ['RANK']) == 0:
@@ -129,18 +112,6 @@ def parse_args(args=None):
         default=None,
         help="The torch backend to use."
     )
-    parser.add_argument(
-        '-d',
-        '--dryrun',
-        action='store_true',
-        help="Proccess configuration and exit without train, eval, save, etc."
-    )
-    parser.add_argument(
-        '--seed',
-        type=int,
-        default=42,
-        help="Set the random seed to this value before loading the configuration."
-    )
 
     args = parser.parse_args(args)
     logger.info(f"args: {args}")
@@ -149,79 +120,9 @@ def parse_args(args=None):
     if args.syspath is not None:
         sys.path.insert(0, args.syspath)
     # We only resolve these modules after we know where to look for them.
-    global ConfigEnvironment, base_preprocessor_globals, format_line_numbers
-    global TrainingScriptConfig, MetaConfig
-    
-    from forgather.utils import format_line_numbers
-    from forgather.config import ConfigEnvironment
-    from aiws.config import base_preprocessor_globals, MetaConfig
-    from aiws.training_loop import TrainingScriptConfig
+    global training_loop
+    from aiws.training_loop import training_loop
     return args
-
-class TrainingScriptConfigError(Exception):
-    pass
-
-
-def load_config(args):
-    config_template = args.config_template
-    project_directory = args.project_dir
-
-    meta = MetaConfig(project_directory)
-    config_template_path = os.path.join(meta.config_prefix, config_template)
-    
-    pp_globals = base_preprocessor_globals() | dict(
-        script_args=pformat(args),
-        project_directory=project_directory,
-        world_size=os.environ['WORLD_SIZE'],
-        rank=int(os.environ['RANK']),
-        local_rank=int(os.environ['LOCAL_RANK']),
-    )
-
-    environment = ConfigEnvironment(
-        searchpath=meta.searchpath,
-        globals = pp_globals,
-    )
-
-    loaded_config = environment.load(config_template_path)
-    return loaded_config
-
-
-def write_configuration_log(args, config, preprocessed_config):
-    if config.logging_dir is None:
-        return
-    log_name = config.experiment_name + '_' + str(time.time_ns()) + ".yaml"
-    config_log = os.path.join(config.logging_dir, log_name)
-    
-    with open(config_log, 'w') as file:
-        file.write(preprocessed_config)
-
-def set_seed(seed):
-    """
-    Set random seeds on all libraries we may potentially use.
-    """
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-
-def train(config):
-    trainer = config.trainer
-    train_output = trainer.train()
-    distributed.barrier()
-    if hasattr(trainer, "log_metrics"):
-        metrics = train_output.metrics
-        trainer.log_metrics("train", metrics)
-        trainer.save_metrics("train", metrics)
-    if hasattr(trainer, "save_state"):
-        trainer.save_state()
-    
-def eval(config):
-    trainer = config.trainer
-    gc.collect()
-    torch.cuda.empty_cache()
-    metrics = trainer.evaluate()
-    if hasattr(trainer, "log_metrics"):
-        trainer.log_metrics("eval", metrics)
-        trainer.save_metrics("eval", metrics)
 
 def save(config):
     config.trainer.save_model(config.output_dir)
@@ -229,33 +130,9 @@ def save(config):
 @record # Improves diagnostics for distributed training
 def main():
     args = parse_args()
-    set_seed(args.seed)
     init_process(args)
     init_logging(args)
-    loaded_config = load_config(args)
-    config = TrainingScriptConfig(**loaded_config.config)
-
-    logger.info("*" * 40)
-    logger.info(f"Training started with world-size of {get_world_size()}")
-    logger.debug(f"preprocessed-config:\n{format_line_numbers(loaded_config.pp_config)}")
-    logger.debug(f"config:\n{pformat(config)}")
-    logger.info("*" * 40)
-
-    # Materialize the trainer
-    config.trainer = config.trainer(pp_config=loaded_config.pp_config)
-    
-    if args.dryrun:
-        sys.exit(0)
-
-    logger.debug(config)
-    write_configuration_log(args, config, loaded_config.pp_config)
-
-    if config.do_train:
-        train(config)
-    if config.do_eval:
-        eval(config)
-    if config.do_train and config.do_save:
-        save(config)
+    training_loop(args.project_dir, args.config_template)
 
 if __name__ == "__main__":
     main()

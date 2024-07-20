@@ -11,7 +11,7 @@ from .trainer_types import (
 )
 
 
-class JsonLogger(TrainerCallback):
+class JsonLogger:
     """
     A very simple JSON  logger callback
 
