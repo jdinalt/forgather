@@ -251,6 +251,17 @@ def load_config(config_path: str | os.PathLike, /, **kwargs) -> ConfigDict:
 
     The search path is relative to the CWD and returns a ConfigDict.
     """
-    environment = ConfigEnvironment()
-    config = environment.load(config_path, **kwargs)
+    project_directory, template_name = os.path.split(config_path)
+    assert os.path.exists(
+        project_directory
+    ), f"The directory, '{project_directory}', does not exist."
+    assert os.path.isdir(
+        project_directory
+    ), f"'{project_directory}' is not a directory."
+    assert os.path.isfile(
+        config_path
+    ), f"'The template, '{template_name}', does not exist in '{project_directory}'"
+
+    environment = ConfigEnvironment(searchpath=project_directory)
+    config = environment.load(template_name, **kwargs)
     return config.config

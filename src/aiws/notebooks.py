@@ -38,8 +38,10 @@ def find_file_specs(config):
 
 def display_meta(meta, title=""):
     md = f"{title}"
-    md += f"Project Directory: {meta.project_dir}\n\n"
-    md += f"Meta Config: [{meta.meta_path}]({meta.meta_path})\n\n"
+    relpath = os.path.relpath(meta.project_dir)
+    md += f"Project Directory: {relpath}\n\n"
+    relpath = os.path.relpath(meta.meta_path)
+    md += f"Meta Config: [{relpath}]({relpath})\n\n"
     md += f"Template Search Paths:\n"
     for path in meta.searchpath:
         relpath = os.path.relpath(path)
