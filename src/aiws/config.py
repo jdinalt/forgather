@@ -1,12 +1,26 @@
 from typing import Any, List
 from dataclasses import dataclass, field
 import os
-import platform
-
 from importlib.metadata import version
+import platform
 
 from forgather.config import load_config
 
+def preprocessor_globals(project_directory):
+    return dict(
+        project_directory=project_directory,
+        hostname=platform.node(),
+        uname=platform.uname(),
+        versions={"python": platform.python_version()}
+        | {
+            lib: version(lib)
+            for lib in (
+                "torch",
+                "transformers",
+                "accelerate",
+            )
+        },
+    )
 
 @dataclass()
 class MetaConfig:
@@ -61,23 +75,3 @@ class MetaConfig:
                         if template_name.startswith("/"):
                             template_name = template_name[1:]
                         yield (template_name, template_path)
-
-
-def base_preprocessor_globals():
-    return dict(
-        script_args="N/A",
-        world_size=1,
-        rank=0,
-        local_rank=0,
-        hostname=platform.node(),
-        uname=platform.uname(),
-        versions={"python": platform.python_version()}
-        | {
-            lib: version(lib)
-            for lib in (
-                "torch",
-                "transformers",
-                "accelerate",
-            )
-        },
-    )

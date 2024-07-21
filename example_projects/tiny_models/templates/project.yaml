@@ -1,5 +1,11 @@
 -- extends 'projects/tiny.yaml'
 
+-- block experiment_metadata
+    == super()
+    -- set ns.trainer_class = 'trainers/accel_trainer.yaml'
+-- endblock experiment_metadata
+
+
 -- block trainer_definition
     -- include 'project.trainer_config'
 -- endblock trainer_definition

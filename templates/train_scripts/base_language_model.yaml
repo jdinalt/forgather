@@ -39,9 +39,7 @@
 # {{ utcnow() }}
 # Description: {{ ns.EXPERIMENT_DESCRIPTION }}
 # Model: {{ ns.MODEL_NAME }}
-# World Size: {{ world_size }}
 # Hostname: {{ hostname }}
-# Script Args: {{ script_args }}
 # Versions:
 -- for key, value in versions.items()
     == '#     ' + key + ': ' + value
@@ -65,6 +63,15 @@
 # ns.TRAIN: {{ ns.TRAIN }}
 # ns.EVAL: {{ ns.EVAL }}
 << endblock variable_listing
+-- endfilter
+
+
+== h2('Distributed Environment')
+
+-- filter trim()
+-- block distributed_environment
+.define: &distributed_env !callable:aiws.distributed:DistributedEnvironment
+<< endblock distributed_environment
 -- endfilter
 
 
@@ -132,18 +139,31 @@
 == h1('Configuration Output')
 -- filter trim()
 -- block output_configuration
-experiment_name: "{{ ns.EXPERIMENT_NAME }}"
-experiment_description: "{{ ns.EXPERIMENT_DESCRIPTION }}"
-project_dir: "{{ ns.PROJECT_DIR }}"
-models_dir: "{{ ns.MODELS_DIR }}"
-tokenizers_dir: "{{ ns.TOKENIZERS_DIR }}"
-datasets_dir: "{{ ns.DATASETS_DIR }}"
-model_zoo_dir: "{{ ns.MODEL_ZOO_DIR }}"
-output_dir: "{{ ns.OUTPUT_DIR }}"
-logging_dir: "{{ns.LOGGING_DIR}}" 
-trainer: *trainer
-do_save: {{ ns.SAVE_MODEL }}
-do_train: {{ ns.TRAIN }}
-do_eval: {{ ns.EVAL }}
--- endblock output_configuration
+    -- filter trim()
+    -- block config_meta
+meta: &meta
+    experiment_name: "{{ ns.EXPERIMENT_NAME }}"
+    experiment_description: "{{ ns.EXPERIMENT_DESCRIPTION }}"
+    project_dir: "{{ ns.PROJECT_DIR }}"
+    models_dir: "{{ ns.MODELS_DIR }}"
+    tokenizers_dir: "{{ ns.TOKENIZERS_DIR }}"
+    datasets_dir: "{{ ns.DATASETS_DIR }}"
+    model_zoo_dir: "{{ ns.MODEL_ZOO_DIR }}"
+    output_dir: "{{ ns.OUTPUT_DIR }}"
+    logging_dir: "{{ns.LOGGING_DIR}}"
+    << endblock config_meta
+    -- endfilter
+
+    -- filter trim()
+    -- block training_script
+training_script: !callable:aiws.training_script:TrainingScript
+    meta: *meta
+    do_save: {{ ns.SAVE_MODEL }}
+    do_train: {{ ns.TRAIN }}
+    do_eval: {{ ns.EVAL }}
+    distributed_env: *distributed_env
+    trainer: *trainer
+    << endblock training_script
+    -- endfilter
+<< endblock output_configuration
 -- endfilter

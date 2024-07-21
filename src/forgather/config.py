@@ -38,6 +38,14 @@ class Config:
         self.config = config
         self.pp_config = pp_config
 
+    def get(self):
+        """
+        Returns the config as a tuple
+
+        (self.config, self.pp_config)
+        """
+        return self.config, self.pp_config
+    
     def __repr__(self):
         return (
             f"{type(self).__name__}(config={self.config}, pp_config={self.pp_config})"

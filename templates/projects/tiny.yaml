@@ -8,6 +8,7 @@
     == super()
     -- set ns.EXPERIMENT_NAME = "Tiny Experiments"
     -- set ns.EXPERIMENT_DESCRIPTION = "A project template for running tiny model experiments."
+    -- set ns.trainer_class = 'trainers/trainer.yaml'
 -- endblock experiment_metadata
 
 
@@ -49,7 +50,7 @@
 << endblock trainer_callbacks
 
 #-------------------- tiny.trainer_config --------------------
--- extends 'trainers/trainer.yaml'
+-- extends ns.trainer_class
 
 -- block trainer_meta_config
     == super()
