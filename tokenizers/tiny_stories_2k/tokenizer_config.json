@@ -39,7 +39,7 @@
   "model_max_length": 2048,
   "pad_token": "<|PAD|>",
   "padding_side": "right",
-  "return_special_tokens_mask": false,
+  "return_special_tokens_mask": true,
   "tokenizer_class": "PreTrainedTokenizerFast",
   "truncation_side": "right",
   "unk_token": "<|UNK|>"

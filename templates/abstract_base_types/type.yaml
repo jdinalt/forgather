@@ -1,0 +1,63 @@
+## This template defines a rough outline for training configurations to follow
+## The details should be filled in via a "child" template
+-- set ns = namespace()
+-- from 'inc/formatting.jinja' import h1, h2, h3
+-- filter trim()
+
+-- block config_metadata
+    -- set ns.CONFIG_NAME = "Undefined"
+    -- set ns.CONFIG_DESCRIPTION = "Undefined"
+-- endblock config_metadata
+
+
+-- block base_directories required
+    ## -- set ns.PROJECT_DIR
+    ## -- set ns.MODELS_DIR
+    ## -- set ns.TOKENIZERS_DIR
+    ## -- set ns.DATASETS_DIR
+-- endblock base_directories
+
+
+-- endfilter ## filter trim() setup
+== h1(ns.CONFIG_NAME)
+-- filter trim()
+-- block header
+# {{ utcnow() }}
+# Description: {{ ns.CONFIG_DESCRIPTION }}
+
+# ns.PROJECT_DIR: "{{ ns.PROJECT_DIR }}"
+# ns.MODELS_DIR: "{{ ns.MODELS_DIR }}"
+# ns.TOKENIZERS_DIR: "{{ ns.TOKENIZERS_DIR }}"
+# ns.DATASETS_DIR: "{{ ns.DATASETS_DIR }}"
+<< endblock header
+-- endfilter
+
+
+-- filter trim()
+-- block main_body required
+## Main Body
+<< endblock main_body
+-- endfilter
+
+== h1('Configuration Output')
+-- filter trim()
+-- block config_output
+    -- filter trim()
+    -- block meta_output
+meta: &meta_output
+    config_name: "{{ ns.CONFIG_NAME }}"
+    config_description: "{{ ns.CONFIG_DESCRIPTION }}"
+    project_dir: "{{ ns.PROJECT_DIR }}"
+    models_dir: "{{ ns.MODELS_DIR }}"
+    tokenizers_dir: "{{ ns.TOKENIZERS_DIR }}"
+    datasets_dir: "{{ ns.DATASETS_DIR }}"
+    << endblock meta_output
+    -- endfilter
+
+    -- filter trim()
+    -- block main_output required
+## main:
+    << endblock main_output
+    -- endfilter
+<< endblock config_output
+-- endfilter

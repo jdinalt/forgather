@@ -18,10 +18,10 @@
 
 -- block base_directories required
     ## -- set ns.PROJECT_DIR
-    ## -- set ns.MODEL_ZOO_DIR
     ## -- set ns.MODELS_DIR
     ## -- set ns.TOKENIZERS_DIR
     ## -- set ns.DATASETS_DIR
+    ## -- set ns.MODEL_ZOO_DIR
 -- endblock base_directories
 
 
@@ -148,9 +148,9 @@ meta: &meta
     project_dir: "{{ ns.PROJECT_DIR }}"
     models_dir: "{{ ns.MODELS_DIR }}"
     tokenizers_dir: "{{ ns.TOKENIZERS_DIR }}"
+    output_dir: "{{ ns.OUTPUT_DIR }}"
     datasets_dir: "{{ ns.DATASETS_DIR }}"
     model_zoo_dir: "{{ ns.MODEL_ZOO_DIR }}"
-    output_dir: "{{ ns.OUTPUT_DIR }}"
     logging_dir: "{{ns.LOGGING_DIR}}"
     << endblock config_meta
     -- endfilter

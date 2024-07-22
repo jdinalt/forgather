@@ -1,0 +1,23 @@
+-- extends 'models/abstract/custom_causal_lm.yaml'
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Improved Transformer"
+    -- set model_def.description = "A somewhat improved transformer with ALIBI positional encoding."
+    -- set model_def.cls = 'CausalTransformer'
+    -- set model_def.cfg_cls = 'CausalTransformerConfig'
+    -- set model_def.config_path = path_join(ns.MODEL_ZOO_DIR, 'improved_transformer', 'improved_transformer.py')
+    -- set model_def.model_path = model_def.config_path
+-- endblock model_meta_config
+
+
+-- block model_tokenizer
+.define: &tokenizer !callable:transformers:AutoTokenizer.from_pretrained
+    - "{{ path_join(ns.TOKENIZERS_DIR, 'tiny_stories_2k') }}"
+<< endblock model_tokenizer
+
+
+-- block model_config
+    == super()
+    max_sequence_length: !callable:forgather.construct:get_attr [ *tokenizer, 'model_max_length' ]
+<< endblock model_config

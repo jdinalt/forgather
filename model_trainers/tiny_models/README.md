@@ -13,9 +13,10 @@ This allows for direct comparison of model archetectures.
 - Tokenizer: tokenizers/tiny_2k_bpe.yaml
     - Vocabulary Size: 2000
     - Maximum Model Sequence: 2048
-- Dataset: datasets/tiny_stories_tokenized
+- Dataset: datasets/tiny/tiny_stories_abridged.yaml
     - Dataset ID: roneneldan/TinyStories
     - Reference: https://arxiv.org/abs/2305.07759
+    - Train Select Range: 10% 
 - Model:
     - Model Dimension: 256
     - MLP Dimension: 1024
@@ -24,6 +25,6 @@ This allows for direct comparison of model archetectures.
     - Dropout Probability: 0.0
 - Trainer:
     - Class: aiws.trainer.Trainer
-    - Max Steps: 4000
+    - Epochs: 1
     - Learning Rate: 1.0e-3
     - Batch Size: 16

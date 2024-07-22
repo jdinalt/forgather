@@ -1,0 +1,21 @@
+-- extends 'models/improved_transformer.yaml'
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Improved Tiny"
+<< endblock model_meta_config
+
+
+-- block model_tokenizer
+.define: &tokenizer !callable:transformers:AutoTokenizer.from_pretrained
+    - "{{ path_join(ns.TOKENIZERS_DIR, 'tiny_stories_2k') }}"
+<< endblock model_tokenizer
+
+
+-- block model_config
+    == super()
+    hidden_size: 256
+    dim_feedforward: 1024
+    num_attention_heads: 2
+    num_hidden_layers: 4
+<< endblock model_config

@@ -1,0 +1,27 @@
+## This is just an outline, defining the main blocks from 'type.yaml'
+## It's a starting point for defining a new output type and is intended
+## to be copied.
+-- extends "abstract_base_types/base.yaml"
+
+## Optional
+-- block config_metadata
+    == super()
+-- endblock config_metadata
+
+
+## Optional
+-- block header
+    == super()
+<< endblock header
+
+
+## Required
+-- block main_body
+## Main Body
+<< endblock main_body
+
+
+## Required
+-- block main_output
+## main:
+<< endblock main_output

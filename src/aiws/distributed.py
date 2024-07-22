@@ -95,7 +95,7 @@ class DistributedEnvironment:
         always: bool = False,
     ):
         logger.remove()
-        logger.add(sys.stderr, level="INFO")
+        logger.add(sys.stderr, level="WARNING")
         self.rank = rank
         self.local_rank = local_rank
         self.world_size = world_size

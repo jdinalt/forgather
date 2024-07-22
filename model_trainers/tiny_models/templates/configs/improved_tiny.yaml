@@ -1,0 +1,17 @@
+-- extends 'project.yaml'
+
+-- block experiment_metadata
+    == super()
+    -- set ns.EXPERIMENT_NAME = "Improved Tiny"
+    -- set ns.EXPERIMENT_DESCRIPTION = "A tiny improved transformer."
+    -- set ns.MODEL_NAME = "improved_tiny"
+    -- set ns.LOG_NAME = "improved"
+-- endblock experiment_metadata
+
+
+-- block construct_new_model
+    -- include 'experiment.model_config'
+-- endblock construct_new_model
+
+#-------------------- experiment.model_config --------------------
+-- extends 'models/tiny/improved_tiny.yaml'

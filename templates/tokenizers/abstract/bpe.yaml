@@ -2,8 +2,8 @@
 
 -- block tokenizer_meta_config
     == super()
-    -- set model_def.name = "Custom BPE Tokenizer"
-    -- set model_def.description = "A custom BPE tokenizer definition."
+    -- set tok_def.name = "Custom BPE Tokenizer"
+    -- set tok_def.description = "A custom BPE tokenizer definition."
 ## -- set tok_def.output_dir = "my/output/dir"
 -- endblock tokenizer_meta_config
 
