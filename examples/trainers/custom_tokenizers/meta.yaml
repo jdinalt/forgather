@@ -1,4 +1,4 @@
--- set main_dir = path_join('..', '..')
+-- set main_dir = path_join('..', '..', '..')
 
 searchdir:
     - "templates"

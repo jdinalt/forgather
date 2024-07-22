@@ -12,7 +12,7 @@
 
 
 -- block base_directories
-    -- set ASSETS_DIR = normpath(path_join(project_directory, '..', '..'))
+    -- set ASSETS_DIR = normpath(path_join(project_directory, '..', '..', '..'))
     -- include 'paths/default_paths.yaml'
 -- endblock base_directories
 
