@@ -6,6 +6,13 @@
 -- endblock experiment_metadata
 
 
+-- block base_directories
+    == super()
+    ## Save the output tokenizers in the project directory
+    -- set ns.TOKENIZERS_DIR = path_join(ns.PROJECT_DIR, 'tokenizers')
+-- endblock base_directories
+
+
 -- block datasets_definition
     -- include 'project.datasets'
 -- endblock datasets_definition
@@ -15,8 +22,13 @@
     -- include 'project.model_config'
 -- endblock construct_new_model
 
+
+-- block trainer_definition
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
 #-------------------- project.datasets --------------------
--- extends 'datasets/tiny_stories.yaml'
+-- extends 'datasets/tiny/tiny_stories_abridged.yaml'
 
 #-------------------- project.model_config --------------------
 -- extends 'models/tiny/tiny.yaml'
@@ -28,3 +40,13 @@
 
 #-------------------- project.tokenizer --------------------
 -- extends 'tokenizers/tiny_2k_bpe.yaml'
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+-- block trainer_args
+    == super()
+    # Project Overrides
+    # It seems that a CUDA OOM can occur with the smaller tokenizers; reducing batch size.
+    per_device_train_batch_size: 32
+-- endblock trainer_args

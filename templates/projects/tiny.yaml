@@ -40,14 +40,9 @@
 
 
 -- block trainer_callbacks
-    == super()
-    - !callable:aiws.textgen_callback:TextgenCallback
-        summary_writer: *summary_writer
-        prompts: *testprompts
-        generation_config: *generation_config
-        max_new_tokens: 40
-        generation_steps: 1000
+    -- include 'tiny.callbacks'
 << endblock trainer_callbacks
+
 
 #-------------------- tiny.trainer_config --------------------
 -- extends ns.trainer_class
@@ -60,7 +55,7 @@
 
 -- block trainer_args
     == super()
-    # Project Overrides
+    # Tiny Project Overrides
     per_device_train_batch_size: 64
     per_device_eval_batch_size: 64
     logging_steps: 100
@@ -69,3 +64,27 @@
 
 #-------------------- tiny.model_config --------------------
 -- extends 'models/tiny/tiny.yaml'
+
+#-------------------- tiny.callbacks --------------------
+-- extends 'callbacks/loggers.yaml'
+
+-- block callback_dependencies
+    == super()
+
+    -- filter trim()
+    -- block text_gen_callback_args
+.define: &text_gen_callback_args
+    summary_writer: *summary_writer
+    prompts: *testprompts
+    generation_config: *generation_config
+    max_new_tokens: 40
+    generation_steps: 1000
+    << endblock text_gen_callback_args
+    -- endfilter
+<< endblock callback_dependencies
+
+-- block callback_list
+    == super()
+    - !callable:aiws.textgen_callback:TextgenCallback
+        <<: *text_gen_callback_args
+<< endblock callback_list

@@ -3,15 +3,16 @@
 -- block experiment_metadata
     == super()
     ## Experiment Metadata
-    -- set ns.EXPERIMENT_NAME = "1k tokenizer"
-    -- set ns.EXPERIMENT_DESCRIPTION = "tiny_2k_bpe tokenizer definition with 1k tokens."
-    -- set ns.LOG_NAME = "1k"
+    -- set ns.EXPERIMENT_NAME = "Byte Tokenizer"
+    -- set ns.EXPERIMENT_DESCRIPTION = "tiny_2k_bpe, reduced to the base 256 byte tokens + special tokens."
+    -- set ns.LOG_NAME = "bytes"
 -- endblock experiment_metadata
 
 
 -- block construct_new_model
     -- include 'experiment.model_config'
 -- endblock construct_new_model
+
 
 -- block trainer_callbacks
     -- include 'experiment.callbacks'
@@ -22,7 +23,7 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.description = "Tiny model with 1k tokenizer" 
+    -- set model_def.description = "Tiny model with byte tokenizer" 
 -- endblock model_meta_config
 
 ## Replace default tokenizer with custom tokenizer
@@ -35,15 +36,15 @@
 
 -- block tokenizer_meta_config
     == super()
-    -- set tok_def.name = "tiny_1k_bpe"
-    -- set tok_def.description = "Smaller tiny tokenizer" 
-    -- set tok_def.output_dir = path_join(ns.TOKENIZERS_DIR, 'tiny_stories_1k')
+    -- set tok_def.name = "Tiny Bytes"
+    -- set tok_def.description = "Byte-level BPE tokenizer" 
+    -- set tok_def.output_dir = path_join(ns.TOKENIZERS_DIR, 'tiny_bytes')
 -- endblock tokenizer_meta_config
 
 # Reduce vocabulary to 1000 tokens
 -- block tokenizer_custom_definition
     == super()
-    -- set tok_def.vocab_size = 1000
+    -- set tok_def.vocab_size = 256
 -- endblock tokenizer_custom_definition
 
 #-------------------- experiment.callbacks --------------------
@@ -53,5 +54,5 @@
     == super()
 
     # Override to compensate for less information in each token
-    max_new_tokens: 80
+    max_new_tokens: 300
 << endblock text_gen_callback_args

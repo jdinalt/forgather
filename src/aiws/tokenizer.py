@@ -49,7 +49,9 @@ class TokenizerTrainer:
         print(f"steps: {steps}")
 
         def batch_iterator():
-            train_progress_bar = tqdm(total=steps, dynamic_ncols=True)
+            train_progress_bar = tqdm(
+                total=steps, dynamic_ncols=True, desc="Training Tokenizer"
+            )
             try:
                 for i in range(0, total_samples, batch_size):
                     yield self.train_dataset[i : i + batch_size]["text"]
