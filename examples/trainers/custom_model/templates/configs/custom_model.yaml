@@ -1,11 +1,11 @@
 ## The project defines the defaults
 -- extends 'project.yaml'
 
--- block experiment_metadata
+-- block config_metadata
     == super()
     ## Experiment Metadata
-    -- set ns.EXPERIMENT_NAME = "My ML Science Project"
-    -- set ns.EXPERIMENT_DESCRIPTION = "It's not supid, it's advanced!"
+    -- set ns.CONFIG_NAME = "My ML Science Project"
+    -- set ns.CONFIG_DESCRIPTION = "It's not supid, it's advanced!"
     -- set ns.MODEL_NAME = 'my_custom_model'
 
     ## Initialize a new model from scratch
@@ -13,7 +13,7 @@
 
     ## Save model, when training is complete
     -- set ns.SAVE_MODEL = True
--- endblock experiment_metadata
+-- endblock config_metadata
 
 
 ## Override default project definition
@@ -34,7 +34,7 @@
 -- block trainer_args
     == super()
     
-    # {{ ns.EXPERIMENT_NAME }} Overrides
+    # {{ ns.CONFIG_NAME }} Overrides
     max_steps: 1000
 -- endblock trainer_args
 
@@ -44,6 +44,6 @@
 -- block model_config
     == super()
 
-    # {{ ns.EXPERIMENT_NAME }} Overrides
+    # {{ ns.CONFIG_NAME }} Overrides
     num_hidden_layers: 3
 -- endblock model_config

@@ -1,12 +1,12 @@
 -- extends 'project.yaml'
 
--- block experiment_metadata
+-- block config_metadata
     == super()
-    -- set ns.EXPERIMENT_NAME = "Tiny LLama"
-    -- set ns.EXPERIMENT_DESCRIPTION = "A tiny llama model."
+    -- set ns.CONFIG_NAME = "Tiny LLama"
+    -- set ns.CONFIG_DESCRIPTION = "A tiny llama model."
     -- set ns.MODEL_NAME = "tiny_llama"
     -- set ns.LOG_NAME = "llama"
--- endblock experiment_metadata
+-- endblock config_metadata
 
 
 -- block construct_new_model

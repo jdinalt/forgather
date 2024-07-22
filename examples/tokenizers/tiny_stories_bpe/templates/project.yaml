@@ -1,11 +1,4 @@
--- extends 'abstract_base_types/tokenizer.yaml'
-
-
--- block config_metadata
-    == super()
-    -- set ns.CONFIG_NAME = "Tiny Stories"
-    -- set ns.CONFIG_DESCRIPTION = "BPE tokenizer trained on Tiny Stories dataset"
--- endblock config_metadata
+-- extends 'types/tokenizer/bpe/bpe.yaml'
 
 
 -- block base_directories
@@ -14,10 +7,12 @@
 -- endblock base_directories
 
 
--- block tokenizer
-    -- include "project.tokenizer"
-<< endblock tokenizer
+-- block config_metadata
+    == super()
+    -- set ns.CONFIG_NAME = "Tiny Stories"
+    -- set ns.CONFIG_DESCRIPTION = "BPE tokenizer trained on Tiny Stories dataset"
+    -- set ns.dataset_id = 'roneneldan/TinyStories'
+    -- set ns.model_max_length = 2048
+-- endblock config_metadata
 
 
-#-------------------- project.tokenizer --------------------
--- extends "tokenizers/tiny_2k_bpe.yaml"

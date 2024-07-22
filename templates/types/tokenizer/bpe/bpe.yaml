@@ -1,18 +1,19 @@
--- extends 'tokenizers/abstract/custom_tokenizer.yaml'
+-- extends 'types/tokenizer/tokenizer.yaml'
 
--- block tokenizer_meta_config
+-- block config_metadata
     == super()
-    -- set tok_def.name = "Custom BPE Tokenizer"
-    -- set tok_def.description = "A custom BPE tokenizer definition."
-## -- set tok_def.output_dir = "my/output/dir"
--- endblock tokenizer_meta_config
+    -- set ns.CONFIG_NAME = "Custom BPE Tokenizer"
+    -- set ns.CONFIG_DESCRIPTION = "A custom BPE tokenizer definition."
+    ## -- set ns.dataset_id = 'dataset_id'
+    ## -- set ns.output_dir = path_join(ns.TOKENIZERS_DIR, 'custom_tokenizer')
+-- endblock config_metadata
 
 
 -- block tokenizer_trainer
     == super()
     model: !callable:tokenizers:models.BPE
         cache_capacity: 16
-        unk_token: "{{ tok_def.unk_token }}"
+        unk_token: "{{ ns.unk_token }}"
         byte_fallback: True
     normalizer: !callable:tokenizers:normalizers.NFC []
     pre_tokenizer: !callable:tokenizers:pre_tokenizers.ByteLevel []
@@ -20,9 +21,9 @@
     # Automatically add bos token to sequence start
     post_processor: !callable:tokenizers:processors.TemplateProcessing
         single: "<bos> $A"
-        special_tokens: [ !tuple [ "<bos>", {{ tok_def.bos_token_id }} ] ]
+        special_tokens: [ !tuple [ "<bos>", {{ ns.bos_token_id }} ] ]
     trainer: !callable:tokenizers.trainers:BpeTrainer
-        vocab_size: {{ tok_def.vocab_size }}
+        vocab_size: {{ ns.vocab_size }}
         initial_alphabet: !callable:tokenizers:pre_tokenizers.ByteLevel.alphabet []
         special_tokens: !callable:forgather.construct:values [ *special_tokens_map ]
         show_progress: False

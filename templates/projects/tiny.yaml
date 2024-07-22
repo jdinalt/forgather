@@ -1,17 +1,21 @@
-## This is an example of a project template, where similar configurations
+## This is an example of a project template; useful where similar configurations
 ## may be used in multiple projects.
 ##
-## Specifically, this sets up training for a very small model (1.3M parms) over 4000 train steps.
--- extends "train_scripts/causal_language_model.yaml"
+## Specifically, this sets up training for a very small model over one epoch
+## on the 'abridged' version of the Tiny Stories dataset.
+-- extends "types/training_script/causal_lm/causal_lm.yaml"
 
--- block experiment_metadata
+-- block config_metadata
     == super()
-    -- set ns.EXPERIMENT_NAME = "Tiny Experiments"
-    -- set ns.EXPERIMENT_DESCRIPTION = "A project template for running tiny model experiments."
+    ## Overrides
+    -- set ns.CONFIG_NAME = "Tiny Experiments"
+    -- set ns.CONFIG_DESCRIPTION = "A project template for running tiny model experiments."
+    ## Defines
     -- set ns.trainer_class = 'trainers/trainer.yaml'
--- endblock experiment_metadata
+-- endblock config_metadata
 
 
+## Setup base directories for the example projects
 -- block base_directories
     -- set ASSETS_DIR = normpath(path_join(project_directory, '..', '..', '..'))
     -- include 'paths/default_paths.yaml'
@@ -25,10 +29,14 @@
 
 
 -- block datasets_definition
+    ## Note: Switch to 'datasets/tiny/tiny_stories.yaml' for the full dataset.
     -- include 'datasets/tiny/tiny_stories_abridged.yaml'
 -- endblock datasets_definition
 
 
+## Defaults to the basic trainer implementation
+## Note: This is unsuitable for multiple GPUs.
+## Override 'ns.trainer_class' to change the trainer class.
 -- block trainer_definition
     -- include 'tiny.trainer_config'
 -- endblock trainer_definition

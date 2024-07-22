@@ -54,8 +54,8 @@ class TrainingScript:
 
         if is_main_process:
             print("**** Training Script Started *****")
-            print(f"experiment_name: {self.meta.experiment_name}")
-            print(f"experiment_description: {self.meta.experiment_description}")
+            print(f"config_name: {self.meta.config_name}")
+            print(f"config_description: {self.meta.config_description}")
             print(f"output_dir: {self.meta.output_dir}")
             print(f"logging_dir: {self.meta.logging_dir}")
 

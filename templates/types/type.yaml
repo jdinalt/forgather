@@ -4,11 +4,6 @@
 -- from 'inc/formatting.jinja' import h1, h2, h3
 -- filter trim()
 
--- block config_metadata
-    -- set ns.CONFIG_NAME = "Undefined"
-    -- set ns.CONFIG_DESCRIPTION = "Undefined"
--- endblock config_metadata
-
 
 -- block base_directories required
     ## -- set ns.PROJECT_DIR
@@ -18,6 +13,17 @@
 -- endblock base_directories
 
 
+-- block config_metadata
+    -- set ns.CONFIG_NAME = "Undefined"
+    -- set ns.CONFIG_DESCRIPTION = "Undefined"
+-- endblock config_metadata
+
+
+-- block globals
+## For variables computed from above data
+-- endblock globals
+
+
 -- endfilter ## filter trim() setup
 == h1(ns.CONFIG_NAME)
 -- filter trim()
@@ -25,11 +31,20 @@
 # {{ utcnow() }}
 # Description: {{ ns.CONFIG_DESCRIPTION }}
 
+
+<< endblock header
+-- endfilter
+
+
+== h2('Config Vars')
+
+-- filter trim()
+-- block variable_listing
 # ns.PROJECT_DIR: "{{ ns.PROJECT_DIR }}"
 # ns.MODELS_DIR: "{{ ns.MODELS_DIR }}"
 # ns.TOKENIZERS_DIR: "{{ ns.TOKENIZERS_DIR }}"
 # ns.DATASETS_DIR: "{{ ns.DATASETS_DIR }}"
-<< endblock header
+<< endblock variable_listing
 -- endfilter
 
 
@@ -38,6 +53,7 @@
 ## Main Body
 << endblock main_body
 -- endfilter
+
 
 == h1('Configuration Output')
 -- filter trim()
@@ -53,6 +69,7 @@ meta: &meta_output
     datasets_dir: "{{ ns.DATASETS_DIR }}"
     << endblock meta_output
     -- endfilter
+
 
     -- filter trim()
     -- block main_output required

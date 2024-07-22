@@ -1,4 +1,4 @@
--- extends "abstract_base_types/training_script.yaml"
+-- extends "types/training_script/training_script.yaml"
 -- from 'inc/formatting.jinja' import h2, sep
 
 

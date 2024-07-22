@@ -1,29 +1,9 @@
 -- extends 'project.yaml'
 
-
 -- block config_metadata
     == super()
+    -- set ns.tokenizer_name = "tiny_stories_8k"
     -- set ns.CONFIG_NAME = ns.CONFIG_NAME + " 8K"
     -- set ns.CONFIG_DESCRIPTION = ns.CONFIG_DESCRIPTION + " w/ 8K tokens"
+    -- set ns.vocab_size = 8000
 -- endblock config_metadata
-
-
--- block tokenizer
-    -- include "config.tokenizer"
-<< endblock tokenizer
-
-#-------------------- config.tokenizer --------------------
--- extends 'project.tokenizer'
-
--- block tokenizer_meta_config
-    == super()
-    -- set tok_def.name = ns.CONFIG_NAME
-    -- set tok_def.description = ns.CONFIG_DESCRIPTION
-    -- set tok_def.output_dir = path_join(ns.TOKENIZERS_DIR, 'tiny_stories_8k')
--- endblock tokenizer_meta_config
-
-# Increase vocabulary to 8000 tokens
--- block tokenizer_custom_definition
-    == super()
-    -- set tok_def.vocab_size = 8000
--- endblock tokenizer_custom_definition

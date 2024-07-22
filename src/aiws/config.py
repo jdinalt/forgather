@@ -45,7 +45,7 @@ class MetaConfig:
             ), f"Search dir {norm_path} is not a directory."
             self.searchpath.append(os.path.abspath(norm_path))
         self.config_prefix = config.config_prefix
-        self.default_cfg = config.default_config
+        self.default_cfg = config.get("default_config", None)
         self.system_path = self.norm_path(config.system_path)
 
     def norm_path(self, path):
@@ -53,16 +53,15 @@ class MetaConfig:
 
     def default_config(self):
         if self.default_cfg is not None:
-            return self.config_path(self.default_cfg)
+            return self.default_cfg
         else:
             # Pick the first in the list.
             return next(self.find_templates(self.config_prefix))[0]
 
     def config_path(self, config_template=None):
         if config_template is None or len(config_template) == 0:
-            return self.default_config()
-        else:
-            return os.path.join(self.config_prefix, config_template)
+            config_template = self.default_config()
+        return os.path.join(self.config_prefix, config_template)
 
     def find_templates(self, prefix="", suffix=".yaml"):
         """

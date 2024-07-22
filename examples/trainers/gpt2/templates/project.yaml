@@ -1,14 +1,14 @@
 ## Project level definitions and overrides go here.
--- extends "train_scripts/causal_language_model.yaml"
+-- extends "types/training_script/causal_lm/causal_lm.yaml"
 -- from "model_ctor/args.yaml" import use_flash_attn2
 
 ## Set Project level defaults
--- block experiment_metadata
+-- block config_metadata
     == super()
-    -- set ns.EXPERIMENT_NAME = "GPT2 From Scratch"
-    -- set ns.EXPERIMENT_DESCRIPTION = "Train the base GPT2 model from scratch."
+    -- set ns.CONFIG_NAME = "GPT2 From Scratch"
+    -- set ns.CONFIG_DESCRIPTION = "Train the base GPT2 model from scratch."
     -- set ns.SAVE_MODEL = True
--- endblock experiment_metadata
+-- endblock config_metadata
 
 
 -- block base_directories
@@ -26,7 +26,7 @@
 
 
 -- block datasets_definition
-    -- include 'datasets/tiny_stories.yaml'
+    -- include 'datasets/tiny/tiny_stories.yaml'
 -- endblock datasets_definition
 
 

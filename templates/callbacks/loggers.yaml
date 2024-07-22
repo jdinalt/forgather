@@ -9,8 +9,8 @@
 # Additional data to record to experiment loggers
 .define: &experiment_info
     date: "{{ utcnow() }}"
-    name: "{{ ns.EXPERIMENT_NAME }}"
-    description: "{{ ns.EXPERIMENT_DESCRIPTION }}"
+    name: "{{ ns.CONFIG_NAME }}"
+    description: "{{ ns.CONFIG_DESCRIPTION }}"
     config: !callable:pp_config
     versions: {{ versions }}
     << endblock experiment_info

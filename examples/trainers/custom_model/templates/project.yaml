@@ -1,12 +1,12 @@
 ## Project level definitions and overrides go here.
--- extends "train_scripts/causal_language_model.yaml"
+-- extends "types/training_script/causal_lm/causal_lm.yaml"
 
 ## Set Project level defaults
--- block experiment_metadata
+-- block config_metadata
     == super()
-    -- set ns.EXPERIMENT_NAME = "Project Name"
-    -- set ns.EXPERIMENT_DESCRIPTION = "An example configuration"
--- endblock experiment_metadata
+    -- set ns.CONFIG_NAME = "Project Name"
+    -- set ns.CONFIG_DESCRIPTION = "An example configuration"
+-- endblock config_metadata
 
 
 -- block base_directories

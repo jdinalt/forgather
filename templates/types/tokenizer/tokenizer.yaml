@@ -1,0 +1,125 @@
+-- extends 'types/type.yaml'
+-- from 'inc/formatting.jinja' import h2
+
+-- block config_metadata
+    == super()
+    -- set ns.tokenizer_name = "custom_tokenizer"
+    -- set ns.model_max_length = 2048
+    -- set ns.vocab_size = 32000
+    -- set ns.dataset_split = 'train'
+    ## Define special tokens
+    -- set ns.pad_token = "<|PAD|>"
+    -- set ns.bos_token = "<|BOS|>"
+    -- set ns.eos_token = "<|EOS|>"
+    -- set ns.unk_token = "<|UNK|>"
+    ## This should match the position in special_tokens_map
+    -- set ns.bos_token_id = 0
+    ## The following args are required
+    ## -- set ns.dataset_id = 'dataset_id'
+-- endblock config_metadata
+
+
+-- block globals
+    -- set ns.output_dir = path_join(ns.TOKENIZERS_DIR, ns.tokenizer_name)
+-- endblock globals
+
+
+-- block variable_listing
+    == super()
+# tokenizer_name: '{{ ns.tokenizer_name }}'
+# output_dir: '{{ ns.output_dir }}'
+# model_max_length: '{{ ns.model_max_length }}'
+# vocab_size: '{{ ns.vocab_size }}'
+# dataset_id: '{{ ns.dataset_id }}'
+# dataset_split: '{{ ns.dataset_split }}'
+<< endblock variable_listing
+
+
+-- block main_body
+
+== h2('Special Tokens Map')
+
+    -- filter trim()
+    -- block tokenizer_special_tokens_map
+.define: &special_tokens_map
+    bos: "{{ ns.bos_token }}" # Beginning of Sequence; the first token in a sequence
+    pad: "{{ ns.pad_token }}" # Padding, used to pad out samples in a batch.
+    eos: "{{ ns.eos_token }}" # End of Sequence; typically is used to stop generation.
+    unk: "{{ ns.unk_token }}" # Unknown; used when a symbol can't be represented.
+    << endblock tokenizer_special_tokens_map
+    -- endfilter
+
+
+== h2('Pretrained Tokenizer Fast Args')
+
+    -- filter trim()
+    -- block tokenizer_args
+## Args to transformers.PreTrainedTokenizerFast()
+## https://huggingface.co/docs/transformers/main_classes/tokenizer#transformers.PreTrainedTokenizerFast
+.define: &tokenizer_args
+    bos_token: "{{ ns.bos_token }}"
+    eos_token: "{{ ns.eos_token }}"
+    unk_token: "{{ ns.unk_token }}"
+    pad_token: "{{ ns.pad_token }}"
+    return_special_tokens_mask: True
+    model_max_length: {{ ns.model_max_length }}
+    padding_side: "right"
+    truncation_side: "right"
+    << endblock tokenizer_args
+    -- endfilter
+
+
+== h2('Tokenizer Training Dataset')
+
+-- filter trim()
+## This directly loads the entire dataset
+## For large datasets, a subset should be selected.
+-- block tokenizer_dataset
+    .define: &tokenizer_dataset !callable:forgather.construct:get_item
+        - !callable:datasets:load_dataset [ "{{ ns.dataset_id }}" ]
+        - "{{ ns.dataset_split }}"
+<< endblock tokenizer_dataset
+-- endfilter
+
+
+== h2('Tokenizer Trainer')
+
+    -- filter trim()
+    -- block tokenizer_trainer
+.define: &tokenizer_trainer !callable:aiws.tokenizer:train_tokenizer
+    as_callable: True
+    output_dir: "{{ ns.output_dir }}"
+    dataset: *tokenizer_dataset
+    args: *tokenizer_args
+## The following additional args are required.
+## See: https://huggingface.co/docs/tokenizers/
+##  model:
+##  normalizer:
+##  pre_tokenizer:
+##  decoder:
+##  post_processor:
+##  trainer:
+    << endblock tokenizer_trainer
+    -- endfilter
+<< endblock main_body
+
+
+-- block meta_output
+    == super()
+    tokenizer_name: "{{ ns.tokenizer_name }}"
+    output_dir: "{{ ns.output_dir }}"
+    vocab_size: "{{ ns.vocab_size }}"
+    model_max_length: "{{ ns.model_max_length }}"
+<< endblock meta_output
+
+
+-- block main_output
+main: !callable:aiws.construct:build_rule
+    target: "{{ path_join(ns.output_dir, 'tokenizer.json') }}"
+    recipe: *tokenizer_trainer
+    loader: !callable:transformers:AutoTokenizer.from_pretrained
+        args:
+            - "{{ ns.output_dir }}"
+        kwargs:
+            as_callable: True  
+<< endblock main_output

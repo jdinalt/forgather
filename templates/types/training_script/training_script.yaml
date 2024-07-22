@@ -1,0 +1,142 @@
+-- extends 'types/type.yaml'
+-- from 'inc/formatting.jinja' import h2
+
+## Define these in a sub-class
+## -- block base_directories required
+    ## -- set ns.PROJECT_DIR
+    ## -- set ns.MODELS_DIR
+    ## -- set ns.TOKENIZERS_DIR
+    ## -- set ns.DATASETS_DIR
+    ## -- set ns.MODEL_ZOO_DIR
+## -- endblock base_directories
+
+
+-- block config_metadata
+    -- set ns.LOG_NAME = "log"
+    -- set ns.MODEL_NAME = "default_model"
+    -- set ns.CREATE_NEW_MODEL = True
+    -- set ns.SAVE_MODEL = True
+    -- set ns.TRAIN = True
+    -- set ns.EVAL = False
+-- endblock config_metadata
+
+
+-- block globals
+    -- set ns.OUTPUT_DIR = path_join(ns.MODELS_DIR, ns.MODEL_NAME)
+    -- set ns.LOGGING_DIR = path_join(ns.OUTPUT_DIR, "runs", ns.LOG_NAME + '_' + time_ns())
+-- endblock globals
+
+
+-- block header
+    == super()
+# Model: {{ ns.MODEL_NAME }}
+# Hostname: {{ hostname }}
+# Versions:
+-- for key, value in versions.items()
+    == '#     ' + key + ': ' + value
+-- endfor
+<< endblock header
+
+
+-- block variable_listing
+    == super()
+# ns.OUTPUT_DIR: "{{ ns.OUTPUT_DIR }}"
+# ns.LOGGING_DIR: "{{ ns.LOGGING_DIR }}"
+# ns.CREATE_NEW_MODEL: {{ ns.CREATE_NEW_MODEL }}
+# ns.SAVE_MODEL: {{ ns.SAVE_MODEL }}
+# ns.TRAIN: {{ ns.TRAIN }}
+# ns.EVAL: {{ ns.EVAL }}
+<< endblock variable_listing
+
+
+-- block main_body
+
+== h2('Distributed Environment')
+
+    -- filter trim()
+    -- block distributed_environment
+.define: &distributed_env !callable:aiws.distributed:DistributedEnvironment
+    << endblock distributed_environment
+    -- endfilter
+
+
+== h2('Dependencies')
+
+    -- filter trim()
+    -- block pre_model_setup
+## Undefined
+    -- endblock pre_model_setup
+    -- endfilter
+
+
+== h2('Model')
+
+    -- filter trim()
+    -- block model_constructor_args
+## .define: &model_constructor_args
+    -- endblock model_constructor_args
+    -- endfilter
+
+
+    -- filter trim()
+    -- block model_definition required
+## .define: &tokenizer
+## .define: &model
+    -- endblock model_definition
+    -- endfilter
+
+
+== h2('Datasets')
+
+    -- filter trim()
+    -- block datasets_definition required
+## .define: &train_dataset
+## .define: &eval_dataset
+    << endblock datasets_definition
+    -- endfilter
+
+
+== h2('Data Collator')
+
+    -- filter trim()
+    -- block datacollator
+.define: &data_collator null
+    << endblock datacollator
+    -- endfilter
+
+
+== h2('Trainer Callbacks')
+
+    -- filter trim()
+    -- block trainer_callbacks
+.define: &trainer_callbacks []
+    << endblock trainer_callbacks
+    -- endfilter
+
+== h2('Trainer')
+
+    -- filter trim()
+    -- block trainer_definition required
+## .define: &trainer
+    << endblock trainer_definition
+    -- endfilter
+<< endblock main_body
+
+
+-- block meta_output
+    == super()
+    output_dir: "{{ ns.OUTPUT_DIR }}"
+    model_zoo_dir: "{{ ns.MODEL_ZOO_DIR }}"
+    logging_dir: "{{ns.LOGGING_DIR}}"
+<< endblock meta_output
+
+
+-- block main_output
+main: !callable:aiws.training_script:TrainingScript
+    meta: *meta_output
+    do_save: {{ ns.SAVE_MODEL }}
+    do_train: {{ ns.TRAIN }}
+    do_eval: {{ ns.EVAL }}
+    distributed_env: *distributed_env
+    trainer: *trainer
+<< endblock main_output
