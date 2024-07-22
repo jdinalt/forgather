@@ -98,7 +98,7 @@ class Trainer(BaseTrainer):
 
     @classmethod
     def default_callbacks(cls):
-        return [ProgressCallback()]
+        return [ProgressCallback(), InfoCallback()]
 
     def __init__(
         self,
@@ -231,7 +231,7 @@ class Trainer(BaseTrainer):
         self._dispatch_event("on_train_end")
         return TrainOutput(self.state.global_step, self.mean_train_loss, metrics)
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def _eval_loop(self) -> Dict[str, float]:
         """
         The inner evaluation loop

@@ -45,7 +45,7 @@ class Config:
         (self.config, self.pp_config)
         """
         return self.config, self.pp_config
-    
+
     def __repr__(self):
         return (
             f"{type(self).__name__}(config={self.config}, pp_config={self.pp_config})"

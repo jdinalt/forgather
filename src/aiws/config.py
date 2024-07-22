@@ -6,6 +6,7 @@ import platform
 
 from forgather.config import load_config
 
+
 def preprocessor_globals(project_directory):
     return dict(
         project_directory=project_directory,
@@ -22,13 +23,14 @@ def preprocessor_globals(project_directory):
         },
     )
 
+
 @dataclass()
 class MetaConfig:
     project_dir: str
     meta_path: str
     searchpath: List[str]
     system_path: str
-    train_script: str
+    default_cfg: str = None
 
     def __init__(self, project_dir, meta_name="meta.yaml"):
         self.meta_path = os.path.join(project_dir, meta_name)
@@ -43,11 +45,24 @@ class MetaConfig:
             ), f"Search dir {norm_path} is not a directory."
             self.searchpath.append(os.path.abspath(norm_path))
         self.config_prefix = config.config_prefix
+        self.default_cfg = config.default_config
         self.system_path = self.norm_path(config.system_path)
-        self.train_script = self.norm_path(config.train_script)
 
     def norm_path(self, path):
         return os.path.normpath(os.path.join(self.project_dir, path))
+
+    def default_config(self):
+        if self.default_cfg is not None:
+            return self.config_path(self.default_cfg)
+        else:
+            # Pick the first in the list.
+            return next(self.find_templates(self.config_prefix))[0]
+
+    def config_path(self, config_template=None):
+        if config_template is None or len(config_template) == 0:
+            return self.default_config()
+        else:
+            return os.path.join(self.config_prefix, config_template)
 
     def find_templates(self, prefix="", suffix=".yaml"):
         """

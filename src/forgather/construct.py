@@ -1,4 +1,4 @@
-from typing import Sequence, Mapping, Hashable, Sized
+from typing import Sequence, Mapping, Hashable, Sized, Any
 
 
 # A simple constructor which simply gets the key from the object.
@@ -28,3 +28,8 @@ def length(obj: Sized):
 
 def items(obj: Mapping):
     return list(obj.items())
+
+
+def method_call(obj: Any, method_name: str, *args, **kwargs):
+    method = getattr(obj, method_name)
+    return method(*args, **kwargs)

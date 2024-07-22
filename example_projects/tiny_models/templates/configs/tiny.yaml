@@ -5,6 +5,7 @@
     -- set ns.EXPERIMENT_NAME = "Tiny"
     -- set ns.EXPERIMENT_DESCRIPTION = "A tiny vanilla transformer."
     -- set ns.MODEL_NAME = "tiny"
+    -- set ns.LOG_NAME = "vanilla"
 -- endblock experiment_metadata
 
 

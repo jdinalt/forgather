@@ -2,7 +2,7 @@
 
 -- block experiment_metadata
     == super()
-    -- set ns.trainer_class = 'trainers/accel_trainer.yaml'
+    ##-- set ns.trainer_class = 'trainers/accel_trainer.yaml'
 -- endblock experiment_metadata
 
 

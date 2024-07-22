@@ -1,12 +1,11 @@
-## The project defines the defaults
 -- extends 'project.yaml'
 
 -- block experiment_metadata
     == super()
-    ## Experiment Metadata
     -- set ns.EXPERIMENT_NAME = "HF Trainer"
-    -- set ns.EXPERIMENT_DESCRIPTION = "Change trainer to Huggingface implementation"
+    -- set ns.EXPERIMENT_DESCRIPTION = "Train with transformers.Trainer implementation"
+    -- set ns.LOG_NAME = "hf_trainer"
 
-    ## Override trainer
-    -- set ns.TRAINER = "trainers/hf_trainer.yaml"
+    ## Set trainer
+    -- set ns.trainer_class = 'trainers/hf_trainer.yaml'
 -- endblock experiment_metadata

@@ -6,6 +6,7 @@ from pprint import pformat
 from random import seed as py_seed
 
 from torch import manual_seed as torch_seed
+from torch import distributed
 from numpy.random import seed as np_seed
 from torch.distributed.elastic.multiprocessing.errors import record
 
@@ -15,12 +16,13 @@ from aiws.distributed import DistributedEnvironment
 from aiws.dotdict import DotDict
 from forgather import Latent
 
+
 def set_seed(seed: int):
     torch_seed(seed)
     np_seed(seed)
     py_seed(seed)
-        
-    
+
+
 @dataclass(kw_only=True)
 class TrainingScript:
     meta: dict
@@ -44,42 +46,43 @@ class TrainingScript:
             if dir is not None and not os.path.isdir(dir):
                 print(f"Creating directory: {dir}")
                 os.makedirs(dir, exist_ok=True)
-    
+
     @record
     def run(self):
         # In a distriubted environment, we only want one process to print messages
-        is_main_process = (self.distributed_env.local_rank == 0)
-    
+        is_main_process = self.distributed_env.local_rank == 0
+
         if is_main_process:
             print("**** Training Script Started *****")
             print(f"experiment_name: {self.meta.experiment_name}")
             print(f"experiment_description: {self.meta.experiment_description}")
             print(f"output_dir: {self.meta.output_dir}")
             print(f"logging_dir: {self.meta.logging_dir}")
-    
+
         if self.do_train:
             # This is where the actual 'loop' is.
             metrics = self.trainer.train().metrics
             if self.distributed_env.world_size > 1:
-                distributed_env.barrier()
-    
+                distributed.barrier()
+
             if is_main_process:
                 print("**** Training Completed *****")
                 print(metrics)
-    
+
         if self.do_eval:
             metrics = self.trainer.evaluate()
-    
+
             if is_main_process:
                 print("**** Evaluation Completed *****")
                 print(metrics)
-    
-        if self.do_save:
-            self.trainer.save_model(self.output_dir)
-            if is_main_process:
-                print(f"Model saved to: {self.output_dir}")
 
-def training_loop(project_directory, config_template):
+        if self.do_save:
+            self.trainer.save_model(self.meta.output_dir)
+            if is_main_process:
+                print(f"Model saved to: {self.meta.output_dir}")
+
+
+def training_loop(project_directory, config_template=None):
     """
     A mini-training-loop for use with accelerate.notebook_launcher
 
@@ -106,7 +109,6 @@ def training_loop(project_directory, config_template):
 
     # Load meta-config
     meta = MetaConfig(project_directory)
-    config_template_path = os.path.join(meta.config_prefix, config_template)
 
     # Create configuration envrionment
     environment = ConfigEnvironment(
@@ -115,10 +117,10 @@ def training_loop(project_directory, config_template):
     )
 
     # Load the target configuration
-    config, pp_config = environment.load(config_template_path).get()
+    config, pp_config = environment.load(meta.config_path(config_template)).get()
 
     # Materialize the configuration
-    training_script = config.training_script(pp_config=pp_config)
-    
+    main = config.main(pp_config=pp_config)
+
     # Run it!
-    training_script.run()
+    main.run()

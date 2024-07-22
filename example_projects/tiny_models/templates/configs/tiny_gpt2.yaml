@@ -5,6 +5,7 @@
     -- set ns.EXPERIMENT_NAME = "Tiny GPT2"
     -- set ns.EXPERIMENT_DESCRIPTION = "A tiny GPT2 model."
     -- set ns.MODEL_NAME = "tiny_gpt2"
+    -- set ns.LOG_NAME = "gpt2"
 -- endblock experiment_metadata
 
 

@@ -224,10 +224,10 @@ class BaseTrainer(ExtensibleTrainer):
                 continue
 
             new_control = event_handler(
-                args=self.args,
-                state=self.state,
-                control=control,
-                model=self.model,
+                self.args,
+                self.state,
+                control,
+                model=self.unwrapped_model(),
                 tokenizer=self.tokenizer,
                 optimizer=self.optimizer,
                 lr_scheduler=self.lr_scheduler,

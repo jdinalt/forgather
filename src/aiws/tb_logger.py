@@ -10,7 +10,7 @@ from .trainer_types import TrainerCallback
 
 
 # Log loss to TensorBoard
-class TBLogger:
+class TBLogger(TrainerCallback):
     """
     A Trainer callbacks which implements Tensorboard logging.
     """

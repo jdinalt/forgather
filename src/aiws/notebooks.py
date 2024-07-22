@@ -105,9 +105,9 @@ def display_filelink(path, title="", name=None):
     display.display(display.Markdown(md))
 
 
-def get_train_cmdline(meta, nproc="gpu", cuda_devices=None):
+def get_train_cmdline(train_script_path, meta, nproc="gpu", cuda_devices=None):
     s = (
-        f"torchrun --standalone --nproc-per-node '{nproc}' '{meta.train_script}'"
+        f"torchrun --standalone --nproc-per-node '{nproc}' '{train_script_path}'"
         + f" -p '{meta.project_dir}' -s '{meta.system_path}'"
     )
     if cuda_devices is not None:
@@ -116,6 +116,7 @@ def get_train_cmdline(meta, nproc="gpu", cuda_devices=None):
 
 
 def make_train_script(
+    train_script_path,
     project_directory,
     config_template=None,
     script_name="train.sh",
@@ -146,7 +147,7 @@ def make_train_script(
 
         if config_template is None:
             config_template = r"${@}"
-        cmdline = get_train_cmdline(meta, nproc, cuda_devices)
+        cmdline = get_train_cmdline(train_script_path, meta, nproc, cuda_devices)
 
         with open(script_name, "w") as f:
             f.write("#!/bin/bash\n" + cmdline + f' "{config_template}"\n')

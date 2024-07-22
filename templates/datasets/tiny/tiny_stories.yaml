@@ -1,4 +1,4 @@
--- extends 'datasets/base_datasets.yaml'
+-- extends 'datasets/abstract/base_datasets.yaml'
 
 -- block datasets_meta_config
     == super()
@@ -7,5 +7,5 @@
     -- set datasets_ns.source = "https://arxiv.org/abs/2305.07759"
     -- set datasets_ns.train_dataset_id = "roneneldan/TinyStories"
     -- set datasets_ns.eval_dataset_id = "roneneldan/TinyStories"
-    -- set datasets_ns.eval_select = 500
+    -- set datasets_ns.eval_select_range = 500
 -- endblock datasets_meta_config

@@ -6,6 +6,7 @@
 
 -- block experiment_metadata
     -- set ns.EXPERIMENT_NAME = "Undefined"
+    -- set ns.LOG_NAME = "log"
     -- set ns.EXPERIMENT_DESCRIPTION = "Undefined"
     -- set ns.MODEL_NAME = "default_model"
     -- set ns.CREATE_NEW_MODEL = True
@@ -26,7 +27,7 @@
 
 -- block train_directories
     -- set ns.OUTPUT_DIR = path_join(ns.MODELS_DIR, ns.MODEL_NAME)
-    -- set ns.LOGGING_DIR = path_join(ns.OUTPUT_DIR, "runs", ns.EXPERIMENT_NAME + '_' + time_ns())
+    -- set ns.LOGGING_DIR = path_join(ns.OUTPUT_DIR, "runs", ns.LOG_NAME + '_' + time_ns())
 -- endblock train_directories
 
 ################################
@@ -156,7 +157,7 @@ meta: &meta
 
     -- filter trim()
     -- block training_script
-training_script: !callable:aiws.training_script:TrainingScript
+main: !callable:aiws.training_script:TrainingScript
     meta: *meta
     do_save: {{ ns.SAVE_MODEL }}
     do_train: {{ ns.TRAIN }}

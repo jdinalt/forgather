@@ -1,12 +1,11 @@
-## The project defines the defaults
 -- extends 'project.yaml'
 
 -- block experiment_metadata
     == super()
-    ## Experiment Metadata
-    -- set ns.EXPERIMENT_NAME = "Accel Trainer"
-    -- set ns.EXPERIMENT_DESCRIPTION = "Change trainer to accelerate implementation"
+    -- set ns.EXPERIMENT_NAME = "Accelerate Trainer"
+    -- set ns.EXPERIMENT_DESCRIPTION = "Train with aiws.accel_trainer.AccelTrainer implementation"
+    -- set ns.LOG_NAME = "accel_trainer"
 
-    ## Override trainer
-    -- set ns.TRAINER = "trainers/accel_trainer.yaml"
+    ## Set trainer
+    -- set ns.trainer_class = 'trainers/accel_trainer.yaml'
 -- endblock experiment_metadata

@@ -19,8 +19,6 @@
 
 -- block callback_list
 .define: &trainer_callbacks
-    - !callable:aiws.default_callbacks:InfoCallback
-    # Log training metrics to JSON fiie.
     - !callable:aiws.json_logger:JsonLogger
         <<: *experiment_info
     # Log configuration and metrics to Tensorboard file

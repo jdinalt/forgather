@@ -55,7 +55,7 @@ class EosStoppingCriteria(StoppingCriteria):
         return self.done.all()
 
 
-class TextgenCallback:
+class TextgenCallback(TrainerCallback):
     # Stride is the number of steps between text generations
     def __init__(
         self,
@@ -83,7 +83,7 @@ class TextgenCallback:
         self.max_new_tokens = max_new_tokens
         self.next_gen_step = 0
 
-    def on_evaluate(self, args, state, model, tokenizer, **kwargs):
+    def on_evaluate(self, args, state, control, /, model, tokenizer, **kwargs):
         if not state.is_world_process_zero or state.global_step < self.next_gen_step:
             return
         if self.generation_steps is None:

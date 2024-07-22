@@ -3,6 +3,12 @@ import os
 
 from .distributed import main_process_first
 
+from aiws.config import MetaConfig
+from forgather.config import (
+    load_config,
+    ConfigEnvironment,
+)
+
 
 def register_for_auto_class(object, /, *args, **kwargs):
     """
@@ -107,3 +113,17 @@ def torch_dtype(type: str):
             "float8_e5m2": torch.float8_e5m2,
         }
     return torch_dtype_map[type]
+
+
+def load_from_config(project_directory, config_template=None):
+    meta = MetaConfig(project_directory)
+    # Get default
+    if config_template is None:
+        config_template = meta.default_config()
+    environment = ConfigEnvironment(
+        searchpath=meta.searchpath,
+        globals={"project_directory": project_directory},
+    )
+    config_template_path = meta.config_path(config_template)
+    config = environment.load(config_template_path).config
+    return config.main()

@@ -25,7 +25,7 @@
 
 
 -- block datasets_definition
-    -- include 'datasets/tiny_stories.yaml'
+    -- include 'datasets/tiny/tiny_stories_abridged.yaml'
 -- endblock datasets_definition
 
 
@@ -65,7 +65,6 @@
     per_device_eval_batch_size: 64
     logging_steps: 100
     eval_steps: 500
-    max_steps: 4000
 -- endblock trainer_args
 
 #-------------------- tiny.model_config --------------------

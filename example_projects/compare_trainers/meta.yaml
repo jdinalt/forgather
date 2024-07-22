@@ -6,4 +6,4 @@ searchdir:
 
 config_prefix: "experiments"
 system_path: "{{ path_join(main_dir, 'src') }}"
-train_script: "{{ path_join(main_dir, 'scripts', 'train_script.py') }}"
+default_config: "trainer.yaml"
