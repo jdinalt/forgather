@@ -6,5 +6,5 @@
     ## Experiment Metadata
     -- set ns.EXPERIMENT_NAME = "Control"
     -- set ns.EXPERIMENT_DESCRIPTION = "This regenerates the exmaple tiny-stories 2k tokenizer from scratch."
-    -- set ns.LOG_NAME = "2k"
+    -- set ns.log_name = "2k"
 -- endblock experiment_metadata

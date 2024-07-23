@@ -124,6 +124,5 @@ def load_from_config(project_directory, config_template=None):
         searchpath=meta.searchpath,
         globals={"project_directory": project_directory},
     )
-    config_template_path = meta.config_path(config_template)
-    config = environment.load(config_template_path).config
+    config = environment.load(meta.config_path(config_template)).config
     return config.main()

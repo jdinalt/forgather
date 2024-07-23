@@ -2,14 +2,14 @@
 
 -- block experiment_metadata
     == super()
-    -- set ns.SAVE_MODEL = True
+    -- set ns.save_model = True
 -- endblock experiment_metadata
 
 
 -- block base_directories
     == super()
     ## Save the output tokenizers in the project directory
-    -- set ns.TOKENIZERS_DIR = path_join(ns.PROJECT_DIR, 'tokenizers')
+    -- set ns.tokenizers_dir = path_join(ns.project_dir, 'tokenizers')
 -- endblock base_directories
 
 

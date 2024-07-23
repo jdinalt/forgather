@@ -2,15 +2,15 @@
 
 
 -- block base_directories
-    -- set ASSETS_DIR = normpath(path_join(project_directory, '..', '..', '..'))
+    -- set ns.assets_dir = normpath(path_join(project_directory, '..', '..', '..'))
     -- include 'paths/default_paths.yaml'
 -- endblock base_directories
 
 
 -- block config_metadata
     == super()
-    -- set ns.CONFIG_NAME = "Tiny Stories"
-    -- set ns.CONFIG_DESCRIPTION = "BPE tokenizer trained on Tiny Stories dataset"
+    -- set ns.config_name = "Tiny Stories"
+    -- set ns.config_description = "BPE tokenizer trained on Tiny Stories dataset"
     -- set ns.dataset_id = 'roneneldan/TinyStories'
     -- set ns.model_max_length = 2048
 -- endblock config_metadata

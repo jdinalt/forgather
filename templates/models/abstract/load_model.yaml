@@ -2,9 +2,9 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = ns.MODEL_NAME
+    -- set model_def.name = ns.model_name
     -- set model_def.description = "Load locally save model from disk."
-    -- set model_def.model_id_or_path = ns.OUTPUT_DIR
+    -- set model_def.model_id_or_path = ns.output_dir
 << endblock model_meta_config
 
 

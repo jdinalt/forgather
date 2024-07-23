@@ -2,9 +2,9 @@
 
 -- block config_metadata
     == super()
-    -- set ns.CONFIG_NAME = "HF Trainer"
-    -- set ns.CONFIG_DESCRIPTION = "Train with transformers.Trainer implementation"
-    -- set ns.LOG_NAME = "hf_trainer"
+    -- set ns.config_name = "HF Trainer"
+    -- set ns.config_description = "Train with transformers.Trainer implementation"
+    -- set ns.log_name = "hf_trainer"
 
     ## Set trainer
     -- set ns.trainer_class = 'trainers/hf_trainer.yaml'

@@ -20,7 +20,7 @@
 
 
 -- block globals
-    -- set ns.output_dir = path_join(ns.TOKENIZERS_DIR, ns.tokenizer_name)
+    -- set ns.output_dir = path_join(ns.tokenizers_dir, ns.tokenizer_name)
 -- endblock globals
 
 

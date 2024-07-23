@@ -4,15 +4,15 @@
 -- block config_metadata
     == super()
     ## Experiment Metadata
-    -- set ns.CONFIG_NAME = "My ML Science Project"
-    -- set ns.CONFIG_DESCRIPTION = "It's not supid, it's advanced!"
-    -- set ns.MODEL_NAME = 'my_custom_model'
+    -- set ns.config_name = "My ML Science Project"
+    -- set ns.config_description = "It's not supid, it's advanced!"
+    -- set ns.model_name = 'my_custom_model'
 
     ## Initialize a new model from scratch
-    -- set ns.CREATE_NEW_MODEL = True
+    -- set ns.create_new_model = True
 
     ## Save model, when training is complete
-    -- set ns.SAVE_MODEL = True
+    -- set ns.save_model = True
 -- endblock config_metadata
 
 
@@ -34,7 +34,7 @@
 -- block trainer_args
     == super()
     
-    # {{ ns.CONFIG_NAME }} Overrides
+    # {{ ns.config_name }} Overrides
     max_steps: 1000
 -- endblock trainer_args
 
@@ -44,6 +44,6 @@
 -- block model_config
     == super()
 
-    # {{ ns.CONFIG_NAME }} Overrides
+    # {{ ns.config_name }} Overrides
     num_hidden_layers: 3
 -- endblock model_config

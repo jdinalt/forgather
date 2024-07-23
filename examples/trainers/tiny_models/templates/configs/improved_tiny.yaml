@@ -2,10 +2,10 @@
 
 -- block config_metadata
     == super()
-    -- set ns.CONFIG_NAME = "Improved Tiny"
-    -- set ns.CONFIG_DESCRIPTION = "A tiny improved transformer."
-    -- set ns.MODEL_NAME = "improved_tiny"
-    -- set ns.LOG_NAME = "improved"
+    -- set ns.config_name = "Improved Tiny"
+    -- set ns.config_description = "A tiny improved transformer."
+    -- set ns.model_name = "improved_tiny"
+    -- set ns.log_name = "improved"
 -- endblock config_metadata
 
 

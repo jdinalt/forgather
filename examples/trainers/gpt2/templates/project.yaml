@@ -5,14 +5,14 @@
 ## Set Project level defaults
 -- block config_metadata
     == super()
-    -- set ns.CONFIG_NAME = "GPT2 From Scratch"
-    -- set ns.CONFIG_DESCRIPTION = "Train the base GPT2 model from scratch."
-    -- set ns.SAVE_MODEL = True
+    -- set ns.config_name = "GPT2 From Scratch"
+    -- set ns.config_description = "Train the base GPT2 model from scratch."
+    -- set ns.save_model = True
 -- endblock config_metadata
 
 
 -- block base_directories
-    -- set ASSETS_DIR = normpath(path_join(project_directory, '..', '..', '..'))
+    -- set ns.assets_dir = normpath(path_join(project_directory, '..', '..', '..'))
     -- include 'paths/default_paths.yaml'
 -- endblock base_directories
 

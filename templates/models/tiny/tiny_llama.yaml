@@ -11,7 +11,7 @@
 
 -- block model_tokenizer
 .define: &tokenizer !callable:transformers:AutoTokenizer.from_pretrained
-    - "{{ path_join(ns.TOKENIZERS_DIR, 'tiny_stories_2k') }}"
+    - "{{ path_join(ns.tokenizers_dir, 'tiny_stories_2k') }}"
 << endblock model_tokenizer
 
 

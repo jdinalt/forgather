@@ -3,7 +3,7 @@
 -- block config_metadata
     == super()
     -- set ns.tokenizer_name = "tiny_stories_8k"
-    -- set ns.CONFIG_NAME = ns.CONFIG_NAME + " 8K"
-    -- set ns.CONFIG_DESCRIPTION = ns.CONFIG_DESCRIPTION + " w/ 8K tokens"
+    -- set ns.config_name = ns.config_name + " 8K"
+    -- set ns.config_description = ns.config_description + " w/ 8K tokens"
     -- set ns.vocab_size = 8000
 -- endblock config_metadata

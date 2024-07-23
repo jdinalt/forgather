@@ -2,9 +2,9 @@
 
 -- block config_metadata
     == super()
-    -- set ns.CONFIG_NAME = "Default Trainer"
-    -- set ns.CONFIG_DESCRIPTION = "Train with aiws.trainer.Trainer implementation"
-    -- set ns.LOG_NAME = "default_trainer"
+    -- set ns.config_name = "Default Trainer"
+    -- set ns.config_description = "Train with aiws.trainer.Trainer implementation"
+    -- set ns.log_name = "default_trainer"
 
     ## Set trainer; this is a variable defined in 'projects/tiny.yaml'
     -- set ns.trainer_class = 'trainers/trainer.yaml'

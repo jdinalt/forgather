@@ -8,8 +8,8 @@
 -- block config_metadata
     == super()
     ## Overrides
-    -- set ns.CONFIG_NAME = "Tiny Experiments"
-    -- set ns.CONFIG_DESCRIPTION = "A project template for running tiny model experiments."
+    -- set ns.config_name = "Tiny Experiments"
+    -- set ns.config_description = "A project template for running tiny model experiments."
     ## Defines
     -- set ns.trainer_class = 'trainers/trainer.yaml'
 -- endblock config_metadata
@@ -17,7 +17,7 @@
 
 ## Setup base directories for the example projects
 -- block base_directories
-    -- set ASSETS_DIR = normpath(path_join(project_directory, '..', '..', '..'))
+    -- set ns.assets_dir = normpath(path_join(project_directory, '..', '..', '..'))
     -- include 'paths/default_paths.yaml'
 -- endblock base_directories
 

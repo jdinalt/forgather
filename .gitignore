@@ -1,6 +1,7 @@
 /datasets
 /models
 /projects
+/tutorial
 *.sh
 
 output_models

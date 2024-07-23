@@ -6,16 +6,16 @@
 
 
 -- block base_directories required
-    ## -- set ns.PROJECT_DIR
-    ## -- set ns.MODELS_DIR
-    ## -- set ns.TOKENIZERS_DIR
-    ## -- set ns.DATASETS_DIR
+    ## -- set ns.project_dir
+    ## -- set ns.models_dir
+    ## -- set ns.tokenizers_dir
+    ## -- set ns.datasets_dir
 -- endblock base_directories
 
 
 -- block config_metadata
-    -- set ns.CONFIG_NAME = "Undefined"
-    -- set ns.CONFIG_DESCRIPTION = "Undefined"
+    -- set ns.config_name = "Undefined"
+    -- set ns.config_description = "Undefined"
 -- endblock config_metadata
 
 
@@ -25,11 +25,11 @@
 
 
 -- endfilter ## filter trim() setup
-== h1(ns.CONFIG_NAME)
+== h1(ns.config_name)
 -- filter trim()
 -- block header
 # {{ utcnow() }}
-# Description: {{ ns.CONFIG_DESCRIPTION }}
+# Description: {{ ns.config_description }}
 
 
 << endblock header
@@ -40,10 +40,10 @@
 
 -- filter trim()
 -- block variable_listing
-# ns.PROJECT_DIR: "{{ ns.PROJECT_DIR }}"
-# ns.MODELS_DIR: "{{ ns.MODELS_DIR }}"
-# ns.TOKENIZERS_DIR: "{{ ns.TOKENIZERS_DIR }}"
-# ns.DATASETS_DIR: "{{ ns.DATASETS_DIR }}"
+# ns.project_dir: "{{ ns.project_dir }}"
+# ns.models_dir: "{{ ns.models_dir }}"
+# ns.tokenizers_dir: "{{ ns.tokenizers_dir }}"
+# ns.datasets_dir: "{{ ns.datasets_dir }}"
 << endblock variable_listing
 -- endfilter
 
@@ -61,12 +61,12 @@
     -- filter trim()
     -- block meta_output
 meta: &meta_output
-    config_name: "{{ ns.CONFIG_NAME }}"
-    config_description: "{{ ns.CONFIG_DESCRIPTION }}"
-    project_dir: "{{ ns.PROJECT_DIR }}"
-    models_dir: "{{ ns.MODELS_DIR }}"
-    tokenizers_dir: "{{ ns.TOKENIZERS_DIR }}"
-    datasets_dir: "{{ ns.DATASETS_DIR }}"
+    config_name: "{{ ns.config_name }}"
+    config_description: "{{ ns.config_description }}"
+    project_dir: "{{ ns.project_dir }}"
+    models_dir: "{{ ns.models_dir }}"
+    tokenizers_dir: "{{ ns.tokenizers_dir }}"
+    datasets_dir: "{{ ns.datasets_dir }}"
     << endblock meta_output
     -- endfilter
 

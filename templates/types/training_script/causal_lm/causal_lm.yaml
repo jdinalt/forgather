@@ -10,7 +10,7 @@
 
 -- block model_definition
 -- filter trim()
-    -- if ns.CREATE_NEW_MODEL
+    -- if ns.create_new_model
         -- block construct_new_model
 # Undefined model constructor
         << endblock construct_new_model

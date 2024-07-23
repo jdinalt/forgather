@@ -25,8 +25,8 @@
 .define: &trainer_args
     # Base Trainer Defaults
     # https://huggingface.co/docs/transformers/en/main_classes/trainer#transformers.TrainingArguments
-    output_dir: "{{ ns.OUTPUT_DIR }}"
-    logging_dir: "{{ ns.LOGGING_DIR }}"
+    output_dir: "{{ ns.output_dir }}"
+    logging_dir: "{{ ns.logging_dir }}"
     overwrite_output_dir: True
     per_device_train_batch_size: 16
     per_device_eval_batch_size: 16

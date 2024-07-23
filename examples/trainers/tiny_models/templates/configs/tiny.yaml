@@ -2,10 +2,10 @@
 
 -- block config_metadata
     == super()
-    -- set ns.CONFIG_NAME = "Tiny"
-    -- set ns.CONFIG_DESCRIPTION = "A tiny vanilla transformer."
-    -- set ns.MODEL_NAME = "tiny"
-    -- set ns.LOG_NAME = "vanilla"
+    -- set ns.config_name = "Tiny"
+    -- set ns.config_description = "A tiny vanilla transformer."
+    -- set ns.model_name = "tiny"
+    -- set ns.log_name = "vanilla"
 -- endblock config_metadata
 
 

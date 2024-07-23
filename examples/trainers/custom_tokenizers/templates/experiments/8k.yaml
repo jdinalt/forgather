@@ -5,7 +5,7 @@
     ## Experiment Metadata
     -- set ns.EXPERIMENT_NAME = "8k tokenizer"
     -- set ns.EXPERIMENT_DESCRIPTION = "tiny_2k_bpe tokenizer definition with 8k tokens; this results in a much larger model!"
-    -- set ns.LOG_NAME = "8k"
+    -- set ns.log_name = "8k"
 -- endblock experiment_metadata
 
 
@@ -37,7 +37,7 @@
     == super()
     -- set tok_def.name = "tiny_8k_bpe"
     -- set tok_def.description = "Smaller tiny tokenizer" 
-    -- set tok_def.output_dir = path_join(ns.TOKENIZERS_DIR, 'tiny_stories_8k')
+    -- set tok_def.output_dir = path_join(ns.tokenizers_dir, 'tiny_stories_8k')
 -- endblock tokenizer_meta_config
 
 # Increase vocabulary to 8000 tokens

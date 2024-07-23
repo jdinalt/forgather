@@ -3,33 +3,33 @@
 
 ## Define these in a sub-class
 ## -- block base_directories required
-    ## -- set ns.PROJECT_DIR
-    ## -- set ns.MODELS_DIR
-    ## -- set ns.TOKENIZERS_DIR
-    ## -- set ns.DATASETS_DIR
+    ## -- set ns.project_dir
+    ## -- set ns.models_dir
+    ## -- set ns.tokenizers_dir
+    ## -- set ns.datasets_dir
     ## -- set ns.MODEL_ZOO_DIR
 ## -- endblock base_directories
 
 
 -- block config_metadata
-    -- set ns.LOG_NAME = "log"
-    -- set ns.MODEL_NAME = "default_model"
-    -- set ns.CREATE_NEW_MODEL = True
-    -- set ns.SAVE_MODEL = True
-    -- set ns.TRAIN = True
-    -- set ns.EVAL = False
+    -- set ns.log_name = "log"
+    -- set ns.model_name = "default_model"
+    -- set ns.create_new_model = True
+    -- set ns.save_model = True
+    -- set ns.train = True
+    -- set ns.eval = False
 -- endblock config_metadata
 
 
 -- block globals
-    -- set ns.OUTPUT_DIR = path_join(ns.MODELS_DIR, ns.MODEL_NAME)
-    -- set ns.LOGGING_DIR = path_join(ns.OUTPUT_DIR, "runs", ns.LOG_NAME + '_' + time_ns())
+    -- set ns.output_dir = path_join(ns.models_dir, ns.model_name)
+    -- set ns.logging_dir = path_join(ns.output_dir, "runs", ns.log_name + '_' + time_ns())
 -- endblock globals
 
 
 -- block header
     == super()
-# Model: {{ ns.MODEL_NAME }}
+# Model: {{ ns.model_name }}
 # Hostname: {{ hostname }}
 # Versions:
 -- for key, value in versions.items()
@@ -40,12 +40,12 @@
 
 -- block variable_listing
     == super()
-# ns.OUTPUT_DIR: "{{ ns.OUTPUT_DIR }}"
-# ns.LOGGING_DIR: "{{ ns.LOGGING_DIR }}"
-# ns.CREATE_NEW_MODEL: {{ ns.CREATE_NEW_MODEL }}
-# ns.SAVE_MODEL: {{ ns.SAVE_MODEL }}
-# ns.TRAIN: {{ ns.TRAIN }}
-# ns.EVAL: {{ ns.EVAL }}
+# ns.output_dir: "{{ ns.output_dir }}"
+# ns.logging_dir: "{{ ns.logging_dir }}"
+# ns.create_new_model: {{ ns.create_new_model }}
+# ns.save_model: {{ ns.save_model }}
+# ns.train: {{ ns.train }}
+# ns.eval: {{ ns.eval }}
 << endblock variable_listing
 
 
@@ -125,18 +125,18 @@
 
 -- block meta_output
     == super()
-    output_dir: "{{ ns.OUTPUT_DIR }}"
+    output_dir: "{{ ns.output_dir }}"
     model_zoo_dir: "{{ ns.MODEL_ZOO_DIR }}"
-    logging_dir: "{{ns.LOGGING_DIR}}"
+    logging_dir: "{{ns.logging_dir}}"
 << endblock meta_output
 
 
 -- block main_output
 main: !callable:aiws.training_script:TrainingScript
     meta: *meta_output
-    do_save: {{ ns.SAVE_MODEL }}
-    do_train: {{ ns.TRAIN }}
-    do_eval: {{ ns.EVAL }}
+    do_save: {{ ns.save_model }}
+    do_train: {{ ns.train }}
+    do_eval: {{ ns.eval }}
     distributed_env: *distributed_env
     trainer: *trainer
 << endblock main_output
