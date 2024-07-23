@@ -1,4 +1,5 @@
 from typing import Callable, List, Any
+from types import NoneType
 import os
 
 from .distributed import main_process_first
@@ -115,7 +116,15 @@ def torch_dtype(type: str):
     return torch_dtype_map[type]
 
 
-def load_from_config(project_directory, config_template=None):
+def load_from_config(project_directory: str, config_template: str|NoneType=None):
+    """
+    Construct an object from a project configuration
+
+    project_directory: Path to project.
+    config_template: Config template name; if None, use default config.
+
+    TODO: Add ability to pass args to pre-processor and constructor
+    """
     meta = MetaConfig(project_directory)
     # Get default
     if config_template is None:

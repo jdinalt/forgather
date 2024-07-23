@@ -5,6 +5,14 @@
 ## on the 'abridged' version of the Tiny Stories dataset.
 -- extends "types/training_script/causal_lm/causal_lm.yaml"
 
+
+## Setup base directories for the example projects
+-- block base_directories
+    -- set ns.assets_dir = normpath(path_join(project_directory, '..', '..', '..'))
+    -- include 'paths/default_paths.yaml'
+-- endblock base_directories
+
+
 -- block config_metadata
     == super()
     ## Overrides
@@ -13,13 +21,6 @@
     ## Defines
     -- set ns.trainer_class = 'trainers/trainer.yaml'
 -- endblock config_metadata
-
-
-## Setup base directories for the example projects
--- block base_directories
-    -- set ns.assets_dir = normpath(path_join(project_directory, '..', '..', '..'))
-    -- include 'paths/default_paths.yaml'
--- endblock base_directories
 
 
 -- block pre_model_setup

@@ -1,0 +1,56 @@
+-- extends 'projects/tiny.yaml'
+
+-- block config_metadata
+    == super()
+    ## Set sub-project and config for tokenizer
+    ## Save the models
+    -- set ns.save_model = True
+    -- set ns.tokenizer_project_path = path_join(ns.assets_dir, 'examples', 'tokenizers', 'tiny_stories_bpe')
+    -- set ns.tokenizer_project_config = "2k.yaml"
+    -- set ns.max_new_tokens = 30
+-- endblock config_metadata
+
+
+-- block construct_new_model
+    -- include 'project.model_config'
+-- endblock construct_new_model
+
+
+-- block trainer_callbacks
+    -- include 'project.callbacks'
+<< endblock trainer_callbacks
+
+
+-- block trainer_definition
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- project.model_config --------------------
+-- extends 'models/tiny/tiny.yaml'
+
+-- block model_tokenizer
+# Load custom tokenizer from sub-project definition
+.define: &tokenizer !callable:aiws.construct:load_from_config
+    project_directory: "{{ ns.tokenizer_project_path }}"
+    config_template: "{{ ns.tokenizer_project_config }}"
+<< endblock model_tokenizer
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+-- block trainer_args
+    == super()
+    # Project Overrides
+    # It seems that a CUDA OOM can occur with the smaller tokenizers; reducing batch size.
+    per_device_train_batch_size: 32
+-- endblock trainer_args
+
+#-------------------- project.callbacks --------------------
+-- extends 'tiny.callbacks'
+
+-- block text_gen_callback_args
+    == super()
+
+    # Override to compensate for less information in each token
+    max_new_tokens: {{ ns.max_new_tokens }}
+<< endblock text_gen_callback_args

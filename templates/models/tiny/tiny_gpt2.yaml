@@ -9,8 +9,7 @@
 
 
 -- block model_tokenizer
-.define: &tokenizer !callable:transformers:AutoTokenizer.from_pretrained
-    - "{{ path_join(ns.tokenizers_dir, 'tiny_stories_2k') }}"
+    -- include 'tokenizers/tiny_2k.yaml'
 << endblock model_tokenizer
 
 
