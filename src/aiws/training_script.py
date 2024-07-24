@@ -48,7 +48,7 @@ class TrainingScript:
                 os.makedirs(dir, exist_ok=True)
 
     @record
-    def run(self):
+    def run(self, pp_config: str = None):
         # In a distriubted environment, we only want one process to print messages
         is_main_process = self.distributed_env.local_rank == 0
 
@@ -58,6 +58,12 @@ class TrainingScript:
             print(f"config_description: {self.meta.config_description}")
             print(f"output_dir: {self.meta.output_dir}")
             print(f"logging_dir: {self.meta.logging_dir}")
+
+        if pp_config is not None:
+            # Store a copy of the pre-processed configuration in the logging directory.
+            os.makedirs(self.meta.logging_dir, exist_ok=True)
+            with open(os.path.join(self.meta.logging_dir, "config.yaml"), "w") as f:
+                f.write(pp_config)
 
         if self.do_train:
             # This is where the actual 'loop' is.
@@ -123,4 +129,4 @@ def training_loop(project_directory, config_template=None):
     main = config.main(pp_config=pp_config)
 
     # Run it!
-    main.run()
+    main.run(pp_config=pp_config)

@@ -148,14 +148,21 @@ class LineStatementProcessor(Extension):
 
 
 class PPEnvironment(SandboxedEnvironment):
-    TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+    TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
+    FILE_TIME_FORMAT = "%Y-%m-%dT%H-%M-%S"
 
     default_globals = {
-        "now": lambda: datetime.datetime.now().strftime(PPEnvironment.TIME_FORMAT),
-        "utcnow": lambda: datetime.datetime.utcnow().strftime(
-            PPEnvironment.TIME_FORMAT
+        "isotime": lambda: datetime.datetime.now().isoformat(timespec="seconds"),
+        "utcisotime": lambda: datetime.datetime.utcnow().isoformat(timespec="seconds"),
+        # An ISO 8601-like time, suitable for use in file names
+        "filetime": lambda: datetime.datetime.now().strftime(
+            PPEnvironment.FILE_TIME_FORMAT
         ),
-        "time_ns": lambda: str(time.time_ns()),
+        "utcfiletime": lambda: datetime.datetime.utcnow().strftime(
+            PPEnvironment.FILE_TIME_FORMAT
+        ),
+        "now": datetime.datetime.now,
+        "utcnow": datetime.datetime.utcnow,
         "joinpath": _os_path_join,
         "normpath": _os_path_normpath,
         "abspath": os.path.abspath,

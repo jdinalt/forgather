@@ -23,7 +23,7 @@
 
 -- block globals
     -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
-    -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + time_ns())
+    -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
 -- endblock globals
 
 
@@ -114,6 +114,7 @@
     << endblock trainer_callbacks
     -- endfilter
 
+
 == h2('Trainer')
 
     -- filter trim()
@@ -127,7 +128,7 @@
 -- block meta_output
     == super()
     output_dir: "{{ ns.output_dir }}"
-    model_zoo_dir: "{{ ns.model_src_dir }}"
+    model_src_dir: "{{ ns.model_src_dir }}"
     logging_dir: "{{ns.logging_dir}}"
 << endblock meta_output
 

@@ -62,7 +62,7 @@ class TextgenCallback(TrainerCallback):
         summary_writer: SummaryWriter,
         prompts: List[str],
         generation_config: GenerationConfig = None,
-        generation_steps: int = 1000,
+        generation_steps: int = None,
         max_new_tokens: int = 200,
     ):
         super().__init__()
@@ -79,15 +79,15 @@ class TextgenCallback(TrainerCallback):
             )
         if not isinstance(self.generation_config, GenerationConfig):
             self.generation_config = GenerationConfig(**generation_config)
-        self.generation_steps = None
+        self.generation_steps = generation_steps
         self.max_new_tokens = max_new_tokens
         self.next_gen_step = 0
 
     def on_evaluate(self, args, state, control, /, model, tokenizer, **kwargs):
-        if not state.is_world_process_zero or state.global_step < self.next_gen_step:
-            return
         if self.generation_steps is None:
             self.generation_steps = args.eval_steps
+        if not state.is_world_process_zero or state.global_step < self.next_gen_step:
+            return
         self.next_gen_step += self.generation_steps
         text = ""
         for output in self.generate(args, model, tokenizer):

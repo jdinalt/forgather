@@ -27,7 +27,7 @@
 == h1(ns.config_name)
 -- filter trim()
 -- block header
-# {{ utcnow() }}
+# {{ utcisotime() }}
 # Description: {{ ns.config_description }}
 # Project Dir: {{ project_dir }}
 # Current Working Dir: "{{ getcwd() }}"
