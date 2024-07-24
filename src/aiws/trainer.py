@@ -135,6 +135,18 @@ class Trainer(BaseTrainer):
         if self.args.use_cpu:
             self.args.device = "cpu"
 
+    def _get_dataloader(self, dataset):
+        return DataLoader(
+            dataset,
+            batch_size=self.args.per_device_train_batch_size,
+            collate_fn=self.data_collator,
+            drop_last=self.args.dataloader_drop_last,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
+            prefetch_factor=self.args.dataloader_prefetch_factor,
+            persistent_workers=self.args.dataloader_persistent_workers,
+        )
+    
     def _prepare(self, train_dataset, eval_dataset) -> None:
         """
         Prepare for training and/or evaluation
@@ -150,13 +162,7 @@ class Trainer(BaseTrainer):
 
         if train_dataset is not None:
             assert train_dataset is not None, "Training requires a train_dataset"
-            self.train_dataloader = DataLoader(
-                train_dataset,
-                batch_size=self.args.per_device_train_batch_size,
-                collate_fn=self.data_collator,
-                drop_last=True,
-                # pin_memory=True,
-            )
+            self.train_dataloader = self._get_dataloader(train_dataset)
             self._update_training_steps()
             if self.optimizer is None:
                 self.optimizer = self.optimizer_factory(self.model, self.args)
@@ -169,13 +175,7 @@ class Trainer(BaseTrainer):
         if eval_dataset is not None:
             assert self.train_dataset is not None, "Evaluation requires an eval_dataset"
             if self.eval_dataset is not None:
-                self.eval_dataloader = DataLoader(
-                    eval_dataset,
-                    batch_size=self.args.per_device_eval_batch_size,
-                    collate_fn=self.data_collator,
-                    drop_last=True,
-                    # pin_memory=True,
-                )
+                self.eval_dataloader = self._get_dataloader(eval_dataset)
 
     def _train_loop(self) -> TrainOutput:
         """

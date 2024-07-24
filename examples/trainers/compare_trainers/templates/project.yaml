@@ -1,2 +1,63 @@
 # Just use the tiny project defaults.
--- extends 'projects/tiny.yaml'
+-- extends "types/training_script/causal_lm/causal_lm.yaml"
+
+
+## Setup base directories for the example projects
+-- block base_directories
+    -- set ns.assets_dir = normpath(path_join(project_directory, '..', '..', '..'))
+    -- include 'paths/default_paths.yaml'
+-- endblock base_directories
+
+
+-- block config_metadata
+    == super()
+    ## Overrides
+    -- set ns.config_name = "Compare Trainers"
+    -- set ns.config_description = "Compare trainer performance."
+    -- set ns.save_model = False
+    ## Defines
+    -- set ns.trainer_class = 'trainers/trainer.yaml'
+-- endblock config_metadata
+
+
+-- block datasets_definition
+    ## Note: Switch to 'datasets/tiny/tiny_stories.yaml' for the full dataset.
+    -- include 'datasets/tiny/tiny_stories_abridged.yaml'
+-- endblock datasets_definition
+
+
+-- block trainer_definition
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
+
+-- block construct_new_model
+    -- include 'project.model_config'
+-- endblock construct_new_model
+
+
+-- block trainer_callbacks
+    -- include 'callbacks/loggers.yaml'
+<< endblock trainer_callbacks
+
+#-------------------- project.trainer_config --------------------
+-- extends ns.trainer_class
+
+-- block trainer_meta_config
+    == super()
+    -- set trainer_def.name = "Custom " + trainer_def.name
+-- endblock trainer_meta_config
+
+
+-- block trainer_args
+    == super()
+    # Tiny Project Overrides
+    per_device_train_batch_size: 64
+    per_device_eval_batch_size: 64
+    logging_steps: 100
+    eval_steps: 500
+    dataloader_num_workers: 1
+-- endblock trainer_args
+
+#-------------------- project.model_config --------------------
+-- extends 'models/tiny/tiny.yaml'

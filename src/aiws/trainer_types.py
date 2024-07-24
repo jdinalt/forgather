@@ -99,6 +99,11 @@ class TrainingArguments:
     warmup_steps: int = 0
     device: Any = None
     logging_dir: str = None
+    dataloader_num_workers: int = 0
+    dataloader_pin_memory: int = True
+    dataloader_persistent_workers: bool = False
+    dataloader_prefetch_factor: int = None
+    dataloader_drop_last: bool = False
 
     eval_strategy: ConversionDescriptor = ConversionDescriptor(
         IntervalStrategy, default=IntervalStrategy.NO
@@ -116,6 +121,9 @@ class TrainingArguments:
     use_cpu: bool = False
 
     def __post_init__(self):
+        # As per https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader
+        if self.dataloader_prefetch_factor is None and self.dataloader_num_workers > 0:
+            self.dataloader_prefetch_factor = 2
         if self.logging_dir is None:
             self.logging_dir = os.path.join(
                 self.output_dir, "runs", f"{time.time_ns()}_{platform.node()}"
