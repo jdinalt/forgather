@@ -6,7 +6,6 @@
 
 
 -- block base_directories required
-    ## -- set ns.project_dir
     ## -- set ns.models_dir
     ## -- set ns.tokenizers_dir
     ## -- set ns.datasets_dir
@@ -30,7 +29,9 @@
 -- block header
 # {{ utcnow() }}
 # Description: {{ ns.config_description }}
-
+# Project Dir: {{ project_dir }}
+# Current Working Dir: "{{ getcwd() }}"
+# Forgather Config Dir: "{{ forgather_config_dir() }}"
 
 << endblock header
 -- endfilter
@@ -40,7 +41,6 @@
 
 -- filter trim()
 -- block variable_listing
-# ns.project_dir: "{{ ns.project_dir }}"
 # ns.models_dir: "{{ ns.models_dir }}"
 # ns.tokenizers_dir: "{{ ns.tokenizers_dir }}"
 # ns.datasets_dir: "{{ ns.datasets_dir }}"
@@ -63,7 +63,7 @@
 meta: &meta_output
     config_name: "{{ ns.config_name }}"
     config_description: "{{ ns.config_description }}"
-    project_dir: "{{ ns.project_dir }}"
+    project_dir: "{{ project_dir }}"
     models_dir: "{{ ns.models_dir }}"
     tokenizers_dir: "{{ ns.tokenizers_dir }}"
     datasets_dir: "{{ ns.datasets_dir }}"

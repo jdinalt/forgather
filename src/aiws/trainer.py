@@ -146,7 +146,7 @@ class Trainer(BaseTrainer):
             prefetch_factor=self.args.dataloader_prefetch_factor,
             persistent_workers=self.args.dataloader_persistent_workers,
         )
-    
+
     def _prepare(self, train_dataset, eval_dataset) -> None:
         """
         Prepare for training and/or evaluation

@@ -17,6 +17,10 @@ from platformdirs import (
 from .utils import format_line_numbers
 
 
+def forgather_config_dir():
+    return user_config_dir("forgather", "dinalt")
+
+
 class PPLoader(FileSystemLoader):
     """
     Custom Jinja2 loader which can split a file template into multiple named sub-templates
@@ -146,6 +150,27 @@ class LineStatementProcessor(Extension):
 class PPEnvironment(SandboxedEnvironment):
     TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+    default_globals = {
+        "now": lambda: datetime.datetime.now().strftime(PPEnvironment.TIME_FORMAT),
+        "utcnow": lambda: datetime.datetime.utcnow().strftime(
+            PPEnvironment.TIME_FORMAT
+        ),
+        "time_ns": lambda: str(time.time_ns()),
+        "joinpath": _os_path_join,
+        "normpath": _os_path_normpath,
+        "abspath": os.path.abspath,
+        "relpath": os.path.relpath,
+        "user_home_dir": lambda: os.path.expanduser("~"),
+        "getcwd": os.getcwd,
+        "forgather_config_dir": forgather_config_dir,
+        # https://pypi.org/project/platformdirs/
+        "user_data_dir": user_data_dir,
+        "user_cache_dir": user_cache_dir,
+        "user_config_dir": user_config_dir,
+        "site_data_dir": site_data_dir,
+        "site_config_dir": site_config_dir,
+    }
+
     def __init__(
         self,
         *args,
@@ -173,17 +198,5 @@ class PPEnvironment(SandboxedEnvironment):
             undefined=undefined,
             **kwargs,
         )
-        self.globals["now"] = lambda: datetime.datetime.now().strftime(self.TIME_FORMAT)
-        self.globals["utcnow"] = lambda: datetime.datetime.utcnow().strftime(
-            self.TIME_FORMAT
-        )
-        self.globals["time_ns"] = lambda: str(time.time_ns())
-        self.globals["path_join"] = _os_path_join
-        self.globals["normpath"] = _os_path_normpath
-        self.globals["user_home_dir"] = os.path.expanduser("~")
-        # https://pypi.org/project/platformdirs/
-        self.globals["user_data_dir"] = user_data_dir
-        self.globals["user_cache_dir"] = user_cache_dir
-        self.globals["user_config_dir"] = user_config_dir
-        self.globals["site_data_dir"] = site_data_dir
-        self.globals["site_config_dir"] = site_config_dir
+
+        self.globals |= self.default_globals

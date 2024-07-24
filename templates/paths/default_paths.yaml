@@ -1,8 +1,0 @@
-## Set the relative path from the project to the common 'assets' directory
-## -- set ns.assets_dir = normpath(path_join(project_directory, '..', '..'))
-
--- set ns.project_dir = project_directory
--- set ns.MODEL_ZOO_DIR = path_join(ns.assets_dir, 'model_zoo')
--- set ns.models_dir = normpath(path_join(project_directory, 'output_models'))
--- set ns.tokenizers_dir = path_join(ns.assets_dir, 'tokenizers')
--- set ns.datasets_dir = path_join(ns.assets_dir, 'datasets')

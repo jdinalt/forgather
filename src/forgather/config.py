@@ -5,6 +5,7 @@ from typing import (
     Dict,
     Set,
     Iterator,
+    Iterable,
     Tuple,
 )
 from collections.abc import Sequence, Mapping
@@ -14,6 +15,7 @@ from yaml import SafeLoader
 from pathlib import Path
 
 from jinja2 import Environment, meta
+from platformdirs import user_config_dir
 
 from pprint import pformat
 from .latent import Latent
@@ -159,15 +161,17 @@ class ConfigEnvironment:
 
     def __init__(
         self,
-        searchpath: List[str | os.PathLike] | str | os.PathLike = Path("."),
+        searchpath: Iterable[str | os.PathLike] | str | os.PathLike = tuple("."),
         pp_environment: Environment = None,
         globals: Dict[str, Any] = {},
     ):
-        # Implicitly add CWD to search path
-        # if isinstance(searchpath, str) or isinstance(searchpath, os.PathLike):
-        #    searchpath = [Path("."), searchpath]
-        # else:
-        #    searchpath.insert(0, Path("."))
+        # Convert search path to tuple, if str or os.PathLike
+        if isinstance(searchpath, os.PathLike) or isinstance(searchpath, str):
+            searchpath = [searchpath]
+        assert isinstance(searchpath, Iterable), "searchpath must be Iterable"
+
+        # Remove non-existent directories from searchpath
+        searchpath = list(filter(lambda path: os.path.isdir(path), searchpath))
 
         if pp_environment is None:
             pp_environment = PPEnvironment(searchpath=searchpath)
@@ -249,27 +253,3 @@ class ConfigEnvironment:
                 continue
             for t in self.find_referenced_templates(template, level + 1):
                 yield t
-
-
-def load_config(config_path: str | os.PathLike, /, **kwargs) -> ConfigDict:
-    """
-    Just load a simple configuration and return it
-
-    This is intended for loading a very basic configuration, like a meta-config.
-
-    The search path is relative to the CWD and returns a ConfigDict.
-    """
-    project_directory, template_name = os.path.split(config_path)
-    assert os.path.exists(
-        project_directory
-    ), f"The directory, '{project_directory}', does not exist."
-    assert os.path.isdir(
-        project_directory
-    ), f"'{project_directory}' is not a directory."
-    assert os.path.isfile(
-        config_path
-    ), f"'The template, '{template_name}', does not exist in '{project_directory}'"
-
-    environment = ConfigEnvironment(searchpath=project_directory)
-    config = environment.load(template_name, **kwargs)
-    return config.config

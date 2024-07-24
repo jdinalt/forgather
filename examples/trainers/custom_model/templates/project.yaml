@@ -10,8 +10,8 @@
 
 
 -- block base_directories
-    -- set ns.assets_dir = normpath(path_join(project_directory, '..', '..', '..'))
-    -- include 'paths/default_paths.yaml'
+    -- set ns.forgather_dir = normpath(joinpath(project_dir, '..', '..', '..'))
+    -- include 'paths/example_paths.yaml'
 -- endblock base_directories
 
 

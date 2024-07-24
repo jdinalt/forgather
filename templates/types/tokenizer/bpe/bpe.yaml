@@ -5,7 +5,7 @@
     -- set ns.config_name = "Custom BPE Tokenizer"
     -- set ns.config_description = "A custom BPE tokenizer definition."
     ## -- set ns.dataset_id = 'dataset_id'
-    ## -- set ns.output_dir = path_join(ns.tokenizers_dir, 'custom_tokenizer')
+    ## -- set ns.output_dir = joinpath(ns.tokenizers_dir, 'custom_tokenizer')
 -- endblock config_metadata
 
 

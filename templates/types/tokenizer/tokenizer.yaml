@@ -20,7 +20,7 @@
 
 
 -- block globals
-    -- set ns.output_dir = path_join(ns.tokenizers_dir, ns.tokenizer_name)
+    -- set ns.output_dir = joinpath(ns.tokenizers_dir, ns.tokenizer_name)
 -- endblock globals
 
 
@@ -115,7 +115,7 @@
 
 -- block main_output
 main: !callable:aiws.construct:build_rule
-    target: "{{ path_join(ns.output_dir, 'tokenizer.json') }}"
+    target: "{{ joinpath(ns.output_dir, 'tokenizer.json') }}"
     recipe: *tokenizer_trainer
     loader: !callable:transformers:AutoTokenizer.from_pretrained
         args:

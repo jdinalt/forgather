@@ -44,7 +44,7 @@ def display_meta(meta, title=""):
     md += f"Meta Config: [{relpath}]({relpath})\n\n"
     md += f"Template Search Paths:\n"
     for path in meta.searchpath:
-        relpath = os.path.relpath(path)
+        relpath = os.path.abspath(path)
         md += f"- [{relpath}]({relpath})\n"
     display.display(display.Markdown(md))
 
@@ -108,7 +108,7 @@ def display_filelink(path, title="", name=None):
 def get_train_cmdline(train_script_path, meta, nproc="gpu", cuda_devices=None):
     s = (
         f"torchrun --standalone --nproc-per-node '{nproc}' '{train_script_path}'"
-        + f" -p '{meta.project_dir}' -s '{meta.system_path}'"
+        + f" -p '{os.path.abspath(meta.project_dir)}' -s '{os.path.abspath(meta.system_path)}'"
     )
     if cuda_devices is not None:
         s = f"CUDA_VISIBLE_DEVICES='{cuda_devices}' " + s

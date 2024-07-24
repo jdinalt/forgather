@@ -6,14 +6,14 @@
     -- set model_def.description = "A very basic transformer model"
     -- set model_def.cls = 'VanillaTransformer'
     -- set model_def.cfg_cls = 'VanillaTransformerConfig'
-    -- set model_def.config_path = path_join(ns.MODEL_ZOO_DIR, 'vanilla_transformer', 'vanilla_transformer.py')
+    -- set model_def.config_path = joinpath(ns.model_src_dir, 'vanilla_transformer', 'vanilla_transformer.py')
     -- set model_def.model_path = model_def.config_path
 -- endblock model_meta_config
 
 
 -- block model_tokenizer
 .define: &tokenizer !callable:transformers:AutoTokenizer.from_pretrained
-    - "{{ path_join(ns.tokenizers_dir, 'tiny_stories_2k') }}"
+    - "{{ joinpath(ns.tokenizers_dir, 'tiny_stories_2k') }}"
 << endblock model_tokenizer
 
 

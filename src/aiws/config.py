@@ -4,12 +4,13 @@ import os
 from importlib.metadata import version
 import platform
 
-from forgather.config import load_config
+from forgather.config import ConfigEnvironment, ConfigDict
+from forgather.preprocess import forgather_config_dir
 
 
-def preprocessor_globals(project_directory):
+def preprocessor_globals(project_dir):
     return dict(
-        project_directory=project_directory,
+        project_dir=project_dir,
         hostname=platform.node(),
         uname=platform.uname(),
         versions={"python": platform.python_version()}
@@ -34,16 +35,11 @@ class MetaConfig:
 
     def __init__(self, project_dir, meta_name="meta.yaml"):
         self.meta_path = os.path.join(project_dir, meta_name)
-        config = load_config(self.meta_path)
+        config = self._load_config(self.meta_path)
         self.project_dir = project_dir
-        self.searchpath = []
-        for path in config.searchdir:
-            norm_path = self.norm_path(path)
-            assert os.path.exists(norm_path), f"Search dir {norm_path} does not exist."
-            assert os.path.isdir(
-                norm_path
-            ), f"Search dir {norm_path} is not a directory."
-            self.searchpath.append(os.path.abspath(norm_path))
+        self.searchpath = [
+            os.path.abspath(self.norm_path(path)) for path in config.searchdir
+        ]
         self.config_prefix = config.config_prefix
         self.default_cfg = config.get("default_config", None)
         self.system_path = self.norm_path(config.system_path)
@@ -89,3 +85,24 @@ class MetaConfig:
                         if template_name.startswith("/"):
                             template_name = template_name[1:]
                         yield (template_name, template_path)
+
+    @staticmethod
+    def _load_config(config_path: str | os.PathLike, /, **kwargs) -> ConfigDict:
+        project_directory, template_name = os.path.split(config_path)
+        assert os.path.exists(
+            project_directory
+        ), f"The directory, '{project_directory}', does not exist."
+        assert os.path.isdir(
+            project_directory
+        ), f"'{project_directory}' is not a directory."
+        assert os.path.isfile(
+            config_path
+        ), f"'The template, '{template_name}', does not exist in '{project_directory}'"
+
+        searchpath = [project_directory]
+        user_templates_dir = os.path.join(forgather_config_dir(), "templates")
+        if os.path.isdir(user_templates_dir):
+            searchpath.append(user_templates_dir)
+        environment = ConfigEnvironment(searchpath=searchpath)
+        config = environment.load(template_name, **kwargs)
+        return config.config

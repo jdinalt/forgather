@@ -3,11 +3,11 @@
 
 ## Define these in a sub-class
 ## -- block base_directories required
-    ## -- set ns.project_dir
+    ## -- set project_dir
     ## -- set ns.models_dir
     ## -- set ns.tokenizers_dir
     ## -- set ns.datasets_dir
-    ## -- set ns.MODEL_ZOO_DIR
+    ## -- set ns.model_src_dir
 ## -- endblock base_directories
 
 
@@ -22,8 +22,8 @@
 
 
 -- block globals
-    -- set ns.output_dir = path_join(ns.models_dir, ns.model_name)
-    -- set ns.logging_dir = path_join(ns.output_dir, "runs", ns.log_name + '_' + time_ns())
+    -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
+    -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + time_ns())
 -- endblock globals
 
 
@@ -40,6 +40,7 @@
 
 -- block variable_listing
     == super()
+# ns.model_src_dir: "{{ ns.model_src_dir }}"
 # ns.output_dir: "{{ ns.output_dir }}"
 # ns.logging_dir: "{{ ns.logging_dir }}"
 # ns.create_new_model: {{ ns.create_new_model }}
@@ -126,7 +127,7 @@
 -- block meta_output
     == super()
     output_dir: "{{ ns.output_dir }}"
-    model_zoo_dir: "{{ ns.MODEL_ZOO_DIR }}"
+    model_zoo_dir: "{{ ns.model_src_dir }}"
     logging_dir: "{{ns.logging_dir}}"
 << endblock meta_output
 

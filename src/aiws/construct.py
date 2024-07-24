@@ -5,10 +5,7 @@ import os
 from .distributed import main_process_first
 
 from aiws.config import MetaConfig
-from forgather.config import (
-    load_config,
-    ConfigEnvironment,
-)
+from forgather.config import ConfigEnvironment
 
 
 def register_for_auto_class(object, /, *args, **kwargs):
@@ -116,7 +113,7 @@ def torch_dtype(type: str):
     return torch_dtype_map[type]
 
 
-def load_from_config(project_directory: str, config_template: str|NoneType=None):
+def load_from_config(project_dir: str, config_template: str | NoneType = None):
     """
     Construct an object from a project configuration
 
@@ -125,13 +122,13 @@ def load_from_config(project_directory: str, config_template: str|NoneType=None)
 
     TODO: Add ability to pass args to pre-processor and constructor
     """
-    meta = MetaConfig(project_directory)
+    meta = MetaConfig(project_dir)
     # Get default
     if config_template is None:
         config_template = meta.default_config()
     environment = ConfigEnvironment(
         searchpath=meta.searchpath,
-        globals={"project_directory": project_directory},
+        globals={"project_dir": project_dir},
     )
     config = environment.load(meta.config_path(config_template)).config
     return config.main()

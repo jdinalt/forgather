@@ -5,7 +5,7 @@
     ## Set sub-project and config for tokenizer
     ## Save the models
     -- set ns.save_model = True
-    -- set ns.tokenizer_project_path = path_join(ns.assets_dir, 'examples', 'tokenizers', 'tiny_stories_bpe')
+    -- set ns.tokenizer_project_path = joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'tiny_stories_bpe')
     -- set ns.tokenizer_project_config = "2k.yaml"
     -- set ns.max_new_tokens = 30
 -- endblock config_metadata
@@ -31,7 +31,7 @@
 -- block model_tokenizer
 # Load custom tokenizer from sub-project definition
 .define: &tokenizer !callable:aiws.construct:load_from_config
-    project_directory: "{{ ns.tokenizer_project_path }}"
+    project_dir: "{{ ns.tokenizer_project_path }}"
     config_template: "{{ ns.tokenizer_project_config }}"
 << endblock model_tokenizer
 

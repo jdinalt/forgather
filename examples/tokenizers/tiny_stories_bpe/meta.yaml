@@ -1,9 +1,9 @@
--- set main_dir = path_join('..', '..', '..')
+-- set main_dir = joinpath('..', '..', '..')
 
 searchdir:
     - "templates"
-    - "{{ path_join(main_dir, 'templates') }}"
+    - "{{ joinpath(main_dir, 'templates') }}"
 
 config_prefix: "configs"
-system_path: "{{ path_join(main_dir, 'src') }}"
+system_path: "{{ joinpath(main_dir, 'src') }}"
 default_config: "2k.yaml"
