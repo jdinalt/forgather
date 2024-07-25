@@ -1,8 +1,31 @@
-from typing import Any, Callable, Iterable, Optional, Union, List, Type
-import types
+from typing import Any, Callable, Iterable, Optional, Union, List, Type, Tuple
+from collections.abc import Iterable
+from types import ModuleType
 import importlib
 import sys
 import os
+
+
+def walk_package_modules(mod: ModuleType, level=0) -> Iterable[Tuple[int, ModuleType]]:
+    """
+    Given a package, walk all referenced sub-modules within the same package
+
+    yields Tuple[recursion_depth: int, module: ModuleType]
+    """
+    yield level, mod
+    # Is it a package; only packages have a '__path__' attr
+    if not hasattr(mod, "__path__"):
+        return
+    for value in mod.__dict__.values():
+        # Ignore items which are not modules or which don't have a __package__ attr
+        # Ignore things which don't start with the package prefix
+        if (
+            type(value) != ModuleType
+            or not hasattr(value, "__package__")
+            or not value.__package__.startswith(mod.__package__)
+        ):
+            continue
+        yield from walk_package_modules(value, level + 1)
 
 
 def parse_module_name_or_path(module_name_or_path: Union[os.PathLike, str]):
@@ -74,9 +97,7 @@ class DynamicImportParseError(Exception):
     pass
 
 
-def import_dynamic_module(
-    module_name_or_path: Union[os.PathLike, str]
-) -> types.ModuleType:
+def import_dynamic_module(module_name_or_path: Union[os.PathLike, str]) -> ModuleType:
     """
     Given a module-name-or-path return the associated module
 
@@ -91,10 +112,14 @@ def import_dynamic_module(
         if module_path is None:
             mod = importlib.import_module(module_name)
         else:
+            module_dir = os.path.abspath(os.path.dirname(module_path))
             module_spec = importlib.util.spec_from_file_location(
-                module_name, module_path
+                module_name, module_path, submodule_search_locations=[module_dir]
             )
             mod = importlib.util.module_from_spec(module_spec)
+            if module_dir not in sys.path:
+                sys.path.insert(0, module_dir)
+
             sys.modules[module_name] = mod
             module_spec.loader.exec_module(mod)
     return mod

@@ -130,6 +130,10 @@
     output_dir: "{{ ns.output_dir }}"
     model_src_dir: "{{ ns.model_src_dir }}"
     logging_dir: "{{ns.logging_dir}}"
+    create_new_model: "{{ns.create_new_model}}"
+    save_model: "{{ns.save_model}}"
+    train: "{{ns.train}}"
+    eval: "{{ns.eval}}"
 << endblock meta_output
 
 

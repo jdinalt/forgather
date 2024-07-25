@@ -34,7 +34,7 @@ class TrainingScript:
 
     def __post_init__(self):
         self.meta = DotDict(self.meta)
-        if int(os.environ.get("RANK", 0)) == 0:
+        if int(os.environ.get("LOCAL_RANK", 0)) == 0:
             self.validate_dirs()
 
     def validate_dirs(self):

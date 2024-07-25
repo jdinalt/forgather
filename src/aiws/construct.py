@@ -1,11 +1,14 @@
-from typing import Callable, List, Any
-from types import NoneType
+from typing import Callable, List, Any, Tuple
+from types import NoneType, ModuleType
 import os
+import shutil
+import sys
 
 from .distributed import main_process_first
 
 from aiws.config import MetaConfig
 from forgather.config import ConfigEnvironment
+from forgather.dynamic import walk_package_modules
 
 
 def register_for_auto_class(object, /, *args, **kwargs):
@@ -132,3 +135,67 @@ def load_from_config(project_dir: str, config_template: str | NoneType = None):
     )
     config = environment.load(meta.config_path(config_template)).config
     return config.main()
+
+
+__copied_package_files = set()
+
+
+def copy_package_files(dest_dir: str | os.PathLike, obj: Any) -> Any:
+    """
+    Given an object, copy the source files for those objects,
+        and all referenced source files within the same package, to the
+        desitnation directory.
+
+    returns the input object, unaltered
+
+    ```
+    # Copy the source code for a custom model instance to the model output
+    # directory.
+
+    custom_model = copy_package_files('output_models/my_model', custom_model)
+    ```
+
+    The underlying implementation only copies imported files from the same
+    module as the object -- recursively. Duplicates are eliminated before
+    the copy.
+
+    While not perfect, it's less broken than the attempt at something similar
+    within the Transformers library. Includes modules can be in sub-directories,
+    which makes it easy to symlink a 'model-bits' directory and have this only
+    copy the referenced bits.
+
+    Why do this?
+
+    I have been burned multiple times by using imported models, only
+    to 'fix' the library, resulting in incompatible model weights. This being
+    followed by the hilarity of trying to piece back together the original
+    source code. Fun times!
+
+    This allows one to keep a snap-shot of working code with the model weights.
+    Even if you don't save the weights, it makes the experiment reproducible.
+    """
+
+    # Only do this on the main process
+    if int(os.environ.get("LOCAL_RANK", 0)) != 0:
+        return obj
+    global __copied_package_files
+    # Get module for object
+    pkg = sys.modules[obj.__module__]
+    for level, value in walk_package_modules(pkg):
+        # Ignore namespaces
+        if value.__spec__.origin is None:
+            continue
+        origin = value.__spec__.origin
+        package_name = value.__package__
+        with open(origin, "r") as f:
+            file_hash = hash((origin, package_name, f.read()))
+        # Skip, if we have already copied this file
+        if file_hash in __copied_package_files:
+            continue
+        __copied_package_files.add(file_hash)
+        file_name = os.path.basename(origin)
+        module_prefix = package_name.split(".")[1:]
+        module_dir = os.path.join(dest_dir, *module_prefix)
+        os.makedirs(module_dir, exist_ok=True)
+        shutil.copy2(origin, module_dir, follow_symlinks=True)
+    return obj

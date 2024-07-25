@@ -167,6 +167,8 @@ class PPEnvironment(SandboxedEnvironment):
         "normpath": _os_path_normpath,
         "abspath": os.path.abspath,
         "relpath": os.path.relpath,
+        # Given a module file path, return the module name
+        "modname_from_path": lambda path: os.path.splitext(os.path.basename(path))[0],
         "user_home_dir": lambda: os.path.expanduser("~"),
         "getcwd": os.getcwd,
         "forgather_config_dir": forgather_config_dir,
