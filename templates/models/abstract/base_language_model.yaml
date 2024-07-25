@@ -32,6 +32,14 @@
 << endblock model_config
 -- endfilter
 
+-- filter trim()
+## A list of searchpaths which will be considered part of the same module
+## as the custom model definition, if defined.
+-- block model_submodule_searchpath
+##.define: &model_submodule_searchpath []
+<< endblock model_submodule_searchpath
+-- endfilter
+
 
 == h3('Model Constructor')
 

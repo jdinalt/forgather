@@ -2,7 +2,13 @@ import os
 from dataclasses import fields
 from typing import Iterator, Tuple
 
-from forgather.dynamic import parse_module_name_or_path, parse_dynamic_import_spec
+from forgather.dynamic import (
+    parse_module_name_or_path,
+    parse_dynamic_import_spec,
+    import_dynamic_module,
+    walk_package_modules,
+)
+
 from forgather import Latent
 from IPython import display
 
@@ -33,7 +39,7 @@ def find_file_specs(config):
         if spec in spec_set:
             continue
         spec_set.add(spec)
-        yield spec
+        yield module_path, symbol_name, latent.submodule_searchpath
 
 
 def display_meta(meta, title=""):
@@ -91,10 +97,25 @@ def display_referenced_templates(environment, template, title=""):
     display.display(display.Markdown(md))
 
 
-def display_referenced_source_list(config, title=""):
+def display_referenced_source_list(config, title="", deep=False):
+    """
+    Setting the 'deep' flag requires actually loading the modules
+    """
+    visited_modules = set()
     md = f"{title}"
-    for file, callable in sorted(find_file_specs(config)):
-        md += f"- [{file}]({file}) : {callable}\n"
+    for file, callable, searchpath in find_file_specs(config):
+        md += f"- [{file}]({os.path.relpath(file)}) : {callable}\n"
+        if deep:
+            mod = import_dynamic_module(file, searchpath=searchpath)
+            for level, submod in walk_package_modules(mod):
+                module_name = submod.__name__
+                origin = submod.__spec__.origin
+                hasht = (module_name, origin)
+                if hasht in visited_modules:
+                    continue
+                visited_modules.add(hasht)
+                md += f"{' ' * 4 * (level + 1)}- [{origin}]({os.path.relpath(origin)}) : {module_name}\n"
+
     display.display(display.Markdown(md))
 
 

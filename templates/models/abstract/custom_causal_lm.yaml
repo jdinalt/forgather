@@ -36,6 +36,11 @@
 << endblock model_config
 
 
+-- block model_submodule_searchpath
+.define: &model_submodule_searchpath []
+<< endblock model_submodule_searchpath
+
+
 -- block model_constructor
 # Custom transformer model; registers for AutoClass and will save code with weights.
 .define: &model !callable:aiws.construct:copy_package_files
@@ -45,7 +50,9 @@
             - !callable:aiws.construct:copy_package_files
                 - "{{ ns.output_dir }}"
                 - !callable:{{ model_def.config_path }}:{{ model_def.cfg_cls }}
+                    submodule_searchpath: *model_submodule_searchpath
                     <<: *model_config
         kwargs:
+            submodule_searchpath: *model_submodule_searchpath
             <<: *model_constructor_args
 << endblock model_constructor

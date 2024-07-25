@@ -27,6 +27,7 @@ class Latent:
         "as_callable",
         "is_singleton",
         "singleton",
+        "submodule_searchpath",
     )
 
     def __init__(
@@ -36,12 +37,14 @@ class Latent:
         *args,
         as_callable=False,
         is_singleton=False,
+        submodule_searchpath=[],
         **kwargs,
     ):
         assert isinstance(constructor, str) or isinstance(constructor, Callable)
         assert isinstance(as_callable, bool)
         assert isinstance(is_singleton, bool)
         self.constructor = constructor
+        self.submodule_searchpath = submodule_searchpath
         self.args = args
         self.kwargs = kwargs
 
@@ -180,7 +183,9 @@ class Latent:
             # If not plausibly an import spec, skip it
             if not isinstance(latent.constructor, str) or not ":" in latent.constructor:
                 continue
-            constructor = dynamic_import(latent.constructor)
+            constructor = dynamic_import(
+                latent.constructor, searchpath=latent.submodule_searchpath
+            )
             if not isinstance(constructor, Callable):
                 raise LatentException(
                     f"Imported constructor is not Callable: [{type(self.constructor)}] {self.constructor}"

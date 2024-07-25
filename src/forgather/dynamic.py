@@ -97,7 +97,11 @@ class DynamicImportParseError(Exception):
     pass
 
 
-def import_dynamic_module(module_name_or_path: Union[os.PathLike, str]) -> ModuleType:
+def import_dynamic_module(
+    module_name_or_path: os.PathLike | str,
+    *,
+    searchpath: List[os.PathLike | str] = [],
+) -> ModuleType:
     """
     Given a module-name-or-path return the associated module
 
@@ -112,21 +116,22 @@ def import_dynamic_module(module_name_or_path: Union[os.PathLike, str]) -> Modul
         if module_path is None:
             mod = importlib.import_module(module_name)
         else:
-            module_dir = os.path.abspath(os.path.dirname(module_path))
             module_spec = importlib.util.spec_from_file_location(
-                module_name, module_path, submodule_search_locations=[module_dir]
+                module_name,
+                module_path,
+                submodule_search_locations=searchpath,
             )
             mod = importlib.util.module_from_spec(module_spec)
-            if module_dir not in sys.path:
-                sys.path.insert(0, module_dir)
-
             sys.modules[module_name] = mod
             module_spec.loader.exec_module(mod)
     return mod
 
 
 def from_dynamic_module_import(
-    module_name_or_path: Union[os.PathLike, str], symbol_name: str
+    module_name_or_path: Union[os.PathLike, str],
+    symbol_name: str,
+    *,
+    searchpath: List[os.PathLike | str] = [],
 ) -> Any:
     """
     Given a module-name-or-path and a symbol name in that module,
@@ -137,13 +142,17 @@ def from_dynamic_module_import(
     tensor = tensor_cls([1, 2, 3])
     ```
     """
-    mod = import_dynamic_module(module_name_or_path)
+    mod = import_dynamic_module(module_name_or_path, searchpath=searchpath)
     for symbol in symbol_name.split("."):
         mod = getattr(mod, symbol)
     return mod
 
 
-def dynamic_import(import_spec: str):
+def dynamic_import(
+    import_spec: str,
+    *,
+    searchpath: List[os.PathLike | str] = [],
+):
     """
     Given an import spec, return the associated object
 
@@ -151,25 +160,8 @@ def dynamic_import(import_spec: str):
     torch_module_cls = dynamic_import("torch.nn:Module")
     ```
     """
-    return from_dynamic_module_import(*parse_dynamic_import_spec(import_spec))
-
-
-def dynamic_call(import_spec: str, /, *args, **kwargs):
-    """
-    Like dynamic_import, but calls the symbol with the provided arguments.
-
-    ```
-    tensor = dynamic_call("torch:zeros", 2, 4)
-    > tensor([[0., 0., 0., 0.],
-    > [0., 0., 0., 0.]])
-    ```
-
-    Note: This is not a terribly efficient way of calling a function. It's handly
-    for a one-off, but if you are going to call the same thing more than once,
-    consider dynamic_import().
-    """
-    return from_dynamic_module_import(*parse_dynamic_import_spec(import_spec))(
-        *args, **kwargs
+    return from_dynamic_module_import(
+        *parse_dynamic_import_spec(import_spec), searchpath=searchpath
     )
 
 
