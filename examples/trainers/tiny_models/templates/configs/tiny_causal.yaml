@@ -2,10 +2,9 @@
 
 -- block config_metadata
     == super()
-    -- set ns.config_name = "Tiny"
-    -- set ns.config_description = "A tiny vanilla transformer."
-    -- set ns.model_name = "tiny"
-    -- set ns.log_name = "vanilla"
+    -- set ns.config_name = "Tiny Causal"
+    -- set ns.config_description = "A tiny causal transformer."
+    -- set ns.model_name = "tiny_causal"
 -- endblock config_metadata
 
 
@@ -14,4 +13,4 @@
 -- endblock construct_new_model
 
 #-------------------- experiment.model_config --------------------
--- extends 'models/tiny/tiny.yaml'
+-- extends 'models/tiny/tiny_causal.yaml'

@@ -1,6 +1,17 @@
 -- extends "types/training_script/training_script.yaml"
 -- from 'inc/formatting.jinja' import h2, sep
 
+-- block config_metadata
+    == super()
+    -- set ns.trust_remote_code = False
+-- endblock config_metadata
+
+
+-- block variable_listing
+    == super()
+# ns.trust_remote_code: {{ ns.trust_remote_code }}
+<< endblock variable_listing
+
 
 -- block model_constructor_args
 # https://huggingface.co/docs/transformers/en/model_doc/auto

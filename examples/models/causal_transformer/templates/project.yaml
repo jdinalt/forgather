@@ -1,0 +1,7 @@
+-- extends 'types/model/model_type.yaml'
+
+-- block base_directories
+    -- set ns.forgather_dir = normpath(joinpath(project_dir, '..', '..', '..'))
+    -- include 'paths/example_paths.yaml'
+    -- set ns.model_name = 'causal_transformer'
+-- endblock base_directories

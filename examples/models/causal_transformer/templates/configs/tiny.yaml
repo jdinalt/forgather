@@ -1,0 +1,12 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Tiny Causal Transformer"
+    -- set ns.config_description = "A tiny causal transformer"
+-- endblock config_metadata
+
+
+-- block model_definition
+    -- include 'models/tiny/tiny_causal.yaml'
+-- endblock model_definition

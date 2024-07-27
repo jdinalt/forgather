@@ -44,14 +44,11 @@ def find_file_specs(config):
 
 def display_meta(meta, title=""):
     md = f"{title}"
-    relpath = os.path.relpath(meta.project_dir)
-    md += f"Project Directory: {relpath}\n\n"
-    relpath = os.path.relpath(meta.meta_path)
-    md += f"Meta Config: [{relpath}]({relpath})\n\n"
+    md += f"Project Directory: {os.path.abspath(meta.project_dir)}\n\n"
+    md += f"Meta Config: [{os.path.abspath(meta.meta_path)}]({os.path.relpath(meta.meta_path)})\n\n"
     md += f"Template Search Paths:\n"
     for path in meta.searchpath:
-        relpath = os.path.abspath(path)
-        md += f"- [{relpath}]({relpath})\n"
+        md += f"- [{os.path.abspath(path)}]({os.path.relpath(path)})\n"
     display.display(display.Markdown(md))
 
 

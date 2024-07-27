@@ -1,0 +1,36 @@
+from typing import Optional
+import math
+
+import torch
+from torch import nn, Tensor
+
+
+# An implementation of the original transformer sinusoidal positional encoder.
+# https://arxiv.org/pdf/1706.03762
+class SinusoidalPE(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        max_sequence_length,
+    ):
+        super().__init__()
+        self.d_model = d_model
+        self.max_sequence_length = max_sequence_length
+
+        weight = torch.zeros(max_sequence_length, d_model)
+        position = torch.arange(0, max_sequence_length, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
+        weight[:, 0::2] = torch.sin(position * div_term)
+        weight[:, 1::2] = torch.cos(position * div_term)
+        weight = weight.unsqueeze(0)
+        self.register_buffer("weight", weight, persistent=False)
+
+    def forward(
+        self, seq_length: int, *, position_ids: Optional[torch.LongTensor] = None
+    ) -> Tensor:
+        if position_ids is not None:
+            return self.weight[position_ids]
+        else:
+            return self.weight[:, :seq_length]

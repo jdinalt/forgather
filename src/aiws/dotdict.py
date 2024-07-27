@@ -7,7 +7,9 @@ class DotDict(dict):
     __setattr__ = dict.__setitem__
     __delattr__ = dict.__delitem__
 
-    def __init__(self, dct):
+    def __init__(self, dct=None, /, **kwargs):
+        if dct is None:
+            dct = kwargs
         for key, value in dct.items():
             if hasattr(value, "keys"):
                 value = DotDict(value)

@@ -5,7 +5,6 @@
     -- set ns.config_name = "Tiny GPT2"
     -- set ns.config_description = "A tiny GPT2 model."
     -- set ns.model_name = "tiny_gpt2"
-    -- set ns.log_name = "gpt2"
 -- endblock config_metadata
 
 

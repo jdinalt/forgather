@@ -32,7 +32,7 @@
     per_device_eval_batch_size: 16
     learning_rate: 1.0e-3
     num_train_epochs: 1
-    eval_steps: 500
+    eval_steps: 100
     logging_steps: 500
     eval_strategy: "steps"
     save_strategy: "no"

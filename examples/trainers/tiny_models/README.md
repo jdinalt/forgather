@@ -5,7 +5,7 @@ A collection of tiny models to train on the Tiny Stories dataset with the tiny_s
 This allows for direct comparison of model archetectures.
 
 ### Featuring
-- Tiny Vanilla Transformer
+- Tiny Causal Transformer -- an example custom transformer model
 - Tiny Llama
 - Tiny GPT2
 
@@ -22,7 +22,7 @@ This allows for direct comparison of model archetectures.
     - MLP Dimension: 1024
     - Layers: 4
     - Heads: 2
-    - Dropout Probability: 0.0
+    - All Dropout Probabilities: 0.0
 - Trainer:
     - Class: aiws.trainer.Trainer
     - Epochs: 1

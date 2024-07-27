@@ -60,4 +60,4 @@
 -- endblock trainer_args
 
 #-------------------- project.model_config --------------------
--- extends 'models/tiny/tiny.yaml'
+-- extends 'models/tiny/tiny_causal.yaml'

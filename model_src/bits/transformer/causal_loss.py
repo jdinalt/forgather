@@ -1,9 +1,10 @@
 from torch.nn.functional import cross_entropy
+from torch import Tensor
 
 
 class CausalLoss:
     @staticmethod
-    def __call__(logits, labels):
+    def __call__(logits: Tensor, labels: Tensor) -> Tensor:
         # Shift so that tokens < n predict n
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()

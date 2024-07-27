@@ -5,7 +5,6 @@
     -- set ns.config_name = "Tiny LLama"
     -- set ns.config_description = "A tiny llama model."
     -- set ns.model_name = "tiny_llama"
-    -- set ns.log_name = "llama"
 -- endblock config_metadata
 
 

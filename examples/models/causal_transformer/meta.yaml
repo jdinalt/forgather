@@ -6,4 +6,4 @@ searchdir:
 
 config_prefix: "configs"
 system_path: "{{ joinpath(main_dir, 'src') }}"
-default_config: "tiny_causal.yaml"
+default_config: "default.yaml"

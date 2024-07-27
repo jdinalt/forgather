@@ -15,7 +15,7 @@
 -- set datasets_ns.eval_select_range = "null"
 ## The following args are required
 ## -- set datasets_ns.train_dataset_id = "dataset_id_or_path"
-## -- set datasets_ns.eval_dataset_id = "dataset_id_or_path"
+-- set datasets_ns.eval_dataset_id = datasets_ns.train_dataset_id
 -- endblock datasets_meta_config
 
 ## Alias train dataset, if they are the same?

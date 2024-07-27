@@ -1,0 +1,57 @@
+-- extends 'types/type.yaml'
+
+## Optional
+-- block config_metadata
+    == super()
+-- endblock config_metadata
+
+
+-- block globals
+    -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
+-- endblock globals
+
+
+-- block header
+    == super()
+# Model: {{ ns.model_name }}
+<< endblock header
+
+
+-- block variable_listing
+    == super()
+# ns.model_src_dir: "{{ ns.model_src_dir }}"
+# ns.output_dir: "{{ ns.output_dir }}"
+<< endblock variable_listing
+
+-- block main_body
+
+== h2('Model')
+
+    -- filter trim()
+    -- block model_constructor_args
+.define: &model_constructor_args {}
+    -- endblock model_constructor_args
+    -- endfilter
+
+
+    -- filter trim()
+    -- block model_definition required
+## .define: &tokenizer
+## .define: &model
+    -- endblock model_definition
+    -- endfilter
+<< endblock main_body
+
+
+-- block meta_output
+    == super()
+    output_dir: "{{ ns.output_dir }}"
+    model_src_dir: "{{ ns.model_src_dir }}"
+<< endblock meta_output
+
+
+-- block main_output
+main: !callable:aiws.dotdict:DotDict
+    model: *model
+    tokenizer: *tokenizer
+<< endblock main_output

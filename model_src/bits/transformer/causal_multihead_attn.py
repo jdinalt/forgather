@@ -1,13 +1,17 @@
 import torch
-from torch import nn
+from torch import nn, Tensor
 import math
 
 
-class MultiheadAttention(nn.Module):
+# A simple causal multi-head-attention implementation
+class CausalMultiheadAttn(nn.Module):
     def __init__(
         self,
-        d_model,
-        num_heads,
+        d_model: int,
+        num_heads: int,
+        *,
+        bias: bool = True,
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.d_model = d_model
@@ -23,17 +27,18 @@ class MultiheadAttention(nn.Module):
         self.dot_product_scale = 1.0 / math.sqrt(self.d_head)
 
         # Input projection matricies: K, K, V
-        self.query_linear = nn.Linear(self.d_model, self.d_model)
-        self.key_linear = nn.Linear(self.d_model, self.d_model)
-        self.value_linear = nn.Linear(self.d_model, self.d_model)
+        self.query_linear = nn.Linear(self.d_model, self.d_model, bias=bias)
+        self.key_linear = nn.Linear(self.d_model, self.d_model, bias=bias)
+        self.value_linear = nn.Linear(self.d_model, self.d_model, bias=bias)
 
-        # Output projection matrix:
-        # The input and output matrices only make sense with multi-head
-        # Don't bother with the output matrix, with a single head.
-        if self.num_heads != 1:
-            self.output_linear = nn.Linear(self.d_model, self.d_model)
+        # The purpose of the output layer is to expand the dimension of the low-rank
+        # attention heads back to d_model and sum their output. With only a single head,
+        # this only adds dead-weights.
+        if self.num_heads > 1:
+            self.output_linear = nn.Linear(self.d_model, self.d_model, bias=bias)
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self, qkv):
+    def forward(self, qkv: Tensor) -> Tensor:
         # qkv: (batch_size, seq_len, d_qkv)
         batch_size, seq_len, d_qkv = qkv.shape
 
@@ -63,7 +68,7 @@ class MultiheadAttention(nn.Module):
         scores.masked_fill_(causal_mask, float("-inf"))
 
         # Calculate the attention weights; avoid NANs that might emerge from zeros in softmax's denominator
-        attention_weights = torch.softmax(scores, dim=-1).clamp(min=1e-10)
+        attention_weights = self.dropout(torch.softmax(scores, dim=-1).clamp(min=1e-10))
 
         # Use the attention weights to get a weighted combination of value vectors
         attended_values = torch.matmul(attention_weights, value)
@@ -76,9 +81,7 @@ class MultiheadAttention(nn.Module):
         )
 
         # Project the concatenated output through the output matrix.
-        if self.num_heads != 1:
-            output = self.output_linear(attended_values)
+        if self.num_heads == 1:
+            return attended_values
         else:
-            output = attended_values
-
-        return output
+            return self.output_linear(attended_values)

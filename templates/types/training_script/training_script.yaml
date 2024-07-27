@@ -74,7 +74,7 @@
 
     -- filter trim()
     -- block model_constructor_args
-## .define: &model_constructor_args
+.define: &model_constructor_args {}
     -- endblock model_constructor_args
     -- endfilter
 
@@ -143,6 +143,7 @@ main: !callable:aiws.training_script:TrainingScript
     do_save: {{ ns.save_model }}
     do_train: {{ ns.train }}
     do_eval: {{ ns.eval }}
+    # Init distributed envrionment before initializing anyting which depends on it.
     distributed_env: *distributed_env
     trainer: *trainer
 << endblock main_output
