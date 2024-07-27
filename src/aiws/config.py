@@ -35,7 +35,7 @@ class MetaConfig:
 
     def __init__(self, project_dir, meta_name="meta.yaml"):
         self.meta_path = os.path.join(project_dir, meta_name)
-        config = self._load_config(self.meta_path)
+        config = self._load_config(self.meta_path, project_dir=project_dir)
         self.project_dir = project_dir
         self.searchpath = [
             os.path.abspath(self.norm_path(path)) for path in config.searchdir

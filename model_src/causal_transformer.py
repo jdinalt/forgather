@@ -14,7 +14,7 @@ from transformers import (
 
 from .causal_loss import CausalLoss
 from .sinusoidal_pe import SinusoidalPE
-from .pre_ln_layer import PreLNLayer
+from .pre_ln_layer import PostLNLayer
 from .causal_multihead_attn import CausalMultiheadAttn
 from .feedforward_layer import FeedforwardLayer
 
@@ -75,7 +75,7 @@ class CausalTransformer(PreTrainedModel):
 
         self.layers = nn.Sequential(
             *(
-                PreLNLayer(
+                PostLNLayer(
                     feedforward=FeedforwardLayer(
                         d_model=self.d_model,
                         d_feedforward=self.config.dim_feedforward,

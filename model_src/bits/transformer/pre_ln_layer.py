@@ -1,8 +1,9 @@
 from torch import nn, Tensor
 
 
-# https://arxiv.org/pdf/1706.03762
-class PreLNLayer(nn.Module):
+# https://arxiv.org/pdf/2002.04745
+# https://arxiv.org/pdf/2002.04745
+class PostLNLayer(nn.Module):
     def __init__(
         self,
         *,
@@ -24,11 +25,11 @@ class PreLNLayer(nn.Module):
 
     def forward(self, x: Tensor):
         residual = self.residual_dropout(x)
+        x = self.norm1(x)
         x = self.attention(x)
-        x = self.dropout(x)
-        x = self.norm1(residual + x)
+        x = residual + self.dropout(x)
         residual = self.residual_dropout(x)
+        x = self.norm2(x)
         x = self.feedforward(x)
-        x = self.dropout(x)
-        x = self.norm2(residual + x)
+        x = residual + self.dropout(x)
         return x
