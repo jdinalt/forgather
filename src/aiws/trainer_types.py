@@ -120,10 +120,18 @@ class TrainingArguments:
     save_total_limit: int = 2
     use_cpu: bool = False
 
+    torch_compile: bool = False
+    torch_compile_backend: str | None = None
+    torch_compile_mode: str | None = None
+
     def __post_init__(self):
         # As per https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader
         if self.dataloader_prefetch_factor is None and self.dataloader_num_workers > 0:
             self.dataloader_prefetch_factor = 2
+        if self.torch_compile_backend is not None or self.torch_compile_mode is not None:
+            self.torch_compile = True
+        if self.torch_compile_backend is None:
+            self.torch_compile_backend = 'inductor'
         if self.logging_dir is None:
             self.logging_dir = os.path.join(
                 self.output_dir, "runs", f"{time.time_ns()}_{platform.node()}"
