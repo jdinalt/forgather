@@ -3,7 +3,7 @@ from torch import nn, Tensor
 
 # https://arxiv.org/pdf/2002.04745
 # https://arxiv.org/pdf/2002.04745
-class PostLNLayer(nn.Module):
+class PreLNLayer(nn.Module):
     def __init__(
         self,
         *,
