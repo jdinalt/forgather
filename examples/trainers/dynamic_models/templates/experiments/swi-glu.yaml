@@ -1,0 +1,34 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "SwiGLU"
+    -- set ns.config_description = "SwiGLU feedforward layer"
+    -- set ns.model_name = "dynamic"
+    -- set ns.log_name = "swi-glu"
+-- endblock config_metadata
+
+
+-- block construct_new_model
+    -- include 'experiment.model_config'
+-- endblock construct_new_model
+
+#-------------------- experiment.model_config --------------------
+-- extends 'project.model_config'
+
+-- block feedforward_factory
+# GLU Variants Improve Transformer: https://arxiv.org/pdf/2002.05202v1
+.define: &feedforward_factory !callable:.glu_feedforward:GLUFeedforwardLayer
+    d_model: !key "hidden_size"
+    d_feedforward: !key "dim_feedforward"
+    dropout: !key "activation_dropout"
+-- endblock feedforward_factory
+
+
+-- block model_config
+== super()
+    # Scale down, to compensate for increased parameter count
+    # GLU-feedforward increases parameter could by 1.5, so scale down
+    # 1024 * 2/3 ~ 682
+    dim_feedforward: 682
+<< endblock model_config

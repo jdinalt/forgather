@@ -1,0 +1,9 @@
+-- set main_dir = joinpath('..', '..', '..')
+
+searchdir:
+    - "templates"
+    - "{{ joinpath(main_dir, 'templates') }}"
+
+config_prefix: "experiments"
+system_path: "{{ joinpath(main_dir, 'src') }}"
+default_config: "control.yaml"

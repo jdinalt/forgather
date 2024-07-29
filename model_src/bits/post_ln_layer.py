@@ -1,7 +1,8 @@
 from torch import nn, Tensor
 
 
-# https://arxiv.org/pdf/1706.03762
+# Attention Is All You Need: https://arxiv.org/pdf/1706.03762
+# On Layer Normalization in the Transformer Architecture: https://arxiv.org/pdf/2002.04745
 class PostLNLayer(nn.Module):
     def __init__(
         self,
@@ -22,6 +23,7 @@ class PostLNLayer(nn.Module):
             self.dropout = nn.Identity()
         else:
             self.dropout = nn.Dropout(dropout)
+        # Residual Dropout:A Simple Approach to Improve Transformer’s Data Efficiency
         # https://aclanthology.org/2024.sigul-1.35.pdf
         if residual_dropout == 0.0:
             self.residual_dropout = nn.Identity()

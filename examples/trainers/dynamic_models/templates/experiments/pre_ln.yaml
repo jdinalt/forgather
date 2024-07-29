@@ -1,0 +1,38 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Pre-LN"
+    -- set ns.config_description = "Pre-Layer-Norm transformer"
+    -- set ns.model_name = "dynamic"
+    -- set ns.log_name = "pre_ln"
+-- endblock config_metadata
+
+
+-- block construct_new_model
+    -- include 'experiment.model_config'
+-- endblock construct_new_model
+
+#-------------------- experiment.model_config --------------------
+-- extends 'project.model_config'
+
+-- block layer_factory
+# On Layer Normalization in the Transformer Architecture: https://arxiv.org/pdf/2002.04745
+.define: &layer_factory !callable:.pre_ln_layer:PreLNLayer
+    as_lambda: True
+    feedforward: *feedforward_factory
+    attention: *attention_factory
+    norm1: *layer_norm_factory
+    norm2: *layer_norm_factory
+    dropout: !key "layer_dropout"
+    residual_dropout: !key "residual_dropout"
+-- endblock layer_factory
+
+
+-- block layer_stack_factory
+.define: &layer_stack_factory !callable:.causal_layer_stack:CausalLayerStack
+    layer_factory: *layer_factory
+    num_hidden_layers: !key "num_hidden_layers"
+    # Add a layer-norm to the end of the stack.
+    post_norm: *layer_norm_factory
+-- endblock layer_stack_factory
