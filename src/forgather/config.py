@@ -175,7 +175,7 @@ class ConfigLoader(SafeLoader):
 
 ConfigLoader.add_multi_constructor("!callable", callable_constructor)
 ConfigLoader.add_multi_constructor("!latent", callable_constructor)
-ConfigLoader.add_constructor("!key", key_constructor)
+ConfigLoader.add_constructor("!var", key_constructor)
 ConfigLoader.add_constructor("!tuple", tuple_constructor)
 
 

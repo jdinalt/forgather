@@ -36,21 +36,21 @@
     # Setting 'indenity' to 0 will cause a new instance to be created each
     # time it is referenced, otherwise each reference would be to the same instance.
     identity: 0
-    normalized_shape: !key "hidden_size"
+    normalized_shape: !var "hidden_size"
     -- endblock layer_norm_factory
 
     -- block feedforward_factory
 .define: &feedforward_factory !callable:.feedforward_layer:FeedforwardLayer
-    d_model: !key "hidden_size"
-    d_feedforward: !key "dim_feedforward"
-    dropout: !key "activation_dropout"
+    d_model: !var "hidden_size"
+    d_feedforward: !var "dim_feedforward"
+    dropout: !var "activation_dropout"
     -- endblock feedforward_factory
 
     -- block attention_factory
 .define: &attention_factory !callable:.causal_multihead_attn:CausalMultiheadAttn
-    d_model: !key "hidden_size"
-    num_heads: !key "num_attention_heads"
-    dropout: !key "attention_dropout"
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    dropout: !var "attention_dropout"
     -- endblock attention_factory
 
     -- block layer_factory
@@ -62,39 +62,39 @@
     attention: *attention_factory
     norm1: *layer_norm_factory
     norm2: *layer_norm_factory
-    dropout: !key "layer_dropout"
-    residual_dropout: !key "residual_dropout"
+    dropout: !var "layer_dropout"
+    residual_dropout: !var "residual_dropout"
     -- endblock layer_factory
 
     -- block layer_stack_factory
 .define: &layer_stack_factory !callable:.causal_layer_stack:CausalLayerStack
     layer_factory: *layer_factory
-    num_hidden_layers: !key "num_hidden_layers"
+    num_hidden_layers: !var "num_hidden_layers"
     -- endblock layer_stack_factory
 
     -- block output_decoder_factory
 .define: &output_decoder_factory !callable:torch.nn:Linear
-    - !key "hidden_size"
-    - !key "vocab_size"
+    - !var "hidden_size"
+    - !var "vocab_size"
     -- endblock output_decoder_factory
 
     -- block positional_encoder_factory
 .define: &positional_encoder_factory !callable:.sinusoidal_pe:SinusoidalPE
-    d_model: !key "hidden_size"
-    max_sequence_length: !key "max_sequence_length"
+    d_model: !var "hidden_size"
+    max_sequence_length: !var "max_sequence_length"
     -- endblock positional_encoder_factory
 
     -- block input_encoder_factory
 .define: &input_encoder_factory !callable:.input_encoder:InputEncoder
-    d_model: !key "hidden_size"
-    vocab_size: !key "vocab_size"
-    dropout: !key "embedding_dropout"
+    d_model: !var "hidden_size"
+    vocab_size: !var "vocab_size"
+    dropout: !var "embedding_dropout"
     positional_encoder: *positional_encoder_factory
     -- endblock input_encoder_factory
 
     -- block init_weights_factory
 .define: &init_weights_factory !callable:.init_weights:InitWeights
-    std: !key "initializer_range"
+    std: !var "initializer_range"
     -- endblock init_weights_factory
 
     -- block model_factory
@@ -106,7 +106,7 @@
     # as JSON, with the rest of the configuration.
     #   After this is passed to the DynamicCausalLM, the definition will be
     # 'materialized' in __init__, passing the config arguments to be substituted
-    # as for the '!key' tags in the definition.
+    # as for the '!var' tags in the definition.
     as_lambda: True
     loss_fn: *loss_fn_factory
     input_encoder: *input_encoder_factory
