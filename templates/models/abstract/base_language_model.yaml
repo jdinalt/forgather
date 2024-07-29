@@ -28,6 +28,13 @@
 == h3('Model Config')
 
 -- filter trim()
+-- block model_config_defs
+## Put items required for defining the configuration here
+<< endblock model_config_defs
+-- endfilter
+
+
+-- filter trim()
 -- block model_config
 << endblock model_config
 -- endfilter

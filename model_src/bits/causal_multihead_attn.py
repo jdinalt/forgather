@@ -36,7 +36,14 @@ class CausalMultiheadAttn(nn.Module):
         # this only adds dead-weights.
         if self.num_heads > 1:
             self.output_linear = nn.Linear(self.d_model, self.d_model, bias=bias)
-        self.dropout = nn.Dropout(dropout)
+
+        if dropout == 0.0:
+            self.dropout = nn.Identity()
+        else:
+            self.dropout = nn.Dropout(dropout)
+
+    def extra_repr(self):
+        return f"d_model={self.d_model}, num_heads={self.num_heads}"
 
     def forward(self, qkv: Tensor) -> Tensor:
         # qkv: (batch_size, seq_len, d_qkv)

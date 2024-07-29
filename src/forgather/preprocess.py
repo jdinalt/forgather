@@ -185,12 +185,14 @@ class PPEnvironment(SandboxedEnvironment):
         *args,
         loader=None,
         searchpath=None,
-        extensions=[],
+        extensions=None,
         auto_reload=True,
         trim_blocks=True,
         undefined=StrictUndefined,
         **kwargs,
     ):
+        if extensions is None:
+            extensions = []
         assert (
             loader is not None or searchpath is not None
         ), "Either a loader or searchpath must be specified"

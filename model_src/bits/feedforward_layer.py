@@ -1,6 +1,7 @@
 from torch import nn, Tensor, FloatTensor
 from collections import OrderedDict
 
+
 # A basic feedforward layer
 # https://arxiv.org/pdf/1706.03762
 class FeedforwardLayer(nn.Sequential):
@@ -20,9 +21,15 @@ class FeedforwardLayer(nn.Sequential):
             OrderedDict(
                 [
                     ("linear1", nn.Linear(self.d_model, self.d_feedforward, bias=bias)),
-                    ("dropout", nn.Dropout(dropout)),
+                    (
+                        "dropout",
+                        nn.Dropout(dropout) if dropout != 0.0 else nn.Identity(),
+                    ),
                     ("activation", activation),
                     ("linear2", nn.Linear(self.d_feedforward, self.d_model, bias=bias)),
                 ]
             )
         )
+
+    def extra_repr(self):
+        return f"d_model={self.d_model}, d_feedforward={self.d_feedforward}"

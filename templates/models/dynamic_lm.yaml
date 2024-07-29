@@ -1,0 +1,145 @@
+-- extends 'models/abstract/custom_causal_lm.yaml'
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Dynamic Causal Languange Model"
+    -- set model_def.description = "This model's implemetation modules can be swapped out entirely through the configuraiton."
+    -- set model_def.cls = 'DynamicCasualLM'
+    -- set model_def.cfg_cls = 'DynamicCausalLMConfig'
+    -- set model_def.config_path = joinpath(ns.model_src_dir, 'dynamic_causal_lm.py')
+    -- set model_def.model_path = model_def.config_path
+-- endblock model_meta_config
+
+
+-- block model_tokenizer
+    -- include 'tokenizers/tiny_2k.yaml'
+<< endblock model_tokenizer
+
+## These are all modular 'bits' which all can be swapped out with other
+## modules through the configuration, provided they share a compatible
+## interface with the other modules.
+##
+## This effectively makes the implementation of each component a
+## configurable model parameter.
+##
+## The default arguments are intended closely mirror the original 
+## transformer archetecture, Attention is All You Need, obviously
+## excepting this being a causal LM.
+-- block model_config_defs
+    -- block loss_fn_factory
+.define: &loss_fn_factory !callable:.causal_loss:CausalLoss []
+    -- endblock loss_fn_factory
+
+    -- block layer_norm_factory
+.define: &layer_norm_factory !callable:torch.nn:LayerNorm
+    # This definition is used more than once per layer
+    # Setting 'indenity' to 0 will cause a new instance to be created each
+    # time it is referenced, otherwise each reference would be to the same instance.
+    identity: 0
+    normalized_shape: !key "hidden_size"
+    -- endblock layer_norm_factory
+
+    -- block feedforward_factory
+.define: &feedforward_factory !callable:.feedforward_layer:FeedforwardLayer
+    d_model: !key "hidden_size"
+    d_feedforward: !key "dim_feedforward"
+    dropout: !key "activation_dropout"
+    -- endblock feedforward_factory
+
+    -- block attention_factory
+.define: &attention_factory !callable:.causal_multihead_attn:CausalMultiheadAttn
+    d_model: !key "hidden_size"
+    num_heads: !key "num_attention_heads"
+    dropout: !key "attention_dropout"
+    -- endblock attention_factory
+
+    -- block layer_factory
+.define: &layer_factory !callable:.post_ln_layer:PostLNLayer
+    # Setting 'as_lambda=True' results in this being returned as a lambda, thus
+    # it is a true 'factory,' which generates a new instance each time it is called.
+    as_lambda: True
+    feedforward: *feedforward_factory
+    attention: *attention_factory
+    norm1: *layer_norm_factory
+    norm2: *layer_norm_factory
+    dropout: !key "layer_dropout"
+    residual_dropout: !key "residual_dropout"
+    -- endblock layer_factory
+
+    -- block layer_stack_factory
+.define: &layer_stack_factory !callable:.causal_layer_stack:CausalLayerStack
+    layer_factory: *layer_factory
+    num_hidden_layers: !key "num_hidden_layers"
+    -- endblock layer_stack_factory
+
+    -- block output_decoder_factory
+.define: &output_decoder_factory !callable:torch.nn:Linear
+    - !key "hidden_size"
+    - !key "vocab_size"
+    -- endblock output_decoder_factory
+
+    -- block positional_encoder_factory
+.define: &positional_encoder_factory !callable:.sinusoidal_pe:SinusoidalPE
+    d_model: !key "hidden_size"
+    max_sequence_length: !key "max_sequence_length"
+    -- endblock positional_encoder_factory
+
+    -- block input_encoder_factory
+.define: &input_encoder_factory !callable:.input_encoder:InputEncoder
+    d_model: !key "hidden_size"
+    vocab_size: !key "vocab_size"
+    dropout: !key "embedding_dropout"
+    positional_encoder: *positional_encoder_factory
+    -- endblock input_encoder_factory
+
+    -- block init_weights_factory
+.define: &init_weights_factory !callable:.init_weights:InitWeights
+    std: !key "initializer_range"
+    -- endblock init_weights_factory
+
+    -- block model_factory
+.define: &model_factory !callable:.causal_lm:CasualLM
+    # We use 'as_lambda' here to defer construction. We do this as to pass it to
+    # 'Latent.to_serailizable,' which takes a lamda and outputs a serializible 
+    # representation of the factory. This in turn is passed to an instance of
+    # transformers.PretrinedConfig, which allows this information to be saved,
+    # as JSON, with the rest of the configuration.
+    #   After this is passed to the DynamicCausalLM, the definition will be
+    # 'materialized' in __init__, passing the config arguments to be substituted
+    # as for the '!key' tags in the definition.
+    as_lambda: True
+    loss_fn: *loss_fn_factory
+    input_encoder: *input_encoder_factory
+    output_decoder: *output_decoder_factory
+    layer_stack: *layer_stack_factory
+    init_weights: *init_weights_factory
+    -- endblock model_factory
+<< endblock model_config_defs
+
+
+-- block model_config
+    == super()
+    # Convert model definition to a JSON compatible encoding for the configuration to store.
+    model_definition: !callable:forgather.latent:Latent.to_serailizable
+        - *model_factory
+    hidden_size: 512
+    num_attention_heads: 8
+    num_hidden_layers: 6
+    max_sequence_length: !callable:forgather.construct:get_attr
+        - *tokenizer
+        - "model_max_length"
+    dim_feedforward: 2048
+    initializer_range: 0.02
+    embedding_dropout: 0.10
+    layer_dropout: 0.10
+    residual_dropout: 0.0
+    attention_dropout: 0.0
+    activation_dropout: 0.0
+<< endblock model_config
+
+
+-- block model_submodule_searchpath
+# Add 'bits' to model's module.
+.define: &model_submodule_searchpath
+    - "{{ joinpath(ns.forgather_dir, 'model_src', 'bits') }}"
+<< endblock model_submodule_searchpath

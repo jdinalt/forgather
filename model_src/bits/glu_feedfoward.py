@@ -20,7 +20,13 @@ class GLUFeedforwardLayer(nn.Module):
         self.linear1 = nn.Linear(self.d_model, self.d_feedforward * 2, bias=False)
         self.linear2 = nn.Linear(self.d_feedforward, self.d_model, bias=False)
         self.activation = activation
-        self.dropout = nn.Dropout(dropout)
+        if dropout == 0.0:
+            self.dropout = nn.Identity()
+        else:
+            self.dropout = nn.Dropout(dropout)
+
+    def extra_repr(self):
+        return f"d_model={self.d_model}, d_feedforward={self.d_feedforward}"
 
     def forward(self, x):
         x, gate = self.linear1(x).chunk(2, dim=-1)

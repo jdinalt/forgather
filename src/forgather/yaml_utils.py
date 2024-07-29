@@ -41,6 +41,17 @@ def callable_constructor(loader, tag_suffix, node):
     return Latent(tag_suffix, *args, **kwargs)
 
 
+def key_constructor(loader, node):
+    """
+    A Yaml constuctor for Latent 'key' objects
+    """
+    assert isinstance(node, yaml.ScalarNode), "Key tags must be singleton nodes."
+    value = loader.construct_scalar(node)
+    assert isinstance(value, str), f"Keys must be string, found {type(value)}"
+    assert ":" not in value, f"Keys may not include the character ':', found {value}"
+    return Latent(value, identity=0)
+
+
 def tuple_constructor(loader, node):
     assert isinstance(node, yaml.SequenceNode)
     value = loader.construct_sequence(node, deep=True)

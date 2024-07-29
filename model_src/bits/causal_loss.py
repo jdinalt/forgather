@@ -3,6 +3,9 @@ from torch import Tensor
 
 
 class CausalLoss:
+    def __repr__(self):
+        return f"{type(self).__name__}()"
+
     @staticmethod
     def __call__(logits: Tensor, labels: Tensor) -> Tensor:
         # Shift so that tokens < n predict n

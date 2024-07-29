@@ -44,7 +44,7 @@
 -- block model_submodule_searchpath
 # Model is entirely self-contained; no sub-modules.
 .define: &model_submodule_searchpath []
-<< endblock model_submodule_searchpath
+-- endblock model_submodule_searchpath
 
 
 -- block model_constructor

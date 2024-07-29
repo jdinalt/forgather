@@ -49,8 +49,10 @@ class BaseTrainer(ExtensibleTrainer):
         eval_dataset=None,
         tokenizer=None,
         model_init: Optional[Callable[[], PreTrainedModel]] = None,
-        callbacks: List = [],
+        callbacks: List = None,
     ):
+        if callbacks is None:
+            callbacks = []
         # Init args
         self.model = model
         self.args = args

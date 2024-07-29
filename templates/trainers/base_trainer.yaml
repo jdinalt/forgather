@@ -38,7 +38,23 @@
     save_strategy: "no"
     logging_strategy: "steps"
     lr_scheduler_type: "constant"
+    ## Additional common params
     ## use_cpu: True ; Set in config for debugging
+    ## max_steps: -1
+    ## seed: -1
+    ## device: null
+    ## dataloader_num_workers: 0
+    ## dataloader_pin_memory: True
+    ## dataloader_persistent_workers: False
+    ## dataloader_prefetch_factor: null ; defaults to 2, if num_workers
+    ## dataloader_drop_last: False
+    ## logging_first_step: False
+    ## eval_delay: 0
+    ## save_total_limit: 2
+    ## torch_compile: False
+    ## torch_compile_backend: null
+    ## torch_compile_mode: null
+    
 << endblock trainer_args
 -- endfilter
 

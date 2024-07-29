@@ -1,0 +1,13 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Default Causal Transformer"
+    -- set ns.config_description = "Construct with model definiton defaults"
+    -- set ns.model_name = 'causal_transformer'
+-- endblock config_metadata
+
+
+-- block model_definition
+    -- include 'models/dynamic.yaml'
+-- endblock model_definition

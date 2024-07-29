@@ -87,7 +87,7 @@
     -- filter trim()
     -- block tokenizer_trainer
 .define: &tokenizer_trainer !callable:aiws.tokenizer:train_tokenizer
-    as_callable: True
+    as_lambda: True
     output_dir: "{{ ns.output_dir }}"
     dataset: *tokenizer_dataset
     args: *tokenizer_args
@@ -121,5 +121,5 @@ main: !callable:aiws.construct:build_rule
         args:
             - "{{ ns.output_dir }}"
         kwargs:
-            as_callable: True  
+            as_lambda: True  
 << endblock main_output

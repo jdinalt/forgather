@@ -1,7 +1,9 @@
-from typing import Any, Callable, Union, Container, Tuple
+from typing import Any, Callable, Union, Container, Tuple, Optional, Hashable, List
 from collections.abc import MutableSequence, MutableMapping
 from types import NoneType
 from itertools import chain
+import sys
+import os
 
 from pprint import pformat
 
@@ -20,50 +22,43 @@ class Latent:
     A Latent [object] abstracts what to create from when to create it
     """
 
-    __slots__ = (
-        "constructor",
-        "args",
-        "kwargs",
-        "as_callable",
-        "is_singleton",
-        "singleton",
-        "submodule_searchpath",
-    )
-
     def __init__(
         self,
-        constructor: Callable | str,
+        constructor: str,
         /,
         *args,
-        as_callable=False,
-        is_singleton=False,
-        submodule_searchpath=[],
+        as_lambda: Optional[bool] = False,
+        identity: Hashable = None,
+        submodule_searchpath: Optional[List[str | os.PathLike]] = None,
         **kwargs,
     ):
-        assert isinstance(constructor, str) or isinstance(constructor, Callable)
-        assert isinstance(as_callable, bool)
-        assert isinstance(is_singleton, bool)
+        assert isinstance(constructor, str)
+        assert isinstance(as_lambda, bool)
         self.constructor = constructor
-        self.submodule_searchpath = submodule_searchpath
         self.args = args
         self.kwargs = kwargs
 
-        # When this attribute is True, the object will not be materialized, unless it is the
-        # root of the graph. This can be useful for passing a Latent object to another
-        # Latent object, as-is -- for example, as a factory object.
-        self.as_callable = as_callable
+        if as_lambda:
+            self.as_lambda = as_lambda
 
-        # A 'singleton' latent object always returns the same instance of the object,
-        # otherwise, a new instance is created on each materialization.
-        self.is_singleton = is_singleton
+        if submodule_searchpath is not None:
+            self.submodule_searchpath = submodule_searchpath
 
-        # The object's singleton instance of the materialized object.
-        self.singleton = None
+        if as_lambda or (isinstance(identity, int) and identity == 0):
+            self.identity = None
+        elif identity is None:
+            self.identity = id(self)
+        else:
+            self.identity = identity
+
+    def is_anonymous(self):
+        return self.identity is None
 
     def __repr__(self):
         return (
             f"{self.__class__.__name__}({repr(self.constructor)}, *{repr(self.args)}, "
-            f"**{repr(self.kwargs)}, as_callable={self.as_callable}, is_singleton={self.is_singleton})"
+            f"**{repr(self.kwargs)}, identity={repr(self.identity)}, "
+            f"as_lambda={getattr(self, 'as_lambda', False)})"
         )
 
     def __call__(self, **mapping):
@@ -72,22 +67,128 @@ class Latent:
         """
         return Latent.materialize(self, **mapping)
 
-    """
-    Traverse the graph of objects, replacing all Latent objects with concrete instances
-
-    whitelist: A Container object which is used to verify if the constructor is allowed.
-    **mapping: A dict[str, Any], which will substitue any stand-in constructors with
-        the corresponding objects from the map.
-    """
+    @staticmethod
+    def materialize(obj: Any, /, **kwargs):
+        """
+        Traverse the graph of objects, replacing all Latent objects with concrete instances
+        """
+        if len(kwargs):
+            Latent._resolve_standins(obj, **kwargs)
+        return Latent._materialize(obj, dict(), 0)
 
     @staticmethod
-    def materialize(obj: Any, **mapping):
-        Latent._resolve_standins(obj, **mapping)
-        Latent._resolve_dynamic_imports(obj)
-        return Latent._materialize(obj, dict())
+    def to_serailizable(obj: Any, **kwargs):
+        """
+        Convert Latent graph to serializable format
+
+        ```
+        # Convert map of latents to JSON
+        serialized_latents = json.dumps(Latent.to_serailizable(map_with_latents))
+        ```
+        Object with the same identity will be encoded as such, allowing them
+        to be reconstructed as intended.
+
+        Note: This only support 'string' callables at present.
+
+        There is a reference 'decoder' for materializing the output format at the bottom of this file.
+        """
+        if len(kwargs):
+            Latent._resolve_standins(obj, **kwargs)
+        encoding = Latent._to_serailizable(obj, set(), 0)
+
+        # Add versioning header
+        return {"!forgather_version": "1.0", "encoding": encoding}
 
     @staticmethod
-    def _materialize(obj: Any, idmap: dict[int, Any], level: int = 0):
+    def contains_only_pods(obj):
+        """
+        Return True, if contains only Plain Old Datatypes (PODs). else False
+        """
+        for level, key, value in Latent.all_items(value):
+            if (
+                isinstance(value, str)
+                or isinstance(value, int)
+                or isinstance(value, float)
+            ):
+                continue
+            return False
+        return True
+
+    @staticmethod
+    def _to_serailizable(obj, idmap, level):
+        if isinstance(obj, list):
+            return [Latent._to_serailizable(value, idmap, level + 1) for value in obj]
+        elif isinstance(obj, dict):
+            return {
+                key: Latent._to_serailizable(value, idmap, level + 1)
+                for key, value in obj.items()
+            }
+        elif isinstance(obj, tuple):
+            # Convert tuples to list with !tuple tag, as this type may not be natively supported.
+            # And... some arguments require this type.
+            return {
+                "!tuple": list(
+                    Latent._to_serailizable(value, idmap, level + 1) for value in obj
+                )
+            }
+        elif isinstance(obj, Latent):
+            # If in identity map (we have seen it before) and not anonymous, return id tag.
+            if not obj.is_anonymous() and obj.identity in idmap:
+                return {"!id": obj.identity}
+
+            # If value has been resolved contains only PODs, return literal value
+            if hasattr(obj, "value"):
+                assert contains_only_pods(
+                    obj.value
+                ), "Encounterd resolved symbol which is not a POD {obj}"
+                return obj.value
+
+            # If stand-in, encode as key
+            if ":" not in obj.constructor:
+                return {"!key": obj.constructor}
+
+            # Encode callable and arguments
+            encoding = {
+                "!callable": obj.constructor,
+            }
+
+            # If object is not anonymous, add identity to id-map and add identity
+            if not obj.is_anonymous():
+                encoding["id"] = obj.identity
+                idmap.add(obj.identity)
+
+            if hasattr(obj, "as_lambda"):
+                encoding["as_lambda"] = True
+            if len(obj.args):
+                encoding["args"] = Latent._to_serailizable(obj.args, idmap, level + 1)
+            if len(obj.kwargs):
+                encoding["kwargs"] = Latent._to_serailizable(
+                    obj.kwargs, idmap, level + 1
+                )
+            return encoding
+        else:
+            return obj
+
+    @staticmethod
+    def _resolve_callable(latent):
+        # The object has not yet been constructed. Verify that the
+        # constructor has been resolved.
+        callable = getattr(latent, "callable", None)
+        if callable is not None:
+            return callable
+
+        searchpath = getattr(latent, "submodule_searchpath", [])
+        callable = dynamic_import(latent.constructor, searchpath=searchpath)
+        if not isinstance(callable, Callable):
+            raise LatentException(
+                f"Imported constructor is not Callable: [{type(callable)}] {latent.constructor}"
+            )
+        # Cache the resolved symbol
+        setattr(latent, "callable", callable)
+        return callable
+
+    @staticmethod
+    def _materialize(obj, idmap, level):
         if isinstance(obj, list):
             return [Latent._materialize(value, idmap, level + 1) for value in obj]
         elif isinstance(obj, dict):
@@ -98,46 +199,30 @@ class Latent:
         elif isinstance(obj, tuple):
             return tuple(Latent._materialize(value, idmap, level + 1) for value in obj)
         elif isinstance(obj, Latent):
-            # If flagged 'as_callable,' and not the root node, skip materialization.
-            if obj.as_callable and level > 0:
+            # If flagged 'as_lambda,' and not the root node, skip materialization.
+            if hasattr(obj, "as_lambda") and level > 0:
                 return obj
             # Have we already constructed this object?
-            value = idmap.get(id(obj), None)
+            value = idmap.get(obj.identity, None)
             if value is not None:
                 return value
 
-            # If the object has already been constructed
-            if obj.singleton is not None:
-                idmap[id(obj)] = obj.singleton
-                return obj.singleton
-
-            # The object has not yet been constructed. Verify that the
-            # constructor has been resolved.
-            if not isinstance(obj.constructor, Callable):
-                if isinstance(obj.constructor, str) and ":" not in obj.constructor:
-                    raise LatentException(
-                        f"Found unresolved symbol '{obj.constructor}' in Latent: {obj}"
-                        + " This is likely either a missing stand-in or a syntax error."
-                    )
-                else:
-                    raise LatentException(
-                        f"Constructor must be Callable, but found [{type(obj.constructor)}] {obj.constructor}"
-                        + "; see _resolve_dynamic_imports() and _resolve_standins()"
-                    )
+            # If injected 'stand-in' value, return it
+            value = getattr(obj, "value", None)
+            if value is not None:
+                return value
 
             # Materialize the arguments
             args = Latent._materialize(obj.args, idmap, level + 1)
             kwargs = Latent._materialize(obj.kwargs, idmap, level + 1)
 
             # Materialize the object
-            value = obj.constructor(*args, **kwargs)
+            value = Latent._resolve_callable(obj)(*args, **kwargs)
 
             # Cache materialized object
-            idmap[id(obj)] = value
+            if not obj.is_anonymous():
+                idmap[obj.identity] = value
 
-            # If the object is a singleton, add the instance to the node.
-            if obj.is_singleton:
-                obj.singleton = value
             return value
         # We return the original reference for everything else, which means that
         # there will only be a single instance of all other object types.
@@ -174,36 +259,167 @@ class Latent:
             yield value
 
     @staticmethod
-    def _resolve_dynamic_imports(obj: Any):
-        """
-        Try to resolve all dynamic imports, replacing the constructor string with the
-        corresponding Callable.
-        """
-        for latent in Latent.all_latents(obj):
-            # If not plausibly an import spec, skip it
-            if not isinstance(latent.constructor, str) or not ":" in latent.constructor:
-                continue
-            constructor = dynamic_import(
-                latent.constructor, searchpath=latent.submodule_searchpath
-            )
-            if not isinstance(constructor, Callable):
-                raise LatentException(
-                    f"Imported constructor is not Callable: [{type(self.constructor)}] {self.constructor}"
-                )
-            latent.constructor = constructor
-
-    @staticmethod
     def _resolve_standins(obj: Any, **mapping):
         """
         Replace all stand-ins with the corresonding Callables from the mapping.
         """
         for latent in Latent.all_latents(obj):
-            if not isinstance(latent.constructor, str) or ":" in latent.constructor:
+            if ":" in latent.constructor:
                 continue
-            value = mapping.get(latent.constructor, None)
-            # If we found the key in the map...
-            # and either the value has not been set OR the node is not a singleton, then set the value
-            if value is not None and (
-                latent.singleton is None or not latent.is_singleton
-            ):
-                latent.singleton = value
+            if latent.constructor in mapping:
+                value = mapping[latent.constructor]
+                setattr(latent, "value", value)
+
+
+"""
+This section contains a reference implementation for materializing the output
+from Latent.to_serializable().
+
+This code is intended to be embedded in other projects, where this library
+may not be available.
+"""
+import importlib
+import sys
+
+
+def dynamic_import_module(name):
+    module_name, symbol_name = name.split(":")
+    package = sys.modules[__name__].__package__
+    mod = importlib.import_module(module_name, package=package)
+    for symbol in symbol_name.split("."):
+        mod = getattr(mod, symbol)
+    return mod
+
+
+def materialize_config(obj, idmap: dict[int, Any] = None):
+    if idmap is None:
+        idmap = {}
+    if isinstance(obj, list):
+        return [materialize_config(value, idmap) for value in obj]
+    elif isinstance(obj, tuple):
+        return tuple(materialize_config(value, idmap) for value in obj)
+    elif isinstance(obj, dict):
+        if "!id" in obj:
+            return idmap[obj["!id"]]
+        elif "!callable" in obj:
+            as_lambda = obj.get("as_lambda", False)
+            args = obj.get("args", tuple())
+            kwargs = obj.get("kwargs", {})
+            obj_id = obj.get("id", None)
+            if len(args):
+                args = tuple(materialize_config(obj["args"], idmap))
+            if len(kwargs):
+                kwargs = materialize_config(obj["kwargs"], idmap)
+            callable = dynamic_import_module(obj["!callable"])
+            if as_lambda:
+                return lambda: callable(*args, **kwargs)
+            else:
+                value = callable(*args, **kwargs)
+            if obj_id is not None:
+                idmap[obj_id] = value
+            return value
+        else:
+            return {key: materialize_config(value, idmap) for key, value in obj.items()}
+    else:
+        return obj
+
+
+"""
+This section contains a reference implementation for materializing the output
+from Latent.to_serializable().
+
+This code is intended to be embedded in other projects, where this library
+may not be available.
+"""
+import importlib
+import sys
+
+
+def dynamic_import_module(name):
+    module_name, symbol_name = name.split(":")
+    package = sys.modules[__name__].__package__
+    mod = importlib.import_module(module_name, package=package)
+    for symbol in symbol_name.split("."):
+        mod = getattr(mod, symbol)
+    return mod
+
+
+def materialize_config(config: dict, **kwargs):
+    MAJOR_VERSION = 1
+    assert isinstance(config, dict)
+    version_string = config.get("!forgather_version", None)
+    if version_string is None:
+        raise KeyError("This does not appear to be a Forgather encoded object.")
+    major, minor = version_string.split(".")
+    if int(major) > MAJOR_VERSION:
+        raise RuntimeError(
+            "The encoded data was encoded by a newer version"
+            f"{int(major)} > {MAJOR_VERSION}"
+        )
+    return _materialize_config(config["encoding"], kwargs, {}, 0)
+
+
+def _materialize_config(obj, mapping, idmap, level):
+    if isinstance(obj, list):
+        return [_materialize_config(value, mapping, idmap, level + 1) for value in obj]
+    # A dictionary /may/ contain a type tag. If so, construct the type.
+    elif isinstance(obj, dict):
+        # Convert tag '!tuple' back to tuple
+        if "!tuple" in obj:
+            return tuple(
+                _materialize_config(obj["!tuple"], mapping, idmap, level=level + 1)
+            )
+        # This indicates that we /should/ have seen the definition for 'id' already
+        # Find the value cached in the idmap and return value
+        elif "!id" in obj:
+            key = obj["!id"]
+            return idmap[key]
+
+        # Is it a kwargs substition
+        elif "!key" in obj:
+            key = obj["!key"]
+            return mapping[key]
+
+        # Is it a callable definition?
+        elif "!callable" in obj:
+            as_lambda = obj.get("as_lambda", False)
+
+            # If this is not the root and it is a lambda, stop traversal and
+            # return a lambda for deferred construction.
+            # If level is zero and it's a lambda, then
+            # it is being called as a lambda; construct it!
+            if as_lambda and level > 0:
+                return lambda: _materialize_config(obj, mapping, {}, 0)
+
+            # Get the arguments
+            obj_id = obj.get("id", None)
+            args = obj.get("args", tuple())
+            kwargs = obj.get("kwargs", {})
+            if len(args):
+                args = tuple(
+                    _materialize_config(obj["args"], mapping, idmap, level=level + 1)
+                )
+            if len(kwargs):
+                kwargs = _materialize_config(
+                    obj["kwargs"], mapping, idmap, level=level + 1
+                )
+
+            # Resolve the callable name
+            fn = dynamic_import_module(obj["!callable"])
+
+            # Call it with the args to get the value
+            value = fn(*args, **kwargs)
+
+            # If it is not an anonymous object, cache the result
+            if obj_id is not None:
+                idmap[obj_id] = value
+
+            # Return the constructed object.
+            return value
+        else:  # It's an ordinary mapping
+            return {
+                key: _materialize_config(value, mapping, idmap, level=level + 1)
+                for key, value in obj.items()
+            }
+    else:  # It is a basic type (i.e. int, float, etc.)
+        return obj

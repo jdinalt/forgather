@@ -161,7 +161,11 @@ class Trainer(BaseTrainer):
             self.lr_scheduler = None
 
         if self.args.torch_compile:
-            print("Compiling model", self.args.torch_compile_backend, self.args.torch_compile_mode)
+            print(
+                "Compiling model",
+                self.args.torch_compile_backend,
+                self.args.torch_compile_mode,
+            )
             self.model.compile(
                 backend=self.args.torch_compile_backend,
                 mode=self.args.torch_compile_mode,
@@ -169,7 +173,7 @@ class Trainer(BaseTrainer):
             )
         else:
             print("not compiling model")
-        
+
         if train_dataset is not None:
             assert train_dataset is not None, "Training requires a train_dataset"
             self.train_dataloader = self._get_dataloader(train_dataset)

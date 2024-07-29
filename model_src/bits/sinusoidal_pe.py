@@ -11,7 +11,7 @@ class SinusoidalPE(nn.Module):
     def __init__(
         self,
         d_model: int,
-        max_sequence_length,
+        max_sequence_length: int,
     ):
         super().__init__()
         self.d_model = d_model
@@ -26,6 +26,9 @@ class SinusoidalPE(nn.Module):
         weight[:, 1::2] = torch.cos(position * div_term)
         weight = weight.unsqueeze(0)
         self.register_buffer("weight", weight, persistent=False)
+
+    def extra_repr(self):
+        return f"d_model={self.d_model}, max_sequence_length={self.max_sequence_length}"
 
     def forward(
         self, seq_length: int, *, position_ids: Optional[torch.LongTensor] = None

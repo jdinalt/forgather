@@ -20,7 +20,12 @@ from platformdirs import user_config_dir
 from pprint import pformat
 from .latent import Latent
 from .preprocess import PPEnvironment
-from .yaml_utils import callable_constructor, load_depth_first, tuple_constructor
+from .yaml_utils import (
+    callable_constructor,
+    load_depth_first,
+    tuple_constructor,
+    key_constructor,
+)
 from .utils import format_line_numbers, add_exception_notes
 
 
@@ -54,12 +59,14 @@ class Config:
         )
 
 
-def fconfig(obj, sort_items=True, indent_level=2, visited=set()):
+def fconfig(obj, sort_items=True, indent_level=2, visited=None):
     """
     Recursively pretty-format a configuration
 
     TODO: Rewrite using reprlib
     """
+    if visited is None:
+        visited = set()
 
     def indent_block(block):
         indent = " " * indent_level
@@ -70,19 +77,22 @@ def fconfig(obj, sort_items=True, indent_level=2, visited=set()):
         return obj.with_line_numbers()
     elif isinstance(obj, Config):
         return fconfig(
-            dict(config=obj.config, pp_config=obj.pp_config), sort_items, indent_level
+            dict(config=obj.config, pp_config=obj.pp_config),
+            sort_items,
+            indent_level,
+            visited,
         )
     elif isinstance(obj, str):
         return f"'{obj}'"
     elif isinstance(obj, Set):
-        return fconfig(tuple(obj), sort_items, indent_level)
+        return fconfig(tuple(obj), sort_items, indent_level, visited)
     elif isinstance(obj, Mapping):
         s = ""
         items = obj.items()
         if sort_items:
             items = dict(sorted(items)).items()
         for key, value in items:
-            fmt_value = fconfig(value, sort_items, indent_level)
+            fmt_value = fconfig(value, sort_items, indent_level, visited)
             if "\n" in fmt_value or len(fmt_value) > 80:
                 s += f"{key}:\n" + indent_block(fmt_value) + "\n"
             else:
@@ -100,18 +110,51 @@ def fconfig(obj, sort_items=True, indent_level=2, visited=set()):
             if sortable:
                 items = sorted(items)
         for value in items:
-            s += "- " + fconfig(value, sort_items, indent_level) + "\n"
+            s += "- " + fconfig(value, sort_items, indent_level, visited) + "\n"
         return s[:-1]
     elif isinstance(obj, Latent):
-        if id(obj) in visited:
-            s = f"Latent *{id(obj)}"
+        if not obj.is_anonymous() and obj.identity in visited:
+            s = f"Latent id={obj.identity} elided ..."
         else:
-            visited.add(id(obj))
-            s = f"Latent &{id(obj)} '{obj.constructor}'"
-            if len(obj.args):
-                s += "\n" + indent_block(fconfig(obj.args, sort_items, indent_level))
-            if len(obj.kwargs):
-                s += "\n" + indent_block(fconfig(obj.kwargs, sort_items, indent_level))
+            if ":" in obj.constructor:
+                if not obj.is_anonymous():
+                    visited.add(obj.identity)
+                    identity_str = f"id={obj.identity}"
+                else:
+                    identity_str = ""
+
+                if hasattr(obj, "as_lambda"):
+                    lambda_str = " lambda "
+                else:
+                    lambda_str = " "
+
+                value = getattr(obj, "value", None)
+                if value is not None:
+                    value_str = f"={value}"
+                else:
+                    value_str = ""
+
+                searchpath = getattr(obj, "submodule_searchpath", None)
+                if searchpath is not None:
+                    searchpath_str = f" searchpath={searchpath}"
+                else:
+                    searchpath_str = ""
+
+                s = f"Latent{identity_str}{lambda_str}'{obj.constructor}'{value_str}{searchpath_str}"
+                if len(obj.args):
+                    s += "\n" + indent_block(
+                        fconfig(obj.args, sort_items, indent_level, visited)
+                    )
+                if len(obj.kwargs):
+                    s += "\n" + indent_block(
+                        fconfig(obj.kwargs, sort_items, indent_level, visited)
+                    )
+            else:
+                if hasattr(obj, "value"):
+                    value = getattr(obj, "value")
+                else:
+                    value = "Undefined"
+                s = f"key {obj.constructor}: {value}"
         return s
     else:
         return pformat(obj)
@@ -131,6 +174,8 @@ class ConfigLoader(SafeLoader):
 
 
 ConfigLoader.add_multi_constructor("!callable", callable_constructor)
+ConfigLoader.add_multi_constructor("!latent", callable_constructor)
+ConfigLoader.add_constructor("!key", key_constructor)
 ConfigLoader.add_constructor("!tuple", tuple_constructor)
 
 
@@ -163,8 +208,10 @@ class ConfigEnvironment:
         self,
         searchpath: Iterable[str | os.PathLike] | str | os.PathLike = tuple("."),
         pp_environment: Environment = None,
-        globals: Dict[str, Any] = {},
+        globals: Dict[str, Any] = None,
     ):
+        if globals is None:
+            globals = {}
         # Convert search path to tuple, if str or os.PathLike
         if isinstance(searchpath, os.PathLike) or isinstance(searchpath, str):
             searchpath = [searchpath]
@@ -235,7 +282,7 @@ class ConfigEnvironment:
         try:
             loaded_config = load_depth_first(pp_config, Loader=ConfigLoader)
         except Exception as error:
-            raise add_exception_notes(error, pp_config)
+            raise add_exception_notes(error, format_line_numbers(pp_config))
         if isinstance(loaded_config, dict):
             loaded_config = ConfigDict(loaded_config)
         return Config(loaded_config, pp_config)

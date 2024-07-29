@@ -18,9 +18,15 @@ class PostLNLayer(nn.Module):
         self.attention = attention
         self.norm1 = norm1
         self.norm2 = norm2
-        self.dropout = nn.Dropout(dropout)
+        if dropout == 0.0:
+            self.dropout = nn.Identity()
+        else:
+            self.dropout = nn.Dropout(dropout)
         # https://aclanthology.org/2024.sigul-1.35.pdf
-        self.residual_dropout = nn.Dropout(residual_dropout)
+        if residual_dropout == 0.0:
+            self.residual_dropout = nn.Identity()
+        else:
+            self.residual_dropout = nn.Dropout(residual_dropout)
 
     def forward(self, x: Tensor):
         residual = self.residual_dropout(x)
