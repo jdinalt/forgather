@@ -9,7 +9,7 @@
 
 
 -- block model_constructor
-.define: &model !callable:transformers:AutoModelForCausalLM.from_pretrained
+.define: &model !singleton:transformers:AutoModelForCausalLM.from_pretrained
     args: [ "{{ model_def.model_id_or_path }}" ]
     kwargs:
     -- if ns.trust_remote_code

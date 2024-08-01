@@ -75,8 +75,8 @@
 ## This directly loads the entire dataset
 ## For large datasets, a subset should be selected.
 -- block tokenizer_dataset
-    .define: &tokenizer_dataset !callable:forgather.construct:get_item
-        - !callable:datasets:load_dataset [ "{{ ns.dataset_id }}" ]
+    .define: &tokenizer_dataset !singleton:operator:getitem
+        - !singleton:datasets:load_dataset [ "{{ ns.dataset_id }}" ]
         - "{{ ns.dataset_split }}"
 << endblock tokenizer_dataset
 -- endfilter
@@ -86,8 +86,7 @@
 
     -- filter trim()
     -- block tokenizer_trainer
-.define: &tokenizer_trainer !callable:aiws.tokenizer:train_tokenizer
-    as_lambda: True
+.define: &tokenizer_trainer !lambda:aiws.tokenizer:train_tokenizer
     output_dir: "{{ ns.output_dir }}"
     dataset: *tokenizer_dataset
     args: *tokenizer_args
@@ -114,12 +113,9 @@
 
 
 -- block main_output
-main: !callable:aiws.construct:build_rule
+main: !singleton:aiws.construct:build_rule
     target: "{{ joinpath(ns.output_dir, 'tokenizer.json') }}"
     recipe: *tokenizer_trainer
-    loader: !callable:transformers:AutoTokenizer.from_pretrained
-        args:
-            - "{{ ns.output_dir }}"
-        kwargs:
-            as_lambda: True  
+    loader: !lambda:transformers:AutoTokenizer.from_pretrained
+        - "{{ ns.output_dir }}"
 << endblock main_output

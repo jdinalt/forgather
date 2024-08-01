@@ -99,6 +99,6 @@
 
 -- block callback_list
     == super()
-    - !callable:aiws.textgen_callback:TextgenCallback
+    - !singleton:aiws.textgen_callback:TextgenCallback
         <<: *text_gen_callback_args
 << endblock callback_list

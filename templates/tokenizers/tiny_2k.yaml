@@ -1,4 +1,4 @@
 # Load custom tokenizer from sub-project definition
-.define: &tokenizer !callable:aiws.construct:load_from_config
+.define: &tokenizer !singleton:aiws.construct:load_from_config
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'tiny_stories_bpe') }}"
     config_template: "2k.yaml"

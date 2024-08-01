@@ -24,14 +24,14 @@
 
 
 -- block model_config
-.define: &model_config !callable:{{ model_def.model_config_cls }}
+.define: &model_config !singleton:{{ model_def.model_config_cls }}
     vocab_size: !callable:forgather.construct:length [ *tokenizer ]
 << endblock model_config
 
 
 -- block model_constructor
 # Custom transformer model; registers for AutoClass and will save code with weights.
-.define: &model !callable:transformers:AutoModelForCausalLM.from_config
+.define: &model !singleton:transformers:AutoModelForCausalLM.from_config
     args:
         - *model_config
     kwargs:

@@ -11,7 +11,7 @@
 
 -- block model_tokenizer
 ## Select a 'llama-2' tokenizer
-.define: !callable:transformers:AutoTokenizer.from_pretrained
+.define: !singleton:transformers:AutoTokenizer.from_pretrained
     args:
         - "TheBloke/Llama-2-7B-GPTQ"
     kwargs:
@@ -23,8 +23,8 @@
 -- block model_config
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/configuration_llama.py
     == super()
-    max_position_embeddings: !callable:forgather.construct:get_attr [ *tokenizer, 'model_max_length' ]
-    pad_token_id: !callable:forgather.construct:get_attr [ *tokenizer, 'pad_token_id' ]
-    bos_token_id: !callable:forgather.construct:get_attr [ *tokenizer, 'bos_token_id' ]
-    eos_token_id: !callable:forgather.construct:get_attr [ *tokenizer, 'eos_token_id' ]
+    max_position_embeddings: !singleton:getattr [ *tokenizer, 'model_max_length' ]
+    pad_token_id: !singleton:getattr [ *tokenizer, 'pad_token_id' ]
+    bos_token_id: !singleton:getattr [ *tokenizer, 'bos_token_id' ]
+    eos_token_id: !singleton:getattr [ *tokenizer, 'eos_token_id' ]
 << endblock model_config

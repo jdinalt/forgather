@@ -6,4 +6,4 @@ searchdir:
 
 config_prefix: "configs"
 system_path: "{{ joinpath(main_dir, 'src') }}"
-default_config: "default.yaml"
+default_config: "base_dynamic.yaml"

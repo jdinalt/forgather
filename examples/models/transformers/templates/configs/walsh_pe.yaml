@@ -4,16 +4,16 @@
     == super()
     -- set ns.config_name = "Walsh PE"
     -- set ns.config_description = "Hadamard-Walsh Positional Encoder"
-    -- set ns.model_name = "dynamic"
+    -- set ns.model_name = "walsh"
 -- endblock config_metadata
 
 
--- block construct_new_model
+-- block model_definition
     -- include 'experiment.model_config'
--- endblock construct_new_model
+-- endblock model_definition
 
 #-------------------- experiment.model_config --------------------
--- extends 'project.model_config'
+-- extends 'models/dynamic_lm.yaml'
 
 -- block positional_encoder_factory
 # Note: This is the author's own creation; there is no literature to cite.

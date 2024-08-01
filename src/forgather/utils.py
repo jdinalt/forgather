@@ -77,3 +77,74 @@ def add_exception_notes(error: Exception, *args):
                 return error
     # Fallback to generic exception, which at least should chain them.
     raise Exception(note)
+
+
+class AutoName:
+    NAMES = [
+        "alpha",
+        "beta",
+        "gamma",
+        "delta",
+        "epsilon",
+        "zeta",
+        "eta",
+        "theta",
+        "iota",
+        "kappa",
+        "lambda",
+        "mu",
+        "nu",
+        "xi",
+        "omicron",
+        "pi",
+        "rho",
+        "sigma",
+        "tau",
+        "upsilon",
+        "phi",
+        "chi",
+        "psi",
+        "omega",
+    ]
+
+    def __iter__(self):
+        self.i = 0
+        return self
+
+    def __next__(self):
+        i = self.i
+        self.i += 1
+        name = ""
+        while True:
+            next_name = self.NAMES[i % len(self.NAMES)]
+            i = i // len(self.NAMES)
+            if len(name):
+                name = next_name + "_" + name
+            else:
+                name = next_name
+            if i == 0:
+                break
+        return name + "_"
+
+
+def track_depth(method):
+    """Decorator to track the recursion depth of a class method."""
+
+    def wrapper(self, *args, **kwargs):
+        # Increment the recursion level
+        self.level += 1
+        try:
+            # Call the actual method
+            result = method(self, *args, **kwargs)
+        finally:
+            # Decrement the recursion level regardless of method success
+            self.level -= 1
+        return result
+
+    return wrapper
+
+
+def indent_block(block):
+    indent = " " * indent_level
+    s = "".join(map(lambda s: indent + s + "\n", block.split("\n")))
+    return s[:-1]

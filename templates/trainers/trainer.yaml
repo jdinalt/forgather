@@ -7,9 +7,9 @@
 
 
 -- block trainer_constructor
-.define: &trainer !callable:aiws.trainer:Trainer
+.define: &trainer !singleton:aiws.trainer:Trainer
     model: *model
-    args: !callable:aiws.trainer_types:TrainingArguments
+    args: !singleton:aiws.trainer_types:TrainingArguments
         <<: *trainer_args
     data_collator: *data_collator
     train_dataset: *train_dataset

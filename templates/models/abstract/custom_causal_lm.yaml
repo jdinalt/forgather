@@ -34,10 +34,10 @@
         AutoConfig: "{{ modname_from_path(model_def.config_path) + '.' + model_def.cfg_cls }}"
         AutoModel: "{{ modname_from_path(model_def.model_path) + '.' + model_def.cls }}"
     # Get the vocab-size from the tokenizer definition.
-    vocab_size: !callable:forgather.construct:length [ *tokenizer ]
-    pad_token_id: !callable:forgather.construct:get_attr [ *tokenizer, 'pad_token_id' ]
-    bos_token_id: !callable:forgather.construct:get_attr [ *tokenizer, 'bos_token_id' ]
-    eos_token_id: !callable:forgather.construct:get_attr [ *tokenizer, 'eos_token_id' ]
+    vocab_size: !singleton:len [ *tokenizer ]
+    pad_token_id: !singleton:getattr [ *tokenizer, 'pad_token_id' ]
+    bos_token_id: !singleton:getattr [ *tokenizer, 'bos_token_id' ]
+    eos_token_id: !singleton:getattr [ *tokenizer, 'eos_token_id' ]
 << endblock model_config
 
 
@@ -49,17 +49,17 @@
 
 -- block model_constructor
 # Custom transformer model; registers for AutoClass and will save code with weights.
-.define: &model !callable:aiws.construct:copy_package_files
+.define: &model !singleton:aiws.construct:copy_package_files
     # Source files will be copied to model directory.
     - "{{ ns.output_dir }}"
     # Construct model from configuration.
-    - !callable:{{ model_def.model_path }}:{{ model_def.cls }}
+    - !singleton:{{ model_def.model_path }}:{{ model_def.cls }}
         args:
-            - !callable:aiws.construct:copy_package_files
+            - !singleton:aiws.construct:copy_package_files
                 # Source files will be copied to model directory.
                 - "{{ ns.output_dir }}"
                 # Construct configuration from config-args.
-                - !callable:{{ model_def.config_path }}:{{ model_def.cfg_cls }}
+                - !singleton:{{ model_def.config_path }}:{{ model_def.cfg_cls }}
                     submodule_searchpath: *model_submodule_searchpath
                     <<: *model_config
         kwargs:

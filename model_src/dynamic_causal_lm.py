@@ -11,7 +11,7 @@ from transformers import (
     AutoModelForCausalLM,
 )
 
-from .materialize import materialize_config
+from .model_factory import construct_model
 
 model_type = "dynamic-causal-lm"
 
@@ -26,7 +26,7 @@ class DynamicCasualLM(PreTrainedModel):
 
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
-        self.causal_lm = materialize_config(config.model_definition, **config.to_dict())
+        self.causal_lm = construct_model(**config.to_dict())
 
     def forward(
         self,

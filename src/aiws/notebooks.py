@@ -9,8 +9,9 @@ from forgather.dynamic import (
     walk_package_modules,
 )
 
-from forgather import Latent
 from IPython import display
+
+from forgather.latent import Latent, CallableNode
 
 
 def find_file_specs(config):
@@ -18,13 +19,13 @@ def find_file_specs(config):
     Generate all referenced file names in config
     """
     spec_set = set()
-    for latent in Latent.all_latents(config):
-        # Skip, if not string
-        if not isinstance(latent.constructor, str):
+    for node in Latent.all_of_type(config, CallableNode):
+        # Skip built-ins
+        if not ":" in node.constructor:
             continue
         try:
             module_name_or_path, symbol_name = parse_dynamic_import_spec(
-                latent.constructor
+                node.constructor
             )
             module_name, module_path = parse_module_name_or_path(module_name_or_path)
         except:
@@ -39,7 +40,7 @@ def find_file_specs(config):
         if spec in spec_set:
             continue
         spec_set.add(spec)
-        yield module_path, symbol_name, latent.submodule_searchpath
+        yield module_path, symbol_name, node.submodule_searchpath
 
 
 def display_meta(meta, title=""):

@@ -11,22 +11,40 @@ from typing import (
 from collections.abc import Sequence, Mapping
 import os
 import sys
-from yaml import SafeLoader
+from collections import defaultdict
 from pathlib import Path
+from pprint import pformat
 
+from yaml import SafeLoader
 from jinja2 import Environment, meta
 from platformdirs import user_config_dir
 
-from pprint import pformat
-from .latent import Latent
+
+from .latent import (
+    Latent,
+    Node,
+    VarNode,
+    CallableNode,
+    SingletonNode,
+    LambdaNode,
+    PyNode,
+)
+
 from .preprocess import PPEnvironment
 from .yaml_utils import (
-    callable_constructor,
+    CallableConstructor,
     load_depth_first,
     tuple_constructor,
-    key_constructor,
+    var_constructor,
 )
-from .utils import format_line_numbers, add_exception_notes
+
+from .utils import (
+    format_line_numbers,
+    add_exception_notes,
+    AutoName,
+    track_depth,
+    indent_block,
+)
 
 
 class ConfigText(str):
@@ -112,49 +130,35 @@ def fconfig(obj, sort_items=True, indent_level=2, visited=None):
         for value in items:
             s += "- " + fconfig(value, sort_items, indent_level, visited) + "\n"
         return s[:-1]
-    elif isinstance(obj, Latent):
-        if not obj.is_anonymous() and obj.identity in visited:
-            s = f"Latent id={obj.identity} elided ..."
+    elif isinstance(obj, Node):
+        s = ""
+        if isinstance(obj, VarNode):
+            return f"var {obj.constructor}={obj.value}\n"
+        elif isinstance(obj, SingletonNode):
+            s += "singleton "
+        elif isinstance(obj, LambdaNode):
+            s += "lambda "
+        elif isinstance(obj, CallableNode):
+            s += "callable "
         else:
-            if ":" in obj.constructor:
-                if not obj.is_anonymous():
-                    visited.add(obj.identity)
-                    identity_str = f"id={obj.identity}"
-                else:
-                    identity_str = ""
+            s += "node "
+        s += f"{repr(obj.identity)} {obj.constructor}"
+        if obj.identity in visited:
+            s += "elided ..."
+            return s
 
-                if hasattr(obj, "as_lambda"):
-                    lambda_str = " lambda "
-                else:
-                    lambda_str = " "
-
-                value = getattr(obj, "value", None)
-                if value is not None:
-                    value_str = f"={value}"
-                else:
-                    value_str = ""
-
-                searchpath = getattr(obj, "submodule_searchpath", None)
-                if searchpath is not None:
-                    searchpath_str = f" searchpath={searchpath}"
-                else:
-                    searchpath_str = ""
-
-                s = f"Latent{identity_str}{lambda_str}'{obj.constructor}'{value_str}{searchpath_str}"
-                if len(obj.args):
-                    s += "\n" + indent_block(
-                        fconfig(obj.args, sort_items, indent_level, visited)
-                    )
-                if len(obj.kwargs):
-                    s += "\n" + indent_block(
-                        fconfig(obj.kwargs, sort_items, indent_level, visited)
-                    )
-            else:
-                if hasattr(obj, "value"):
-                    value = getattr(obj, "value")
-                else:
-                    value = "Undefined"
-                s = f"key {obj.constructor}: {value}"
+        visited.add(obj.identity)
+        if isinstance(obj, CallableNode):
+            if len(obj.submodule_searchpath):
+                s += f" searchpath={obj.submodule_searchpath}"
+            if len(obj.args):
+                s += "\n" + indent_block(
+                    fconfig(obj.args, sort_items, indent_level, visited)
+                )
+            if len(obj.kwargs):
+                s += "\n" + indent_block(
+                    fconfig(obj.kwargs, sort_items, indent_level, visited)
+                )
         return s
     else:
         return pformat(obj)
@@ -173,9 +177,11 @@ class ConfigLoader(SafeLoader):
     pass
 
 
-ConfigLoader.add_multi_constructor("!callable", callable_constructor)
-ConfigLoader.add_multi_constructor("!latent", callable_constructor)
-ConfigLoader.add_constructor("!var", key_constructor)
+ConfigLoader.add_multi_constructor("!callable", CallableConstructor(CallableNode))
+ConfigLoader.add_multi_constructor("!singleton", CallableConstructor(SingletonNode))
+ConfigLoader.add_multi_constructor("!lambda", CallableConstructor(LambdaNode))
+ConfigLoader.add_multi_constructor("!python", CallableConstructor(PyNode))
+ConfigLoader.add_constructor("!var", var_constructor)
 ConfigLoader.add_constructor("!tuple", tuple_constructor)
 
 

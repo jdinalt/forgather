@@ -18,7 +18,7 @@
 
 -- block model_config
     == super()
-    max_sequence_length: !callable:forgather.construct:get_attr [ *tokenizer, 'model_max_length' ]
+    max_sequence_length: !singleton:getattr [ *tokenizer, 'model_max_length' ]
 << endblock model_config
 
 

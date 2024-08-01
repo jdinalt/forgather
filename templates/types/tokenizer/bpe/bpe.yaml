@@ -11,20 +11,20 @@
 
 -- block tokenizer_trainer
     == super()
-    model: !callable:tokenizers:models.BPE
+    model: !singleton:tokenizers:models.BPE
         cache_capacity: 16
         unk_token: "{{ ns.unk_token }}"
         byte_fallback: True
-    normalizer: !callable:tokenizers:normalizers.NFC []
-    pre_tokenizer: !callable:tokenizers:pre_tokenizers.ByteLevel []
-    decoder: !callable:tokenizers:decoders.ByteLevel []
+    normalizer: !singleton:tokenizers:normalizers.NFC []
+    pre_tokenizer: !singleton:tokenizers:pre_tokenizers.ByteLevel []
+    decoder: !singleton:tokenizers:decoders.ByteLevel []
     # Automatically add bos token to sequence start
-    post_processor: !callable:tokenizers:processors.TemplateProcessing
+    post_processor: !singleton:tokenizers:processors.TemplateProcessing
         single: "<bos> $A"
         special_tokens: [ !tuple [ "<bos>", {{ ns.bos_token_id }} ] ]
-    trainer: !callable:tokenizers.trainers:BpeTrainer
+    trainer: !singleton:tokenizers.trainers:BpeTrainer
         vocab_size: {{ ns.vocab_size }}
-        initial_alphabet: !callable:tokenizers:pre_tokenizers.ByteLevel.alphabet []
-        special_tokens: !callable:forgather.construct:values [ *special_tokens_map ]
+        initial_alphabet: !singleton:tokenizers:pre_tokenizers.ByteLevel.alphabet []
+        special_tokens: !singleton:list [!singleton:values [*special_tokens_map]]
         show_progress: False
 << endblock tokenizer_trainer

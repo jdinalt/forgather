@@ -2,36 +2,31 @@
 
 -- block config_metadata
     == super()
-    -- set ns.config_name = "ReLU-GLU"
-    -- set ns.config_description = "ReLU-GLU feedforward layer"
-    -- set ns.model_name = "dynamic"
-    -- set ns.log_name = "relu-glu"
+    -- set ns.config_name = "SwiGLU"
+    -- set ns.config_description = "SwiGLU feedforward layer"
+    -- set ns.model_name = "swi-glu"
 -- endblock config_metadata
 
 
--- block construct_new_model
+-- block model_definition
     -- include 'experiment.model_config'
--- endblock construct_new_model
+-- endblock model_definition
 
 #-------------------- experiment.model_config --------------------
--- extends 'project.model_config'
+-- extends 'models/dynamic_lm.yaml'
 
-## Note: It would also be possible to override the swi-glu config's activation function.
 -- block feedforward_factory
 # GLU Variants Improve Transformer: https://arxiv.org/pdf/2002.05202v1
 .define: &feedforward_factory !callable:.glu_feedforward:GLUFeedforwardLayer
     d_model: !var "hidden_size"
     d_feedforward: !var "dim_feedforward"
     dropout: !var "activation_dropout"
-    # Replace the default activation (SiLU) with ReLU.
-    activation: !callable:torch.nn:ReLU []
 -- endblock feedforward_factory
-
 
 -- block model_config
 == super()
     # Scale down, to compensate for increased parameter count
     # GLU-feedforward increases parameter could by 1.5, so scale down
-    # 1024 * 2/3 ~ 682
-    dim_feedforward: 682
+    # 2048 * 2/3 ~ 1365
+    dim_feedforward: 1365
 << endblock model_config

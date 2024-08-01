@@ -41,7 +41,7 @@
 
 -- filter trim()
 -- block load_train_dataset
-.define: &train_source_dataset !callable:{{datasets_ns.train_load_method}}
+.define: &train_source_dataset !singleton:{{datasets_ns.train_load_method}}
     args:
         - "{{ datasets_ns.train_dataset_id }}"
 << endblock load_train_dataset
@@ -51,7 +51,7 @@
 -- filter trim()
 
 -- block load_eval_dataset
-.define: &eval_source_dataset !callable:{{datasets_ns.eval_load_method}}
+.define: &eval_source_dataset !singleton:{{datasets_ns.eval_load_method}}
     args:
         - "{{ datasets_ns.eval_dataset_id }}"
 << endblock load_eval_dataset
@@ -62,11 +62,11 @@
 
 -- filter trim()
 -- block dataset_splits
-.define: &train_dataset_split !callable:forgather.construct:get_item
+.define: &train_dataset_split !singleton:operator:getitem
     - *train_source_dataset
     - "{{ datasets_ns.train_dataset_split }}"
 
-.define: &eval_dataset_split !callable:forgather.construct:get_item
+.define: &eval_dataset_split !singleton:operator:getitem
     - *{{ datasets_ns.eval_source_dataset_name }}
     - "{{ datasets_ns.eval_dataset_split }}"
 << endblock dataset_splits
@@ -90,7 +90,7 @@
 -- block datasets
     -- filter trim()
     -- block tokenize_train
-.define: &train_dataset !callable:aiws.datasets:tokenize_dataset
+.define: &train_dataset !singleton:aiws.datasets:tokenize_dataset
     dataset: *train_dataset_split
     tokenizer: *tokenizer
     select_range: {{ datasets_ns.train_select_range }}
@@ -103,7 +103,7 @@
 
     -- filter trim()
     -- block tokenize_eval
-.define: &eval_dataset !callable:aiws.datasets:tokenize_dataset
+.define: &eval_dataset !singleton:aiws.datasets:tokenize_dataset
     dataset: *eval_dataset_split
     tokenizer: *tokenizer
     select_range: {{ datasets_ns.eval_select_range }}

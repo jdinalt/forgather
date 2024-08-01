@@ -51,7 +51,9 @@
 
 
 -- block main_output
-main: !callable:aiws.dotdict:DotDict
+main:
     model: *model
     tokenizer: *tokenizer
+    model_config: *model_config
+    model_src: *model_code
 << endblock main_output

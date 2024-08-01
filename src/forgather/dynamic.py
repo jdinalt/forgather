@@ -148,6 +148,15 @@ def from_dynamic_module_import(
     return mod
 
 
+def get_builtin(name):
+    mod = sys.modules["builtins"]
+    for s in name.split("."):
+        mod = getattr(mod, s, None)
+        if mod is None:
+            return None
+    return mod
+
+
 def dynamic_import(
     import_spec: str,
     *,

@@ -3,57 +3,60 @@ import pprint
 
 from loguru import logger
 
-from .latent import Latent
+from .latent import (
+    VarNode,
+    CallableNode,
+)
 
 
-def callable_constructor(loader, tag_suffix, node):
-    """
-    A Yaml constuctor for Latent objects -- which are all Callables
-    """
-    if isinstance(node, yaml.MappingNode):
-        value = loader.construct_mapping(node, deep=True)
+class CallableConstructor:
+    def __init__(self, node_type: CallableNode):
+        self.node_type = node_type
 
-        args = value.get("args", None)
-        kwargs = value.get("kwargs", None)
-        # Only args
-        if len(value) == 1 and args is not None:
+    def __call__(self, loader, tag_suffix, node):
+        if isinstance(node, yaml.MappingNode):
+            value = loader.construct_mapping(node, deep=True)
+
+            args = value.get("args", None)
+            kwargs = value.get("kwargs", None)
+            # Only args
+            if len(value) == 1 and args is not None:
+                kwargs = {}
+            # Only kwargs
+            elif len(value) == 1 and kwargs is not None:
+                args = tuple()
+            # Exactly args and kwargs
+            elif len(value) == 2 and args is not None and kwargs is not None:
+                pass
+            # Everything else; use the value as shorthand for kwargs
+            else:
+                args = tuple()
+                kwargs = value
+
+        elif isinstance(node, yaml.SequenceNode):
+            args = loader.construct_sequence(node, deep=True)
             kwargs = {}
-        # Only kwargs
-        elif len(value) == 1 and kwargs is not None:
-            args = tuple()
-        # Exactly args and kwargs
-        elif len(value) == 2 and args is not None and kwargs is not None:
-            pass
-        # Everything else; use the value as shorthand for kwargs
         else:
-            args = tuple()
-            kwargs = value
+            args = loader.construct_scalar(node)
+            kwargs = {}
 
-    elif isinstance(node, yaml.SequenceNode):
-        args = loader.construct_sequence(node, deep=True)
-        kwargs = {}
+        assert isinstance(kwargs, dict), f"Expected dict, but found {type(kwargs)}"
+        tag_suffix = tag_suffix[1:]
+        return self.node_type(tag_suffix, *args, **kwargs)
+
+
+def var_constructor(loader, node):
+    if isinstance(node, yaml.MappingNode):
+        return VarNode(**loader.construct_mapping(node))
+    elif isinstance(node, yaml.ScalarNode):
+        return VarNode(loader.construct_scalar(node))
     else:
-        args = loader.construct_scalar(node)
-        kwargs = {}
-
-    assert isinstance(kwargs, dict), f"Expected dict, but found {type(kwargs)}"
-    tag_suffix = tag_suffix[1:]
-    return Latent(tag_suffix, *args, **kwargs)
-
-
-def key_constructor(loader, node):
-    """
-    A Yaml constuctor for Latent 'key' objects
-    """
-    assert isinstance(node, yaml.ScalarNode), "Key tags must be singleton nodes."
-    value = loader.construct_scalar(node)
-    assert isinstance(value, str), f"Keys must be string, found {type(value)}"
-    assert ":" not in value, f"Keys may not include the character ':', found {value}"
-    return Latent(value, identity=0)
+        raise TypeError(f"Var nodes may not be sequences. Found {node}")
 
 
 def tuple_constructor(loader, node):
-    assert isinstance(node, yaml.SequenceNode)
+    if not isinstance(node, yaml.SequenceNode):
+        raise TypeError(f"Tuples must be sequences. Found {node}")
     value = loader.construct_sequence(node, deep=True)
     return tuple(value)
 

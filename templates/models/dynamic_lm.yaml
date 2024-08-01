@@ -32,10 +32,6 @@
 
     -- block layer_norm_factory
 .define: &layer_norm_factory !callable:torch.nn:LayerNorm
-    # This definition is used more than once per layer
-    # Setting 'indenity' to 0 will cause a new instance to be created each
-    # time it is referenced, otherwise each reference would be to the same instance.
-    identity: 0
     normalized_shape: !var "hidden_size"
     -- endblock layer_norm_factory
 
@@ -54,10 +50,7 @@
     -- endblock attention_factory
 
     -- block layer_factory
-.define: &layer_factory !callable:.post_ln_layer:PostLNLayer
-    # Setting 'as_lambda=True' results in this being returned as a lambda, thus
-    # it is a true 'factory,' which generates a new instance each time it is called.
-    as_lambda: True
+.define: &layer_factory !lambda:.post_ln_layer:PostLNLayer
     feedforward: *feedforward_factory
     attention: *attention_factory
     norm1: *layer_norm_factory
@@ -98,34 +91,32 @@
     -- endblock init_weights_factory
 
     -- block model_factory
-.define: &model_factory !callable:.causal_lm:CasualLM
-    # We use 'as_lambda' here to defer construction. We do this as to pass it to
-    # 'Latent.to_serailizable,' which takes a lamda and outputs a serializible 
-    # representation of the factory. This in turn is passed to an instance of
-    # transformers.PretrinedConfig, which allows this information to be saved,
-    # as JSON, with the rest of the configuration.
-    #   After this is passed to the DynamicCausalLM, the definition will be
-    # 'materialized' in __init__, passing the config arguments to be substituted
-    # as for the '!var' tags in the definition.
-    as_lambda: True
+.define: &model_code !python:.causal_lm:CasualLM
     loss_fn: *loss_fn_factory
     input_encoder: *input_encoder_factory
     output_decoder: *output_decoder_factory
     layer_stack: *layer_stack_factory
     init_weights: *init_weights_factory
     -- endblock model_factory
+
+    -- block model_code_generator
+.define: &model_code_generator !singleton:aiws.construct:generate_factory_file
+    passthrough: "Forgather 1.0"
+    code: *model_code
+    factory_name: "construct_model"
+    output_file: "{{ joinpath(ns.output_dir, 'model_factory.py') }}"
+    -- endblock model_code_generator
 << endblock model_config_defs
 
 
 -- block model_config
     == super()
+    code_generator: *model_code_generator
     # Convert model definition to a JSON compatible encoding for the configuration to store.
-    model_definition: !callable:forgather.latent:Latent.to_serailizable
-        - *model_factory
     hidden_size: 512
     num_attention_heads: 8
     num_hidden_layers: 6
-    max_sequence_length: !callable:forgather.construct:get_attr
+    max_sequence_length: !singleton:getattr
         - *tokenizer
         - "model_max_length"
     dim_feedforward: 2048
@@ -141,5 +132,6 @@
 -- block model_submodule_searchpath
 # Add 'bits' to model's module.
 .define: &model_submodule_searchpath
+    - "{{ ns.output_dir }}"
     - "{{ joinpath(ns.forgather_dir, 'model_src', 'bits') }}"
 << endblock model_submodule_searchpath

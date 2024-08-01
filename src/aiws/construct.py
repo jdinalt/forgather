@@ -137,9 +137,7 @@ def load_from_config(project_dir: str, config_template: str | NoneType = None):
     return config.main()
 
 
-__copied_package_files = set()
-
-
+@main_process_first()
 def copy_package_files(dest_dir: str | os.PathLike, obj: Any) -> Any:
     """
     Given an object, copy the source files for those objects,
@@ -178,7 +176,7 @@ def copy_package_files(dest_dir: str | os.PathLike, obj: Any) -> Any:
     # Only do this on the main process
     if int(os.environ.get("LOCAL_RANK", 0)) != 0:
         return obj
-    global __copied_package_files
+
     # Get module for object
     pkg = sys.modules[obj.__module__]
     for level, value in walk_package_modules(pkg):
@@ -187,15 +185,111 @@ def copy_package_files(dest_dir: str | os.PathLike, obj: Any) -> Any:
             continue
         origin = value.__spec__.origin
         package_name = value.__package__
-        with open(origin, "r") as f:
-            file_hash = hash((origin, package_name, f.read()))
-        # Skip, if we have already copied this file
-        if file_hash in __copied_package_files:
-            continue
-        __copied_package_files.add(file_hash)
+
         file_name = os.path.basename(origin)
         module_prefix = package_name.split(".")[1:]
         module_dir = os.path.join(dest_dir, *module_prefix)
+        dest_path = os.path.join(module_dir, file_name)
+
+        # Skip is the source and destination are the same file
+        # This can happen when dynamically generating source code.
+        if os.path.exists(dest_path) and os.path.samefile(origin, dest_path):
+            continue
+
         os.makedirs(module_dir, exist_ok=True)
         shutil.copy2(origin, module_dir, follow_symlinks=True)
     return obj
+
+
+@main_process_first()
+def generate_factory_file(
+    passthrough: Any,
+    code: dict,
+    factory_name,
+    output_file: str | os.PathLike,
+) -> Any:
+    # Only do this on the main process
+    if int(os.environ.get("LOCAL_RANK", 0)) != 0:
+        return passthrough
+
+    source_code = format_latent_to_py(code, factory_name)
+    module_dir = os.path.dirname(output_file)
+
+    os.makedirs(module_dir, exist_ok=True)
+    with open(output_file, "w") as f:
+        f.write(source_code)
+    return passthrough
+
+
+DYNAMIC_IMPORT_DEF = """
+from importlib.util import spec_from_file_location, module_from_spec
+import os
+import sys
+
+def dynimport(module, name, searchpath):
+    module_path = module
+    module_name = os.path.basename(module).split(".")[0]
+    module_spec = spec_from_file_location(
+        module_name,
+        module_path,
+        submodule_search_locations=searchpath,
+    )
+    mod = module_from_spec(module_spec)
+    sys.modules[module_name] = mod
+    module_spec.loader.exec_module(mod)
+    for symbol in name.split("."):
+        mod = getattr(mod, symbol)
+    return mod
+
+""".strip()
+
+
+def format_imports(imports):
+    s = ""
+    dynamic_modules = []
+
+    for args in imports:
+        module, name, searchpath = args
+
+        if module.endswith(".py"):
+            dynamic_modules.append(args)
+        else:
+            s += f"from {module} import {name.split('.')[-1]}\n"
+    if len(dynamic_modules):
+        s += DYNAMIC_IMPORT_DEF + "\n\n"
+
+        for args in dynamic_modules:
+            attr_str = args[1].split(".")[-1]
+            args_str = ", ".join([repr(x) for x in args])
+            s += f"{attr_str} = dynimport({args_str})\n"
+
+    return s
+
+
+def indent_block(block, level):
+    indent = " " * level * 4
+    s = "".join(map(lambda s: indent + s + "\n", block.split("\n")))
+    return s[:-1]
+
+
+def format_factory(name, variables, main_body):
+    var_block = ""
+    for var in variables:
+        var_block += var + ",\n"
+
+    # Allow additional args
+    var_block += "**kwargs"
+    s = f"def {name}(\n"
+    s += indent_block(var_block, 1).rstrip() + "\n"
+    s += "):\n"
+    s += indent_block("return " + main_body, 1)
+    return s
+
+
+def format_latent_to_py(code, factory_name="construct"):
+    s = ""
+    s += format_imports(code["imports"])
+    s += "\n\n"
+    s += "# Code automatically generated from config by Forgather\n"
+    s += format_factory(factory_name, code["variables"], code["main_body"])
+    return s
