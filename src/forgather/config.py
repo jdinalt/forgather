@@ -27,7 +27,7 @@ from .latent import (
     CallableNode,
     SingletonNode,
     LambdaNode,
-    PyNode,
+    MetaNode,
 )
 
 from .preprocess import PPEnvironment
@@ -180,7 +180,7 @@ class ConfigLoader(SafeLoader):
 ConfigLoader.add_multi_constructor("!callable", CallableConstructor(CallableNode))
 ConfigLoader.add_multi_constructor("!singleton", CallableConstructor(SingletonNode))
 ConfigLoader.add_multi_constructor("!lambda", CallableConstructor(LambdaNode))
-ConfigLoader.add_multi_constructor("!python", CallableConstructor(PyNode))
+ConfigLoader.add_multi_constructor("!meta", CallableConstructor(MetaNode))
 ConfigLoader.add_constructor("!var", var_constructor)
 ConfigLoader.add_constructor("!tuple", tuple_constructor)
 

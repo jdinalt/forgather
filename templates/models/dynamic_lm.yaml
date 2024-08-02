@@ -91,7 +91,7 @@
     -- endblock init_weights_factory
 
     -- block model_factory
-.define: &model_code !python:.causal_lm:CasualLM
+.define: &model_factory !singleton:.causal_lm:CasualLM
     loss_fn: *loss_fn_factory
     input_encoder: *input_encoder_factory
     output_decoder: *output_decoder_factory
@@ -102,7 +102,7 @@
     -- block model_code_generator
 .define: &model_code_generator !singleton:aiws.construct:generate_factory_file
     passthrough: "Forgather 1.0"
-    code: *model_code
+    code: !meta:forgather.latent:Latent.to_py [ *model_factory ]
     factory_name: "construct_model"
     output_file: "{{ joinpath(ns.output_dir, 'model_factory.py') }}"
     -- endblock model_code_generator

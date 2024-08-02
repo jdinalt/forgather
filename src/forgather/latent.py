@@ -165,7 +165,7 @@ class SingletonNode(CallableNode):
     pass
 
 
-class PyNode(SingletonNode):
+class MetaNode(SingletonNode):
     pass
 
 
@@ -284,8 +284,8 @@ class Materializer:
                 if (value := self.idmap.get(obj.identity, None)) is not None:
                     return value
 
-            if isinstance(obj, PyNode):
-                value = Latent.to_py(obj)
+            if isinstance(obj, MetaNode):
+                value = obj.callable(*obj.args, **obj.kwargs)
             else:
                 args = self._materialize(obj.args)
                 kwargs = self._materialize(obj.kwargs)
@@ -367,8 +367,8 @@ class YamlDumper:
     @track_depth
     def _node(self, obj):
         s = ""
-        if isinstance(obj, PyNode):
-            s += "!python"
+        if isinstance(obj, MetaNode):
+            s += "!meta"
         elif isinstance(obj, SingletonNode):
             s += "!singleton"
         elif isinstance(obj, LambdaNode):
@@ -494,8 +494,8 @@ class PyEncoder:
 
     @track_depth
     def _encode_callable_main(self, obj):
-        if isinstance(obj, PyNode) and self.level > 1:
-            return self._encode(Latent.to_py(obj))
+        if isinstance(obj, MetaNode):
+            return self._encode(obj.callable(*obj.args, **obj.kwargs))
         if ":" in obj.constructor:
             module, callable_name = obj.constructor.split(":")
             self.imports.add((module, callable_name, tuple(obj.submodule_searchpath)))
@@ -568,5 +568,5 @@ class PyEncoder:
     def _encode_other(self, obj):
         assert (
             isinstance(obj, int) or isinstance(obj, float) or isinstance(obj, str)
-        ), f"Found unexpected type in graph: {type(obj)}"
+        ), f"Found unsupported type in graph: {type(obj)}"
         return repr(obj)

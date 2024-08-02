@@ -204,7 +204,7 @@ def copy_package_files(dest_dir: str | os.PathLike, obj: Any) -> Any:
 @main_process_first()
 def generate_factory_file(
     passthrough: Any,
-    code: dict,
+    code: Any,
     factory_name,
     output_file: str | os.PathLike,
 ) -> Any:
@@ -293,3 +293,6 @@ def format_latent_to_py(code, factory_name="construct"):
     s += "# Code automatically generated from config by Forgather\n"
     s += format_factory(factory_name, code["variables"], code["main_body"])
     return s
+
+def dependency(passthrough: Any, /, *args):
+    return passthrough
