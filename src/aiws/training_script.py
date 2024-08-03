@@ -119,7 +119,7 @@ def training_loop(project_directory, config_template=None):
     # Create configuration envrionment
     environment = ConfigEnvironment(
         searchpath=meta.searchpath,
-        globals=preprocessor_globals(project_directory),
+        global_vars=preprocessor_globals(project_directory),
     )
 
     # Load the target configuration

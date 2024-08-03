@@ -4,7 +4,7 @@
     == super()
     -- set ns.config_name = "Control"
     -- set ns.config_description = "Tiny Causal; the baseline control"
-    -- set ns.model_name = "dynamic"
+    -- set ns.model_name = "tiny_causal"
     -- set ns.log_name = "control"
 -- endblock config_metadata
 

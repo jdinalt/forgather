@@ -18,7 +18,7 @@
 -- block positional_encoder_factory
 # Note: This is the author's own creation; there is no literature to cite.
 # See notes in implementation for details.
-.define: &positional_encoder_factory !callable:.walsh_pe:WalshPE
+.define: &positional_encoder_factory !factory:.walsh_pe:WalshPE
     d_model: !var "hidden_size"
     max_sequence_length: !var "max_sequence_length"
 -- endblock positional_encoder_factory

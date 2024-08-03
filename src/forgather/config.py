@@ -24,7 +24,7 @@ from .latent import (
     Latent,
     Node,
     VarNode,
-    CallableNode,
+    FactoryNode,
     SingletonNode,
     LambdaNode,
     MetaNode,
@@ -177,7 +177,7 @@ class ConfigLoader(SafeLoader):
     pass
 
 
-ConfigLoader.add_multi_constructor("!callable", CallableConstructor(CallableNode))
+ConfigLoader.add_multi_constructor("!factory", CallableConstructor(FactoryNode))
 ConfigLoader.add_multi_constructor("!singleton", CallableConstructor(SingletonNode))
 ConfigLoader.add_multi_constructor("!lambda", CallableConstructor(LambdaNode))
 ConfigLoader.add_multi_constructor("!meta", CallableConstructor(MetaNode))
@@ -214,10 +214,10 @@ class ConfigEnvironment:
         self,
         searchpath: Iterable[str | os.PathLike] | str | os.PathLike = tuple("."),
         pp_environment: Environment = None,
-        globals: Dict[str, Any] = None,
+        global_vars: Dict[str, Any] = None,
     ):
-        if globals is None:
-            globals = {}
+        if global_vars is None:
+            global_vars = {}
         # Convert search path to tuple, if str or os.PathLike
         if isinstance(searchpath, os.PathLike) or isinstance(searchpath, str):
             searchpath = [searchpath]
@@ -229,7 +229,7 @@ class ConfigEnvironment:
         if pp_environment is None:
             pp_environment = PPEnvironment(searchpath=searchpath)
         self.pp_environment = pp_environment
-        self.pp_environment.globals |= globals
+        self.pp_environment.globals |= global_vars
 
     def preprocess(
         self,

@@ -1,4 +1,4 @@
-from typing import Callable, List, Any, Tuple
+from typing import Callable, List, Any, Tuple, Optional
 from types import NoneType, ModuleType
 import os
 import shutil
@@ -9,6 +9,8 @@ from .distributed import main_process_first
 from aiws.config import MetaConfig
 from forgather.config import ConfigEnvironment
 from forgather.dynamic import walk_package_modules
+from forgather.preprocess import PPEnvironment
+from forgather.latent import Latent, Undefined
 
 
 def register_for_auto_class(object, /, *args, **kwargs):
@@ -131,7 +133,7 @@ def load_from_config(project_dir: str, config_template: str | NoneType = None):
         config_template = meta.default_config()
     environment = ConfigEnvironment(
         searchpath=meta.searchpath,
-        globals={"project_dir": project_dir},
+        global_vars={"project_dir": project_dir},
     )
     config = environment.load(meta.config_path(config_template)).config
     return config.main()
@@ -221,11 +223,20 @@ def generate_factory_file(
     return passthrough
 
 
-DYNAMIC_IMPORT_DEF = """
+DEFAULT_CODE_TEMPLATE = """
+## Set default factory name, if not provided
+-- if factory_name is undefined:
+    -- set factory_name = "construct"
+-- endif
+-- for module, name in imports:
+from {{ module }} import {{ name }}
+-- endfor
+-- if dynamic_imports|length
 from importlib.util import spec_from_file_location, module_from_spec
 import os
 import sys
 
+# Import a dynamic module.
 def dynimport(module, name, searchpath):
     module_path = module
     module_name = os.path.basename(module).split(".")[0]
@@ -241,58 +252,108 @@ def dynimport(module, name, searchpath):
         mod = getattr(mod, symbol)
     return mod
 
+    -- for module, name, searchpath in dynamic_imports:
+{{ name.split('.')[-1] }} = dynimport("{{ module }}", "{{ name }}", {{ searchpath }})
+    -- endfor
+-- endif
+
+def {{ factory_name }}(
+-- for var, has_default, default in variables:
+    {{ var }}{% if has_default %}={{ repr(default) }}{% endif %},
+-- endfor
+-- if relaxed_kwargs is defined:
+    **kwargs
+-- endif
+):
+    return {{ main_body|indent(4) }}
 """.strip()
 
 
-def format_imports(imports):
-    s = ""
-    dynamic_modules = []
+def generate_code(
+    obj,
+    template_name: Optional[str] = None,
+    template_str: Optional[str] = None,
+    searchpath: Optional[List[str | os.PathLike] | str | os.PathLike] = ".",
+    env=None,  # jinja2 environment or compatible API
+    output_file: Optional[str | os.PathLike] = None,
+    return_value: Optional[Any] = Undefined,
+    **kwargs,
+) -> Any:
+    """
+    Generate Python code from Latent graph
 
-    for args in imports:
-        module, name, searchpath = args
+    The primary use-case for this is for dynamic python code generation from /within/ a Latent
+    graph, as to construct a file defining a factory method for constructing the defined graph.
 
-        if module.endswith(".py"):
-            dynamic_modules.append(args)
+    When used as such, the node-type should be a MetaNode.
+    ```yaml
+    code: !metanode:aiws.construct:generate_code *model
+    ```
+
+    Outside of this context, it can be used directly to help understand how a Latent graph is being
+    interpreted, by expressing it as executable python code.
+
+    ```python
+    print(generate_code(config))
+    ```
+
+    obj: A Latent graph
+    template_name: The template name; this is interpreted by Environment's Loader.
+        By default, this is a file-name within searchpath, but is specific to the Loader type.
+        If not None, it overrides 'template_str'
+    template_str: A string containing a code template.
+        If both template_str and template_name are None, the default code template is used.
+    searchpath: The search path to locate Jinja templates.
+        Only applicable when using the default Jinja environment.
+    output_file: If specified, write the generated code to the specified file path.
+        Missing directories will automatically be created.
+        If running in a multiprocess environment, only the main local process will write the file,
+        while the other processes will wait for the file to be written.
+    return_value: If not Undefined, this value is returned instead of the generated code
+        This would typically be used when one only desires to generate a file, while potentially
+        return meta-data about the written file.
+    kwargs: Any remaining kwargs are passed to the template's 'render' method.
+        That is, these arguments are visible within the template.
+
+    returns: If return_value is not Undefined, return_value, else the generated code as a str.
+
+    The default template accepts the following kwargs:
+
+    factory_name: Optional[str]="construct", ; The name of the generated factory function.
+    relaxed_kwargs: Optional[bool]=Undefined, ; if defined, **kwargs is added to the arg list
+    """
+    # Convert the input to Python code
+    py_output = Latent.to_py(obj)
+
+    if env is None:
+        if isinstance(searchpath, os.PathLike) or isinstance(searchpath, str):
+            searchpath = [searchpath]
+
+        # Removes paths which don't exist
+        searchpath = list(filter(lambda path: os.path.isdir(path), searchpath))
+        env = PPEnvironment(searchpath=searchpath)
+
+    if template_name is None:
+        if template_str is None:
+            template = env.from_string(DEFAULT_CODE_TEMPLATE)
         else:
-            s += f"from {module} import {name.split('.')[-1]}\n"
-    if len(dynamic_modules):
-        s += DYNAMIC_IMPORT_DEF + "\n\n"
+            template = template_str
+    else:
+        template = env.get_template(template_name)
 
-        for args in dynamic_modules:
-            attr_str = args[1].split(".")[-1]
-            args_str = ", ".join([repr(x) for x in args])
-            s += f"{attr_str} = dynimport({args_str})\n"
+    generated_code = template.render(**kwargs | py_output).strip()
 
-    return s
+    if output_file is not None:
+        # If output_file, synchronize with main process and only output on main
+        with main_process_first():
+            if int(os.environ.get("LOCAL_RANK", 0)) == 0:
+                module_dir = os.path.dirname(output_file)
+                if len(module_dir):
+                    os.makedirs(module_dir, exist_ok=True)
+                with open(output_file, "w") as f:
+                    f.write(generated_code)
 
-
-def indent_block(block, level):
-    indent = " " * level * 4
-    s = "".join(map(lambda s: indent + s + "\n", block.split("\n")))
-    return s[:-1]
-
-
-def format_factory(name, variables, main_body):
-    var_block = ""
-    for var in variables:
-        var_block += var + ",\n"
-
-    # Allow additional args
-    var_block += "**kwargs"
-    s = f"def {name}(\n"
-    s += indent_block(var_block, 1).rstrip() + "\n"
-    s += "):\n"
-    s += indent_block("return " + main_body, 1)
-    return s
-
-
-def format_latent_to_py(code, factory_name="construct"):
-    s = ""
-    s += format_imports(code["imports"])
-    s += "\n\n"
-    s += "# Code automatically generated from config by Forgather\n"
-    s += format_factory(factory_name, code["variables"], code["main_body"])
-    return s
-
-def dependency(passthrough: Any, /, *args):
-    return passthrough
+    if return_value is not Undefined:
+        return return_value
+    else:
+        return generated_code

@@ -5,6 +5,7 @@ from collections import defaultdict
 from enum import Enum
 import sys
 import os
+from abc import ABCMeta
 
 from loguru import logger
 
@@ -35,7 +36,7 @@ class UnboundVarError(NameError):
         super().__init__(f"Variable {repr(name)} is undefined.", name=name)
 
 
-class Node:
+class Node(metaclass=ABCMeta):
     def __init__(
         self,
         constructor: str,
@@ -56,34 +57,31 @@ class Node:
         return repr(self.constructor)
 
     def _kwarg_repr(self):
-        if not isinstance(self.identity, int):
-            return f", identity={repr(self.identity)}"
-        else:
-            return ""
+        return f", identity={repr(self.identity)}"
 
     @property
     def identity(self):
         return getattr(self, "_identity", id(self))
 
-    def __call__(self, **kwargs):
-        return Latent.materialize(self, **kwargs)
+    def __call__(self, *args, **kwargs):
+        return Latent.materialize(self, *args, **kwargs)
 
 
 class VarNode(Node):
     def __init__(
         self,
-        constructor: str,
+        name: str,
         identity: Hashable = None,
-        default_value: Any = Undefined,
+        default: Any = Undefined,
     ):
-        super().__init__(constructor, identity=identity)
-        self.value = default_value
+        super().__init__(name, identity=identity)
+        self.value = default
 
     def _kwarg_repr(self):
         return super()._kwarg_repr() + f", value={repr(self.value)}"
 
 
-class CallableNode(Node):
+class CallableNode(Node, metaclass=ABCMeta):
     """
     Call a function
 
@@ -161,15 +159,49 @@ class CallableNode(Node):
         return callable
 
 
+# While these nodes types are a CallableNodes, without overrides,
+# their type is used to determine how they are processed in a graph.
+class FactoryNode(CallableNode):
+    """
+    A FactoryNode generates a new object instance for every occurance in a graph.
+    """
+
+    pass
+
+
 class SingletonNode(CallableNode):
+    """
+    A SingletonNode only generates a single instance of an object. All other occurances
+    are references to the same constructed object.
+    """
+
     pass
 
 
 class MetaNode(SingletonNode):
+    """
+    When a MetaNode is encountered in a graph, the nodes areguments are not constructed
+    before calling the node.
+
+    This allows for MetaNode to do things like modifying the graph, before continuing, or
+    to convert the graph to an alternate representation (Python code or Yaml, for example).
+    """
+
     pass
 
 
 class LambdaNode(CallableNode):
+    """
+    A LambdaNode returns a Callable for constructing the downstream graph, rather than
+    as a constructed object.
+
+    This can be used construct a Callable object, for example as a factory argument to
+    another object.
+
+    Note: This is very similar to s FactoryNode, with the difference being that s
+    FactoryNode is implicitly called, while a LambdaNode must be explicitly called.
+    """
+
     pass
 
 
@@ -193,14 +225,9 @@ class NodeNameDict(dict):
 
 class Latent:
     @staticmethod
-    def materialize(obj: Any, /, **kwargs):
-        """
-        Traverse the graph of objects, replacing all Latent objects with concrete instances
-        """
-        if len(kwargs):
-            Latent._resolve_vars(obj, **kwargs)
+    def materialize(obj: Any, /, *args, **kwargs):
         materializer = Materializer()
-        return materializer(obj)
+        return materializer(obj, *args, **kwargs)
 
     @staticmethod
     def all_nodes(value, key=None, level=0) -> Tuple[int, int | str | NoneType, Any]:
@@ -232,16 +259,6 @@ class Latent:
             yield value
 
     @staticmethod
-    def _resolve_vars(obj: Any, **kwargs):
-        """
-        Replace all vars with the corresonding values from the kwargs.
-        """
-        for node in Latent.all_of_type(obj, VarNode):
-            if node.constructor in kwargs:
-                node.value = kwargs[node.constructor]
-            logger.debug(f"Resolved Variable: {repr(node)[:40]}")
-
-    @staticmethod
     def to_yaml(obj):
         dumper = YamlDumper()
         return dumper(obj)
@@ -253,9 +270,15 @@ class Latent:
 
 
 class Materializer:
-    def __call__(self, obj):
+    def __call__(self, obj, /, *args, **kwargs):
         self.level = -1
         self.idmap = dict()
+
+        # Merge args with kwargs
+        for i, arg in enumerate(args):
+            key = "arg" + str(i)
+            kwargs[key] = arg
+        self.kwargs = kwargs
         return self._materialize(obj)
 
     @track_depth
@@ -270,9 +293,10 @@ class Materializer:
             return tuple(self._materialize(value) for value in obj)
 
         elif isinstance(obj, VarNode):
-            if obj.value is Undefined:
+            value = self.kwargs.get(obj.constructor, obj.value)
+            if value is Undefined:
                 raise UnboundVarError(obj.constructor)
-            return obj.value
+            return value
 
         elif isinstance(obj, CallableNode):
             # If not the root-node, stop traversal and return callable.
@@ -354,7 +378,10 @@ class YamlDumper:
         return s
 
     def _var(self, obj):
-        return f"!var {obj.constructor}"
+        if obj.value is Undefined:
+            return f"!var {obj.constructor}"
+        else:
+            return f"!var {{ name: {obj.constructor}, default: {repr(obj.value)} }}"
 
     def _node_identity(self, obj):
         name = self.name_map[obj.identity]
@@ -373,10 +400,12 @@ class YamlDumper:
             s += "!singleton"
         elif isinstance(obj, LambdaNode):
             s += "!lambda"
-        elif isinstance(obj, CallableNode):
-            s += "!callable"
+        elif isinstance(obj, FactoryNode):
+            s += "!factory"
         else:
-            s += "!node"
+            raise ValueError(
+                f"Encountered unrepresentable node type in graph {type(obj)}"
+            )
 
         s += ":" + obj.constructor + "\n"
         if len(obj.args):
@@ -389,10 +418,16 @@ class YamlDumper:
 
     @track_depth
     def _other(self, obj):
-        assert (
-            isinstance(obj, int) or isinstance(obj, float) or isinstance(obj, str)
-        ), f"Found unexpected type in graph: {type(obj)}"
-        return repr(obj)
+        if obj is None:
+            return "null"
+        elif (
+            isinstance(obj, bool)
+            or isinstance(obj, int)
+            or isinstance(obj, float)
+            or isinstance(obj, str)
+        ):
+            return repr(obj)
+        raise TypeError(f"Found unexpected type in graph: {type(obj)}")
 
 
 class PyEncoder:
@@ -401,11 +436,17 @@ class PyEncoder:
         self.name_map = NodeNameDict(obj)
         self.defined_ids = set()
         self.imports = set()
+        self.dynamic_imports = set()
         self.vars = set()
         s = self._encode(obj).strip()
         return dict(
             main_body=s,
+            # And convert these from sets to lists
             imports=list(self.imports),
+            dynamic_imports=[
+                (module, callable_name, list(searchpath))
+                for module, callable_name, searchpath in self.dynamic_imports
+            ],
             variables=list(self.vars),
         )
 
@@ -458,7 +499,9 @@ class PyEncoder:
         return s
 
     def _encode_var(self, obj):
-        self.vars.add(obj.constructor)
+        # We include a bool for if the var is undefined, as this detection
+        # is otherwise complicated in a Jinja template.
+        self.vars.add((obj.constructor, obj.value != Undefined, obj.value))
         return obj.constructor
 
     def _encode_callable(self, obj):
@@ -471,7 +514,7 @@ class PyEncoder:
     def _encode_identity(self, obj):
         name = self.name_map[obj.identity]
         if obj.identity in self.defined_ids:
-            if type(obj) is CallableNode:
+            if type(obj) is FactoryNode:
                 return name + "()"
             else:
                 return name
@@ -486,9 +529,9 @@ class PyEncoder:
                 + "\n"
             )
             s += self._indent(-1) + ")"
-            # When multiple instances of a CallableNode exist, we define it as a lambda, so
+            # When multiple instances of a FactoryNode exist, we define it as a lambda, so
             # it can be reused, but we need to call it here to instantiate the first instance.
-            if type(obj) is CallableNode:
+            if type(obj) is FactoryNode:
                 s += "()"
             return s
 
@@ -498,7 +541,12 @@ class PyEncoder:
             return self._encode(obj.callable(*obj.args, **obj.kwargs))
         if ":" in obj.constructor:
             module, callable_name = obj.constructor.split(":")
-            self.imports.add((module, callable_name, tuple(obj.submodule_searchpath)))
+            if module.endswith(".py"):
+                self.dynamic_imports.add(
+                    (module, callable_name, tuple(obj.submodule_searchpath))
+                )
+            else:
+                self.imports.add((module, callable_name))
         else:
             # We have a handful of special cases built-ins.
             # These are mostly for readability.
@@ -517,11 +565,15 @@ class PyEncoder:
                     callable_name = obj.constructor
 
         s = ""
-        if self.level > 1 and (
-            isinstance(obj, LambdaNode)
-            or (type(obj) == CallableNode and obj.identity in self.name_map)
-        ):
-            s += "lambda: "
+        if self.level > 1:
+            if isinstance(obj, LambdaNode):
+                s += "lambda: "
+                # TODO: implement lambda, with arguments
+                # This appears to be a difficult one, so deferring for now.
+                # return self._encode_lambda(obj)
+            elif type(obj) == FactoryNode and obj.identity in self.name_map:
+                s += "lambda: "
+
         s += callable_name + "("
         if len(obj.kwargs) + len(obj.args) == 0:
             s += ")"
@@ -566,7 +618,12 @@ class PyEncoder:
 
     @track_depth
     def _encode_other(self, obj):
-        assert (
-            isinstance(obj, int) or isinstance(obj, float) or isinstance(obj, str)
-        ), f"Found unsupported type in graph: {type(obj)}"
-        return repr(obj)
+        if (
+            obj is None
+            or isinstance(obj, bool)
+            or isinstance(obj, int)
+            or isinstance(obj, float)
+            or isinstance(obj, str)
+        ):
+            return repr(obj)
+        raise TypeError(f"Found unexpected type in graph: {type(obj)}")

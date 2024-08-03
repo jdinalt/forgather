@@ -17,7 +17,7 @@
 
 -- block feedforward_factory
 # GLU Variants Improve Transformer: https://arxiv.org/pdf/2002.05202v1
-.define: &feedforward_factory !callable:.glu_feedforward:GLUFeedforwardLayer
+.define: &feedforward_factory !factory:.glu_feedforward:GLUFeedforwardLayer
     d_model: !var "hidden_size"
     d_feedforward: !var "dim_feedforward"
     dropout: !var "activation_dropout"
