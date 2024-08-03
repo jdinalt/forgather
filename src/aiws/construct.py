@@ -265,6 +265,8 @@ def {{ factory_name }}(
     **kwargs
 -- endif
 ):
+    {{ definitions|indent(4) }}
+    
     return {{ main_body|indent(4) }}
 """.strip()
 

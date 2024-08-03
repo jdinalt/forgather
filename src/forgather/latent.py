@@ -6,6 +6,7 @@ from enum import Enum
 import sys
 import os
 from abc import ABCMeta
+from functools import partial
 
 from loguru import logger
 
@@ -236,8 +237,7 @@ class Latent:
 
         yields tuple(level: int, key: int|str|NoneType, value: Any)
         """
-        yield (level, key, value)
-
+        generator = None
         # Supported sequence types
         if isinstance(value, list) or isinstance(value, tuple):
             generator = enumerate(value)
@@ -246,10 +246,13 @@ class Latent:
             generator = value.items()
         elif isinstance(value, CallableNode):
             generator = chain(enumerate(value.args), value.kwargs.items())
-        else:
-            return
-        for k, v in generator:
-            yield from Latent.all_nodes(v, k, level + 1)
+
+        if generator is not None:
+            for k, v in generator:
+                yield from Latent.all_nodes(v, k, level + 1)
+
+        # Generate depth first
+        yield (level, key, value)
 
     @staticmethod
     def all_of_type(value: Any, obj_type: type) -> Any:
@@ -301,7 +304,7 @@ class Materializer:
         elif isinstance(obj, CallableNode):
             # If not the root-node, stop traversal and return callable.
             if self.level > 0 and isinstance(obj, LambdaNode):
-                return obj
+                return partial(obj, **self.kwargs)
 
             if isinstance(obj, SingletonNode):
                 # Have we already constructed this object?
@@ -407,13 +410,17 @@ class YamlDumper:
                 f"Encountered unrepresentable node type in graph {type(obj)}"
             )
 
-        s += ":" + obj.constructor + "\n"
-        if len(obj.args):
-            s += self._indent() + "args:"
-            s += self._list(obj.args)
-        if len(obj.kwargs):
-            s += self._indent() + "kwargs:"
-            s += self._dict(obj.kwargs)
+        s += ":" + obj.constructor
+        if len(obj.args) + len(obj.kwargs):
+            s += "\n"
+            if len(obj.args):
+                s += self._indent() + "args:"
+                s += self._list(obj.args)
+            if len(obj.kwargs):
+                s += self._indent() + "kwargs:"
+                s += self._dict(obj.kwargs)
+        else:
+            s += ' []'
         return s
 
     @track_depth
@@ -434,13 +441,15 @@ class PyEncoder:
     def __call__(self, obj):
         self.level = 0
         self.name_map = NodeNameDict(obj)
-        self.defined_ids = set()
         self.imports = set()
+        self.defined_ids = set()
         self.dynamic_imports = set()
         self.vars = set()
-        s = self._encode(obj).strip()
+        definitions = self._encode_definitions(obj).strip()
+        main_body = self._encode(obj).strip()
         return dict(
-            main_body=s,
+            definitions=definitions,
+            main_body=main_body,
             # And convert these from sets to lists
             imports=list(self.imports),
             dynamic_imports=[
@@ -457,6 +466,18 @@ class PyEncoder:
         module, callable_name = obj.constructor.split(":")
         return module == "forgather.construct" and callable_name in self.INTRINSICS
 
+    def _encode_definitions(self, obj):
+        s = ''
+        for node in Latent.all_of_type(obj, CallableNode):
+            if node.identity in self.name_map and node.identity not in self.defined_ids:
+                s += self.name_map[node.identity]
+                s += ' = '
+                if isinstance(node, FactoryNode):
+                    s += 'lambda: '
+                s += self._encode(node) + '\n\n'
+                self.defined_ids.add(node.identity)
+        return s
+        
     def _encode(self, obj):
         """
         Dispatch by type
@@ -505,7 +526,7 @@ class PyEncoder:
         return obj.constructor
 
     def _encode_callable(self, obj):
-        if obj.identity in self.name_map:
+        if obj.identity in self.defined_ids:
             return self._encode_identity(obj)
         else:
             return self._encode_callable_main(obj)
@@ -513,27 +534,10 @@ class PyEncoder:
     @track_depth
     def _encode_identity(self, obj):
         name = self.name_map[obj.identity]
-        if obj.identity in self.defined_ids:
-            if type(obj) is FactoryNode:
-                return name + "()"
-            else:
-                return name
+        if type(obj) is FactoryNode:
+            return name + "()"
         else:
-            self.defined_ids.add(obj.identity)
-            s = (
-                "(\n"
-                + self._indent()
-                + name
-                + " := "
-                + self._encode_callable_main(obj)
-                + "\n"
-            )
-            s += self._indent(-1) + ")"
-            # When multiple instances of a FactoryNode exist, we define it as a lambda, so
-            # it can be reused, but we need to call it here to instantiate the first instance.
-            if type(obj) is FactoryNode:
-                s += "()"
-            return s
+            return name
 
     @track_depth
     def _encode_callable_main(self, obj):
