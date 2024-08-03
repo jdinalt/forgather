@@ -2,7 +2,7 @@ from typing import Optional
 import math
 
 import torch
-from torch import nn, Tensor
+from torch import nn, Tensor, FloatTensor, LongTensor
 
 
 # An implementation of the original transformer sinusoidal positional encoder.
@@ -31,9 +31,10 @@ class SinusoidalPE(nn.Module):
         return f"d_model={self.d_model}, max_sequence_length={self.max_sequence_length}"
 
     def forward(
-        self, seq_length: int, *, position_ids: Optional[torch.LongTensor] = None
+        self, x: FloatTensor, *, position_ids: Optional[LongTensor] = None
     ) -> Tensor:
+        seq_length = x.size(1)
         if position_ids is not None:
-            return self.weight[position_ids]
+            return x + self.weight[position_ids]
         else:
-            return self.weight[:, :seq_length]
+            return x + self.weight[:, :seq_length]

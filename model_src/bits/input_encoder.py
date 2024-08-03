@@ -15,6 +15,7 @@ class InputEncoder(nn.Module):
         *,
         dropout: float = 0.1,
         positional_encoder: nn.Module = None,
+        # Defaults to d_model ** 0.5
         embedding_scale: float = None,
     ):
         super().__init__()
@@ -22,7 +23,7 @@ class InputEncoder(nn.Module):
         self.vocab_size = vocab_size
 
         if embedding_scale is None:
-            self.embedding_scale = d_model**0.5
+            self.embedding_scale = d_model ** 0.5
         else:
             self.embedding_scale = embedding_scale
 
@@ -42,5 +43,5 @@ class InputEncoder(nn.Module):
     ) -> FloatTensor:
         x = self.embedding(input_ids) * self.embedding_scale
         if self.positional_encoder is not None:
-            x = x + self.positional_encoder(x.size(1), position_ids=position_ids)
+            x = self.positional_encoder(x, position_ids=position_ids)
         return self.dropout(x)

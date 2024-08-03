@@ -2,7 +2,7 @@ from typing import Optional
 import math
 
 import torch
-from torch import nn, Tensor
+from torch import nn, Tensor, FloatTensor, LongTensor
 
 
 # Converts a torch array of integers into their equivalent binary codes.
@@ -96,8 +96,10 @@ class WalshPE(nn.Module):
         )
 
     def forward(
-        self, seq_length: int, *, position_ids: Optional[torch.LongTensor] = None
+        self, x: FloatTensor, *, position_ids: Optional[LongTensor] = None
     ) -> Tensor:
+        seq_length = x.size(1)
+        
         # Get sequence of binary codes...
         # We use a random base offset when training.
         # This results in slower initial gains, but appears to allow the model to generalize to
@@ -126,4 +128,4 @@ class WalshPE(nn.Module):
         # If nothing else, the Walsh encodings make the positional information exceptionally
         # robust with respect to dropout and other adversities. They can still be easily detected
         # at the final layer.
-        return seq @ self.walsh
+        return x + (seq @ self.walsh)
