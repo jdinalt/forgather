@@ -3,6 +3,7 @@
 
 -- block config_metadata
     == super()
+    ## This needs to be set to True for a custom model.
     -- set ns.trust_remote_code = False
 -- endblock config_metadata
 
@@ -14,12 +15,19 @@
 
 
 -- block model_constructor_args
+## These are-runtime model construction arguments which
+## typically control things like Flash Attention or what
+## data-type to convert the model to.
 # https://huggingface.co/docs/transformers/en/model_doc/auto
 .define: &model_constructor_args {}
 -- endblock model_constructor_args
 
 
 -- block model_definition
+## Depending upon the value 'create_new_model,' either load an existing
+## model or construct a new one.
+## The details for constructing a new model need to be filled in by
+## a child template, while an existing model should work 'as-is'
 -- filter trim()
     -- if ns.create_new_model
         -- block construct_new_model
@@ -54,5 +62,6 @@
 
 
 -- block trainer_definition
+    ## Set defulat trainer
     -- include 'trainers/trainer.yaml'
 -- endblock trainer_definition

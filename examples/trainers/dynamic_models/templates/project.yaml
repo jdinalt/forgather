@@ -4,7 +4,7 @@
     == super()
     -- set ns.create_new_model = True
     -- set ns.save_model = False
-    ##-- set ns.log_name = "alternate"
+    ## Change trainer implementation
     ##-- set ns.trainer_class = 'trainers/accel_trainer.yaml'
 -- endblock config_metadata
 
@@ -28,4 +28,5 @@
 
 -- block trainer_args
     == super()
+    # max_steps: 500
 -- endblock trainer_args

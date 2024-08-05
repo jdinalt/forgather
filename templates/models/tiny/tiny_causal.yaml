@@ -7,6 +7,13 @@
 << endblock model_meta_config
 
 
+-- block model_tokenizer
+    ## Use a smaller tokenizer.
+    -- include 'tokenizers/tiny_2k.yaml'
+<< endblock model_tokenizer
+
+
+## Add overrides to make the model smaller and disable all dropouts.
 -- block model_config
     == super()
     

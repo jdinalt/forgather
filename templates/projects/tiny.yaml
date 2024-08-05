@@ -26,6 +26,8 @@
 
 
 -- block pre_model_setup
+    ## Add assets needed for text-gen sampling.
+    ## This adds a set of prompts and text-gen parameters.
     == super()
     -- include "prompts/tiny_stories.yaml"
 -- endblock pre_model_setup
@@ -41,23 +43,31 @@
 ## Note: This is unsuitable for multiple GPUs.
 ## Override 'ns.trainer_class' to change the trainer class.
 -- block trainer_definition
+    ## See definition below
     -- include 'tiny.trainer_config'
 -- endblock trainer_definition
 
 
 -- block construct_new_model
+    ## See definition below
     -- include 'tiny.model_config'
 -- endblock construct_new_model
 
 
 -- block trainer_callbacks
+    ## See definition below
     -- include 'tiny.callbacks'
 << endblock trainer_callbacks
 
 
 #-------------------- tiny.trainer_config --------------------
 -- extends ns.trainer_class
+## Note: We use dynamic inheritance for the trainer-class
+## This has a side effect of not being able to statically resolve the
+## parent template, which is named in the 'ns.trainer_class' variable,
+## the value of which is defined in the 'config_metadata' block, above.
 
+## Set sane trainer defaults for 'tiny' projects.
 -- block trainer_meta_config
     == super()
     -- set trainer_def.name = "Custom " + trainer_def.name
@@ -78,9 +88,13 @@
 
 #-------------------- tiny.model_config --------------------
 -- extends 'models/tiny/tiny_causal.yaml'
+## Default to tiny-causal model definition.
+
 
 #-------------------- tiny.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'
+## Add experiment loggers to the callbacks list.
+## The parent creates a Tensor Board SummaryWriter, which we can use.
 
 -- block callback_dependencies
     == super()
@@ -97,6 +111,7 @@
     -- endfilter
 << endblock callback_dependencies
 
+## This adds a text-generationn sample every 'generation_steps'
 -- block callback_list
     == super()
     - !singleton:aiws.textgen_callback:TextgenCallback

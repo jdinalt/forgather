@@ -25,6 +25,6 @@
     trainer: !singleton:tokenizers.trainers:BpeTrainer
         vocab_size: {{ ns.vocab_size }}
         initial_alphabet: !singleton:tokenizers:pre_tokenizers.ByteLevel.alphabet []
-        special_tokens: !singleton:list [!singleton:values [*special_tokens_map]]
+        special_tokens: !list [!singleton:values [*special_tokens_map]]
         show_progress: False
 << endblock tokenizer_trainer

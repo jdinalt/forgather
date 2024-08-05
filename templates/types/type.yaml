@@ -73,7 +73,8 @@ meta: &meta_output !dict:@meta
 
     -- filter trim()
     -- block main_output required
-## main:
+## Fill in definition of what the main output should be
+## main: !singleton:foo ...
     << endblock main_output
     -- endfilter
 << endblock config_output

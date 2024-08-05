@@ -12,6 +12,7 @@
 
 
 -- block config_metadata
+    ## This block introduces new settings and defines defautls.
     -- set ns.log_name = "log"
     -- set ns.model_name = "default_model"
     -- set ns.create_new_model = True
@@ -22,6 +23,7 @@
 
 
 -- block globals
+    ## Compute directories from above blocks.
     -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
     -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
 -- endblock globals

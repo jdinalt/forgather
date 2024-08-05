@@ -623,7 +623,7 @@ class YamlEncoder(GraphEncoder):
         return s
 
     def _named_list(self, obj):
-        return self._list(obj.args)
+        return self._list(obj.args[0])
 
     def _named_dict(self, obj):
         return self._dict(obj.kwargs)
@@ -853,7 +853,7 @@ class PyEncoder(GraphEncoder):
     def _named_list(self, obj):
         try:
             self.level -= 1
-            s = self._list(obj.args)
+            s = self._list(obj.args[0])
         finally:
             self.level += 1
         return s
