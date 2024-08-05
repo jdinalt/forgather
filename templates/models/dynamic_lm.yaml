@@ -117,7 +117,7 @@
 
 -- block model_code_generator
 .define: &model_code_writer !singleton:aiws.construct:write_file@model_code_writer
-    data: &model_code_generator !meta:aiws.construct:generate_code@model_code_generator
+    data: &model_code_generator !meta:forgather.codegen:generate_code@model_code_generator
         obj: *model_factory
         factory_name: "construct_model"
         relaxed_kwargs: True

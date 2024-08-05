@@ -214,6 +214,9 @@ class LambdaNode(CallableNode):
 
 
 class Latent:
+    """
+    A namespace class for processing node graphs
+    """
     @staticmethod
     def materialize(obj: Any, /, *args, **kwargs):
         materializer = Materializer()
@@ -268,6 +271,9 @@ class Latent:
 
     @staticmethod
     def to_yaml(obj):
+        """
+        Encode graph as YAML
+        """
         encoder = YamlEncoder()
         return encoder(obj)
 
