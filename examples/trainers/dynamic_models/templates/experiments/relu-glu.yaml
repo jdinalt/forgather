@@ -18,6 +18,7 @@
 
 ## Note: It would also be possible to override the swi-glu config's activation function.
 -- block feedforward_factory
+# ReluGLU config override.
 # GLU Variants Improve Transformer: https://arxiv.org/pdf/2002.05202v1
 .define: &feedforward_factory !factory:.glu_feedforward:GLUFeedforwardLayer
     d_model: !var "hidden_size"

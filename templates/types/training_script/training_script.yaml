@@ -56,7 +56,7 @@
 
     -- filter trim()
     -- block distributed_environment
-.define: &distributed_env !singleton:aiws.distributed:DistributedEnvironment
+.define: &distributed_env !singleton:aiws.distributed:DistributedEnvironment@distributed_env
     << endblock distributed_environment
     -- endfilter
 
@@ -138,7 +138,7 @@
 
 
 -- block main_output
-main: !singleton:aiws.training_script:TrainingScript
+main: !singleton:aiws.training_script:TrainingScript@training_script
     meta: *meta_output
     do_save: {{ ns.save_model }}
     do_train: {{ ns.train }}

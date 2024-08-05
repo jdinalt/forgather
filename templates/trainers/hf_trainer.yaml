@@ -19,7 +19,7 @@
 
 
 -- block trainer_constructor
-.define: &trainer !singleton:transformers:Trainer
+.define: &trainer !singleton:transformers:Trainer@trainer
     model: *model
     args: !singleton:transformers:TrainingArguments
         <<: *trainer_args

@@ -23,6 +23,7 @@ from platformdirs import user_config_dir
 from .latent import (
     Latent,
     Node,
+    CallableNode,
     VarNode,
     FactoryNode,
     SingletonNode,
@@ -35,7 +36,9 @@ from .yaml_utils import (
     CallableConstructor,
     load_depth_first,
     tuple_constructor,
+    list_constructor,
     var_constructor,
+    dict_constructor,
 )
 
 from .utils import (
@@ -182,7 +185,9 @@ ConfigLoader.add_multi_constructor("!singleton", CallableConstructor(SingletonNo
 ConfigLoader.add_multi_constructor("!lambda", CallableConstructor(LambdaNode))
 ConfigLoader.add_multi_constructor("!meta", CallableConstructor(MetaNode))
 ConfigLoader.add_constructor("!var", var_constructor)
-ConfigLoader.add_constructor("!tuple", tuple_constructor)
+ConfigLoader.add_multi_constructor("!tuple", tuple_constructor)
+ConfigLoader.add_multi_constructor("!list", list_constructor)
+ConfigLoader.add_multi_constructor("!dict", dict_constructor)
 
 
 class ConfigDict(dict):

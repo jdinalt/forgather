@@ -99,7 +99,7 @@ class WalshPE(nn.Module):
         self, x: FloatTensor, *, position_ids: Optional[LongTensor] = None
     ) -> Tensor:
         seq_length = x.size(1)
-        
+
         # Get sequence of binary codes...
         # We use a random base offset when training.
         # This results in slower initial gains, but appears to allow the model to generalize to

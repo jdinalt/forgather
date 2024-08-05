@@ -23,7 +23,7 @@ class InputEncoder(nn.Module):
         self.vocab_size = vocab_size
 
         if embedding_scale is None:
-            self.embedding_scale = d_model ** 0.5
+            self.embedding_scale = d_model**0.5
         else:
             self.embedding_scale = embedding_scale
 

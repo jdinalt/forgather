@@ -35,16 +35,16 @@
 
 
 -- filter trim()
--- block model_config
-<< endblock model_config
+-- block model_code_generator
+# Model does not have dynamically generated code
+.define: &model_code_generator null
+<< endblock model_code_generator
 -- endfilter
 
+
 -- filter trim()
-## A list of searchpaths which will be considered part of the same module
-## as the custom model definition, if defined.
--- block model_submodule_searchpath
-##.define: &model_submodule_searchpath []
-<< endblock model_submodule_searchpath
+-- block model_config
+<< endblock model_config
 -- endfilter
 
 

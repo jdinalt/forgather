@@ -31,7 +31,7 @@
 
 -- block model_constructor
 # Custom transformer model; registers for AutoClass and will save code with weights.
-.define: &model !singleton:transformers:AutoModelForCausalLM.from_config
+.define: &model !singleton:transformers:AutoModelForCausalLM.from_config@model
     args:
         - *model_config
     kwargs:

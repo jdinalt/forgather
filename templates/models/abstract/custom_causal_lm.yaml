@@ -27,8 +27,24 @@
 ##<< endblock model_tokenizer
 
 
+-- block model_config_defs
+    == super()
+-- block model_submodule_searchpath
+# Model is entirely self-contained; no sub-modules.
+.define: &model_submodule_searchpath []
+-- endblock model_submodule_searchpath
+
+-- filter trim()
+-- block model_bits
+## Custom model definition
+<< endblock model_bits
+-- endfilter
+-- endblock model_config_defs
+
+
 -- block model_config
-.define: &model_config
+.define: &model_config !singleton:{{ model_def.config_path }}:{{ model_def.cfg_cls }}@model_config
+    submodule_searchpath: *model_submodule_searchpath
     # Set auto-map for custom model; this ensures that the source code stays with the model.
     auto_map:
         AutoConfig: "{{ modname_from_path(model_def.config_path) + '.' + model_def.cfg_cls }}"
@@ -41,29 +57,21 @@
 << endblock model_config
 
 
--- block model_submodule_searchpath
-# Model is entirely self-contained; no sub-modules.
-.define: &model_submodule_searchpath []
--- endblock model_submodule_searchpath
-
-
 -- block model_constructor
-# Custom transformer model; registers for AutoClass and will save code with weights.
-.define: &model !singleton:aiws.construct:copy_package_files
-    # Source files will be copied to model directory.
-    - "{{ ns.output_dir }}"
-    # Construct model from configuration.
-    - !singleton:{{ model_def.model_path }}:{{ model_def.cls }}
-        args:
-            - !singleton:aiws.construct:copy_package_files
-                # Source files will be copied to model directory.
-                - "{{ ns.output_dir }}"
-                # Construct configuration from config-args.
-                - !singleton:{{ model_def.config_path }}:{{ model_def.cfg_cls }}
-                    submodule_searchpath: *model_submodule_searchpath
-                    <<: *model_config
-        kwargs:
-            submodule_searchpath: *model_submodule_searchpath
-            # Constructor args specify things like flash-attention.
-            <<: *model_constructor_args
+.define: &pretrained_model !singleton:{{ model_def.model_path }}:{{ model_def.cls }}@pretrained_model
+    args:
+        - *model_config
+    kwargs:
+        submodule_searchpath: *model_submodule_searchpath
+        <<: *model_constructor_args
+
+.define: &model !singleton:aiws.construct:dependency_list@model
+    - *pretrained_model
+    - !singleton:aiws.construct:copy_package_files
+        - "{{ ns.output_dir }}"
+        - *model_config
+    - !singleton:aiws.construct:copy_package_files
+        - "{{ ns.output_dir }}"
+        - *pretrained_model
 << endblock model_constructor
+    

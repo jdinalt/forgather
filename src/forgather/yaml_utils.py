@@ -6,7 +6,17 @@ from loguru import logger
 from .latent import (
     VarNode,
     CallableNode,
+    SingletonNode,
 )
+
+
+def split_tag_idenity(tag_suffix):
+    if len(tag_suffix) == 0:
+        return None, None
+    split_suffix = tag_suffix[1:].split("@", maxsplit=1)
+    tag_value = split_suffix[0]
+    tag_identity = split_suffix[1] if len(split_suffix) > 1 else None
+    return tag_value, tag_identity
 
 
 class CallableConstructor:
@@ -14,6 +24,8 @@ class CallableConstructor:
         self.node_type = node_type
 
     def __call__(self, loader, tag_suffix, node):
+        constructor, identity = split_tag_idenity(tag_suffix)
+
         if isinstance(node, yaml.MappingNode):
             value = loader.construct_mapping(node, deep=True)
 
@@ -41,8 +53,7 @@ class CallableConstructor:
             kwargs = {}
 
         assert isinstance(kwargs, dict), f"Expected dict, but found {type(kwargs)}"
-        tag_suffix = tag_suffix[1:]
-        return self.node_type(tag_suffix, *args, **kwargs)
+        return self.node_type(constructor, *args, _identity=identity, **kwargs)
 
 
 def var_constructor(loader, node):
@@ -54,11 +65,34 @@ def var_constructor(loader, node):
         raise TypeError(f"Var nodes may not be sequences. Found {node}")
 
 
-def tuple_constructor(loader, node):
-    if not isinstance(node, yaml.SequenceNode):
-        raise TypeError(f"Tuples must be sequences. Found {node}")
-    value = loader.construct_sequence(node, deep=True)
-    return tuple(value)
+def list_constructor(loader, tag_suffix, node):
+    constructor, identity = split_tag_idenity(tag_suffix)
+    if isinstance(node, yaml.SequenceNode):
+        return SingletonNode(
+            "list", loader.construct_sequence(node), _identity=identity
+        )
+    else:
+        raise TypeError(f"list nodes must be sequencess. Found {node}")
+
+
+def tuple_constructor(loader, tag_suffix, node):
+    constructor, identity = split_tag_idenity(tag_suffix)
+    if isinstance(node, yaml.SequenceNode):
+        return SingletonNode(
+            "tuple", loader.construct_sequence(node), _identity=identity
+        )
+    else:
+        raise TypeError(f"tuple nodes must be sequencess. Found {node}")
+
+
+def dict_constructor(loader, tag_suffix, node):
+    constructor, identity = split_tag_idenity(tag_suffix)
+    if isinstance(node, yaml.MappingNode):
+        return SingletonNode(
+            "dict", _identity=identity, **loader.construct_mapping(node)
+        )
+    else:
+        raise TypeError(f"dict nodes must be mappings. Found {node}")
 
 
 def load_depth_first(stream, Loader=yaml.SafeLoader):

@@ -60,7 +60,7 @@
 -- block config_output
     -- filter trim()
     -- block meta_output
-meta: &meta_output
+meta: &meta_output !dict:@meta
     config_name: "{{ ns.config_name }}"
     config_description: "{{ ns.config_description }}"
     project_dir: "{{ project_dir }}"

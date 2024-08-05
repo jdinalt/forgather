@@ -17,6 +17,7 @@
 -- extends 'project.model_config'
 
 -- block feedforward_factory
+# SwiGLU config override.
 # GLU Variants Improve Transformer: https://arxiv.org/pdf/2002.05202v1
 .define: &feedforward_factory !factory:.glu_feedforward:GLUFeedforwardLayer
     d_model: !var "hidden_size"

@@ -11,7 +11,7 @@
 
 -- block model_tokenizer
 ## Select a 'llama-2' tokenizer
-.define: !singleton:transformers:AutoTokenizer.from_pretrained
+.define: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
     args:
         - "TheBloke/Llama-2-7B-GPTQ"
     kwargs:

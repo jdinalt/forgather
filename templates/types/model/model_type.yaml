@@ -55,4 +55,5 @@ main:
     model: *model
     tokenizer: *tokenizer
     model_config: *model_config
+    generated_code: *model_code_generator
 << endblock main_output

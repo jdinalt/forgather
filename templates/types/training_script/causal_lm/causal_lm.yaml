@@ -44,7 +44,7 @@
 # Batches are dynamically padded to longest sequence
 # labels are set to input_ids, with pad tokens set to -100
 # https://huggingface.co/docs/transformers/en/main_classes/data_collator#transformers.DataCollatorForLanguageModeling
-.define: &data_collator !singleton:transformers:DataCollatorForLanguageModeling
+.define: &data_collator !singleton:transformers:DataCollatorForLanguageModeling@data_collator
     args:
         - *tokenizer
     kwargs:

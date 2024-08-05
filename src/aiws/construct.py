@@ -223,6 +223,10 @@ def generate_factory_file(
     return passthrough
 
 
+def dependency_list(*args):
+    return args[0]
+
+
 DEFAULT_CODE_TEMPLATE = """
 ## Set default factory name, if not provided
 -- if factory_name is undefined:
@@ -277,29 +281,25 @@ def generate_code(
     template_str: Optional[str] = None,
     searchpath: Optional[List[str | os.PathLike] | str | os.PathLike] = ".",
     env=None,  # jinja2 environment or compatible API
-    output_file: Optional[str | os.PathLike] = None,
-    return_value: Optional[Any] = Undefined,
+    name_policy: str = None,
     **kwargs,
 ) -> Any:
     """
-    Generate Python code from Latent graph
-
-    The primary use-case for this is for dynamic python code generation from /within/ a Latent
-    graph, as to construct a file defining a factory method for constructing the defined graph.
+    Generate Python code from a Forgather graph
 
     When used as such, the node-type should be a MetaNode.
     ```yaml
-    code: !metanode:aiws.construct:generate_code *model
+    code: !metanode:aiws.construct:generate_code *model_def
     ```
 
-    Outside of this context, it can be used directly to help understand how a Latent graph is being
-    interpreted, by expressing it as executable python code.
+    Outside of this context, it can be used directly to help understand how a graph is being
+    interpreted, by expressing it as executable Python code.
 
     ```python
     print(generate_code(config))
     ```
 
-    obj: A Latent graph
+    obj: A Forgather graph
     template_name: The template name; this is interpreted by Environment's Loader.
         By default, this is a file-name within searchpath, but is specific to the Loader type.
         If not None, it overrides 'template_str'
@@ -307,13 +307,10 @@ def generate_code(
         If both template_str and template_name are None, the default code template is used.
     searchpath: The search path to locate Jinja templates.
         Only applicable when using the default Jinja environment.
-    output_file: If specified, write the generated code to the specified file path.
-        Missing directories will automatically be created.
-        If running in a multiprocess environment, only the main local process will write the file,
-        while the other processes will wait for the file to be written.
-    return_value: If not Undefined, this value is returned instead of the generated code
-        This would typically be used when one only desires to generate a file, while potentially
-        return meta-data about the written file.
+    name_policy: When to name variabes. [default='named']
+        'required': Only when more than one instance exists
+        'named': If given an explicit name or more than one instance exists
+        'all': Given a name to all CallableNodes
     kwargs: Any remaining kwargs are passed to the template's 'render' method.
         That is, these arguments are visible within the template.
 
@@ -325,7 +322,7 @@ def generate_code(
     relaxed_kwargs: Optional[bool]=Undefined, ; if defined, **kwargs is added to the arg list
     """
     # Convert the input to Python code
-    py_output = Latent.to_py(obj)
+    py_output = Latent.to_py(obj, name_policy=name_policy)
 
     if env is None:
         if isinstance(searchpath, os.PathLike) or isinstance(searchpath, str):
@@ -343,19 +340,33 @@ def generate_code(
     else:
         template = env.get_template(template_name)
 
-    generated_code = template.render(**kwargs | py_output).strip()
+    return template.render(**kwargs | py_output).strip()
 
-    if output_file is not None:
-        # If output_file, synchronize with main process and only output on main
-        with main_process_first():
-            if int(os.environ.get("LOCAL_RANK", 0)) == 0:
-                module_dir = os.path.dirname(output_file)
-                if len(module_dir):
-                    os.makedirs(module_dir, exist_ok=True)
-                with open(output_file, "w") as f:
-                    f.write(generated_code)
+
+@main_process_first()
+def write_file(
+    data,
+    output_file: Optional[str | os.PathLike] = None,
+    return_value: Optional[Any] = Undefined,
+):
+    """
+    Write unicode data to a file, with the main-process first and only with the main process
+
+    data: The data to write
+    output_file: If specified, write the generated code to the specified file path.
+        Missing directories will automatically be created.
+        If running in a multiprocess environment, only the main local process will write the file,
+        while the other processes will wait for the file to be written.
+    return_value: Override passthrough of the data by returning this value instead.
+    """
+    if int(os.environ.get("LOCAL_RANK", 0)) == 0:
+        module_dir = os.path.dirname(output_file)
+        if len(module_dir):
+            os.makedirs(module_dir, exist_ok=True)
+        with open(output_file, "w") as f:
+            f.write(data)
 
     if return_value is not Undefined:
         return return_value
     else:
-        return generated_code
+        return data

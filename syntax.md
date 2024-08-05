@@ -205,16 +205,47 @@ The following standard types are presently unsupported:
 ---
 Complex types are instead supported through Forgather specific tags:
 
-#### !tuple
+#### !tuple : Named Tuple
 
-Construct a Python tuple from a YAML sequence
+Syntax: !tuple\[:@name\] \<sequence\>
+
+Construct a named Python tuple from a YAML sequence
 
 ```yaml
-!tuple [ 1, 2, 3 ]
+!tuple:@my_tuple [ 1, 2, 3 ]
+```
+
+---
+
+#### !list : Named List
+
+Syntax: !list\[:@name\] \<sequence\>
+
+Construct a named Python list from a YAML sequence
+
+```yaml
+!tuple:@my_list [ 1, 2, 3 ]
+```
+
+---
+
+#### !dict : Named Dictionary
+
+Syntax: !dict\[:@\<name\>\] \<mapping\>
+
+Construct a named Python dict from a YAML mapping
+
+```yaml
+!dict:@my_dict
+    foo: 1
+    bar: 2
+    baz: 3
 ```
 
 ---
 #### !var
+
+Syntax: !var "\<var-name\>" | { name: \<var-name\>, default: \<default-value\> }
 
 This declares a variable, which can be substituted when the graph is constructed.
 
@@ -229,11 +260,13 @@ point:
 ---
 #### !singleton
 
+Synatx: !singleton:\<import-spec\>[@\<name\>\] (\<sequence\> | \<mapping\> | ({ args: \<sequence\>, kwargs: \<mapping\> }))
+
 This is a callable object with only a single instance; any aliases refers to the same object instance.
 
 ```yaml
 # Construct three random ints, all having the same value.
-- &random_int !singleton:random:randrange [ 1000 ]
+- &random_int !singleton:random:randrange:@random_int [ 1000 ]
 - *random_int
 - *random_int
 ```
@@ -251,6 +284,8 @@ However, there are a few exceptions...
 
 ---
 #### !factory
+
+Synatx: !factory:\<import-spec\>[@\<name\>\] (\<sequence\> | \<mapping\> | ({ args: \<sequence\>, kwargs: \<mapping\> }))
 
 This is a callable object which instantiates a new instance everywhere it appears in the graph.
 
@@ -270,6 +305,8 @@ Latent.materialize(graph)
 
 ---
 #### !lambda
+
+Synatx: !lambda:\<import-spec\>[@\<name\>\] (\<sequence\> | \<mapping\> | ({ args: \<sequence\>, kwargs: \<mapping\> }))
 
 This returns the entire sub-graph as a callable. This can be used when a callable needs to be passed as an argument.
 
@@ -340,7 +377,7 @@ You can also dynamically import a name from a file.
 !singleton:/path/to/my/pymodule.py:MyClass [ "foo", "bar" ]
 ```
 
-When using a file-import which itself has relative imports, you will need to specify which directories to search for relative imports:
+When using a file-import, which itself has relative imports, you will need to specify which directories to search for relative imports:
 
 ```yaml
 # See: https://docs.python.org/3/library/operator.html
@@ -353,3 +390,63 @@ When using a file-import which itself has relative imports, you will need to spe
 ```
 
 By specifying multiple locations, the import system treats all of the directories in the list as a union, thus you can perform a relative import from any of these directories.
+
+---
+#### Named Callable Nodes
+
+CallableNodes may be given an explcit name. The name servers the same purpose as the YAML anchor/alias, but PyYaml does not make this information available through the tag API. While feasible to hack PyYaml, doing so is risky. For now, there is a somewhat redundant interface for specitying node names.
+
+When a node has been assigned an explicit name, it will always be rendered as an explciit definition in the Python and Yaml code generators, as to improve readability. Doing so is entirely optional.
+
+A callable node's tag may end with '@\<name\>' which will assign a name to the node.
+
+```yaml
+.define: &foobar !singleton:dict@foobar
+    foo: 1
+    bar: 2
+    baz: |
+        She sells sea shells
+        by the sea shore
+main:
+    - *foobar
+```
+
+When rendered as Python:
+
+```python
+def construct(
+):
+    foobar = {
+        'foo': 1,
+        'bar': 2,
+        'baz': (
+                'She sells sea shells\n'
+                'by the sea shore\n'
+            ),
+    }
+    
+    return {
+        'main': [
+            foobar,
+        ],
+    }
+```
+
+And without the name, the object definition becomes anonymous:
+
+```python
+def construct(
+):
+    return {
+        'main': [
+            {
+                'foo': 1,
+                'bar': 2,
+                'baz': (
+                        'She sells sea shells\n'
+                        'by the sea shore\n'
+                    ),
+            },
+        ],
+    }
+```

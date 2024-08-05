@@ -19,7 +19,10 @@ def find_file_specs(config):
     Generate all referenced file names in config
     """
     spec_set = set()
-    for node in Latent.all_of_type(config, CallableNode):
+    for level, node, sub_nodes in Latent.walk(config):
+        if not isinstance(node, CallableNode):
+            continue
+
         # Skip built-ins
         if not ":" in node.constructor:
             continue
