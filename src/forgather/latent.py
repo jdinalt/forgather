@@ -767,6 +767,7 @@ class PyEncoder(GraphEncoder):
 
     @track_depth
     def _callable_main(self, obj):
+        is_dynamic = False
         if isinstance(obj, MetaNode):
             return self._encode(obj.callable(*obj.args, **obj.kwargs))
         if ":" in obj.constructor:
@@ -774,6 +775,7 @@ class PyEncoder(GraphEncoder):
                 return self._getitem(obj)
             module, callable_name = obj.constructor.split(":")
             if module.endswith(".py"):
+                is_dynamic = True
                 self.dynamic_imports.add(
                     (module, callable_name, tuple(obj.submodule_searchpath))
                 )
@@ -808,7 +810,10 @@ class PyEncoder(GraphEncoder):
             elif type(obj) == FactoryNode and obj.identity in self.name_map:
                 s += "lambda: "
 
-        s += callable_name + "("
+        s += callable_name
+        if is_dynamic:
+            s += "()"
+        s += "("
         if len(obj.kwargs) + len(obj.args) == 0:
             s += ")"
             return s

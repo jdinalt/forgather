@@ -203,26 +203,6 @@ def copy_package_files(dest_dir: str | os.PathLike, obj: Any) -> Any:
     return obj
 
 
-@main_process_first()
-def generate_factory_file(
-    passthrough: Any,
-    code: Any,
-    factory_name,
-    output_file: str | os.PathLike,
-) -> Any:
-    # Only do this on the main process
-    if int(os.environ.get("LOCAL_RANK", 0)) != 0:
-        return passthrough
-
-    source_code = format_latent_to_py(code, factory_name)
-    module_dir = os.path.dirname(output_file)
-
-    os.makedirs(module_dir, exist_ok=True)
-    with open(output_file, "w") as f:
-        f.write(source_code)
-    return passthrough
-
-
 def dependency_list(*args):
     return args[0]
 
@@ -257,7 +237,7 @@ def dynimport(module, name, searchpath):
     return mod
 
     -- for module, name, searchpath in dynamic_imports:
-{{ name.split('.')[-1] }} = dynimport("{{ module }}", "{{ name }}", {{ searchpath }})
+{{ name.split('.')[-1] }} = lambda: dynimport("{{ module }}", "{{ name }}", {{ searchpath }})
     -- endfor
 -- endif
 
@@ -359,6 +339,8 @@ def write_file(
         while the other processes will wait for the file to be written.
     return_value: Override passthrough of the data by returning this value instead.
     """
+    if isinstance(data, Callable):
+        data = data()
     if int(os.environ.get("LOCAL_RANK", 0)) == 0:
         module_dir = os.path.dirname(output_file)
         if len(module_dir):
