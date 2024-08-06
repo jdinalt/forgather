@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["forgather*"]
+
+[project]
+name = "forgather"
+description = "ML project configuration framework."
+#readme = "README.md"
+license = {text = "MIT License"}
+requires-python = ">=3.10"
+
+dependencies = [
+    "accelerate >= 0.31.0",
+    "datasets >= 2.17.0",
+    "ipyfilechooser >= 0.6.0",
+    "ipython >= 8.12.3",
+    "Jinja2 >= 3.1.2",
+    "loguru >= 0.7.2",
+    "matplotlib >= 3.8.3",
+    "numpy >= 1.26.0",
+    "platformdirs >= 3.10.0",
+    "PyYAML >= 6.0.1",
+    "tokenizers >= 0.19.1",
+    "torch >= 2.3.1",
+    "transformers >= 4.41.2",
+    "tqdm >= 4.65.0",
+]
+version = "2024.0.0a1"
+authors = [
+    {name = "Jason dinAlt", email = "joedkloss@gmail.com"},
+]
+keywords = [
+    "ml", "config", "configuration", "trainer", "training", "machine learning",
+]
+
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.10",
+]
