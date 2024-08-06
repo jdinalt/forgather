@@ -29,9 +29,9 @@ def register_for_auto_class(object, /, *args, **kwargs):
     ## Defines a constructor for a custom model and registers both the
     ## configuration and model class for AutoConfig/AutoModel construction.
     -- macro custom_model(model_path, model_cls, config_cls, model_config)
-    !object:aiws.construct:register_for_auto_class
+    !object:forgather.ml.construct:register_for_auto_class
         - !object:{{model_path}}:{{model_cls}}
-            - !object:aiws.construct:register_for_auto_class
+            - !object:forgather.ml.construct:register_for_auto_class
                 - !object:{{model_path}}:{{config_cls}}
                     kwargs: *{{model_config}}
     -- endmacro
@@ -212,7 +212,7 @@ def dependency_list(*args):
     don't pass directly through the graph.
 
     ```yaml
-    !singleton:aiws.construct.dependency_list
+    !singleton:forgather.ml.construct.dependency_list
         - *pass_through_node
         - copy_package_files
             ...

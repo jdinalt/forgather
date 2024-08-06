@@ -3,7 +3,7 @@
 -- block config_metadata
     == super()
     -- set ns.config_name = "Accelerate Trainer"
-    -- set ns.config_description = "Train with aiws.accel_trainer.AccelTrainer implementation"
+    -- set ns.config_description = "Train with forgather.ml.accel_trainer.AccelTrainer implementation"
     -- set ns.log_name = "accel_trainer"
 
     ## Set trainer

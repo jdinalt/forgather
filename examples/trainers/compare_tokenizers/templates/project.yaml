@@ -30,7 +30,7 @@
 
 -- block model_tokenizer
 # Load custom tokenizer from sub-project definition
-.define: &tokenizer !singleton:aiws.construct:load_from_config
+.define: &tokenizer !singleton:forgather.ml.construct:load_from_config
     project_dir: "{{ ns.tokenizer_project_path }}"
     config_template: "{{ ns.tokenizer_project_config }}"
 << endblock model_tokenizer

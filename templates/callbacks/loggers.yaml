@@ -20,10 +20,10 @@
 -- block callback_list
 .define: &trainer_callbacks !list:@trainer_callbacks
     # Log all training output to JSON
-    - !singleton:aiws.json_logger:JsonLogger
+    - !singleton:forgather.ml.json_logger:JsonLogger
         <<: *experiment_info
     # Log configuration and metrics to Tensorboard file
-    - !singleton:aiws.tb_logger:TBLogger
+    - !singleton:forgather.ml.tb_logger:TBLogger
         args: [ *summary_writer ]
         kwargs:
             <<: *experiment_info

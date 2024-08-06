@@ -1,7 +1,7 @@
 -- extends 'trainers/trainer.yaml'
 -- block trainer_meta_config
     == super()
-    -- set trainer_def.name = "aiws.accel_trainer:AccelTrainer"
+    -- set trainer_def.name = "forgather.ml.accel_trainer:AccelTrainer"
     -- set trainer_def.description = "A lightweight, extensible trainer w/ Accelerate support"
 -- endblock trainer_meta_config
 
@@ -19,9 +19,9 @@
 
 
 -- block trainer_constructor
-.define: &trainer !singleton:aiws.accel_trainer:AccelTrainer@trainer
+.define: &trainer !singleton:forgather.ml.accel_trainer:AccelTrainer@trainer
     model: *model
-    args: !singleton:aiws.accel_trainer:AccelTrainingArguments
+    args: !singleton:forgather.ml.accel_trainer:AccelTrainingArguments
         <<: *trainer_args
     data_collator: *data_collator
     train_dataset: *train_dataset

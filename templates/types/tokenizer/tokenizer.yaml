@@ -86,7 +86,7 @@
 
     -- filter trim()
     -- block tokenizer_trainer
-.define: &tokenizer_trainer !lambda:aiws.tokenizer:train_tokenizer@tokenizer_trainer
+.define: &tokenizer_trainer !lambda:forgather.ml.tokenizer:train_tokenizer@tokenizer_trainer
     output_dir: "{{ ns.output_dir }}"
     dataset: *tokenizer_dataset
     args: *tokenizer_args
@@ -113,7 +113,7 @@
 
 
 -- block main_output
-main: !singleton:aiws.construct:build_rule
+main: !singleton:forgather.ml.construct:build_rule
     target: "{{ joinpath(ns.output_dir, 'tokenizer.json') }}"
     recipe: *tokenizer_trainer
     loader: !lambda:transformers:AutoTokenizer.from_pretrained

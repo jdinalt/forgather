@@ -12,8 +12,8 @@ from torch.distributed.elastic.multiprocessing.errors import record
 
 from forgather.config import ConfigEnvironment, fconfig, pconfig
 from forgather.meta_config import MetaConfig, preprocessor_globals
-from aiws.distributed import DistributedEnvironment
-from aiws.dotdict import DotDict
+from forgather.ml.distributed import DistributedEnvironment
+from forgather.ml.dotdict import DotDict
 from forgather import Latent
 
 
@@ -96,7 +96,7 @@ def training_loop(project_directory, config_template=None):
     config_template_path: Path to a configuration template in the project
     ```
     from accelerate import notebook_launcher
-    from aiws.training_script import training_loop
+    from forgather.ml.training_script import training_loop
 
     notebook_launcher(
         training_loop,

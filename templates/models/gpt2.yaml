@@ -11,7 +11,7 @@
 
 -- block model_tokenizer
 ## The base-tokenizer is missing the PAD token, so we add it here.
-.define: &tokenizer !singleton:aiws.construct:add_special_tokens@tokenizer
+.define: &tokenizer !singleton:forgather.ml.construct:add_special_tokens@tokenizer
     tokenizer:
         !singleton:transformers:AutoTokenizer.from_pretrained
         - "openai-community/gpt2"

@@ -13,8 +13,8 @@ def make_project_tokenizer(force: bool = False):
         return
 
     from forgather.config import load_config, materialize_config
-    from aiws.tokenizer_trainer import TokenizerTrainer
-    from aiws.dotdict import DotDict
+    from forgather.ml.tokenizer_trainer import TokenizerTrainer
+    from forgather.ml.dotdict import DotDict
 
     metacfg = DotDict(load_config("forgather_config.yaml").config)
     config = DotDict(

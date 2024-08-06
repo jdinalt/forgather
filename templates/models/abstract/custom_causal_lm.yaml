@@ -65,12 +65,12 @@
         submodule_searchpath: *model_submodule_searchpath
         <<: *model_constructor_args
 
-.define: &model !singleton:aiws.construct:dependency_list@model
+.define: &model !singleton:forgather.ml.construct:dependency_list@model
     - *pretrained_model
-    - !singleton:aiws.construct:copy_package_files
+    - !singleton:forgather.ml.construct:copy_package_files
         - "{{ ns.output_dir }}"
         - *model_config
-    - !singleton:aiws.construct:copy_package_files
+    - !singleton:forgather.ml.construct:copy_package_files
         - "{{ ns.output_dir }}"
         - *pretrained_model
 << endblock model_constructor

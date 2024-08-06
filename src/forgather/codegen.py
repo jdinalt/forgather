@@ -311,7 +311,7 @@ def generate_code(
 
     When used as such, the node-type should be a MetaNode.
     ```yaml
-    code: !metanode:aiws.construct:generate_code *model_def
+    code: !metanode:forgather.ml.construct:generate_code *model_def
     ```
 
     Outside of this context, it can be used directly to help understand how a graph is being
