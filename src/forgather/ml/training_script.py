@@ -14,7 +14,7 @@ from forgather.config import ConfigEnvironment, fconfig, pconfig
 from forgather.meta_config import MetaConfig, preprocessor_globals
 from forgather.ml.distributed import DistributedEnvironment
 from forgather.ml.dotdict import DotDict
-from forgather import Latent
+from forgather.latent import Latent
 
 
 def set_seed(seed: int):
