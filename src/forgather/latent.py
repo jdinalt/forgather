@@ -263,6 +263,10 @@ class Materializer:
             return obj
 
 
+class DuplicateNameError(RuntimeError):
+    pass
+
+
 class Latent:
     """
     A namespace class for processing node graphs
@@ -321,6 +325,38 @@ class Latent:
 
         if not top_down:
             yield (level, node, sub_nodes)
+
+    @staticmethod
+    def check(obj: Any):
+        """
+        Check for issues in a node graph
+        """
+        names = set()
+        visisted = set()
+
+        for _, node, _ in Latent.walk(obj):
+            if (
+                isinstance(node, str)
+                or isinstance(node, int)
+                or isinstance(node, float)
+                or isinstance(node, bool)
+                or node is None
+                or isinstance(node, list)
+                or isinstance(node, dict)
+                or isinstance(node, tuple)
+            ):
+                continue
+            elif not isinstance(node, Node):
+                raise TypeError(f"Found unsupported type in graph: {type(node)}")
+
+            if id(node) in visisted:
+                continue
+            visisted.add(id(node))
+            if node.identity in names:
+                raise DuplicateNameError(
+                    f"Multiple definitions found for node {node.identity}"
+                )
+            names.add(node.identity)
 
 
 def prune_node_type(node_map, node_type):

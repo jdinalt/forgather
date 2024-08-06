@@ -434,6 +434,11 @@ def construct(
 
 And without the name, the object definition becomes anonymous:
 
+```yaml
+.define: &foobar !singleton:dict
+...
+```
+
 ```python
 def construct(
 ):

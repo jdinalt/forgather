@@ -292,6 +292,7 @@ class ConfigEnvironment:
         """
         try:
             loaded_config = load_depth_first(pp_config, Loader=ConfigLoader)
+            Latent.check(loaded_config)
         except Exception as error:
             raise add_exception_notes(error, format_line_numbers(pp_config))
         if isinstance(loaded_config, dict):
