@@ -2,16 +2,19 @@ import os
 from dataclasses import fields
 from typing import Iterator, Tuple
 
+from IPython import display as ds
+
+from forgather.latent import Latent, CallableNode
 from forgather.dynamic import (
     parse_module_name_or_path,
     parse_dynamic_import_spec,
     import_dynamic_module,
     walk_package_modules,
 )
-
-from IPython import display
-
-from forgather.latent import Latent, CallableNode
+from forgather.meta_config import preprocessor_globals, MetaConfig
+from forgather.config import ConfigEnvironment
+from forgather.codegen import generate_code
+from forgather.yaml_encoder import to_yaml
 
 
 def find_file_specs(config):
@@ -53,7 +56,7 @@ def display_meta(meta, title=""):
     md += f"Template Search Paths:\n"
     for path in meta.searchpath:
         md += f"- [{os.path.abspath(path)}]({os.path.relpath(path)})\n"
-    display.display(display.Markdown(md))
+    display(ds.Markdown(md))
 
 
 def list_templates(templates: Iterator[Tuple[str, str]], title: str = ""):
@@ -65,7 +68,7 @@ def list_templates(templates: Iterator[Tuple[str, str]], title: str = ""):
     md = f"{title}"
     for template_name, template_path in templates:
         md += f"- [{template_name}]({os.path.relpath(template_path)})\n"
-    display.display(display.Markdown(md))
+    display(ds.Markdown(md))
 
 
 def display_referenced_templates_tree(environment, path, title=""):
@@ -73,12 +76,12 @@ def display_referenced_templates_tree(environment, path, title=""):
     # Yields # tuple(level: int, name: str, path: str)
     for level, name, path in environment.find_referenced_templates(path):
         s += f"{' ' * 4 * level}- [{name}]({os.path.relpath(path)})\n"
-    display.display(display.Markdown(s))
+    display(ds.Markdown(s))
 
 
 def display_preprocessed_template(environment, template, title=""):
     md = f"{title}" f"```yaml\n{environment.preprocess(template)}\n```\n"
-    display.display(display.Markdown(md))
+    display(ds.Markdown(md))
 
 
 def display_referenced_templates(environment, template, title=""):
@@ -95,7 +98,7 @@ def display_referenced_templates(environment, template, title=""):
 
         md += f"#### [{name}]({os.path.relpath(path)})\n" f"```yaml\n{data}\n```\n---\n"
 
-    display.display(display.Markdown(md))
+    display(ds.Markdown(md))
 
 
 def display_referenced_source_list(config, title="", deep=False):
@@ -117,14 +120,14 @@ def display_referenced_source_list(config, title="", deep=False):
                 visited_modules.add(hasht)
                 md += f"{' ' * 4 * (level + 1)}- [{origin}]({os.path.relpath(origin)}) : {module_name}\n"
 
-    display.display(display.Markdown(md))
+    display(ds.Markdown(md))
 
 
 def display_filelink(path, title="", name=None):
     if name is None:
         name = path
     md = f"{title}" f"[{name}]({path})\n"
-    display.display(display.Markdown(md))
+    display(ds.Markdown(md))
 
 
 def get_train_cmdline(train_script_path, meta, nproc="gpu", cuda_devices=None):
@@ -185,7 +188,7 @@ def show_project_readme(project_dir):
     if os.path.exists(md_path):
         with open(md_path, "r") as f:
             md = f.read()
-        display.display(display.Markdown(md))
+        display(ds.Markdown(md))
 
 
 def delete_dir(target, prompt):
@@ -202,3 +205,67 @@ def delete_dir(target, prompt):
         print("deleted")
     else:
         print("aborted")
+
+
+def display_project_index(
+    project_dir=".", config_template="", materialize=True, pp_first=False
+):
+    """
+    Display project information
+
+    project_dir: The location of the project directory
+    config_template: The configuration to display. If "", the default is shown.
+    materialize: Materialize the configuration. Without doing so, dynamic imports may not show up.
+    pp_first: Preprocess before loading. This can be useful for debugging, if loading raises and exception.
+    """
+    show_project_readme(project_dir)
+
+    # Load project meta and get default config
+    meta = MetaConfig(project_dir)
+    config_template_path = meta.config_path(config_template)
+    default_config = meta.default_config()
+
+    display_meta(meta, "### Meta Config\n")
+    list_templates(
+        meta.find_templates(meta.config_prefix), "### Available Configurations\n"
+    )
+    display(ds.Markdown(f"Default Configuration: {default_config}\n\n"))
+    list_templates(meta.find_templates(""), "### Available Templates\n")
+
+    # Create new config environment and load configuration
+    environment = ConfigEnvironment(
+        searchpath=meta.searchpath,
+        global_vars=preprocessor_globals(project_dir),
+    )
+    display_referenced_templates_tree(
+        environment, config_template_path, "### Included Templates\n"
+    )
+
+    if pp_first:
+        pp_config = environment.preprocess(config_template_path)
+        display(
+            ds.Markdown(f"#### Preprocessed Config\n" f"```yaml\n{pp_config}\n```\n")
+        )
+
+    config, pp_config = environment.load(config_template_path).get()
+
+    # Materialize the configuration
+    if materialize:
+        main_output = Latent.materialize(config, pp_config=pp_config)
+
+    display_referenced_source_list(config, title="### Modules\n", deep=True)
+
+    if not pp_first:
+        display(
+            ds.Markdown(f"#### Preprocessed Config\n" f"```yaml\n{pp_config}\n```\n")
+        )
+    display(
+        ds.Markdown(
+            f"### Loaded Configuration to YAML\n```yaml\n{to_yaml(config)}\n```"
+        )
+    )
+    display(
+        ds.Markdown(
+            f"### Generated Source Code\n```python\n{generate_code(config)}\n```"
+        )
+    )
