@@ -69,7 +69,7 @@ def list_constructor(loader, tag_suffix, node):
     constructor, identity = split_tag_idenity(tag_suffix)
     if isinstance(node, yaml.SequenceNode):
         return SingletonNode(
-            "list", loader.construct_sequence(node), _identity=identity
+            "named_list", loader.construct_sequence(node), _identity=identity
         )
     else:
         raise TypeError(f"list nodes must be sequencess. Found {node}")
@@ -79,7 +79,7 @@ def tuple_constructor(loader, tag_suffix, node):
     constructor, identity = split_tag_idenity(tag_suffix)
     if isinstance(node, yaml.SequenceNode):
         return SingletonNode(
-            "tuple", loader.construct_sequence(node), _identity=identity
+            "named_tuple", loader.construct_sequence(node), _identity=identity
         )
     else:
         raise TypeError(f"tuple nodes must be sequencess. Found {node}")
@@ -89,7 +89,7 @@ def dict_constructor(loader, tag_suffix, node):
     constructor, identity = split_tag_idenity(tag_suffix)
     if isinstance(node, yaml.MappingNode):
         return SingletonNode(
-            "dict", _identity=identity, **loader.construct_mapping(node)
+            "named_dict", _identity=identity, **loader.construct_mapping(node)
         )
     else:
         raise TypeError(f"dict nodes must be mappings. Found {node}")

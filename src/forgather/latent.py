@@ -92,6 +92,9 @@ class CallableNode(Node, metaclass=ABCMeta):
         items=lambda x: x.items(),
         keys=lambda x: x.keys(),
         values=lambda x: x.values(),
+        named_list=list,
+        named_tuple=tuple,
+        named_dict=dict,
     )
 
     def __init__(

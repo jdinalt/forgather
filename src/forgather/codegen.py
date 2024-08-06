@@ -144,10 +144,12 @@ class PyEncoder(GraphEncoder):
                     return self._keys(obj)
                 case "items":
                     return self._items(obj)
-                case "list":
+                case "named_list":
                     return self._named_list(obj)
-                case "dict":
+                case "named_dict":
                     return self._named_dict(obj)
+                case "named_tuple":
+                    return self._named_tuple(obj)
                 case _:
                     callable_name = obj.constructor
 
@@ -210,6 +212,14 @@ class PyEncoder(GraphEncoder):
         try:
             self.level -= 1
             s = self._list(obj.args[0])
+        finally:
+            self.level += 1
+        return s
+
+    def _named_tuple(self, obj):
+        try:
+            self.level -= 1
+            s = self._tuple(obj.args[0])
         finally:
             self.level += 1
         return s

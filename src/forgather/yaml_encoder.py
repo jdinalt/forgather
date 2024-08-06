@@ -118,10 +118,12 @@ class YamlEncoder(GraphEncoder):
             s += f"@{obj.identity}"
 
         match obj.constructor:
-            case "list":
+            case "named_list":
                 return s + self._named_list(obj)
-            case "dict":
+            case "named_dict":
                 return s + self._named_dict(obj)
+            case "named_tuple":
+                return s + self._named_tuple(obj)
 
         if len(obj.args) + len(obj.kwargs):
             if len(obj.args) == 0:
@@ -136,6 +138,9 @@ class YamlEncoder(GraphEncoder):
 
     def _named_list(self, obj):
         return self._list(obj.args[0])
+
+    def _named_tuple(self, obj):
+        return self._tuple(obj.args[0])
 
     def _named_dict(self, obj):
         return self._dict(obj.kwargs)

@@ -251,7 +251,9 @@ def display_project_index(
 
     # Materialize the configuration
     if materialize:
-        main_output = Latent.materialize(config, pp_config=pp_config)
+        output = Latent.materialize(config, pp_config=pp_config)
+    else:
+        output = None
 
     display_referenced_source_list(config, title="### Modules\n", deep=True)
 
@@ -269,3 +271,4 @@ def display_project_index(
             f"### Generated Source Code\n```python\n{generate_code(config)}\n```"
         )
     )
+    return output
