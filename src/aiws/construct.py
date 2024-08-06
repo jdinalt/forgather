@@ -6,7 +6,7 @@ import sys
 
 from .distributed import main_process_first
 
-from aiws.config import MetaConfig
+from forgather.meta_config import MetaConfig
 from forgather.config import ConfigEnvironment
 from forgather.dynamic import walk_package_modules
 from forgather.latent import Undefined

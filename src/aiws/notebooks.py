@@ -158,7 +158,7 @@ def make_train_script(
         i.e. If you wish to only CUDA 0 and 1, then "0,1"
     """
     import stat
-    from aiws.config import MetaConfig
+    from forgather.meta_config import MetaConfig
 
     prev_cwd = os.getcwd()
 

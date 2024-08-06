@@ -11,7 +11,7 @@ from numpy.random import seed as np_seed
 from torch.distributed.elastic.multiprocessing.errors import record
 
 from forgather.config import ConfigEnvironment, fconfig, pconfig
-from aiws.config import MetaConfig, preprocessor_globals
+from forgather.meta_config import MetaConfig, preprocessor_globals
 from aiws.distributed import DistributedEnvironment
 from aiws.dotdict import DotDict
 from forgather import Latent

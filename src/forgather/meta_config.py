@@ -4,8 +4,8 @@ import os
 from importlib.metadata import version
 import platform
 
-from forgather.config import ConfigEnvironment, ConfigDict
-from forgather.preprocess import forgather_config_dir
+from .config import ConfigEnvironment, ConfigDict
+from .preprocess import forgather_config_dir
 
 
 def preprocessor_globals(project_dir):
