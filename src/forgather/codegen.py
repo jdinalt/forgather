@@ -2,7 +2,252 @@ from typing import List, Any, Optional
 import os
 
 from .preprocess import PPEnvironment
-from .latent import Latent, Undefined
+from .graph_encoder import GraphEncoder, NamePolicy
+from .latent import (
+    Latent,
+    Undefined,
+    Node,
+    VarNode,
+    CallableNode,
+    FactoryNode,
+    SingletonNode,
+    MetaNode,
+    LambdaNode,
+)
+from .utils import track_depth
+
+
+class PyEncoder(GraphEncoder):
+    def init(self, obj: Any, name_policy):
+        super().init(obj, name_policy, True)
+        self.imports = set()
+        self.dynamic_imports = set()
+        self.vars = set()
+
+    def __call__(self, obj: Any, name_policy=None) -> dict:
+        self.init(obj, name_policy)
+        self.level = 0
+        definitions = self._encode_definitions(obj).strip()
+        main_body = self._encode(obj).strip()
+        return dict(
+            definitions=definitions,
+            main_body=main_body,
+            # And convert these from sets to lists
+            imports=list(self.imports),
+            dynamic_imports=[
+                (module, callable_name, list(searchpath))
+                for module, callable_name, searchpath in self.dynamic_imports
+            ],
+            variables=list(self.vars),
+        )
+
+    def _encode_definitions(self, obj):
+        """
+        Encode the definition of all nodes with names in the name_map
+
+        At a minimum, these nodes occur in more than one place in the graph. Depending
+        upon the naming-policy, this could also include all nodes with explicit names or
+        even all nodes in the graph.
+
+        We only define ids for callable nodes which have an idenity in the name_map,
+            which has pruned MetaNodes, and which have not already been defined.
+        """
+
+        def node_filter(t):
+            node = t[1]
+            return (
+                isinstance(node, CallableNode)
+                and node.identity in self.name_map
+                and node.identity not in self.defined_ids
+            )
+
+        s = ""
+        # Walk nodes, bottom-up
+        for _, node, _ in filter(node_filter, Latent.walk(obj, top_down=False)):
+            s += self.name_map[node.identity]
+            s += " = "
+            if isinstance(node, FactoryNode) or isinstance(node, LambdaNode):
+                s += "lambda: "
+            s += self._encode(node) + "\n\n"
+            self.defined_ids.add(node.identity)
+        return s
+
+    @track_depth
+    def _list(self, obj: list):
+        s = "[\n"
+        for value in obj:
+            s += self._indent() + self._encode(value) + ",\n"
+        s += self._indent(-1) + "]"
+        return s
+
+    @track_depth
+    def _dict(self, obj: dict):
+        s = "{\n"
+        for key, value in obj.items():
+            s += self._indent() + repr(key) + ": " + self._encode(value) + ",\n"
+        s += self._indent(-1) + "}"
+        return s
+
+    @track_depth
+    def _tuple(self, obj: tuple):
+        s = "(\n"
+        for value in obj:
+            s += self._indent() + self._encode(value) + ",\n"
+        s += self._indent(-1) + ")"
+        return s
+
+    def _var(self, obj: VarNode):
+        # We include a bool for if the var is undefined, as this detection
+        # is otherwise complicated in a Jinja template.
+        self.vars.add((obj.constructor, obj.value != Undefined, obj.value))
+        return obj.constructor
+
+    def _callable(self, obj: CallableNode):
+        if obj.identity in self.defined_ids:
+            return self._identity(obj)
+        else:
+            return self._callable_main(obj)
+
+    @track_depth
+    def _identity(self, obj):
+        name = self.name_map[obj.identity]
+        if type(obj) is FactoryNode:
+            return name + "()"
+        else:
+            return name
+
+    @track_depth
+    def _callable_main(self, obj):
+        is_dynamic = False
+        if isinstance(obj, MetaNode):
+            return self._encode(obj.callable(*obj.args, **obj.kwargs))
+        if ":" in obj.constructor:
+            if obj.constructor == "operator:getitem":
+                return self._getitem(obj)
+            module, callable_name = obj.constructor.split(":")
+            if module.endswith(".py"):
+                is_dynamic = True
+                self.dynamic_imports.add(
+                    (module, callable_name, tuple(obj.submodule_searchpath))
+                )
+            else:
+                self.imports.add((module, callable_name))
+        else:
+            # We have a handful of special cases built-ins.
+            # These are mostly for readability.
+            match obj.constructor:
+                case "getattr":
+                    return self._getattr(obj)
+                case "values":
+                    return self._values(obj)
+                case "keys":
+                    return self._keys(obj)
+                case "items":
+                    return self._items(obj)
+                case "list":
+                    return self._named_list(obj)
+                case "dict":
+                    return self._named_dict(obj)
+                case _:
+                    callable_name = obj.constructor
+
+        s = ""
+        if self.level > 1:
+            if isinstance(obj, LambdaNode):
+                s += "lambda: "
+                # TODO: implement lambda, with arguments
+                # This appears to be a difficult one, so deferring for now.
+                # return self._encode_lambda(obj)
+            elif type(obj) == FactoryNode and obj.identity in self.name_map:
+                s += "lambda: "
+
+        s += callable_name
+        if is_dynamic:
+            s += "()"
+        s += "("
+        if len(obj.kwargs) + len(obj.args) == 0:
+            s += ")"
+            return s
+        s += "\n"
+        for arg in obj.args:
+            s += self._indent() + self._encode(arg) + ",\n"
+        for key, value in obj.kwargs.items():
+            s += self._indent() + str(key) + "=" + self._encode(value) + ",\n"
+        s += self._indent(-1) + ")"
+        return s
+
+    def _getitem(self, obj):
+        mapping = obj.args[0]
+        key = obj.args[1]
+        s = self._encode(mapping) + f"[{repr(key)}]"
+        return s
+
+    def _getattr(self, obj):
+        o = obj.args[0]
+        attribute = obj.args[1]
+        assert isinstance(
+            attribute, str
+        ), f"Attribute is expected to be a string, found{type(attribute)}"
+        s = self._encode(o) + f".{attribute}"
+        return s
+
+    def _values(self, obj):
+        o = obj.args[0]
+        s = self._encode(o) + f".values()"
+        return s
+
+    def _keys(self, obj):
+        o = obj.args[0]
+        s = self._encode(o) + f".keys()"
+        return s
+
+    def _encode_items(self, obj):
+        o = obj.args[0]
+        s = self._encode(o) + f".items()"
+        return s
+
+    def _named_list(self, obj):
+        try:
+            self.level -= 1
+            s = self._list(obj.args[0])
+        finally:
+            self.level += 1
+        return s
+
+    def _named_dict(self, obj):
+        try:
+            self.level -= 1
+            s = self._dict(obj.kwargs)
+        finally:
+            self.level += 1
+        return s
+
+    def _none(self):
+        return "None"
+
+    def _str(self, obj: str):
+        if "\n" in obj:
+            s = "(\n"
+            s += self.encode_textblock(obj)
+            s += "\n" + self._indent(-1) + ")"
+            return s
+        else:
+            return repr(obj)
+
+    def encode_textblock(self, obj):
+        return "\n".join(
+            map(lambda line: self._indent() + repr(line), self.split_text(obj))
+        )
+
+    def _int(self, obj: int):
+        return repr(obj)
+
+    def _float(self, obj: float):
+        return repr(obj)
+
+    def _bool(self, obj: bool):
+        return repr(obj)
+
 
 DEFAULT_CODE_TEMPLATE = """
 ## Set default factory name, if not provided
@@ -58,7 +303,7 @@ def generate_code(
     template_str: Optional[str] = None,
     searchpath: Optional[List[str | os.PathLike] | str | os.PathLike] = ".",
     env=None,  # jinja2 environment or compatible API
-    name_policy: str = None,
+    name_policy: str | NamePolicy = None,
     **kwargs,
 ) -> Any:
     """
@@ -98,8 +343,10 @@ def generate_code(
     factory_name: Optional[str]="construct", ; The name of the generated factory function.
     relaxed_kwargs: Optional[bool]=Undefined, ; if defined, **kwargs is added to the arg list
     """
+
     # Convert the input to Python code
-    py_output = Latent.to_py(obj, name_policy=name_policy)
+    encoder = PyEncoder()
+    py_output = encoder(obj, name_policy=name_policy)
 
     if env is None:
         if isinstance(searchpath, os.PathLike) or isinstance(searchpath, str):
