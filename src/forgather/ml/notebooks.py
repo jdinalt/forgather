@@ -222,14 +222,17 @@ def display_project_index(
 
     # Load project meta and get default config
     meta = MetaConfig(project_dir)
-    config_template_path = meta.config_path(config_template)
-    default_config = meta.default_config()
 
     display_meta(meta, "### Meta Config\n")
     list_templates(
         meta.find_templates(meta.config_prefix), "### Available Configurations\n"
     )
+
+    config_template_path = meta.config_path(config_template)
+    default_config = meta.default_config()
+    active_config = config_template if len(config_template) else default_config
     display(ds.Markdown(f"Default Configuration: {default_config}\n\n"))
+    display(ds.Markdown(f"Active Configuration: {active_config}\n\n"))
     list_templates(meta.find_templates(""), "### Available Templates\n")
 
     # Create new config environment and load configuration

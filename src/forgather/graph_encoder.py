@@ -42,15 +42,18 @@ class NodeNameDict(dict):
         if name_policy is None:
             name_policy = NamePolicy.NAMED
 
+        # Count the occurances of each node in the graph
         idcount = defaultdict(int)
-        visited = set()
-        # Count the occurances of each id in the graph
+
         for level, node, sub_nodes in Latent.walk(obj):
             if prune_meta:
                 prune_node_type(sub_nodes, MetaNode)
-            if isinstance(node, CallableNode) and node.identity not in visited:
-                visited.add(node.identity)
-                idcount[node.identity] += 1
+            if not isinstance(node, CallableNode):
+                continue
+            idcount[node.identity] += 1
+            if idcount[node.identity] > 1:
+                # If we have visited this node more than once, skip all children.
+                sub_nodes.clear()
 
         match name_policy:
             case NamePolicy.REQUIRED:

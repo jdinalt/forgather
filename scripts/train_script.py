@@ -7,8 +7,9 @@ from loguru import logger
 import transformers
 import datasets
 
+
 def init_logging(args):
-    if int(os.environ['RANK']) == 0:
+    if int(os.environ["RANK"]) == 0:
         log_level = args.log_level
         # TODO: Is there a version which takes a string?
         transformers.utils.logging.set_verbosity_info()
@@ -17,11 +18,12 @@ def init_logging(args):
 
     logger.remove()
     logger.add(sys.stderr, level=log_level)
-    
+
     datasets.utils.logging.set_verbosity(log_level)
     transformers.utils.logging.set_verbosity(log_level)
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
+
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
@@ -31,37 +33,38 @@ def parse_args(args=None):
             "This script should be run with torchrun or accelerate...\n"
             "    torchrun --nproc-per-node 1 --standalone train_script.py -I ./config my_config.yaml\n"
             "    accelerate launch train_script.py my_config.yaml"
-        )
+        ),
     )
     parser.add_argument(
-        'config_template',
+        "config_template",
         type=str,
         metavar="config-template",
-        help="Configuration Template Name"
+        help="Configuration Template Name",
     )
     parser.add_argument(
-        '-l', '--log-level',
+        "-l",
+        "--log-level",
         default="INFO",
-        help="Set the log level for the main process: INFO, WARNING, DEBUG, ...; default=INFO"
+        help="Set the log level for the main process: INFO, WARNING, DEBUG, ...; default=INFO",
     )
     parser.add_argument(
-        '--secondary-log-level',
+        "--secondary-log-level",
         default="WARNING",
-        help="Set the log level for the secondary processes, if any: INFO, WARNING, DEBUG, ...; default=WARNING"
+        help="Set the log level for the secondary processes, if any: INFO, WARNING, DEBUG, ...; default=WARNING",
     )
     parser.add_argument(
-        '-s',
-        '--syspath',
+        "-s",
+        "--syspath",
         type=str,
         default=None,
-        help="Add sys.path for relative imports"
+        help="Add sys.path for relative imports",
     )
     parser.add_argument(
-        '-p',
-        '--project-dir',
+        "-p",
+        "--project-dir",
         type=str,
-        default='.',
-        help="The relative path to the project directory."
+        default=".",
+        help="The relative path to the project directory.",
     )
 
     args = parser.parse_args(args)
@@ -72,13 +75,16 @@ def parse_args(args=None):
         sys.path.insert(0, args.syspath)
     # We only resolve these modules after we know where to look for them.
     global training_loop
-    from aiws.training_script import training_loop
+    from forgather.ml.training_script import training_loop
+
     return args
+
 
 def main():
     args = parse_args()
     init_logging(args)
     training_loop(args.project_dir, args.config_template)
+
 
 if __name__ == "__main__":
     main()
