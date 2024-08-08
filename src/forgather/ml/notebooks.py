@@ -76,6 +76,7 @@ def render_template_list(templates: Iterator[Tuple[str, str]], title: str = ""):
     md = f"{title}"
     for template_name, template_path in templates:
         md += f"- [{template_name}]({os.path.relpath(template_path)})\n"
+    md += "\n"
     return md
 
 
