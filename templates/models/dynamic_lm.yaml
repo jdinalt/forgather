@@ -19,7 +19,7 @@
     ##   "all" : Assign names to all objects; generate automatic names, when not specified.
     ##     This results in a very flat structure, but the hierarchy may not be readily apparent
     ##     and the is very verbose.
-    -- set model_def.name_policy = "named"
+    -- set model_def.name_policy = "required"
 -- endblock model_meta_config
 
 

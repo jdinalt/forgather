@@ -13,7 +13,7 @@ from transformers import (
 
 from .model_factory import construct_model
 
-model_type = "dynamic-causal-lm"
+model_type = "forgather-dynamic-causal-lm"
 
 
 class DynamicCausalLMConfig(PretrainedConfig):

@@ -1,6 +1,7 @@
 import os
 from dataclasses import fields
 from typing import Iterator, Tuple
+from pprint import pformat
 
 from IPython import display as ds
 
@@ -49,17 +50,23 @@ def find_file_specs(config):
         yield module_path, symbol_name, node.submodule_searchpath
 
 
-def display_meta(meta, title=""):
+def render_meta(meta, title=""):
     md = f"{title}"
     md += f"Project Directory: {os.path.abspath(meta.project_dir)}\n\n"
     md += f"Meta Config: [{os.path.abspath(meta.meta_path)}]({os.path.relpath(meta.meta_path)})\n\n"
+    for level, name, path in meta.environment.find_referenced_templates(meta.name):
+        md += f"{' ' * 4 * level}- [{name}]({os.path.relpath(path)})\n"
     md += f"Template Search Paths:\n"
     for path in meta.searchpath:
         md += f"- [{os.path.abspath(path)}]({os.path.relpath(path)})\n"
-    display(ds.Markdown(md))
+    return md
 
 
-def list_templates(templates: Iterator[Tuple[str, str]], title: str = ""):
+def display_meta(meta, title=""):
+    display(ds.Markdown(render_meta(meta, title)))
+
+
+def render_template_list(templates: Iterator[Tuple[str, str]], title: str = ""):
     """
     Given a template iterator, display a list of templates
 
@@ -68,40 +75,36 @@ def list_templates(templates: Iterator[Tuple[str, str]], title: str = ""):
     md = f"{title}"
     for template_name, template_path in templates:
         md += f"- [{template_name}]({os.path.relpath(template_path)})\n"
-    display(ds.Markdown(md))
+    return md
+
+
+def list_templates(templates: Iterator[Tuple[str, str]], title: str = ""):
+    display(ds.Markdown(render_template_list(templates, title)))
+
+
+def render_referenced_templates_tree(environment, path, title=""):
+    md = f"{title}"
+    # Yields # tuple(level: int, name: str, path: str)
+    for level, name, path in environment.find_referenced_templates(path):
+        md += f"{' ' * 4 * level}- [{name}]({os.path.relpath(path)})\n"
+    return md
 
 
 def display_referenced_templates_tree(environment, path, title=""):
-    s = f"{title}"
-    # Yields # tuple(level: int, name: str, path: str)
-    for level, name, path in environment.find_referenced_templates(path):
-        s += f"{' ' * 4 * level}- [{name}]({os.path.relpath(path)})\n"
-    display(ds.Markdown(s))
+    display(ds.Markdown(render_referenced_templates_tree(environment, path, title)))
 
 
-def display_preprocessed_template(environment, template, title=""):
-    md = f"{title}" f"```yaml\n{environment.preprocess(template)}\n```\n"
-    display(ds.Markdown(md))
+# Render code via Markdown render
+def show_codeblock(language, source, header=None):
+    display(ds.Markdown(render_codeblock(language, source, header)))
 
 
-def display_referenced_templates(environment, template, title=""):
-    visited_set = set()
-    md = f"{title}"
-
-    for _, name, path in environment.find_referenced_templates(template):
-        if path in visited_set:
-            continue
-        visisted_set.add(path)
-
-        with open(path, "r") as f:
-            data = f.read()
-
-        md += f"#### [{name}]({os.path.relpath(path)})\n" f"```yaml\n{data}\n```\n---\n"
-
-    display(ds.Markdown(md))
+def render_codeblock(language, source, header=None):
+    header = header + "\n" if header is not None else ""
+    return f"{header}```{language}\n{source}\n\n```\n\n"
 
 
-def display_referenced_source_list(config, title="", deep=False):
+def render_referenced_source_list(config, title="", deep=False):
     """
     Setting the 'deep' flag requires actually loading the modules
     """
@@ -119,15 +122,22 @@ def display_referenced_source_list(config, title="", deep=False):
                     continue
                 visited_modules.add(hasht)
                 md += f"{' ' * 4 * (level + 1)}- [{origin}]({os.path.relpath(origin)}) : {module_name}\n"
+    return md
 
-    display(ds.Markdown(md))
+
+def display_referenced_source_list(config, title="", deep=False):
+    display(ds.Markdown(render_referenced_source_list(config, title, deep)))
 
 
-def display_filelink(path, title="", name=None):
+def render_filelink(path, title="", name=None):
     if name is None:
         name = path
     md = f"{title}" f"[{name}]({path})\n"
-    display(ds.Markdown(md))
+    return md
+
+
+def display_filelink(path, title="", name=None):
+    display(ds.Markdown(render_filelink(path, title, name)))
 
 
 def get_train_cmdline(train_script_path, meta, nproc="gpu", cuda_devices=None):
@@ -183,11 +193,19 @@ def make_train_script(
         os.chdir(prev_cwd)
 
 
-def show_project_readme(project_dir):
+def render_project_readme(project_dir):
     md_path = os.path.join(project_dir, "README.md")
     if os.path.exists(md_path):
         with open(md_path, "r") as f:
-            md = f.read()
+            md = f.read() + "\n\n"
+        return md
+    else:
+        return ""
+
+
+def show_project_readme(project_dir):
+    md = render_project_readme(project_dir)
+    if len(md):
         display(ds.Markdown(md))
 
 
@@ -207,71 +225,97 @@ def delete_dir(target, prompt):
         print("aborted")
 
 
-def display_project_index(
+def render_project_index(
     project_dir=".", config_template="", materialize=True, pp_first=False
 ):
     """
-    Display project information
+    Render project information
 
     project_dir: The location of the project directory
     config_template: The configuration to display. If "", the default is shown.
     materialize: Materialize the configuration. Without doing so, dynamic imports may not show up.
     pp_first: Preprocess before loading. This can be useful for debugging, if loading raises and exception.
     """
-    show_project_readme(project_dir)
 
-    # Load project meta and get default config
-    meta = MetaConfig(project_dir)
+    try:
+        md = ""
+        md += render_project_readme(project_dir)
 
-    display_meta(meta, "### Meta Config\n")
-    list_templates(
-        meta.find_templates(meta.config_prefix), "### Available Configurations\n"
-    )
+        # Load project meta and get default config
+        meta = MetaConfig(project_dir)
 
-    config_template_path = meta.config_path(config_template)
-    default_config = meta.default_config()
-    active_config = config_template if len(config_template) else default_config
-    display(ds.Markdown(f"Default Configuration: {default_config}\n\n"))
-    display(ds.Markdown(f"Active Configuration: {active_config}\n\n"))
-    list_templates(meta.find_templates(""), "### Available Templates\n")
+        md += render_meta(meta, "## Meta Config\n")
+        md += render_template_list(
+            meta.find_templates(meta.config_prefix), "## Available Configurations\n"
+        )
 
-    # Create new config environment and load configuration
-    environment = ConfigEnvironment(
-        searchpath=meta.searchpath,
-        global_vars=preprocessor_globals(project_dir),
-    )
-    display_referenced_templates_tree(
-        environment, config_template_path, "### Included Templates\n"
-    )
+        config_template_path = meta.config_path(config_template)
+        default_config = meta.default_config()
+        active_config = config_template if len(config_template) else default_config
+        md += f"Default Configuration: {default_config}\n\n"
+        md += f"Active Configuration: {active_config}\n\n"
+        md += render_template_list(meta.find_templates(""), "## Available Templates\n")
 
-    if pp_first:
-        pp_config = environment.preprocess(config_template_path)
+        # Create new config environment and load configuration
+        environment = ConfigEnvironment(
+            searchpath=meta.searchpath,
+            global_vars=preprocessor_globals(project_dir),
+        )
+
+        md += render_referenced_templates_tree(
+            environment, config_template_path, "## Included Templates\n"
+        )
+
+        if pp_first:
+            pp_config = environment.preprocess(config_template_path)
+            md += render_codeblock("yaml", pp_config, "## Preprocessed Config\n")
+
+        config, pp_config = environment.load(config_template_path).get()
+
+        config_meta = config.meta()
+        md += f"### Config Metadata:\n\n"
+        md += render_codeblock("python", pformat(config_meta))
+
+        # Materialize the configuration
+        if materialize:
+            output = Latent.materialize(config, pp_config=pp_config)
+        else:
+            output = None
+
+        md += render_referenced_source_list(config, title="## Modules\n", deep=True)
+
+        if not pp_first:
+            md += render_codeblock("yaml", pp_config, "## Preprocessed Config\n")
+
+        md += render_codeblock(
+            "yaml", to_yaml(config), "## Loaded Configuration to YAML\n"
+        )
+        md += render_codeblock(
+            "python", generate_code(config), "### Generated Source Code\n"
+        )
+        if output is not None:
+            md += render_codeblock(
+                "python", pformat(output), "## Constructed Project\n"
+            )
+        return md
+    except Exception as e:
+        md += render_codeblock("", repr(e), "# RAISED EXCEPTION\n\n")
+        setattr(e, "markdown", md)
+        raise e
+
+
+def display_project_index(
+    project_dir=".", config_template="", materialize=True, pp_first=False
+):
+    try:
         display(
-            ds.Markdown(f"#### Preprocessed Config\n" f"```yaml\n{pp_config}\n```\n")
+            ds.Markdown(
+                render_project_index(
+                    project_dir, config_template, materialize, pp_first
+                )
+            )
         )
-
-    config, pp_config = environment.load(config_template_path).get()
-
-    # Materialize the configuration
-    if materialize:
-        output = Latent.materialize(config, pp_config=pp_config)
-    else:
-        output = None
-
-    display_referenced_source_list(config, title="### Modules\n", deep=True)
-
-    if not pp_first:
-        display(
-            ds.Markdown(f"#### Preprocessed Config\n" f"```yaml\n{pp_config}\n```\n")
-        )
-    display(
-        ds.Markdown(
-            f"### Loaded Configuration to YAML\n```yaml\n{to_yaml(config)}\n```"
-        )
-    )
-    display(
-        ds.Markdown(
-            f"### Generated Source Code\n```python\n{generate_code(config)}\n```"
-        )
-    )
-    return output
+    except Exception as e:
+        display(ds.Markdown(e.markdown))
+        delattr(e, "markdown")
+        raise e

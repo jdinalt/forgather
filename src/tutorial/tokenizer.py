@@ -14,7 +14,7 @@ def make_project_tokenizer(force: bool = False):
 
     from forgather.config import load_config, materialize_config
     from forgather.ml.tokenizer_trainer import TokenizerTrainer
-    from forgather.ml.dotdict import DotDict
+    from forgather.dotdict import DotDict
 
     metacfg = DotDict(load_config("forgather_config.yaml").config)
     config = DotDict(

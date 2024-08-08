@@ -13,8 +13,10 @@ from torch.distributed.elastic.multiprocessing.errors import record
 from forgather.config import ConfigEnvironment, fconfig, pconfig
 from forgather.meta_config import MetaConfig, preprocessor_globals
 from forgather.ml.distributed import DistributedEnvironment
-from forgather.ml.dotdict import DotDict
 from forgather.latent import Latent
+from forgather.ml.distributed import main_process_first
+from forgather.dotdict import DotDict
+from forgather.project import Project
 
 
 def set_seed(seed: int):
@@ -34,8 +36,6 @@ class TrainingScript:
 
     def __post_init__(self):
         self.meta = DotDict(self.meta)
-        if int(os.environ.get("LOCAL_RANK", 0)) == 0:
-            self.validate_dirs()
 
     def validate_dirs(self):
         """
@@ -49,6 +49,9 @@ class TrainingScript:
 
     @record
     def run(self, pp_config: str = None):
+        with main_process_first():
+            self.validate_dirs()
+
         # In a distriubted environment, we only want one process to print messages
         is_main_process = self.distributed_env.local_rank == 0
 
@@ -88,7 +91,7 @@ class TrainingScript:
                 print(f"Model saved to: {self.meta.output_dir}")
 
 
-def training_loop(project_directory, config_template=None):
+def training_loop(project_directory, config_template=""):
     """
     A mini-training-loop for use with accelerate.notebook_launcher
 
@@ -110,23 +113,13 @@ def training_loop(project_directory, config_template=None):
     log_level: The log-level to use.
     ```
     """
-
     set_seed(42)
 
-    # Load meta-config
-    meta = MetaConfig(project_directory)
+    # Load the project
+    proj = Project(project_directory, config_template)
 
-    # Create configuration envrionment
-    environment = ConfigEnvironment(
-        searchpath=meta.searchpath,
-        global_vars=preprocessor_globals(project_directory),
-    )
-
-    # Load the target configuration
-    config, pp_config = environment.load(meta.config_path(config_template)).get()
-
-    # Materialize the configuration
-    main = config.main(pp_config=pp_config)
+    # Materialize the config
+    training_script = proj()["main"]
 
     # Run it!
-    main.run(pp_config=pp_config)
+    training_script.run(pp_config=proj.pp_config)

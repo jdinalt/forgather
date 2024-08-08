@@ -28,21 +28,26 @@ def preprocessor_globals(project_dir):
 @dataclass()
 class MetaConfig:
     project_dir: str
+    name: str
     meta_path: str
     searchpath: List[str]
     system_path: str
-    default_cfg: str = None
+    config_prefix: str
+    default_cfg: str
+    config_dict: dict
 
     def __init__(self, project_dir, meta_name="meta.yaml"):
+        self.name = meta_name
         self.meta_path = os.path.join(project_dir, meta_name)
         config = self._load_config(self.meta_path, project_dir=project_dir)
+        self.config_dict = config
         self.project_dir = project_dir
         self.searchpath = [
             os.path.abspath(self.norm_path(path)) for path in config.searchdir
         ]
-        self.config_prefix = config.config_prefix
+        self.config_prefix = config.get("config_prefix", "config")
         self.default_cfg = config.get("default_config", None)
-        self.system_path = self.norm_path(config.system_path)
+        self.system_path = self.norm_path(config.get("system_path", None))
 
     def norm_path(self, path):
         return os.path.normpath(os.path.join(self.project_dir, path))
@@ -86,8 +91,7 @@ class MetaConfig:
                             template_name = template_name[1:]
                         yield (template_name, template_path)
 
-    @staticmethod
-    def _load_config(config_path: str | os.PathLike, /, **kwargs) -> ConfigDict:
+    def _load_config(self, config_path: str | os.PathLike, /, **kwargs) -> ConfigDict:
         project_directory, template_name = os.path.split(config_path)
         assert os.path.exists(
             project_directory
@@ -103,6 +107,6 @@ class MetaConfig:
         user_templates_dir = os.path.join(forgather_config_dir(), "templates")
         if os.path.isdir(user_templates_dir):
             searchpath.append(user_templates_dir)
-        environment = ConfigEnvironment(searchpath=searchpath)
-        config = environment.load(template_name, **kwargs)
+        self.environment = ConfigEnvironment(searchpath=searchpath)
+        config = self.environment.load(template_name, **kwargs)
         return config.config

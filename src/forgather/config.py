@@ -300,15 +300,40 @@ class ConfigEnvironment:
         return Config(loaded_config, pp_config)
 
     def find_referenced_templates(
-        self, template_name: os.PathLike | str, level=0
+        self,
+        template_name: os.PathLike | str,
     ) -> Iterator[Tuple[int, str, str]]:
+        """
+        Iterate over the template hierarchy
+
+        We try to yield templates from root to leaf, while skipping ones
+        we have already visited.
+        """
         environment = self.pp_environment
-        source, filename, _ = environment.loader.get_source(environment, template_name)
-        yield (level, template_name, filename)
-        ast = environment.parse(source, name=template_name, filename=filename)
-        iter = meta.find_referenced_templates(ast)
-        for template in iter:
-            if template is None:
-                continue
-            for t in self.find_referenced_templates(template, level + 1):
-                yield t
+        queue = [(template_name, 0)]
+        visited = set(template_name)
+
+        while len(queue):
+            template_name, level = queue.pop(-1)
+            source, filename, _ = environment.loader.get_source(
+                environment, template_name
+            )
+
+            yield (level, template_name, filename)
+
+            ast = environment.parse(source, name=template_name, filename=filename)
+
+            # Filter out 'None' items, then sort items with those ending in '.yaml' last.
+            # As we draw in LIFO order, this ensures that all 'file' templates are traversed
+            # before the sub-templates defined in files.
+            # Without doing so, it's possible to try to load a sub-template, before the file
+            # which defines it has been loaded.
+            iterator = sorted(
+                filter(lambda x: x is not None, meta.find_referenced_templates(ast)),
+                key=lambda a: 1 if a.endswith(".yaml") else -1,
+            )
+
+            for t in iterator:
+                if t not in visited:
+                    queue.append((t, level + 1))
+                    visited.add(t)
