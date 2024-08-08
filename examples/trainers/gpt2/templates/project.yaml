@@ -27,7 +27,7 @@
 
 
 -- block datasets_definition
-    -- include 'datasets/tiny/tiny_stories.yaml'
+    -- include 'datasets/tiny/tiny_stories_abridged.yaml'
 -- endblock datasets_definition
 
 

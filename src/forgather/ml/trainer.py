@@ -269,7 +269,10 @@ class Trainer(BaseTrainer):
         Returns: mean loss (detached from graph)
         """
         outputs = self.model(**batch)
-        loss = outputs[0]
+        if isinstance(outputs, tuple):
+            loss = outputs[0]
+        else:
+            lose = outputs["loss"]
         self._backward(loss)
         self.optimizer.step()
         self._dispatch_event("on_optimizer_step")

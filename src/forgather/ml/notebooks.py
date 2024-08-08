@@ -55,10 +55,11 @@ def render_meta(meta, title=""):
     md += f"Project Directory: {os.path.abspath(meta.project_dir)}\n\n"
     md += f"Meta Config: [{os.path.abspath(meta.meta_path)}]({os.path.relpath(meta.meta_path)})\n\n"
     for level, name, path in meta.environment.find_referenced_templates(meta.name):
-        md += f"{' ' * 4 * level}- [{name}]({os.path.relpath(path)})\n"
+        md += f"{' ' * 4 * level}- [{name}]({os.path.relpath(path)})\n\n"
     md += f"Template Search Paths:\n"
     for path in meta.searchpath:
         md += f"- [{os.path.abspath(path)}]({os.path.relpath(path)})\n"
+    md += "\n"
     return md
 
 

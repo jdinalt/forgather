@@ -2,12 +2,12 @@
 
 -- block config_metadata
     == super()
-    -- set ns.config_name = "Default Dynamic Causal Transformer"
+    -- set ns.config_name = "Default Causal Transformer"
     -- set ns.config_description = ""
-    -- set ns.model_name = 'dynamic_causal_transformer'
+    -- set ns.model_name = 'causal_transformer'
 -- endblock config_metadata
 
 
 -- block model_definition
-    -- include 'models/dynamic_lm.yaml'
+    -- include 'models/causal_transformer.yaml'
 -- endblock model_definition

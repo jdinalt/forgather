@@ -25,7 +25,7 @@
 
 -- block model_config
 .define: &model_config !singleton:{{ model_def.model_config_cls }}
-    vocab_size: !callable:forgather.construct:length [ *tokenizer ]
+    vocab_size: !singleton:len [ *tokenizer ]
 << endblock model_config
 
 

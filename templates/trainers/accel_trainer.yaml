@@ -12,7 +12,7 @@
     # Accel Trainer Defaults
     accelerator_args:
         device_placement: True
-        dataloader_config: !callable:accelerate:DataLoaderConfiguration
+        dataloader_config: !singleton:accelerate:DataLoaderConfiguration
             dispatch_batches: False
             split_batches: False
 << endblock trainer_args

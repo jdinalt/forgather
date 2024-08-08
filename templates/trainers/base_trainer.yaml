@@ -28,16 +28,16 @@
     output_dir: "{{ ns.output_dir }}"
     logging_dir: "{{ ns.logging_dir }}"
     overwrite_output_dir: True
-    per_device_train_batch_size: 16
-    per_device_eval_batch_size: 16
-    learning_rate: 1.0e-3
+    per_device_train_batch_size: 16 ## Decrease on OOM errors!
+    per_device_eval_batch_size: 32
+    learning_rate: 1.0e-4 ## Relatively safe, but not idea for most models.
     num_train_epochs: 1
     eval_steps: 100
     logging_steps: 500
     eval_strategy: "steps"
     save_strategy: "no"
     logging_strategy: "steps"
-    lr_scheduler_type: "constant"
+    lr_scheduler_type: "cosine"
     ## Additional common params
     ## use_cpu: True ; Set in config for debugging
     ## max_steps: -1

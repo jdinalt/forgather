@@ -2,6 +2,7 @@
 -- extends "types/training_script/causal_lm/causal_lm.yaml"
 
 -- block base_directories
+    ## Set project paths
     -- set ns.forgather_dir = normpath(joinpath(project_dir, '..', '..', '..'))
     -- include 'paths/example_paths.yaml'
 -- endblock base_directories
@@ -12,6 +13,15 @@
     == super()
     -- set ns.config_name = "Project Name"
     -- set ns.config_description = "An example configuration"
+    
+    ## Initialize a new model from scratch
+    -- set ns.create_new_model = True
+
+    ## Save model, when training is complete
+    -- set ns.save_model = True
+
+    ## Required to load a custom model
+    -- set ns.trust_remote_code = True
 -- endblock config_metadata
 
 
@@ -29,10 +39,15 @@
     -- include 'project.model_config'
 -- endblock construct_new_model
 
+
+-- block trainer_callbacks
+    -- include 'project.callbacks'
+<< endblock trainer_callbacks
+
 #-------------------- project.trainer_config --------------------
 ## Select one-of:
 ## trainers/( trainer.yaml | accel_trainer.yaml | hf_trainer.yaml )
--- extends 'trainers/trainer.yaml'
+-- extends 'trainers/accel_trainer.yaml'
 
 
 -- block trainer_meta_config
@@ -44,18 +59,26 @@
 -- block trainer_args
     == super()
     # Project Overrides
-    per_device_train_batch_size: 64
+    learning_rate: 5.0e-4
+    per_device_train_batch_size: 16
     per_device_eval_batch_size: 64
     logging_steps: 100
     eval_steps: 500
+    lr_scheduler_type: "cosine"
+    
+    ## Stop early for quick test.
+    ## max_steps: 1000
 << endblock trainer_args
 
 #-------------------- project.model_config --------------------
--- extends 'models/tiny/tiny_d128_l2.yaml'
+-- extends 'models/causal_transformer.yaml'
 
 -- block model_config
     == super()
     
     # Project Overrides
-    hidden_size: 256
 << endblock model_config
+
+
+#-------------------- project.callbacks --------------------
+-- extends 'callbacks/loggers.yaml'

@@ -4,15 +4,12 @@
 -- block config_metadata
     == super()
     ## Experiment Metadata
-    -- set ns.config_name = "My ML Science Project"
+    -- set ns.config_name = 'My ML Science Project'
     -- set ns.config_description = "It's not supid, it's advanced!"
     -- set ns.model_name = 'my_custom_model'
-
-    ## Initialize a new model from scratch
-    -- set ns.create_new_model = True
-
-    ## Save model, when training is complete
-    -- set ns.save_model = True
+    
+    ## Name the logging directory to match the model name
+    -- set ns.log_name = ns.model_name
 -- endblock config_metadata
 
 
@@ -27,6 +24,7 @@
     -- include 'experiment.model_config'
 -- endblock construct_new_model
 
+
 ## The next line defines a new template within the same file.
 #-------------------- experiment.trainer_config --------------------
 -- extends 'project.trainer_config'
@@ -35,8 +33,8 @@
     == super()
     
     # {{ ns.config_name }} Overrides
-    max_steps: 1000
 -- endblock trainer_args
+
 
 #-------------------- experiment.model_config --------------------
 -- extends 'project.model_config'
@@ -45,5 +43,4 @@
     == super()
 
     # {{ ns.config_name }} Overrides
-    num_hidden_layers: 3
 -- endblock model_config
