@@ -32,8 +32,8 @@
 -- block model_submodule_searchpath
 # Add 'bits' to model's module.
 .define: &model_submodule_searchpath
-    - "{{ ns.output_dir }}"
     - "{{ joinpath(ns.forgather_dir, 'model_src', 'bits') }}"
+    - "{{ ns.output_dir }}"
 << endblock model_submodule_searchpath
 
 
@@ -82,7 +82,7 @@
     -- endblock layer_factory
 
     -- block layer_stack_factory
-.define: &layer_stack_factory !factory:.causal_layer_stack:CausalLayerStack@layer_stack_factory
+.define: &layer_stack_factory !factory:.layer_stack:LayerStack@layer_stack_factory
     layer_factory: *layer_factory
     num_hidden_layers: !var "num_hidden_layers"
     -- endblock layer_stack_factory

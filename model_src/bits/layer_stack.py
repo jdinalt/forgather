@@ -3,7 +3,7 @@ from typing import Optional, Callable
 from torch import nn, Tensor, FloatTensor
 
 
-class CausalLayerStack(nn.Module):
+class LayerStack(nn.Module):
     def __init__(
         self,
         layer_factory: Callable,
@@ -19,8 +19,6 @@ class CausalLayerStack(nn.Module):
     def forward(
         self,
         hidden_states: FloatTensor,
-        *,
-        attention_mask: Optional[FloatTensor] = None,
         **kwargs,
     ) -> FloatTensor:
         for layer in self.layers:

@@ -66,7 +66,7 @@ class InitWeights:
         return f"{type(self).__name__}(std={self.std})"
 
 
-class CausalLayerStack(nn.Module):
+class LayerStack(nn.Module):
     def __init__(
         self,
         layer_factory: Callable,
@@ -371,7 +371,7 @@ class CausalTransformer(PreTrainedModel):
             config.vocab_size,
         )
 
-        self.layer_stack = CausalLayerStack(
+        self.layer_stack = LayerStack(
             layer_factory=lambda: PostLNLayer(
                 feedforward=FeedforwardLayer(
                     d_model=config.hidden_size,
