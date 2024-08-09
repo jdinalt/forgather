@@ -13,7 +13,7 @@
 -- endblock model_definition
 
 #-------------------- experiment.model_config --------------------
--- extends 'models/dynamic_lm.yaml'
+-- extends 'models/dynamic_causal_transformer.yaml'
 
 -- block feedforward_factory
 # GLU Variants Improve Transformer: https://arxiv.org/pdf/2002.05202v1

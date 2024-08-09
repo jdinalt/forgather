@@ -9,5 +9,5 @@
 
 
 -- block model_definition
-    -- include 'models/dynamic_lm.yaml'
+    -- include 'models/dynamic_causal_transformer.yaml'
 -- endblock model_definition

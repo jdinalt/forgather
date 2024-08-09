@@ -1,25 +1,9 @@
--- extends 'models/abstract/custom_causal_lm.yaml'
+-- extends 'models/abstract/dynamic_causal_lm.yaml'
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "Dynamic Causal Languange Model"
-    -- set model_def.description = "This model's implemetation modules can be swapped out entirely through the configuraiton."
-    ## name of the model class
-    -- set model_def.cls = 'DynamicCasualLM'
-    ## name of the configuration class
-    -- set model_def.cfg_cls = 'DynamicCausalLMConfig'
-    ## path to file containing model class
-    -- set model_def.config_path = joinpath(ns.model_src_dir, 'dynamic_causal_lm.py')
-    ## path to file containing configuration class; be default, we assume they are the same.
-    -- set model_def.model_path = model_def.config_path
-    ## Code generation naming policy:
-    ##   "required" : Only assign names to objects when they show up in more than on place in the graph.
-    ##     This results in the most compact representation.
-    ##   "named" : Assign names when required or if the object has been named in the definition.
-    ##   "all" : Assign names to all objects; generate automatic names, when not specified.
-    ##     This results in a very flat structure, but the hierarchy may not be readily apparent
-    ##     and the is very verbose.
-    -- set model_def.name_policy = "required"
+    -- set model_def.name = "Dynamic Causal Transformer"
+    -- set model_def.description = "A vanilla causal transformer model."
 -- endblock model_meta_config
 
 
@@ -27,14 +11,6 @@
     ## Default tokenizer
     -- include 'tokenizers/tiny_8k.yaml'
 << endblock model_tokenizer
-
-
--- block model_submodule_searchpath
-# Add 'bits' to model's module.
-.define: &model_submodule_searchpath
-    - "{{ joinpath(ns.forgather_dir, 'model_src', 'bits') }}"
-    - "{{ ns.output_dir }}"
-<< endblock model_submodule_searchpath
 
 
 ## These are all modular 'bits' which all can be swapped out with other
@@ -50,26 +26,30 @@
 -- block model_bits
     -- block loss_fn_factory
 .define: &loss_fn_factory !factory:.causal_loss:CausalLoss@loss_fn_factory []
-    -- endblock loss_fn_factory
+    << endblock loss_fn_factory
+
 
     -- block layer_norm_factory
 .define: &layer_norm_factory !factory:torch.nn:LayerNorm@layer_norm_factory
     normalized_shape: !var "hidden_size"
-    -- endblock layer_norm_factory
+    << endblock layer_norm_factory
+
 
     -- block feedforward_factory
 .define: &feedforward_factory !factory:.feedforward_layer:FeedforwardLayer@feedforward_factory
     d_model: !var "hidden_size"
     d_feedforward: !var "dim_feedforward"
     dropout: !var "activation_dropout"
-    -- endblock feedforward_factory
+    << endblock feedforward_factory
+
 
     -- block attention_factory
 .define: &attention_factory !factory:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
     d_model: !var "hidden_size"
     num_heads: !var "num_attention_heads"
     dropout: !var "attention_dropout"
-    -- endblock attention_factory
+    << endblock attention_factory
+
 
     -- block layer_factory
 .define: &layer_factory !lambda:.post_ln_layer:PostLNLayer@layer_factory
@@ -79,25 +59,29 @@
     norm2: *layer_norm_factory
     dropout: !var "layer_dropout"
     residual_dropout: !var "residual_dropout"
-    -- endblock layer_factory
+    << endblock layer_factory
+
 
     -- block layer_stack_factory
 .define: &layer_stack_factory !factory:.layer_stack:LayerStack@layer_stack_factory
     layer_factory: *layer_factory
     num_hidden_layers: !var "num_hidden_layers"
-    -- endblock layer_stack_factory
+    << endblock layer_stack_factory
+
 
     -- block output_decoder_factory
 .define: &output_decoder_factory !factory:torch.nn:Linear@output_decoder_factory
     - !var "hidden_size"
     - !var "vocab_size"
-    -- endblock output_decoder_factory
+    << endblock output_decoder_factory
+
 
     -- block positional_encoder_factory
 .define: &positional_encoder_factory !factory:.sinusoidal_pe:SinusoidalPE@positional_encoder_factory
     d_model: !var "hidden_size"
     max_sequence_length: !var "max_sequence_length"
-    -- endblock positional_encoder_factory
+    << endblock positional_encoder_factory
+
 
     -- block input_encoder_factory
 .define: &input_encoder_factory !factory:.input_encoder:InputEncoder@input_encoder_factory
@@ -105,12 +89,14 @@
     vocab_size: !var "vocab_size"
     dropout: !var "embedding_dropout"
     positional_encoder: *positional_encoder_factory
-    -- endblock input_encoder_factory
+    << endblock input_encoder_factory
+
 
     -- block init_weights_factory
 .define: &init_weights_factory !factory:.init_weights:InitWeights@init_weights_factory
     std: !var "initializer_range"
-    -- endblock init_weights_factory
+    << endblock init_weights_factory
+
 
     -- block model_factory
 .define: &model_factory !singleton:.causal_lm:CasualLM@model_factory
@@ -119,26 +105,12 @@
     output_decoder: *output_decoder_factory
     layer_stack: *layer_stack_factory
     init_weights: *init_weights_factory
-    -- endblock model_factory
+    << endblock model_factory
 << endblock model_bits
-
-
--- block model_code_generator
-.define: &model_code_writer !singleton:forgather.ml.construct:write_file@model_code_writer
-    data: &model_code_generator !meta:forgather.codegen:generate_code@model_code_generator
-        obj: *model_factory
-        factory_name: "construct_model"
-        relaxed_kwargs: True
-        name_policy: "{{ model_def.name_policy }}"
-    output_file: "{{ joinpath(ns.output_dir, 'model_factory.py') }}"
-    return_value: "Model constructor generated by Forgather 1.0"
--- endblock model_code_generator
 
 
 -- block model_config
     == super()
-    code_generator: *model_code_writer
-    # Convert model definition to a JSON compatible encoding for the configuration to store.
     hidden_size: 512
     num_attention_heads: 8
     num_hidden_layers: 6
@@ -153,4 +125,3 @@
     attention_dropout: 0.0
     activation_dropout: 0.0
 << endblock model_config
-

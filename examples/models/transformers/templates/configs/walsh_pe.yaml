@@ -13,7 +13,7 @@
 -- endblock model_definition
 
 #-------------------- experiment.model_config --------------------
--- extends 'models/dynamic_lm.yaml'
+-- extends 'models/dynamic_causal_transformer.yaml'
 
 -- block positional_encoder_factory
 # Note: This is the author's own creation; there is no literature to cite.

@@ -29,10 +29,10 @@
 
 -- block model_config_defs
     == super()
+.define: &model_submodule_searchpath
 -- block model_submodule_searchpath
-# Model is entirely self-contained; no sub-modules.
-.define: &model_submodule_searchpath []
--- endblock model_submodule_searchpath
+<< endblock model_submodule_searchpath
+    - "{{ ns.output_dir }}"
 
 -- filter trim()
 -- block model_bits

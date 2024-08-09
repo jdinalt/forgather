@@ -1,4 +1,4 @@
--- extends 'models/dynamic_lm.yaml'
+-- extends 'models/dynamic_causal_transformer.yaml'
 
 -- block model_meta_config
     == super()
