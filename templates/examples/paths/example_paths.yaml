@@ -1,7 +1,0 @@
-## Set the relative path from the project to the common 'assets' directory
-## -- set ns.forgather_dir = normpath(joinpath(project_dir, '..', '..'))
-
--- set ns.model_src_dir = joinpath(ns.forgather_dir, 'model_src')
--- set ns.models_dir = normpath(joinpath(project_dir, 'output_models'))
--- set ns.tokenizers_dir = joinpath(ns.forgather_dir, 'tokenizers')
--- set ns.datasets_dir = joinpath(ns.forgather_dir, 'datasets')
