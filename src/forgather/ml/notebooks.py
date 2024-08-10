@@ -52,7 +52,6 @@ def find_file_specs(config):
 
 def render_meta(meta, title=""):
     md = f"{title}"
-    md += f"Project Directory: {os.path.abspath(meta.project_dir)}\n\n"
     md += f"Meta Config: [{os.path.abspath(meta.meta_path)}]({os.path.relpath(meta.meta_path)})\n\n"
     for level, name, path in meta.environment.find_referenced_templates(meta.name):
         md += f"{' ' * 4 * level}- [{name}]({os.path.relpath(path)})\n\n"
@@ -228,7 +227,7 @@ def delete_dir(target, prompt):
 
 
 def render_project_index(
-    project_dir=".", config_template="", materialize=True, pp_first=False
+    project_dir=".", config_template="", materialize=True, pp_first=False, **kwargs
 ):
     """
     Render project information
@@ -238,10 +237,10 @@ def render_project_index(
     materialize: Materialize the configuration. Without doing so, dynamic imports may not show up.
     pp_first: Preprocess before loading. This can be useful for debugging, if loading raises and exception.
     """
-
     try:
         md = ""
         md += render_project_readme(project_dir)
+        md += f'#### Project Directory: "{os.path.abspath(project_dir)}"\n\n'
 
         # Load project meta and get default config
         meta = MetaConfig(project_dir)
@@ -268,11 +267,13 @@ def render_project_index(
             environment, config_template_path, "## Included Templates\n"
         )
 
+        # Perform discrete pp-step, if set.
+        # Useful, should there be a failure in YAML processing.
         if pp_first:
-            pp_config = environment.preprocess(config_template_path)
+            pp_config = environment.preprocess(config_template_path, **kwargs)
             md += render_codeblock("yaml", pp_config, "## Preprocessed Config\n")
 
-        config, pp_config = environment.load(config_template_path).get()
+        config, pp_config = environment.load(config_template_path, **kwargs).get()
 
         config_meta = config.meta()
         md += f"### Config Metadata:\n\n"
@@ -307,13 +308,17 @@ def render_project_index(
 
 
 def display_project_index(
-    project_dir=".", config_template="", materialize=True, pp_first=False
+    project_dir=".",
+    config_template="",
+    materialize=True,
+    pp_first=False,
+    **kwargs,
 ):
     try:
         display(
             ds.Markdown(
                 render_project_index(
-                    project_dir, config_template, materialize, pp_first
+                    project_dir, config_template, materialize, pp_first, **kwargs
                 )
             )
         )

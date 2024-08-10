@@ -1,11 +1,23 @@
 from torch import nn, Tensor
+import torch
 
 
 class InitWeights:
+    """
+    Conventional transformer weight initialization.
+    """
+
     def __init__(self, std: float):
         self.std = std
 
+    @torch.no_grad()
     def __call__(self, module: nn.Module) -> None:
+        """
+        Called with the top-level module with weights as an argument.
+        """
+        module.apply(self.init_weights)
+
+    def init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=self.std)
             if module.bias is not None:

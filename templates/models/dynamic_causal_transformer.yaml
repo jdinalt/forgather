@@ -24,6 +24,8 @@
 ## transformer archetecture, Attention is All You Need, obviously
 ## excepting this being a causal LM.
 -- block model_bits
+
+
     -- block loss_fn_factory
 .define: &loss_fn_factory !factory:.causal_loss:CausalLoss@loss_fn_factory []
     << endblock loss_fn_factory
@@ -106,6 +108,8 @@
     layer_stack: *layer_stack_factory
     init_weights: *init_weights_factory
     << endblock model_factory
+
+
 << endblock model_bits
 
 

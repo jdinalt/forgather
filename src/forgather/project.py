@@ -20,6 +20,7 @@ class Project:
         self,
         project_dir: Optional[str | os.PathLike] = ".",
         config_name: Optional[str] = "",
+        **kwargs,
     ):
         """
         An abstract project representation which hides some of the details
@@ -65,7 +66,9 @@ class Project:
         )
 
         # Load the pre-processed config and the config graph
-        self.config, self.pp_config = self.environment.load(config_template_path).get()
+        self.config, self.pp_config = self.environment.load(
+            config_template_path, **kwargs
+        ).get()
 
     def __call__(self, **kwargs):
         """

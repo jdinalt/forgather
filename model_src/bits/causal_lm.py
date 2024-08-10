@@ -20,7 +20,7 @@ class CasualLM(nn.Module):
         self.output_decoder = output_decoder
         self.layer_stack = layer_stack
         self.init_weights = init_weights
-        self.apply(init_weights)
+        self.init_weights(self)
 
     def extra_repr(self):
         return f"loss_fn={self.loss_fn}, init_weights={self.init_weights}"
