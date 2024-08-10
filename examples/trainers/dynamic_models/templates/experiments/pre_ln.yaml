@@ -10,30 +10,5 @@
 
 
 -- block construct_new_model
-    -- include 'experiment.model_config'
+    -- include 'models/pre_ln.yaml'
 -- endblock construct_new_model
-
-#-------------------- experiment.model_config --------------------
--- extends 'project.model_config'
-
--- block layer_factory
-# Pre-ln override; replaces post-LN module with pre-LN module.
-# On Layer Normalization in the Transformer Architecture: https://arxiv.org/pdf/2002.04745
-.define: &layer_factory !lambda:.pre_ln_layer:PreLNLayer
-    feedforward: *feedforward_factory
-    attention: *attention_factory
-    norm1: *layer_norm_factory
-    norm2: *layer_norm_factory
-    dropout: !var "layer_dropout"
-    residual_dropout: !var "residual_dropout"
--- endblock layer_factory
-
-
--- block layer_stack_factory
-
-.define: &layer_stack_factory !factory:.causal_layer_stack:CausalLayerStack
-    layer_factory: *layer_factory
-    num_hidden_layers: !var "num_hidden_layers"
-    # Pre-LN override; add a layer-norm to the end of the stack.
-    post_norm: *layer_norm_factory
--- endblock layer_stack_factory

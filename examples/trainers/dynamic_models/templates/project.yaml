@@ -13,15 +13,6 @@
     -- include 'project.trainer_config'
 -- endblock trainer_definition
 
-
--- block construct_new_model
-    -- include 'project.model_config'
--- endblock construct_new_model
-
-#-------------------- project.model_config --------------------
--- extends 'models/tiny/tiny_causal.yaml'
-
-
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
 

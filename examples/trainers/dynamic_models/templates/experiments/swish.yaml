@@ -10,15 +10,5 @@
 
 
 -- block construct_new_model
-    -- include 'experiment.model_config'
+    -- include 'models/swish.yaml'
 -- endblock construct_new_model
-
-#-------------------- experiment.model_config --------------------
--- extends 'project.model_config'
-
--- block feedforward_factory
-    == super()
-    # Replace the default activation ReLU with SiLU (Swish)
-    # https://pytorch.org/docs/stable/generated/torch.nn.SiLU.html#torch.nn.SiLU
-    activation: !factory:torch.nn:SiLU []
--- endblock feedforward_factory

@@ -10,26 +10,5 @@
 
 
 -- block construct_new_model
-    -- include 'experiment.model_config'
+    -- include 'models/swi-glu.yaml'
 -- endblock construct_new_model
-
-#-------------------- experiment.model_config --------------------
--- extends 'project.model_config'
-
--- block feedforward_factory
-# SwiGLU config override.
-# GLU Variants Improve Transformer: https://arxiv.org/pdf/2002.05202v1
-.define: &feedforward_factory !factory:.glu_feedforward:GLUFeedforwardLayer
-    d_model: !var "hidden_size"
-    d_feedforward: !var "dim_feedforward"
-    dropout: !var "activation_dropout"
--- endblock feedforward_factory
-
-
--- block model_config
-== super()
-    # Scale down, to compensate for increased parameter count
-    # GLU-feedforward increases parameter could by 1.5, so scale down
-    # 1024 * 2/3 ~ 682
-    dim_feedforward: 682
-<< endblock model_config

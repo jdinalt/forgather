@@ -1,0 +1,29 @@
+## Tiny models model test-harness project template
+-- extends 'types/model/model_type.yaml'
+
+
+## Setup base directories for the example projects
+-- block base_directories
+    -- set ns.forgather_dir = normpath(joinpath(project_dir, '..', '..', '..', '..'))
+-- endblock base_directories
+
+
+-- block resource_directories
+    == super()
+    ## Point project model_src_dir to parent's model_src
+    -- set ns.project_model_src_dir = joinpath(project_dir, '..', 'model_src')
+-- endblock resource_directories
+
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Model Test Harness"
+    -- set ns.config_description = "Test and debug new models before training."
+    -- set ns.model_name = 'test_model'
+-- endblock config_metadata
+
+
+-- block model_definition
+    ## Import model definition specified as argument
+    -- include test_model
+-- endblock model_definition
