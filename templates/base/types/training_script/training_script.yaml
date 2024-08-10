@@ -1,15 +1,6 @@
 -- extends 'types/type.yaml'
 -- from 'inc/formatting.jinja' import h2
 
-## Define these in a sub-class
-## -- block base_directories required
-    ## -- set project_dir
-    ## -- set ns.models_dir
-    ## -- set ns.tokenizers_dir
-    ## -- set ns.datasets_dir
-    ## -- set ns.model_src_dir
-## -- endblock base_directories
-
 
 -- block config_metadata
     ## This block introduces new settings and defines defautls.

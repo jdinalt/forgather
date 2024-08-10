@@ -1,8 +1,7 @@
--- set main_dir = joinpath('..', '..', '..')
+-- set templates_dir = joinpath('..', '..', '..', 'templates')
 
 searchdir:
     - "templates"
-    - "{{ joinpath(main_dir, 'templates') }}"
-
-config_prefix: "configs"
-system_path: "{{ joinpath(main_dir, 'src') }}"
+    - "{{ joinpath(templates_dir, 'tiny_experiments') }}"
+    - "{{ joinpath(templates_dir, 'modellib') }}"
+    - "{{ joinpath(templates_dir, 'base') }}"

@@ -45,9 +45,11 @@ class MetaConfig:
         self.searchpath = [
             os.path.abspath(self.norm_path(path)) for path in config.searchdir
         ]
-        self.config_prefix = config.get("config_prefix", "config")
+        self.config_prefix = config.get("config_prefix", "configs")
         self.default_cfg = config.get("default_config", None)
-        self.system_path = self.norm_path(config.get("system_path", None))
+        self.system_path = config.get("system_path", None)
+        if self.system_path is not None:
+            self.system_path = self.norm_path(self.system_path)
 
     def norm_path(self, path):
         return os.path.normpath(os.path.join(self.project_dir, path))

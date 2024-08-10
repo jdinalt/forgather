@@ -6,10 +6,29 @@
 
 
 -- block base_directories required
-    ## -- set ns.models_dir
-    ## -- set ns.tokenizers_dir
-    ## -- set ns.datasets_dir
+    ## 'project_dir' is provided as an environment variable
+
+    ## The installed location of the Forgather directory
+    ##-- set ns.forgather_dir = ...
 -- endblock base_directories
+
+
+-- block resource_directories
+    ## The directory where models are stored
+    -- set ns.models_dir = joinpath(project_dir, 'output_models')
+
+    ## Project-specific model source code directory
+    -- set ns.project_model_src_dir = joinpath(project_dir, 'model_src')
+    
+    ## Shared model source directory for custom models
+    -- set ns.model_src_dir = joinpath(ns.forgather_dir, 'model_src')
+
+    ## The directory in which custom tokenizers are stored
+    -- set ns.tokenizers_dir = joinpath(ns.forgather_dir, 'tokenizers')
+
+    ## The directory in which datasets are stored
+    -- set ns.datasets_dir = joinpath(ns.forgather_dir, 'datasets')
+-- endblock resource_directories
 
 
 -- block config_metadata
@@ -41,7 +60,9 @@
 
 -- filter trim()
 -- block variable_listing
+# ns.forgather_dir: "{{ ns.forgather_dir }}"
 # ns.models_dir: "{{ ns.models_dir }}"
+# ns.project_model_src_dir: "{{ ns.project_model_src_dir }}"
 # ns.tokenizers_dir: "{{ ns.tokenizers_dir }}"
 # ns.datasets_dir: "{{ ns.datasets_dir }}"
 << endblock variable_listing
