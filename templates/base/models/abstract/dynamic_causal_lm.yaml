@@ -3,9 +3,8 @@
 -- block model_meta_config
     == super()
     -- set model_def.name = "Dynamic Causal Languange Model"
-    ##-- set model_def.model_type = ... # Huggingface model type identifier
-    ##-- set model_def.model_path = ... # Where to save generated model code
-    ##-- set model_def.config_path = model_def.model_path
+    ## Used to name the generated model file and to set the HF model type.
+    -- set model_def.short_name = "dynamic_causal_lm"
     ## Where to search for model source templates.
     -- set model_def.model_template_searchpath = joinpath(ns.forgather_dir, 'model_src')
     ## The name of the model source template to use
@@ -25,9 +24,19 @@
 -- endblock model_meta_config
 
 
+-- block model_globals
+    -- set model_def.model_path = joinpath(ns.output_dir, model_def.short_name + ".py")
+    -- set model_def.config_path = model_def.model_path
+    -- set model_def.model_type = "forgather-dynamic-causal-" + model_def.short_name
+    -- set model_def.bits_dir = joinpath(ns.forgather_dir, 'model_src', 'bits')
+<< endblock model_globals
+
+
 -- block model_header
     == super()
+# model_def.short_name = "{{ model_def.short_name }}"
 # model_def.model_type = "{{ model_def.model_type }}"
+# model_def.model_path = "{{ model_def.model_path }}"
 # model_def.model_template_searchpath = "{{ abspath(model_def.model_template_searchpath) }}"
 # model_def.model_template_name = "{{ model_def.model_template_name }}"
 # model_def.name_policy = "{{ model_def.name_policy }}"
@@ -36,7 +45,7 @@
 
 ## Note reversed order of super(), as we want to search from specific to general
 -- block model_submodule_searchpath
-    - "{{ joinpath(ns.forgather_dir, 'model_src', 'bits') }}"
+    - "{{ model_def.bits_dir }}"
     == super()
 << endblock model_submodule_searchpath
 

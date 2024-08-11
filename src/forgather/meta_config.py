@@ -36,7 +36,7 @@ class MetaConfig:
     default_cfg: str
     config_dict: dict
 
-    def __init__(self, project_dir, meta_name="meta.yaml"):
+    def __init__(self, project_dir=".", meta_name="meta.yaml"):
         self.name = meta_name
         self.meta_path = os.path.join(project_dir, meta_name)
         config = self._load_config(self.meta_path, project_dir=project_dir)

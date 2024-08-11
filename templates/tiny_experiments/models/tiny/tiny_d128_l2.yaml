@@ -2,8 +2,9 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "Tiny-d128-2L"
-    -- set model_def.description = "A Plain Vanilla Transformer with 2 layers, d=128, and a 2k tiny_stories tokenizer." 
+    -- set model_def.name = "Tiny-d128-l2"
+    -- set model_def.description = "A Plain Vanilla Transformer with 2 layers, d=128, and a 2k tiny_stories tokenizer."
+    -- set model_def.short_name = "tiny_d128_l2"
 -- endblock model_meta_config
 
 

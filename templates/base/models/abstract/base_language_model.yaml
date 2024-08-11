@@ -9,6 +9,11 @@
 << endblock model_meta_config
 
 
+-- block model_globals
+## Values computed from above
+<< endblock model_globals
+
+
 -- block model_header
 # Name: {{ model_def.name }}
 # Description: {{ model_def.description }}

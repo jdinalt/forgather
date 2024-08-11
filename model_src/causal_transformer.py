@@ -421,8 +421,8 @@ class CausalTransformer(PreTrainedModel):
 
         # Return type depends on arguments.
         if return_dict:
-            return CausalLMOutput(loss=logits, logits=logits)
-        elif labels is not None:
+            return CausalLMOutput(loss=loss, logits=logits)
+        elif loss is not None:
             return (loss, logits)
         else:
             return logits

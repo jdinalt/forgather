@@ -4,6 +4,7 @@
     == super()
     -- set model_def.name = "Tiny Causal"
     -- set model_def.description = "A scaled-down version of the base Causal Transformer"
+    -- set model_def.short_name = "tiny_causal_transformer"
 << endblock model_meta_config
 
 

@@ -18,6 +18,10 @@ from forgather.codegen import generate_code
 from forgather.yaml_encoder import to_yaml
 
 
+def display_md(md: str):
+    display(ds.Markdown(md))
+
+
 def find_file_specs(config):
     """
     Generate all referenced file names in config
@@ -66,7 +70,9 @@ def display_meta(meta, title=""):
     display(ds.Markdown(render_meta(meta, title)))
 
 
-def render_template_list(templates: Iterator[Tuple[str, str]], title: str = ""):
+def render_template_list(
+    templates: Iterator[Tuple[str, str]], title: str = "", with_paths=False
+):
     """
     Given a template iterator, display a list of templates
 
@@ -74,7 +80,10 @@ def render_template_list(templates: Iterator[Tuple[str, str]], title: str = ""):
     """
     md = f"{title}"
     for template_name, template_path in templates:
-        md += f"- [{template_name}]({os.path.relpath(template_path)})\n"
+        md += f"- [{template_name}]({os.path.relpath(template_path)})"
+        if with_paths:
+            md += " " + os.path.abspath(template_path)
+        md += "\n"
     md += "\n"
     return md
 
@@ -255,7 +264,9 @@ def render_project_index(
         active_config = config_template if len(config_template) else default_config
         md += f"Default Configuration: {default_config}\n\n"
         md += f"Active Configuration: {active_config}\n\n"
-        md += render_template_list(meta.find_templates(""), "## Available Templates\n")
+        md += render_template_list(
+            sorted(meta.find_templates("")), "## Available Templates\n"
+        )
 
         # Create new config environment and load configuration
         environment = ConfigEnvironment(
@@ -326,3 +337,21 @@ def display_project_index(
         display(ds.Markdown(e.markdown))
         delattr(e, "markdown")
         raise e
+
+
+def display_model_project_index(project_dir="."):
+    md = ""
+    try:
+        md += render_project_readme(project_dir)
+        md += f'#### Project Directory: "{os.path.abspath(project_dir)}"\n\n'
+        meta = MetaConfig(project_dir)
+        md += render_meta(meta, "## Meta Config\n")
+        template_iter = filter(
+            lambda x: not x[0].startswith("abstract/"),
+            meta.find_templates(prefix="models"),
+        )
+        md += render_template_list(
+            template_iter, "## Available Models\n", with_paths=True
+        )
+    finally:
+        display_md(md)

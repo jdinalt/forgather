@@ -1,4 +1,3 @@
-## Tiny models model test-harness project template
 -- extends 'model_test/sub_project.yaml'
 
 ## Setup base directories for the example projects
