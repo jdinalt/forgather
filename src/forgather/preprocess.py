@@ -167,6 +167,9 @@ class PPEnvironment(SandboxedEnvironment):
         "normpath": _os_path_normpath,
         "abspath": os.path.abspath,
         "relpath": os.path.relpath,
+        "dirname": os.path.dirname,
+        "basename": os.path.basename,
+        "splitext": os.path.splitext,
         "repr": repr,
         # Given a module file path, return the module name
         "modname_from_path": lambda path: os.path.splitext(os.path.basename(path))[0],

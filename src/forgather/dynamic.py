@@ -111,6 +111,7 @@ def import_dynamic_module(
     """
     module_name, module_path = parse_module_name_or_path(module_name_or_path)
 
+    importlib.invalidate_caches()
     mod = sys.modules.get(module_name, None)
     if mod is None:
         if module_path is None:

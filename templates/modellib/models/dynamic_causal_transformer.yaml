@@ -4,6 +4,9 @@
     == super()
     -- set model_def.name = "Dynamic Causal Transformer"
     -- set model_def.description = "A vanilla causal transformer model."
+    -- set model_def.model_type = "forgather-dynamic-causal-transformer"
+    -- set model_def.model_path = joinpath(ns.output_dir, "dynamic_causal_transformer.py")
+    -- set model_def.config_path = model_def.model_path
 -- endblock model_meta_config
 
 

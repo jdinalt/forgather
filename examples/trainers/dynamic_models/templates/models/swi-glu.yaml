@@ -1,5 +1,15 @@
 -- extends 'models/control.yaml'
 
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Swi-GLU"
+    -- set model_def.description = "Base + Swi-GLU FF layer"
+    -- set model_def.model_type = "dynmaic-models-swiglu"
+    -- set model_def.model_path = joinpath(ns.output_dir, "swiglu_model.py")
+    -- set model_def.config_path = model_def.model_path
+-- endblock model_meta_config
+
+
 -- block feedforward_factory
 # SwiGLU config override.
 # GLU Variants Improve Transformer: https://arxiv.org/pdf/2002.05202v1

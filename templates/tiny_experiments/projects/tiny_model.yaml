@@ -19,7 +19,7 @@
     == super()
     -- set ns.config_name = "Model Test Harness"
     -- set ns.config_description = "Test and debug new models before training."
-    -- set ns.model_name = 'test_model'
+    -- set ns.model_name = splitext(basename(test_model))[0]
 -- endblock config_metadata
 
 

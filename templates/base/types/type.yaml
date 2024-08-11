@@ -48,9 +48,9 @@
 -- block header
 # {{ utcisotime() }}
 # Description: {{ ns.config_description }}
-# Project Dir: {{ project_dir }}
+# Project Dir: {{ abspath(project_dir) }}
 # Current Working Dir: "{{ getcwd() }}"
-# Forgather Config Dir: "{{ forgather_config_dir() }}"
+# Forgather Config Dir: "{{ abspath(forgather_config_dir()) }}"
 
 << endblock header
 -- endfilter
@@ -60,11 +60,11 @@
 
 -- filter trim()
 -- block variable_listing
-# ns.forgather_dir: "{{ ns.forgather_dir }}"
-# ns.models_dir: "{{ ns.models_dir }}"
-# ns.project_model_src_dir: "{{ ns.project_model_src_dir }}"
-# ns.tokenizers_dir: "{{ ns.tokenizers_dir }}"
-# ns.datasets_dir: "{{ ns.datasets_dir }}"
+# ns.forgather_dir: "{{ abspath(ns.forgather_dir) }}"
+# ns.models_dir: "{{ abspath(ns.models_dir) }}"
+# ns.project_model_src_dir: "{{ abspath(ns.project_model_src_dir) }}"
+# ns.tokenizers_dir: "{{ abspath(ns.tokenizers_dir) }}"
+# ns.datasets_dir: "{{ abspath(ns.datasets_dir) }}"
 << endblock variable_listing
 -- endfilter
 

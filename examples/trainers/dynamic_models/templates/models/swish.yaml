@@ -1,5 +1,15 @@
 -- extends 'models/control.yaml'
 
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Swish"
+    -- set model_def.description = "Base + Swish (SiLu) activation"
+    -- set model_def.model_type = "dynmaic-models-swish"
+    -- set model_def.model_path = joinpath(ns.output_dir, "swish_model.py")
+    -- set model_def.config_path = model_def.model_path
+-- endblock model_meta_config
+
+
 -- block feedforward_factory
     == super()
     # Replace the default activation ReLU with SiLU (Swish)

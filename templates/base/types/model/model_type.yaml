@@ -19,8 +19,8 @@
 
 -- block variable_listing
     == super()
-# ns.model_src_dir: "{{ ns.model_src_dir }}"
-# ns.output_dir: "{{ ns.output_dir }}"
+# ns.model_src_dir: "{{ abspath(ns.model_src_dir) }}"
+# ns.output_dir: "{{ abspath(ns.output_dir) }}"
 << endblock variable_listing
 
 -- block main_body

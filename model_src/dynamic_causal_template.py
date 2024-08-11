@@ -1,6 +1,6 @@
 # See: https://huggingface.co/docs/transformers/custom_models
-from typing import Optional, Tuple, Callable
-from abc import abstractmethod
+# This is a template model, with the details filled-in by the code-generator.
+from typing import Optional, Tuple
 
 from torch import nn, Tensor, LongTensor, FloatTensor
 from transformers.modeling_outputs import CausalLMOutput
@@ -11,9 +11,11 @@ from transformers import (
     AutoModelForCausalLM,
 )
 
-from .model_factory import construct_model
+-- for module, name in imports:
+from {{ module }} import {{ name }}
+-- endfor
 
-model_type = "forgather-dynamic-causal-lm"
+model_type = "{{ model_type }}"
 
 
 class DynamicCausalLMConfig(PretrainedConfig):
@@ -26,7 +28,18 @@ class DynamicCasualLM(PreTrainedModel):
 
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
-        self.causal_lm = construct_model(**config.to_dict())
+        self.causal_lm = self.construct_model(**config.to_dict())
+
+    @staticmethod
+    def construct_model(
+    -- for var, has_default, default in variables:
+        {{ var }}{% if has_default %}={{ repr(default) }}{% endif %},
+    -- endfor
+        **kwargs
+    ):
+        {{ definitions|indent(8) }}
+        
+        return {{ main_body|indent(8) }}
 
     def forward(
         self,

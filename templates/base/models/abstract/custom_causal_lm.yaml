@@ -16,8 +16,8 @@
     == super()
 # model_def.cls = "{{ model_def.cls }}"
 # model_def.cfg_cls = "{{ model_def.cfg_cls }}"
-# model_def.config_path = "{{ model_def.config_path }}"
-# model_def.model_path = "{{ model_def.model_path }}"
+# model_def.config_path = "{{ abspath(model_def.config_path) }}"
+# model_def.model_path = "{{ abspath(model_def.model_path) }}"
 << endblock model_header
 
 
