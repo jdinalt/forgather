@@ -6,9 +6,9 @@
     ## Used to name the generated model file and to set the HF model type.
     -- set model_def.short_name = "dynamic_causal_lm"
     ## Where to search for model source templates.
-    -- set model_def.model_template_searchpath = joinpath(ns.forgather_dir, 'model_src')
+    -- set model_def.model_template_searchpath = joinpath(ns.forgather_dir, 'templates', 'dynamic_models')
     ## The name of the model source template to use
-    -- set model_def.model_template_name = 'dynamic_causal_template.py'
+    -- set model_def.model_template_name = 'causal_lm.py'
     -- set model_def.description = "This model's implemetation modules can be swapped out entirely through the configuraiton."
     -- set model_def.cls = 'DynamicCasualLM'
     -- set model_def.cfg_cls = 'DynamicCausalLMConfig'
