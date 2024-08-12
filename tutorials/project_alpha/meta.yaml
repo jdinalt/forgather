@@ -1,0 +1,14 @@
+# A list of paths to search for configuration templates.
+# By default, search a sub-dir of the project-directory named "templates"
+# When a template name is specified, all of the directories in the list
+# will be searched in the order given.
+searchpath: [ "joinpath(project_dir, 'templates')" ]
+
+# Where, in the template namespace, are the projects top-level 'configuraiton'
+# templates located. For example, with the default search path, configuration
+# templates are located in "./templates/configs/*"
+config_prefix: "configs"
+
+# The name of the default configuration. If unspecified, the first configuration
+# in the "configs" namespace will be automatically chosen.
+default_config: "default.yaml"

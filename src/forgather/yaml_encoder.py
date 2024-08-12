@@ -80,9 +80,11 @@ class YamlEncoder(GraphEncoder):
     @track_depth
     def _var(self, obj: VarNode):
         if obj.value is Undefined:
-            return f"!var {obj.constructor}"
+            return f"!var {repr(obj.constructor)}"
         else:
-            return f"!var {{ name: {obj.constructor}, default: {repr(obj.value)} }}"
+            return (
+                f"!var {{ name: {repr(obj.constructor)}, default: {repr(obj.value)} }}"
+            )
 
     def _callable(self, obj: CallableNode):
         if obj.identity in self.defined_ids:

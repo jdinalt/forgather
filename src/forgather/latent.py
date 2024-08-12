@@ -95,6 +95,7 @@ class CallableNode(Node, metaclass=ABCMeta):
         named_list=list,
         named_tuple=tuple,
         named_dict=dict,
+        call=lambda fn, *args, **kwargs: fn(*args, **kwargs),
     )
 
     def __init__(
@@ -215,6 +216,7 @@ class Materializer:
         for i, arg in enumerate(args):
             key = "arg" + str(i)
             kwargs[key] = arg
+
         self.kwargs = kwargs
         return self._materialize(obj)
 

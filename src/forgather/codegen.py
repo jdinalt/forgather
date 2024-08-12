@@ -74,27 +74,36 @@ class PyEncoder(GraphEncoder):
 
     @track_depth
     def _list(self, obj: list):
-        s = "[\n"
-        for value in obj:
-            s += self._indent() + self._encode(value) + ",\n"
-        s += self._indent(-1) + "]"
-        return s
+        if len(obj) == 0:
+            return "[]"
+        else:
+            s = "[\n"
+            for value in obj:
+                s += self._indent() + self._encode(value) + ",\n"
+            s += self._indent(-1) + "]"
+            return s
 
     @track_depth
     def _dict(self, obj: dict):
-        s = "{\n"
-        for key, value in obj.items():
-            s += self._indent() + repr(key) + ": " + self._encode(value) + ",\n"
-        s += self._indent(-1) + "}"
-        return s
+        if len(obj) == 0:
+            return "{}"
+        else:
+            s = "{\n"
+            for key, value in obj.items():
+                s += self._indent() + repr(key) + ": " + self._encode(value) + ",\n"
+            s += self._indent(-1) + "}"
+            return s
 
     @track_depth
     def _tuple(self, obj: tuple):
-        s = "(\n"
-        for value in obj:
-            s += self._indent() + self._encode(value) + ",\n"
-        s += self._indent(-1) + ")"
-        return s
+        if len(obj) == 0:
+            return "tuple()"
+        else:
+            s = "(\n"
+            for value in obj:
+                s += self._indent() + self._encode(value) + ",\n"
+            s += self._indent(-1) + ")"
+            return s
 
     def _var(self, obj: VarNode):
         # We include a bool for if the var is undefined, as this detection
@@ -124,6 +133,8 @@ class PyEncoder(GraphEncoder):
         if ":" in obj.constructor:
             if obj.constructor == "operator:getitem":
                 return self._getitem(obj)
+            elif obj.constructor == "operator:call":
+                return self._call(obj)
             module, callable_name = obj.constructor.split(":")
             if module.endswith(".py"):
                 is_dynamic = True
@@ -138,6 +149,8 @@ class PyEncoder(GraphEncoder):
             match obj.constructor:
                 case "getattr":
                     return self._getattr(obj)
+                case "call":
+                    return self._call(obj)
                 case "values":
                     return self._values(obj)
                 case "keys":
@@ -182,6 +195,19 @@ class PyEncoder(GraphEncoder):
         mapping = obj.args[0]
         key = obj.args[1]
         s = self._encode(mapping) + f"[{repr(key)}]"
+        return s
+
+    def _call(self, obj):
+        s = self._encode(obj.args[0]) + "("
+        if len(obj.kwargs) + len(obj.args) - 1 == 0:
+            s += ")"
+            return s
+        s += "\n"
+        for arg in obj.args[1:]:
+            s += self._indent() + self._encode(arg) + ",\n"
+        for key, value in obj.kwargs.items():
+            s += self._indent() + str(key) + "=" + self._encode(value) + ",\n"
+        s += self._indent(-1) + ")"
         return s
 
     def _getattr(self, obj):

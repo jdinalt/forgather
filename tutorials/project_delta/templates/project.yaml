@@ -1,0 +1,28 @@
+-- extends 'projects/tiny.yaml'
+
+-- block base_directories
+    -- set ns.forgather_dir = normpath(joinpath(project_dir, '..', '..'))
+-- endblock base_directories
+
+
+-- block config_metadata
+    == super()
+    -- set ns.create_new_model = True
+    -- set ns.save_model = False
+    ## Change trainer implementation
+    ##-- set ns.trainer_class = 'trainers/accel_trainer.yaml'
+-- endblock config_metadata
+
+
+-- block trainer_definition
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+
+-- block trainer_args
+    == super()
+    # max_steps: 500
+-- endblock trainer_args

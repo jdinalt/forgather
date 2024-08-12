@@ -1,0 +1,160 @@
+-- set ns = namespace()
+
+-- from 'formatting.yaml' import h1, h2, h3, sep
+-- filter trim()
+
+-- block config_vars
+    -- set ns.config_name = "Fashion MNIST Trainer"
+    -- set ns.config_description = "Base configuration, based on Torch tutorial parameters."
+    -- set ns.source_citation = "https://pytorch.org/tutorials/beginner/basics/optimization_tutorial.html"
+    -- set ns.hidden_dim = 512
+    -- set ns.epochs = 5
+    -- set ns.batch_size = 64
+    -- set ns.logging_steps = 100
+    -- set ns.lr = 1.0e-3
+<< endblock config_vars
+
+-- endfilter ## filter trim() setup
+== h1(ns.config_name)
+-- block header
+# {{ utcisotime() }}
+# Description: {{ ns.config_description }}
+# Project Dir: {{ abspath(project_dir) }}
+# Citation: {{ ns.source_citation }}
+<< endblock header
+== '\n' + sep()
+
+
+== h2('Config Vars')
+
+-- block variable_listing
+# ns.hidden_dim = {{ ns.hidden_dim }}
+# ns.epochs = {{ ns.epochs }}
+# ns.batch_size = {{ ns.batch_size }}
+# ns.lr = {{ ns.lr }}
+# ns.logging_steps = {{ ns.logging_steps }}
+<< endblock variable_listing
+
+## The '.define:' syntax is specific to Forgather. While these resolve
+## to regular YAML mappings, anything starting with a dot will automatically
+## be removed from the output.
+
+## Note: The &name and *name syntax is part of the YAML language,
+## which defines "anchors" and "aliases." When an alias refers to
+## an anchor, it does not copy the object -- it's a reference to
+## the object. Even though the '.define' is eliminated, the definition
+## will survive, as long as it shows up in the output.
+
+## What's the difference between the '!factory' and !singleton' tags?
+## A !factory generates a new instance of the defined object at each
+## occurance, while only a single instance of a !singleton is constructed.
+## If they only show up once in the graph, they are equivalent.
+## There is also a !lambda. See syntax reference for details.
+
+== h2('Model Definition')
+
+-- block activation_fn
+.define: &activation_fn !factory:torch.nn:ReLU@activation_fn []
+<< endblock activation_fn
+
+
+-- block model_main
+.define: &model !singleton:torch.nn:Sequential@model
+    - !factory:torch.nn:Flatten []
+    - !factory:torch.nn:Linear [ {{ 28 * 28 }}, {{ ns.hidden_dim }} ]
+    - *activation_fn
+    - !factory:torch.nn:Linear [ {{ ns.hidden_dim }}, {{ ns.hidden_dim }} ]
+    - *activation_fn
+    - !factory:torch.nn:Linear [ {{ ns.hidden_dim }}, 10 ]
+<< endblock model_main
+
+
+== h2('Dataset')
+
+.define: &transform !factory:torchvision.transforms:ToTensor@transform []
+
+-- block dataset
+.define: &training_data !singleton:torchvision.datasets:FashionMNIST
+    root: "data"
+    train: True
+    download: True
+    transform: *transform
+
+.define: &test_data !singleton:torchvision.datasets:FashionMNIST
+    root: "data"
+    train: False
+    download: True
+    transform: *transform
+<< endblock dataset
+
+
+-- block data_loaders
+.define: &train_dataloader !singleton:torch.utils.data:DataLoader
+    args: [ *training_data ]
+    kwargs: { batch_size: {{ ns.batch_size }} }
+
+.define: &test_dataloader !singleton:torch.utils.data:DataLoader
+    args: [ *test_data ]
+    kwargs: { batch_size: {{ ns.batch_size }} }
+<< endblock data_loaders
+
+
+== h2('Trainer')
+
+## This implements a method-call (model.parameters()). It's pretty ugly and not 
+## recommended, unless it's the least-bad option, but it works and demonstrates that
+## the flexibility is there for exceptional cases.
+.define: &model_params !singleton:call [ !singleton:getattr [ *model, "parameters" ] ]
+
+== h3('Optimizer')
+
+-- block optimizer
+.define: &optimizer !singleton:torch.optim:SGD
+    args: [ *model_params ]
+    kwargs:
+        lr: {{ ns.lr }}
+<< endblock optimizer
+
+
+== h3('Loss Function')
+
+-- block loss_fn
+.define: &loss_fn !singleton:torch.nn:CrossEntropyLoss []
+<< endblock loss_fn
+
+
+== h3('Trainer')
+
+-- block trainer
+.define: &trainer !singleton:{{ joinpath(project_dir, "src", "trainer.py") }}:Trainer@trainer
+    train_dataloader: *train_dataloader
+    test_dataloader: *test_dataloader
+    model: *model
+    loss_fn: *loss_fn
+    optimizer: *optimizer
+    epochs: {{ ns.epochs }}
+    batch_size: {{ ns.batch_size }}
+    logging_steps: {{ ns.logging_steps }}
+<< endblock trainer
+
+
+== h2('Output')
+
+-- block meta
+meta:
+    name: "{{ ns.config_name }}"
+    description: "{{ ns.config_description }}"
+    citation: "{{ ns.source_citation }}"
+    hidden_dim: {{ ns.hidden_dim }}
+    epochs: {{ ns.epochs }}
+    batch_size: {{ ns.batch_size }}
+    logging_steps: {{ ns.logging_steps }}
+    lr: {{ ns.lr }}
+<< endblock meta
+
+
+-- block main
+main:
+    model: *model
+    trainer: *trainer
+<< endblock main

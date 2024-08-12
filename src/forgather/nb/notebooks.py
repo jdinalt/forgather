@@ -236,7 +236,12 @@ def delete_dir(target, prompt):
 
 
 def render_project_index(
-    project_dir=".", config_template="", materialize=True, pp_first=False, **kwargs
+    project_dir=".",
+    config_template="",
+    materialize=True,
+    pp_first=False,
+    materialize_kwargs=None,
+    **kwargs,
 ):
     """
     Render project information
@@ -246,6 +251,8 @@ def render_project_index(
     materialize: Materialize the configuration. Without doing so, dynamic imports may not show up.
     pp_first: Preprocess before loading. This can be useful for debugging, if loading raises and exception.
     """
+    if materialize_kwargs is None:
+        materialize_kwargs = {}
     try:
         md = ""
         md += render_project_readme(project_dir)
@@ -285,14 +292,15 @@ def render_project_index(
             md += render_codeblock("yaml", pp_config, "## Preprocessed Config\n")
 
         config, pp_config = environment.load(config_template_path, **kwargs).get()
-
-        config_meta = config.meta()
+        config_meta = Latent.materialize(config.meta)
         md += f"### Config Metadata:\n\n"
         md += render_codeblock("python", pformat(config_meta))
 
         # Materialize the configuration
         if materialize:
-            output = Latent.materialize(config, pp_config=pp_config)
+            output = Latent.materialize(
+                config, **(dict(pp_config=pp_config) | materialize_kwargs)
+            )
         else:
             output = None
 
@@ -323,13 +331,19 @@ def display_project_index(
     config_template="",
     materialize=True,
     pp_first=False,
+    materialize_kwargs=None,
     **kwargs,
 ):
     try:
         display(
             ds.Markdown(
                 render_project_index(
-                    project_dir, config_template, materialize, pp_first, **kwargs
+                    project_dir,
+                    config_template,
+                    materialize,
+                    pp_first,
+                    materialize_kwargs=materialize_kwargs,
+                    **kwargs,
                 )
             )
         )

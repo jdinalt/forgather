@@ -42,8 +42,11 @@ class MetaConfig:
         config = self._load_config(self.meta_path, project_dir=project_dir)
         self.config_dict = config
         self.project_dir = project_dir
+        self.searchpath = config.get(
+            "searchdir", [os.path.join(project_dir, "templates")]
+        )
         self.searchpath = [
-            os.path.abspath(self.norm_path(path)) for path in config.searchdir
+            os.path.abspath(self.norm_path(path)) for path in self.searchpath
         ]
         self.config_prefix = config.get("config_prefix", "configs")
         self.default_cfg = config.get("default_config", None)

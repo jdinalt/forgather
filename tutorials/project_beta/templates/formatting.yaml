@@ -1,0 +1,9 @@
+{%- macro h2(name='Heading 2') %}{{ "{:#^40}".format(' ' + name + ' ') }}{% endmacro %}
+{%- macro h3(name='Heading 3') %}{{ '# **' + name + '**' }}{% endmacro %}
+{%- macro h4(name='Heading 4') %}{{ '# ' + name }}{% endmacro %}
+{%- macro sep() %}{{ '#' + "{:-^39}".format('') }}{% endmacro %}
+{%- macro h1(name='Title') %}
+{{ sep() }}
+{{ '# ' + "{:^39}".format(' ' + name + ' ') }}
+{{ sep() }}
+{%- endmacro %}

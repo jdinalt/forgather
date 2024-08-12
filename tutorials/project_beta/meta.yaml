@@ -1,0 +1,5 @@
+# Meta Default:
+# searchpath: ['./templates']
+# config_prefix: "configs"
+
+default_config: "list.yaml"

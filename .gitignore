@@ -6,6 +6,7 @@
 *.sh
 
 output_models
+data
 
 # Vim swap files
 *.swp
