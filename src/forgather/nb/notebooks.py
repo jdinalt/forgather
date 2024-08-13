@@ -153,8 +153,10 @@ def display_filelink(path, title="", name=None):
 def get_train_cmdline(train_script_path, meta, nproc="gpu", cuda_devices=None):
     s = (
         f"torchrun --standalone --nproc-per-node '{nproc}' '{train_script_path}'"
-        + f" -p '{os.path.abspath(meta.project_dir)}' -s '{os.path.abspath(meta.system_path)}'"
+        + f" -p '{os.path.abspath(meta.project_dir)}'"
     )
+    if meta.system_path is not None:
+        s += f" -s '{os.path.abspath(meta.system_path)}'"
     if cuda_devices is not None:
         s = f"CUDA_VISIBLE_DEVICES='{cuda_devices}' " + s
     return s
@@ -309,12 +311,8 @@ def render_project_index(
         if not pp_first:
             md += render_codeblock("yaml", pp_config, "## Preprocessed Config\n")
 
-        md += render_codeblock(
-            "yaml", to_yaml(config), "## Loaded Configuration to YAML\n"
-        )
-        md += render_codeblock(
-            "python", generate_code(config), "### Generated Source Code\n"
-        )
+        md += render_codeblock("yaml", to_yaml(config), "## Loaded Configuration\n")
+        md += render_codeblock("python", generate_code(config), "## Generated Code\n")
         if output is not None:
             md += render_codeblock(
                 "python", pformat(output), "## Constructed Project\n"

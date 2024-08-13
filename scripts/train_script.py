@@ -7,6 +7,7 @@ from loguru import logger
 import transformers
 import datasets
 
+from forgather.ml.training_script import training_loop
 
 def init_logging(args):
     if int(os.environ["RANK"]) == 0:
@@ -70,12 +71,8 @@ def parse_args(args=None):
     args = parser.parse_args(args)
     logger.info(f"args: {args}")
 
-    # We only resolve these modules after we know where to look for them.pconfig
     if args.syspath is not None:
         sys.path.insert(0, args.syspath)
-    # We only resolve these modules after we know where to look for them.
-    global training_loop
-    from forgather.ml.training_script import training_loop
 
     return args
 

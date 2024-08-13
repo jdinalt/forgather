@@ -32,7 +32,7 @@ class SinusoidalPE(nn.Module):
 
     def forward(
         self, x: FloatTensor, *, position_ids: Optional[LongTensor] = None
-    ) -> Tensor:
+    ) -> FloatTensor:
         seq_length = x.size(1)
         if position_ids is not None:
             return x + self.weight[position_ids]

@@ -1,3 +1,4 @@
+from typing import Callable, Optional
 from torch import nn, Tensor, LongTensor, FloatTensor
 
 
@@ -6,6 +7,13 @@ class InputEncoder(nn.Module):
     Converts input-ids to embeddings and, optionally, adds positional encodings
 
     Also performs embedding dropout by default, as per the Attention is All You Need.
+
+    d_model: Model hidden dimesnion
+    vocab_size: Number of tokens in vocabulary
+    dropout: Embedding dropout probability, as per original Transformer paper.
+    positional_encoder_factory: Constructs a positional encoder; default is None
+    embedding_factory: Constructs an embedding implementaiton. Default is nn.Embedding(vocab_size, d_model)
+    embeddint_scale: Multiplier for embedding; defaults to sqrt(d_model), as per Attention is All you Need.
     """
 
     def __init__(
@@ -13,10 +21,10 @@ class InputEncoder(nn.Module):
         d_model: int,
         vocab_size: int,
         *,
-        dropout: float = 0.1,
-        positional_encoder: nn.Module = None,
-        # Defaults to d_model ** 0.5
-        embedding_scale: float = None,
+        dropout: Optional[float] = 0.1,
+        positional_encoder_factory: Optional[Callable] = None,
+        embedding_factory: Optional[Callable] = None,
+        embedding_scale: Optional[float] = None,
     ):
         super().__init__()
         self.d_model = d_model
@@ -32,8 +40,15 @@ class InputEncoder(nn.Module):
         else:
             self.dropout = nn.Dropout(dropout)
 
-        self.embedding = nn.Embedding(vocab_size, d_model)
-        self.positional_encoder = positional_encoder
+        if embedding_factory is not None:
+            self.embedding = embedding_factory()
+        else:
+            self.embedding = nn.Embedding(vocab_size, d_model)
+
+        if positional_encoder_factory is not None:
+            self.positional_encoder = positional_encoder_factory()
+        else:
+            self.positional_encoder = None
 
     def extra_repr(self):
         return f"d_model={self.d_model}, vocab_size={self.vocab_size}, embedding_scale={self.embedding_scale}"

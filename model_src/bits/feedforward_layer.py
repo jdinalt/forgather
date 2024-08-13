@@ -1,3 +1,4 @@
+from typing import Optional, Callable
 from torch import nn, Tensor, FloatTensor
 from collections import OrderedDict
 
@@ -10,9 +11,9 @@ class FeedforwardLayer(nn.Sequential):
         d_model: int,
         d_feedforward: int,
         *,
-        activation=nn.ReLU(),
-        dropout: float = 0.0,
-        bias: bool = True,
+        activation_factory: Optional[Callable] = lambda: nn.ReLU(),
+        dropout: Optional[float] = 0.0,
+        bias: Optional[bool] = True,
     ):
         self.d_model = d_model
         self.d_feedforward = d_feedforward
@@ -25,7 +26,7 @@ class FeedforwardLayer(nn.Sequential):
                         "dropout",
                         nn.Dropout(dropout) if dropout != 0.0 else nn.Identity(),
                     ),
-                    ("activation", activation),
+                    ("activation", activation_factory()),
                     ("linear2", nn.Linear(self.d_feedforward, self.d_model, bias=bias)),
                 ]
             )

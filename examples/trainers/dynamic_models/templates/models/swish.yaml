@@ -12,5 +12,5 @@
     == super()
     # Replace the default activation ReLU with SiLU (Swish)
     # https://pytorch.org/docs/stable/generated/torch.nn.SiLU.html#torch.nn.SiLU
-    activation: !factory:torch.nn:SiLU []
+    activation_factory: !lambda:torch.nn:SiLU []
 -- endblock feedforward_factory

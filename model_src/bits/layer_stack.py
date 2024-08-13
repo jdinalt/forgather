@@ -9,12 +9,12 @@ class LayerStack(nn.Module):
         layer_factory: Callable,
         num_hidden_layers,
         *,
-        post_norm: Optional[nn.Module] = None,
+        post_norm_factory: Optional[Callable] = None,
     ):
         super().__init__()
         self.layers = nn.ModuleList([layer_factory() for _ in range(num_hidden_layers)])
-        if post_norm is not None:
-            self.layers.append(post_norm)
+        if post_norm_factory is not None:
+            self.layers.append(post_norm_factory())
 
     def forward(
         self,

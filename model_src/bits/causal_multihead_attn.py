@@ -1,5 +1,5 @@
 import torch
-from torch import nn, Tensor
+from torch import nn, Tensor, FloatTensor
 import math
 
 
@@ -30,12 +30,7 @@ class CausalMultiheadAttn(nn.Module):
         self.query_linear = nn.Linear(self.d_model, self.d_model, bias=bias)
         self.key_linear = nn.Linear(self.d_model, self.d_model, bias=bias)
         self.value_linear = nn.Linear(self.d_model, self.d_model, bias=bias)
-
-        # The purpose of the output layer is to expand the dimension of the low-rank
-        # attention heads back to d_model and sum their output. With only a single head,
-        # this only adds dead-weights.
-        if self.num_heads > 1:
-            self.output_linear = nn.Linear(self.d_model, self.d_model, bias=bias)
+        self.output_linear = nn.Linear(self.d_model, self.d_model, bias=bias)
 
         if dropout == 0.0:
             self.dropout = nn.Identity()
@@ -45,7 +40,7 @@ class CausalMultiheadAttn(nn.Module):
     def extra_repr(self):
         return f"d_model={self.d_model}, num_heads={self.num_heads}"
 
-    def forward(self, qkv: Tensor) -> Tensor:
+    def forward(self, qkv: FloatTensor) -> FloatTensor:
         # qkv: (batch_size, seq_len, d_qkv)
         batch_size, seq_len, d_qkv = qkv.shape
 
@@ -88,7 +83,4 @@ class CausalMultiheadAttn(nn.Module):
         )
 
         # Project the concatenated output through the output matrix.
-        if self.num_heads == 1:
-            return attended_values
-        else:
-            return self.output_linear(attended_values)
+        return self.output_linear(attended_values)

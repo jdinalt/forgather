@@ -1,5 +1,6 @@
+from typing import Optional, Callable
 import torch
-from torch import nn
+from torch import nn, FloatTensor, Tensor
 
 
 # GLU Variants Improve Transformer
@@ -10,8 +11,8 @@ class GLUFeedforwardLayer(nn.Module):
         d_model: int,
         d_feedforward: int,
         *,
-        activation=nn.SiLU(),
-        dropout=0.1,
+        activation_factory: Optional[Callable] = lambda: nn.SiLU(),
+        dropout: Optional[float] = 0.1,
     ):
         super().__init__()
         self.d_model = d_model
@@ -19,7 +20,7 @@ class GLUFeedforwardLayer(nn.Module):
 
         self.linear1 = nn.Linear(self.d_model, self.d_feedforward * 2, bias=False)
         self.linear2 = nn.Linear(self.d_feedforward, self.d_model, bias=False)
-        self.activation = activation
+        self.activation = activation_factory()
         if dropout == 0.0:
             self.dropout = nn.Identity()
         else:
@@ -28,7 +29,7 @@ class GLUFeedforwardLayer(nn.Module):
     def extra_repr(self):
         return f"d_model={self.d_model}, d_feedforward={self.d_feedforward}"
 
-    def forward(self, x):
+    def forward(self, x: FloatTensor) -> FloatTensor:
         x, gate = self.linear1(x).chunk(2, dim=-1)
         x = x * self.activation(gate)
         x = self.dropout(x)
