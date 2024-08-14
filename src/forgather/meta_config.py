@@ -8,9 +8,10 @@ from .config import ConfigEnvironment, ConfigDict
 from .preprocess import forgather_config_dir
 
 
-def preprocessor_globals(project_dir):
+def preprocessor_globals(project_dir, workspace_root):
     return dict(
         project_dir=project_dir,
+        workspace_root=workspace_root,
         hostname=platform.node(),
         uname=platform.uname(),
         versions={"python": platform.python_version()}
@@ -25,6 +26,9 @@ def preprocessor_globals(project_dir):
     )
 
 
+WORKSPACE_CONFIG_DIR_NAME = "forgather_workspace"
+
+
 @dataclass()
 class MetaConfig:
     project_dir: str
@@ -35,6 +39,7 @@ class MetaConfig:
     config_prefix: str
     default_cfg: str
     config_dict: dict
+    workspace_root: str
 
     def __init__(self, project_dir=".", meta_name="meta.yaml"):
         self.name = meta_name
@@ -108,10 +113,37 @@ class MetaConfig:
             config_path
         ), f"'The template, '{template_name}', does not exist in '{project_directory}'"
 
+        # Build searchpath for meta-config.
+        # We include the project, the workspace config, and the user's Forgather config directory.
         searchpath = [project_directory]
+
+        self.workspace_root = self._find_workspace_dir(project_directory)
+        searchpath.append(os.path.join(self.workspace_root, WORKSPACE_CONFIG_DIR_NAME))
+        kwargs["workspace_root"] = self.workspace_root
+
         user_templates_dir = os.path.join(forgather_config_dir(), "templates")
         if os.path.isdir(user_templates_dir):
             searchpath.append(user_templates_dir)
+
         self.environment = ConfigEnvironment(searchpath=searchpath)
         config = self.environment.load(template_name, **kwargs)
         return config.config
+
+    def _find_workspace_dir(self, project_dir):
+        """
+        Recurisvely search parent directories for Forgather workspace config directory
+        """
+        workspace_root = os.path.abspath(project_dir)
+
+        while True:
+            workspace_config_dir = os.path.join(
+                workspace_root, WORKSPACE_CONFIG_DIR_NAME
+            )
+            if os.path.isdir(workspace_config_dir):
+                return workspace_root
+            parent_dir, _ = os.path.split(workspace_root)
+            if parent_dir == workspace_root:
+                raise RuntimeError(
+                    f"Workspace directory,'forgather_workspace', was not found under project directory {project_dir}"
+                )
+            workspace_root = parent_dir

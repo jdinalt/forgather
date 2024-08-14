@@ -5,11 +5,10 @@
 -- filter trim()
 
 
--- block base_directories required
-    ## 'project_dir' is provided as an environment variable
-
-    ## The installed location of the Forgather directory
-    ##-- set ns.forgather_dir = ...
+-- block base_directories
+    ## At a minimum, this block is expected to define:
+    ## -- set ns.forgather_dir = ...
+    -- include "base_directories.yaml"
 -- endblock base_directories
 
 

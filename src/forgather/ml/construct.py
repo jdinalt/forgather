@@ -7,6 +7,7 @@ import sys
 from .distributed import main_process_first
 
 from forgather.meta_config import MetaConfig
+from forgather.project import Project
 from forgather.config import ConfigEnvironment
 from forgather.dynamic import walk_package_modules
 from forgather.latent import Undefined
@@ -122,20 +123,11 @@ def load_from_config(project_dir: str, config_template: str | NoneType = None):
     Construct an object from a project configuration
 
     project_directory: Path to project.
-    config_template: Config template name; if None, use default config.
-
-    TODO: Add ability to pass args to pre-processor and constructor
+    config_template: Config template name; if None, use default config
     """
-    meta = MetaConfig(project_dir)
-    # Get default
-    if config_template is None:
-        config_template = meta.default_config()
-    environment = ConfigEnvironment(
-        searchpath=meta.searchpath,
-        global_vars={"project_dir": project_dir},
-    )
-    config = environment.load(meta.config_path(config_template)).config
-    return config.main()
+
+    proj = Project(project_dir, config_template)
+    return proj()["main"]
 
 
 @main_process_first()

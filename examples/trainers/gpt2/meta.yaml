@@ -1,7 +1,1 @@
--- set templates_dir = joinpath('..', '..', '..', 'templates')
-
-searchdir:
-    - "templates"
-    - "{{ joinpath(templates_dir, 'tiny_experiments') }}"
-    - "{{ joinpath(templates_dir, 'modellib') }}"
-    - "{{ joinpath(templates_dir, 'base') }}"
+-- extends "meta_defaults.yaml"

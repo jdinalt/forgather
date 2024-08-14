@@ -1,0 +1,27 @@
+-- set ns = namespace()
+
+## Import default paths; common to meta and regular templates.
+-- include "base_directories.yaml"
+-- set ns.forgather_templates_dir = joinpath(ns.forgather_dir, "templates")
+
+## Search these directories for templates
+## The list is split, which makes it easier to selectively append or prepend.
+searchdir:
+-- block searchdir_project
+    - "{{ joinpath(project_dir, 'templates') }}"
+-- endblock searchdir_project
+
+
+-- block searchdir_common
+    - "{{ joinpath(workspace_root, 'forgather_workspace') }}"
+    - "{{ joinpath(ns.forgather_templates_dir, 'tiny_experiments') }}"
+    - "{{ joinpath(ns.forgather_templates_dir, 'modellib') }}"
+    - "{{ joinpath(ns.forgather_templates_dir, 'base') }}"
+-- endblock searchdir_common
+
+
+-- block configs
+## Set default prefix and config name.
+## config_prefix: "configs"
+## default_config: "control.yaml"
+-- endblock configs

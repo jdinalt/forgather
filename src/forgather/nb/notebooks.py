@@ -58,7 +58,8 @@ def render_meta(meta, title=""):
     md = f"{title}"
     md += f"Meta Config: [{os.path.abspath(meta.meta_path)}]({os.path.relpath(meta.meta_path)})\n\n"
     for level, name, path in meta.environment.find_referenced_templates(meta.name):
-        md += f"{' ' * 4 * level}- [{name}]({os.path.relpath(path)})\n\n"
+        md += f"{' ' * 4 * level}- [{name}]({os.path.relpath(path)})\n"
+    md += "\n"
     md += f"Template Search Paths:\n"
     for path in meta.searchpath:
         md += f"- [{os.path.abspath(path)}]({os.path.relpath(path)})\n"
@@ -280,7 +281,7 @@ def render_project_index(
         # Create new config environment and load configuration
         environment = ConfigEnvironment(
             searchpath=meta.searchpath,
-            global_vars=preprocessor_globals(project_dir),
+            global_vars=preprocessor_globals(project_dir, meta.workspace_root),
         )
 
         md += render_referenced_templates_tree(

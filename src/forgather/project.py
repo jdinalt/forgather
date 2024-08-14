@@ -62,7 +62,7 @@ class Project:
         # Construct a project environment
         self.environment = ConfigEnvironment(
             searchpath=self.meta.searchpath,
-            global_vars=preprocessor_globals(project_dir),
+            global_vars=preprocessor_globals(project_dir, self.meta.workspace_root),
         )
 
         # Load the pre-processed config and the config graph

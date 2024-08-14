@@ -1,12 +1,6 @@
 ## Project level definitions and overrides go here.
 -- extends "types/training_script/causal_lm/causal_lm.yaml"
 
--- block base_directories
-    ## Set location of Forgather directory
-    -- set ns.forgather_dir = normpath(joinpath(project_dir, '..', '..', '..'))
--- endblock base_directories
-
-
 ## Set Project level defaults
 -- block config_metadata
     == super()

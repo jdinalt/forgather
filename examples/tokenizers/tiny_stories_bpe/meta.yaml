@@ -1,9 +1,6 @@
--- set templates = joinpath('..', '..', '..', 'templates')
+-- extends "meta_defaults.yaml"
 
-searchdir:
-    - "templates"
-    - "{{ joinpath(templates, 'tiny_experiments') }}"
-    - "{{ joinpath(templates, 'base') }}"
-
+-- block configs
 config_prefix: "configs"
 default_config: "2k.yaml"
+<< endblock configs

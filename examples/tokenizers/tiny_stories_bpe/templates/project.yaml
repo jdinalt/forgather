@@ -1,11 +1,5 @@
 -- extends 'types/tokenizer/bpe/bpe.yaml'
 
-
--- block base_directories
-    -- set ns.forgather_dir = normpath(joinpath(project_dir, '..', '..', '..'))
--- endblock base_directories
-
-
 -- block config_metadata
     == super()
     -- set ns.config_name = "Tiny Stories"
