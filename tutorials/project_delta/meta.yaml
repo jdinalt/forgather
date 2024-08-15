@@ -1,6 +1,0 @@
--- extends "meta_defaults.yaml"
-
--- block configs
-config_prefix: "configs"
-default_config: "tiny_causal.yaml"
-<< endblock configs

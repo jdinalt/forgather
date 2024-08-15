@@ -212,13 +212,27 @@ class Materializer:
         self.level = -1
         self.idmap = dict()
 
+        mtargets = kwargs.pop("mtargets", None)
+
         # Merge args with kwargs
         for i, arg in enumerate(args):
             key = "arg" + str(i)
             kwargs[key] = arg
 
         self.kwargs = kwargs
-        return self._materialize(obj)
+        if mtargets is not None:
+            return self._selective_materialize(obj, set(mtargets))
+        else:
+            return self._materialize(obj)
+
+    @track_depth
+    def _selective_materialize(self, obj: Any, mtargets: set[str]):
+        if not isinstance(obj, dict):
+            raise TypeError(
+                f"Root node is not a dictionary ({type(obj)}) and mtargets was specified."
+            )
+        iterator = filter(lambda x: x[0] in mtargets, obj.items())
+        return {key: self._materialize(value) for key, value in iterator}
 
     @track_depth
     def _materialize(self, obj):

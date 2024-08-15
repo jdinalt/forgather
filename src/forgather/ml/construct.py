@@ -127,7 +127,7 @@ def load_from_config(project_dir: str, config_template: str | NoneType = None):
     """
 
     proj = Project(project_dir, config_template)
-    return proj()["main"]
+    return proj()
 
 
 @main_process_first()

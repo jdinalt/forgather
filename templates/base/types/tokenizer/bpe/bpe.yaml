@@ -2,6 +2,7 @@
 
 -- block config_metadata
     == super()
+    -- set ns.config_class = ns.config_class + ".bpe"
     -- set ns.config_name = "Custom BPE Tokenizer"
     -- set ns.config_description = "A custom BPE tokenizer definition."
     ## -- set ns.dataset_id = 'dataset_id'

@@ -3,6 +3,7 @@
 ## Optional
 -- block config_metadata
     == super()
+    -- set ns.config_class = ns.config_class + ".model"
 -- endblock config_metadata
 
 
@@ -54,6 +55,11 @@
 main:
     model: *model
     tokenizer: *tokenizer
-    model_config: *model_config
-    generated_code: *model_code_generator
 << endblock main_output
+
+
+-- block auxiliary_outputs
+== super()
+model_config: *model_config
+generated_model_code: *model_code_generator
+<< endblock auxiliary_outputs

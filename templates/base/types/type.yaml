@@ -9,7 +9,7 @@
     ## At a minimum, this block is expected to define:
     ## -- set ns.forgather_dir = ...
     -- include "base_directories.yaml"
--- endblock base_directories
+<< endblock base_directories
 
 
 -- block resource_directories
@@ -27,18 +27,19 @@
 
     ## The directory in which datasets are stored
     -- set ns.datasets_dir = joinpath(ns.forgather_dir, 'datasets')
--- endblock resource_directories
+<< endblock resource_directories
 
 
 -- block config_metadata
     -- set ns.config_name = "Undefined"
     -- set ns.config_description = "Undefined"
--- endblock config_metadata
+    -- set ns.config_class = "type"
+<< endblock config_metadata
 
 
 -- block globals
 ## For variables computed from above data
--- endblock globals
+<< endblock globals
 
 
 -- endfilter ## filter trim() setup
@@ -83,7 +84,10 @@
 meta: &meta_output !dict:@meta
     config_name: "{{ ns.config_name }}"
     config_description: "{{ ns.config_description }}"
+    config_class: "{{ ns.config_class }}"
     project_dir: "{{ project_dir }}"
+    workspace_root: "{{ workspace_root }}"
+    forgather_dir: "{{ ns.forgather_dir }}"
     models_dir: "{{ ns.models_dir }}"
     tokenizers_dir: "{{ ns.tokenizers_dir }}"
     datasets_dir: "{{ ns.datasets_dir }}"
@@ -96,6 +100,13 @@ meta: &meta_output !dict:@meta
 ## Fill in definition of what the main output should be
 ## main: !singleton:foo ...
     << endblock main_output
+    -- endfilter
+
+
+    -- filter trim()
+    -- block auxiliary_outputs
+## Optional additional ouput targets
+    << endblock auxiliary_outputs
     -- endfilter
 << endblock config_output
 -- endfilter

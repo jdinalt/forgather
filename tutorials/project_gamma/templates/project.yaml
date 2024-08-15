@@ -142,19 +142,32 @@
 
 -- block meta
 meta:
-    name: "{{ ns.config_name }}"
-    description: "{{ ns.config_description }}"
+    config_name: "{{ ns.config_name }}"
+    config_description: "{{ ns.config_description }}"
+    config_class: "fashion_trainer"
     citation: "{{ ns.source_citation }}"
+    
+<< endblock meta
+
+
+-- block main
+main: *trainer
+<< endblock main
+
+
+-- block auxiliary_outputs
+args:
     hidden_dim: {{ ns.hidden_dim }}
     epochs: {{ ns.epochs }}
     batch_size: {{ ns.batch_size }}
     logging_steps: {{ ns.logging_steps }}
     lr: {{ ns.lr }}
-<< endblock meta
-
-
--- block main
-main:
-    model: *model
-    trainer: *trainer
-<< endblock main
+model_params: *model_params
+model: *model
+training_data: *training_data
+test_data: *test_data
+train_dataloader: *train_dataloader
+test_dataloader: *test_dataloader
+loss_fn: *loss_fn
+optimizer: *optimizer
+<< endblock auxiliary_outputs

@@ -3,6 +3,8 @@
 
 
 -- block config_metadata
+    == super()
+    -- set ns.config_class = ns.config_class + ".training_script"
     ## This block introduces new settings and defines defautls.
     -- set ns.log_name = "log"
     -- set ns.model_name = "default_model"
@@ -10,14 +12,14 @@
     -- set ns.save_model = True
     -- set ns.train = True
     -- set ns.eval = False
--- endblock config_metadata
+<< endblock config_metadata
 
 
 -- block globals
     ## Compute directories from above blocks.
     -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
     -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
--- endblock globals
+<< endblock globals
 
 
 -- block header
@@ -68,7 +70,7 @@
     -- filter trim()
     -- block model_constructor_args
 .define: &model_constructor_args {}
-    -- endblock model_constructor_args
+    << endblock model_constructor_args
     -- endfilter
 
 
@@ -76,7 +78,7 @@
     -- block model_definition required
 ## .define: &tokenizer
 ## .define: &model
-    -- endblock model_definition
+    << endblock model_definition
     -- endfilter
 
 
@@ -140,3 +142,17 @@ main: !singleton:forgather.ml.training_script:TrainingScript@training_script
     distributed_env: *distributed_env
     trainer: *trainer
 << endblock main_output
+
+
+-- block auxiliary_outputs
+== super()
+model_code_writer: *model_code_writer
+distributed_env: *distributed_env
+tokenizer: *tokenizer
+model: *model
+trainer: *trainer
+train_dataset: *train_dataset
+eval_dataset: *eval_dataset
+data_collator: *data_collator
+trainer_callbacks: *trainer_callbacks
+<< endblock auxiliary_outputs

@@ -24,19 +24,5 @@ Under "Available Configurations," there are two configs listed:
 
 Note the hierarchical template listing for the selected configuration. You can examine the referenced templates by clicking on the links in the index.
 
-## Preprocessed Config
-
-This is more interesting than the first example, as the preprocessed config was generated from multiple template files. We have also automatically generated a project header in the output.
-
-## Wrapping Up
-
-If you followed the first example, the rest should be pretty self-explanatory. Try loading the alternate configuration, "full_list.yaml."
-
-```python
-nb.display_project_index(config_template="full_list.yaml", materialize=True, pp_first=False)
-```
-
-Once you are comfortable with your understanding of how this works, the last part of this notebook demonstrates how to obtain the constructed object and the generated code.
-
 ---
 

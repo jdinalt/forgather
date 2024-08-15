@@ -1,4 +1,4 @@
-from typing import Callable, List, Any, Optional
+from typing import Callable, List, Any, Optional, Iterable
 from dataclasses import dataclass, field
 import os
 
@@ -23,11 +23,10 @@ class Project:
         **kwargs,
     ):
         """
-        An abstract project representation which hides some of the details
-        of the underlying mechanics.
+        A high-level, abstract project representation, which hides details of the underlying mechanics.
 
         project_dir: The location of the project directory
-        cnfig_name: The name of the configuration to loade; an empty string loads the default.
+        config_name: The name of the configuration to loade; an empty string loads the default.
 
         dataclass attributes:
 
@@ -70,29 +69,46 @@ class Project:
             config_template_path, **kwargs
         ).get()
 
-    def __call__(self, **kwargs):
+    def __call__(
+        self, make_targets: Optional[str | Iterable[str]] = "main", /, **kwargs
+    ):
         """
         Construct and return an instance of the configuration
 
+        make_targets: The output targets to make. By default, this is 'main'
+            If a string, returns the specified target. If an Iterable of str, returns
+            a dictionary of the specified targets. If Iterable, invalid targets will be removed
+            from the returned dictionary.
+
+            Note: Each call will construct a new set of objects, thus you could end up with duplicates
+            if you call this seperately on different targets.
         kwargs: Additional keyword-args to pass to the graph constructor.
 
-        Note: Finer grained construction can be obtained by selecting the desired targets within
-        the configuration node graph. i.e.
-
         ```python
-        Latent.materialize(proj.config['meta'])
+        # Construct and return main target
+        proj = Project()
+        main_target = proj()
 
-        # Or, if the target is a node
-        proj.config['main']['generated_code']()
-        ```
+        # Construct only confg-meta
+        meta = proj("meta")
 
-        Note: Many project types expect the pre-processed config to be passed in to the
-            constructor. This call adds this for you, but you may need to do this manually for
-            certain objects.
-
-        ```python
-        proj.config['main'](pp_config=proj.pp_config)
+        # Construct a dictionary of objects
+        outputs = proj(["model", "tokenizer"])
         ```
         """
+        if isinstance(make_targets, str):
+            mtargets = (make_targets,)
+        elif isinstance(make_targets, Iterable):
+            mtargets = make_targets
+        else:
+            raise TypeError(
+                f"make_targets must be a string on an iterable of str; found {type(make_targets)}"
+            )
+
         kwargs |= dict(pp_config=self.pp_config)
-        return Latent.materialize(self.config, **kwargs)
+        outputs = Latent.materialize(self.config, mtargets=mtargets, **kwargs)
+
+        if isinstance(make_targets, str):
+            return outputs[make_targets]
+        else:
+            return outputs

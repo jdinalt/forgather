@@ -119,7 +119,7 @@ def training_loop(project_directory, config_template=""):
     proj = Project(project_directory, config_template)
 
     # Materialize the config
-    training_script = proj()["main"]
+    training_script = proj()
 
     # Run it!
     training_script.run(pp_config=proj.pp_config)

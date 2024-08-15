@@ -106,8 +106,13 @@ def display_referenced_templates_tree(environment, path, title=""):
 
 
 # Render code via Markdown render
-def show_codeblock(language, source, header=None):
+def display_codeblock(language, source, header=None):
     display(ds.Markdown(render_codeblock(language, source, header)))
+
+
+# An alias for display_codeblock()... until it is fully depricated.
+def show_codeblock(**kwargs):
+    display_codeblock(**kwargs)
 
 
 def render_codeblock(language, source, header=None):
@@ -133,6 +138,15 @@ def render_referenced_source_list(config, title="", deep=False):
                     continue
                 visited_modules.add(hasht)
                 md += f"{' ' * 4 * (level + 1)}- [{origin}]({os.path.relpath(origin)}) : {module_name}\n"
+    return md
+
+
+def render_output_targets(config, title=""):
+    md = f"{title}"
+
+    for target in config.keys():
+        md += f"- {target}\n"
+    md += "\n"
     return md
 
 
@@ -240,8 +254,13 @@ def delete_dir(target, prompt):
 
 def render_project_index(
     project_dir=".",
+    /,
     config_template="",
-    materialize=True,
+    show_available_templates=False,
+    show_pp_config=False,
+    show_loaded_config=False,
+    show_generated_code=False,
+    materialize=False,
     pp_first=False,
     materialize_kwargs=None,
     **kwargs,
@@ -274,9 +293,10 @@ def render_project_index(
         active_config = config_template if len(config_template) else default_config
         md += f"Default Configuration: {default_config}\n\n"
         md += f"Active Configuration: {active_config}\n\n"
-        md += render_template_list(
-            sorted(meta.find_templates("")), "## Available Templates\n"
-        )
+        if show_available_templates:
+            md += render_template_list(
+                sorted(meta.find_templates("")), "## Available Templates\n"
+            )
 
         # Create new config environment and load configuration
         environment = ConfigEnvironment(
@@ -290,7 +310,7 @@ def render_project_index(
 
         # Perform discrete pp-step, if set.
         # Useful, should there be a failure in YAML processing.
-        if pp_first:
+        if pp_first and show_pp_config:
             pp_config = environment.preprocess(config_template_path, **kwargs)
             md += render_codeblock("yaml", pp_config, "## Preprocessed Config\n")
 
@@ -299,21 +319,29 @@ def render_project_index(
         md += f"### Config Metadata:\n\n"
         md += render_codeblock("python", pformat(config_meta))
 
+        materialize_kwargs |= dict(pp_config=pp_config)
         # Materialize the configuration
         if materialize:
-            output = Latent.materialize(
-                config, **(dict(pp_config=pp_config) | materialize_kwargs)
-            )
+            output = Latent.materialize(config["main"], **materialize_kwargs)
         else:
+            # If it has dynamically generated code, construct it before processing the model source
+            code_writer = config.get("model_code_writer", None)
+            if code_writer is not None:
+                Latent.materialize(code_writer, **materialize_kwargs)
             output = None
 
         md += render_referenced_source_list(config, title="## Modules\n", deep=True)
+        md += render_output_targets(config, title="## Output Targets\n")
 
-        if not pp_first:
+        if not pp_first and show_pp_config:
             md += render_codeblock("yaml", pp_config, "## Preprocessed Config\n")
 
-        md += render_codeblock("yaml", to_yaml(config), "## Loaded Configuration\n")
-        md += render_codeblock("python", generate_code(config), "## Generated Code\n")
+        if show_loaded_config:
+            md += render_codeblock("yaml", to_yaml(config), "## Loaded Configuration\n")
+        if show_generated_code:
+            md += render_codeblock(
+                "python", generate_code(config["main"]), "## Generated Code\n"
+            )
         if output is not None:
             md += render_codeblock(
                 "python", pformat(output), "## Constructed Project\n"
@@ -327,25 +355,11 @@ def render_project_index(
 
 def display_project_index(
     project_dir=".",
-    config_template="",
-    materialize=True,
-    pp_first=False,
-    materialize_kwargs=None,
+    /,
     **kwargs,
 ):
     try:
-        display(
-            ds.Markdown(
-                render_project_index(
-                    project_dir,
-                    config_template,
-                    materialize,
-                    pp_first,
-                    materialize_kwargs=materialize_kwargs,
-                    **kwargs,
-                )
-            )
-        )
+        display(ds.Markdown(render_project_index(project_dir, **kwargs)))
     except Exception as e:
         display(ds.Markdown(e.markdown))
         delattr(e, "markdown")
