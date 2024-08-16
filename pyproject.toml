@@ -20,6 +20,7 @@ dependencies = [
     "Jinja2 >= 3.1.2",
     "loguru >= 0.7.2",
     "matplotlib >= 3.8.3",
+    "meerkat-ml >= 0.4.11",
     "numpy >= 1.26.0",
     "platformdirs >= 3.10.0",
     "PyYAML >= 6.0.1",
