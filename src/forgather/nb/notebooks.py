@@ -116,8 +116,8 @@ def display_markdown(text):
 
 
 # An alias for display_codeblock()... until it is fully depricated.
-def show_codeblock(**kwargs):
-    display_codeblock(**kwargs)
+def show_codeblock(*args, **kwargs):
+    display_codeblock(*args, **kwargs)
 
 
 def render_codeblock(language, source, header=None):
