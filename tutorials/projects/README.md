@@ -1,4 +1,4 @@
-# Example Project 'Alpha'
+# Forgather Projects
 
 This is an absolutely minimalist exmpale project, which defines and constructs a simple list, which will be used to illustrate the structure of a Forgather project.
 
