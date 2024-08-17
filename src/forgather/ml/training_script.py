@@ -33,6 +33,7 @@ class TrainingScript:
     do_eval: bool = False
     distributed_env: DistributedEnvironment
     trainer: Any
+    pp_config: str
 
     def __post_init__(self):
         self.meta = DotDict(self.meta)
@@ -48,7 +49,7 @@ class TrainingScript:
                 os.makedirs(dir, exist_ok=True)
 
     @record
-    def run(self, pp_config: str = None):
+    def run(self):
         with main_process_first():
             self.validate_dirs()
 
@@ -62,11 +63,11 @@ class TrainingScript:
             print(f"output_dir: {self.meta.output_dir}")
             print(f"logging_dir: {self.meta.logging_dir}")
 
-        if pp_config is not None:
+        if self.pp_config is not None:
             # Store a copy of the pre-processed configuration in the logging directory.
             os.makedirs(self.meta.logging_dir, exist_ok=True)
             with open(os.path.join(self.meta.logging_dir, "config.yaml"), "w") as f:
-                f.write(pp_config)
+                f.write(self.pp_config)
 
         if self.do_train:
             # This is where the actual 'loop' is.
@@ -122,4 +123,4 @@ def training_loop(project_directory, config_template=""):
     training_script = proj()
 
     # Run it!
-    training_script.run(pp_config=proj.pp_config)
+    training_script.run()

@@ -60,8 +60,13 @@ class AccelTrainer(Trainer):
         """
         return self.accelerator.reduce(loss, "mean")
 
-    def _prepare_batch(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
-        return batch
+    def _prepare_batch(self, batch):
+        # The accelerate will have already moved the batch to the right device
+        # We just need to split it into positional/kw-args
+        if isinstance(batch, dict):
+            return (tuple(), batch)
+        else
+            return (batch, {})
 
     def _init_state(self) -> TrainerState:
         """

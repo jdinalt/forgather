@@ -1,0 +1,124 @@
+## We use the training_script template as our base.
+## This definition requires more details than most, as it is a relitively unique training
+## configuration, without a close template in the library to start with.
+-- extends "types/training_script/training_script.yaml"
+
+
+## Override default name and description, while adding a new "source_citation" var.
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Fashion MNIST Trainer"
+    -- set ns.config_description = "Base configuration, based on Torch tutorial parameters."
+    -- set ns.config_class = ns.config_class + ".torch_vision"
+    -- set ns.source_citation = "https://pytorch.org/tutorials/beginner/basics/optimization_tutorial.html"
+
+    ## This determines the final output directory name for the model
+    -- set ns.model_name = "base_model"
+
+    ## Name the log after the model.
+    -- set ns.log_name = ns.model_name
+-- endblock config_metadata
+
+
+## Extend the header with the new variable, above.
+-- block header
+    == super()
+# Source: {{ ns.source_citation }}
+<< endblock header
+
+
+## Define the Modle in the "model_definition" block
+## We also define sub-blocks, within model_definition, as we may want to override some of these
+## blocks in derived configurations.
+-- block model_definition
+
+## The model's loss function.
+    -- block loss_fn
+.define: &loss_fn !factory:torch.nn:CrossEntropyLoss []
+    << endblock loss_fn
+
+
+## The MLP activation function. ReLU, being the classic, but we could try something else?
+    -- block activation_factory
+.define: &activation_factory !lambda:torch.nn:ReLU@activation_factory []
+    << endblock activation_factory
+
+
+## This constructs the model via a dynamic import from the project's 'model_src' directory.
+    -- block model_constructor
+.define: &model_constructor !singleton:{{joinpath(project_dir, "model_src", "mlp_model.py")}}:MultilayerPerceptron
+    # Defaults, from PyTorch Tutorial.
+    d_input: {{ 28 * 28 }} # The input image dimensions
+    d_model: 512 # a.k.a "Hidden Dimension"
+    d_output: 10 # The number of categories in the dataset
+    activation_factory: *activation_factory
+    loss_fn: *loss_fn
+    << endblock model_constructor
+    
+
+## A "dependency_list" returns the first argument, but not before constructing
+## all the elements in the list. In this case, we use it to find the model's source code,
+## including relative imports, and copy the model's source code to the output directory.
+## Keeping the model source with the saved weights avoid issues with the model's definition
+## diverging, after initial training.
+
+# Copy model mode to output directory.
+.define: &model !singleton:forgather.ml.construct:dependency_list@model
+    - *model_constructor
+    ## This will copy the model source (and relative imports) to the output directory.
+    - !singleton:forgather.ml.construct:copy_package_files
+        - "{{ ns.output_dir }}"
+        - *model_constructor
+
+## If dynamically generated model code is used, this is expected to write the generated
+## code to the output directory. Its a hook to generate the model's code, without actually
+## constructing anything else.
+
+# Model does not have dynamic code generation.
+.define: &model_code_writer null
+-- endblock model_definition
+
+
+## Define Datasets
+-- block datasets_definition
+.define: &transform !factory:torchvision.transforms:ToTensor@transform []
+
+.define: &train_dataset !singleton:torchvision.datasets:FashionMNIST@train_dataset
+    root: "data"
+    train: True
+    download: True
+    transform: *transform
+
+.define: &eval_dataset !singleton:torchvision.datasets:FashionMNIST@eval_dataset
+    root: "data"
+    train: False
+    download: True
+    transform: *transform
+<< endblock datasets_definition
+    
+
+## Trainer definition
+-- block trainer_definition
+    ## This imports an inline-template, defined below.
+    ## Jinja2 does not allow multiple inheritance, but you can work around this by just
+    ## including a template with the desired overrides.
+    ##
+    ## The inline-template mechanisim is not standard. It's part of Forgather's 
+    ## custom template loader.
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
+
+#-------------------- project.trainer_config --------------------
+-- extends 'trainers/simple_trainer.yaml'
+
+-- block trainer_args
+    == super()
+    
+    # {{ ns.config_name }} Overrides
+    logging_steps: 100
+    per_device_train_batch_size: 64
+    per_device_eval_batch_size: 64
+    learning_rate: 1.0e-3
+    num_train_epochs: 5
+-- endblock trainer_args

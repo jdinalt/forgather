@@ -12,7 +12,7 @@ import torch
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 import transformers
-from transformers import set_seed, DataCollatorForLanguageModeling
+from transformers import set_seed
 
 from .base_trainer import BaseTrainer
 from .trainer_types import TrainerState as BaseTrainerState
@@ -115,15 +115,8 @@ class Trainer(BaseTrainer):
         assert (self.model is not None) or (
             self.model_init is not None
         ), "Either a model or a model constructor must be specified."
-        assert (self.data_collator is not None) or (
-            self.tokenizer is not None
-        ), "Either a tokenizer of data_collator must be specified."
         if self.data_collator is None:
-            self.data_collator = DataCollatorForLanguageModeling(
-                self.tokenizer,
-                mlm=False,
-                return_tensors="pt",
-            )
+            self.data_collator = torch.utils.data.default_collate
         # Holds the mean loss for the most recent train log-step
         self.mean_train_loss = float("NaN")
         # If unspecified, set a default device
@@ -135,10 +128,10 @@ class Trainer(BaseTrainer):
         if self.args.use_cpu:
             self.args.device = "cpu"
 
-    def _get_dataloader(self, dataset):
+    def _get_dataloader(self, dataset, batch_size):
         return DataLoader(
             dataset,
-            batch_size=self.args.per_device_train_batch_size,
+            batch_size=batch_size,
             collate_fn=self.data_collator,
             drop_last=self.args.dataloader_drop_last,
             num_workers=self.args.dataloader_num_workers,
@@ -176,7 +169,9 @@ class Trainer(BaseTrainer):
 
         if train_dataset is not None:
             assert train_dataset is not None, "Training requires a train_dataset"
-            self.train_dataloader = self._get_dataloader(train_dataset)
+            self.train_dataloader = self._get_dataloader(
+                train_dataset, self.args.per_device_train_batch_size
+            )
             self._update_training_steps()
             if self.optimizer is None:
                 self.optimizer = self.optimizer_factory(self.model, self.args)
@@ -189,7 +184,9 @@ class Trainer(BaseTrainer):
         if eval_dataset is not None:
             assert self.train_dataset is not None, "Evaluation requires an eval_dataset"
             if self.eval_dataset is not None:
-                self.eval_dataloader = self._get_dataloader(eval_dataset)
+                self.eval_dataloader = self._get_dataloader(
+                    eval_dataset, self.args.per_device_eval_batch_size
+                )
 
     def _train_loop(self) -> TrainOutput:
         """
@@ -207,7 +204,6 @@ class Trainer(BaseTrainer):
                 # Batch within epoch loop
                 for batch in self.train_dataloader:
                     self._dispatch_event("on_step_begin")
-                    batch = self._prepare_batch(batch)
                     loss = self._train_step(batch)
                     loss = self._reduce_loss(loss)
                     state.total_loss += loss
@@ -254,25 +250,23 @@ class Trainer(BaseTrainer):
             total_loss = torch.zeros(1, device=self.args.device)
             step = 0
             for step, batch in enumerate(self.eval_dataloader):
-                loss, _, _ = self._prediction_step(self._prepare_batch(batch))
-                loss = self._reduce_loss(loss)
+                outputs = self._prediction_step(batch)
+                loss = self._reduce_loss(outputs["loss"])
                 total_loss += loss
                 self._dispatch_event("on_prediction_step")
             metrics = {"eval_loss": (total_loss / step).item()}
             self._dispatch_event("on_evaluate", metrics=metrics)
             return metrics
 
-    def _train_step(self, batch: Tensor) -> Tensor:
+    def _train_step(self, batch: dict | tuple) -> Tensor:
         """
         Perform a single training step
 
         Returns: mean loss (detached from graph)
         """
-        outputs = self.model(**batch)
-        if isinstance(outputs, tuple):
-            loss = outputs[0]
-        else:
-            lose = outputs["loss"]
+        args, kwargs = self._prepare_batch(batch)
+        loss, _ = self.model(*args, **kwargs)
+
         self._backward(loss)
         self.optimizer.step()
         self._dispatch_event("on_optimizer_step")
@@ -372,14 +366,18 @@ class Trainer(BaseTrainer):
         metrics["epoch"] = self.state.epoch
         return metrics
 
-    def _prediction_step(self, batch: Tensor) -> Tensor:
+    def _prediction_step(self, batch: dict | tuple) -> Tensor:
         """
         Perform a single batch of predictions
         """
-        outputs = self.model(**batch)
-        logits = outputs[1]
-        loss = outputs[0]
-        return loss.mean().detach(), logits.detach(), batch["labels"]
+        args, kwargs = self._prepare_batch(batch)
+        loss, logits = self.model(*args, **kwargs)
+        labels = kwargs.get("labels", None)
+        return {
+            "loss": loss.mean().detach(),
+            "logits": logits.detach(),
+            "labels": labels,
+        }
 
     def _speed_metrics(self, prefix, runtime, samples, steps):
         metrics = {
@@ -418,12 +416,14 @@ class Trainer(BaseTrainer):
 
         self.log(logs)
 
-    def _prepare_batch(self, batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    def _prepare_batch(self, batch):
         """
-        Performs any required steps to ready the data for the model to process.
-        For example, normal torch training requires moving the batch to the target device.
+        Move the batch to the device and returns (args, kwargs) in batch
         """
-        return {k: v.to(self.args.device) for k, v in batch.items()}
+        if isinstance(batch, tuple):
+            return (tuple(x.to(self.args.device) for x in batch), {})
+        else:
+            return (tuple(), {k: v.to(self.args.device) for k, v in batch.items()})
 
     def _reduce_loss(self, loss: Tensor) -> Tensor:
         return loss

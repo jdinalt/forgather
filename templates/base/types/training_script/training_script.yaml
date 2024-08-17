@@ -141,6 +141,9 @@ main: !singleton:forgather.ml.training_script:TrainingScript@training_script
     # Init distributed envrionment before initializing anyting which depends on it.
     distributed_env: *distributed_env
     trainer: *trainer
+    ## Feed the preprocessed config back in as an argument; it will be saved
+    ## in the logging directory.
+    pp_config: !var "pp_config"
 << endblock main_output
 
 
@@ -148,7 +151,6 @@ main: !singleton:forgather.ml.training_script:TrainingScript@training_script
 == super()
 model_code_writer: *model_code_writer
 distributed_env: *distributed_env
-tokenizer: *tokenizer
 model: *model
 trainer: *trainer
 train_dataset: *train_dataset

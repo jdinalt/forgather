@@ -55,6 +55,11 @@ class BaseTrainer(ExtensibleTrainer):
             callbacks = []
         # Init args
         self.model = model
+        if args is None:
+            args = TrainingArguments()
+        elif isinstance(args, dict):
+            args = TrainingArguments(**args)
+
         self.args = args
         self.data_collator = data_collator
         self.train_dataset = train_dataset

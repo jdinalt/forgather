@@ -214,6 +214,8 @@ class Materializer:
 
         mtargets = kwargs.pop("mtargets", None)
 
+        # if len(args):
+        #    print(f"args={args}, kwargs={kwargs}")
         # Merge args with kwargs
         for i, arg in enumerate(args):
             key = "arg" + str(i)

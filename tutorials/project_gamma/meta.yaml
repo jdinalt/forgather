@@ -1,2 +1,0 @@
-config_prefix: "experiments"
-default_config: "baseline.yaml"

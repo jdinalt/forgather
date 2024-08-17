@@ -110,6 +110,11 @@ def display_codeblock(language, source, header=None):
     display(ds.Markdown(render_codeblock(language, source, header)))
 
 
+# Render code via Markdown render
+def display_markdown(text):
+    display(ds.Markdown(text))
+
+
 # An alias for display_codeblock()... until it is fully depricated.
 def show_codeblock(**kwargs):
     display_codeblock(**kwargs)

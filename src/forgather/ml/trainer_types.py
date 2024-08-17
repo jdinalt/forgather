@@ -73,7 +73,29 @@ class TrainerControl:
 
 
 @dataclass(kw_only=True)
-class TrainingArguments:
+class MinimalTrainingArguments:
+    """
+    A minimal sub-set of the TrainingArguments from transformers.TrainingArguments
+    """
+
+    output_dir: str = OUTPUTDIR_NAME
+    logging_dir: str = None
+    logging_steps: int = 500
+    per_device_eval_batch_size: int = 16
+    per_device_train_batch_size: int = 16
+    learning_rate: float = 1.0e-3
+    num_train_epochs: int = 1
+    device: Any = None
+
+    def __post_init__(self):
+        if self.logging_dir is None:
+            self.logging_dir = os.path.join(
+                self.output_dir, "runs", f"{time.time_ns()}_{platform.node()}"
+            )
+
+
+@dataclass(kw_only=True)
+class TrainingArguments(MinimalTrainingArguments):
     """
     Stores training arguments, independent of model/dataset/etc.
 
@@ -82,28 +104,18 @@ class TrainingArguments:
     Additional arguments can be added via sub-classing.
     """
 
-    per_device_train_batch_size: int = field(
-        default=16, metadata={"help": "The training batch size used on each device."}
-    )
-    output_dir: str = OUTPUTDIR_NAME
-    overwrite_output_dir: bool = False
-    per_device_eval_batch_size: int = 16
     max_steps: int = -1
-    logging_steps: int = 500
-    eval_steps: int = 500
-    save_steps: int = 500
-    learning_rate: float = 1.0e-3
-    num_train_epochs: int = 1
-    seed: int = -1
     lr_scheduler_type: str = LR_SCHEDULER_NAME
     warmup_steps: int = 0
-    device: Any = None
-    logging_dir: str = None
+    eval_steps: int = 500
+    save_steps: int = 500
     dataloader_num_workers: int = 0
     dataloader_pin_memory: int = True
     dataloader_persistent_workers: bool = False
     dataloader_prefetch_factor: int = None
     dataloader_drop_last: bool = False
+    overwrite_output_dir: bool = False
+    seed: int = -1
 
     eval_strategy: ConversionDescriptor = ConversionDescriptor(
         IntervalStrategy, default=IntervalStrategy.NO
@@ -125,6 +137,7 @@ class TrainingArguments:
     torch_compile_mode: str | None = None
 
     def __post_init__(self):
+        super().__post_init__()
         # As per https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader
         if self.dataloader_prefetch_factor is None and self.dataloader_num_workers > 0:
             self.dataloader_prefetch_factor = 2
@@ -135,10 +148,6 @@ class TrainingArguments:
             self.torch_compile = True
         if self.torch_compile_backend is None:
             self.torch_compile_backend = "inductor"
-        if self.logging_dir is None:
-            self.logging_dir = os.path.join(
-                self.output_dir, "runs", f"{time.time_ns()}_{platform.node()}"
-            )
 
 
 class AbstractBaseTrainer(ABC):

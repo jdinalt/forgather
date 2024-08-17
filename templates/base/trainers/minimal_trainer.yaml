@@ -1,0 +1,46 @@
+-- set trainer_def = namespace()
+-- from 'inc/formatting.jinja' import h2, h3, sep
+-- filter trim()
+-- block trainer_meta_config
+    -- set trainer_def.name = "Base Trainer"
+    -- set trainer_def.description = "A ML model trainer"
+    -- block trainer_vars
+        ## Define vars like this
+        ## -- set trainer_def.foo = '<bar>'
+        ##
+    << endblock trainer_vars
+<< endblock trainer_meta_config
+
+-- block trainer_header
+# Name: {{ trainer_def.name }}
+# Description: {{ trainer_def.description }}
+<< endblock trainer_header
+-- endfilter ## trim()
+
+
+== h3('Trainer Args')
+
+-- filter trim()
+-- block trainer_args
+## Supports at least the sub-set of args from forgather.ml.trainer_types.MinimalTrainingArguments
+.define: &trainer_args
+    # Minimal Trainer Defaults
+    # https://huggingface.co/docs/transformers/en/main_classes/trainer#transformers.TrainingArguments
+    output_dir: "{{ ns.output_dir }}"
+    logging_dir: "{{ ns.logging_dir }}"
+    logging_steps: 500
+    per_device_train_batch_size: 16 ## Decrease on OOM errors!
+    per_device_eval_batch_size: 32
+    learning_rate: 5e-5 ## Relatively safe, but far from ideal for many models.
+    num_train_epochs: 1
+<< endblock trainer_args
+-- endfilter
+
+
+== h3('Trainer Constructor')
+
+-- filter trim()
+-- block trainer_constructor required
+## .define: &trainer
+<< endblock trainer_constructor
+-- endfilter

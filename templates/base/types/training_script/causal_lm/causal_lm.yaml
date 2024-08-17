@@ -71,4 +71,5 @@
 -- block auxiliary_outputs
 == super()
 model_constructor_args: *model_constructor_args
+tokenizer: *tokenizer
 << endblock auxiliary_outputs
