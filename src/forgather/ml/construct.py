@@ -126,7 +126,7 @@ def load_from_config(project_dir: str, config_template: str | NoneType = None):
     config_template: Config template name; if None, use default config
     """
 
-    proj = Project(project_dir, config_template)
+    proj = Project(config_template, project_dir)
     return proj()
 
 

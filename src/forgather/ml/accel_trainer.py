@@ -1,5 +1,6 @@
 # A subclass of Trainer, which adds support for the Acclerate library.
 from dataclasses import dataclass, field
+from collections.abc import Sequence
 
 from torch import Tensor
 from accelerate import Accelerator
@@ -63,10 +64,10 @@ class AccelTrainer(Trainer):
     def _prepare_batch(self, batch):
         # The accelerate will have already moved the batch to the right device
         # We just need to split it into positional/kw-args
-        if isinstance(batch, dict):
-            return (tuple(), batch)
-        else
+        if isinstance(batch, Sequence):
             return (batch, {})
+        else:
+            return (tuple(), batch)
 
     def _init_state(self) -> TrainerState:
         """

@@ -117,7 +117,7 @@ def training_loop(project_directory, config_template=""):
     set_seed(42)
 
     # Load the project
-    proj = Project(project_directory, config_template)
+    proj = Project(config_template, project_directory)
 
     # Materialize the config
     training_script = proj()

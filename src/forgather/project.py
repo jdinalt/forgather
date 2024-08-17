@@ -18,8 +18,8 @@ class Project:
 
     def __init__(
         self,
-        project_dir: Optional[str | os.PathLike] = ".",
         config_name: Optional[str] = "",
+        project_dir: Optional[str | os.PathLike] = ".",
         **kwargs,
     ):
         """
@@ -55,18 +55,27 @@ class Project:
         default_config = self.meta.default_config()
         self.config_name = config_name if len(config_name) else default_config
 
-        # Get the config name, with the config-prefix prepended
-        config_template_path = self.meta.config_path(config_name)
-
         # Construct a project environment
         self.environment = ConfigEnvironment(
             searchpath=self.meta.searchpath,
             global_vars=preprocessor_globals(project_dir, self.meta.workspace_root),
         )
 
+        if config_name is not None:
+            self.load_config(config_name)
+        else:
+            self.config = None
+            self.pp_config = None
+
+    def load_config(self, config_name: str, **kwargs):
+        """
+        Loaded the specified configurtion
+
+        config_name: The name of the configuration to load.
+        """
         # Load the pre-processed config and the config graph
         self.config, self.pp_config = self.environment.load(
-            config_template_path, **kwargs
+            self.meta.config_path(config_name), **kwargs
         ).get()
 
     def __call__(
@@ -96,6 +105,9 @@ class Project:
         outputs = proj(["model", "tokenizer"])
         ```
         """
+        if self.config is None:
+            raise RuntimeError("The project does not have a loaded configuration")
+
         if isinstance(make_targets, str):
             mtargets = (make_targets,)
         elif isinstance(make_targets, Iterable):
