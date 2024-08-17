@@ -4,6 +4,8 @@ from typing import (
     Any,
     Dict,
 )
+from collections.abc import Sequence
+
 from dataclasses import dataclass, field
 import time
 from contextlib import contextmanager
@@ -420,7 +422,7 @@ class Trainer(BaseTrainer):
         """
         Move the batch to the device and returns (args, kwargs) in batch
         """
-        if isinstance(batch, tuple):
+        if isinstance(batch, Sequence):
             return (tuple(x.to(self.args.device) for x in batch), {})
         else:
             return (tuple(), {k: v.to(self.args.device) for k, v in batch.items()})

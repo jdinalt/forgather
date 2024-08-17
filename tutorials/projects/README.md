@@ -65,7 +65,7 @@ The constructed object is to created from the generated code, but from interpret
 Change the selected configuration to the 'other' available configuration in this project and regnerate the project index.
 
 ```python
-nb.display_project_index(config_template="poems.yaml", materialize=True, pp_first=False)
+nb.display_project_index(config_template="poems.yaml", ...)
 ```
 
 ---

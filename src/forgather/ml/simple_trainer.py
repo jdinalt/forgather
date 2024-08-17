@@ -1,5 +1,6 @@
 import os
 from typing import Optional
+from collections.abc import Sequence
 
 import torch
 import datetime
@@ -197,7 +198,7 @@ class SimpleTrainer(AbstractBaseTrainer):
         """
         Move the batch to the device and returns (args, kwargs) in batch
         """
-        if isinstance(batch, tuple):
+        if isinstance(batch, Sequence):
             return (tuple(x.to(self.args.device) for x in batch), {})
         else:
             return (tuple(), {k: v.to(self.args.device) for k, v in batch.items()})
