@@ -1,6 +1,6 @@
 import os
 from dataclasses import fields
-from typing import Iterator, Tuple
+from typing import Iterator, Tuple, Any
 from pprint import pformat
 
 from IPython import display as ds
@@ -16,6 +16,7 @@ from forgather.meta_config import preprocessor_globals, MetaConfig
 from forgather.config import ConfigEnvironment
 from forgather.codegen import generate_code
 from forgather.yaml_encoder import to_yaml
+from forgather.ml.utils import count_parameters
 
 
 def display_md(md: str):
@@ -146,6 +147,17 @@ def render_referenced_source_list(config, title="", deep=False):
     return md
 
 
+def render_model(model: "nn.Module") -> str:
+    params = count_parameters(model)
+    md = render_codeblock("yaml", repr(model))
+    md += f"\n- Total Parameters: {params['total']}\n- Trainable Parameters: {params['trainable']}"
+    return md
+
+
+def display_model(model: "nn.Module"):
+    display_md(render_model(model))
+
+
 def render_output_targets(config, title=""):
     md = f"{title}"
 
@@ -225,6 +237,39 @@ def make_train_script(
         os.chdir(prev_cwd)
 
 
+def generate_trainingscript(project, cuda_devices=None):
+    """
+    A high-level version of make_train_script(), for use in a notebook.
+
+    Given a project and target cuda devices, generates a trainscript in the project directory,
+    named after the project's configuration name.
+
+    Finally, reads back the generated script and renders it as Markdown.
+    """
+    meta = project("meta")
+    train_script_path = os.path.join(
+        meta["forgather_dir"], "scripts", "train_script.py"
+    )
+    script_name = os.path.splitext(os.path.basename(project.config_name))[0] + ".sh"
+    make_train_script(
+        train_script_path=os.path.abspath(train_script_path),
+        project_directory=project.project_dir,
+        config_template=project.config_name,
+        script_name=script_name,
+        cuda_devices=cuda_devices,
+    )
+
+    # Read back to verify
+    script_path = os.path.join(project.project_dir, script_name)
+    with open(script_path, "r") as f:
+        md = (
+            f"#### Generated Shell Script\n"
+            f"[{script_name}]({os.path.relpath(script_path)})\n"
+            f"```bash\n{f.read()}\n```"
+        )
+        display_md(md)
+
+
 def render_project_readme(project_dir):
     md_path = os.path.join(project_dir, "README.md")
     if os.path.exists(md_path):
@@ -257,17 +302,22 @@ def delete_dir(target, prompt):
         print("aborted")
 
 
+def delete_output_dir(proj):
+    meta = proj("meta")
+    delete_dir(meta["output_dir"], "Delete the configuration's output directory?")
+
+
 def render_project_index(
-    project_dir=".",
+    project_dir: str = ".",
     /,
-    config_template="",
-    show_available_templates=False,
-    show_pp_config=False,
-    show_loaded_config=False,
-    show_generated_code=False,
-    materialize=False,
-    pp_first=False,
-    materialize_kwargs=None,
+    config_template: str = "",
+    show_available_templates: bool = False,
+    show_pp_config: bool = False,
+    show_loaded_config: bool = False,
+    show_generated_code: bool = False,
+    materialize: bool = False,
+    pp_first: bool = False,
+    materialize_kwargs: dict[Any] = None,
     **kwargs,
 ):
     """
@@ -275,8 +325,17 @@ def render_project_index(
 
     project_dir: The location of the project directory
     config_template: The configuration to display. If "", the default is shown.
-    materialize: Materialize the configuration. Without doing so, dynamic imports may not show up.
-    pp_first: Preprocess before loading. This can be useful for debugging, if loading raises and exception.
+    show_pp_config: Show the preprocessed configuration.
+    show_loaded_config: After loading the preprocessed configuration, render the node-graph as YAML.
+    show_generated_code: After loading the preprocessed configuration, render the node-graph as Python code.
+    materialize: Construct the main output of the configuration and display it; this can potentially be slow,
+        as this could trigger dataset downloads, dataset tokenization, construction of a large model, etc.
+    pp_first: Normally a config is preprocessed and loaded in a single step. This breaks the process down
+        into seperate steps, which can be useful for debugging YAML errors.
+    materialize_kwargs: Arguments to pass to the 'materialize' step, if enabled. Most project don't require
+        additional arguments, but if they do, this provides the means to do so.
+    kwargs: These kwargs are passed in to the Jinja2 environment and are available to templates. Usually not
+        required.
     """
     if materialize_kwargs is None:
         materialize_kwargs = {}

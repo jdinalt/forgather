@@ -29,16 +29,22 @@ class PyEncoder(GraphEncoder):
         self.level = 0
         definitions = self._encode_definitions(obj).strip()
         main_body = self._encode(obj).strip()
+
+        # We used sorted, as sets do not have a deterministic order, which can result
+        # in symantically equivalent, but reordered output, accross invocations. This
+        # makes it difficult to compare the output files for actual differences.
         return dict(
             definitions=definitions,
             main_body=main_body,
             # And convert these from sets to lists
-            imports=list(self.imports),
-            dynamic_imports=[
-                (module, callable_name, list(searchpath))
-                for module, callable_name, searchpath in self.dynamic_imports
-            ],
-            variables=list(self.vars),
+            imports=sorted(list(self.imports)),
+            dynamic_imports=sorted(
+                [
+                    (module, callable_name, tuple(searchpath))
+                    for module, callable_name, searchpath in self.dynamic_imports
+                ]
+            ),
+            variables=sorted(list(self.vars)),
         )
 
     def _encode_definitions(self, obj):

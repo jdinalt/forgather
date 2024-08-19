@@ -5,6 +5,7 @@ import os
 from forgather.meta_config import MetaConfig, preprocessor_globals
 from forgather.config import ConfigEnvironment
 from forgather.latent import Latent
+from forgather.dotdict import DotDict
 
 
 @dataclass()
@@ -123,4 +124,4 @@ class Project:
         if isinstance(make_targets, str):
             return outputs[make_targets]
         else:
-            return outputs
+            return DotDict(outputs)

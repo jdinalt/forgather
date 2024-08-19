@@ -160,3 +160,19 @@ class DiagnosticEnum(Enum):
         raise ValueError(
             f"'{value}' is not a valid {cls.__name__}; choose one of {cls._value2member_map_.keys()}"
         )
+
+
+def count_parameters(model) -> dict[str, str]:
+    """
+    Get model 'total' and 'trainable' parameters in a model as formatted strings
+
+    The primary use-case is for displaying / logging this information.
+    """
+    total_parameters = sum(t.numel() for t in model.parameters())
+    trainable_parameters = sum(
+        t.numel() if t.requires_grad else 0 for t in model.parameters()
+    )
+    num_params = lambda x: f"{x/1000000:.2f}M"
+    return dict(
+        total=num_params(total_parameters), trainable=num_params(trainable_parameters)
+    )

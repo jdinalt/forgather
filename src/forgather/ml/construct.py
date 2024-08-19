@@ -3,9 +3,11 @@ from types import NoneType
 import os
 import shutil
 import sys
+import filecmp
+
+from loguru import logger
 
 from .distributed import main_process_first
-
 from forgather.meta_config import MetaConfig
 from forgather.project import Project
 from forgather.config import ConfigEnvironment
@@ -130,8 +132,49 @@ def load_from_config(project_dir: str, config_template: str | NoneType = None):
     return proj()
 
 
+def _should_write_file(file_path: str, exists: str) -> bool:
+    """
+    Process file overwriting policy
+
+    exists: One of ['ok', 'warn', 'skip', 'raise']
+        ok: Quietly overwrite file
+        warn: Warn if files are not the same, but allow overwrite.
+        skip: Warn if files are not the same and skip overwrite.
+        raise: Raise exception if files are not the same.
+
+    """
+    if os.path.isfile(file_path):
+        match exists:
+            case "warn":
+                logger.warning(
+                    f"The source data for '{file_path}' has changed; the file will be overwritten."
+                )
+                return True
+            case "skip":
+                logger.warning(
+                    f"The source data for '{file_path}' has changed; the file will NOT be overwritten. "
+                    "This could lead to unexpected results!"
+                )
+                return False
+            case "raise":
+                raise RuntimeError(
+                    f"The source data for '{file_path}' has changed; overwrite is prohibited. "
+                    "Delete the destination file or change the overwrite policy."
+                )
+            case "ok":
+                return True
+            case _:
+                raise ValueError(
+                    f"File overwrite policy must be one of: ['ok', 'warn', 'skip', 'raise']; found {exists}"
+                )
+    else:
+        return True
+
+
 @main_process_first()
-def copy_package_files(dest_dir: str | os.PathLike, obj: Any) -> Any:
+def copy_package_files(
+    dest_dir: str | os.PathLike, obj: Any, exists: Optional[str] = "raise"
+) -> Any:
     """
     Given an object, copy the source files for those objects,
         and all referenced source files within the same package, to the
@@ -147,7 +190,7 @@ def copy_package_files(dest_dir: str | os.PathLike, obj: Any) -> Any:
     ```
 
     The underlying implementation only copies imported files from the same
-    module as the object -- recursively. Duplicates are eliminated before
+    module as the object (recursively). Duplicates are eliminated before
     the copy.
 
     While not perfect, it's less broken than the attempt at something similar
@@ -184,13 +227,12 @@ def copy_package_files(dest_dir: str | os.PathLike, obj: Any) -> Any:
         module_dir = os.path.join(dest_dir, *module_prefix)
         dest_path = os.path.join(module_dir, file_name)
 
-        # Skip is the source and destination are the same file
-        # This can happen when dynamically generating source code.
-        if os.path.exists(dest_path) and os.path.samefile(origin, dest_path):
+        if os.path.exists(dest_path) and filecmp.cmp(origin, dest_path):
             continue
 
-        os.makedirs(module_dir, exist_ok=True)
-        shutil.copy2(origin, module_dir, follow_symlinks=True)
+        if _should_write_file(dest_path, exists):
+            os.makedirs(module_dir, exist_ok=True)
+            shutil.copy2(origin, module_dir, follow_symlinks=True)
     return obj
 
 
@@ -213,11 +255,22 @@ def dependency_list(*args):
     return args[0]
 
 
+def _compare_file_to_str(file_path: str, string: str):
+    """
+    Compare the contents of a file and a string for equality
+    """
+    if not os.path.isfile(file_path):
+        return False
+    with open(file_path, "r") as f:
+        return f.read() == string
+
+
 @main_process_first()
 def write_file(
     data,
     output_file: Optional[str | os.PathLike] = None,
     return_value: Optional[Any] = Undefined,
+    exists: Optional[str] = "raise",
 ):
     """
     Write unicode data to a file, with the main-process first and only with the main process
@@ -227,16 +280,20 @@ def write_file(
         Missing directories will automatically be created.
         If running in a multiprocess environment, only the main local process will write the file,
         while the other processes will wait for the file to be written.
+    exits: one of [ "ok", "warn", "skip", "raise" ]; see _should_write_file()
     return_value: Override passthrough of the data by returning this value instead.
     """
     if isinstance(data, Callable):
         data = data()
     if int(os.environ.get("LOCAL_RANK", 0)) == 0:
-        module_dir = os.path.dirname(output_file)
-        if len(module_dir):
-            os.makedirs(module_dir, exist_ok=True)
-        with open(output_file, "w") as f:
-            f.write(data)
+        if not _compare_file_to_str(output_file, data) and _should_write_file(
+            output_file, exists
+        ):
+            module_dir = os.path.dirname(output_file)
+            if len(module_dir):
+                os.makedirs(module_dir, exist_ok=True)
+            with open(output_file, "w") as f:
+                f.write(data)
 
     if return_value is not Undefined:
         return return_value
