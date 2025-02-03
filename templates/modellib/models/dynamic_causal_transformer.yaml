@@ -10,7 +10,6 @@
 
 -- block model_tokenizer
     ## Default tokenizer
-    -- include 'tokenizers/tiny_8k.yaml'
 << endblock model_tokenizer
 
 
