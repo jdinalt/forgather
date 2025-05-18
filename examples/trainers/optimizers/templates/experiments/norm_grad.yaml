@@ -1,0 +1,16 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Norm Grad"
+    -- set ns.config_description = "Norm Grad"
+    -- set ns.log_name = "norm_grad_b32_lr1e-3"
+-- endblock config_metadata
+
+
+-- block optimizer
+.define: &optimizer !lambda:./src/norm_grad.py:NormGrad
+    kwargs:
+        lr: {{ns.lr}}
+
+<< endblock optimizer

@@ -1,0 +1,32 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Adafactor momentum"
+    -- set ns.config_description = "HF Adafactor with momentum"
+    -- set ns.model_name = "tiny_causal"
+    -- set ns.log_name = "adafactor_m"
+-- endblock config_metadata
+
+
+-- block construct_new_model
+    -- include 'models/control.yaml'
+-- endblock construct_new_model
+
+-- block optimizer
+.define: &optimizer !lambda:./src/adafactor.py:Adafactor
+    ## Note: Lambdas are translated to partial functions. The tl;dr is that you need to
+    ## explicitly specify positional args via argN, whereas kvargs are handled automatically.
+    args: 
+        - !var "arg0"
+    kwargs:
+        lr: 1.0e-3
+        scale_parameter: False
+        relative_step: False
+        beta1: 0.9
+
+<< endblock optimizer
+    
+#-- block datasets_definition
+#    -- include 'datasets/tiny/tiny_stories.yaml'
+#-- endblock datasets_definition

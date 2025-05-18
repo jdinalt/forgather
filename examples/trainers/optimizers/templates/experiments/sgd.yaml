@@ -1,0 +1,29 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "SGD"
+    -- set ns.config_description = "Torch SGD"
+    -- set ns.model_name = "tiny_causal"
+    -- set ns.log_name = "sgd"
+-- endblock config_metadata
+
+
+-- block construct_new_model
+    -- include 'models/control.yaml'
+-- endblock construct_new_model
+
+-- block optimizer
+.define: &optimizer !lambda:torch:optim.SGD
+    ## Note: Lambdas are translated to partial functions. The tl;dr is that you need to
+    ## explicitly specify positional args via argN, whereas kvargs are handled automatically.
+    args: 
+        - !var "arg0"
+    kwargs:
+        lr: 1.0e-1
+
+<< endblock optimizer
+    
+#-- block datasets_definition
+#    -- include 'datasets/tiny/tiny_stories.yaml'
+#-- endblock datasets_definition

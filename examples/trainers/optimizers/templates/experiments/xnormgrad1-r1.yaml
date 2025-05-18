@@ -1,0 +1,47 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "XNorm Grad1-R1"
+    -- set ns.config_description = "XNorm Grad1 Rank-1"
+    -- set ns.model_name = "tiny_causal"
+    -- set ns.log_name = "xnorm_grad1_r1"
+-- endblock config_metadata
+
+
+-- block construct_new_model
+    -- include 'models/control.yaml'
+-- endblock construct_new_model
+
+-- block optimizer
+.define: &optimizer !lambda:./src/opt_utils.py:make_grouped_optimizer
+    ## Note: Lambdas are translated to partial functions. The tl;dr is that you need to
+    ## explicitly specify positional args via argN, whereas kvargs are handled automatically.
+    args: 
+        - !var "arg0"
+    kwargs:
+        opt_ctor: !lambda:./src/xnormgrad.py:XNormGrad1
+            - !var "arg0"
+        opt_kwargs:
+            lr: 1.0e-3
+            p: 0.2
+            i: 0.8
+            beta: 0.995
+        group_map:
+            - [ "bias", "default" ]
+            - [ "feedforward|attention|input_encoder|output_decoder", "low_rank" ]
+            - [ ".*", "default" ]
+        group_config:
+            default: {}
+            low_rank:
+                proj_args:
+                    rank: 1
+                    orthag: none
+                    proj_type: auto
+                    update_steps: 10
+
+<< endblock optimizer
+    
+#-- block datasets_definition
+#    -- include 'datasets/tiny/tiny_stories.yaml'
+#-- endblock datasets_definition
