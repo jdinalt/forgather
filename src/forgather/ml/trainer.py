@@ -43,23 +43,31 @@ class TrainerState(BaseTrainerState):
 
 
 # For compatible with return-type of HF Trainer.
-def default_optimizer_factory(model, training_args):
-    """
-    Construct the default optimizer
-    """
-    return torch.optim.AdamW(model.parameters(), lr=training_args.learning_rate)
+class DefaultOptimizerFactory:
+    def __init__(self, training_args):
+        self.training_args = training_args
+
+    def __call__(self, parameters):
+        return torch.optim.AdamW(parameters, lr=self.training_args.learning_rate)
 
 
-def default_lr_scheduler_factory(optimizer, num_training_steps, training_args):
-    """
-    Construct the default learning-rate scheduler
-    """
-    return transformers.get_scheduler(
-        name=training_args.lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=training_args.warmup_steps,
-        num_training_steps=num_training_steps,
-    )
+class DefaultLRSchedulerFactory:
+    def __init__(self, training_args):
+        self.training_args = training_args
+
+    def __call__(self, optimizer, num_training_steps):
+        """
+        Construct the default learning-rate scheduler
+        """
+        if self.training_args.lr_scheduler_type is None:
+            return None
+
+        return transformers.get_scheduler(
+            name=self.training_args.lr_scheduler_type,
+            optimizer=optimizer,
+            num_warmup_steps=self.training_args.warmup_steps,
+            num_training_steps=num_training_steps,
+        )
 
 
 @dataclass(kw_only=True, slots=True)
@@ -104,14 +112,17 @@ class Trainer(BaseTrainer):
 
     def __init__(
         self,
-        optimizer_factory=default_optimizer_factory,
-        lr_scheduler_factory=default_lr_scheduler_factory,
-        *args,
+        *,
+        args,
+        optimizer_factory=None,
+        lr_scheduler_factory=None,
         **kwargs,
     ):
+        if optimizer_factory is None:
+            optimizer_factory = DefaultOptimizerFactory(args)
         self.optimizer_factory = optimizer_factory
         self.lr_scheduler_factory = lr_scheduler_factory
-        super().__init__(*args, **kwargs)
+        super().__init__(args=args, **kwargs)
 
     def _post_init(self) -> None:
         assert (self.model is not None) or (
@@ -146,6 +157,9 @@ class Trainer(BaseTrainer):
         """
         Prepare for training and/or evaluation
         """
+        self.max_steps = 0
+        self.epoch_train_steps = 0
+
         # Set the random seed
         if self.args.seed != -1:
             set_seed(self.args.seed)
@@ -169,35 +183,36 @@ class Trainer(BaseTrainer):
         else:
             print("not compiling model")
 
-        if train_dataset is not None:
-            assert train_dataset is not None, "Training requires a train_dataset"
+        self.do_train = train_dataset is not None
+        self.do_eval = eval_dataset is not None
+
+        if self.do_train:
             self.train_dataloader = self._get_dataloader(
                 train_dataset, self.args.per_device_train_batch_size
             )
             self._update_training_steps()
             if self.optimizer is None:
-                self.optimizer = self.optimizer_factory(self.model, self.args)
-            if self.lr_scheduler is None:
+                print("Calling optimizer factory")
+                self.optimizer = self.optimizer_factory(self.model.named_parameters())
+            if self.lr_scheduler is None and self.lr_scheduler_factory is not None:
                 self.lr_scheduler = self.lr_scheduler_factory(
-                    self.optimizer, self.max_steps, self.args
+                    self.optimizer, self.max_steps
                 )
             self.mean_train_loss = float("NaN")
 
-        if eval_dataset is not None:
-            assert self.train_dataset is not None, "Evaluation requires an eval_dataset"
-            if self.eval_dataset is not None:
-                self.eval_dataloader = self._get_dataloader(
-                    eval_dataset, self.args.per_device_eval_batch_size
-                )
+        if self.do_eval:
+            self.eval_dataloader = self._get_dataloader(
+                eval_dataset, self.args.per_device_eval_batch_size
+            )
+
+        self.state = self._init_state()
 
     def _train_loop(self) -> TrainOutput:
         """
         The inner training loop
         """
-        state = self._private_state = self._init_private_state()
-        self.state = self._init_state()
         self._dispatch_event("on_train_begin")
-
+        pstate = self._private_state = self._init_private_state()
         # Context manager for setting model.train()/eval()
         with set_train(self.model, True):
             # Epoch loop
@@ -208,19 +223,19 @@ class Trainer(BaseTrainer):
                     self._dispatch_event("on_step_begin")
                     loss = self._train_step(batch)
                     loss = self._reduce_loss(loss)
-                    state.total_loss += loss
-                    state.log_step_loss += loss
+                    pstate.total_loss += loss
+                    pstate.log_step_loss += loss
                     self.state.global_step += 1
 
                     # Compute epoch as continous value from steps
                     self.state.epoch = float(self.state.global_step) / float(
                         self.epoch_train_steps
                     )
-                    state.periodic_log.step(
-                        state.log_step_loss, state.periodic_log.count()
+                    pstate.periodic_log.step(
+                        pstate.log_step_loss, pstate.periodic_log.count()
                     )
-                    state.periodic_eval.step()
-                    state.periodic_save.step()
+                    pstate.periodic_eval.step()
+                    pstate.periodic_save.step()
 
                     # Stop, if requested by callback.
                     control = self._dispatch_event("on_step_end")
@@ -237,7 +252,7 @@ class Trainer(BaseTrainer):
                     continue
                 break  # Break, if inner-loop breaks
         # Flush the last (poentially) partial log-step.
-        self._log_step(state.log_step_loss, state.periodic_log.count())
+        self._log_step(pstate.log_step_loss, pstate.periodic_log.count())
         metrics = self._end_train_loop()
         self.log(metrics)
         self._dispatch_event("on_train_end")
@@ -267,12 +282,13 @@ class Trainer(BaseTrainer):
         Returns: mean loss (detached from graph)
         """
         args, kwargs = self._prepare_batch(batch)
-        loss, _ = self.model(*args, **kwargs)
+        loss = self.model(*args, **kwargs)[0]
 
         self._backward(loss)
         self.optimizer.step()
         self._dispatch_event("on_optimizer_step")
-        self.lr_scheduler.step()
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step()
         self.optimizer.zero_grad()
         return loss.detach().mean()
 
@@ -300,18 +316,32 @@ class Trainer(BaseTrainer):
         Init public training state
         This should be retained when saving a checkpoint
         """
-        return TrainerState(
-            max_steps=self.max_steps,
-            logging_steps=self.args.logging_steps,
-            eval_steps=self.args.eval_steps,
-            num_train_epochs=int(self.args.num_train_epochs),
-            train_batch_size=self.train_dataloader.batch_size,
-            epoch_train_steps=self.epoch_train_steps,
-            is_local_process_zero=self.is_local_process_zero,
-            is_world_process_zero=self.is_world_process_zero,
-            num_processes=self.num_processes,
-            save_steps=self._private_state.periodic_save.period,
-        )
+        if self.do_train:
+            return TrainerState(
+                max_steps=self.max_steps,
+                logging_steps=self.args.logging_steps,
+                eval_steps=self.args.eval_steps,
+                num_train_epochs=int(self.args.num_train_epochs),
+                train_batch_size=self.train_dataloader.batch_size,
+                epoch_train_steps=self.epoch_train_steps,
+                is_local_process_zero=self.is_local_process_zero,
+                is_world_process_zero=self.is_world_process_zero,
+                num_processes=self.num_processes,
+                save_steps=self.args.save_steps,
+            )
+        else:
+            return TrainerState(
+                max_steps=0,
+                logging_steps=0,
+                eval_steps=0,
+                num_train_epochs=0,
+                train_batch_size=0,
+                epoch_train_steps=0,
+                is_local_process_zero=self.is_local_process_zero,
+                is_world_process_zero=self.is_world_process_zero,
+                num_processes=self.num_processes,
+                save_steps=0,
+            )
 
     def _init_private_state(self) -> PrivateTrainerState:
         """
@@ -319,6 +349,7 @@ class Trainer(BaseTrainer):
         This should be retained when saving a checkpoint
         """
         start_time = time.time()
+
         self.model.zero_grad()
         periodic_log = PeriodicFunction(
             strategy=self.args.logging_strategy,
@@ -332,7 +363,7 @@ class Trainer(BaseTrainer):
             period=self.args.eval_steps,
             epoch_period=self.epoch_train_steps,
             f=self._eval_loop,
-            first_step=self.args.eval_delay,
+            first_step=-self.args.eval_delay,
         )
 
         periodic_save = PeriodicFunction(
@@ -340,7 +371,7 @@ class Trainer(BaseTrainer):
             period=self.args.save_steps,
             epoch_period=self.epoch_train_steps,
             f=self._save_checkpoint,
-            first_step=self.args.eval_delay,
+            first_step=0,
         )
         # Tracks mean loss for each log-step
         log_step_loss = torch.zeros(1, device=self.args.device)
@@ -357,14 +388,14 @@ class Trainer(BaseTrainer):
         )
 
     def _end_train_loop(self):
-        state = self._private_state
-        runtime = time.time() - state.start_time
+        pstate = self._private_state
+        runtime = time.time() - pstate.start_time
         total_train_batch_size = self.state.num_processes * self.state.train_batch_size
         total_train_samples = total_train_batch_size * self.max_steps
         metrics = self._speed_metrics(
             "train", runtime, total_train_samples, self.max_steps
         )
-        metrics["train_loss"] = (state.total_loss / self.state.global_step).item()
+        metrics["train_loss"] = (pstate.total_loss / self.state.global_step).item()
         metrics["epoch"] = self.state.epoch
         return metrics
 
@@ -373,7 +404,8 @@ class Trainer(BaseTrainer):
         Perform a single batch of predictions
         """
         args, kwargs = self._prepare_batch(batch)
-        loss, logits = self.model(*args, **kwargs)
+        outputs = self.model(*args, **kwargs)
+        loss, logits = outputs[0], outputs[1]
         labels = kwargs.get("labels", None)
         return {
             "loss": loss.mean().detach(),
@@ -393,8 +425,9 @@ class Trainer(BaseTrainer):
 
     def _update_train_loss(self, total_loss: Tensor, log_steps: int):
         if log_steps == 0:
-            return self.mean_train_loss
+            return
         self.mean_train_loss = (total_loss / log_steps).item()
+        # Note that total_loss is a reference to a tensor. We perform an update-in-place to zero it.
         total_loss -= total_loss
 
     def _log_step(self, total_loss: Tensor, log_steps: int):
@@ -406,15 +439,17 @@ class Trainer(BaseTrainer):
             return
         self._update_train_loss(total_loss, log_steps)
 
-        last_lr = self.lr_scheduler.get_last_lr()[0]
-        if torch.is_tensor(last_lr):
-            last_lr = last_lr.item()
-
         logs = {
             "epoch": self.state.epoch,
             "loss": self.mean_train_loss,
-            "learning_rate": last_lr,
         }
+
+        if self.lr_scheduler is not None:
+            last_lr = self.lr_scheduler.get_last_lr()[0]
+            if last_lr is not None:
+                if torch.is_tensor(last_lr):
+                    last_lr = last_lr.item()
+                logs["learning_rate"] = last_lr
 
         self.log(logs)
 

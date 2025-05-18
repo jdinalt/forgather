@@ -182,7 +182,7 @@ class SingletonNode(CallableNode):
 
 class MetaNode(SingletonNode):
     """
-    When a MetaNode is encountered in a graph, the nodes areguments are not constructed
+    When a MetaNode is encountered in a graph, the nodes arguments are not constructed
     before calling the node.
 
     This allows for MetaNode to do things like modifying the graph, before continuing, or
@@ -213,15 +213,17 @@ class Materializer:
         self.idmap = dict()
 
         mtargets = kwargs.pop("mtargets", None)
-
+        self.context_vars = kwargs.pop("context_vars", {})
         # if len(args):
         #    print(f"args={args}, kwargs={kwargs}")
         # Merge args with kwargs
-        for i, arg in enumerate(args):
-            key = "arg" + str(i)
-            kwargs[key] = arg
+        # for i, arg in enumerate(args):
+        #    key = "arg" + str(i)
+        #    context_vars[key] = arg
 
         self.kwargs = kwargs
+        self.args = args
+
         if mtargets is not None:
             return self._selective_materialize(obj, set(mtargets))
         else:
@@ -248,7 +250,7 @@ class Materializer:
             return tuple(self._materialize(value) for value in obj)
 
         elif isinstance(obj, VarNode):
-            value = self.kwargs.get(obj.constructor, obj.value)
+            value = self.context_vars.get(obj.constructor, obj.value)
             if value is Undefined:
                 raise UnboundVarError(obj.constructor)
             return value
@@ -256,7 +258,7 @@ class Materializer:
         elif isinstance(obj, CallableNode):
             # If not the root-node, stop traversal and return callable.
             if self.level > 0 and isinstance(obj, LambdaNode):
-                return partial(obj, **self.kwargs)
+                return partial(obj, context_vars=self.context_vars)
 
             if isinstance(obj, SingletonNode):
                 # Have we already constructed this object?
@@ -268,6 +270,10 @@ class Materializer:
             else:
                 args = self._materialize(obj.args)
                 kwargs = self._materialize(obj.kwargs)
+                if self.level == 0 and isinstance(obj, LambdaNode):
+                    args = list(args)
+                    args.extend(self.args)
+                    kwargs |= self.kwargs
                 try:
                     value = obj.callable(*args, **kwargs)
                 except Exception as e:

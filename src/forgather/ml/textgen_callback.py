@@ -68,36 +68,54 @@ class TextgenCallback(TrainerCallback):
         super().__init__()
         self.summary_writer = summary_writer
         self.prompts = prompts
-        self.generation_config = generation_config
-        if self.generation_config is None:
-            self.generation_config = dict(
+
+        # To construct GenerationConfig, we need token ids from the model or tokenizer
+        # We don't have these here, so defer construction until callback.
+        self.generation_config = None
+        if generation_config is not None and isinstance(
+            self.generation_config, GenerationConfig
+        ):
+            self.generation_config = generation_config
+        elif generation_config is None:
+            self.gen_config_args = dict(
                 do_sample=True,
                 top_k=20,
                 top_p=0.9,
                 temperature=0.7,
                 repetition_penalty=1.15,
             )
-        if not isinstance(self.generation_config, GenerationConfig):
-            self.generation_config = GenerationConfig(**generation_config)
+        else:
+            self.gen_config_args = generation_config
+
         self.generation_steps = generation_steps
         self.max_new_tokens = max_new_tokens
         self.next_gen_step = 0
 
-    def on_evaluate(self, args, state, control, /, model, tokenizer, **kwargs):
+    def on_evaluate(self, args, state, control, /, model, processing_class, **kwargs):
         if self.generation_steps is None:
             self.generation_steps = args.eval_steps
         if not state.is_world_process_zero or state.global_step < self.next_gen_step:
             return
         self.next_gen_step += self.generation_steps
         text = ""
-        for output in self.generate(args, model, tokenizer):
+        for output in self.generate(args, model, processing_class):
             text += output + "\n\n---\n\n"
         self.summary_writer.add_text("eval-text", text, global_step=state.global_step)
         self.summary_writer.flush()
 
-    def generate(self, args, model, tokenizer):
+    def init_gen_config(self, model):
+        self.generation_config = GenerationConfig(
+            pad_token_id=model.config.pad_token_id,
+            bos_token_id=model.config.bos_token_id,
+            eos_token_id=model.config.eos_token_id,
+            **self.gen_config_args,
+        )
+
+    def generate(self, args, model, processing_class):
+        if self.generation_config is None:
+            self.init_gen_config(model)
         for prompt in self.prompts:
-            tokenizer_outputs = tokenizer(
+            tokenizer_outputs = processing_class(
                 [prompt],
                 truncation=False,
                 return_length=True,
@@ -114,14 +132,14 @@ class TextgenCallback(TrainerCallback):
                 input_ids,
                 attention_mask=attention_mask,
                 generation_config=self.generation_config,
-                stopping_criteria=[EosStoppingCriteria(tokenizer)],
+                stopping_criteria=[EosStoppingCriteria(processing_class)],
                 return_dict_in_generate=True,
                 use_cache=use_cache,
                 past_key_values=None,
                 max_new_tokens=self.max_new_tokens,
             )
 
-            output_text = tokenizer.decode(
+            output_text = processing_class.decode(
                 outputs.sequences[0],
                 skip_special_tokens=True,
             )

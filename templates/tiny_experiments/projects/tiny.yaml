@@ -76,7 +76,6 @@
     eval_steps: 500
     learning_rate: 1.0e-3
     num_train_epochs: 1
-    lr_scheduler_type: "cosine"
 -- endblock trainer_args
 
 #-------------------- tiny.model_config --------------------

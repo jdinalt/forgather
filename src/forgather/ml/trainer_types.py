@@ -12,7 +12,7 @@ import numpy as np
 from .utils import ConversionDescriptor, DiagnosticEnum
 
 OUTPUTDIR_NAME = "tmp_trainer"
-LR_SCHEDULER_NAME = "constant"
+LR_SCHEDULER_NAME = None
 
 
 class TrainOutput(NamedTuple):
@@ -338,6 +338,15 @@ class TrainerCallback(ABC):
         pass
 
     def on_prediction_step(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
+        pass
+
+    def on_pre_optimizer_step(
         self,
         args: TrainingArguments,
         state: TrainerState,

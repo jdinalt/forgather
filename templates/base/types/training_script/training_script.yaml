@@ -110,6 +110,23 @@
     -- endfilter
 
 
+== h2('Optimizer')
+
+    -- filter trim()
+    -- block optimizer
+.define: &optimizer ~
+    << endblock optimizer
+    -- endfilter
+
+== h2('LR Scheduler')
+
+    -- filter trim()
+    -- block lr_scheduler
+.define: &lr_scheduler ~
+    << endblock lr_scheduler
+    -- endfilter
+
+
 == h2('Trainer')
 
     -- filter trim()
@@ -157,4 +174,7 @@ train_dataset: *train_dataset
 eval_dataset: *eval_dataset
 data_collator: *data_collator
 trainer_callbacks: *trainer_callbacks
+trainer_args: *trainer_args
+optimizer: *optimizer
+lr_scheduler: *lr_scheduler
 << endblock auxiliary_outputs

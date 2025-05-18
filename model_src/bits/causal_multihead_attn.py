@@ -68,15 +68,12 @@ class CausalMultiheadAttn(nn.Module):
             torch.full((seq_len, seq_len), True, device=qkv.device), diagonal=1
         )
         scores.masked_fill_(causal_mask, float("-inf"))
-        del causal_mask
 
         # Calculate the attention weights
         attention_weights = self.dropout(torch.softmax(scores, dim=-1))
-        del scores
 
         # Use the attention weights to get a weighted combination of value vectors
         attended_values = torch.matmul(attention_weights, value)
-        del attention_weights
 
         # Concatenate attention heads and project to original embedding size using the output linear layer
         attended_values = (

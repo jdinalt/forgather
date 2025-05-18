@@ -8,6 +8,8 @@ from typing import (
 from types import NoneType
 import os
 from abc import abstractmethod
+import glob
+import shutil
 
 from loguru import logger
 import torch
@@ -47,12 +49,19 @@ class BaseTrainer(ExtensibleTrainer):
         data_collator=None,
         train_dataset=None,
         eval_dataset=None,
-        tokenizer=None,
+        processing_class=None,
         model_init: Optional[Callable[[], PreTrainedModel]] = None,
         callbacks: List = None,
+        # Depreicated; use processing_class
+        tokenizer=None,
     ):
         if callbacks is None:
             callbacks = []
+
+        # Try to maintain backward compatability for now.
+        if processing_class is None and tokenizer is not None:
+            processing_class = tokenizer
+
         # Init args
         self.model = model
         if args is None:
@@ -64,7 +73,7 @@ class BaseTrainer(ExtensibleTrainer):
         self.data_collator = data_collator
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
-        self.tokenizer = tokenizer
+        self.processing_class = processing_class
         self.model_init = model_init
         self.callbacks = self.default_callbacks()
         self.callbacks.extend(callbacks)
@@ -91,7 +100,7 @@ class BaseTrainer(ExtensibleTrainer):
             f"data_collator={self.data_collator},"
             f"train_dataset={self.train_dataset},"
             f"eval_dataset={self.eval_dataset},"
-            f"tokenizer={self.tokenizer},"
+            f"processing_class={self.processing_class},"
             f"model_init={self.model_init},"
             f"callbacks={self.callbacks},"
             ")"
@@ -205,18 +214,46 @@ class BaseTrainer(ExtensibleTrainer):
             os.makedirs(logging_dir, exist_ok=True)
 
     def _save(self, output_dir):
-        if self.is_world_process_zero:
-            model = self.unwrapped_model()
-            if isinstance(model, PreTrainedModel):
-                model.save_pretrained(
-                    save_directory=output_dir,
-                    safe_serialization=True,
-                )
-            else:
-                logger.info("Saving model as state-dictionary")
-                torch.save(model.state_dict(), os.path.join(output_dir, WEIGHTS_NAME))
-            if self.tokenizer is not None:
-                self.tokenizer.save_pretrained(output_dir)
+        if not self.is_world_process_zero:
+            return
+        model = self.unwrapped_model()
+        if isinstance(model, PreTrainedModel):
+            model.save_pretrained(
+                save_directory=output_dir,
+                is_main_process=True,
+                safe_serialization=True,
+            )
+        else:
+            logger.info("Saving model as state-dictionary")
+            torch.save(model.state_dict(), os.path.join(output_dir, WEIGHTS_NAME))
+        if self.processing_class is not None:
+            self.processing_class.save_pretrained(output_dir)
+
+    def _save_checkpoint(self):
+        if not self.is_world_process_zero:
+            return
+        checkpoints_dir = os.path.join(self.args.output_dir, "checkpoints")
+        checkpoint_path = os.path.join(
+            checkpoints_dir, f"checkpoint-{self.state.global_step}"
+        )
+        logger.info(f"Saving checkpoint at {checkpoint_path}")
+
+        os.makedirs(checkpoints_dir, exist_ok=True)
+        self._save(checkpoint_path)
+        checkpoints = glob.glob(os.path.join(checkpoints_dir, "checkpoint-*"))
+        if len(checkpoints) > self.args.save_total_limit:
+            # Find oldest and delete it
+            oldest_path = None
+            oldest_ctime = None
+            for cp in checkpoints:
+                ctime = os.path.getctime(cp)
+                if oldest_ctime is None or ctime < oldest_ctime:
+                    oldest_path = cp
+                    oldest_ctime = ctime
+            logger.info(f"Deleting oldest checkpoint at {oldest_path}")
+            shutil.rmtree(oldest_path)
+        # Make available to sub-class for saving additional state
+        return checkpoint_path
 
     def _dispatch_event(self, event: str, **kwargs):
         """
@@ -235,7 +272,7 @@ class BaseTrainer(ExtensibleTrainer):
                 self.state,
                 control,
                 model=self.unwrapped_model(),
-                tokenizer=self.tokenizer,
+                processing_class=self.processing_class,
                 optimizer=self.optimizer,
                 lr_scheduler=self.lr_scheduler,
                 train_dataloader=self.train_dataloader,
@@ -246,9 +283,6 @@ class BaseTrainer(ExtensibleTrainer):
             if new_control is not None:
                 control = new_control
         return control
-
-    def _save_checkpoint(self):
-        logger.warning("Trainer._save_checkpoint() is unimplemented!")
 
     @abstractmethod
     def _post_init(self) -> None:

@@ -33,6 +33,7 @@ class CasualLM(nn.Module):
         attention_mask: Optional[FloatTensor] = None,
         **kwargs,
     ) -> dict[str, FloatTensor]:
+        # print(input_ids.shape)
         # Convert input_ids to embeddings and add positional information.
         hidden_states = self.input_encoder(input_ids, position_ids)
 

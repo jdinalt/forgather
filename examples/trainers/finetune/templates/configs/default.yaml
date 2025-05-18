@@ -1,0 +1,23 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = 'Finetune'
+    -- set ns.config_description = "Example configuration for finetuning a pre-trained model."
+-- endblock config_metadata
+
+
+## Override default project definition
+-- block trainer_definition
+    -- include 'experiment.trainer_config'
+-- endblock trainer_definition
+
+## The next line defines a new template within the same file.
+#-------------------- experiment.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+-- block trainer_args
+    == super()
+    
+    # {{ ns.config_name }} Overrides
+-- endblock trainer_args

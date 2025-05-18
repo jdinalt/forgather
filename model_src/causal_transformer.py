@@ -12,6 +12,7 @@ from transformers import (
     PretrainedConfig,
     AutoConfig,
     AutoModelForCausalLM,
+    GenerationMixin,
 )
 
 model_type = "forgather-causal-transformer"
@@ -343,7 +344,7 @@ class CausalTransformerConfig(PretrainedConfig):
         super().__init__(**kwargs)
 
 
-class CausalTransformer(PreTrainedModel):
+class CausalTransformer(PreTrainedModel, GenerationMixin):
     config_class = CausalTransformerConfig
     model_type = model_type
 

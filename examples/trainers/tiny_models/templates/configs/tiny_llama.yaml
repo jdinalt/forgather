@@ -1,4 +1,5 @@
 -- extends 'project.yaml'
+-- from "model_ctor/args.yaml" import use_flash_attn2
 
 -- block config_metadata
     == super()
@@ -7,6 +8,12 @@
     -- set ns.model_name = "tiny_llama"
 -- endblock config_metadata
 
+## Enables flash-attention2
+## Disable this block, if your hardware does not support this.
+-- block model_constructor_args
+.define: &model_constructor_args
+    == use_flash_attn2
+<< endblock model_constructor_args
 
 -- block construct_new_model
     -- include 'experiment.model_config'

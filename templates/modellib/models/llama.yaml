@@ -13,6 +13,8 @@
 ## Select a 'llama-2' tokenizer
 .define: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
     args:
+        # For 'reasons' the offical tokenizer requires an access token.
+        # We will use the tokenizer from a derived model to side-step this.
         - "TheBloke/Llama-2-7B-GPTQ"
     kwargs:
         legacy: False

@@ -3,7 +3,7 @@
 -- block model_meta_config
     == super()
     -- set model_def.name = "Causal Transformer"
-    -- set model_def.description = "A causal transformer model, based upon 'Attention is All You Need'"
+    -- set model_def.description = "A causal (decoder only) transformer model, roughly based upon 'Attention is All You Need'"
     -- set model_def.cls = 'CausalTransformer'
     -- set model_def.cfg_cls = 'CausalTransformerConfig'
     -- set model_def.config_path = joinpath(ns.model_src_dir, 'causal_transformer.py')

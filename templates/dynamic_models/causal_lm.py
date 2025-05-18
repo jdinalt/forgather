@@ -9,6 +9,7 @@ from transformers import (
     PretrainedConfig,
     AutoConfig,
     AutoModelForCausalLM,
+    GenerationMixin,
 )
 
 -- for module, name in imports:
@@ -22,7 +23,7 @@ class DynamicCausalLMConfig(PretrainedConfig):
     model_type = model_type
 
 
-class DynamicCasualLM(PreTrainedModel):
+class DynamicCasualLM(PreTrainedModel, GenerationMixin):
     config_class = DynamicCausalLMConfig
     model_type = model_type
 
@@ -32,6 +33,7 @@ class DynamicCasualLM(PreTrainedModel):
 
     @staticmethod
     def construct_model(
+    ## Expands code for constructing model here.
     -- for var, has_default, default in variables:
         {{ var }}{% if has_default %}={{ repr(default) }}{% endif %},
     -- endfor

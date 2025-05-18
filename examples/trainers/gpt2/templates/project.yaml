@@ -7,7 +7,7 @@
     == super()
     -- set ns.config_name = "GPT2 From Scratch"
     -- set ns.config_description = "Train the base GPT2 model from scratch."
-    -- set ns.create_new_model = True
+    -- set ns.create_new_model = False
     -- set ns.save_model = True 
 -- endblock config_metadata
 
@@ -43,7 +43,7 @@
 #-------------------- project.trainer_config --------------------
 ## Select one-of:
 ## trainers/( trainer.yaml | accel_trainer.yaml | trainer.yaml )
--- extends 'trainers/accel_trainer.yaml'
+-- extends 'trainers/trainer.yaml'
 
 
 -- block trainer_meta_config
@@ -59,6 +59,6 @@
     per_device_eval_batch_size: 4
     logging_steps: 100
     eval_steps: 1000
-    learning_rate: 1.0e-3
+    learning_rate: 1.0e-5
     lr_scheduler_type: "cosine"
 -- endblock trainer_args

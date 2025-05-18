@@ -14,6 +14,9 @@
     data_collator: *data_collator
     train_dataset: *train_dataset
     eval_dataset: *eval_dataset
-    tokenizer: *tokenizer
+    processing_class: *tokenizer
     callbacks: *trainer_callbacks
+    ## Not in HF Trainer
+    optimizer_factory: *optimizer
+    lr_scheduler_factory: *lr_scheduler
 << endblock trainer_constructor

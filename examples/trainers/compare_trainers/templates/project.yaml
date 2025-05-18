@@ -46,9 +46,12 @@
     # Tiny Project Overrides
     per_device_train_batch_size: 64
     per_device_eval_batch_size: 64
+    learning_rate: 1.0e-3
     logging_steps: 100
     eval_steps: 500
     dataloader_num_workers: 1
+    seed: 42
+    max_steps: 500
 -- endblock trainer_args
 
 #-------------------- project.model_config --------------------

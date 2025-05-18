@@ -9,6 +9,7 @@ class ExplicitLayerStack(nn.Module):
 
     The version is a bit more flexible for creating "unusual" model configurations.
     """
+
     def __init__(
         self,
         factory_list: list[Callable],

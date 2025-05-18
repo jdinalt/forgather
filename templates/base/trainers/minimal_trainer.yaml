@@ -31,7 +31,7 @@
     logging_steps: 500
     per_device_train_batch_size: 16 ## Decrease on OOM errors!
     per_device_eval_batch_size: 32
-    learning_rate: 5e-5 ## Relatively safe, but far from ideal for many models.
+    learning_rate: 5.0e-5 ## Relatively safe, but far from ideal for many models.
     num_train_epochs: 1
 << endblock trainer_args
 -- endfilter

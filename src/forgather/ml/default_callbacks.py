@@ -77,12 +77,28 @@ class ProgressCallback:
         return s
 
     @staticmethod
+    def format_mapping(header, mapping):
+        s = header + " "
+        for key, value in mapping.items():
+            if isinstance(value, int):
+                value = f"{value:,}"
+            elif isinstance(value, float):
+                value = f"{value:.4}"
+            elif not isinstance(value, str):
+                value = pformat(value)
+            if len(value) > 80:
+                s += f"{key}:\n{value}\n"
+            else:
+                s += f"{key}: {value} "
+        return s
+
+    @staticmethod
     def _format_train(state, record):
         header = ProgressCallback._record_header(state)
         if "loss" in record and "learning_rate" in record:
             return f"{header} train-loss: {round(record['loss'], 5):<10}learning-rate: {record['learning_rate']:1.2e}"
         else:
-            return format_mapping(record)
+            return ProgressCallback.format_mapping(header, record)
 
     @staticmethod
     def _format_eval(state, record):
@@ -90,7 +106,7 @@ class ProgressCallback:
         if "eval_loss" in record:
             return f"{header} eval-loss:  {round(record['eval_loss'], 5):<10}"
         else:
-            return format_mapping(record)
+            return ProgressCallback.format_mapping(header, record)
 
 
 class InfoCallback:

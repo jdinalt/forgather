@@ -119,7 +119,9 @@ class Project:
             )
 
         kwargs |= dict(pp_config=self.pp_config)
-        outputs = Latent.materialize(self.config, mtargets=mtargets, **kwargs)
+        outputs = Latent.materialize(
+            self.config, mtargets=mtargets, context_vars=kwargs
+        )
 
         if isinstance(make_targets, str):
             return outputs[make_targets]

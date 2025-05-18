@@ -237,6 +237,22 @@ def make_train_script(
         os.chdir(prev_cwd)
 
 
+def get_tb_command(project, local_host=True):
+    cmd = "tensorboard "
+    if not local_host:
+        cmd += "--bind_all "
+
+    directory = os.path.abspath(project("meta")["output_dir"])
+    cmd += f'--logdir "{directory}"'
+    return cmd
+
+
+def display_tb_command(project, local_host=True):
+    cmd = get_tb_command(project, local_host)
+    md = f"#### Tensorboard Command\n\n" f"```bash\n{cmd}\n```"
+    display_md(md)
+
+
 def generate_trainingscript(project, cuda_devices=None):
     """
     A high-level version of make_train_script(), for use in a notebook.

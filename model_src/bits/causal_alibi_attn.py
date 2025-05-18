@@ -31,6 +31,8 @@ class CausalAlibiAttn(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
+        self.trainable_alibi = trainable_alibi
+        self.alt_alibi_init = alt_alibi_init
 
         assert d_model % num_heads == 0, "d_model must be evenly divisible by num_heads"
 

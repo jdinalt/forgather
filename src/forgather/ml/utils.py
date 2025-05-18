@@ -35,7 +35,7 @@ def format_train_info(
     state,
     control,
     model,
-    tokenizer,
+    processing_class,
     optimizer,
     lr_scheduler,
     train_dataloader,
@@ -83,7 +83,7 @@ def format_train_info(
     extra_info = {
         "args": pformat(args),
         "state": pformat(state),
-        "tokenizer": pformat(tokenizer),
+        "processing_class": pformat(processing_class),
         "optimizer": alt_repr(optimizer),
         "lr_schedulerr": alt_repr(lr_scheduler),
         "train_dataloader": alt_repr(train_dataloader),

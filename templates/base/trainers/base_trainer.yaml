@@ -18,6 +18,9 @@
     save_strategy: "no"
     logging_strategy: "steps"
     ## Additional common params
+    ## save_steps: 500
+    ## logging_steps: 500
+    ## warmup_steps: 0
     ## use_cpu: True ; Set in config for debugging
     ## max_steps: -1
     ## seed: -1
