@@ -1,0 +1,49 @@
+-- extends 'datasets/abstract/base_datasets.yaml'
+
+-- block datasets_meta_config
+    == super()
+    -- set datasets_ns.name = "wikipedia-20220301.en"
+    -- set datasets_ns.description = ""
+    -- set datasets_ns.source = ""
+    -- set datasets_ns.train_load_method = "datasets:load_from_disk"
+    -- set datasets_ns.train_dataset_id = joinpath(ns.datasets_dir, "wikipedia-20220301.en")
+
+    -- set datasets_ns.eval_load_method = "datasets:load_from_disk"
+    -- set datasets_ns.eval_dataset_id = joinpath(ns.datasets_dir, "wikipedia-20220301.en")
+
+    ## There is not pre-made eval, so fake it by grabbing samples from train
+    -- set datasets_ns.eval_dataset_split = "train"
+
+-- endblock datasets_meta_config
+
+-- block preprocess_args
+.define: &preprocess_args
+    block_size: 512
+    overflow: false
+    add_bos: false
+    combine: false
+    min_len: 400
+    stride: 0
+<< endblock preprocess_args
+
+
+-- block tokenize_train
+    == super()
+    map_fn: !lambda:forgather.ml.datasets:block_tokenize_fn
+    to_iterable: true
+    num_shards: 1024
+    parallel_tokenizer: false
+    map_kwargs:
+        batch_size: 32
+
+    shuffle: true
+    seed: 42
+    select_range: [ 1000, -1 ]
+<< endblock tokenize_train
+
+
+-- block tokenize_eval
+    == super()
+    map_fn: !lambda:forgather.ml.datasets:block_tokenize_fn
+    select_range: [ 0, 1000 ]
+<< endblock tokenize_eval

@@ -158,7 +158,8 @@ class Trainer(BaseTrainer):
         Prepare for training and/or evaluation
         """
         self.max_steps = 0
-        self.epoch_train_steps = 0
+        self.epoch_train_steps = self.args.epoch_train_steps
+        self.train_ds_has_length = False
 
         # Set the random seed
         if self.args.seed != -1:
@@ -187,9 +188,12 @@ class Trainer(BaseTrainer):
         self.do_eval = eval_dataset is not None
 
         if self.do_train:
+
             self.train_dataloader = self._get_dataloader(
                 train_dataset, self.args.per_device_train_batch_size
             )
+
+            self.train_ds_has_length = hasattr(train_dataset, "__len__")
             self._update_training_steps()
             if self.optimizer is None:
                 print("Calling optimizer factory")
@@ -232,7 +236,7 @@ class Trainer(BaseTrainer):
                         self.epoch_train_steps
                     )
                     pstate.periodic_log.step(
-                        pstate.log_step_loss, pstate.periodic_log.count()
+                        pstate.log_step_loss, pstate.periodic_log.count() + 1
                     )
                     pstate.periodic_eval.step()
                     pstate.periodic_save.step()
@@ -251,8 +255,6 @@ class Trainer(BaseTrainer):
                         break
                     continue
                 break  # Break, if inner-loop breaks
-        # Flush the last (poentially) partial log-step.
-        self._log_step(pstate.log_step_loss, pstate.periodic_log.count())
         metrics = self._end_train_loop()
         self.log(metrics)
         self._dispatch_event("on_train_end")
@@ -302,7 +304,9 @@ class Trainer(BaseTrainer):
         Should this occur, update the value be calling this again.
         """
         # The number of training steps in a single epoch
-        self.epoch_train_steps = len(self.train_dataloader)
+
+        if self.train_ds_has_length:
+            self.epoch_train_steps = len(self.train_dataloader)
 
         # If limit is specified, constrain to limit.
         if self.args.max_steps >= 0:
@@ -356,14 +360,14 @@ class Trainer(BaseTrainer):
             period=self.args.logging_steps,
             epoch_period=self.epoch_train_steps,
             f=self._log_step,
-            first_step=0 if not self.args.logging_first_step else -1,
+            phase=0 if not self.args.logging_first_step else -1,
         )
         periodic_eval = PeriodicFunction(
             strategy=self.args.eval_strategy,
             period=self.args.eval_steps,
             epoch_period=self.epoch_train_steps,
             f=self._eval_loop,
-            first_step=-self.args.eval_delay,
+            phase=self.args.eval_delay,
         )
 
         periodic_save = PeriodicFunction(
@@ -371,7 +375,7 @@ class Trainer(BaseTrainer):
             period=self.args.save_steps,
             epoch_period=self.epoch_train_steps,
             f=self._save_checkpoint,
-            first_step=0,
+            phase=0,
         )
         # Tracks mean loss for each log-step
         log_step_loss = torch.zeros(1, device=self.args.device)

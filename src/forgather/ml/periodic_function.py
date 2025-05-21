@@ -13,11 +13,12 @@ class PeriodicFunction:
         period: int,
         epoch_period: int,
         f: Callable,
-        first_step=0,
+        phase=0,
     ):
         assert period > 0
         self.period = period
-        self.counter = first_step + 1
+        self.phase = phase
+        self.counter = 0
         self.f = f
         match strategy:
             case IntervalStrategy.NO:
@@ -30,12 +31,9 @@ class PeriodicFunction:
                 pass
 
     def count(self):
-        return self.counter - 1
-
-    def reset(self, value=0) -> None:
-        self.counter = value
+        return self.counter % self.period
 
     def step(self, *args, **kwargs) -> None:
-        if self.counter >= 0 and self.counter % self.period == 0:
-            self.f(*args, **kwargs)
         self.counter += 1
+        if (self.counter + self.phase) % self.period == 0:
+            self.f(*args, **kwargs)

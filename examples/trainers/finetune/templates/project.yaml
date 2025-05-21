@@ -14,11 +14,11 @@
 -- block config_metadata
     == super()
     -- set ns.config_name = "Finetune"
-    -- set ns.config_description = "An example configuration"
+    -- set ns.config_description = "Example configuration for finetuning a pre-trained model."
 
     ## The name of the model to train in the models directory
     -- set ns.model_name = 'walsh_test'
-    -- set ns.log_name = ns.model_name
+    -- set ns.log_name = "project_default"
     
     ## Initialize a new model from scratch
     -- set ns.create_new_model = False
@@ -38,7 +38,7 @@
     ## Add assets needed for text-gen sampling.
     ## This adds a set of prompts and text-gen parameters.
     == super()
-    -- include "prompts/tiny_stories.yaml"
+    -- include "prompts/short_stories.yaml"
 -- endblock pre_model_setup
 
 
@@ -53,12 +53,9 @@
 
 
 -- block optimizer
-#.define: &optimizer !lambda:torchao.optim:Adam8bit
-.define: &optimizer !lambda:transformers:Adafactor
+.define: &optimizer !lambda:torchao.optim:Adam8bit
     kwargs:
-        scale_parameter: False
-        relative_step: False
-        lr: 1.0e-5
+        lr: 5.0e-6
         #bf16_stochastic_round: true
 << endblock optimizer
 
@@ -81,7 +78,7 @@
 #-------------------- project.trainer_config --------------------
 ## Select one-of:
 ## trainers/( trainer.yaml | accel_trainer.yaml | hf_trainer.yaml )
--- extends 'trainers/accel_trainer.yaml'
+-- extends 'trainers/trainer.yaml'
 
 
 -- block trainer_meta_config
@@ -101,10 +98,10 @@
     lr_scheduler_type: "none"
     
     ## Stop early for quick test.
-    max_steps: 1001
+    max_steps: 2001
 
     # Eval after the first step
-    eval_delay: 1
+    eval_delay: -1
 << endblock trainer_args
 
 
@@ -123,7 +120,7 @@
     summary_writer: *summary_writer
     prompts: *testprompts
     generation_config: *generation_config
-    max_new_tokens: 40
+    max_new_tokens: 50
     generation_steps: 500
     << endblock text_gen_callback_args
     -- endfilter
@@ -137,24 +134,5 @@
 << endblock callback_list
 
 #-------------------- project.dataset --------------------
--- extends 'datasets/abstract/base_datasets.yaml'
+-- extends 'datasets/examples/books.yaml'
 
--- block datasets_meta_config
-    == super()
-    -- set datasets_ns.name = "Local Dataset"
-    -- set datasets_ns.description = "A dataset on the local filesystem."
-    -- set datasets_ns.train_dataset_id = joinpath(ns.datasets_dir, "roneneldan-TinyStories")
-    -- set datasets_ns.eval_dataset_id = datasets_ns.train_dataset_id
-    -- set datasets_ns.train_load_method = "datasets:load_from_disk"
-    -- set datasets_ns.eval_load_method = datasets_ns.train_load_method
-
-    -- set datasets_ns.train_select_range = 0.1
-    -- set datasets_ns.eval_select_range = 500
--- endblock datasets_meta_config
-
--- block tokenize_args
-## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
-.define: &tokenize_args
-    truncation: True
-    max_length: 512
-<< endblock tokenize_args

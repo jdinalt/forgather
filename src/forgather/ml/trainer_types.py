@@ -136,6 +136,10 @@ class TrainingArguments(MinimalTrainingArguments):
     torch_compile_backend: str | None = None
     torch_compile_mode: str | None = None
 
+    # Not if HF trainer; number of train-batches in an epoch, when dataset does not support len()
+    # This just becomes a relative value for book-keeping.
+    epoch_train_steps: int = 100000
+
     def __post_init__(self):
         super().__post_init__()
         # As per https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader
