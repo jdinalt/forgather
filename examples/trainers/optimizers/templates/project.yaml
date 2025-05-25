@@ -4,13 +4,14 @@
     == super()
     -- set ns.create_new_model = True
     -- set ns.save_model = False
-    ##-- set ns.model_name = "tiny_causal"
-    -- set ns.model_name = "bigger_cp"
-    -- set ns.lr = 5.0e-4
+    -- set ns.model_name = "tiny_causal"
+    ##-- set ns.model_name = "bigger_cp"
+    ##-- set ns.model_name = "neoinit"
+    -- set ns.lr = 1.0e-3
 -- endblock config_metadata
 
 -- block construct_new_model
-    -- include 'models/bigger.yaml'
+    -- include 'models/control.yaml'
 -- endblock construct_new_model
 
 
@@ -23,6 +24,11 @@
     -- include 'project.dataset_config'
 -- endblock datasets_definition
 
+-- block model_constructor_args
+.define: &model_constructor_args
+    torch_dtype: !singleton:forgather.ml.construct:torch_dtype [ "bfloat16" ]
+<< endblock model_constructor_args
+
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
 
@@ -31,7 +37,7 @@
     == super()
     # project overrides
     per_device_train_batch_size: 32
-    per_device_eval_batch_size: 32
+    per_device_eval_batch_size: 64
     ## max_steps: 3
 -- endblock trainer_args
 

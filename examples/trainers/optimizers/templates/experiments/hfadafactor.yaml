@@ -8,7 +8,7 @@
 -- endblock config_metadata
 
 -- block optimizer
-.define: &optimizer !lambda:./src/adafactor.py:Adafactor
+.define: &optimizer !lambda:./src/hfadafactor.py:Adafactor
     kwargs:
         lr: {{ns.lr}}
         scale_parameter: False

@@ -28,9 +28,11 @@ class DynamicCasualLM(PreTrainedModel, GenerationMixin):
     config_class = DynamicCausalLMConfig
     model_type = model_type
 
-    def __init__(self, config: PretrainedConfig):
+    def __init__(self, config: PretrainedConfig, torch_dtype=None):
         super().__init__(config)
         self.causal_lm = self.construct_model(**config.to_dict())
+        if torch_dtype is not None:
+            self.to(torch_dtype)
 
     @staticmethod
     def construct_model(

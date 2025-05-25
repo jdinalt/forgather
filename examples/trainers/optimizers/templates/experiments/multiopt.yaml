@@ -1,0 +1,28 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "multiopt"
+    -- set ns.config_description = ""
+    -- set ns.log_name = "multiopt"
+-- endblock config_metadata
+
+-- block optimizer
+.define: &optimizer !lambda:./src/multiopt.py:make_re_multiopt
+    optimizer_map:
+        - [ "bias", "default" ]
+        # output_decoder : ++
+        # attention : +++
+        # feedforward : +
+        # input_encoder : +
+        # norm : -
+        # bias : -
+        - [ "output_decoder|input_encoder|feedforward|attention", "adam" ]
+        - [ ".*", "default" ]
+    factories:
+        default: !lambda:./src/sgd.py:SGD
+            lr: 1.0e-1
+        adam: !lambda:./src/adam.py:Adam
+            lr: 1.0e-3
+
+<< endblock optimizer

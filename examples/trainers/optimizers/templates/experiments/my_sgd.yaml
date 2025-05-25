@@ -4,16 +4,11 @@
     == super()
     -- set ns.config_name = "SGD"
     -- set ns.config_description = "Torch SGD"
-    -- set ns.log_name = "sgd"
+    -- set ns.log_name = "my_sgd"
 -- endblock config_metadata
 
-
--- block construct_new_model
-    -- include 'models/control.yaml'
--- endblock construct_new_model
-
 -- block optimizer
-.define: &optimizer !lambda:torch:optim.SGD
+.define: &optimizer !lambda:./src/sgd.py:SGD
     lr: 1.0e-1
 
 << endblock optimizer

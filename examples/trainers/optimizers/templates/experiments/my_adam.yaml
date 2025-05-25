@@ -1,0 +1,14 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Adam"
+    -- set ns.config_description = "Custom Adam Implementation"
+    -- set ns.log_name = "my_adam"
+-- endblock config_metadata
+
+-- block optimizer
+.define: &optimizer !lambda:./src/adam.py:Adam
+    lr: {{ns.lr}}
+
+<< endblock optimizer

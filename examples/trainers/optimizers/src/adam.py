@@ -6,38 +6,32 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from torch.optim import Optimizer
 
-class Adafactor(Optimizer):
+class AdamW(Optimizer):
     """
-    Adafactor
+    Adam
     """
     def __init__(
         self,
         params: Iterable[nn.parameter.Parameter],
         lr: float=1e-3,
-        sgd_lr: float=1.0,
-        decay_rate: float=-0.8,
-        clip_threshold: float=1.0,
         betas: Tuple[float, float]=(0.9, 0.999),
-        eps: float=1e-30,
+        eps: float=1e-6,
         weight_decay: float = 0.0, 
         torch_compile: bool = False,
     ):
         self.compile = torch_compile
         defaults = dict(
             lr=lr,
-            sgd_lr=sgd_lr,
             betas=betas,
             eps=eps,
-            decay_rate=decay_rate,
-            clip_threshold=clip_threshold,
             weight_decay=weight_decay,
         )
         super().__init__(params, defaults)
 
     def _init_state(self, state, group, p, grad):
         state["step"] = torch.tensor(0.0)
-        state["row"] = torch.zeros(grad.shape[0], dtype=torch.float32, device=grad.device)
-        state["col"] = torch.zeros(grad.shape[1], dtype=torch.float32, device=grad.device)
+        state["m"] = torch.zeros_like(grad)
+        state["v"] = torch.zeros_like(grad)
         
     @torch.no_grad()
     def step(self, closure: Callable = None):
@@ -51,12 +45,6 @@ class Adafactor(Optimizer):
                     if p.grad is None:
                         continue
                     grad = p.grad
-    
-                    # If single dimension, perform SGD update
-                    if grad.dim() == 1:
-                        p.add_(grad, alpha=-group["sgd_lr"])
-                        continue
-                    
                     state = self.state[p]
     
                     # Init state
@@ -70,65 +58,50 @@ class Adafactor(Optimizer):
                         p,
                         grad,
                         state["step"],
-                        state["row"],
-                        state["col"],
+                        state["m"],
+                        state["v"],
                         group["lr"],
                         betas[0],
                         betas[1],
-                        group["decay_rate"],
-                        group["clip_threshold"],
                         group["eps"],
                         group["weight_decay"],
                     ]
                     if self.compile:
-                        torch.compile(_adafactor, fullgraph=True, dynamic=False)(*args)
+                        torch.compile(_adam, fullgraph=True, dynamic=False)(*args)
                     else:
-                        _adafactor(*args)
+                        _adam(*args)
 
         return loss
-
-"""
-TODO: Implement Stochastic Rounding
-https://arxiv.org/abs/2010.06192
-# https://github.com/pytorch/ao/blob/main/torchao/optim/quant_utils.py#L120
-"""
-
-def _adafactor(
+            
+def _adam(
     p: Tensor,
     grad: Tensor,
     step: Tensor,
-    r: Tensor,
-    c: Tensor,
+    m: Tensor,
+    v: Tensor,
     alpha: float,
     beta1: float,
     beta2: float,
-    decay_rate: float,
-    clip_threshold: float,
     eps: float,
     weight_decay: float,
 ):
     if weight_decay > 0.0:
         p.add_(p, alpha=(-alpha * weight_decay))
-
+        
     """
-    https://arxiv.org/pdf/1804.04235
+    https://arxiv.org/pdf/1412.6980
     """
-    grad32 = grad.float()
-    update = grad32 ** 2 + eps
+    m.lerp_(grad, 1.0 - beta1)
+    v.lerp_(grad.square(), 1.0 - beta2)
     
-    # We clamp to beta2, which is not from the paper
-    beta2t = (1.0 - step ** decay_rate).clamp(max=beta2)
-    r.lerp_(update.mean(dim=-1), 1.0 - beta2t)
-    c.lerp_(update.mean(dim=-2), 1.0 - beta2t)
-    update = grad32 * torch.outer(torch.rsqrt(r / r.mean()), torch.rsqrt(c))
+    m_hat = m.float() / (1.0 - beta1 ** step)
+    v_hat = v.float() / (1.0- beta2 ** step)
     
-    # Apply update clipping
-    update /= (update.square().mean().sqrt() / clip_threshold).clamp_(min=1.0)
+    update = m_hat / (v_hat.sqrt_() + eps)
+    p.add_(update, alpha=-alpha)
 
-    # Update parameter
     if p.dtype == update.dtype:
         p.add_(update, alpha=-alpha)
     else:
+        #p -= (alpha * update).to(dtype=p.dtype)
         p.copy_(p.float() - alpha * update)
-
-        
