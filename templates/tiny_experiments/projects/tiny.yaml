@@ -27,8 +27,7 @@
 
 
 -- block datasets_definition
-    ## Note: Switch to 'datasets/tiny/tiny_stories.yaml' for the full dataset.
-    -- include 'datasets/tiny/tiny_stories_abridged.yaml'
+    -- include 'tiny.dataset_config'
 -- endblock datasets_definition
 
 
@@ -82,7 +81,6 @@
 -- extends 'models/tiny/tiny_causal.yaml'
 ## Default to tiny-causal model definition.
 
-
 #-------------------- tiny.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'
 ## Add experiment loggers to the callbacks list.
@@ -109,3 +107,14 @@
     - !singleton:forgather.ml.textgen_callback:TextgenCallback
         <<: *text_gen_callback_args
 << endblock callback_list
+
+#-------------------- tiny.dataset_config --------------------
+## Note: Switch to 'datasets/tiny/tiny_stories.yaml' for the full dataset.
+-- extends 'datasets/tiny/tiny_stories_abridged.yaml'
+
+-- block tokenize_args
+## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
+    == super()
+    # project overrides
+    max_length: 512
+<< endblock tokenize_args

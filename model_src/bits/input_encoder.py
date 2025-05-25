@@ -22,41 +22,35 @@ class InputEncoder(nn.Module):
         vocab_size: int,
         *,
         dropout: Optional[float] = 0.1,
-        positional_encoder_factory: Optional[Callable] = None,
-        embedding_factory: Optional[Callable] = None,
-        embedding_scale: Optional[float] = None,
+        positional_encoder: Optional[Callable] = None,
+        embedding: Optional[Callable] = None,
     ):
         super().__init__()
         self.d_model = d_model
         self.vocab_size = vocab_size
-
-        if embedding_scale is None:
-            self.embedding_scale = d_model**0.5
-        else:
-            self.embedding_scale = embedding_scale
 
         if dropout == 0.0:
             self.dropout = nn.Identity()
         else:
             self.dropout = nn.Dropout(dropout)
 
-        if embedding_factory is not None:
-            self.embedding = embedding_factory()
+        if embedding is not None:
+            self.embedding = embedding
         else:
             self.embedding = nn.Embedding(vocab_size, d_model)
 
-        if positional_encoder_factory is not None:
-            self.positional_encoder = positional_encoder_factory()
+        if positional_encoder is not None:
+            self.positional_encoder = positional_encoder
         else:
             self.positional_encoder = None
 
     def extra_repr(self):
-        return f"d_model={self.d_model}, vocab_size={self.vocab_size}, embedding_scale={self.embedding_scale}"
+        return f"d_model={self.d_model}, vocab_size={self.vocab_size}"
 
     def forward(
         self, input_ids: LongTensor, position_ids: LongTensor = None
     ) -> FloatTensor:
-        x = self.embedding(input_ids) * self.embedding_scale
+        x = self.embedding(input_ids)
         if self.positional_encoder is not None:
             x = self.positional_encoder(x, position_ids=position_ids)
         return self.dropout(x)

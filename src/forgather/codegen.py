@@ -73,7 +73,7 @@ class PyEncoder(GraphEncoder):
             s += self.name_map[node.identity]
             s += " = "
             if isinstance(node, FactoryNode) or isinstance(node, LambdaNode):
-                s += "lambda: "
+                s += "partial("
             s += self._encode(node) + "\n\n"
             self.defined_ids.add(node.identity)
         return s
@@ -173,19 +173,20 @@ class PyEncoder(GraphEncoder):
                     callable_name = obj.constructor
 
         s = ""
-        if self.level > 1:
-            if isinstance(obj, LambdaNode):
-                s += "lambda: "
-                # TODO: implement lambda, with arguments
-                # This appears to be a difficult one, so deferring for now.
-                # return self._encode_lambda(obj)
-            elif type(obj) == FactoryNode and obj.identity in self.name_map:
-                s += "lambda: "
+        
+        in_name_map = (type(obj) == FactoryNode and obj.identity in self.name_map)
+        is_partial = in_name_map or isinstance(obj, LambdaNode)
+        if self.level > 1 and is_partial:
+            s += "partial("
 
         s += callable_name
         if is_dynamic:
             s += "()"
-        s += "("
+        if is_partial:
+            s += ", "
+        else:
+            s += "("
+        
         if len(obj.kwargs) + len(obj.args) == 0:
             s += ")"
             return s
@@ -303,6 +304,7 @@ from {{ module }} import {{ name }}
 from importlib.util import spec_from_file_location, module_from_spec
 import os
 import sys
+from functools import partial
 
 # Import a dynamic module.
 def dynimport(module, name, searchpath):

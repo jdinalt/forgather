@@ -2,6 +2,7 @@
 # This is a template model, with the details filled-in by the code-generator.
 from typing import Optional, Tuple
 
+from functools import partial
 from torch import nn, Tensor, LongTensor, FloatTensor
 from transformers.modeling_outputs import CausalLMOutput
 from transformers import (

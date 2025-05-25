@@ -73,5 +73,11 @@
 << endblock model_config
 
 
+## Add the project model_src directory to the search path
+-- block model_submodule_searchpath
+    - "{{ ns.project_model_src_dir }}"
+    == super()
+<< endblock model_submodule_searchpath
+
 #-------------------- project.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'

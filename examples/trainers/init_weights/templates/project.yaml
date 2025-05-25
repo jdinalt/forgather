@@ -1,0 +1,55 @@
+## Project level definitions and overrides go here.
+-- extends 'projects/tiny.yaml'
+
+## Set Project level defaults
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Init Test"
+    -- set ns.config_description = "Test performance of various initialization methods."
+    
+    ## Initialize a new model from scratch
+    -- set ns.create_new_model = True
+
+    ## Save model, when training is complete
+    -- set ns.save_model = False
+
+    ## Required to load a custom model
+    -- set ns.trust_remote_code = True
+-- endblock config_metadata
+
+
+-- block trainer_definition
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
+
+-- block construct_new_model
+    -- include 'project.model_config'
+-- endblock construct_new_model
+
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+
+-- block trainer_args
+    == super()
+    # project overrides
+    ## max_steps: 3
+-- endblock trainer_args
+
+#-------------------- project.model_config --------------------
+-- extends 'models/tiny/tiny_causal.yaml'
+
+## Add the project model_src directory to the search path
+-- block model_submodule_searchpath
+    - "{{ ns.project_model_src_dir }}"
+    == super()
+<< endblock model_submodule_searchpath
+
+
+-- block model_config
+    == super()
+    
+    # Project Overrides
+<< endblock model_config

@@ -7,23 +7,22 @@ class CasualLM(nn.Module):
 
     def __init__(
         self,
-        loss_fn_factory: Callable,
-        input_encoder_factory: Callable,
-        output_decoder_factory: Callable,
-        layer_stack_factory: Callable,
-        init_weights_factory: Callable,
+        loss_fn: Callable,
+        input_encoder: Callable,
+        output_decoder: Callable,
+        layer_stack: Callable,
+        init_weights: Callable,
     ):
         super().__init__()
 
-        self.loss_fn = loss_fn_factory()
-        self.input_encoder = input_encoder_factory()
-        self.output_decoder = output_decoder_factory()
-        self.layer_stack = layer_stack_factory()
-        self.init_weights = init_weights_factory()
-        self.init_weights(self)
+        self.loss_fn = loss_fn
+        self.input_encoder = input_encoder
+        self.output_decoder = output_decoder
+        self.layer_stack = layer_stack
+        init_weights(self)
 
     def extra_repr(self):
-        return f"loss_fn={self.loss_fn}, init_weights={self.init_weights}"
+        return f"loss_fn={self.loss_fn}"
 
     def forward(
         self,
