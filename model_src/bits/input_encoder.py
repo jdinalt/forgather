@@ -1,5 +1,6 @@
 from typing import Callable, Optional
 from torch import nn, Tensor, LongTensor, FloatTensor
+import math
 
 
 class InputEncoder(nn.Module):
@@ -13,7 +14,9 @@ class InputEncoder(nn.Module):
     dropout: Embedding dropout probability, as per original Transformer paper.
     positional_encoder_factory: Constructs a positional encoder; default is None
     embedding_factory: Constructs an embedding implementaiton. Default is nn.Embedding(vocab_size, d_model)
-    embeddint_scale: Multiplier for embedding; defaults to sqrt(d_model), as per Attention is All you Need.
+    scale: Set embedding scale. scale_sqrt_d_model == True overrides this value.
+    scale_sqrt_d_model: Multiply  sqrt(d_model), as per Attention is All you Need.
+        Note: When used, embedding std should be: 1/sqrt(d_model)
     """
 
     def __init__(
@@ -24,11 +27,17 @@ class InputEncoder(nn.Module):
         dropout: Optional[float] = 0.1,
         positional_encoder: Optional[Callable] = None,
         embedding: Optional[Callable] = None,
+        scale: float = 1.0,
+        scale_sqrt_d_model: bool = True,
     ):
         super().__init__()
         self.d_model = d_model
         self.vocab_size = vocab_size
-
+        if scale_sqrt_d_model:
+            self.scale = math.sqrt(d_model)
+        else:
+            self.scale = scale
+        
         if dropout == 0.0:
             self.dropout = nn.Identity()
         else:
@@ -51,6 +60,8 @@ class InputEncoder(nn.Module):
         self, input_ids: LongTensor, position_ids: LongTensor = None
     ) -> FloatTensor:
         x = self.embedding(input_ids)
+        if self.scale != 1.0:
+            x = x * self.scale
         if self.positional_encoder is not None:
             x = self.positional_encoder(x, position_ids=position_ids)
         return self.dropout(x)

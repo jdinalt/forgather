@@ -5,15 +5,8 @@
     -- set ns.create_new_model = True
     -- set ns.save_model = False
     -- set ns.model_name = "tiny_causal"
-    ##-- set ns.model_name = "bigger_cp"
-    ##-- set ns.model_name = "neoinit"
-    -- set ns.lr = 1.0e-3
+    -- set ns.bfloat16 = False
 -- endblock config_metadata
-
--- block construct_new_model
-    -- include 'models/control.yaml'
--- endblock construct_new_model
-
 
 -- block trainer_definition
     -- include 'project.trainer_config'
@@ -24,10 +17,23 @@
     -- include 'project.dataset_config'
 -- endblock datasets_definition
 
--- block model_constructor_args
-.define: &model_constructor_args
-    torch_dtype: !singleton:forgather.ml.construct:torch_dtype [ "bfloat16" ]
-<< endblock model_constructor_args
+##-- block model_constructor_args
+##.define: &model_constructor_args
+##    torch_dtype: !singleton:forgather.ml.construct:torch_dtype [ "bfloat16" ]
+##<< endblock model_constructor_args
+
+-- block trainer_callbacks
+    -- include 'project.callbacks'
+<< endblock trainer_callbacks
+
+-- block lr_scheduler
+    ##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
+# https://arxiv.org/html/2503.02844v1
+.define: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+    warmup_steps: 5000
+    cooldown_steps: 50000
+    constant_lr: 1.0e-4
+<< endblock lr_scheduler
 
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
@@ -36,13 +42,13 @@
 -- block trainer_args
     == super()
     # project overrides
-    per_device_train_batch_size: 32
-    per_device_eval_batch_size: 64
     ## max_steps: 3
 -- endblock trainer_args
 
+
 #-------------------- project.dataset_config --------------------
--- extends 'datasets/tiny/tiny_stories_abridged.yaml'
+##-- extends 'datasets/tiny/tiny_stories_abridged.yaml'
+-- extends 'datasets/tiny/tiny_stories.yaml'
 
 
 -- block tokenize_args
@@ -51,3 +57,7 @@
     # project overrides
     max_length: 512
 << endblock tokenize_args
+
+#-------------------- project.callbacks --------------------
+-- extends 'tiny.callbacks'
+##-- extends 'callbacks/grad_logger.yaml'

@@ -58,3 +58,11 @@ This uses the deepnet initialization method, but not the residual scaling factor
 
 This is the same as Deepnet, but we replace Xavier Uniform with the "Torch" method. Again, similar performance.
 
+### No sqrt(d_model)
+
+With transformer models, we typically initialize the embedding layer to have a standard-deviation of 1/sqrt(d_model) and then scale the embedding outputs by sqrt(d_model); this is our default.
+
+This was originally a clever trick to allow the same embedding weights to be used by both the input encoder and the output decoder, but does it matter when these weights are not tied?
+
+Let's see what happens if we instead initialize the embeddings to std = 1.0 and scale the embeddings by 1.0? This should produce the same results, right?
+

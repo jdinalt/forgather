@@ -2,13 +2,13 @@
 
 -- block config_metadata
     == super()
-    -- set ns.config_name = "Torch Adam"
-    -- set ns.config_description = "Torch Adam; the baseline control"
-    -- set ns.log_name = "adam"
+    -- set ns.config_name = "Torch AdamW"
+    -- set ns.config_description = "Torch AdamW; the baseline control"
+    -- set ns.log_name = "adamw"
 -- endblock config_metadata
 
 -- block optimizer
 .define: &optimizer !lambda:torch:optim.AdamW
-    lr: {{ns.lr}}
+    lr: 1.0e-3
 
 << endblock optimizer

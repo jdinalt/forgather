@@ -7,6 +7,16 @@ import platform
 import time
 
 from torch.utils.data import DataLoader, Dataset
+import torch 
+
+def sequential_lr_factory(optimizer, schedulers, milestones, last_epoch=-1):
+    return torch.optim.lr_scheduler.SequentialLR(
+        optimizer=optimizer,
+        schedulers=[f(optimizer) for f in scheduler_factories],
+        milestones=milestones,
+        last_epoch=last_epoch,
+    )
+    
 import numpy as np
 
 from .utils import ConversionDescriptor, DiagnosticEnum

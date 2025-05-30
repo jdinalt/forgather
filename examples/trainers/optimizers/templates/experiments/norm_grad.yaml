@@ -1,16 +1,26 @@
--- extends 'project.yaml'
+-- extends 'pre_init.yaml'
 
 -- block config_metadata
     == super()
     -- set ns.config_name = "Norm Grad"
     -- set ns.config_description = "Norm Grad"
-    -- set ns.log_name = "norm_grad_b32_lr1e-3"
+    -- set ns.log_name = "norm_grad"
 -- endblock config_metadata
 
-
 -- block optimizer
-.define: &optimizer !lambda:./src/norm_grad.py:NormGrad
-    kwargs:
-        lr: {{ns.lr}}
-
+.define: &optimizer !lambda:./src/multiopt.py:make_re_multiopt
+    optimizer_map:
+        - [ "bias", "default" ]
+        - [ "output_decoder|input_encoder|feedforward|attention", "norm_grad" ]
+        - [ ".*", "default" ]
+    factories:
+        norm_grad: !lambda:./src/norm_grad.py:NormGrad
+            lr: 1.0e-4
+            clip_threshold: 1.0
+        default: !lambda:./src/sgd.py:SGD
+            lr: 1.0e-2
 << endblock optimizer
+
+##-- block lr_scheduler
+##.define: &lr_scheduler ~
+##<< endblock lr_scheduler

@@ -35,13 +35,23 @@ def init_torch_linear_default(weight: Tensor, gain: float=1.0):
     torch.nn.init.uniform_(weight, -uniform_range, uniform_range)
 
 @torch.no_grad()
-def init_embeddings(weight: Tensor, padding_index: int=None, std: float=1.0):
+def init_embeddings(
+    weight: Tensor,
+    padding_index: int=None,
+    std: float=1.0,
+    scale_rsqrt_d_model: bool=True,
+):
     """
         Simple embedding init.
         
         Zeros out the pad embedding.
-        This is the same as the default method for nn.Embedding()
+        If scale_rsqrt_d_model == True, then std = 1 / sqrt(d_model), as per
+            per Attention is All you Need.
+        Note: When scale_rsqrt_d_model == True, the input encoder should scale the embedding outputs
+            by sqrt(d_model).
     """
+    if scale_rsqrt_d_model:
+        std = 1. / math.sqrt(weight.shape[1])
     torch.nn.init.normal_(weight, std=std)
 
     # If pad index, zero that embedding.

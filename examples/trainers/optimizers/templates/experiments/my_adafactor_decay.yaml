@@ -4,12 +4,11 @@
     == super()
     -- set ns.config_name = "Adafactor"
     -- set ns.config_description = "Custom Adamfactor Implementation"
-    -- set ns.log_name = "my_adafactor"
+    -- set ns.log_name = "my_adafactor_decay"
 -- endblock config_metadata
 
 -- block optimizer
-.define: &optimizer !lambda:forgather.ml.optim.adafactor:Adafactor
+.define: &optimizer !lambda:./src/adafactor.py:Adafactor
     lr: 1.0e-3
     weight_decay: 0.01
-    
 << endblock optimizer

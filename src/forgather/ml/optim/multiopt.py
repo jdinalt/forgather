@@ -1,5 +1,6 @@
 import math
 from typing import Callable, Iterable, Tuple
+from abc import ABC
 import re
 
 import torch
@@ -20,11 +21,23 @@ def make_re_multiopt(named_parameters, optimizer_map, factories):
     
     return Multiopt(optimizers)
 
-class Multiopt:
+class Multiopt(Optimizer):
+    """
+        Allows constructions of composite optimizers
+
+        This is primarily for experimentation -- not all Optimizer methods are
+        expected to work correctly.
+    """
     def __init__(
         self,
         optimizers: list,
     ):
+        param_groups = []
+        for opt in optimizers:
+            for group in opt.param_groups:
+                param_groups.append(group)
+        
+        super().__init__(param_groups, {})
         self.optimizers = optimizers
         
     @torch.no_grad()

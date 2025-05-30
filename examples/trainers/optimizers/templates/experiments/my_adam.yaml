@@ -9,6 +9,6 @@
 
 -- block optimizer
 .define: &optimizer !lambda:./src/adam.py:Adam
-    lr: {{ns.lr}}
+    lr: 1.0e-3
 
 << endblock optimizer

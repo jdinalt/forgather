@@ -1,0 +1,31 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Apollo"
+    -- set ns.config_description = "My Apollo implementation"
+    -- set ns.log_name = "apollo_r64"
+-- endblock config_metadata
+
+
+-- block optimizer
+.define: &optimizer !lambda:forgather.ml.optim.multiopt:make_re_multiopt
+    optimizer_map:
+        - [ "bias", "default" ]
+        - [ "output_decoder|input_encoder|feedforward|attention", "apollo" ]
+        - [ ".*", "default" ]
+    factories:
+        apollo: !lambda:forgather.ml.optim.apollo:Apollo
+            lr: 1.0e-2
+            rank: 64
+            mini: False
+            scale: 1.0
+            #projector_factory: !lambda:forgather.ml.optim.subspace_proj:OnlinePCAProjector
+            #    update_steps: 10
+            projector_factory: !lambda:forgather.ml.optim.subspace_proj:RandProjector
+                init: "normal"
+                update_steps: 200
+                lazy: True
+        default: !lambda:torch:optim.Adam
+            lr: 1.0e-2
+<< endblock optimizer

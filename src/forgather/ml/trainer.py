@@ -200,7 +200,7 @@ class Trainer(BaseTrainer):
                 self.optimizer = self.optimizer_factory(self.model.named_parameters())
             if self.lr_scheduler is None and self.lr_scheduler_factory is not None:
                 self.lr_scheduler = self.lr_scheduler_factory(
-                    self.optimizer, self.max_steps
+                    optimizer=self.optimizer,
                 )
             self.mean_train_loss = float("NaN")
 

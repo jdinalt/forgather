@@ -1,0 +1,31 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.create_new_model = False
+    -- set ns.save_model = False
+    -- set ns.model_name = "pre_init"
+-- endblock config_metadata
+
+
+-- block lr_scheduler
+-- set ns.lr_scheduler_warmup_steps = 5000
+-- set ns.lr_scheduler_total_steps = 6500
+
+.define: &lr_scheduler !lambda:forgather.ml.sequential_lr_factory:sequential_lr_factory@lr_scheduler
+    milestones:
+        # Perform warm-up for 1st N steps
+        - {{ns.lr_scheduler_warmup_steps}}
+    schedulers:
+        - !lambda:torch.optim.lr_scheduler:LinearLR
+            # Must be greater than 0
+            start_factor: 0.05
+            end_factor: 1.0
+            # Should match N  milestone
+            total_iters: {{ns.lr_scheduler_warmup_steps}}
+        - !lambda:torch.optim.lr_scheduler:CosineAnnealingLR
+            # Number of Annealing steps to min-eta
+            T_max: {{ ns.lr_scheduler_total_steps - ns.lr_scheduler_warmup_steps }}
+            # Minimum learning rate
+            eta_min: 2.0e-4
+<< endblock lr_scheduler

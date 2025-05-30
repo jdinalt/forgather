@@ -1,0 +1,48 @@
+## The project defines the defaults
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    ## Experiment Metadata
+    -- set ns.config_name = 'Norm All the Weights'
+    -- set ns.config_description = "What happens if we use torch.nn.init.normal_() on all the weights?"
+    -- set ns.model_name = 'norm_all_the_weights'
+    
+    ## Name the logging directory to match the model name
+    -- set ns.log_name = ns.model_name
+-- endblock config_metadata
+
+## Override default project definition
+-- block construct_new_model
+    -- include 'experiment.model_config'
+-- endblock construct_new_model
+
+#-------------------- experiment.model_config --------------------
+-- extends 'project.model_config'
+
+-- block init_weights
+.define: &init_weights !lambda:.init_weights_by_regex:init_weights_by_regex@init_weights
+    # Note: Yaml treats single and double quotes differently WRT escapes. Use single
+    # quotes for regex expressions, wihc prevents Yaml from interpreting escapes.
+    # For a literal ' use ''
+    regex_list:
+        - [ 'norm', "pass" ]
+        - [ 'bias', "zeros" ]
+        - [ '\.*', "normal" ]
+    init_f_map:
+        pass: !lambda:.init_weights_by_regex:init_pass
+        zeros: !lambda:torch.nn.init:zeros_ []
+        normal: !lambda:torch.nn.init:normal_
+            mean: 1.0
+            std: 1.0
+    # Print how each param is being initialized.
+    debug: True
+<< endblock init_weights
+
+-- block input_encoder
+    == super()
+    # We are not scaling the embeddings by 1 / sqrt(d_model), so don't
+    # scale the output by sqrt(d_model)!
+    scale_sqrt_d_model: False
+    scale: 1.0
+<< endblock input_encoder
