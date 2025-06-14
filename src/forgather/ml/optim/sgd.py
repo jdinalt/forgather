@@ -6,10 +6,12 @@ import torch.nn.functional as F
 from torch import nn
 from torch.optim import Optimizer
 
+
 class SGD(Optimizer):
     """
     Template Optimizer: Minimal SGD Implementation
     """
+
     def __init__(
         self,
         params: Iterable[nn.parameter.Parameter],
@@ -32,8 +34,7 @@ class SGD(Optimizer):
                     continue
                 grad = p.grad
                 state = self.state[p]
-                
+
                 p.add_(grad, alpha=-group["lr"])
 
         return loss
-

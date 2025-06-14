@@ -175,6 +175,7 @@ class SingletonNode(CallableNode):
     A SingletonNode only generates a single instance of an object. All other occurances
     are references to the same constructed object.
     """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.instance = None

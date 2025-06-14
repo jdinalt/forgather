@@ -7,7 +7,8 @@ import platform
 import time
 
 from torch.utils.data import DataLoader, Dataset
-import torch 
+import torch
+
 
 def sequential_lr_factory(optimizer, schedulers, milestones, last_epoch=-1):
     return torch.optim.lr_scheduler.SequentialLR(
@@ -16,7 +17,8 @@ def sequential_lr_factory(optimizer, schedulers, milestones, last_epoch=-1):
         milestones=milestones,
         last_epoch=last_epoch,
     )
-    
+
+
 import numpy as np
 
 from .utils import ConversionDescriptor, DiagnosticEnum
@@ -44,7 +46,7 @@ class TrainerState:
     This is the same API as used by the HF Trainer class, for compatibility.
     Not all values are implemented at present.
     See: https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_callback.py#
-    
+
     """
 
     logging_steps: int
@@ -58,7 +60,7 @@ class TrainerState:
     is_world_process_zero: bool = True
     log_history: list[Dict[str, float]] = field(default_factory=lambda: [])
     save_steps: int = 0
-    
+
     # Unimplemented in Trainer; included for consistency with HF Trainer
     num_input_tokens_seen: int = 0
     total_flos: float = 0.0

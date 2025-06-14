@@ -6,17 +6,19 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from torch.optim import Optimizer
 
+
 class AdamW(Optimizer):
     """
     Adam
     """
+
     def __init__(
         self,
         params: Iterable[nn.parameter.Parameter],
-        lr: float=1e-3,
-        betas: Tuple[float, float]=(0.9, 0.999),
-        eps: float=1e-6,
-        weight_decay: float = 0.0, 
+        lr: float = 1e-3,
+        betas: Tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-6,
+        weight_decay: float = 0.0,
         torch_compile: bool = False,
     ):
         self.compile = torch_compile
@@ -32,7 +34,7 @@ class AdamW(Optimizer):
         state["step"] = torch.tensor(0.0)
         state["m"] = torch.zeros_like(grad)
         state["v"] = torch.zeros_like(grad)
-        
+
     @torch.no_grad()
     def step(self, closure: Callable = None):
         loss = None
@@ -46,11 +48,11 @@ class AdamW(Optimizer):
                         continue
                     grad = p.grad
                     state = self.state[p]
-    
+
                     # Init state
                     if "step" not in state:
                         self._init_state(state, group, p, grad)
-    
+
                     state["step"] += 1
                     betas = group["betas"]
 
@@ -72,7 +74,8 @@ class AdamW(Optimizer):
                         _adam(*args)
 
         return loss
-            
+
+
 def _adam(
     p: Tensor,
     grad: Tensor,
@@ -91,7 +94,7 @@ def _adam(
     """
     if weight_decay > 0.0:
         p.add_(p, alpha=(-alpha * weight_decay))
-        
+
     """
     https://arxiv.org/pdf/1412.6980
     """
@@ -100,10 +103,10 @@ def _adam(
     update = m / (v.sqrt() + eps)
 
     # Bias correction
-    alpha = alpha * torch.sqrt(1.0 - beta2 ** step) / (1.0 - beta1 ** step)
-    
+    alpha = alpha * torch.sqrt(1.0 - beta2**step) / (1.0 - beta1**step)
+
     if p.dtype == update.dtype:
         p.add_(update, alpha=-alpha)
     else:
-        #p -= (alpha * update).to(dtype=p.dtype)
+        # p -= (alpha * update).to(dtype=p.dtype)
         p.copy_(p.float() - alpha * update)

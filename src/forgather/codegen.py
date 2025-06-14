@@ -173,8 +173,8 @@ class PyEncoder(GraphEncoder):
                     callable_name = obj.constructor
 
         s = ""
-        
-        in_name_map = (type(obj) == FactoryNode and obj.identity in self.name_map)
+
+        in_name_map = type(obj) == FactoryNode and obj.identity in self.name_map
         is_partial = in_name_map or isinstance(obj, LambdaNode)
         if self.level > 1 and is_partial:
             s += "partial("
@@ -186,7 +186,7 @@ class PyEncoder(GraphEncoder):
             s += ", "
         else:
             s += "("
-        
+
         if len(obj.kwargs) + len(obj.args) == 0:
             s += ")"
             return s

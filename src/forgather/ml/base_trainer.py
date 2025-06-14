@@ -30,6 +30,7 @@ WEIGHTS_INDEX_NAME = "pytorch_model.bin.index.json"
 SAFE_WEIGHTS_INDEX_NAME = "model.safetensors.index.json"
 SAFE_WEIGHTS_NAME = "model.safetensors"
 
+
 class BaseTrainer(ExtensibleTrainer):
     """
     Implements the common aspects of the ExtensibleTrainer class,
@@ -60,8 +61,10 @@ class BaseTrainer(ExtensibleTrainer):
         if callbacks is None:
             callbacks = []
 
-        assert model or model_init, "Either a model or a model constructor must be specified"
-        
+        assert (
+            model or model_init
+        ), "Either a model or a model constructor must be specified"
+
         # Try to maintain backward compatability for now.
         if processing_class is None and tokenizer is not None:
             processing_class = tokenizer
@@ -193,7 +196,7 @@ class BaseTrainer(ExtensibleTrainer):
 
     def _validate_dirs(self):
         """
-            TODO: Review logic
+        TODO: Review logic
         """
         output_dir = self.args.output_dir
         if os.path.isdir(output_dir):
@@ -209,7 +212,9 @@ class BaseTrainer(ExtensibleTrainer):
                         f"Model exists in output dir '{output_dir}' and model may be overwritten!"
                     )
         elif os.path.exists(output_dir):
-            raise Exception(f"Something other than a directory already exists at the output path! {output_dir}")
+            raise Exception(
+                f"Something other than a directory already exists at the output path! {output_dir}"
+            )
         else:
             logger.info(f"Creating output directory: {output_dir}")
             os.makedirs(output_dir, exist_ok=True)

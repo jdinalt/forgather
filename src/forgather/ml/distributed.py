@@ -94,7 +94,7 @@ class DistributedEnvironment:
         master_port: int = 29501,
         backend: str = None,
         log_level="INFO",
-        device_map = None,
+        device_map=None,
         always: bool = False,
     ):
         logger.remove()
@@ -163,4 +163,6 @@ class DistributedEnvironment:
             torch.cuda.set_device(self.device)
 
     def _init_process_group(self):
-        distributed.init_process_group(backend=self.backend, device_id=torch.device(self.device))
+        distributed.init_process_group(
+            backend=self.backend, device_id=torch.device(self.device)
+        )

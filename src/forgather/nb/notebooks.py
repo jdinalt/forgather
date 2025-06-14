@@ -410,7 +410,7 @@ def render_project_index(
                 Latent.materialize(code_writer, **materialize_kwargs)
             output = None
 
-        #md += render_referenced_source_list(config, title="## Modules\n", deep=True)
+        # md += render_referenced_source_list(config, title="## Modules\n", deep=True)
         md += render_output_targets(config, title="## Output Targets\n")
 
         if not pp_first and show_pp_config:

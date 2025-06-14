@@ -16,6 +16,7 @@ from forgather.latent import Undefined
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 def register_for_auto_class(object, /, *args, **kwargs):
     """
     Register an object as a HF AutoClass
@@ -120,10 +121,12 @@ def torch_dtype(type: str):
         }
     return torch_dtype_map[type]
 
+
 def module_to_dtype(module_ctor, dtype: str, **kwargs):
     logger.info(f"Constructing module and converting to dytpe={dtype}")
     m = module_ctor(**kwargs)
     return m.to(dtype=torch_dtype(dtype))
+
 
 def load_from_config(project_dir: str, config_template: str | NoneType = None):
     """

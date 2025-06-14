@@ -79,9 +79,7 @@ class Project:
             self.meta.config_path(config_name), **kwargs
         ).get()
 
-    def __call__(
-        self, *args, asdict=False, **kwargs
-    ):
+    def __call__(self, *args, asdict=False, **kwargs):
         """
         Construct and return an instance of the configuration
 
@@ -104,12 +102,12 @@ class Project:
 
         # Construct the model and tokenizer
         model, tokenizer = proj("model", "tokenizer")
-        
+
         # Construct a dictionary of objects
         outputs = proj("model", "tokenizer", asdict=True)
         ```
         """
-            
+
         if self.config is None:
             raise RuntimeError("The project does not have a loaded configuration")
 

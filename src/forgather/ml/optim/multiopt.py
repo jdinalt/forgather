@@ -8,26 +8,31 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from torch.optim import Optimizer
 
+
 def make_re_multiopt(named_parameters, optimizer_map, factories):
-    groups = { group_name: [] for regex, group_name in optimizer_map }
-        
+    groups = {group_name: [] for regex, group_name in optimizer_map}
+
     for param_name, param_value in named_parameters:
         for regex, group_name in optimizer_map:
             m = re.search(regex, param_name)
             if m is not None:
                 groups[group_name].append((param_name, param_value))
                 break
-    optimizers = [ factories[group_name](params) for group_name, params in groups.items() ]
-    
+    optimizers = [
+        factories[group_name](params) for group_name, params in groups.items()
+    ]
+
     return Multiopt(optimizers)
+
 
 class Multiopt(Optimizer):
     """
-        Allows constructions of composite optimizers
+    Allows constructions of composite optimizers
 
-        This is primarily for experimentation -- not all Optimizer methods are
-        expected to work correctly.
+    This is primarily for experimentation -- not all Optimizer methods are
+    expected to work correctly.
     """
+
     def __init__(
         self,
         optimizers: list,
@@ -36,10 +41,10 @@ class Multiopt(Optimizer):
         for opt in optimizers:
             for group in opt.param_groups:
                 param_groups.append(group)
-        
+
         super().__init__(param_groups, {})
         self.optimizers = optimizers
-        
+
     @torch.no_grad()
     def step(self, closure: Callable = None):
         loss = None

@@ -6,18 +6,20 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from torch.optim import Optimizer
 
+
 class Adafactor(Optimizer):
     """
     Adafactor
     """
+
     def __init__(
         self,
         params: Iterable[nn.parameter.Parameter],
-        lr: float=1e-3,
-        decay_rate: float=-0.8,
-        clip_threshold: float=1.0,
-        betas: Tuple[float, float]=(0.9, 0.999),
-        eps: Tuple[float, float]=(1e-30, 1e-3),
+        lr: float = 1e-3,
+        decay_rate: float = -0.8,
+        clip_threshold: float = 1.0,
+        betas: Tuple[float, float] = (0.9, 0.999),
+        eps: Tuple[float, float] = (1e-30, 1e-3),
         weight_decay: float = 0.0,
         relative_step: bool = False,
         torch_compile: bool = False,
@@ -42,9 +44,13 @@ class Adafactor(Optimizer):
             state["row"] = torch.zeros_like(grad, dtype=torch.float32)
             state["col"] = None
         else:
-            state["row"] = torch.zeros(grad.shape[0], dtype=torch.float32, device=grad.device)
-            state["col"] = torch.zeros(grad.shape[1], dtype=torch.float32, device=grad.device)
-        
+            state["row"] = torch.zeros(
+                grad.shape[0], dtype=torch.float32, device=grad.device
+            )
+            state["col"] = torch.zeros(
+                grad.shape[1], dtype=torch.float32, device=grad.device
+            )
+
     @torch.no_grad()
     def step(self, closure: Callable = None):
         loss = None
@@ -58,11 +64,11 @@ class Adafactor(Optimizer):
                         continue
                     grad = p.grad
                     state = self.state[p]
-    
+
                     # Init state
                     if "step" not in state:
                         self._init_state(state, group, p, grad)
-    
+
                     state["step"] += 1
                     beta1, beta2 = group["betas"]
                     eps1, eps2 = group["eps"]
@@ -91,6 +97,7 @@ class Adafactor(Optimizer):
 
         return loss
 
+
 """
 TODO: Implement Stochastic Rounding
 https://arxiv.org/abs/2010.06192
@@ -98,6 +105,7 @@ https://arxiv.org/abs/2010.06192
 Source for implementation is from:
 https://github.com/pytorch/ao/blob/main/torchao/optim/quant_utils.py#L120
 """
+
 
 def _fp32_to_bf16_sr(x_f32: Tensor) -> Tensor:
     # For an FP32 number      [a31, ..., a16, a15, ..., a0] to be converted to BF16
@@ -125,6 +133,7 @@ def _fp32_to_bf16_sr(x_f32: Tensor) -> Tensor:
     # alternative, slightly faster
     # x_f32_bits = (x_f32_bits + rand_16bit) & 0xFFFF0000
     return x_f32_bits.view(torch.float32).bfloat16()
+
 
 """
 Derivation of the implementation:
@@ -234,8 +243,10 @@ Using their lr scheduler for reference, this suggests an lr ~= 1e-2
 
 """
 
+
 def rms(x):
     return x.square().mean().sqrt()
+
 
 def _adafactor(
     p: Tensor,
@@ -261,7 +272,7 @@ def _adafactor(
 
     if relative_step:
         lr = max(eps2, rms(p)) * lr
-    
+
     """
     DECOUPLED WEIGHT DECAY REGULARIZATION
     https://arxiv.org/pdf/1711.05101
@@ -272,11 +283,11 @@ def _adafactor(
         p.add_(p, alpha=(-lr * weight_decay))
 
     grad32 = grad.float()
-    update = grad32 ** 2 + eps1
-    
+    update = grad32**2 + eps1
+
     # We clamp to beta2, which is not from the paper, but appears to be a bit
     # more flexible that decaying to infinity..
-    beta2t = (1.0 - step ** decay_rate).clamp(max=beta2)
+    beta2t = (1.0 - step**decay_rate).clamp(max=beta2)
 
     # Vectors and scalars are not factored.
     if c is None:
@@ -300,4 +311,3 @@ def _adafactor(
         if bf16_stochastic_round:
             update = _fp32_to_bf16_sr(update)
         p.copy_(update)
-        

@@ -9,6 +9,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from .trainer_types import TrainerCallback
 
+
 class GradLogger(TrainerCallback):
     def __init__(self, summary_writer, neg_re, pos_re, log_steps, **kwargs):
         super().__init__()
@@ -21,7 +22,7 @@ class GradLogger(TrainerCallback):
     @torch.no_grad()
     def rms(x):
         return x.square().mean().sqrt().item()
-    
+
     def on_optimizer_step(self, args, state, control, /, model, **kwargs):
         if not state.is_world_process_zero:
             return
@@ -34,7 +35,7 @@ class GradLogger(TrainerCallback):
                 continue
             if not re.search(self.pos_re, param_name):
                 continue
-            
+
             self.summary_writer.add_scalar(
                 f"weight:{param_name}", self.rms(p), global_step=state.global_step
             )

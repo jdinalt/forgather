@@ -130,7 +130,7 @@ class Trainer(BaseTrainer):
         ), "Either a model or a model constructor must be specified."
         if self.data_collator is None:
             self.data_collator = torch.utils.data.default_collate
-        
+
         # If unspecified, set a default device
         if self.args.device is None:
             self.args.device = (
@@ -173,10 +173,10 @@ class Trainer(BaseTrainer):
                 mode=self.args.torch_compile_mode,
                 dynamic=True,
             )
-        
+
         if self.do_train:
             self._init_optimizer()
-        
+
         self.state = self._init_state()
         self._dispatch_event("on_init_end")
 
@@ -194,7 +194,7 @@ class Trainer(BaseTrainer):
             self.lr_scheduler = self.lr_scheduler_factory(
                 optimizer=self.optimizer,
             )
-    
+
     def _init_dataloaders(self, train_dataset, eval_dataset) -> None:
         self.max_steps = 0
         self.epoch_train_steps = self.args.epoch_train_steps
@@ -219,7 +219,6 @@ class Trainer(BaseTrainer):
             self.eval_dataloader = self._get_dataloader(
                 eval_dataset, self.args.per_device_eval_batch_size
             )
-            
 
     def _train_loop(self) -> TrainOutput:
         """
@@ -232,7 +231,7 @@ class Trainer(BaseTrainer):
 
         # Just to be sure...
         self.optimizer.zero_grad()
-        
+
         # Context manager for setting model.train()/eval()
         with set_train(self.model, True):
             # Epoch loop
