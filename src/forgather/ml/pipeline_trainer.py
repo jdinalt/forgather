@@ -219,7 +219,7 @@ class PipelineTrainer(Trainer):
         super()._post_init()
         assert self.model is None
         assert self.model_init
-        # assert self.args.per_device_eval_batch_size == self.args.per_device_train_batch_size
+        
         for batch_size in (
             self.args.per_device_train_batch_size,
             self.args.per_device_eval_batch_size,
@@ -277,7 +277,7 @@ class PipelineTrainer(Trainer):
         self.lr_scheduler = None
 
         # Construct model instance on the "meta" device; parameters have meta-data, but no actual data.
-        # This allows us to construct a "huge" model, without having to have the memory for it.+
+        # This allows us to construct a "huge" model, without having to have the memory for it.
         model = self._construct_model(device="meta")
         if self.denv.rank == 0:
             self._print_modules([model])
@@ -509,7 +509,7 @@ class PipelineTrainer(Trainer):
                     # All params and buffes in destination module
                     for name, _ in make_state_dict(mod, missing_buf_only).items():
                         # NCCL can't send between GPU and GPU, so copy each parameter to
-                        # the our GPU, then free it. Kind of hack'ish, but it works.
+                        # our GPU, send it, then free it. Kind of hack'ish, but it works.
                         # See: https://docs.pytorch.org/docs/stable/distributed.html
                         # I believe this will work for CPU to CPU, with gloo, but
                         # have yet to try it.
@@ -624,7 +624,7 @@ class PipelineTrainer(Trainer):
 
     def _init_optimizer(self):
         if self.optimizer is None:
-            # Build a named-parameter iterator for all of our modules
+            # Build a named-parameter generator for all of our modules
             def named_parameters(modules):
                 for mod in modules:
                     for param in mod.named_parameters():
