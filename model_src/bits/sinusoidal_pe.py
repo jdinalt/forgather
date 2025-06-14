@@ -25,7 +25,7 @@ class SinusoidalPE(nn.Module):
         weight[:, 0::2] = torch.sin(position * div_term)
         weight[:, 1::2] = torch.cos(position * div_term)
         weight = weight.unsqueeze(0)
-        self.register_buffer("weight", weight, persistent=False)
+        self.register_buffer("weight", weight, persistent=True)
 
     def extra_repr(self):
         return f"d_model={self.d_model}, max_sequence_length={self.max_sequence_length}"

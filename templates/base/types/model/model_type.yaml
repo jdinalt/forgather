@@ -30,7 +30,7 @@
 
     -- filter trim()
     -- block model_constructor_args
-.define: &model_constructor_args {}
+model_constructor_args: &model_constructor_args {}
     -- endblock model_constructor_args
     -- endfilter
 
@@ -56,10 +56,3 @@ main:
     model: *model
     tokenizer: *tokenizer
 << endblock main_output
-
-
--- block auxiliary_outputs
-== super()
-model_config: *model_config
-generated_model_code: *model_code_generator
-<< endblock auxiliary_outputs

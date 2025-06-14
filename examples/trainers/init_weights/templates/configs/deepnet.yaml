@@ -21,8 +21,6 @@
 -- extends 'project.model_config'
 
 -- block init_weights
-.define: &deepnet_beta 
-
 .define: &init_weights !lambda:.init_weights_by_regex:init_weights_by_regex@init_weights
     regex_list:
         - [ 'norm', "pass" ]
@@ -42,8 +40,6 @@
 << endblock init_weights
 
 -- block layer_factory
-.define: &deepnet_alpha 
-
 .define: &layer_factory !lambda:.deepnet:DeepnetLayer@layer_factory
     feedforward_factory: *feedforward_factory
     attention_factory: *attention_factory

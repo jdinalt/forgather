@@ -182,7 +182,11 @@ class ConfigLoader(SafeLoader):
 
 ConfigLoader.add_multi_constructor("!factory", CallableConstructor(FactoryNode))
 ConfigLoader.add_multi_constructor("!singleton", CallableConstructor(SingletonNode))
+ConfigLoader.add_multi_constructor("!call", CallableConstructor(SingletonNode))
+
+# Depricated
 ConfigLoader.add_multi_constructor("!lambda", CallableConstructor(LambdaNode))
+ConfigLoader.add_multi_constructor("!partial", CallableConstructor(LambdaNode))
 ConfigLoader.add_multi_constructor("!meta", CallableConstructor(MetaNode))
 ConfigLoader.add_constructor("!var", var_constructor)
 ConfigLoader.add_multi_constructor("!tuple", tuple_constructor)

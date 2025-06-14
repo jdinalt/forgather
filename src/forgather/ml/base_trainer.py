@@ -26,7 +26,9 @@ from .trainer_types import (
 )
 
 WEIGHTS_NAME = "pytorch_model.bin"
-
+WEIGHTS_INDEX_NAME = "pytorch_model.bin.index.json"
+SAFE_WEIGHTS_INDEX_NAME = "model.safetensors.index.json"
+SAFE_WEIGHTS_NAME = "model.safetensors"
 
 class BaseTrainer(ExtensibleTrainer):
     """
@@ -58,6 +60,8 @@ class BaseTrainer(ExtensibleTrainer):
         if callbacks is None:
             callbacks = []
 
+        assert model or model_init, "Either a model or a model constructor must be specified"
+        
         # Try to maintain backward compatability for now.
         if processing_class is None and tokenizer is not None:
             processing_class = tokenizer
@@ -90,7 +94,6 @@ class BaseTrainer(ExtensibleTrainer):
 
         self._post_init()
         self._validate_dirs()
-        self._dispatch_event("on_init_end")
 
     def __repr__(self):
         return (
@@ -111,7 +114,6 @@ class BaseTrainer(ExtensibleTrainer):
         The main entry point to start training the model.
         """
         self._prepare(train_dataset=self.train_dataset, eval_dataset=self.eval_dataset)
-        self.model = self.model.to(self.args.device)
         return self._train_loop()
 
     def evaluate(
@@ -126,7 +128,6 @@ class BaseTrainer(ExtensibleTrainer):
             assert isinstance(eval_dataset, Dataset)
 
         self._prepare(train_dataset=None, eval_dataset=eval_dataset)
-        self.model = self.model.to(self.args.device)
         return self._eval_loop()
 
     def save_model(self, output_dir: os.PathLike | str = None) -> None:
@@ -191,8 +192,9 @@ class BaseTrainer(ExtensibleTrainer):
         return False
 
     def _validate_dirs(self):
-        if not self.is_local_process_zero:
-            return
+        """
+            TODO: Review logic
+        """
         output_dir = self.args.output_dir
         if os.path.isdir(output_dir):
             if self.model_exists(output_dir):
@@ -206,6 +208,8 @@ class BaseTrainer(ExtensibleTrainer):
                     logger.warning(
                         f"Model exists in output dir '{output_dir}' and model may be overwritten!"
                     )
+        elif os.path.exists(output_dir):
+            raise Exception(f"Something other than a directory already exists at the output path! {output_dir}")
         else:
             logger.info(f"Creating output directory: {output_dir}")
             os.makedirs(output_dir, exist_ok=True)
@@ -214,14 +218,12 @@ class BaseTrainer(ExtensibleTrainer):
             os.makedirs(logging_dir, exist_ok=True)
 
     def _save(self, output_dir):
-        if not self.is_world_process_zero:
-            return
         model = self.unwrapped_model()
         if isinstance(model, PreTrainedModel):
             model.save_pretrained(
                 save_directory=output_dir,
                 is_main_process=True,
-                safe_serialization=True,
+                safe_serialization=self.args.save_safetensors,
             )
         else:
             logger.info("Saving model as state-dictionary")
@@ -230,8 +232,6 @@ class BaseTrainer(ExtensibleTrainer):
             self.processing_class.save_pretrained(output_dir)
 
     def _save_checkpoint(self):
-        if not self.is_world_process_zero:
-            return
         checkpoints_dir = os.path.join(self.args.output_dir, "checkpoints")
         checkpoint_path = os.path.join(
             checkpoints_dir, f"checkpoint-{self.state.global_step}"

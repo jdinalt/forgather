@@ -42,7 +42,7 @@
 
     -- filter trim()
     -- block tokenizer_special_tokens_map
-.define: &special_tokens_map !dict:@special_tokens_map
+special_tokens_map: &special_tokens_map !dict:@special_tokens_map
     bos: "{{ ns.bos_token }}" # Beginning of Sequence; the first token in a sequence
     pad: "{{ ns.pad_token }}" # Padding, used to pad out samples in a batch.
     eos: "{{ ns.eos_token }}" # End of Sequence; typically is used to stop generation.
@@ -57,7 +57,7 @@
     -- block tokenizer_args
 ## Args to transformers.PreTrainedTokenizerFast()
 ## https://huggingface.co/docs/transformers/main_classes/tokenizer#transformers.PreTrainedTokenizerFast
-.define: &tokenizer_args !dict:@tokenizer_args
+tokenizer_args: &tokenizer_args !dict:@tokenizer_args
     bos_token: "{{ ns.bos_token }}"
     eos_token: "{{ ns.eos_token }}"
     unk_token: "{{ ns.unk_token }}"
@@ -76,7 +76,7 @@
 ## This directly loads the entire dataset
 ## For large datasets, a subset should be selected.
 -- block tokenizer_dataset
-.define: &tokenizer_dataset !singleton:operator:getitem@tokenizer_dataset
+tokenizer_dataset: &tokenizer_dataset !singleton:operator:getitem@tokenizer_dataset
     - !singleton:datasets:load_dataset [ "{{ ns.dataset_id }}" ]
     - "{{ ns.dataset_split }}"
 << endblock tokenizer_dataset
@@ -87,7 +87,7 @@
 
     -- filter trim()
     -- block tokenizer_trainer
-.define: &tokenizer_trainer !lambda:forgather.ml.tokenizer:train_tokenizer@tokenizer_trainer
+tokenizer_trainer: &tokenizer_trainer !lambda:forgather.ml.tokenizer:train_tokenizer@tokenizer_trainer
     output_dir: "{{ ns.output_dir }}"
     dataset: *tokenizer_dataset
     args: *tokenizer_args
@@ -120,12 +120,3 @@ main: !singleton:forgather.ml.construct:build_rule
     loader: !lambda:transformers:AutoTokenizer.from_pretrained
         - "{{ ns.output_dir }}"
 << endblock main_output
-
-
--- block auxiliary_outputs
-== super()
-special_tokens_map: *special_tokens_map
-tokenizer_args: *tokenizer_args
-tokenizer_dataset: *tokenizer_dataset
-tokenizer_trainer: *tokenizer_trainer
-<< endblock auxiliary_outputs

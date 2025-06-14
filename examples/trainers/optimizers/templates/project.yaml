@@ -2,10 +2,10 @@
 
 -- block config_metadata
     == super()
-    -- set ns.create_new_model = True
+    -- set ns.create_new_model = False
     -- set ns.save_model = False
     -- set ns.model_name = "tiny_causal"
-    -- set ns.bfloat16 = False
+    -- set ns.model_dtype = "bfloat16"
 -- endblock config_metadata
 
 -- block trainer_definition
@@ -17,10 +17,6 @@
     -- include 'project.dataset_config'
 -- endblock datasets_definition
 
-##-- block model_constructor_args
-##.define: &model_constructor_args
-##    torch_dtype: !singleton:forgather.ml.construct:torch_dtype [ "bfloat16" ]
-##<< endblock model_constructor_args
 
 -- block trainer_callbacks
     -- include 'project.callbacks'
@@ -47,8 +43,8 @@
 
 
 #-------------------- project.dataset_config --------------------
-##-- extends 'datasets/tiny/tiny_stories_abridged.yaml'
--- extends 'datasets/tiny/tiny_stories.yaml'
+-- extends 'datasets/tiny/tiny_stories_abridged.yaml'
+##-- extends 'datasets/tiny/tiny_stories.yaml'
 
 
 -- block tokenize_args

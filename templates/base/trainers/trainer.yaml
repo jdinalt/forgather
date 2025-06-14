@@ -7,8 +7,8 @@
 
 
 -- block trainer_constructor
-.define: &trainer !singleton:forgather.ml.trainer:Trainer@trainer
-    model: *model
+trainer: &trainer !singleton:forgather.ml.trainer:Trainer@trainer
+    model_init: *model_preprocessor
     args: !singleton:forgather.ml.trainer_types:TrainingArguments@trainer_args
         <<: *trainer_args
     data_collator: *data_collator

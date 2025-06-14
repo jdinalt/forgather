@@ -162,7 +162,7 @@ main:
 Constructed graph...
 
 ```python
-Latent.materialize(graph)
+graph()
 
 {'main': [[{'x': 0, 'y': 0}, {'x': 5, 'y': 0}],
           [{'x': 5, 'y': 0}, {'x': 0, 'y': 5}],
@@ -215,6 +215,11 @@ Construct a named Python tuple from a YAML sequence
 !tuple:@my_tuple [ 1, 2, 3 ]
 ```
 
+```python
+graph()
+(1, 2, 3)
+```
+
 ---
 
 #### !list : Named List
@@ -224,7 +229,13 @@ Syntax: !list\[:@name\] \<sequence\>
 Construct a named Python list from a YAML sequence
 
 ```yaml
-!tuple:@my_list [ 1, 2, 3 ]
+!list:@my_list [ 1, 2, 3 ]
+
+```
+
+```python
+graph()
+[1, 2, 3]
 ```
 
 ---
@@ -242,38 +253,53 @@ Construct a named Python dict from a YAML mapping
     baz: 3
 ```
 
+```python
+graph()
+{'foo': 1, 'bar': 2, 'baz': 3}
+```
+
 ---
 #### !var
 
 Syntax: !var "\<var-name\>" | { name: \<var-name\>, default: \<default-value\> }
 
-This declares a variable, which can be substituted when the graph is constructed.
+This declares a global variable, which can be substituted anywhere in the graph.
 
 ```yaml
-point:
+document = """
+point: !dict
     x: !var "x" # Define a variable named 'x'
     y: !var # Define a variable named 'y' with a default value of 16
         name: y
         default: 16
+"""
+```
+
+The global context is passed in as the special 'context_vars' argument, a dictionary, when constructng the graph.
+
+```python
+graph.point(context_vars=dict(x=2.0))
+{'x': 2.0, 'y': 16}
 ```
 
 ---
-#### !singleton
+#### !call
 
-Synatx: !singleton:\<import-spec\>[@\<name\>\] (\<sequence\> | \<mapping\> | ({ args: \<sequence\>, kwargs: \<mapping\> }))
+Alias: !singleton
+
+Synatx: !call:\<import-spec\>[@\<name\>\] (\<sequence\> | \<mapping\> | ({ args: \<sequence\>, kwargs: \<mapping\> }))
 
 This is a callable object with only a single instance; any aliases refers to the same object instance.
 
 ```yaml
 # Construct three random ints, all having the same value.
-- &random_int !singleton:random:randrange:@random_int [ 1000 ]
+- &random_int !call:random:randrange:@random_int [ 1000 ]
 - *random_int
 - *random_int
 ```
 
-Constructed...
 ```python
-Latent.materialize(graph)
+graph()
 
 [247, 247, 247]
 ```
@@ -298,35 +324,38 @@ This is a callable object which instantiates a new instance everywhere it appear
 
 Constructed...
 ```python
-Latent.materialize(graph)
+graph()
 
 [99, 366, 116]
 ```
 
 ---
-#### !lambda
+#### !partial
 
-Synatx: !lambda:\<import-spec\>[@\<name\>\] (\<sequence\> | \<mapping\> | ({ args: \<sequence\>, kwargs: \<mapping\> }))
+Alias (depricated): !lambda
 
-This returns the entire sub-graph as a callable. This can be used when a callable needs to be passed as an argument.
+Synatx: !partial:\<import-spec\>[@\<name\>\] (\<sequence\> | \<mapping\> | ({ args: \<sequence\>, kwargs: \<mapping\> }))
+
+This constructs a callable object with the same symantics of a Python partial function, where the provided positional and keyword arguments are passed 
+to the function. If additional argmuents are given, the positional-args are appended and the keyword-args are merged.
+
+See: https://docs.python.org/3/library/functools.html
 
 ```yaml
-# Compute powers-of-two from a list, returning a list.
-!singleton:list
-    - !singleton:map
-        # The generated object is equivalent to: "lambda arg0: pow(arg0, 2)"
-        - !lambda:pow [ !var "arg0", 2 ]
-        - [ 1, 2, 3, 4 ]
+!partial:pow [ 2 ]
 ```
 
-Constructed...
 ```python
-Latent.materialize(graph)
+graph(3)
+8
 
-[1, 4, 9, 16]
+# This is equivalent to:
+pow(2, 3)
 ```
 
-Note that any positional arguments are implicity converted to the variables named \[ 'arg0', 'arg1', 'arg2', ... \]
+```yaml
+
+```
 
 ---
 ### CallableNodes
@@ -388,8 +417,8 @@ When using a file-import, which itself has relative imports, you will need to sp
             - "/path/to/my/"
             - "/path/to/shared/modules/"
 ```
-
-By specifying multiple locations, the import system treats all of the directories in the list as a union, thus you can perform a relative import from any of these directories.
+The key-word argument "submodule_searchpath" has a special meaning in this context and will not passed to the called object. 
+The import system treats all of the directories in the list as a union, thus "pymodule.py" can perform a relative import from any of these directories.
 
 ---
 #### Named Callable Nodes
@@ -455,3 +484,155 @@ def construct(
         ],
     }
 ```
+
+## Low Level API
+
+*Basic Usage*
+
+```python
+# Imports
+from forgather.config import ConfigEnvironment
+
+# Construct a configuration environment
+env = ConfigEnvironment()
+
+# Define a configuration
+document = """
+!call:torch:randn [ 2, 2 ]
+"""
+
+# Convert the configuration to a graph
+graph = env.load_from_string(document).config
+
+# Construct the graph
+graph()
+tensor([[ 0.0090,  0.0064],
+        [-1.1638,  0.7066]])
+```
+
+### Create Config Environment
+
+A configuration environment is required to construct configurations from YAML/Jinja2 inputs; it conains the infromation needed to located Jina2 templates by name as well as defining the global variables available to templates.
+
+```python
+from forgather.config import ConfigEnvironment
+...
+ConfigEnvironment(
+    searchpath: Iterable[str | os.PathLike] | str | os.PathLike = tuple("."),
+    pp_environment: Environment = None,
+    global_vars: Dict[str, Any] = None,
+):
+```
+
+- searchpath: A list of directories to search for templates in.
+- pp_environment: Override the default Jinja2 environment class with another implementation.
+- global_vars: Jinja2 global variables visible to all templates.
+
+```python
+env = ConfigEnvironment("./templates/")
+```
+
+### Define Input
+
+A configuration document consists of a combination of YAML and Jinja2 syntax. Typically, a config template would be loaded from a file, but for testing we can create a template directly from a Python string.
+
+Both the Jinja2 template and the configuration may accept variables.
+
+### Convert Document to Graph
+
+```python
+class ConfigEnvironment:
+... 
+    def load(
+        self,
+        config_path: os.PathLike | str,
+        /,
+        **kwargs,
+    ) -> Config:
+...
+    def load_from_string(
+        self,
+        config: str,
+        /,
+        **kwargs,
+    ) -> Config:
+```
+
+- load: Load a template from a path; all paths relative to 'searchpaths' are searched for the template.
+    - config_path: The relative (to searchpaths) template path.
+    - kwargs: These are passed into the context of the template.
+- load_from_string: As with load, but a Python string defines the template body; Note that this bypasses the template loader.
+    - config: A Python string with a Jinja2 template.
+    - kwargs: Passed to the template.
+
+### Materializing the Graph
+
+Construct the objects directly from the graph.
+
+```python
+from forgather.latent import Latent
+...
+def materialize(obj: Any, /, *args, context_vars: Dict=None, **kwargs):
+```
+
+Construct all object in the graph, returning the constructed root-node.
+
+context_vars: The global variables, which will be substitued by '!var' nodes.
+
+If the root node is a partial funciton, *args and **kwargs are forwarded to the function.
+
+Alternatively, if the root-node is not a dictionary, the following are equivalnt:
+
+```python
+Latent.materialize(graph)
+
+# Performs the same action, if the root-node is not a dictionary.
+graph()
+```
+
+If the root-node is a dictionary...
+
+```yaml
+main: !partial:math:sqrt []
+```
+
+The dictionary elements can be accessed using dot-notation and costructed individually.
+
+```python
+graph.main(16)
+4.0
+```
+
+### Convert Graph to YAML
+
+Convert the node-graph to a YAML representation. This may not be exactly the same as it was in the source template, but should be symantically equivalent.
+
+```python
+from forgather.yaml_encoder import to_yaml
+...
+def to_yaml(obj: Any):
+```
+
+## Convert Graph to Python
+
+This function takes the output from Latent.to_py(graph) and uses it to render Pyhon code using a Jinja2 template. If the template is unspecified, an implicit "built-in" template is used, which will generate appropriate import and dynamic import statements, where required.
+
+```python
+from forgather.codegen import generate_code
+...
+def generate_code(
+    obj,
+    template_name: Optional[str] = None,
+    template_str: Optional[str] = None,
+    searchpath: Optional[List[str | os.PathLike] | str | os.PathLike] = ".",
+    env=None,  # jinja2 environment or compatible API
+    **kwargs,
+) -> Any:
+```
+
+The default template accepts the following additional kwargs:
+
+    factory_name: Optional[str]="construct", ; The name of the generated factory function.
+    relaxed_kwargs: Optional[bool]=Undefined, ; if defined, **kwargs is added to the arg list
+    
+See 'help(generate_code)' for details.

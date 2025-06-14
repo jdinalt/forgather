@@ -21,9 +21,12 @@
 == h3('Trainer Args')
 
 -- filter trim()
+-- block trainer_dependencies
+## Additional definitions required for trainer_args block
+<< endblock trainer_dependencies
 -- block trainer_args
 ## Supports at least the sub-set of args from forgather.ml.trainer_types.MinimalTrainingArguments
-.define: &trainer_args
+trainer_args: &trainer_args
     # Minimal Trainer Defaults
     # https://huggingface.co/docs/transformers/en/main_classes/trainer#transformers.TrainingArguments
     output_dir: "{{ ns.output_dir }}"
@@ -34,6 +37,13 @@
     learning_rate: 5.0e-5 ## Relatively safe, but far from ideal for many models.
     num_train_epochs: 1
 << endblock trainer_args
+
+
+-- block model_preprocessor
+## This can be used to modify the constructed model, before it is passed to the trainer.
+## For example, it could be used to change the model's dtype.
+model_preprocessor: &model_preprocessor !partial:call [ *model ]
+<< endblock model_preprocessor
 -- endfilter
 
 

@@ -7,7 +7,7 @@
 
     -- block experiment_info
 # Additional data to record to experiment loggers
-.define: &experiment_info !dict:@experiment_info
+experiment_info: &experiment_info !dict:@experiment_info
     date: "{{ utcisotime() }}"
     name: "{{ ns.config_name }}"
     description: "{{ ns.config_description }}"
@@ -18,7 +18,7 @@
     
 
 -- block callback_list
-.define: &trainer_callbacks !list:@trainer_callbacks
+trainer_callbacks: &trainer_callbacks !list:@trainer_callbacks
     # Log all training output to JSON
     - !singleton:forgather.ml.json_logger:JsonLogger
         <<: *experiment_info

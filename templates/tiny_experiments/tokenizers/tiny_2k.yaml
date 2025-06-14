@@ -1,4 +1,4 @@
 # Load custom tokenizer from sub-project definition
-.define: &tokenizer !singleton:forgather.ml.construct:load_from_config@tokenizer
+tokenizer: &tokenizer !singleton:forgather.ml.construct:load_from_config@tokenizer
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'tiny_stories_bpe') }}"
     config_template: "2k.yaml"

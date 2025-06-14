@@ -59,6 +59,7 @@ class AccelTrainer(Trainer):
         """
         Reduces loss accross processes
         """
+        mean_loss = torch.stack([x.detach() for x in losses]).mean()
         return self.accelerator.reduce(loss, "mean")
 
     def _prepare_batch(self, batch):

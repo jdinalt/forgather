@@ -19,8 +19,8 @@
 
 
 -- block trainer_constructor
-.define: &trainer !singleton:transformers:Trainer@trainer
-    model: *model
+trainer: &trainer !singleton:transformers:Trainer@trainer
+    model_init: *model_preprocessor
     args: !singleton:transformers:TrainingArguments
         <<: *trainer_args
     data_collator: *data_collator

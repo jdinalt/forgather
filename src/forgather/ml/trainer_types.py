@@ -44,6 +44,7 @@ class TrainerState:
     This is the same API as used by the HF Trainer class, for compatibility.
     Not all values are implemented at present.
     See: https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_callback.py#
+    
     """
 
     logging_steps: int
@@ -57,7 +58,7 @@ class TrainerState:
     is_world_process_zero: bool = True
     log_history: list[Dict[str, float]] = field(default_factory=lambda: [])
     save_steps: int = 0
-
+    
     # Unimplemented in Trainer; included for consistency with HF Trainer
     num_input_tokens_seen: int = 0
     total_flos: float = 0.0
@@ -149,6 +150,11 @@ class TrainingArguments(MinimalTrainingArguments):
     # Not if HF trainer; number of train-batches in an epoch, when dataset does not support len()
     # This just becomes a relative value for book-keeping.
     epoch_train_steps: int = 100000
+
+    save_safetensors: bool = True
+    save_on_each_node: bool = False
+    save_only_model: bool = False
+    restore_callback_states_from_checkpoint: bool = False
 
     def __post_init__(self):
         super().__post_init__()

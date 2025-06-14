@@ -1,0 +1,87 @@
+-- extends 'trainers/trainer.yaml'
+-- block trainer_meta_config
+    == super()
+    -- set trainer_def.name = "forgather.ml.pipeline_trainer:PipelineTrainer"
+    -- set trainer_def.description = "Pipeline parallel trainer"
+    ## Set these in your sub-project
+    ##-- set trainer_def.pipeline_layers = 16
+    ##-- set trainer_def.pipeline_segments = 4
+    ##-- set trainer_def.pipeline_microbatches = 4
+    ##-- set trainer_def.split_layer_prefix = "causal_lm.layer_stack.layers."
+-- endblock trainer_meta_config
+
+-- block trainer_dependencies
+    == super()
+-- block split_spec
+split_spec: &split_spec !dict@split_spec
+    ## Define where to split the model, based upon the total number of layers and the number of segments.
+-- for i in range(1, trainer_def.pipeline_segments):
+    {{ trainer_def.split_layer_prefix }}{{i * (trainer_def.pipeline_layers // trainer_def.pipeline_segments)}}: "beginning"
+-- endfor
+-- endblock split_spec
+
+
+-- endblock trainer_dependencies
+
+
+-- block trainer_args
+    == super()
+    # Pipeline Trainer
+    split_spec: *split_spec
+
+    # Split batches into N micro-batches; batch-sizes must be divisble by this value.
+    pipeline_chunks: {{ trainer_def.pipeline_microbatches }}
+    ## Must be 1 for PipelineScheduleSingle. Otherwise, see scheduler documentation for reqiriements.
+    stages_per_rank: 1
+    ## Set to True, if pipe_schedule_factory is a sub-class of PipelineScheduleMulti
+    is_multistage: False
+
+    # Set to True (or checkpoint-path) to init weights from checkpoint.
+    # Loads from 'output_dir' if True.
+    ## Note: Loading weights in you model constructor will not work with this trainer.
+    ## See pipeline_trainer example project for checkpoint loading details.
+    load_weights_from_checkpoint: False
+    ##
+    ## Optional:
+    ## Enable Pipeline Debug logging
+    ##   debug_pipeline: bool = False
+    ##
+    ## Extra debug info about model splitting.
+    ##   debug_split_model: bool = False
+    ##
+    ## Extra debug info about model params
+    ##   debug_model_params: bool = False
+    ##
+    ## Extra debug info about weight init
+    ##   debug_model_init: bool = False
+    ##
+    ## ZBVZ requires the "v" option.
+    ##   pp_stage_type: "v" | "loop" = "loop"
+    ##
+    ## Use the same pipeline for both train and eval. This is slower, as the train piepline 
+    ## always runs the backward pass. It may also produce different loss results, as it was 
+    ## traced with model.train(), rather than model.eval()
+    ## This option is primarily for diagnostics, although it may also reduce memory overhead slightly.
+    ## In the case of ZBVZ, it is presenlty required for the eval step, as seperate eval model is
+    ## not working for ZBVZ yet.
+    ##   unified_model: True
+<< endblock trainer_args
+
+
+-- block trainer_constructor
+trainer: &trainer !singleton:forgather.ml.pipeline_trainer:PipelineTrainer@trainer
+    model_init: *model_preprocessor
+    args: !singleton:forgather.ml.pipeline_trainer:PipelineTrainingArguments
+        <<: *trainer_args
+    data_collator: *data_collator
+    train_dataset: *train_dataset
+    eval_dataset: *eval_dataset
+    tokenizer: *tokenizer
+    callbacks: *trainer_callbacks
+    optimizer_factory: *optimizer
+    lr_scheduler_factory: *lr_scheduler
+    distributed_env: *distributed_env
+    loss_fn: !singleton:forgather.ml.loss:CausalLoss
+    # https://docs.pytorch.org/docs/stable/distributed.pipelining.html#module-torch.distributed.pipelining.schedules
+    pipe_schedule_factory: !lambda:torch.distributed.pipelining:ScheduleGPipe
+<< endblock trainer_constructor

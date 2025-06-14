@@ -1,0 +1,27 @@
+## The project defines the defaults
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    ## Experiment Metadata
+    -- set ns.config_name = 'Control'
+    -- set ns.config_description = "Baseline Simple Init"
+    -- set ns.model_name = 'simple_init'
+    
+    ## Name the logging directory to match the model name
+    -- set ns.log_name = ns.model_name
+-- endblock config_metadata
+
+## Override default project definition
+-- block construct_new_model
+    -- include 'experiment.model_config'
+-- endblock construct_new_model
+
+#-------------------- experiment.model_config --------------------
+-- extends 'project.model_config'
+
+-- block model_config
+    == super()
+
+    # {{ ns.config_name }} Overrides
+-- endblock model_config

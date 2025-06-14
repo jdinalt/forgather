@@ -1,0 +1,23 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Test Activation Checkpoint"
+    -- set ns.config_description = ""
+    -- set ns.model_name = "checkpoint"
+    -- set ns.log_name = "checkpoint"
+-- endblock config_metadata
+
+
+-- block construct_new_model
+    -- include 'experiment.model'
+-- endblock construct_new_model
+
+#-------------------- experiment.model --------------------
+-- extends 'project.model'
+
+-- block layer_stack
+.define: &layer_stack !singleton:.checkpoint_layer_stack:CheckpointLayerStack@layer_stack
+    layer_factory: *layer_factory
+    num_hidden_layers: !var "num_hidden_layers"
+<< endblock layer_stack

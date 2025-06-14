@@ -4,8 +4,7 @@ import os
 import shutil
 import sys
 import filecmp
-
-from loguru import logger
+import logging
 
 from .distributed import main_process_first
 from forgather.meta_config import MetaConfig
@@ -14,6 +13,8 @@ from forgather.config import ConfigEnvironment
 from forgather.dynamic import walk_package_modules
 from forgather.latent import Undefined
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 def register_for_auto_class(object, /, *args, **kwargs):
     """
@@ -119,6 +120,10 @@ def torch_dtype(type: str):
         }
     return torch_dtype_map[type]
 
+def module_to_dtype(module_ctor, dtype: str, **kwargs):
+    logger.info(f"Constructing module and converting to dytpe={dtype}")
+    m = module_ctor(**kwargs)
+    return m.to(dtype=torch_dtype(dtype))
 
 def load_from_config(project_dir: str, config_template: str | NoneType = None):
     """
@@ -194,19 +199,9 @@ def copy_package_files(
     the copy.
 
     While not perfect, it's less broken than the attempt at something similar
-    within the Transformers library. Includes modules can be in sub-directories,
+    within the Transformers library. Included modules can be in sub-directories,
     which makes it easy to symlink a 'model-bits' directory and have this only
     copy the referenced bits.
-
-    Why do this?
-
-    I have been burned multiple times by using imported models, only
-    to 'fix' the library, resulting in incompatible model weights. This being
-    followed by the hilarity of trying to piece back together the original
-    source code. Fun times!
-
-    This allows one to keep a snap-shot of working code with the model weights.
-    Even if you don't save the weights, it makes the experiment reproducible.
     """
 
     # Only do this on the main process

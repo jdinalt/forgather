@@ -1,0 +1,60 @@
+-- extends 'project.yaml'
+
+## This modifies the baseline project to use the pipeline trainer,
+## rather than the single-gpu trainer. We try to keep the changes
+## to a minimum for comparative purposes.
+
+## This configuration assumes the model has 16 stages and will run on two
+## GPU's, thus we split at the end of layer-7. For other configurations,
+## modify the split-spec to have roughly and equal quantity of weights
+## on each GPU.
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Base Pipeline Project"
+    -- set ns.config_description = ""
+    -- set ns.log_name = "pipeline_defaults"
+    ## Change the trainer implementation.
+    -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
+-- endblock config_metadata
+
+
+-- block trainer_definition
+    -- include 'base_pipeline_project.trainer_config'
+<< endblock trainer_definition
+
+
+## We can't use the regular model loader, as we are constructing the model on the 'meta' device
+## and AutoModelForCausalLM.from_pretrained(), reasonably, generates an exception when we try
+## to load the model into non-existent tensors.
+##
+## Instead, we will change load_model to construct an uninitialized model from the model's config,
+## which can be constructed on "meta," then we will load the weights as a checkpoint, after
+## we have sharded the model and moved the shards to their respective GPUs.
+##
+## This use-cae requires setting the 'load_weights_from_checkpoint' trainer arg to True, which
+## causes the PipelineTrainer to load the model weights saved in the output directory directly
+## onto the GPU's. Alternatively, this can be a path to a different directory containing a 
+## saved checkpoint.
+-- block load_model
+    -- include 'models/abstract/causal_lm_from_pretrained_config.yaml'
+-- endblock load_model
+
+#-------------------- base_pipeline_project.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+
+-- block trainer_meta_config
+    == super()
+    -- set trainer_def.pipeline_layers = 16
+    -- set trainer_def.pipeline_segments = 2
+    -- set trainer_def.pipeline_microbatches = 4
+    -- set trainer_def.split_layer_prefix = "causal_lm.layer_stack.layers."
+-- endblock trainer_meta_config
+
+
+-- block trainer_args
+    == super()
+    # Pipeline Base Project Overrides
+    debug_pipeline: True
+    load_weights_from_checkpoint: {{ not ns.create_new_model }}
+-- endblock trainer_args

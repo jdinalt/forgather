@@ -52,6 +52,31 @@
 << endblock trainer_callbacks
 
 
+-- block datacollator
+    == super()
+    # Tiny Project
+    # Limit maximum sequence length 512 tokens, at the data-collator level.
+    truncation: True
+    max_length: 512
+-- endblock datacollator
+
+
+-- block lr_scheduler
+    ##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
+# https://arxiv.org/html/2503.02844v1
+lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+    warmup_steps: 5000
+    cooldown_steps: 50000
+    constant_lr: 1.0e-4
+<< endblock lr_scheduler
+
+
+-- block optimizer
+optimizer: &optimizer !lambda:torch:optim.AdamW
+    lr: 1.0e-3
+
+<< endblock optimizer
+
 #-------------------- tiny.trainer_config --------------------
 -- extends ns.trainer_class
 ## Note: We use dynamic inheritance for the trainer-class
@@ -93,7 +118,7 @@
 
     -- filter trim()
     -- block text_gen_callback_args
-.define: &text_gen_callback_args
+text_gen_callback_args: &text_gen_callback_args
     summary_writer: *summary_writer
     prompts: *testprompts
     generation_config: *generation_config

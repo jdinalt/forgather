@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 
 from functools import partial
 from torch import nn, Tensor, LongTensor, FloatTensor
+import torch
 from transformers.modeling_outputs import CausalLMOutput
 from transformers import (
     PreTrainedModel,
@@ -28,11 +29,11 @@ class DynamicCasualLM(PreTrainedModel, GenerationMixin):
     config_class = DynamicCausalLMConfig
     model_type = model_type
 
-    def __init__(self, config: PretrainedConfig, torch_dtype=None):
+    def __init__(self, config: PretrainedConfig):
         super().__init__(config)
         self.causal_lm = self.construct_model(**config.to_dict())
-        if torch_dtype is not None:
-            self.to(torch_dtype)
+        if "torch_dtype" in config:
+            self.to(config.torch_dtype)
 
     @staticmethod
     def construct_model(

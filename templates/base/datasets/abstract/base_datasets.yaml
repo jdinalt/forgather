@@ -41,7 +41,7 @@
 
 -- filter trim()
 -- block load_train_dataset
-.define: &train_source_dataset !singleton:{{datasets_ns.train_load_method}}@train_source_dataset
+train_source_dataset: &train_source_dataset !singleton:{{datasets_ns.train_load_method}}@train_source_dataset
     - "{{ datasets_ns.train_dataset_id }}"
 << endblock load_train_dataset
 -- endfilter
@@ -50,7 +50,7 @@
 -- filter trim()
 
 -- block load_eval_dataset
-.define: &eval_source_dataset !singleton:{{datasets_ns.eval_load_method}}@eval_source_dataset
+eval_source_dataset: &eval_source_dataset !singleton:{{datasets_ns.eval_load_method}}@eval_source_dataset
     - "{{ datasets_ns.eval_dataset_id }}"
 << endblock load_eval_dataset
 -- endfilter
@@ -60,11 +60,11 @@
 
 -- filter trim()
 -- block dataset_splits
-.define: &train_dataset_split !singleton:operator:getitem
+train_dataset_split: &train_dataset_split !singleton:operator:getitem
     - *train_source_dataset
     - "{{ datasets_ns.train_dataset_split }}"
 
-.define: &eval_dataset_split !singleton:operator:getitem
+eval_dataset_split: &eval_dataset_split !singleton:operator:getitem
     - *{{ datasets_ns.eval_source_dataset_name }}
     - "{{ datasets_ns.eval_dataset_split }}"
 << endblock dataset_splits
@@ -76,7 +76,7 @@
 -- filter trim()
 -- block preprocess_args
 ## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
-.define: &preprocess_args
+preprocess_args: &preprocess_args
     truncation: True
 << endblock preprocess_args
 
@@ -89,7 +89,7 @@
 -- block datasets
     -- filter trim()
     -- block tokenize_train
-.define: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
+train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
     dataset: *train_dataset_split
     tokenizer: *tokenizer
     select_range: {{ datasets_ns.train_select_range }}
@@ -102,7 +102,7 @@
 
     -- filter trim()
     -- block tokenize_eval
-.define: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
+eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
     dataset: *eval_dataset_split
     tokenizer: *tokenizer
     select_range: {{ datasets_ns.eval_select_range }}

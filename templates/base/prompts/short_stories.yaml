@@ -1,5 +1,5 @@
 # GPT3 generated opening lines to short stories.
-.define: &testprompts !list:@testprompts
+testprompts: &testprompts !list:@testprompts
     - "As the first snowflake fell, Sarah knew this winter would be different."
     - "The old bookstore at the corner of Elm Street had always held secrets, but today, something unusual caught Emma's eye."
     - "It was a rainy evening when Detective Williams received a letter from an anonymous sender, setting in motion a chilling investigation."
@@ -12,7 +12,7 @@
     - "The scent of freshly baked bread filled the air, and for the first time in years, Claire felt a sense of belonging."
 
 # Conservative text-generation parameters.
-.define: &generation_config !dict:@generation_config
+generation_config: &generation_config !dict:@generation_config
     identity: generation_config
     do_sample: True
     top_k: 20

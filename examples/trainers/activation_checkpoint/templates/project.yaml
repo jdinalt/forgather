@@ -1,0 +1,128 @@
+-- extends 'projects/tiny.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.create_new_model = True
+    -- set ns.save_model = False
+    ## float16 or bfloat16 are required for flash
+    ## OTOH, torch "memory-efficient" attention can work with float32.
+    -- set ns.model_dtype = "bfloat16"
+-- endblock config_metadata
+
+-- block trainer_definition
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
+
+-- block datasets_definition
+    -- include 'project.dataset_config'
+-- endblock datasets_definition
+
+
+-- block trainer_callbacks
+    -- include 'project.callbacks'
+<< endblock trainer_callbacks
+
+
+-- block construct_new_model
+    -- include 'project.model'
+-- endblock construct_new_model
+
+-- block optimizer
+.define: &optimizer !lambda:forgather.ml.optim.adafactor:Adafactor
+    lr: 2.0e-4
+    weight_decay: 0.01
+    
+<< endblock optimizer
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+
+-- block trainer_args
+    == super()
+    # project overrides
+    ## max_steps: 3
+-- endblock trainer_args
+
+
+#-------------------- project.dataset_config --------------------
+-- extends 'datasets/tiny/tiny_stories_abridged.yaml'
+##-- extends 'datasets/tiny/tiny_stories.yaml'
+
+
+#-------------------- project.callbacks --------------------
+-- extends 'tiny.callbacks'
+
+
+#-------------------- project.model --------------------
+-- extends 'models/tiny/tiny_causal.yaml'
+
+## Add the project model_src directory to the search path
+-- block model_submodule_searchpath
+    - "{{ ns.project_model_src_dir }}"
+    == super()
+<< endblock model_submodule_searchpath
+
+-- block model_config
+    == super()
+    
+    # Flash Attention Project Overrides
+    # Make the model big enough to be interesting.
+    hidden_size: 2048
+    dim_feedforward: 8192
+    num_attention_heads: 8
+    num_hidden_layers: 32
+    embedding_dropout: 0.1
+    layer_dropout: 0.1
+    attention_type: "torch_flash"
+<< endblock model_config
+
+
+-- block model_tokenizer
+    ## Use a smaller tokenizer.
+    -- include 'tokenizers/tiny_8k.yaml'
+<< endblock model_tokenizer
+
+
+-- block attention_factory
+.define: &attention_factory !lambda:.causal_multihead_flash_attn:CausalMultiheadFlashAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    dropout: !var "attention_dropout"
+    attn_type: !var "attention_type"
+<< endblock attention_factory
+
+
+-- block init_weights
+.define: &init_weights !lambda:.init_weights_by_regex:init_weights_by_regex@init_weights
+    regex_list:
+        - [ 'norm', "pass" ]
+        - [ 'bias', "zeros" ]
+        - [ 'embedding\.weight', "embedding" ]
+        - [ 'feedforward|value_linear|output_linear', "deepnet" ]
+        - [ 'attention|output_decoder', "linear" ]
+    init_f_map:
+        pass: !lambda:.init_weights_by_regex:init_pass
+        zeros: !lambda:torch.nn.init:zeros_ []
+        embedding: !lambda:.init_weights:init_embeddings
+            padding_index: !var "pad_token_id"
+        linear: !lambda:torch.nn.init:xavier_uniform_ []
+        deepnet: !lambda:torch.nn.init:xavier_uniform_
+            gain: !singleton:.deepnet:deepnet_beta [ !var "num_hidden_layers", 0 ]
+    debug: False
+<< endblock init_weights
+
+
+-- block layer_factory
+.define: &deepnet_alpha 
+
+.define: &layer_factory !lambda:.deepnet:DeepnetLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+    dropout: !var "layer_dropout"
+    residual_dropout: !var "residual_dropout"
+    alpha: !singleton:.deepnet:deepnet_alpha [ !var "num_hidden_layers", 0 ]
+<< endblock layer_factory
+

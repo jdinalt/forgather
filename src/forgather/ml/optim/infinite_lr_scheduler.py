@@ -10,8 +10,8 @@ class InfiniteLRScheduler(LRScheduler):
     def __init__(
         self,
         optimizer: Optimizer,
-        warmup_steps: int,
-        cooldown_steps: int,
+        warmup_steps: int = 0,
+        cooldown_steps: int = 0,
         constant_lr: float = 3.75e-5,
         min_lr: float = 1e-8,
         tau: float = 1e4,
@@ -45,10 +45,18 @@ class InfiniteLRScheduler(LRScheduler):
             return self._constant_lr()
         
     def _warmup_lr(self):
-        return [
-            base_lr * self.last_epoch / self.warmup_steps
-            for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs)
-        ]
+        # If cooldown phase, warmp up to self.base_lrs -- cooldown will go to constant_lr
+        if self.cooldown_steps > 0:
+            return [
+                base_lr * self.last_epoch / self.warmup_steps
+                for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs)
+            ]
+        # Warm-up to constant_lr; otherwise this will just create a sudden drop.
+        else:
+            return [
+                self.constant_lr * self.last_epoch / self.warmup_steps
+                for group, base_lr in self.optimizer.param_groups
+            ]
 
     def _cooldown_lr(self):
         return [

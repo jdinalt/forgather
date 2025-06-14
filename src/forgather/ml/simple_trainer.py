@@ -27,14 +27,22 @@ class SimpleTrainer(AbstractBaseTrainer):
 
     def __init__(
         self,
+        model
         model: torch.nn.Module = None,
+        model_init: Optional[Callable[[], PreTrainedModel]] = None,
         args: Optional[dict | MinimalTrainingArguments] = None,
         data_collator=None,
         train_dataset=None,
         eval_dataset=None,
         optimizer_factory=None,
     ):
-        self.model = model
+        assert model or model_init, "Either a model or a model constructor must be specified"
+
+        if model_init:
+            self.model = model_init()
+        else:
+             self.model = model
+        
         if args is None:
             args = TrainingArguments()
         elif isinstance(args, dict):

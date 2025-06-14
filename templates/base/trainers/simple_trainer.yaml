@@ -7,8 +7,8 @@
 
 
 -- block trainer_constructor
-.define: &trainer !singleton:forgather.ml.simple_trainer:SimpleTrainer@trainer
-    model: *model
+trainer: &trainer !singleton:forgather.ml.simple_trainer:SimpleTrainer@trainer
+    model_init: *model_preprocessor
     args: !singleton:forgather.ml.trainer_types:MinimalTrainingArguments@trainer_args
         <<: *trainer_args
     train_dataset: *train_dataset

@@ -29,7 +29,7 @@
 
 -- block model_config_defs
     == super()
-.define: &model_submodule_searchpath
+model_submodule_searchpath: &model_submodule_searchpath
 -- block model_submodule_searchpath
 << endblock model_submodule_searchpath
     - "{{ ns.output_dir }}"
@@ -43,7 +43,7 @@
 
 
 -- block model_config
-.define: &model_config !singleton:{{ model_def.config_path }}:{{ model_def.cfg_cls }}@model_config
+model_config: &model_config !singleton:{{ model_def.config_path }}:{{ model_def.cfg_cls }}@model_config
     submodule_searchpath: *model_submodule_searchpath
     # Set auto-map for custom model; this ensures that the source code stays with the model.
     auto_map:
@@ -58,20 +58,17 @@
 
 
 -- block model_constructor
-.define: &pretrained_model !singleton:{{ model_def.model_path }}:{{ model_def.cls }}@pretrained_model
+pretrained_model: &pretrained_model !partial:{{ model_def.model_path }}:{{ model_def.cls }}@pretrained_model
     args:
         - *model_config
     kwargs:
         submodule_searchpath: *model_submodule_searchpath
         <<: *model_constructor_args
 
-.define: &model !singleton:forgather.ml.construct:dependency_list@model
-    - *pretrained_model
+model: &model !partial:forgather.ml.construct:dependency_list@model
+    - !factory:call [ *pretrained_model ]
     - !singleton:forgather.ml.construct:copy_package_files
         - "{{ ns.output_dir }}"
         - *model_config
-    - !singleton:forgather.ml.construct:copy_package_files
-        - "{{ ns.output_dir }}"
-        - *pretrained_model
 << endblock model_constructor
     

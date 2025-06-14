@@ -18,7 +18,7 @@
 
 -- block preprocess_args
 ## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
-.define: &tokenize_args
+tokenize_args: &tokenize_args
     truncation: True
     max_length: 512
 << endblock preprocess_args

@@ -1,0 +1,44 @@
+-- extends 'base_pipeline_project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "GPipe with 4 GPUs Checkpoint"
+    -- set ns.config_description = "Test combining pipeline parallel with activation checkpointing."
+    -- set ns.log_name = "gpipe_ac_4gpu"
+    -- set ns.model_name = "activation_cp"
+-- endblock config_metadata
+
+-- block trainer_definition
+    -- include 'experiment.trainer_config'
+-- endblock trainer_definition
+
+
+-- block construct_new_model
+    -- include 'experiment.model'
+-- endblock construct_new_model
+
+#-------------------- experiment.trainer_config --------------------
+-- extends 'base_pipeline_project.trainer_config'
+
+
+-- block trainer_meta_config
+    == super()
+    -- set trainer_def.pipeline_segments = 4
+    -- set trainer_def.pipeline_microbatches = 8
+-- endblock trainer_meta_config
+
+
+-- block trainer_args
+    == super()
+
+    # Experiment Overrides
+-- endblock trainer_args
+
+#-------------------- experiment.model --------------------
+-- extends 'project.model'
+
+-- block layer_stack
+.define: &layer_stack !singleton:.checkpoint_layer_stack:CheckpointLayerStack@layer_stack
+    layer_factory: *layer_factory
+    num_hidden_layers: !var "num_hidden_layers"
+<< endblock layer_stack

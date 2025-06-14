@@ -130,8 +130,7 @@ class Trainer(BaseTrainer):
         ), "Either a model or a model constructor must be specified."
         if self.data_collator is None:
             self.data_collator = torch.utils.data.default_collate
-        # Holds the mean loss for the most recent train log-step
-        self.mean_train_loss = float("NaN")
+        
         # If unspecified, set a default device
         if self.args.device is None:
             self.args.device = (
@@ -157,19 +156,12 @@ class Trainer(BaseTrainer):
         """
         Prepare for training and/or evaluation
         """
-        self.max_steps = 0
-        self.epoch_train_steps = self.args.epoch_train_steps
-        self.train_ds_has_length = False
-
         # Set the random seed
         if self.args.seed != -1:
             set_seed(self.args.seed)
 
-        if self.model_init is not None:
-            self.model = self.model_init()
-            self.optimizer = None
-            self.lr_scheduler = None
-
+        self._init_dataloaders(train_dataset, eval_dataset)
+        self._prepare_model()
         if self.args.torch_compile:
             print(
                 "Compiling model",
@@ -181,35 +173,53 @@ class Trainer(BaseTrainer):
                 mode=self.args.torch_compile_mode,
                 dynamic=True,
             )
-        else:
-            print("not compiling model")
+        
+        if self.do_train:
+            self._init_optimizer()
+        
+        self.state = self._init_state()
+        self._dispatch_event("on_init_end")
+
+    def _prepare_model(self):
+        if self.model_init:
+            self.optimizer = None
+            self.lr_scheduler = None
+            self.model = self.model_init()
+        self.model = self.model.to(self.args.device)
+
+    def _init_optimizer(self):
+        if self.optimizer is None:
+            self.optimizer = self.optimizer_factory(self.model.named_parameters())
+        if self.lr_scheduler is None and self.lr_scheduler_factory is not None:
+            self.lr_scheduler = self.lr_scheduler_factory(
+                optimizer=self.optimizer,
+            )
+    
+    def _init_dataloaders(self, train_dataset, eval_dataset) -> None:
+        self.max_steps = 0
+        self.epoch_train_steps = self.args.epoch_train_steps
+        self.train_ds_has_length = False
+
+        self.max_steps = 0
+        self.epoch_train_steps = self.args.epoch_train_steps
+        self.train_ds_has_length = False
 
         self.do_train = train_dataset is not None
         self.do_eval = eval_dataset is not None
 
         if self.do_train:
-
             self.train_dataloader = self._get_dataloader(
                 train_dataset, self.args.per_device_train_batch_size
             )
 
             self.train_ds_has_length = hasattr(train_dataset, "__len__")
             self._update_training_steps()
-            if self.optimizer is None:
-                print("Calling optimizer factory")
-                self.optimizer = self.optimizer_factory(self.model.named_parameters())
-            if self.lr_scheduler is None and self.lr_scheduler_factory is not None:
-                self.lr_scheduler = self.lr_scheduler_factory(
-                    optimizer=self.optimizer,
-                )
-            self.mean_train_loss = float("NaN")
 
         if self.do_eval:
             self.eval_dataloader = self._get_dataloader(
                 eval_dataset, self.args.per_device_eval_batch_size
             )
-
-        self.state = self._init_state()
+            
 
     def _train_loop(self) -> TrainOutput:
         """
@@ -217,6 +227,12 @@ class Trainer(BaseTrainer):
         """
         self._dispatch_event("on_train_begin")
         pstate = self._private_state = self._init_private_state()
+        # Holds the mean loss for the most recent train log-step
+        self.mean_train_loss = float("NaN")
+
+        # Just to be sure...
+        self.optimizer.zero_grad()
+        
         # Context manager for setting model.train()/eval()
         with set_train(self.model, True):
             # Epoch loop
@@ -354,7 +370,6 @@ class Trainer(BaseTrainer):
         """
         start_time = time.time()
 
-        self.model.zero_grad()
         periodic_log = PeriodicFunction(
             strategy=self.args.logging_strategy,
             period=self.args.logging_steps,

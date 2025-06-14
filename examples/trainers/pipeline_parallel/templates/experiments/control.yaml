@@ -1,0 +1,9 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Control"
+    -- set ns.config_description = "Trail model with baseline trainer. (No Pipeline)"
+    -- set ns.log_name = "control"
+    -- set ns.save_model = True
+-- endblock config_metadata

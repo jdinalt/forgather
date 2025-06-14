@@ -30,7 +30,7 @@
 
 -- filter trim()
 -- block datasets_loader
-.define: &dataset !singleton:datasets:load_from_disk@dataset [ "{{ datasets_def.dataset_name_or_path }}" ]
+dataset: &dataset !singleton:datasets:load_from_disk@dataset [ "{{ datasets_def.dataset_name_or_path }}" ]
 << endblock datasets_loader
 -- endfilter
 
@@ -39,7 +39,7 @@
 
 -- filter trim()
 -- block datasets_splits
-.define: &train_dataset !singleton:operator:getitem@train_dataset [ *dataset, "{{ datasets_def.dataset_train_split }}" ]
-.define: &eval_dataset !singleton:operator:getitem@eval_dataset [ *dataset, "{{ datasets_def.dataset_validation_split }}" ]
+train_dataset: &train_dataset !singleton:operator:getitem@train_dataset [ *dataset, "{{ datasets_def.dataset_train_split }}" ]
+eval_dataset: &eval_dataset !singleton:operator:getitem@eval_dataset [ *dataset, "{{ datasets_def.dataset_validation_split }}" ]
 << endblock datasets_splits
 -- endfilter

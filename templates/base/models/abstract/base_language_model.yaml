@@ -41,15 +41,14 @@
 
 -- filter trim()
 -- block model_code_generator
-# Model does not have dynamically generated code
-.define: &model_code_generator null
+## model_code_generator: &model_code_generator null
 << endblock model_code_generator
 -- endfilter
 
 
 -- filter trim()
 -- block model_code_writer
-.define: &model_code_writer null
+## model_code_writer: &model_code_writer null
 << endblock model_code_writer
 -- endfilter
     
@@ -60,7 +59,7 @@
 -- endfilter
 
 
-== h3('Model Constructor')
+== h3('Model Factory')
 
 -- filter trim()
 -- block model_constructor required

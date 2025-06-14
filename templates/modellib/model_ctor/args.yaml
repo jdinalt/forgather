@@ -1,4 +1,0 @@
--- set use_flash_attn2
-    torch_dtype: !singleton:forgather.ml.construct:torch_dtype [ "bfloat16" ]
-    attn_implementation: "flash_attention_2"
--- endset

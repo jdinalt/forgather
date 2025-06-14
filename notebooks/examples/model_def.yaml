@@ -1,0 +1,97 @@
+-- set ns = namespace()
+-- from 'examples/formatting.jinja' import h1, h2, h3
+-- filter trim() ## This removes whitespace before the header.
+
+## Jina2 block definitions; we can override these in derived templates.
+-- block meta_config
+    -- set ns.model_src = '../model_src/bits/'
+    -- set ns.config_name = 'Control'
+    -- set ns.config_description = "Baseline Control"
+    ## Example of variable set by jinja2 template.
+    -- set ns.vocab_size = 1024
+<< endblock meta_config
+
+
+-- endfilter
+-- block header
+== h1(ns.config_name)
+# {{ utcisotime() }}
+# Description: {{ ns.config_description }}
+# model_src = {{ ns.model_src }}
+# Current Working Dir: "{{ getcwd() }}"
+# Forgather Config Dir: "{{ abspath(forgather_config_dir()) }}"
+<< endblock header
+
+
+== h2("Model Definition")
+
+== h3("Layer Norm Factory")
+
+-- block layer_norm_factory
+.define: &layer_norm_factory !lambda:torch.nn:LayerNorm@layer_norm_factory
+    - !var "hidden_size"
+<< endblock layer_norm_factory
+
+
+== h3("Activation Factory")
+
+-- block activation_factory
+.define: &activation_factory !partial:torch.nn:ReLU@activation_factory []
+<< endblock activation_factory
+
+
+== h3("Feedforward Factory")
+
+-- block feedforward_factory
+.define: &feedforward_factory !partial:{{ns.model_src}}feedforward_layer.py:FeedforwardLayer@feedforward_factory
+    activation_factory: *activation_factory
+    d_model: !var "hidden_size"
+    d_feedforward: !var "dim_feedforward"
+<< endblock feedforward_factory
+
+
+== h3("Attention Factory")
+
+-- block attention_factory
+.define: &attention_factory !partial:{{ns.model_src}}single_head_attn.py:SingleHeadAttn@attention_factory
+    d_model: !var "hidden_size"
+<< endblock attention_factory
+
+
+== h3("Layer Factory")
+
+-- block layer_factory
+.define: &layer_factory !partial:{{ns.model_src}}pre_ln_layer.py:PreLNLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+<< endblock layer_factory
+
+
+== h3("Layer Stack Factory")
+
+-- block layer_stack_factory
+.define: &layer_stack_factory !factory:{{ns.model_src}}layer_stack.py:LayerStack@layer_stack_factory
+    layer_factory: *layer_factory
+    post_norm_factory: *layer_norm_factory
+    num_hidden_layers: !var "n_layers"
+<< endblock layer_stack_factory
+
+
+== h3("Model")
+
+-- block model
+## This block is not nearly as factored-out as the others, using inline-definiions.
+.define: &model !call:{{ns.model_src}}causal_lm.py:CasualLM@model
+    loss_fn: !factory:{{ns.model_src}}causal_loss.py:CausalLoss
+    input_encoder: !factory:{{ns.model_src}}input_encoder.py:InputEncoder
+        d_model: !var "hidden_size"
+        vocab_size: {{ ns.vocab_size }}
+    output_decoder: !factory:torch.nn:Linear [ {{ ns.vocab_size }}, !var "hidden_size" ]
+    init_weights: !partial:{{ns.model_src}}init_weights.py:simple_weight_init
+    layer_stack: *layer_stack_factory
+<< endblock model
+
+
+## Main output
+main: *model

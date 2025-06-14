@@ -51,7 +51,7 @@
 
     -- filter trim()
     -- block distributed_environment
-.define: &distributed_env !singleton:forgather.ml.distributed:DistributedEnvironment@distributed_env
+distributed_env: &distributed_env !singleton:forgather.ml.distributed:DistributedEnvironment@distributed_env
     << endblock distributed_environment
     -- endfilter
 
@@ -69,15 +69,15 @@
 
     -- filter trim()
     -- block model_constructor_args
-.define: &model_constructor_args {}
+model_constructor_args: &model_constructor_args {}
     << endblock model_constructor_args
     -- endfilter
 
 
     -- filter trim()
     -- block model_definition required
-## .define: &tokenizer
-## .define: &model
+## tokenizer: &tokenizer
+## model: &model
     << endblock model_definition
     -- endfilter
 
@@ -86,8 +86,8 @@
 
     -- filter trim()
     -- block datasets_definition required
-## .define: &train_dataset
-## .define: &eval_dataset
+## train_dataset: &train_dataset
+## eval_dataset: &eval_dataset
     << endblock datasets_definition
     -- endfilter
 
@@ -96,7 +96,7 @@
 
     -- filter trim()
     -- block datacollator
-.define: &data_collator null
+data_collator: &data_collator null
     << endblock datacollator
     -- endfilter
 
@@ -105,7 +105,7 @@
 
     -- filter trim()
     -- block trainer_callbacks
-.define: &trainer_callbacks []
+trainer_callbacks: &trainer_callbacks []
     << endblock trainer_callbacks
     -- endfilter
 
@@ -114,7 +114,7 @@
 
     -- filter trim()
     -- block optimizer
-.define: &optimizer ~
+optimizer: &optimizer ~
     << endblock optimizer
     -- endfilter
 
@@ -123,7 +123,7 @@
 
     -- filter trim()
     -- block lr_scheduler
-.define: &lr_scheduler ~
+lr_scheduler: &lr_scheduler ~
     << endblock lr_scheduler
     -- endfilter
 
@@ -132,7 +132,7 @@
 
     -- filter trim()
     -- block trainer_definition required
-## .define: &trainer
+## trainer: &trainer
     << endblock trainer_definition
     -- endfilter
 << endblock main_body
@@ -163,19 +163,3 @@ main: !singleton:forgather.ml.training_script:TrainingScript@training_script
     ## in the logging directory.
     pp_config: !var "pp_config"
 << endblock main_output
-
-
--- block auxiliary_outputs
-== super()
-model_code_writer: *model_code_writer
-distributed_env: *distributed_env
-model: *model
-trainer: *trainer
-train_dataset: *train_dataset
-eval_dataset: *eval_dataset
-data_collator: *data_collator
-trainer_callbacks: *trainer_callbacks
-trainer_args: *trainer_args
-optimizer: *optimizer
-lr_scheduler: *lr_scheduler
-<< endblock auxiliary_outputs

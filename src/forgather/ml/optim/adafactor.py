@@ -21,6 +21,7 @@ class Adafactor(Optimizer):
         weight_decay: float = 0.0,
         relative_step: bool = False,
         torch_compile: bool = False,
+        bf16_stochastic_round: bool = False,
     ):
         self.compile = torch_compile
         defaults = dict(
@@ -31,13 +32,14 @@ class Adafactor(Optimizer):
             clip_threshold=clip_threshold,
             weight_decay=weight_decay,
             relative_step=relative_step,
+            bf16_stochastic_round=bf16_stochastic_round,
         )
         super().__init__(params, defaults)
 
     def _init_state(self, state, group, p, grad):
         state["step"] = torch.tensor(0.0)
         if grad.dim() <= 1:
-            state["row"] = torch.zeros_like(grad)
+            state["row"] = torch.zeros_like(grad, dtype=torch.float32)
             state["col"] = None
         else:
             state["row"] = torch.zeros(grad.shape[0], dtype=torch.float32, device=grad.device)
@@ -80,6 +82,7 @@ class Adafactor(Optimizer):
                         eps2,
                         group["weight_decay"],
                         group["relative_step"],
+                        group["bf16_stochastic_round"],
                     ]
                     if self.compile:
                         torch.compile(_adafactor, fullgraph=True, dynamic=False)(*args)
@@ -91,8 +94,37 @@ class Adafactor(Optimizer):
 """
 TODO: Implement Stochastic Rounding
 https://arxiv.org/abs/2010.06192
-# https://github.com/pytorch/ao/blob/main/torchao/optim/quant_utils.py#L120
+
+Source for implementation is from:
+https://github.com/pytorch/ao/blob/main/torchao/optim/quant_utils.py#L120
 """
+
+def _fp32_to_bf16_sr(x_f32: Tensor) -> Tensor:
+    # For an FP32 number      [a31, ..., a16, a15, ..., a0] to be converted to BF16
+    # - Round towards zero:   [a31, ..., a16,   0, ...,  0]
+    # - Round away from zero: [a31, ..., a16+1, 0, ...,  0]
+    # (since the value can be negative, we use round towards/away from zero instead of round up/down)
+    #
+    # For stochastic rounding, we round away from zero with the probability of
+    # [a15, ..., a0] / 2^16, where the bit pattern [a15, ..., a0] is interpreted as uint16
+    #
+    # we have to use int32 since most arithmetic ops are not implemented for uint32/int16/uint16
+    rand_16bit = torch.randint(
+        0, 1 << 16, x_f32.shape, device=x_f32.device, dtype=torch.int32
+    )
+    x_f32_bits = x_f32.view(torch.int32)
+    x_fraction = x_f32_bits & 0xFFFF  # lower 16 bits
+    x_bf16_towards_zero = x_f32_bits & 0xFFFF0000  # upper 16 bits
+
+    x_f32_bits = torch.where(
+        rand_16bit < x_fraction,  # this is True with the probability of p_fraction
+        x_bf16_towards_zero
+        + 0x10000,  # this might overflow, which will result in UB due to signed integer
+        x_bf16_towards_zero,
+    )
+    # alternative, slightly faster
+    # x_f32_bits = (x_f32_bits + rand_16bit) & 0xFFFF0000
+    return x_f32_bits.view(torch.float32).bfloat16()
 
 """
 Derivation of the implementation:
@@ -220,6 +252,7 @@ def _adafactor(
     eps2: float,
     weight_decay: float,
     relative_step: bool,
+    bf16_stochastic_round: bool,
 ):
     """
     Adafactor: Adaptive Learning Rates with Sublinear Memory Cost
@@ -263,6 +296,8 @@ def _adafactor(
     if p.dtype == update.dtype:
         p.add_(update, alpha=-lr)
     else:
-        p.copy_(p.float() - lr * update)
-
+        update = p.float() - lr * update
+        if bf16_stochastic_round:
+            update = _fp32_to_bf16_sr(update)
+        p.copy_(update)
         

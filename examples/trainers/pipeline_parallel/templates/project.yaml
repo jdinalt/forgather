@@ -1,0 +1,147 @@
+-- extends 'projects/tiny.yaml'
+
+## Common project settings
+-- block config_metadata
+    == super()
+    -- set ns.create_new_model = True
+    -- set ns.save_model = False
+    -- set ns.model_name = "test_model"
+-- endblock config_metadata
+
+-- block trainer_definition
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
+
+-- block datasets_definition
+    -- include 'project.dataset_config'
+-- endblock datasets_definition
+
+
+-- block trainer_callbacks
+    -- include 'project.callbacks'
+<< endblock trainer_callbacks
+
+
+-- block construct_new_model
+    -- include 'project.model'
+-- endblock construct_new_model
+
+
+-- block datacollator
+# Pipeline Parallel requires constant input tensor shapes. Use the datacollator to
+# generate constant sequence length batches, padding if too short and truncating if too long.
+data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
+    tokenizer: *tokenizer
+    return_tensors: pt
+    padding: "max_length"
+    truncation: True
+    max_length: 512
+-- endblock datacollator
+
+
+-- block optimizer
+optimizer: &optimizer !lambda:forgather.ml.optim.adafactor:Adafactor
+    lr: 1.0e-3
+    weight_decay: 0.01
+<< endblock optimizer
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+-- block trainer_args
+    == super()
+    # Project Overrides
+    
+    # Different train and eval batch sizes works for all schedulers, except ZBVZ, at present.
+    per_device_train_batch_size: 64
+    per_device_eval_batch_size: 64
+    logging_steps: 10
+    eval_steps: 50
+    max_steps: 250
+-- endblock trainer_args
+
+
+-- block model_preprocessor
+model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_to_dtype [ *model, "bfloat16" ]
+<< endblock model_preprocessor
+
+#-------------------- project.dataset_config --------------------
+-- extends 'datasets/tiny/tiny_stories_abridged.yaml'
+##-- extends 'datasets/tiny/tiny_stories.yaml'
+
+
+#-------------------- project.callbacks --------------------
+-- extends 'callbacks/loggers.yaml'
+
+
+#-------------------- project.model --------------------
+-- extends 'models/tiny/tiny_causal.yaml'
+
+## Add the project model_src directory to the search path
+-- block model_submodule_searchpath
+    - "{{ ns.project_model_src_dir }}"
+    == super()
+<< endblock model_submodule_searchpath
+
+-- block model_config
+    == super()
+    
+    # Pipeline Trainer Project
+    torch_dtype: !singleton:forgather.ml.construct:torch_dtype [ "bfloat16" ]
+    hidden_size: 1024
+    dim_feedforward: 4096
+    num_attention_heads: 16
+    num_hidden_layers: 16
+    embedding_dropout: 0.1
+    layer_dropout: 0.1
+    # TODO: The context manager is not properly traced, so we can't control the exact implementation
+    # Possibly add the context manager to the pipeline trainer?
+    attention_type: "torch"
+<< endblock model_config
+
+
+-- block model_tokenizer
+    -- include 'tokenizers/tiny_8k.yaml'
+<< endblock model_tokenizer
+
+
+-- block attention_factory
+attention_factory: &attention_factory !lambda:.causal_multihead_flash_attn:CausalMultiheadFlashAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    dropout: !var "attention_dropout"
+    attn_type: !var "attention_type"
+<< endblock attention_factory
+
+
+-- block layer_factory
+layer_factory: &layer_factory !lambda:.deepnet:DeepnetLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+    dropout: !var "layer_dropout"
+    residual_dropout: !var "residual_dropout"
+    alpha: !singleton:.deepnet:deepnet_alpha@dn_alpha [ !var "num_hidden_layers", 0 ]
+<< endblock layer_factory
+
+
+-- block init_weights
+init_weights: &init_weights !lambda:.init_weights:init_weights_by_regex@init_weights
+    regex_list:
+        - [ 'norm', "pass" ]
+        - [ 'bias', "zeros" ]
+        - [ 'embedding\.weight', "embedding" ]
+        - [ 'feedforward|value_linear|output_linear', "deepnet" ]
+        - [ 'attention|output_decoder', "linear" ]
+    init_f_map:
+        pass: !lambda:.init_weights:init_pass
+        zeros: !lambda:torch.nn.init:zeros_ []
+        embedding: !lambda:.init_weights:init_embeddings
+            padding_index: !var "pad_token_id"
+        linear: !lambda:torch.nn.init:xavier_uniform_ []
+        deepnet: !lambda:torch.nn.init:xavier_uniform_
+            gain: !singleton:.deepnet:deepnet_beta [ !var "num_hidden_layers", 0 ]
+<< endblock init_weights
+
+

@@ -19,8 +19,8 @@
 
 
 -- block trainer_constructor
-.define: &trainer !singleton:forgather.ml.accel_trainer:AccelTrainer@trainer
-    model: *model
+trainer: &trainer !singleton:forgather.ml.accel_trainer:AccelTrainer@trainer
+    model_init: *model_preprocessor
     args: !singleton:forgather.ml.accel_trainer:AccelTrainingArguments
         <<: *trainer_args
     data_collator: *data_collator
@@ -28,4 +28,6 @@
     eval_dataset: *eval_dataset
     tokenizer: *tokenizer
     callbacks: *trainer_callbacks
+    optimizer_factory: *optimizer
+    lr_scheduler_factory: *lr_scheduler
 << endblock trainer_constructor

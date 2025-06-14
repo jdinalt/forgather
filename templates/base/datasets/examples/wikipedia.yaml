@@ -17,7 +17,7 @@
 -- endblock datasets_meta_config
 
 -- block preprocess_args
-.define: &preprocess_args
+preprocess_args: &preprocess_args
     block_size: 512
     overflow: false
     add_bos: false

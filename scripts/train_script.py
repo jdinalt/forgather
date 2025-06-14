@@ -3,9 +3,12 @@ import argparse
 from argparse import RawTextHelpFormatter
 import sys
 
+from torch.distributed.elastic.multiprocessing.errors import record
 from loguru import logger
 import transformers
 import datasets
+
+import torch
 
 from forgather.ml.training_script import training_loop
 
@@ -76,12 +79,16 @@ def parse_args(args=None):
 
     return args
 
-
+@record
 def main():
     args = parse_args()
     init_logging(args)
     training_loop(args.project_dir, args.config_template)
-
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
+        # This can trigger a seg-fault on process exit. I get a warning without it and a crash with it... I'll take 
+        # the warning, unitl I can figure out what the issue is.
+        # torch.distributed.destroy_process_group()
 
 if __name__ == "__main__":
     main()

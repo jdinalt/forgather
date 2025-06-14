@@ -4,12 +4,11 @@ import sys
 import os
 from abc import ABCMeta
 from functools import partial
+import traceback
+import logging
 
-from loguru import logger
-
-# Disable debug logging
-# Enable with: logger.enable("forgather.latent")
-logger.disable(__name__)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARNING)
 
 from .dynamic import dynamic_import, get_builtin
 from .utils import track_depth, add_exception_notes
@@ -176,8 +175,9 @@ class SingletonNode(CallableNode):
     A SingletonNode only generates a single instance of an object. All other occurances
     are references to the same constructed object.
     """
-
-    pass
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.instance = None
 
 
 class MetaNode(SingletonNode):
@@ -210,7 +210,6 @@ class LambdaNode(CallableNode):
 class Materializer:
     def __call__(self, obj, /, *args, **kwargs):
         self.level = -1
-        self.idmap = dict()
 
         mtargets = kwargs.pop("mtargets", None)
         self.context_vars = kwargs.pop("context_vars", {})
@@ -256,13 +255,15 @@ class Materializer:
             return value
 
         elif isinstance(obj, CallableNode):
+            logger.debug(str(obj))
             # If not the root-node, stop traversal and return callable.
             if self.level > 0 and isinstance(obj, LambdaNode):
                 return partial(obj, context_vars=self.context_vars)
 
             if isinstance(obj, SingletonNode):
                 # Have we already constructed this object?
-                if (value := self.idmap.get(obj.identity, None)) is not None:
+                if (value := obj.instance) is not None:
+                    logger.debug(f"Found Singleton {str(obj)}")
                     return value
 
             if isinstance(obj, MetaNode):
@@ -284,7 +285,8 @@ class Materializer:
 
             if isinstance(obj, SingletonNode):
                 # Store object in map to return if called again.
-                self.idmap[obj.identity] = value
+                logger.debug(f"Constructed new Singleton {str(obj)}")
+                obj.instance = value
             return value
         else:
             return obj

@@ -80,7 +80,7 @@ class Project:
         ).get()
 
     def __call__(
-        self, make_targets: Optional[str | Iterable[str]] = "main", /, **kwargs
+        self, *args, asdict=False, **kwargs
     ):
         """
         Construct and return an instance of the configuration
@@ -102,28 +102,34 @@ class Project:
         # Construct only confg-meta
         meta = proj("meta")
 
+        # Construct the model and tokenizer
+        model, tokenizer = proj("model", "tokenizer")
+        
         # Construct a dictionary of objects
-        outputs = proj(["model", "tokenizer"])
+        outputs = proj("model", "tokenizer", asdict=True)
         ```
         """
+            
         if self.config is None:
             raise RuntimeError("The project does not have a loaded configuration")
 
-        if isinstance(make_targets, str):
-            mtargets = (make_targets,)
-        elif isinstance(make_targets, Iterable):
-            mtargets = make_targets
+        if len(args) == 0:
+            mtargets = ("main",)
+        elif isinstance(args[0], list):
+            # Preserve legacy interface for now.
+            asdict = True
+            mtargets = args[0]
         else:
-            raise TypeError(
-                f"make_targets must be a string on an iterable of str; found {type(make_targets)}"
-            )
+            mtargets = args
 
         kwargs |= dict(pp_config=self.pp_config)
         outputs = Latent.materialize(
             self.config, mtargets=mtargets, context_vars=kwargs
         )
 
-        if isinstance(make_targets, str):
-            return outputs[make_targets]
-        else:
+        if asdict:
             return DotDict(outputs)
+        if len(mtargets) == 1:
+            return outputs[mtargets[0]]
+        else:
+            return (outputs[key] for key in mtargets)

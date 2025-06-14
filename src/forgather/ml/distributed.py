@@ -70,6 +70,8 @@ class DistributedEnvironment:
     available from the envrionment.
 
     It's possible to sub-class this, as to customize how the environment is initialized.
+
+    device_map: rank: int -> device_name: str
     """
 
     # Envrionment variables names and types
@@ -92,6 +94,7 @@ class DistributedEnvironment:
         master_port: int = 29501,
         backend: str = None,
         log_level="INFO",
+        device_map = None,
         always: bool = False,
     ):
         logger.remove()
@@ -104,6 +107,7 @@ class DistributedEnvironment:
         self.master_port = master_port
         self.backend = backend
         self.always = always
+        self.device_map = device_map
         self._init_distributed()
 
     def __repr__(self):
@@ -136,20 +140,27 @@ class DistributedEnvironment:
         logger.info(str(self))
 
         if torch.cuda.is_available():
-            self._init_cuda()
+            if self.device_map:
+                self.device = self.device_map[self.rank]
+            else:
+                self.device = f"cuda:{self.local_rank}"
+        else:
+            self.device = "cpu"
 
         if distributed.is_available() and (self.world_size > 1 or self.always):
             if not distributed.is_initialized():
                 self._init_process_group()
             else:
-                logger.debug("torch distributed has already been initialized")
+                logger.warning("torch distributed has already been initialized")
         else:
             assert (
                 self.world_size == 1
             ), "World size is larger than 1 and torch distributed is not available."
+        self._init_cuda()
 
     def _init_cuda(self):
-        torch.cuda.set_device(self.local_rank)
+        if "cuda" in self.device:
+            torch.cuda.set_device(self.device)
 
     def _init_process_group(self):
-        distributed.init_process_group(backend=self.backend)
+        distributed.init_process_group(backend=self.backend, device_id=torch.device(self.device))

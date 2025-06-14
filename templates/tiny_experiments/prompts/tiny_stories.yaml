@@ -1,5 +1,5 @@
 # The model will be given the following prompts for text-gen at regular intervals.
-.define: &testprompts !list:@testprompts
+testprompts: &testprompts !list:@testprompts
     # Test prompts from "https://arxiv.org/abs/2305.07759"
     - "Alice was so tired when she got back home so she went"
     - "Jack and Lily liked to watch the moon at night. They noticed that the moon changed its shape every night. Sometimes the moon was big and round, and sometimes it was"
@@ -21,7 +21,7 @@
     - "Ben went to visit Lily in her house, but she was not at home. Ben knocked on the door,"
 
 # Conservative text-generation parameters.
-.define: &generation_config !dict:@generation_config
+generation_config: &generation_config !dict:@generation_config
     identity: generation_config
     do_sample: True
     top_k: 20

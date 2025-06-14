@@ -27,18 +27,18 @@
 
 
     -- block loss_fn
-.define: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn []
+loss_fn: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn []
     << endblock loss_fn
 
 
     -- block layer_norm_factory
-.define: &layer_norm_factory !lambda:torch.nn:LayerNorm@layer_norm_factory
+layer_norm_factory: &layer_norm_factory !lambda:torch.nn:LayerNorm@layer_norm_factory
     normalized_shape: !var "hidden_size"
     << endblock layer_norm_factory
 
 
     -- block feedforward_factory
-.define: &feedforward_factory !lambda:.feedforward_layer:FeedforwardLayer@feedforward_factory
+feedforward_factory: &feedforward_factory !lambda:.feedforward_layer:FeedforwardLayer@feedforward_factory
     d_model: !var "hidden_size"
     d_feedforward: !var "dim_feedforward"
     dropout: !var "activation_dropout"
@@ -46,7 +46,7 @@
 
 
     -- block attention_factory
-.define: &attention_factory !lambda:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
+attention_factory: &attention_factory !lambda:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
     d_model: !var "hidden_size"
     num_heads: !var "num_attention_heads"
     dropout: !var "attention_dropout"
@@ -54,7 +54,7 @@
 
 
     -- block layer_factory
-.define: &layer_factory !lambda:.post_ln_layer:PostLNLayer@layer_factory
+layer_factory: &layer_factory !lambda:.post_ln_layer:PostLNLayer@layer_factory
     feedforward_factory: *feedforward_factory
     attention_factory: *attention_factory
     norm_factory: *layer_norm_factory
@@ -64,28 +64,28 @@
 
 
     -- block layer_stack
-.define: &layer_stack !singleton:.layer_stack:LayerStack@layer_stack
+layer_stack: &layer_stack !singleton:.layer_stack:LayerStack@layer_stack
     layer_factory: *layer_factory
     num_hidden_layers: !var "num_hidden_layers"
     << endblock layer_stack
 
 
     -- block output_decoder
-.define: &output_decoder !singleton:torch.nn:Linear@output_decoder
+output_decoder: &output_decoder !singleton:torch.nn:Linear@output_decoder
     - !var "hidden_size"
     - !var "vocab_size"
     << endblock output_decoder
 
 
     -- block positional_encoder
-.define: &positional_encoder !singleton:.sinusoidal_pe:SinusoidalPE@positional_encoder
+positional_encoder: &positional_encoder !singleton:.sinusoidal_pe:SinusoidalPE@positional_encoder
     d_model: !var "hidden_size"
     max_sequence_length: !var "max_sequence_length"
     << endblock positional_encoder
 
 
     -- block input_encoder
-.define: &input_encoder !singleton:.input_encoder:InputEncoder@input_encoder
+input_encoder: &input_encoder !singleton:.input_encoder:InputEncoder@input_encoder
     d_model: !var "hidden_size"
     vocab_size: !var "vocab_size"
     dropout: !var "embedding_dropout"
@@ -94,12 +94,12 @@
 
 
     -- block init_weights
-.define: &init_weights !lambda:.init_weights:simple_weight_init@init_weights []
+init_weights: &init_weights !lambda:.init_weights:simple_weight_init@init_weights []
     << endblock init_weights
 
 
     -- block model_factory
-.define: &model_factory !singleton:.causal_lm:CasualLM@model_factory
+model_factory: &model_factory !singleton:.causal_lm:CasualLM@model_factory
     loss_fn: *loss_fn
     input_encoder: *input_encoder
     output_decoder: *output_decoder
