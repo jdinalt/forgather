@@ -12,7 +12,7 @@
 # Replace standard positional-encoder with Walsh PE.
 # This is the author's own creation; there is no literature to cite.
 # See notes in implementation for details.
-.define: &positional_encoder_factory !lambda:.walsh_pe:WalshPE
+positional_encoder_factory: &positional_encoder_factory !lambda:.walsh_pe:WalshPE
     d_model: !var "hidden_size"
     max_sequence_length: !var "max_sequence_length"
 -- endblock positional_encoder_factory

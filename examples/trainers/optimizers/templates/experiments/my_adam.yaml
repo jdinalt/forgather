@@ -8,7 +8,6 @@
 -- endblock config_metadata
 
 -- block optimizer
-.define: &optimizer !lambda:./src/adam.py:Adam
+optimizer: &optimizer !partial:forgather.ml.optim.adam:Adam
     lr: 1.0e-3
-
 << endblock optimizer

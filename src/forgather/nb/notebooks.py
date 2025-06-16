@@ -328,33 +328,13 @@ def render_project_index(
     /,
     config_template: str = "",
     show_available_templates: bool = False,
-    show_pp_config: bool = False,
-    show_loaded_config: bool = False,
-    show_generated_code: bool = False,
-    materialize: bool = False,
-    pp_first: bool = False,
-    materialize_kwargs: dict[Any] = None,
-    **kwargs,
 ):
     """
     Render project information
 
     project_dir: The location of the project directory
-    config_template: The configuration to display. If "", the default is shown.
-    show_pp_config: Show the preprocessed configuration.
-    show_loaded_config: After loading the preprocessed configuration, render the node-graph as YAML.
-    show_generated_code: After loading the preprocessed configuration, render the node-graph as Python code.
-    materialize: Construct the main output of the configuration and display it; this can potentially be slow,
-        as this could trigger dataset downloads, dataset tokenization, construction of a large model, etc.
-    pp_first: Normally a config is preprocessed and loaded in a single step. This breaks the process down
-        into seperate steps, which can be useful for debugging YAML errors.
-    materialize_kwargs: Arguments to pass to the 'materialize' step, if enabled. Most project don't require
-        additional arguments, but if they do, this provides the means to do so.
-    kwargs: These kwargs are passed in to the Jinja2 environment and are available to templates. Usually not
-        required.
+    show_available_templates: List all templates available on the search path.
     """
-    if materialize_kwargs is None:
-        materialize_kwargs = {}
     try:
         md = ""
         md += render_project_readme(project_dir)
@@ -370,13 +350,62 @@ def render_project_index(
 
         config_template_path = meta.config_path(config_template)
         default_config = meta.default_config()
-        active_config = config_template if len(config_template) else default_config
         md += f"Default Configuration: {default_config}\n\n"
-        md += f"Active Configuration: {active_config}\n\n"
         if show_available_templates:
             md += render_template_list(
                 sorted(meta.find_templates("")), "## Available Templates\n"
             )
+        return md
+    except Exception as e:
+        md += render_codeblock("", repr(e), "# RAISED EXCEPTION\n\n")
+        setattr(e, "markdown", md)
+        raise e
+
+
+def display_project_index(
+    project_dir=".",
+    /,
+    **kwargs,
+):
+    try:
+        display(ds.Markdown(render_project_index(project_dir, **kwargs)))
+    except Exception as e:
+        display(ds.Markdown(e.markdown))
+        delattr(e, "markdown")
+        raise e
+
+
+def render_config(
+    project_dir: str = ".",
+    /,
+    config_template: str = "",
+    show_pp_config: bool = False,
+    show_loaded_config: bool = False,
+    show_generated_code: bool = False,
+    pp_first: bool = False,
+    **kwargs,
+):
+    """
+    Render config information
+
+    project_dir: The location of the project directory
+    config_template: The configuration to display. If "", the default is shown.
+    show_pp_config: Show the preprocessed configuration.
+    show_loaded_config: After loading the preprocessed configuration, render the node-graph as YAML.
+    show_generated_code: After loading the preprocessed configuration, render the node-graph as Python code.
+    pp_first: Normally a config is preprocessed and loaded in a single step. This breaks the process down
+        into seperate steps, which can be useful for debugging YAML errors.
+    kwargs: These kwargs are passed in to the Jinja2 environment and are available to templates. Usually not
+        required.
+    """
+    try:
+        md = ""
+        meta = MetaConfig(project_dir)
+
+        config_template_path = meta.config_path(config_template)
+        default_config = meta.default_config()
+
+        active_config = config_template if len(config_template) else default_config
 
         # Create new config environment and load configuration
         environment = ConfigEnvironment(
@@ -395,22 +424,13 @@ def render_project_index(
             md += render_codeblock("yaml", pp_config, "## Preprocessed Config\n")
 
         config, pp_config = environment.load(config_template_path, **kwargs).get()
+
+        # TODO: Add API to only materialize 'safe' objects and use it here.
         config_meta = Latent.materialize(config.meta)
         md += f"### Config Metadata:\n\n"
         md += render_codeblock("python", pformat(config_meta))
 
-        materialize_kwargs |= dict(pp_config=pp_config)
-        # Materialize the configuration
-        if materialize:
-            output = Latent.materialize(config["main"], **materialize_kwargs)
-        else:
-            # If it has dynamically generated code, construct it before processing the model source
-            code_writer = config.get("model_code_writer", None)
-            if code_writer is not None:
-                Latent.materialize(code_writer, **materialize_kwargs)
-            output = None
-
-        # md += render_referenced_source_list(config, title="## Modules\n", deep=True)
+        md += render_referenced_source_list(config, title="## Modules\n", deep=False)
         md += render_output_targets(config, title="## Output Targets\n")
 
         if not pp_first and show_pp_config:
@@ -422,10 +442,6 @@ def render_project_index(
             md += render_codeblock(
                 "python", generate_code(config["main"]), "## Generated Code\n"
             )
-        if output is not None:
-            md += render_codeblock(
-                "python", pformat(output), "## Constructed Project\n"
-            )
         return md
     except Exception as e:
         md += render_codeblock("", repr(e), "# RAISED EXCEPTION\n\n")
@@ -433,13 +449,13 @@ def render_project_index(
         raise e
 
 
-def display_project_index(
+def display_config(
     project_dir=".",
     /,
     **kwargs,
 ):
     try:
-        display(ds.Markdown(render_project_index(project_dir, **kwargs)))
+        display(ds.Markdown(render_config(project_dir, **kwargs)))
     except Exception as e:
         display(ds.Markdown(e.markdown))
         delattr(e, "markdown")

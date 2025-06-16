@@ -9,23 +9,25 @@
 
 
 -- block optimizer
-.define: &optimizer !lambda:forgather.ml.optim.multiopt:make_re_multiopt
+optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
+    ## Protype optimizer does not handle non-projected params yet, so we
+    ## map these to torch-Adam.
     optimizer_map:
         - [ "bias", "default" ]
         - [ "output_decoder|input_encoder|feedforward|attention", "apollo" ]
         - [ ".*", "default" ]
     factories:
-        apollo: !lambda:forgather.ml.optim.apollo:Apollo
+        apollo: !partial:forgather.ml.optim.apollo:Apollo
             lr: 1.0e-2
             rank: 64
             mini: False
             scale: 1.0
-            #projector_factory: !lambda:forgather.ml.optim.subspace_proj:OnlinePCAProjector
+            #projector_factory: !partial:forgather.ml.optim.subspace_proj:OnlinePCAProjector
             #    update_steps: 10
-            projector_factory: !lambda:forgather.ml.optim.subspace_proj:RandProjector
+            projector_factory: !partial:forgather.ml.optim.subspace_proj:RandProjector
                 init: "normal"
                 update_steps: 200
                 lazy: True
-        default: !lambda:torch:optim.Adam
+        default: !partial:torch:optim.Adam
             lr: 1.0e-2
 << endblock optimizer

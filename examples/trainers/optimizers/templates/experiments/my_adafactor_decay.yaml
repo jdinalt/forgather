@@ -8,7 +8,7 @@
 -- endblock config_metadata
 
 -- block optimizer
-.define: &optimizer !lambda:./src/adafactor.py:Adafactor
+optimizer: &optimizer !partial:forgather.ml.optim.ada_factor:Adafactor
     lr: 1.0e-3
     weight_decay: 0.01
 << endblock optimizer

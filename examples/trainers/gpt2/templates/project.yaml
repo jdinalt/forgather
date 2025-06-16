@@ -1,23 +1,14 @@
 ## Project level definitions and overrides go here.
 -- extends "types/training_script/causal_lm/causal_lm.yaml"
--- from "model_ctor/args.yaml" import use_flash_attn2
 
 ## Set Project level defaults
 -- block config_metadata
     == super()
     -- set ns.config_name = "GPT2 From Scratch"
     -- set ns.config_description = "Train the base GPT2 model from scratch."
-    -- set ns.create_new_model = False
+    -- set ns.create_new_model = True
     -- set ns.save_model = True 
 -- endblock config_metadata
-
-
-## Enables flash-attention2
-## Disable this block, if your hardware does not support this.
--- block model_constructor_args
-.define: &model_constructor_args
-    == use_flash_attn2
-<< endblock model_constructor_args
 
 
 -- block datasets_definition

@@ -81,7 +81,7 @@
 -- extends 'project.model_base'
 
 -- block attention_factory
-.define: &attention_factory !lambda:.causal_multihead_flash_attn:CausalMultiheadFlashAttn@attention_factory
+attention_factory: &attention_factory !lambda:.causal_multihead_flash_attn:CausalMultiheadFlashAttn@attention_factory
     d_model: !var "hidden_size"
     num_heads: !var "num_attention_heads"
     dropout: !var "attention_dropout"

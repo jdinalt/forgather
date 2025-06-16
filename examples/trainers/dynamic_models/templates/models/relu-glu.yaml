@@ -12,7 +12,7 @@
 -- block feedforward_factory
 # ReluGLU config override.
 # GLU Variants Improve Transformer: https://arxiv.org/pdf/2002.05202v1
-.define: &feedforward_factory !lambda:.glu_feedforward:GLUFeedforwardLayer
+feedforward_factory: &feedforward_factory !lambda:.glu_feedforward:GLUFeedforwardLayer
     d_model: !var "hidden_size"
     d_feedforward: !var "dim_feedforward"
     dropout: !var "activation_dropout"

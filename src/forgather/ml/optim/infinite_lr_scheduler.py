@@ -57,7 +57,7 @@ class InfiniteLRScheduler(LRScheduler):
         else:
             return [
                 self.constant_lr * self.last_epoch / self.warmup_steps
-                for group, base_lr in self.optimizer.param_groups
+                for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs)
             ]
 
     def _cooldown_lr(self):

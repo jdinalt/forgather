@@ -25,7 +25,7 @@
 -- block lr_scheduler
     ##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
 # https://arxiv.org/html/2503.02844v1
-.define: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
     warmup_steps: 5000
     cooldown_steps: 50000
     constant_lr: 1.0e-4
@@ -46,13 +46,6 @@
 -- extends 'datasets/tiny/tiny_stories_abridged.yaml'
 ##-- extends 'datasets/tiny/tiny_stories.yaml'
 
-
--- block tokenize_args
-## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
-    == super()
-    # project overrides
-    max_length: 512
-<< endblock tokenize_args
 
 #-------------------- project.callbacks --------------------
 -- extends 'tiny.callbacks'

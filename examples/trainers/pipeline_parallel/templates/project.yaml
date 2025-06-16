@@ -88,7 +88,6 @@ model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_t
     == super()
     
     # Pipeline Trainer Project
-    torch_dtype: !singleton:forgather.ml.construct:torch_dtype [ "bfloat16" ]
     hidden_size: 1024
     dim_feedforward: 4096
     num_attention_heads: 16
@@ -122,7 +121,7 @@ layer_factory: &layer_factory !lambda:.deepnet:DeepnetLayer@layer_factory
     norm_factory: *layer_norm_factory
     dropout: !var "layer_dropout"
     residual_dropout: !var "residual_dropout"
-    alpha: !singleton:.deepnet:deepnet_alpha@dn_alpha [ !var "num_hidden_layers", 0 ]
+    alpha: !call:.deepnet:deepnet_alpha@dn_alpha [ !var "num_hidden_layers", 0 ]
 << endblock layer_factory
 
 
@@ -135,13 +134,13 @@ init_weights: &init_weights !lambda:.init_weights:init_weights_by_regex@init_wei
         - [ 'feedforward|value_linear|output_linear', "deepnet" ]
         - [ 'attention|output_decoder', "linear" ]
     init_f_map:
-        pass: !lambda:.init_weights:init_pass
-        zeros: !lambda:torch.nn.init:zeros_ []
-        embedding: !lambda:.init_weights:init_embeddings
+        pass: !partial:.init_weights:init_pass
+        zeros: !partial:torch.nn.init:zeros_ []
+        embedding: !partial:.init_weights:init_embeddings
             padding_index: !var "pad_token_id"
-        linear: !lambda:torch.nn.init:xavier_uniform_ []
-        deepnet: !lambda:torch.nn.init:xavier_uniform_
-            gain: !singleton:.deepnet:deepnet_beta [ !var "num_hidden_layers", 0 ]
+        linear: !partial:torch.nn.init:xavier_uniform_ []
+        deepnet: !partial:torch.nn.init:xavier_uniform_
+            gain: !call:.deepnet:deepnet_beta [ !var "num_hidden_layers", 0 ]
 << endblock init_weights
 
 

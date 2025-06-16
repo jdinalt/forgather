@@ -8,7 +8,7 @@
 -- endblock config_metadata
 
 -- block optimizer
-.define: &optimizer !lambda:torch:optim.AdamW
+optimizer: &optimizer !partial:torch:optim.AdamW
     lr: 1.0e-3
 
 << endblock optimizer

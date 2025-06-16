@@ -43,7 +43,7 @@
 
 
 -- block model_constructor_args
-.define: &model_constructor_args
+model_constructor_args: &model_constructor_args
     # Load in bfloat16 ; disable if not on GPU with support for this format.
     torch_dtype: !singleton:forgather.ml.construct:torch_dtype [ "bfloat16" ]
 
@@ -53,11 +53,20 @@
 
 
 -- block optimizer
-.define: &optimizer !lambda:torchao.optim:Adam8bit
-    kwargs:
-        lr: 5.0e-6
-        #bf16_stochastic_round: true
+optimizer: &optimizer !lambda:torchao.optim:Adam8bit
+    lr: 5.0e-6
+    #bf16_stochastic_round: true
 << endblock optimizer
+
+
+-- block lr_scheduler
+    ##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
+# https://arxiv.org/html/2503.02844v1
+lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+    warmup_steps: 500
+    cooldown_steps: 0
+    constant_lr: 5.0e-6
+<< endblock lr_scheduler
 
 
 -- block datasets_definition
@@ -90,12 +99,10 @@
 -- block trainer_args
     == super()
     # Project Overrides
-    learning_rate: 1.0e-5
     per_device_train_batch_size: 4
     per_device_eval_batch_size: 16
     logging_steps: 50
     eval_steps: 200
-    lr_scheduler_type: "none"
     
     ## Stop early for quick test.
     max_steps: 2001
@@ -116,7 +123,7 @@
 
     -- filter trim()
     -- block text_gen_callback_args
-.define: &text_gen_callback_args
+text_gen_callback_args: &text_gen_callback_args
     summary_writer: *summary_writer
     prompts: *testprompts
     generation_config: *generation_config

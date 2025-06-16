@@ -11,7 +11,7 @@
 -- block layer_factory
 # Pre-ln override; replaces post-LN module with pre-LN module.
 # On Layer Normalization in the Transformer Architecture: https://arxiv.org/pdf/2002.04745
-.define: &layer_factory !lambda:.pre_ln_layer:PreLNLayer
+layer_factory: &layer_factory !lambda:.pre_ln_layer:PreLNLayer
     feedforward_factory: *feedforward_factory
     attention_factory: *attention_factory
     norm_factory: *layer_norm_factory
@@ -22,7 +22,7 @@
 
 -- block layer_stack_factory
 
-.define: &layer_stack_factory !lambda:.layer_stack:LayerStack
+layer_stack_factory: &layer_stack_factory !lambda:.layer_stack:LayerStack
     layer_factory: *layer_factory
     num_hidden_layers: !var "num_hidden_layers"
     # Pre-LN override; add a layer-norm to the end of the stack.

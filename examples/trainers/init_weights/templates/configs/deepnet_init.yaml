@@ -20,10 +20,9 @@
 #-------------------- experiment.model_config --------------------
 -- extends 'project.model_config'
 
--- block init_weights
-.define: &deepnet_beta 
 
-.define: &init_weights !lambda:.init_weights_by_regex:init_weights_by_regex@init_weights
+-- block init_weights
+init_weights: &init_weights !lambda:.init_weights:init_weights@init_weights
     regex_list:
         - [ 'norm', "pass" ]
         - [ 'bias', "zeros" ]
@@ -31,12 +30,12 @@
         - [ 'feedforward|value_linear|output_linear', "deepnet" ]
         - [ 'attention|output_decoder', "linear" ]
     init_f_map:
-        pass: !lambda:.init_weights_by_regex:init_pass
-        zeros: !lambda:torch.nn.init:zeros_ []
-        embedding: !lambda:.init_weights:init_embeddings
+        pass: !partial:.init_weights:init_pass
+        zeros: !partial:torch.nn.init:zeros_ []
+        embedding: !partial:.init_weights:init_embeddings
             padding_index: !var "pad_token_id"
-        linear: !lambda:torch.nn.init:xavier_uniform_ []
-        deepnet: !lambda:torch.nn.init:xavier_uniform_
-            gain: !singleton:.deepnet:deepnet_beta [ !var "num_hidden_layers", 0 ]
+        linear: !partial:torch.nn.init:xavier_uniform_ []
+        deepnet: !partial:torch.nn.init:xavier_uniform_
+            gain: !call:.deepnet:deepnet_beta [ !var "num_hidden_layers", 0 ]
     debug: True
 << endblock init_weights

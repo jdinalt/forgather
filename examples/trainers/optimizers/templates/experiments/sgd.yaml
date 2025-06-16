@@ -13,7 +13,7 @@
 -- endblock construct_new_model
 
 -- block optimizer
-.define: &optimizer !lambda:torch:optim.SGD
+optimizer: &optimizer !lambda:torch:optim.SGD
     lr: 1.0
 
 << endblock optimizer

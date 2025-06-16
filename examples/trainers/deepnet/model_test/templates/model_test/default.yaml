@@ -1,6 +1,0 @@
--- extends 'model_test/sub_project.yaml'
-
-## Setup base directories for the example projects
--- block base_directories
-    -- set ns.forgather_dir = normpath(joinpath(project_dir, '..', '..', '..', '..'))
--- endblock base_directories

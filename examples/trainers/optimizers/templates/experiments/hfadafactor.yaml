@@ -8,10 +8,9 @@
 -- endblock config_metadata
 
 -- block optimizer
-.define: &optimizer !lambda:./src/hfadafactor.py:Adafactor
-    kwargs:
-        lr: {{ns.lr}}
-        scale_parameter: False
-        relative_step: False
+optimizer: &optimizer !partial:transformers:Adafactor
+    lr: 1.0e-3
+    scale_parameter: False
+    relative_step: False
 
 << endblock optimizer

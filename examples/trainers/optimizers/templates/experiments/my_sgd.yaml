@@ -2,13 +2,12 @@
 
 -- block config_metadata
     == super()
-    -- set ns.config_name = "SGD"
-    -- set ns.config_description = "Torch SGD"
+    -- set ns.config_name = "Forgather SGD"
+    -- set ns.config_description = "Forgather SGD Implementation"
     -- set ns.log_name = "my_sgd"
 -- endblock config_metadata
 
 -- block optimizer
-.define: &optimizer !lambda:./src/sgd.py:SGD
+optimizer: &optimizer !lambda:forgather.ml.optim.sgd:SGD
     lr: 1.0e-1
-
 << endblock optimizer

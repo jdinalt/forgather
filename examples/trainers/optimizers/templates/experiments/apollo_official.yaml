@@ -3,14 +3,14 @@
 -- block config_metadata
     == super()
     -- set ns.config_name = "Official Apollo"
-    -- set ns.config_description = ""
+    -- set ns.config_description = "Test offical Apollo implementation; requires source code."
     -- set ns.log_name = "apollo_official"
 -- endblock config_metadata
 
-
 -- block optimizer
-.define: &optimizer !lambda:forgather.ml.optim.opt_utils:make_grouped_optimizer
-    opt_ctor: !lambda:./src/apollo/apollo.py:AdamW
+optimizer: &optimizer !partial:forgather.ml.optim.opt_utils:make_grouped_optimizer
+    # This assumes that the Apollo source can be found at this path -- not part of Forgather!
+    opt_ctor: !partial:./src/apollo/apollo.py:AdamW
     opt_kwargs:
         lr: 1.0e-2
         disable_nl: False

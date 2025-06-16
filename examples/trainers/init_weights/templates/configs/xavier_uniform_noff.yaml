@@ -21,7 +21,7 @@
 -- extends 'project.model_config'
 
 -- block init_weights
-.define: &init_weights !lambda:.init_weights_by_regex:init_weights_by_regex@init_weights
+init_weights: &init_weights !partial:.init_weights_by_regex:init_weights_by_regex@init_weights
     # Note: Yaml treats single and double quotes differently WRT escapes. Use single
     # quotes for regex expressions, wihc prevents Yaml from interpreting escapes.
     # For a literal ' use ''
@@ -32,11 +32,11 @@
         - [ 'feedforward', "torch" ]
         - [ 'attention|output_decoder', "xavier" ]
     init_f_map:
-        pass: !lambda:.init_weights_by_regex:init_pass
-        zeros: !lambda:torch.nn.init:zeros_ []
-        embedding: !lambda:.init_weights:init_embeddings
+        pass: !partial:.init_weights_by_regex:init_pass
+        zeros: !partial:torch.nn.init:zeros_ []
+        embedding: !partial:.init_weights:init_embeddings
             padding_index: !var "pad_token_id"
-        xavier: !lambda:torch.nn.init:xavier_uniform_ []
-        torch: !lambda:.init_weights:init_torch_linear_default []
+        xavier: !partial:torch.nn.init:xavier_uniform_ []
+        torch: !partial:.init_weights:init_torch_linear_default []
     debug: True
 << endblock init_weights

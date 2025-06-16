@@ -52,6 +52,16 @@ class DataCollatorForCausalLM:
     ):
         self.tokenizer = tokenizer
         self.max_length = pad_kwargs.get("max_length", tokenizer.model_max_length)
+
+        # Supress warning about max_length being ignored when padding is not
+        # 'max_length' and max_length is present.
+        padding = pad_kwargs.get("padding", None)
+        pad_to_max_length = (
+            padding and isinstance(padding, str) and padding == "max_length"
+        )
+        if not pad_to_max_length and "max_length" in pad_kwargs:
+            pad_kwargs.pop("max_length")
+
         if self.max_length > tokenizer.model_max_length:
             logger.warning(
                 f"{max_length=} is greater than {tokenizer.model_max_length=}"

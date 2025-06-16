@@ -7,8 +7,9 @@
     -- set ns.log_name = "multiopt"
 -- endblock config_metadata
 
+## TODO: Fix me -- path is wrong
 -- block optimizer
-.define: &optimizer !lambda:./src/multiopt.py:make_re_multiopt
+optimizer: &optimizer !partial:./src/multiopt.py:make_re_multiopt
     optimizer_map:
         - [ "bias", "default" ]
         # output_decoder : ++

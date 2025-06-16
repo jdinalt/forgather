@@ -219,7 +219,7 @@ class PipelineTrainer(Trainer):
         super()._post_init()
         assert self.model is None
         assert self.model_init
-        
+
         for batch_size in (
             self.args.per_device_train_batch_size,
             self.args.per_device_eval_batch_size,

@@ -1,15 +1,15 @@
-.define: &lr_scheduler !lambda:forgather.ml.sequential_lr_factory:sequential_lr_factory@lr_scheduler
+lr_scheduler: &lr_scheduler !partial:forgather.ml.sequential_lr_factory:sequential_lr_factory@lr_scheduler
     milestones:
         # Perform warm-up for 1st N steps
         - {{ns.lr_scheduler_warmup_steps}}
     schedulers:
-        - !lambda:torch.optim.lr_scheduler:LinearLR
+        - !partial:torch.optim.lr_scheduler:LinearLR
             # Must be greater than 0
             start_factor: 0.05
             end_factor: 1.0
             # Should match N  milestone
             total_iters: {{ns.lr_scheduler_warmup_steps}}
-        - !lambda:torch.optim.lr_scheduler:CosineAnnealingLR
+        - !partial:torch.optim.lr_scheduler:CosineAnnealingLR
             # Number of Annealing steps to min-eta
             T_max: {{ ns.lr_scheduler_total_steps - ns.lr_scheduler_warmup_steps }}
             # Minimum learning rate

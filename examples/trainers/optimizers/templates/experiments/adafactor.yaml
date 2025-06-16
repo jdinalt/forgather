@@ -14,16 +14,7 @@
 -- endblock construct_new_model
 
 -- block optimizer
-.define: &optimizer !lambda:torch:optim.Adafactor
-    ## Note: Lambdas are translated to partial functions. The tl;dr is that you need to
-    ## explicitly specify positional args via argN, whereas kvargs are handled automatically.
-    args: 
-        - !var "arg0"
-    kwargs:
-        lr: 1.0e-3
+optimizer: &optimizer !partial:torch:optim.Adafactor
+    lr: 1.0e-3
 
 << endblock optimizer
-    
-#-- block datasets_definition
-#    -- include 'datasets/tiny/tiny_stories.yaml'
-#-- endblock datasets_definition

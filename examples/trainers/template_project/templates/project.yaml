@@ -1,6 +1,16 @@
 ## Project level definitions and overrides go here.
 -- extends "types/training_script/causal_lm/causal_lm.yaml"
 
+-- block resource_directories
+    == super()
+    ## Directory in which pre-trained models are located.
+    ##-- set ns.models_dir = joinpath(user_home_dir(), 'ai_assets', 'models')
+    
+    ## Directory in which local datasets are stored
+    ##-- set ns.datasets_dir = joinpath(user_home_dir(), 'ai_assets', 'datasets')
+<< endblock resource_directories
+
+
 ## Set Project level defaults
 -- block config_metadata
     == super()
@@ -36,6 +46,33 @@
 -- block trainer_callbacks
     -- include 'project.callbacks'
 << endblock trainer_callbacks
+
+
+-- block datacollator
+# Data collator for causal model
+# Batches are dynamically padded to longest sequence
+# labels are set to input_ids, with pad tokens set to -100
+data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
+    tokenizer: *tokenizer
+    return_tensors: pt
+-- endblock datacollator
+
+
+-- block lr_scheduler
+    ##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
+# https://arxiv.org/html/2503.02844v1
+lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+    warmup_steps: 5000
+    cooldown_steps: 50000
+    constant_lr: 1.0e-4
+<< endblock lr_scheduler
+
+
+-- block optimizer
+optimizer: &optimizer !lambda:torch:optim.AdamW
+    lr: 1.0e-3
+<< endblock optimizer
+
 
 #-------------------- project.trainer_config --------------------
 ## Select one-of:
