@@ -1,6 +1,0 @@
--- extends "meta_defaults.yaml"
-
--- block configs
-config_prefix: "model_test"
-default_config: "default.yaml"
-<< endblock configs

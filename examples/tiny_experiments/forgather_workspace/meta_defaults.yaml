@@ -2,7 +2,7 @@
 
 ## Import default paths; common to meta and regular templates.
 -- include "base_directories.yaml"
--- set ns.forgather_templates_dir = joinpath(ns.forgather_dir, "templates")
+-- set ns.forgather_templates_dir = joinpath(ns.forgather_dir, "templatelib")
 
 ## Search these directories for templates
 ## The list is split, which makes it easier to selectively append or prepend.
