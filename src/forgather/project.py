@@ -10,6 +10,25 @@ from forgather.dotdict import DotDict
 
 @dataclass()
 class Project:
+    """
+    A high-level, abstract project representation, which hides details of the underlying mechanics.
+
+    project_dir: The location of the project directory
+    config_name: The name of the configuration to loade; an empty string loads the default.
+
+    dataclass attributes:
+
+    config_name: The name of the selected configuration; automatically populated with
+        the default, if unspecified.
+    project_dir: The absolute path to the project directory.
+    meta: The project's meta-config
+    environment: The projects config envrionment
+    config: The constructed node-graph, representing the configuration.
+    pp_config: The pre-processed configuration.
+
+    Hint: If you are debugging a configuration, it's usually easier to incrementally
+        construct the project for better diagnostics. See: 'project_config.ipynb'
+    """
     config_name: str
     project_dir: str
     meta: MetaConfig
@@ -23,25 +42,6 @@ class Project:
         project_dir: Optional[str | os.PathLike] = ".",
         **kwargs,
     ):
-        """
-        A high-level, abstract project representation, which hides details of the underlying mechanics.
-
-        project_dir: The location of the project directory
-        config_name: The name of the configuration to loade; an empty string loads the default.
-
-        dataclass attributes:
-
-        config_name: The name of the selected configuration; automatically populated with
-            the default, if unspecified.
-        project_dir: The absolute path to the project directory.
-        meta: The project's meta-config
-        environment: The projects config envrionment
-        config: The constructed node-graph, representing the configuration.
-        pp_config: The pre-processed configuration.
-
-        Hint: If you are debugging a configuration, it's usually easier to incrementally
-            construct the project for better diagnostics. See: 'project_config.ipynb'
-        """
         assert os.path.exists(
             project_dir
         ), f"The directory, '{project_dir}', does not exist."
