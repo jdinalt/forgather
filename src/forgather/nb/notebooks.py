@@ -328,7 +328,7 @@ def render_project_index(
     /,
     config_template: str = "",
     show_available_templates: bool = False,
-):
+) -> str:
     """
     Render project information
 
@@ -363,10 +363,10 @@ def render_project_index(
 
 
 def display_project_index(
-    project_dir=".",
+    project_dir: str=".",
     /,
     **kwargs,
-):
+) -> None:
     try:
         display(ds.Markdown(render_project_index(project_dir, **kwargs)))
     except Exception as e:
@@ -384,7 +384,7 @@ def render_config(
     show_generated_code: bool = False,
     pp_first: bool = False,
     **kwargs,
-):
+) -> str:
     """
     Render config information
 
@@ -453,7 +453,7 @@ def display_config(
     project_dir=".",
     /,
     **kwargs,
-):
+) -> None:
     try:
         display(ds.Markdown(render_config(project_dir, **kwargs)))
     except Exception as e:

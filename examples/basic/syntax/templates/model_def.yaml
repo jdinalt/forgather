@@ -1,10 +1,10 @@
 -- set ns = namespace()
--- from 'examples/formatting.jinja' import h1, h2, h3
+-- from 'templates/formatting.jinja' import h1, h2, h3
 -- filter trim() ## This removes whitespace before the header.
 
 ## Jina2 block definitions; we can override these in derived templates.
 -- block meta_config
-    -- set ns.model_src = '../model_src/bits/'
+    -- set ns.model_src = '../../../modelsrc/transformer/'
     -- set ns.config_name = 'Control'
     -- set ns.config_description = "Baseline Control"
     ## Example of variable set by jinja2 template.
@@ -87,11 +87,22 @@
     input_encoder: !factory:{{ns.model_src}}input_encoder.py:InputEncoder
         d_model: !var "hidden_size"
         vocab_size: {{ ns.vocab_size }}
-    output_decoder: !factory:torch.nn:Linear [ {{ ns.vocab_size }}, !var "hidden_size" ]
+    output_decoder: !factory:torch.nn:Linear [ !var "hidden_size", {{ ns.vocab_size }} ]
     init_weights: !partial:{{ns.model_src}}init_weights.py:simple_weight_init
     layer_stack: *layer_stack_factory
 << endblock model
 
+== h3("Optimizer")
+
+-- block optimizer
+## Define an optimizer
+optimizer: !partial:torch.optim:AdamW
+    lr: 1.0e-3
+<< endblock optimizer
+
+meta:
+    d_model: !var "hidden_size"
+    vocab_size: {{ ns.vocab_size }}
 
 ## Main output
 main: *model
