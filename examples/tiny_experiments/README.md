@@ -44,7 +44,7 @@ A starting point for other "Tiney Experiments" projects.
 
 ### tiny_models
 
-Compares tiny: gpt2, llama, and forgather-dynamic-transformer models
+Compares tiny: gpt2, llama, and forgather-dynamic-transformer models.
 
 ## Other
 

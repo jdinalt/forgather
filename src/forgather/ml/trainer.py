@@ -3,9 +3,15 @@
 from typing import (
     Any,
     Dict,
+    Callable,
+    Iterable,
+    Tuple,
+    Optional,
+    Type,
 )
 from collections.abc import Sequence
 
+from functools import partial
 from dataclasses import dataclass, field
 import time
 from contextlib import contextmanager
@@ -40,35 +46,6 @@ class TrainerState(BaseTrainerState):
     num_processes: int = 1  # Non-standard
     # The number of batches in an epoch
     epoch_train_steps: int = 0
-
-
-# For compatible with return-type of HF Trainer.
-class DefaultOptimizerFactory:
-    def __init__(self, training_args):
-        self.training_args = training_args
-
-    def __call__(self, parameters):
-        return torch.optim.AdamW(parameters, lr=self.training_args.learning_rate)
-
-
-class DefaultLRSchedulerFactory:
-    def __init__(self, training_args):
-        self.training_args = training_args
-
-    def __call__(self, optimizer, num_training_steps):
-        """
-        Construct the default learning-rate scheduler
-        """
-        if self.training_args.lr_scheduler_type is None:
-            return None
-
-        return transformers.get_scheduler(
-            name=self.training_args.lr_scheduler_type,
-            optimizer=optimizer,
-            num_warmup_steps=self.training_args.warmup_steps,
-            num_training_steps=num_training_steps,
-        )
-
 
 @dataclass(kw_only=True, slots=True)
 class PrivateTrainerState:
@@ -114,12 +91,24 @@ class Trainer(BaseTrainer):
         self,
         *,
         args,
-        optimizer_factory=None,
-        lr_scheduler_factory=None,
+        optimizer_factory: Optional[Callable]=None,
+        # Alernative, for compatibility with transformers.Trainer
+        optimizer_cls_and_kwargs: Optional[Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]]=None,
+        lr_scheduler_factory: Optional[Callable]=None,
         **kwargs,
     ):
-        if optimizer_factory is None:
-            optimizer_factory = DefaultOptimizerFactory(args)
+        # HF Trainer compatibility.
+        if not optimizer_factory:
+            if not optimizer_cls_and_kwargs:
+                optimizer_factory = partial(
+                    torch.optim.AdamW,
+                    lr=args.learning_rate,
+                    betas=(args.adam_beta1, args.adam_beta2),
+                    weight_decay=args.weight_decay,
+                    eps=args.adam_epsilon,
+                )
+            else:
+                optimizer_factory = partial(optimizer_cls_and_kwargs[0], **optimizer_cls_and_kwargs[1])
         self.optimizer_factory = optimizer_factory
         self.lr_scheduler_factory = lr_scheduler_factory
         super().__init__(args=args, **kwargs)
@@ -190,10 +179,19 @@ class Trainer(BaseTrainer):
     def _init_optimizer(self):
         if self.optimizer is None:
             self.optimizer = self.optimizer_factory(self.model.named_parameters())
-        if self.lr_scheduler is None and self.lr_scheduler_factory is not None:
-            self.lr_scheduler = self.lr_scheduler_factory(
-                optimizer=self.optimizer,
-            )
+        if self.lr_scheduler is None:
+            if self.lr_scheduler_factory is not None:
+                self.lr_scheduler = self.lr_scheduler_factory(
+                    optimizer=self.optimizer,
+                )
+            elif self.args.lr_scheduler_type:
+                self.lr_scheduler = transformers.get_scheduler(
+                    name=self.args.lr_scheduler_type,
+                    optimizer=self.optimizer,
+                    num_warmup_steps=self.args.warmup_steps,
+                    num_training_steps=self.max_steps,
+                    **self.args.lr_scheduler_kwargs,
+                )
 
     def _init_dataloaders(self, train_dataset, eval_dataset) -> None:
         self.max_steps = 0

@@ -24,7 +24,6 @@ import numpy as np
 from .utils import ConversionDescriptor, DiagnosticEnum
 
 OUTPUTDIR_NAME = "tmp_trainer"
-LR_SCHEDULER_NAME = None
 
 
 class TrainOutput(NamedTuple):
@@ -96,7 +95,6 @@ class MinimalTrainingArguments:
     logging_steps: int = 500
     per_device_eval_batch_size: int = 16
     per_device_train_batch_size: int = 16
-    learning_rate: float = 1.0e-3
     num_train_epochs: int = 1
     device: Any = None
 
@@ -118,8 +116,6 @@ class TrainingArguments(MinimalTrainingArguments):
     """
 
     max_steps: int = -1
-    lr_scheduler_type: str = LR_SCHEDULER_NAME
-    warmup_steps: int = 0
     eval_steps: int = 500
     save_steps: int = 500
     dataloader_num_workers: int = 0
@@ -158,6 +154,16 @@ class TrainingArguments(MinimalTrainingArguments):
     save_only_model: bool = False
     restore_callback_states_from_checkpoint: bool = False
 
+    # Compatibility with HF Trainer -- would be better if they took a factory arg...
+    lr_scheduler_type: str = "linear"
+    lr_scheduler_kwargs: dict = None
+    warmup_steps: int = 0
+    learning_rate: float = 5e-5
+    weight_decay: float = 0.0
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.999
+    adam_epsilon: float = 1.0e-8
+    
     def __post_init__(self):
         super().__post_init__()
         # As per https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader
@@ -170,6 +176,9 @@ class TrainingArguments(MinimalTrainingArguments):
             self.torch_compile = True
         if self.torch_compile_backend is None:
             self.torch_compile_backend = "inductor"
+
+        if self.lr_scheduler_kwargs is None:
+            self.lr_scheduler_kwargs = {}
 
 
 class AbstractBaseTrainer(ABC):

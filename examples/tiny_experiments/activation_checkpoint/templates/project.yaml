@@ -4,9 +4,6 @@
     == super()
     -- set ns.create_new_model = True
     -- set ns.save_model = False
-    ## float16 or bfloat16 are required for flash
-    ## OTOH, torch "memory-efficient" attention can work with float32.
-    -- set ns.model_dtype = "bfloat16"
 -- endblock config_metadata
 
 -- block trainer_definition

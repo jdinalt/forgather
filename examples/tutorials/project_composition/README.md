@@ -1,14 +1,14 @@
-# Template Inheritance
+# Project Composition
 
 This example demostrates the use of [Jinja2 template inheritance](https://jinja.palletsprojects.com/en/3.1.x/templates/#template-inheritance).
 
 ---
 
-In addition to YAML, there is a Jinja2 preprocessing stage which allows for things like template inheritance. This can help eliminate unnecessary repition by factoring out the common elements in a set of configurtions.
+In addition to YAML, there is a Jinja2 preprocessing stage which allows for things like macros and template inheritance. This can help eliminate unnecessary repition by factoring out the common elements in a set of configurtions.
 
 In this example, we define a base-template ("list_base.yaml") for defining a list and extend the definition for the first configuration, "list.yaml." In the second configuration, "full_list.yaml," we extend the definition of "list.yaml."
 
-We use a list in the example as to not distract from the main subject of this example, but this technique is used extensively in the main Forgather template library for much more complex use-cases.
+We use a list to keep this example simple, but this pattern is used extensively in the main Forgather template library for much more complex use-cases.
 
 ## Project Setup
 

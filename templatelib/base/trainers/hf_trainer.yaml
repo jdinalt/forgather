@@ -9,6 +9,7 @@
     == super()
     
     # HF Trainer Defaults
+    lr_scheduler_type: "constant"
     accelerator_config:
         dispatch_batches: False
         split_batches: False
@@ -28,4 +29,6 @@ trainer: &trainer !singleton:transformers:Trainer@trainer
     eval_dataset: *eval_dataset
     processing_class: *tokenizer
     callbacks: *trainer_callbacks
+    # Disabled until bug is fixed.
+    # optimizer_cls_and_kwargs: !tuple [ *optimizer, {} ]
 << endblock trainer_constructor

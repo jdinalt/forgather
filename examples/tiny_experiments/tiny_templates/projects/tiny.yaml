@@ -99,7 +99,6 @@ optimizer: &optimizer !lambda:torch:optim.AdamW
     per_device_eval_batch_size: 64
     logging_steps: 100
     eval_steps: 500
-    learning_rate: 1.0e-3
     num_train_epochs: 1
     dataloader_num_workers: 1
 -- endblock trainer_args

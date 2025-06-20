@@ -1,5 +1,4 @@
-# Just use the tiny project defaults.
--- extends "types/training_script/causal_lm/causal_lm.yaml"
+-- extends 'projects/tiny.yaml'
 
 -- block config_metadata
     == super()
@@ -32,26 +31,31 @@
     -- include 'callbacks/loggers.yaml'
 << endblock trainer_callbacks
 
-#-------------------- project.trainer_config --------------------
--- extends ns.trainer_class
 
--- block trainer_meta_config
-    == super()
-    -- set trainer_def.name = "Custom " + trainer_def.name
--- endblock trainer_meta_config
+-- block lr_scheduler
+# HF Trainer does not support LR Scheduler factories. We must specify in trainer_args
+lr_scheduler: &lr_scheduler ~
+<< endblock lr_scheduler
+
+
+-- block optimizer
+# This would work with the HF trainer, if not for a bug, where they try to get the class name from the callable object.
+# TODO: File bug report and propose PR to resolve.
+optimizer: &optimizer ~
+<< endblock optimizer
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'
 
 
 -- block trainer_args
     == super()
-    # Tiny Project Overrides
-    per_device_train_batch_size: 64
-    per_device_eval_batch_size: 64
+    # HF Trainer compat. LR scheduler args.
+    lr_scheduler_type: "linear"
+    warmup_steps: 500
+
+    # HR optimizer args
     learning_rate: 1.0e-3
-    logging_steps: 100
-    eval_steps: 500
-    dataloader_num_workers: 1
-    seed: 42
-    max_steps: 500
 -- endblock trainer_args
 
 #-------------------- project.model_config --------------------

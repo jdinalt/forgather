@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from collections.abc import Sequence
 
+import torch
 from torch import Tensor
 from accelerate import Accelerator
 
@@ -59,7 +60,6 @@ class AccelTrainer(Trainer):
         """
         Reduces loss accross processes
         """
-        mean_loss = torch.stack([x.detach() for x in losses]).mean()
         return self.accelerator.reduce(loss, "mean")
 
     def _prepare_batch(self, batch):
