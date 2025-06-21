@@ -11,7 +11,7 @@ from abc import abstractmethod
 import glob
 import shutil
 
-from loguru import logger
+import logging
 import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import (
@@ -29,6 +29,10 @@ WEIGHTS_NAME = "pytorch_model.bin"
 WEIGHTS_INDEX_NAME = "pytorch_model.bin.index.json"
 SAFE_WEIGHTS_INDEX_NAME = "model.safetensors.index.json"
 SAFE_WEIGHTS_NAME = "model.safetensors"
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 class BaseTrainer(ExtensibleTrainer):

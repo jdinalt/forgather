@@ -1,6 +1,9 @@
 from typing import Dict, List, Any, Optional
-from loguru import logger
 import torch
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 class DataCollatorForCausalLM:

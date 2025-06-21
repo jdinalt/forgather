@@ -1,8 +1,6 @@
 import yaml
 import pprint
 
-from loguru import logger
-
 from .latent import (
     VarNode,
     CallableNode,

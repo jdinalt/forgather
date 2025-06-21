@@ -3,7 +3,10 @@ import os
 import sys
 import torch
 from torch import distributed
-from loguru import logger
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Should we use thread-local storage for this?
 # It seems unlikely, as distributed.barrier() probably does not
@@ -97,8 +100,7 @@ class DistributedEnvironment:
         device_map=None,
         always: bool = False,
     ):
-        logger.remove()
-        logger.add(sys.stderr, level="WARNING")
+        logger.setLevel(log_level)
         self.rank = rank
         self.local_rank = local_rank
         self.world_size = world_size

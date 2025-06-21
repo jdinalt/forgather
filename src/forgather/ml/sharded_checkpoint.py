@@ -1,7 +1,7 @@
 import json
 import os
 from pprint import pp
-from loguru import logger
+import logging
 from typing import Any, Dict, List, Tuple
 from types import NoneType
 
@@ -11,6 +11,9 @@ from torch.nn import Module
 
 from safetensors.torch import load_file as safetensors_load
 from safetensors.torch import save_file as safetensors_save
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 """
 This implements loading and saving sharded checkpoints
@@ -54,7 +57,7 @@ The primary use-case looks something like this:
     # Construct model with fake weight tensors, using the "meta" device.
     with torch.device("meta"):
         model = model_ctor()
-    
+
     # Optionally, shard the model.
     shards = example_model_shard_function(model, rank=rank)
 
@@ -63,7 +66,7 @@ The primary use-case looks something like this:
 
     # Optional, assuming you will want to save a new checkpoint later.
     shard_index = make_shard_index([m.state_dict() for m in shards], metadata=dict(dtype=dtype))
-    
+
     # Optionally, change weight dtype
     model_shard.to(dtype=dtype)
 
@@ -89,7 +92,7 @@ Create checkpoint from model shards:
 
     # Save only our shard
     save_sharded_checkpoint(output_dir, weight_map, model_shard, safetensors=use_safetensors)
-    
+
 """
 
 # File naming conventions used by Huggingface APIs
