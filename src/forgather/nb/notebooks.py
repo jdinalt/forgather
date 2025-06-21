@@ -326,7 +326,6 @@ def delete_output_dir(proj):
 def render_project_index(
     project_dir: str = ".",
     /,
-    config_template: str = "",
     show_available_templates: bool = False,
 ) -> str:
     """
@@ -348,7 +347,6 @@ def render_project_index(
             meta.find_templates(meta.config_prefix), "## Available Configurations\n"
         )
 
-        config_template_path = meta.config_path(config_template)
         default_config = meta.default_config()
         md += f"Default Configuration: {default_config}\n\n"
         if show_available_templates:

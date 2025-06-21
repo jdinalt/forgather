@@ -112,7 +112,7 @@ class Project:
         if self.config is None:
             raise RuntimeError("The project does not have a loaded configuration")
 
-        if len(args) == 0:
+        if len(args) == 0 or args[0] == "":
             mtargets = ("main",)
         elif isinstance(args[0], list):
             # Preserve legacy interface for now.
