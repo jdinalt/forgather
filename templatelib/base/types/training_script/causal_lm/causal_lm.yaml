@@ -40,7 +40,7 @@ model_constructor_args: &model_constructor_args {}
         << endblock construct_new_model
     -- else
         -- block load_model
-            -- include 'models/abstract/load_model.yaml'
+            -- include 'models/causal_lm/load_model.yaml'
         << endblock load_model
     -- endif
 -- endfilter

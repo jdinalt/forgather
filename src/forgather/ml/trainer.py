@@ -404,7 +404,9 @@ class Trainer(BaseTrainer):
         Perform a single batch of predictions
         """
         args, kwargs = self._prepare_batch(batch)
-        loss, logits = self.model(*args, **kwargs)
+        # Note that some models may outpus more items than (loss, logits)
+        outputs = self.model(*args, **kwargs)
+        loss, logits = outputs[0], outputs[1]
         labels = kwargs.get("labels", None)
         return {
             "loss": loss.mean().detach(),

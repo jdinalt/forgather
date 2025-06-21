@@ -40,8 +40,8 @@
 
 
 #-------------------- project.dataset_config --------------------
--- extends 'datasets/tiny/tiny_stories_abridged.yaml'
-##-- extends 'datasets/tiny/tiny_stories.yaml'
+-- extends 'datasets/tiny_stories_abridged.yaml'
+##-- extends 'datasets/tiny_stories.yaml'
 
 
 -- block tokenize_args

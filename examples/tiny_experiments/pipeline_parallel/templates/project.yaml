@@ -67,8 +67,8 @@ model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_t
 << endblock model_preprocessor
 
 #-------------------- project.dataset_config --------------------
--- extends 'datasets/tiny/tiny_stories_abridged.yaml'
-##-- extends 'datasets/tiny/tiny_stories.yaml'
+-- extends 'datasets/tiny_stories_abridged.yaml'
+##-- extends 'datasets/tiny_stories.yaml'
 
 
 #-------------------- project.callbacks --------------------

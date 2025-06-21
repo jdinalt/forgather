@@ -37,8 +37,8 @@ model_constructor_args: &model_constructor_args {}
 
     -- filter trim()
     -- block model_definition required
-## .define: &tokenizer
-## .define: &model
+## tokenizer: &tokenizer
+## model: &model
     -- endblock model_definition
     -- endfilter
 << endblock main_body

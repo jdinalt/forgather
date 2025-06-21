@@ -15,6 +15,7 @@ searchdir:
 -- block searchdir_common
     - "{{ joinpath(workspace_root, 'forgather_workspace') }}"
     - "{{ joinpath(ns.forgather_templates_dir, 'modellib') }}"
+    - "{{ joinpath(ns.forgather_templates_dir, 'examples') }}"
     - "{{ joinpath(ns.forgather_templates_dir, 'base') }}"
 -- endblock searchdir_common
 

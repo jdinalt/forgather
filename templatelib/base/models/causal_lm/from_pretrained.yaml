@@ -1,4 +1,4 @@
--- extends 'models/abstract/base_language_model.yaml'
+-- extends 'models/base_language_model.yaml'
 
 -- block model_meta_config
     == super()

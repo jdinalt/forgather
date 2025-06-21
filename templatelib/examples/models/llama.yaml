@@ -1,4 +1,4 @@
--- extends "models/abstract/causal_lm_from_config.yaml"
+-- extends "models/causal_lm/from_config.yaml"
 
 -- block model_meta_config
     == super()

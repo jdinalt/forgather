@@ -3,7 +3,7 @@
 ## a configuration, without loading the weights. This can be useful for 
 ## constructing the model on the "meta" device for inspection or for
 ## customizing how the weights are loaded.
--- extends 'models/abstract/base_language_model.yaml'
+-- extends 'models/base_language_model.yaml'
 
 -- block model_meta_config
     == super()

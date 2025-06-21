@@ -55,7 +55,7 @@
 -- block datacollator
     == super()
     # Tiny Project
-    # Limit maximum sequence length 512 tokens, at the data-collator level.
+    ## Limit maximum sequence length 512 tokens, at the data-collator level.
     truncation: True
     max_length: 512
 -- endblock datacollator
@@ -65,8 +65,13 @@
     ##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
 # https://arxiv.org/html/2503.02844v1
 lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+    # Linear warm-up steps
     warmup_steps: 5000
+
+    # Cosine decay from end of warmp-up to constant-lr
     cooldown_steps: 50000
+
+    # See paper for experimentally derived values.
     constant_lr: 1.0e-4
 << endblock lr_scheduler
 
@@ -135,8 +140,8 @@ text_gen_callback_args: &text_gen_callback_args
 << endblock callback_list
 
 #-------------------- tiny.dataset_config --------------------
-## Note: Switch to 'datasets/tiny/tiny_stories.yaml' for the full dataset.
--- extends 'datasets/tiny/tiny_stories_abridged.yaml'
+## Note: Switch to 'datasets/tiny_stories.yaml' for the full dataset.
+-- extends 'datasets/tiny_stories_abridged.yaml'
 
 -- block tokenize_args
 ## See: https://huggingface.co/docs/transformers/main_classes/tokenizer

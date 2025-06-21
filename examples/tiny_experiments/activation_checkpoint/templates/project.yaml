@@ -44,7 +44,7 @@ optimizer: &optimizer !lambda:forgather.ml.optim.adafactor:Adafactor
 
 
 #-------------------- project.dataset_config --------------------
--- extends 'datasets/tiny/tiny_stories_abridged.yaml'
+-- extends 'datasets/tiny_stories_abridged.yaml'
 ##-- extends 'datasets/tiny/tiny_stories.yaml'
 
 

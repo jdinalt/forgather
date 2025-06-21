@@ -1,4 +1,4 @@
--- extends 'datasets/tiny/tiny_stories.yaml'
+-- extends 'datasets/tiny_stories.yaml'
 
 -- block datasets_meta_config
     == super()

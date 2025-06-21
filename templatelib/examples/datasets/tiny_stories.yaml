@@ -1,4 +1,4 @@
--- extends 'datasets/abstract/base_datasets.yaml'
+-- extends 'datasets//base_datasets.yaml'
 
 -- block datasets_meta_config
     == super()

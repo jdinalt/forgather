@@ -14,7 +14,7 @@
 
 -- block datasets_definition
     ## Note: Switch to 'datasets/tiny/tiny_stories.yaml' for the full dataset.
-    -- include 'datasets/tiny/tiny_stories_abridged.yaml'
+    -- include 'datasets/tiny_stories_abridged.yaml'
 -- endblock datasets_definition
 
 

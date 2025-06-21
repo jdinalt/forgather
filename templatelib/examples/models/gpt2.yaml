@@ -1,4 +1,4 @@
--- extends "models/abstract/causal_lm_from_config.yaml"
+-- extends "models/causal_lm/from_config.yaml"
 
 -- block model_meta_config
     == super()
@@ -26,4 +26,5 @@ tokenizer: &tokenizer !singleton:forgather.ml.construct:add_special_tokens@token
     n_positions: !singleton:getattr [ *tokenizer, 'model_max_length' ]
     bos_token_id: !singleton:getattr [ *tokenizer, 'bos_token_id' ]
     eos_token_id: !singleton:getattr [ *tokenizer, 'eos_token_id' ]
+    pad_token_id: !singleton:getattr [ *tokenizer, 'eos_token_id' ]
 << endblock model_config
