@@ -31,6 +31,7 @@ class AccelTrainer(Trainer):
         self.is_world_process_zero = self.accelerator.is_main_process
         self.num_processes = self.accelerator.num_processes
 
+    #@override
     def _prepare(self, train_dataset, eval_dataset) -> None:
         super()._prepare(train_dataset, eval_dataset)
 
@@ -53,15 +54,18 @@ class AccelTrainer(Trainer):
             self._update_training_steps()
         self.accelerator.wait_for_everyone()
 
+    #@override
     def _backward(self, loss):
         self.accelerator.backward(loss)
 
-    def _reduce_loss(self, loss: Tensor):
+    #@override
+    def _gather_reduce_loss(self, loss: Tensor):
         """
         Reduces loss accross processes
         """
         return self.accelerator.reduce(loss, "mean")
 
+    #@override
     def _prepare_batch(self, batch):
         # The accelerate will have already moved the batch to the right device
         # We just need to split it into positional/kw-args
@@ -70,6 +74,7 @@ class AccelTrainer(Trainer):
         else:
             return (tuple(), batch)
 
+    #@override
     def _init_state(self) -> TrainerState:
         """
         Modifies parent state by setting process rank info
@@ -87,6 +92,7 @@ class AccelTrainer(Trainer):
     def unwrapped_model(self):
         return self.accelerator.unwrap_model(self.model)
 
+    #@override
     def _save(self, output_dir):
         self.accelerator.wait_for_everyone()
         super()._save(output_dir)

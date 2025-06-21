@@ -5,6 +5,7 @@
     ## Overrides
     -- set ns.config_name = "Compare Trainers"
     -- set ns.config_description = "Compare trainer performance."
+    -- set ns.create_new_model = True
     -- set ns.save_model = False
     ## Defines
     -- set ns.trainer_class = 'trainers/trainer.yaml'
@@ -28,6 +29,7 @@
 
 
 -- block trainer_callbacks
+    ## Go back to basic loggers, as we may be interesting in comparing the relative speed of the trainers.
     -- include 'callbacks/loggers.yaml'
 << endblock trainer_callbacks
 

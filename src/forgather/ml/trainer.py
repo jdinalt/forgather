@@ -8,6 +8,7 @@ from typing import (
     Tuple,
     Optional,
     Type,
+    #override, # PEP-698, introduced in Python 3.12
 )
 from collections.abc import Sequence
 
@@ -46,19 +47,6 @@ class TrainerState(BaseTrainerState):
     num_processes: int = 1  # Non-standard
     # The number of batches in an epoch
     epoch_train_steps: int = 0
-
-@dataclass(kw_only=True, slots=True)
-class PrivateTrainerState:
-    """
-    Data to save with checkpoint, which is not in TrainerState
-    """
-
-    start_time: float
-    periodic_log: PeriodicFunction
-    periodic_eval: PeriodicFunction
-    periodic_save: PeriodicFunction
-    log_step_loss: Tensor
-    total_loss: Tensor
 
 
 @contextmanager
@@ -113,6 +101,7 @@ class Trainer(BaseTrainer):
         self.lr_scheduler_factory = lr_scheduler_factory
         super().__init__(args=args, **kwargs)
 
+    #@override
     def _post_init(self) -> None:
         assert (self.model is not None) or (
             self.model_init is not None
@@ -141,6 +130,7 @@ class Trainer(BaseTrainer):
             persistent_workers=self.args.dataloader_persistent_workers,
         )
 
+    #@override
     def _prepare(self, train_dataset, eval_dataset) -> None:
         """
         Prepare for training and/or evaluation
@@ -169,31 +159,8 @@ class Trainer(BaseTrainer):
         self.state = self._init_state()
         self._dispatch_event("on_init_end")
 
-    def _prepare_model(self):
-        if self.model_init:
-            self.optimizer = None
-            self.lr_scheduler = None
-            self.model = self.model_init()
-        self.model = self.model.to(self.args.device)
-
-    def _init_optimizer(self):
-        if self.optimizer is None:
-            self.optimizer = self.optimizer_factory(self.model.named_parameters())
-        if self.lr_scheduler is None:
-            if self.lr_scheduler_factory is not None:
-                self.lr_scheduler = self.lr_scheduler_factory(
-                    optimizer=self.optimizer,
-                )
-            elif self.args.lr_scheduler_type:
-                self.lr_scheduler = transformers.get_scheduler(
-                    name=self.args.lr_scheduler_type,
-                    optimizer=self.optimizer,
-                    num_warmup_steps=self.args.warmup_steps,
-                    num_training_steps=self.max_steps,
-                    **self.args.lr_scheduler_kwargs,
-                )
-
     def _init_dataloaders(self, train_dataset, eval_dataset) -> None:
+        # _prepare() sub-step 1
         self.max_steps = 0
         self.epoch_train_steps = self.args.epoch_train_steps
         self.train_ds_has_length = False
@@ -217,19 +184,71 @@ class Trainer(BaseTrainer):
             self.eval_dataloader = self._get_dataloader(
                 eval_dataset, self.args.per_device_eval_batch_size
             )
+    
+    def _prepare_model(self) -> None:
+        # _prepare() sub-step 2
+        if self.model_init:
+            self.optimizer = None
+            self.lr_scheduler = None
+            self.model = self.model_init()
+        self.model = self.model.to(self.args.device)
 
+    
+    def _init_optimizer(self) -> None:
+        # _prepare() sub-step 3
+        if self.optimizer is None:
+            self.optimizer = self.optimizer_factory(self.model.named_parameters())
+        if self.lr_scheduler is None:
+            if self.lr_scheduler_factory is not None:
+                self.lr_scheduler = self.lr_scheduler_factory(
+                    optimizer=self.optimizer,
+                )
+            elif self.args.lr_scheduler_type:
+                self.lr_scheduler = transformers.get_scheduler(
+                    name=self.args.lr_scheduler_type,
+                    optimizer=self.optimizer,
+                    num_warmup_steps=self.args.warmup_steps,
+                    num_training_steps=self.max_steps,
+                    **self.args.lr_scheduler_kwargs,
+                )
+
+    #@override
     def _train_loop(self) -> TrainOutput:
         """
         The inner training loop
         """
         self._dispatch_event("on_train_begin")
-        pstate = self._private_state = self._init_private_state()
-        # Holds the mean loss for the most recent train log-step
-        self.mean_train_loss = float("NaN")
+        
+        start_time = time.time()
+        
+        periodic_log = PeriodicFunction(
+            strategy=self.args.logging_strategy,
+            period=self.args.logging_steps,
+            epoch_period=self.epoch_train_steps,
+            phase=0 if not self.args.logging_first_step else -1,
+        )
+        periodic_eval = PeriodicFunction(
+            strategy=self.args.eval_strategy,
+            period=self.args.eval_steps,
+            epoch_period=self.epoch_train_steps,
+            phase=self.args.eval_delay,
+        )
+
+        periodic_save = PeriodicFunction(
+            strategy=self.args.save_strategy,
+            period=self.args.save_steps,
+            epoch_period=self.epoch_train_steps,
+            phase=0,
+        )
 
         # Just to be sure...
         self.optimizer.zero_grad()
 
+        # Tracks mean loss for each log-step
+        total_loss = torch.zeros(1, device=self.args.device)
+        loss_steps = 0
+        mean_loss = float('nan')
+        
         # Context manager for setting model.train()/eval()
         with set_train(self.model, True):
             # Epoch loop
@@ -239,21 +258,28 @@ class Trainer(BaseTrainer):
                 for batch in self.train_dataloader:
                     self._dispatch_event("on_step_begin")
                     loss = self._train_step(batch)
-                    loss = self._reduce_loss(loss)
-                    pstate.total_loss += loss
-                    pstate.log_step_loss += loss
+                    loss = self._gather_reduce_loss(loss)
+                    total_loss += loss
                     self.state.global_step += 1
+                    loss_steps += 1
 
                     # Compute epoch as continous value from steps
                     self.state.epoch = float(self.state.global_step) / float(
                         self.epoch_train_steps
                     )
-                    pstate.periodic_log.step(
-                        pstate.log_step_loss, pstate.periodic_log.count() + 1
-                    )
-                    pstate.periodic_eval.step()
-                    pstate.periodic_save.step()
 
+                    if periodic_log.step(): 
+                        mean_loss = (total_loss.item() / loss_steps)
+                        total_loss -= total_loss # zero total
+                        loss_steps = 0
+                        self._log_step(mean_loss)
+                        
+                    if periodic_eval.step():
+                        self._eval_loop()
+                    
+                    if periodic_save.step():
+                        self._save_checkpoint()
+                    
                     # Stop, if requested by callback.
                     control = self._dispatch_event("on_step_end")
                     if control is not None and control.should_training_stop:
@@ -268,11 +294,12 @@ class Trainer(BaseTrainer):
                         break
                     continue
                 break  # Break, if inner-loop breaks
-        metrics = self._end_train_loop()
+        metrics = self._end_train_loop(start_time)
         self.log(metrics)
         self._dispatch_event("on_train_end")
-        return TrainOutput(self.state.global_step, self.mean_train_loss, metrics)
+        return TrainOutput(self.state.global_step, mean_loss, metrics)
 
+    #@override
     @torch.no_grad()
     def _eval_loop(self) -> Dict[str, float]:
         """
@@ -280,13 +307,12 @@ class Trainer(BaseTrainer):
         """
         with set_train(self.model, False):
             total_loss = torch.zeros(1, device=self.args.device)
-            step = 0
             for step, batch in enumerate(self.eval_dataloader):
                 outputs = self._prediction_step(batch)
-                loss = self._reduce_loss(outputs["loss"])
+                loss = self._gather_reduce_loss(outputs["loss"])
                 total_loss += loss
                 self._dispatch_event("on_prediction_step")
-            metrics = {"eval_loss": (total_loss / step).item()}
+            metrics = {"eval_loss": (total_loss / (step + 1)).item()}
             self._dispatch_event("on_evaluate", metrics=metrics)
             return metrics
 
@@ -360,58 +386,13 @@ class Trainer(BaseTrainer):
                 save_steps=0,
             )
 
-    def _init_private_state(self) -> PrivateTrainerState:
-        """
-        Init private training state
-        This should be retained when saving a checkpoint
-        """
-        start_time = time.time()
-
-        periodic_log = PeriodicFunction(
-            strategy=self.args.logging_strategy,
-            period=self.args.logging_steps,
-            epoch_period=self.epoch_train_steps,
-            f=self._log_step,
-            phase=0 if not self.args.logging_first_step else -1,
-        )
-        periodic_eval = PeriodicFunction(
-            strategy=self.args.eval_strategy,
-            period=self.args.eval_steps,
-            epoch_period=self.epoch_train_steps,
-            f=self._eval_loop,
-            phase=self.args.eval_delay,
-        )
-
-        periodic_save = PeriodicFunction(
-            strategy=self.args.save_strategy,
-            period=self.args.save_steps,
-            epoch_period=self.epoch_train_steps,
-            f=self._save_checkpoint,
-            phase=0,
-        )
-        # Tracks mean loss for each log-step
-        log_step_loss = torch.zeros(1, device=self.args.device)
-        # Tracks mean loss for whole session.
-        total_loss = torch.zeros(1, device=self.args.device)
-
-        return PrivateTrainerState(
-            start_time=start_time,
-            periodic_log=periodic_log,
-            periodic_eval=periodic_eval,
-            periodic_save=periodic_save,
-            log_step_loss=log_step_loss,
-            total_loss=total_loss,
-        )
-
-    def _end_train_loop(self):
-        pstate = self._private_state
-        runtime = time.time() - pstate.start_time
+    def _end_train_loop(self, start_time):
+        runtime = time.time() - start_time
         total_train_batch_size = self.state.num_processes * self.state.train_batch_size
         total_train_samples = total_train_batch_size * self.max_steps
         metrics = self._speed_metrics(
             "train", runtime, total_train_samples, self.max_steps
         )
-        metrics["train_loss"] = (pstate.total_loss / self.state.global_step).item()
         metrics["epoch"] = self.state.epoch
         return metrics
 
@@ -420,8 +401,7 @@ class Trainer(BaseTrainer):
         Perform a single batch of predictions
         """
         args, kwargs = self._prepare_batch(batch)
-        outputs = self.model(*args, **kwargs)
-        loss, logits = outputs[0], outputs[1]
+        loss, logits = self.model(*args, **kwargs)
         labels = kwargs.get("labels", None)
         return {
             "loss": loss.mean().detach(),
@@ -439,25 +419,10 @@ class Trainer(BaseTrainer):
         }
         return metrics
 
-    def _update_train_loss(self, total_loss: Tensor, log_steps: int):
-        if log_steps == 0:
-            return
-        self.mean_train_loss = (total_loss / log_steps).item()
-        # Note that total_loss is a reference to a tensor. We perform an update-in-place to zero it.
-        total_loss -= total_loss
-
-    def _log_step(self, total_loss: Tensor, log_steps: int):
-        """
-        Log training progress; called every 'log_steps' and once more at the end of training.
-        Note: mean loss must be gathered if multi-process
-        """
-        if log_steps == 0:
-            return
-        self._update_train_loss(total_loss, log_steps)
-
+    def _log_step(self, mean_loss):
         logs = {
             "epoch": self.state.epoch,
-            "loss": self.mean_train_loss,
+            "loss": mean_loss,
         }
 
         if self.lr_scheduler is not None:
@@ -478,5 +443,9 @@ class Trainer(BaseTrainer):
         else:
             return (tuple(), {k: v.to(self.args.device) for k, v in batch.items()})
 
-    def _reduce_loss(self, loss: Tensor) -> Tensor:
+    def _gather_reduce_loss(self, loss: Tensor) -> Tensor:
+        """
+        Gather / reduce loss across all processes
+        This implementaiton only supports a single process, so we just return the input.
+        """
         return loss

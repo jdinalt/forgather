@@ -127,8 +127,6 @@ class BaseTrainer(ExtensibleTrainer):
         """
         if eval_dataset is None:
             eval_dataset = self.eval_dataset
-        else:
-            assert isinstance(eval_dataset, Dataset)
 
         self._prepare(train_dataset=None, eval_dataset=eval_dataset)
         return self._eval_loop()

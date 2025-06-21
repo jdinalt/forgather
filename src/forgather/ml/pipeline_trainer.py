@@ -213,6 +213,7 @@ class PipelineTrainer(Trainer):
         self.pipe_schedule_factory = pipe_schedule_factory
         super().__init__(**kwargs)
 
+    #@override
     def _post_init(self) -> None:
         if self.args.debug_pipeline:
             logger.setLevel(logging.DEBUG)
@@ -267,6 +268,7 @@ class PipelineTrainer(Trainer):
                         f"B {self.denv.rank} {name} : device {p.device}, dtype {p.dtype}"
                     )
 
+    #@override
     def _prepare_model(self):
         # Reset -- this trainer always resets everything.
         self.train_scheduler = None
@@ -622,6 +624,7 @@ class PipelineTrainer(Trainer):
 
         return mean_loss
 
+    #@override
     def _init_optimizer(self):
         if self.optimizer is None:
             # Build a named-parameter generator for all of our modules
@@ -638,6 +641,8 @@ class PipelineTrainer(Trainer):
                 optimizer=self.optimizer,
             )
 
+    # We don't want to automatically use no_grad(), as we may need to use the unified model.
+    #@override
     def _eval_loop(self) -> Dict[str, float]:
         if not self.args.unified_model:
             super()._eval_loop()
@@ -655,6 +660,7 @@ class PipelineTrainer(Trainer):
             self._dispatch_event("on_evaluate", metrics=metrics)
             return metrics
 
+    #@override
     def _train_step(self, batch: dict | tuple) -> Tensor:
         mean_loss = self._train_pipeline_step(batch)
         self.optimizer.step()
@@ -664,6 +670,7 @@ class PipelineTrainer(Trainer):
         self.optimizer.zero_grad()
         return mean_loss
 
+    #@override
     def _prediction_step(self, batch: dict | tuple) -> Tensor:
         mean_loss = self._eval_pipeline_step(batch)
         return {
@@ -684,15 +691,18 @@ class PipelineTrainer(Trainer):
             "labels": None,
         }
 
-    def _reduce_loss(self, loss: Tensor):
+    #@override
+    def _gather_reduce_loss(self, loss: Tensor):
         distributed.broadcast(loss, src=self.pp_last_stage_rank)
         return loss
 
+    #@override
     def _validate_dirs(self):
         validate_output_dir(
             self.args.output_dir, overwrite=self.args.overwrite_output_dir
         )
 
+    #@override
     def _save(self, output_dir):
         shard_index = self.shard_index
         save_safetensors = self.args.save_safetensors

@@ -1,6 +1,4 @@
-from typing import Callable
 from .trainer_types import IntervalStrategy
-
 
 class PeriodicFunction:
     """
@@ -12,17 +10,16 @@ class PeriodicFunction:
         strategy: IntervalStrategy,
         period: int,
         epoch_period: int,
-        f: Callable,
         phase=0,
     ):
         assert period > 0
         self.period = period
         self.phase = phase
         self.counter = 0
-        self.f = f
+        self.enabled = True
         match strategy:
             case IntervalStrategy.NO:
-                self.f = lambda: None
+                self.enabled = False
             case IntervalStrategy.STEPS:
                 pass
             case IntervalStrategy.EPOCH:
@@ -35,5 +32,7 @@ class PeriodicFunction:
 
     def step(self, *args, **kwargs) -> None:
         self.counter += 1
-        if (self.counter + self.phase) % self.period == 0:
-            self.f(*args, **kwargs)
+        if self.enabled and (self.counter + self.phase) % self.period == 0:
+            return True
+        else:
+            return False
