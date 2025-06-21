@@ -8,7 +8,7 @@ from typing import (
     Tuple,
     Optional,
     Type,
-    #override, # PEP-698, introduced in Python 3.12
+    # override, # PEP-698, introduced in Python 3.12
 )
 from collections.abc import Sequence
 
@@ -79,10 +79,12 @@ class Trainer(BaseTrainer):
         self,
         *,
         args,
-        optimizer_factory: Optional[Callable]=None,
+        optimizer_factory: Optional[Callable] = None,
         # Alernative, for compatibility with transformers.Trainer
-        optimizer_cls_and_kwargs: Optional[Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]]=None,
-        lr_scheduler_factory: Optional[Callable]=None,
+        optimizer_cls_and_kwargs: Optional[
+            Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]
+        ] = None,
+        lr_scheduler_factory: Optional[Callable] = None,
         **kwargs,
     ):
         # HF Trainer compatibility.
@@ -96,12 +98,14 @@ class Trainer(BaseTrainer):
                     eps=args.adam_epsilon,
                 )
             else:
-                optimizer_factory = partial(optimizer_cls_and_kwargs[0], **optimizer_cls_and_kwargs[1])
+                optimizer_factory = partial(
+                    optimizer_cls_and_kwargs[0], **optimizer_cls_and_kwargs[1]
+                )
         self.optimizer_factory = optimizer_factory
         self.lr_scheduler_factory = lr_scheduler_factory
         super().__init__(args=args, **kwargs)
 
-    #@override
+    # @override
     def _post_init(self) -> None:
         assert (self.model is not None) or (
             self.model_init is not None
@@ -130,7 +134,7 @@ class Trainer(BaseTrainer):
             persistent_workers=self.args.dataloader_persistent_workers,
         )
 
-    #@override
+    # @override
     def _prepare(self, train_dataset, eval_dataset) -> None:
         """
         Prepare for training and/or evaluation
@@ -184,7 +188,7 @@ class Trainer(BaseTrainer):
             self.eval_dataloader = self._get_dataloader(
                 eval_dataset, self.args.per_device_eval_batch_size
             )
-    
+
     def _prepare_model(self) -> None:
         # _prepare() sub-step 2
         if self.model_init:
@@ -193,7 +197,6 @@ class Trainer(BaseTrainer):
             self.model = self.model_init()
         self.model = self.model.to(self.args.device)
 
-    
     def _init_optimizer(self) -> None:
         # _prepare() sub-step 3
         if self.optimizer is None:
@@ -212,15 +215,15 @@ class Trainer(BaseTrainer):
                     **self.args.lr_scheduler_kwargs,
                 )
 
-    #@override
+    # @override
     def _train_loop(self) -> TrainOutput:
         """
         The inner training loop
         """
         self._dispatch_event("on_train_begin")
-        
+
         start_time = time.time()
-        
+
         periodic_log = PeriodicFunction(
             strategy=self.args.logging_strategy,
             period=self.args.logging_steps,
@@ -247,8 +250,8 @@ class Trainer(BaseTrainer):
         # Tracks mean loss for each log-step
         total_loss = torch.zeros(1, device=self.args.device)
         loss_steps = 0
-        mean_loss = float('nan')
-        
+        mean_loss = float("nan")
+
         # Context manager for setting model.train()/eval()
         with set_train(self.model, True):
             # Epoch loop
@@ -268,18 +271,18 @@ class Trainer(BaseTrainer):
                         self.epoch_train_steps
                     )
 
-                    if periodic_log.step(): 
-                        mean_loss = (total_loss.item() / loss_steps)
-                        total_loss -= total_loss # zero total
+                    if periodic_log.step():
+                        mean_loss = total_loss.item() / loss_steps
+                        total_loss -= total_loss  # zero total
                         loss_steps = 0
                         self._log_step(mean_loss)
-                        
+
                     if periodic_eval.step():
                         self._eval_loop()
-                    
+
                     if periodic_save.step():
                         self._save_checkpoint()
-                    
+
                     # Stop, if requested by callback.
                     control = self._dispatch_event("on_step_end")
                     if control is not None and control.should_training_stop:
@@ -299,7 +302,7 @@ class Trainer(BaseTrainer):
         self._dispatch_event("on_train_end")
         return TrainOutput(self.state.global_step, mean_loss, metrics)
 
-    #@override
+    # @override
     @torch.no_grad()
     def _eval_loop(self) -> Dict[str, float]:
         """

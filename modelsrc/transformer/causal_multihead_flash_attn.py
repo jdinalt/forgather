@@ -19,12 +19,14 @@ if is_flash_attn_2_available():
     except:
         print("Could not import flash2")
 
+
 class CausalMultiheadFlashAttn(nn.Module):
     """
-        Multihead Attention with support for Flash-Attention-2, Torch flash-attention, and native attention.
+    Multihead Attention with support for Flash-Attention-2, Torch flash-attention, and native attention.
 
-        This module is a little more complex than the baseline version, CausalMultiheadAttn, but can be much faster.
+    This module is a little more complex than the baseline version, CausalMultiheadAttn, but can be much faster.
     """
+
     def __init__(
         self,
         d_model: int,
@@ -39,7 +41,7 @@ class CausalMultiheadFlashAttn(nn.Module):
         self.attn_type = attn_type
 
         self.use_torch = True
-        
+
         match attn_type:
             # Use local impementation; slowest option; good for debugging; useful when experimenting with non-standard stuff.
             case "native":
@@ -68,13 +70,14 @@ class CausalMultiheadFlashAttn(nn.Module):
                 self.torch_backend = SDPBackend.CUDNN_ATTENTION
             case _:
                 raise Exception(f"Unknown attention type {attn_type}")
-        
-        assert attn_type != "flash2" or is_flash_attn_2_available(), "Flash Attention 2 is not available. Missing package? Unsupported Hardware?"
-        
+
+        assert (
+            attn_type != "flash2" or is_flash_attn_2_available()
+        ), "Flash Attention 2 is not available. Missing package? Unsupported Hardware?"
+
         self.d_model = d_model
         self.num_heads = num_heads
         self.attn_type = attn_type
-        
 
         assert d_model % num_heads == 0, "d_model must be evenly divisible by num_heads"
 
@@ -94,7 +97,7 @@ class CausalMultiheadFlashAttn(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def extra_repr(self) -> str:
-        return f'd_model={self.d_model}, num_heads={self.num_heads}, attn_type={self.attn_type}'
+        return f"d_model={self.d_model}, num_heads={self.num_heads}, attn_type={self.attn_type}"
 
     # Project QKV input through input matrices, reshape to (batch_size, n_heads, seq_len, d_model), and apply cache.
     def _project_input(self, qkv):
@@ -138,7 +141,7 @@ class CausalMultiheadFlashAttn(nn.Module):
                     attn_mask=None,
                     dropout_p=self.dropout.p if self.training else 0.0,
                     is_causal=(seq_len > 1),
-                    scale=self.dot_product_scale
+                    scale=self.dot_product_scale,
                 )
         # "native" scaled-dot-product attention implementation.
         else:
@@ -149,10 +152,12 @@ class CausalMultiheadFlashAttn(nn.Module):
             if seq_len > 1:
                 scores.masked_fill_(
                     torch.tril(
-                        torch.ones(seq_len, kv_seq_len, dtype=torch.bool, device=qkv.device),
+                        torch.ones(
+                            seq_len, kv_seq_len, dtype=torch.bool, device=qkv.device
+                        ),
                         diagonal=0,
                     ).logical_not(),
-                    float('-inf'),
+                    float("-inf"),
                 )
 
             # Calculate the attention weights; avoid NANs that might emerge from zeros in softmax's denominator
@@ -162,7 +167,11 @@ class CausalMultiheadFlashAttn(nn.Module):
             attended_values = torch.matmul(attentions, value)
 
         # Concatenate attention heads and project to original embedding size using the output linear layer
-        attended_values = attended_values.transpose(1, 2).contiguous().view(batch_size, seq_len, d_embed)
+        attended_values = (
+            attended_values.transpose(1, 2)
+            .contiguous()
+            .view(batch_size, seq_len, d_embed)
+        )
 
         # Project the concatenated output through the output matrix.
         return self.output_linear(attended_values)
@@ -172,7 +181,7 @@ class CausalMultiheadFlashAttn(nn.Module):
         qkv,
     ):
         batch_size, seq_len, d_embed = qkv.shape
-        
+
         # Feed the inputs through the K, Q, V matrices.
         query, key, value = self._project_input(qkv)
 

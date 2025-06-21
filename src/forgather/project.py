@@ -29,6 +29,7 @@ class Project:
     Hint: If you are debugging a configuration, it's usually easier to incrementally
         construct the project for better diagnostics. See: 'project_config.ipynb'
     """
+
     config_name: str
     project_dir: str
     meta: MetaConfig

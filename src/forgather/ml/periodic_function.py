@@ -1,5 +1,6 @@
 from .trainer_types import IntervalStrategy
 
+
 class PeriodicFunction:
     """
     A periodic function caller, which calls 'f' every 'period' steps

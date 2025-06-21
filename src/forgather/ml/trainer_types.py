@@ -163,7 +163,7 @@ class TrainingArguments(MinimalTrainingArguments):
     adam_beta1: float = 0.9
     adam_beta2: float = 0.999
     adam_epsilon: float = 1.0e-8
-    
+
     def __post_init__(self):
         super().__post_init__()
         # As per https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader

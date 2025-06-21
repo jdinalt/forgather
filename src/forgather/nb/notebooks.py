@@ -363,7 +363,7 @@ def render_project_index(
 
 
 def display_project_index(
-    project_dir: str=".",
+    project_dir: str = ".",
     /,
     **kwargs,
 ) -> None:

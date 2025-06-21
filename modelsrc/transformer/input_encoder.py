@@ -37,7 +37,7 @@ class InputEncoder(nn.Module):
             self.scale = math.sqrt(d_model)
         else:
             self.scale = scale
-        
+
         if dropout == 0.0:
             self.dropout = nn.Identity()
         else:
