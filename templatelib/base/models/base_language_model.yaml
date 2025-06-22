@@ -34,6 +34,7 @@
 
 -- filter trim()
 -- block model_config_defs
+# Model config dependencies
 ## Put items required for defining the configuration here
 << endblock model_config_defs
 -- endfilter
@@ -41,14 +42,14 @@
 
 -- filter trim()
 -- block model_code_generator
-## model_code_generator: &model_code_generator null
+model_code_generator: &model_code_generator null
 << endblock model_code_generator
 -- endfilter
 
 
 -- filter trim()
 -- block model_code_writer
-## model_code_writer: &model_code_writer null
+model_code_writer: &model_code_writer null
 << endblock model_code_writer
 -- endfilter
     

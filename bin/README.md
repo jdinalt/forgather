@@ -155,6 +155,15 @@ options:
   -h, --help  show this help message and exit
   --dry-run   Just show the generated commandline, without actually executing it.
 ```
+
+```
+# To bind only to localhost
+fgcli.py -t tiny_llama.yaml tb
+
+# To bind to all interfaces
+fgcli.py -t tiny_llama.yaml tb -- --bind_all
+```
+
 ---
 ### train : Use torchrun to run the project with the training script.
 

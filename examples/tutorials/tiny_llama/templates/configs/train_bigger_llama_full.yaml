@@ -1,0 +1,30 @@
+-- extends 'bigger_llama_project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Bigger Llama Full"
+    -- set ns.config_description = "A bigger Llama with the full Tiny Stories Dataset"
+    -- set ns.log_name = "bigger_llama_full"
+-- endblock config_metadata
+
+
+## Switch to full Tiny Stories dataset
+-- block datasets_definition
+    -- include 'datasets/tiny_stories.yaml'
+-- endblock datasets_definition
+
+
+# Change the LR scheduler to something more complex
+-- block lr_scheduler
+    ##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
+# https://arxiv.org/html/2503.02844v1
+lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+    # Linear warm-up steps
+    warmup_steps: 5000
+
+    # Cosine decay from end of warmp-up to constant-lr
+    cooldown_steps: 50000
+
+    # See paper for experimentally derived values.
+    constant_lr: 3.75e-5
+<< endblock lr_scheduler

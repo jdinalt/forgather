@@ -1,0 +1,59 @@
+## Use the original project as a base
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Bigger Llama"
+    -- set ns.config_description = "A bigger Llama"
+    ## This changes the output directory.
+    -- set ns.model_name = "bigger_llama"
+
+    ## This changes the log prefix
+    -- set ns.log_name = "bigger_llama"
+-- endblock config_metadata
+
+
+## Modify model
+-- block construct_new_model
+    -- include 'biggerllama.model_config'
+-- endblock construct_new_model
+
+## Override loggers
+-- block trainer_callbacks
+    -- include 'biggerllama.logger_config'
+<< endblock trainer_callbacks
+
+
+#-------------------- biggerllama.model_config --------------------
+-- extends 'project.model_config'
+
+-- block model_config
+    == super()
+
+    # Bigger Llama overrides
+    hidden_size: 512
+    intermediate_size: 2048
+    num_attention_heads: 4
+    num_key_value_heads: 4
+    num_hidden_layers: 8
+<< endblock model_config
+
+
+#-------------------- biggerllama.logger_config --------------------
+-- extends 'callbacks/loggers.yaml'
+## Add experiment loggers to the callbacks list.
+## The parent creates a Tensor Board SummaryWriter, which we can use.
+
+## This adds a text-generationn sample every 'generation_steps'
+-- block callback_list
+-- include 'prompts/tiny_stories.yaml'
+
+
+    == super()
+    - !singleton:forgather.ml.textgen_callback:TextgenCallback
+        summary_writer: *summary_writer
+        prompts: *testprompts
+        generation_config: *generation_config
+        max_new_tokens: 40
+        generation_steps: 1000
+<< endblock callback_list

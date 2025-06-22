@@ -76,6 +76,13 @@ def parse_args(args=None):
     )
 
     tb_parser.add_argument(
+         "--all",
+        action="store_true",
+        help="Configure TB to watch all model directories",
+    )
+
+    
+    tb_parser.add_argument(
         "remainder",
         nargs=argparse.REMAINDER,
         help="All arguments after -- will be forwarded as Tensroboard arguments.",
@@ -196,7 +203,11 @@ def start_tensorboard(args):
     env = get_env(meta, args)
     config, pp_config = get_config(meta, env, args)
     config_meta = Latent.materialize(config.meta)
-    output_dir = os.path.abspath(config_meta["output_dir"])
+    
+    if args.all:
+        output_dir = os.path.abspath(config_meta["models_dir"])
+    else:
+        output_dir = os.path.abspath(config_meta["output_dir"])
 
     cmd_args = [
         "tensorboard",

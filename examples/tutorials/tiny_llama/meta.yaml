@@ -1,0 +1,5 @@
+-- extends "meta_defaults.yaml"
+
+-- block configs
+default_config: "train_tiny_llama.yaml"
+<< endblock configs

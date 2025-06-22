@@ -1,0 +1,91 @@
+-- extends "types/training_script/causal_lm/causal_lm.yaml"
+
+-- block config_metadata
+    == super()
+    ## Overrides
+    -- set ns.config_name = "Tiny Llama"
+    -- set ns.config_description = "A demo of training a tiny llama model from scratch."
+    -- set ns.create_new_model = True
+    -- set ns.save_model = True
+-- endblock config_metadata
+
+## Add a dataset to train on from an existing definition
+-- block datasets_definition
+    -- include 'datasets/tiny_stories_abridged.yaml'
+-- endblock datasets_definition
+
+## This includes an inline template, defined below.
+## The need to do this relates to Jinja2 disallowing a template from
+## directly having more than one parent template. We can get around 
+## this limitation by extending in 'project.model_config' and including
+## the resulting template.
+-- block construct_new_model
+    -- include 'project.model_config'
+-- endblock construct_new_model
+
+
+## Definition is inlined, below.
+-- block trainer_definition
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
+
+## Add some Trainer callbacks
+-- block trainer_callbacks
+    ## Adds Tensorboard logging
+    -- include 'callbacks/loggers.yaml'
+<< endblock trainer_callbacks
+
+
+## Explicitly set the optimizer.
+-- block optimizer
+optimizer: &optimizer !lambda:torch:optim.AdamW
+    lr: 1.0e-3
+-- endblock optimizer
+
+
+-- block datacollator
+    == super()
+    # Tiny Llama
+    ## Limit maximum sequence length 512 tokens, at the data-collator level.
+    truncation: True
+    max_length: 512
+-- endblock datacollator
+
+#-------------------- project.model_config --------------------
+-- extends 'models/llama.yaml'
+
+
+-- block model_tokenizer
+## Replace the default Llama tokenizer with the tiny_2k tokenizer.
+    -- include 'tokenizers/tiny_2k.yaml'
+<< endblock model_tokenizer
+
+
+## Make the model much smaller.
+-- block model_config
+    == super()
+
+    # Tiny Llama overrides
+    hidden_size: 256
+    intermediate_size: 1024
+    num_attention_heads: 2
+    num_key_value_heads: 2
+    num_hidden_layers: 4
+<< endblock model_config
+
+
+#-------------------- project.trainer_config --------------------
+-- extends 'trainers/trainer.yaml'
+
+-- block trainer_args
+    == super()
+    # Tiny Llama Project Overrides
+    seed: 42
+    per_device_train_batch_size: 32
+    per_device_eval_batch_size: 64
+    logging_steps: 100
+    eval_steps: 500
+    num_train_epochs: 1
+    dataloader_num_workers: 1
+-- endblock trainer_args
