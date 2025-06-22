@@ -13,6 +13,13 @@
     -- include 'datasets/tiny_stories.yaml'
 -- endblock datasets_definition
 
+## Reduce peak learning rate.
+-- block optimizer
+    == super()
+    # Experiment overrides.
+    lr: 5.0e-4
+-- endblock optimizer
+
 
 # Change the LR scheduler to something more complex
 -- block lr_scheduler
