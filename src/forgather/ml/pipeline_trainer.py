@@ -733,3 +733,22 @@ class PipelineTrainer(Trainer):
 
         # Wait for all processes, before continuing.
         distributed.barrier()
+    
+    # @override
+    def _save_training_state(self, checkpoint_path: str) -> None:
+        """Override to handle distributed optimizer/scheduler state saving."""
+        # Only rank 0 saves training state to avoid conflicts
+        if self.denv.rank == 0:
+            super()._save_training_state(checkpoint_path)
+        
+        # Ensure all processes wait
+        distributed.barrier()
+            
+    # @override
+    def _load_training_state(self, checkpoint_path: str) -> None:
+        """Override to handle distributed optimizer/scheduler state loading."""
+        # All ranks load the same state
+        super()._load_training_state(checkpoint_path)
+        
+        # Ensure synchronization after loading
+        distributed.barrier()

@@ -1,6 +1,8 @@
 # A subclass of Trainer, which adds support for the Acclerate library.
 from dataclasses import dataclass, field
 from collections.abc import Sequence
+import os
+import logging
 
 import torch
 from torch import Tensor
@@ -8,6 +10,8 @@ from accelerate import Accelerator
 
 from .trainer_types import TrainingArguments, TrainerState
 from .trainer import Trainer
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(kw_only=True)
@@ -91,6 +95,40 @@ class AccelTrainer(Trainer):
 
     def unwrapped_model(self):
         return self.accelerator.unwrap_model(self.model)
+
+    def _should_use_accelerate_checkpoint(self) -> bool:
+        """Determine if we should use Accelerate's native checkpointing."""
+        return (self.args.save_optimizer_state and 
+                self.args.save_scheduler_state and
+                hasattr(self.accelerator, 'save_state'))
+    
+    # @override
+    def _save_training_state(self, checkpoint_path: str) -> None:
+        """Override to use Accelerate's checkpoint saving when possible."""
+        self.accelerator.wait_for_everyone()
+        
+        if self.accelerator.is_main_process:
+            if hasattr(self.accelerator, 'save_state') and self._should_use_accelerate_checkpoint():
+                accelerate_checkpoint_path = os.path.join(checkpoint_path, "accelerate_state")
+                self.accelerator.save_state(accelerate_checkpoint_path)
+                logger.info(f"Saved accelerate state to {accelerate_checkpoint_path}")
+            else:
+                super()._save_training_state(checkpoint_path)
+        
+        self.accelerator.wait_for_everyone()
+    
+    # @override
+    def _load_training_state(self, checkpoint_path: str) -> None:
+        """Override to use Accelerate's checkpoint loading when possible."""
+        accelerate_checkpoint_path = os.path.join(checkpoint_path, "accelerate_state")
+        
+        if os.path.exists(accelerate_checkpoint_path) and hasattr(self.accelerator, 'load_state'):
+            self.accelerator.load_state(accelerate_checkpoint_path)
+            logger.info(f"Loaded accelerate state from {accelerate_checkpoint_path}")
+        else:
+            super()._load_training_state(checkpoint_path)
+        
+        self.accelerator.wait_for_everyone()
 
     # @override
     def _save(self, output_dir):

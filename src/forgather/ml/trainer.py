@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 import time
 from contextlib import contextmanager
 import os
+import logging
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
@@ -62,6 +63,9 @@ def set_train(model: torch.nn.Module, mode: bool):
         yield
     finally:
         model.train(previous_mode)
+
+
+logger = logging.getLogger(__name__)
 
 
 class Trainer(BaseTrainer):
@@ -161,6 +165,15 @@ class Trainer(BaseTrainer):
             self._init_optimizer()
 
         self.state = self._init_state()
+        
+        if self.do_train:
+            # Restore from checkpoint if specified (after state is initialized)
+            checkpoint_path = self._resolve_checkpoint_path()
+            if checkpoint_path:
+                logger.info(f"Resuming training from checkpoint: {checkpoint_path}")
+                self._load_model_from_checkpoint(checkpoint_path)
+                self._load_training_state(checkpoint_path)
+        
         self._dispatch_event("on_init_end")
 
     def _init_dataloaders(self, train_dataset, eval_dataset) -> None:

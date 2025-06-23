@@ -1,0 +1,41 @@
+## Project for testing checkpoint functionality
+-- extends "projects/tiny.yaml"
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Checkpoint Testing Project"
+    -- set ns.config_description = "Project for testing optimizer and scheduler checkpoint functionality"
+<< endblock config_metadata
+
+-- block trainer_definition
+    -- include 'checkpointing.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- checkpointing.trainer_config --------------------
+-- extends 'trainers/trainer.yaml'
+## Override the trainer config for checkpointing
+
+-- block trainer_args
+    == super()
+    
+    # Checkpointing Project Overrides (must come after all parent overrides)
+    # Enable checkpoint features
+    save_strategy: "steps"
+    save_optimizer_state: true
+    save_scheduler_state: true
+    restore_optimizer_state: true
+    restore_scheduler_state: true
+    
+    # Save checkpoints frequently for testing
+    save_steps: 100
+    save_total_limit: 3
+    
+    # Small training run for quick testing
+    max_steps: 500
+    eval_steps: 200
+    logging_steps: 50
+    
+    # Smaller batch size for quick iterations
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 16
+<< endblock trainer_args

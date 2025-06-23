@@ -1,0 +1,21 @@
+## Initial training configuration with checkpointing enabled
+-- extends "project.yaml"
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Initial Training with Checkpoints"
+    -- set ns.config_description = "Train a small model from scratch with optimizer/scheduler checkpointing enabled"
+<< endblock config_metadata
+
+-- block trainer_args
+    == super()
+    # Initial training configuration
+    resume_from_checkpoint: false
+    
+    # Use a specific learning rate for reproducibility  
+    learning_rate: 1e-3
+    
+    # Train for 500 steps with checkpoints every 100 steps
+    max_steps: 500
+    save_steps: 100
+<< endblock trainer_args

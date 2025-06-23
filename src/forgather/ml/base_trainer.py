@@ -10,6 +10,7 @@ import os
 from abc import abstractmethod
 import glob
 import shutil
+import time
 
 import logging
 import torch
@@ -24,6 +25,7 @@ from .trainer_types import (
     TrainOutput,
     TrainerControl,
 )
+from .sharded_checkpoint import load_checkpoint
 
 WEIGHTS_NAME = "pytorch_model.bin"
 WEIGHTS_INDEX_NAME = "pytorch_model.bin.index.json"
@@ -238,6 +240,82 @@ class BaseTrainer(ExtensibleTrainer):
         if self.processing_class is not None:
             self.processing_class.save_pretrained(output_dir)
 
+    def _validate_checkpoint(self, checkpoint_path: str) -> bool:
+        """Validate that a checkpoint directory contains the necessary files."""
+        if not os.path.isdir(checkpoint_path):
+            return False
+            
+        # Check for at least one of the expected model files
+        expected_model_files = [
+            "pytorch_model.bin",
+            "model.safetensors", 
+            "model.safetensors.index.json",
+            "pytorch_model.bin.index.json"
+        ]
+        
+        has_model = any(
+            os.path.exists(os.path.join(checkpoint_path, filename))
+            for filename in expected_model_files
+        )
+        
+        if not has_model:
+            logger.warning(f"Checkpoint {checkpoint_path} appears to be incomplete (no model files found)")
+            return False
+            
+        return True
+    
+    def _find_latest_checkpoint(self, checkpoints_dir: str = None) -> str | None:
+        """Find the most recent valid checkpoint in the checkpoints directory based on modification time."""
+        if checkpoints_dir is None:
+            checkpoints_dir = os.path.join(self.args.output_dir, "checkpoints")
+            
+        if not os.path.exists(checkpoints_dir):
+            return None
+            
+        checkpoints = glob.glob(os.path.join(checkpoints_dir, "checkpoint-*"))
+        if not checkpoints:
+            return None
+            
+        # Filter to only valid checkpoints and sort by modification time
+        valid_checkpoints = [cp for cp in checkpoints if self._validate_checkpoint(cp)]
+        
+        if not valid_checkpoints:
+            logger.warning("No valid checkpoints found in checkpoint directory")
+            return None
+            
+        try:
+            latest = max(valid_checkpoints, key=lambda path: os.path.getmtime(path))
+            step_num = os.path.basename(latest).split('-')[1] if '-' in os.path.basename(latest) else "unknown"
+            mtime = os.path.getmtime(latest)
+            mtime_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mtime))
+            logger.info(f"Found latest valid checkpoint: {latest} (step {step_num}, modified {mtime_str})")
+            return latest
+        except (OSError, IndexError) as e:
+            logger.warning(f"Error finding latest checkpoint: {e}")
+            return None
+    
+    def _resolve_checkpoint_path(self) -> str | None:
+        """Resolve the checkpoint path based on resume_from_checkpoint setting."""
+        if not self.args.resume_from_checkpoint:
+            return None
+            
+        if isinstance(self.args.resume_from_checkpoint, str):
+            # Explicit path provided
+            if os.path.exists(self.args.resume_from_checkpoint):
+                if self._validate_checkpoint(self.args.resume_from_checkpoint):
+                    return self.args.resume_from_checkpoint
+                else:
+                    logger.warning(f"Invalid checkpoint at: {self.args.resume_from_checkpoint}")
+                    return None
+            else:
+                logger.warning(f"Checkpoint path does not exist: {self.args.resume_from_checkpoint}")
+                return None
+        elif self.args.resume_from_checkpoint is True:
+            # Auto-discover latest checkpoint
+            return self._find_latest_checkpoint()
+        
+        return None
+
     def _save_checkpoint(self):
         checkpoints_dir = os.path.join(self.args.output_dir, "checkpoints")
         checkpoint_path = os.path.join(
@@ -246,21 +324,97 @@ class BaseTrainer(ExtensibleTrainer):
         logger.info(f"Saving checkpoint at {checkpoint_path}")
 
         os.makedirs(checkpoints_dir, exist_ok=True)
+        os.makedirs(checkpoint_path, exist_ok=True)
         self._save(checkpoint_path)
+        
+        # Save optimizer/scheduler state if enabled
+        if self.args.save_optimizer_state or self.args.save_scheduler_state:
+            self._save_training_state(checkpoint_path)
+        
         checkpoints = glob.glob(os.path.join(checkpoints_dir, "checkpoint-*"))
         if len(checkpoints) > self.args.save_total_limit:
-            # Find oldest and delete it
-            oldest_path = None
-            oldest_ctime = None
-            for cp in checkpoints:
-                ctime = os.path.getctime(cp)
-                if oldest_ctime is None or ctime < oldest_ctime:
-                    oldest_path = cp
-                    oldest_ctime = ctime
+            # Find oldest by modification time and delete it
+            oldest_path = min(checkpoints, key=lambda path: os.path.getmtime(path))
             logger.info(f"Deleting oldest checkpoint at {oldest_path}")
             shutil.rmtree(oldest_path)
         # Make available to sub-class for saving additional state
         return checkpoint_path
+    
+    def _save_training_state(self, checkpoint_path: str) -> None:
+        """Save optimizer and scheduler state. Subclasses can override for custom behavior."""
+        training_state = {}
+        
+        if self.args.save_optimizer_state and self.optimizer is not None:
+            training_state['optimizer'] = self.optimizer.state_dict()
+            logger.debug("Saved optimizer state to checkpoint")
+            
+        if self.args.save_scheduler_state and self.lr_scheduler is not None:
+            training_state['lr_scheduler'] = self.lr_scheduler.state_dict()
+            logger.debug("Saved LR scheduler state to checkpoint")
+        
+        # Save global step for proper resume functionality
+        if hasattr(self, 'state') and self.state is not None:
+            training_state['global_step'] = self.state.global_step
+            logger.debug(f"Saved global step {self.state.global_step} to checkpoint")
+            
+        if training_state:
+            training_state_path = os.path.join(checkpoint_path, "training_state.pt")
+            torch.save(training_state, training_state_path)
+            logger.info(f"Saved training state to {training_state_path}")
+    
+    def _load_training_state(self, checkpoint_path: str) -> None:
+        """Load optimizer and scheduler state. Subclasses can override for custom behavior."""
+        training_state_path = os.path.join(checkpoint_path, "training_state.pt")
+        
+        if not os.path.exists(training_state_path):
+            logger.info(f"No training state file found at: {training_state_path}")
+            return
+            
+        try:
+            # Handle case where device might be None
+            device = self.args.device if self.args.device is not None else 'cpu'
+            training_state = torch.load(training_state_path, map_location=torch.device(device))
+            
+            if self.args.restore_optimizer_state and 'optimizer' in training_state:
+                if self.optimizer is not None:
+                    self.optimizer.load_state_dict(training_state['optimizer'])
+                    logger.info("Restored optimizer state from checkpoint")
+                else:
+                    logger.warning("Cannot restore optimizer state: optimizer not initialized")
+                    
+            if self.args.restore_scheduler_state and 'lr_scheduler' in training_state:
+                if self.lr_scheduler is not None:
+                    self.lr_scheduler.load_state_dict(training_state['lr_scheduler'])
+                    logger.info("Restored LR scheduler state from checkpoint")
+                else:
+                    logger.warning("Cannot restore LR scheduler state: scheduler not initialized")
+            
+            # Also restore global step if present in training state
+            if 'global_step' in training_state and hasattr(self, 'state') and self.state is not None:
+                self.state.global_step = training_state['global_step']
+                logger.info(f"Restored global step to {self.state.global_step}")
+            elif 'global_step' in training_state:
+                logger.warning(f"Global step {training_state['global_step']} found in checkpoint, but trainer state not initialized yet")
+                    
+        except Exception as e:
+            logger.error(f"Failed to load training state from {training_state_path}: {e}")
+
+    def _load_model_from_checkpoint(self, checkpoint_path: str) -> None:
+        """Load model weights from checkpoint using the sharded checkpoint loader."""
+        if self.model is None:
+            logger.warning("Cannot load model weights: model not initialized")
+            return
+            
+        try:
+            # Handle case where device might be None
+            device = self.args.device if self.args.device is not None else 'cpu'
+            
+            # Use the sharded checkpoint loader to handle all checkpoint formats
+            load_checkpoint(checkpoint_path, self.model, device=device, strict=False)
+            logger.info(f"Loaded model weights from checkpoint: {checkpoint_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to load model weights from {checkpoint_path}: {e}")
 
     def _dispatch_event(self, event: str, **kwargs):
         """

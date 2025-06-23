@@ -1,0 +1,6 @@
+-- extends "meta_defaults.yaml"
+
+-- block configs
+config_prefix: "configs"
+default_config: "train.yaml"
+<< endblock configs
