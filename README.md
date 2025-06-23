@@ -30,7 +30,7 @@ pip install -e .
 
 **2. Try a tutorial project:**
 
-See: [./examples/tutorials/tiny_llama/project_index.ipynb](./examples/tutorials/tiny_llama/project_index.ipynb])
+See: [./examples/tutorials/tiny_llama/project_index.ipynb](./examples/tutorials/tiny_llama/project_index.ipynb)
 
 Or, from the comamand-line...
 
