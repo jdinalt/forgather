@@ -64,7 +64,7 @@
 -- block lr_scheduler
     ##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
 # https://arxiv.org/html/2503.02844v1
-lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
     # Linear warm-up steps
     warmup_steps: 5000
 
@@ -77,7 +77,7 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 
 
 -- block optimizer
-optimizer: &optimizer !lambda:torch:optim.AdamW
+optimizer: &optimizer !partial:torch:optim.AdamW
     lr: 1.0e-3
 
 << endblock optimizer
