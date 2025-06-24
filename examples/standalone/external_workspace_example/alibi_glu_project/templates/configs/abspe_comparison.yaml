@@ -1,0 +1,33 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "ALiBi vs AbsPE Experiment"
+    -- set ns.config_description = "Same model with absolute positional encoding instead of ALiBi for comparison"
+    -- set ns.model_name = "abspe_glu_transformer"
+-- endblock config_metadata
+
+-- block model_definition
+    -- include 'tokenizers/tiny_2k.yaml'
+    -- include 'models/glu_transformer_abspe.yaml'
+-- endblock model_definition
+
+-- block trainer_definition
+    -- include 'abspe_comparison.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- abspe_comparison.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+-- block trainer_args
+    == super()
+    
+    ## Same hyperparameters as baseline for fair comparison
+    learning_rate: 3e-4
+    weight_decay: 0.01
+    per_device_train_batch_size: 8
+    warmup_steps: 100
+    
+    output_dir: "./output_models/abspe_glu_transformer"
+    
+-- endblock trainer_args

@@ -51,9 +51,9 @@ fgcli.py -t trainer.yaml train --dry-run           # Preview training command
 ### Direct Training Scripts (Alternative)
 ```bash
 # Direct usage of train_script.py (lower-level interface)
-torchrun --standalone --nproc-per-node gpu scripts/train_script.py -p project_dir config_name.yaml
-CUDA_VISIBLE_DEVICES=0 torchrun --standalone --nproc-per-node gpu scripts/train_script.py -p project_dir config_name.yaml
-accelerate launch scripts/train_script.py -p project_dir config_name.yaml
+torchrun --standalone --nproc-per-node gpu scripts/train_script.py config_template -p project_dir
+CUDA_VISIBLE_DEVICES=0 torchrun --standalone --nproc-per-node gpu scripts/train_script.py config_template -p project_dir
+accelerate launch scripts/train_script.py config_template -p project_dir
 ```
 
 ### Project Installation

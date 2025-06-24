@@ -1,0 +1,31 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Baseline Training"
+    -- set ns.config_description = "Standard hyperparameters for baseline comparison"
+    -- set ns.model_name = "baseline_alibi_glu"
+-- endblock config_metadata
+
+-- block trainer_definition
+    -- include 'baseline.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- baseline.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+-- block trainer_args
+    == super()
+    
+    ## Standard hyperparameters
+    learning_rate: 3e-4
+    weight_decay: 0.01
+    per_device_train_batch_size: 8
+    warmup_steps: 100
+    
+    ## Quick test - comment out for full training
+    # max_steps: 5
+    
+    output_dir: "./output_models/baseline_alibi_glu"
+    
+-- endblock trainer_args

@@ -1,0 +1,18 @@
+## The root directories from which to compute the locations of other directories.
+## This file is common to both config and meta-config templates.
+
+## The following absolute locations are available, as starting points:
+## project_dir : The location of the project directory
+## workspace_root : The location of the workspace-root directory.
+## forgather_config_dir() : The user's Forgather configuration directory
+##    On Linux, this is "~/.config/forgather"
+## user_home_dir() : The location of the user's home directory (~ on Linux).
+
+## Where is Forgather located?
+## For external workspaces, this points to the installed Forgather location
+-- set ns.forgather_dir = "/home/dinalt/ai_assets/forgather"
+
+## Additional user-defined locations should be added here.
+## Examples:
+-- set ns.ai_assets_dir = "/home/dinalt/ai_assets"
+-- set ns.user_projects_dir = "/home/dinalt/claudes_model"

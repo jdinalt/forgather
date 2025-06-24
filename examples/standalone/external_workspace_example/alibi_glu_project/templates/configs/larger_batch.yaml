@@ -1,0 +1,21 @@
+-- extends 'project.yaml'
+
+-- block project_meta_config
+    == super()
+    config_name: "Larger Batch Size"
+    config_description: "Using larger batch size with adjusted learning rate"
+    -- set ns.model_name = "larger_batch_alibi_glu"
+-- endblock project_meta_config
+
+-- block trainer_args
+    == super()
+    
+    ## Larger batch size with proportionally scaled learning rate
+    learning_rate: 5e-4
+    weight_decay: 0.01
+    per_device_train_batch_size: 16
+    warmup_steps: 150
+    
+    output_dir: "./output_models/larger_batch_alibi_glu"
+    
+-- endblock trainer_args

@@ -1,0 +1,6 @@
+-- extends 'meta_defaults.yaml'
+
+-- block meta_config
+project_name: "Claude's Tiny Story Model"
+project_description: "External workspace example: 8M parameter model with ALiBi attention and GLU feedforward trained on TinyStories"
+-- endblock meta_config

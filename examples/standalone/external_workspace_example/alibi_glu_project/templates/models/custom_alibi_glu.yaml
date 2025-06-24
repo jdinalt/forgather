@@ -1,0 +1,112 @@
+-- extends 'models/dynamic_causal_transformer.yaml'
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Custom ALiBi GLU Transformer"
+    -- set model_def.description = "8M parameter transformer with ALiBi attention and GLU feedforward layers"
+    -- set model_def.short_name = "custom_alibi_glu"
+-- endblock model_meta_config
+
+## Custom transformer components demonstrating:
+## 1. ALiBi attention for relative positional encoding
+## 2. GLU feedforward layers for improved capacity
+## 3. No absolute positional encoding (ALiBi replaces it)
+-- block model_bits
+    
+    ## Standard components (explicitly defined for clarity and independence from defaults)
+    -- block loss_fn
+loss_fn: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn []
+    << endblock loss_fn
+
+    -- block layer_norm_factory
+layer_norm_factory: &layer_norm_factory !lambda:torch.nn:LayerNorm@layer_norm_factory
+    normalized_shape: !var "hidden_size"
+    << endblock layer_norm_factory
+
+    ## Custom component 1: GLU feedforward instead of standard MLP
+    ## GLU variants provide gating mechanism for improved representational capacity
+    -- block feedforward_factory
+feedforward_factory: &feedforward_factory !lambda:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
+    d_model: !var "hidden_size"
+    d_feedforward: !var "dim_feedforward"
+    activation_factory: !lambda:torch.nn:SiLU
+    dropout: !var "activation_dropout"
+    << endblock feedforward_factory
+    
+    ## Custom component 2: ALiBi attention with relative positional encoding
+    ## ALiBi replaces absolute positional embeddings with learned relative biases
+    -- block attention_factory
+attention_factory: &attention_factory !lambda:.causal_alibi_attn:CausalAlibiAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    dropout: !var "attention_dropout"
+    trainable_alibi: true
+    alt_alibi_init: false
+    << endblock attention_factory
+
+    -- block layer_factory
+layer_factory: &layer_factory !lambda:.post_ln_layer:PostLNLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+    dropout: !var "layer_dropout"
+    residual_dropout: !var "residual_dropout"
+    << endblock layer_factory
+
+    -- block layer_stack
+layer_stack: &layer_stack !singleton:.layer_stack:LayerStack@layer_stack
+    layer_factory: *layer_factory
+    num_hidden_layers: !var "num_hidden_layers"
+    << endblock layer_stack
+
+    -- block output_decoder
+output_decoder: &output_decoder !singleton:torch.nn:Linear@output_decoder
+    - !var "hidden_size"
+    - !var "vocab_size"
+    << endblock output_decoder
+
+    ## Custom component 3: No positional encoder since ALiBi handles relative positions
+    ## Using null_pe eliminates absolute positional embeddings which would interfere with ALiBi
+    -- block positional_encoder
+positional_encoder: &positional_encoder !singleton:.null_pe:NullPE@positional_encoder
+    << endblock positional_encoder
+
+    -- block input_encoder
+input_encoder: &input_encoder !singleton:.input_encoder:InputEncoder@input_encoder
+    d_model: !var "hidden_size"
+    vocab_size: !var "vocab_size"
+    dropout: !var "embedding_dropout"
+    positional_encoder: *positional_encoder
+    << endblock input_encoder
+
+    -- block init_weights
+init_weights: &init_weights !lambda:.init_weights:simple_weight_init@init_weights []
+    << endblock init_weights
+
+    -- block model_factory
+model_factory: &model_factory !singleton:.causal_lm:CasualLM@model_factory
+    loss_fn: *loss_fn
+    input_encoder: *input_encoder
+    output_decoder: *output_decoder
+    layer_stack: *layer_stack
+    init_weights: *init_weights
+    << endblock model_factory
+    
+<< endblock model_bits
+
+-- block model_config
+    == super()
+    ## ~8M parameter configuration
+    hidden_size: 288
+    num_attention_heads: 6
+    num_hidden_layers: 6
+    dim_feedforward: 1152
+    max_sequence_length: 2048
+    
+    ## Dropout configuration
+    embedding_dropout: 0.1
+    layer_dropout: 0.1
+    residual_dropout: 0.0
+    attention_dropout: 0.1
+    activation_dropout: 0.1
+<< endblock model_config
