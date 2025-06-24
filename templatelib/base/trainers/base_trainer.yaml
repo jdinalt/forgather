@@ -2,6 +2,7 @@
 
 
 -- block trainer_meta_config
+    == super()
     -- set trainer_def.name = "Base Trainer"
     -- set trainer_def.description = "A ML model trainer"
 << endblock trainer_meta_config

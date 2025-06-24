@@ -8,6 +8,7 @@
     ##-- set trainer_def.pipeline_segments = 4
     ##-- set trainer_def.pipeline_microbatches = 4
     ##-- set trainer_def.split_layer_prefix = "causal_lm.layer_stack.layers."
+    ##-- set ns.nproc_per_node = 4
 -- endblock trainer_meta_config
 
 -- block trainer_dependencies

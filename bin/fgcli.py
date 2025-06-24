@@ -233,6 +233,7 @@ def train_script(args):
     env = get_env(meta, args)
     config, pp_config = get_config(meta, env, args)
     config_meta = Latent.materialize(config.meta)
+    nproc_per_node = config_meta["nproc_per_node"]
     train_script_path = os.path.join(
         config_meta["forgather_dir"], "scripts", "train_script.py"
     )
@@ -246,7 +247,7 @@ def train_script(args):
         cmd_args.extend([
             "--standalone",
             "--nproc-per-node",
-            "gpu",
+            str(nproc_per_node),
         ])
 
     # Apply path to script and project directory argument to script.

@@ -16,7 +16,9 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 def init_logging(args):
-    if int(os.environ["RANK"]) == 0:
+    # Default to zero, if not set.
+    rank = int(os.environ.get("RANK", "0"))
+    if rank == 0:
         log_level = args.log_level
         # TODO: Is there a version which takes a string?
         transformers.utils.logging.set_verbosity_info()

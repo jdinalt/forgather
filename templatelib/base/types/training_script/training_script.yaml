@@ -12,6 +12,8 @@
     -- set ns.save_model = True
     -- set ns.train = True
     -- set ns.eval = False
+    ## Assume single process training, unless overridden
+    -- set ns.nproc_per_node = 1
 << endblock config_metadata
 
 
@@ -147,6 +149,7 @@ lr_scheduler: &lr_scheduler ~
     save_model: "{{ns.save_model}}"
     train: "{{ns.train}}"
     eval: "{{ns.eval}}"
+    nproc_per_node: {{ns.nproc_per_node}}
 << endblock meta_output
 
 

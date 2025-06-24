@@ -3,6 +3,7 @@
     == super()
     -- set trainer_def.name = "forgather.ml.accel_trainer:AccelTrainer"
     -- set trainer_def.description = "A lightweight, extensible trainer w/ Accelerate support"
+    -- set ns.nproc_per_node = "gpu"
 -- endblock trainer_meta_config
 
 
