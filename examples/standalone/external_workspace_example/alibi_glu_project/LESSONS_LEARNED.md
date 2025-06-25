@@ -72,8 +72,9 @@ workspace_root/
 ### 4. CLI Usage & Environment Variables
 **Problem**: Confused about RANK environment variable requirement
 **Solution**: 
-- For single GPU: `fgcli.py -t config.yaml train -d 0`
-- For multi-GPU: Use torchrun or accelerate launch
+- fgcli.py works for both single GPU and multi-GPU configurations: `fgcli.py -t config.yaml train0`
+- The set of GPUs allocated can be explicitly set with the -d N argument, where N is a comma seperated list of GPU
+  indices.
 - RANK=0 was a workaround; the training script should be fixed to assume single process when RANK is unset
 
 ### 5. Architecture Compatibility Issues

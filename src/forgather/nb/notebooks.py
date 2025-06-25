@@ -17,6 +17,12 @@ from forgather.config import ConfigEnvironment
 from forgather.codegen import generate_code
 from forgather.yaml_encoder import to_yaml
 from forgather.ml.utils import count_parameters
+from forgather.template_utils import (
+    get_extends_graph,
+    template_extends_iter,
+    template_data_iter,
+    extends_graph_iter,
+)
 
 
 def display_md(md: str):
@@ -99,6 +105,21 @@ def render_referenced_templates_tree(environment, path, title=""):
     # Yields # tuple(level: int, name: str, path: str)
     for level, name, path in environment.find_referenced_templates(path):
         md += f"{' ' * 4 * level}- [{name}]({os.path.relpath(path)})\n"
+    return md
+
+
+def render_extends_graph(meta):
+    """
+    Given project meta, render the inheritance graph of all templates.
+    """
+    extends_graph = get_extends_graph(
+        template_extends_iter(template_data_iter(meta.find_templates()))
+    )
+    md = ""
+    for level, template_name, template_path in extends_graph_iter(extends_graph):
+        md += (
+            f"{' ' * 4 * level}- [{template_name}]({os.path.relpath(template_path)})\n"
+        )
     return md
 
 
@@ -350,9 +371,8 @@ def render_project_index(
         default_config = meta.default_config()
         md += f"Default Configuration: {default_config}\n\n"
         if show_available_templates:
-            md += render_template_list(
-                sorted(meta.find_templates("")), "## Available Templates\n"
-            )
+            md += "## Available Templates\n"
+            md += render_extends_graph(meta)
         return md
     except Exception as e:
         md += render_codeblock("", repr(e), "# RAISED EXCEPTION\n\n")
@@ -458,21 +478,3 @@ def display_config(
         display(ds.Markdown(e.markdown))
         delattr(e, "markdown")
         raise e
-
-
-def display_model_project_index(project_dir="."):
-    md = ""
-    try:
-        md += render_project_readme(project_dir)
-        md += f'#### Project Directory: "{os.path.abspath(project_dir)}"\n\n'
-        meta = MetaConfig(project_dir)
-        md += render_meta(meta, "## Meta Config\n")
-        template_iter = filter(
-            lambda x: not x[0].startswith("abstract/"),
-            meta.find_templates(prefix="models"),
-        )
-        md += render_template_list(
-            template_iter, "## Available Models\n", with_paths=True
-        )
-    finally:
-        display_md(md)

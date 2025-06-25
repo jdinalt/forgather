@@ -153,13 +153,13 @@ class TrainingArguments(MinimalTrainingArguments):
     save_on_each_node: bool = False
     save_only_model: bool = False
     restore_callback_states_from_checkpoint: bool = False
-    
+
     # Optimizer and scheduler checkpoint options
     save_optimizer_state: bool = False
     save_scheduler_state: bool = False
     restore_optimizer_state: bool = True
     restore_scheduler_state: bool = True
-    
+
     # Enhanced resume_from_checkpoint behavior: True = auto-discover, str = specific path
     resume_from_checkpoint: bool | str = False
 

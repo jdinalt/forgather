@@ -2,6 +2,7 @@ import os
 import datetime
 import time
 import re
+import getpass
 
 from jinja2 import FileSystemLoader, StrictUndefined, Undefined
 from jinja2.ext import Extension
@@ -18,7 +19,54 @@ from .utils import format_line_numbers
 
 
 def forgather_config_dir():
-    return user_config_dir("forgather", "dinalt")
+    return user_config_dir("forgather", getpass.getuser())
+
+
+def split_templates(template, name=None):
+    split_on = re.compile(r"\n#\s*-{3,}\s*([\w./]+)\s*-{3,}\n")
+    prev = 0
+    for match in split_on.finditer(template):
+        yield (name, template[prev : match.start()])
+        name = match.group(1)
+        prev = match.end()
+    yield (name, template[prev:])
+
+
+def preprocess(source):
+    def pp_generate(source):
+        newline_re = re.compile(r"(\n|\r\n|\r)")
+        full_line_comment = re.compile(r"\s*##(.*)")
+        line_comment = re.compile(r"(.*)\s+#{2,}.*")
+        line_statement = re.compile(r"\s*(--|<<|>>|==|=>)\s(.*)")
+
+        for line in newline_re.split(source)[::2]:
+            # Completely delete full comment lines
+            if (re_match := full_line_comment.fullmatch(line)) is not None:
+                if LineStatementProcessor.preserve_line_numbers:
+                    line = r"{# " + r" #}"
+                else:
+                    continue
+            # Delete training comments to end-of-line
+            elif (re_match := line_comment.fullmatch(line)) is not None:
+                line = re_match[1]
+
+            if (re_match := line_statement.fullmatch(line)) is not None:
+                match re_match[1]:
+                    case "--":
+                        line = r"{% " + re_match[2] + r" %}"
+                    case "<<":
+                        line = r"{%- " + re_match[2] + r" %}"
+                    case ">>":
+                        line = r"{% " + re_match[2] + r" -%}"
+                    case "==":
+                        line = r"{{ " + re_match[2] + r" }}"
+                    case "=>":
+                        line = r"{{ " + re_match[2] + r" -}}"
+                    case _:
+                        pass
+            yield line
+
+    return "\n".join(pp_generate(source))
 
 
 class PPLoader(FileSystemLoader):
@@ -37,8 +85,6 @@ class PPLoader(FileSystemLoader):
     This just makes things a little easier to work with.
     """
 
-    split_on = re.compile(r"\n#\s*-{3,}\s*([\w./]+)\s*-{3,}\n")
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.templates = {}
@@ -46,20 +92,11 @@ class PPLoader(FileSystemLoader):
     def get_source(self, environment, template_name):
         if (template_info := self.templates.get(template_name)) is None:
             source, filename, uptodate = super().get_source(environment, template_name)
-            main_template = next(iter := self.split_templates(source))
+            main_template = next(iter := split_templates(source))
             for sub in iter:
                 self.templates[sub[0]] = (sub[1], filename, uptodate)
             return main_template[1], filename, uptodate
         return template_info
-
-    def split_templates(self, template):
-        prev = 0
-        name = None
-        for match in self.split_on.finditer(template):
-            yield (name, template[prev : match.start()])
-            name = match.group(1)
-            prev = match.end()
-        yield (name, template[prev:])
 
 
 def _raise_on_undefined(*args):
@@ -85,11 +122,6 @@ def _os_path_normpath(*args):
 
 
 class LineStatementProcessor(Extension):
-    newline_re = re.compile(r"(\n|\r\n|\r)")
-    full_line_comment = re.compile(r"\s*##(.*)")
-    line_comment = re.compile(r"(.*)\s+#{2,}.*")
-
-    line_statement = re.compile(r"\s*(--|<<|>>|==|=>)\s(.*)")
     # Jinja comments add a blank line to the output. This makes it very difficult to
     # format things the way you would like /and/ use Jinja comments. The preprocessor
     # strips Jinja comments, which would otherwise add empty lines, from the input
@@ -112,39 +144,11 @@ class LineStatementProcessor(Extension):
     pp_verbose: bool = False
 
     def preprocess(self, source, name, filename=None):
-        source = "\n".join(self.pp_generate(source))
+        source = preprocess(source)
         if LineStatementProcessor.pp_verbose:
             print(f"{' '+name+' ':-^80}")
             print(format_line_numbers(source))
         return source
-
-    def pp_generate(self, source):
-        for line in self.newline_re.split(source)[::2]:
-            # Completely delete full comment lines
-            if (re_match := self.full_line_comment.fullmatch(line)) is not None:
-                if LineStatementProcessor.preserve_line_numbers:
-                    line = r"{# " + r" #}"
-                else:
-                    continue
-            # Delete training comments to end-of-line
-            elif (re_match := self.line_comment.fullmatch(line)) is not None:
-                line = re_match[1]
-
-            if (re_match := self.line_statement.fullmatch(line)) is not None:
-                match re_match[1]:
-                    case "--":
-                        line = r"{% " + re_match[2] + r" %}"
-                    case "<<":
-                        line = r"{%- " + re_match[2] + r" %}"
-                    case ">>":
-                        line = r"{% " + re_match[2] + r" -%}"
-                    case "==":
-                        line = r"{{ " + re_match[2] + r" }}"
-                    case "=>":
-                        line = r"{{ " + re_match[2] + r" -}}"
-                    case _:
-                        pass
-            yield line
 
 
 class PPEnvironment(SandboxedEnvironment):

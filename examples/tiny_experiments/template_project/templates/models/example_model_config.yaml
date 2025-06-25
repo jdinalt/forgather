@@ -1,0 +1,50 @@
+-- extends 'models/dynamic_causal_transformer.yaml'
+
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Example Model"
+    -- set model_def.description = "An example of a model config template."
+    -- set model_def.short_name = "example_model"
+<< endblock model_meta_config
+
+
+## Add the project model_src directory to the search path
+-- block model_submodule_searchpath
+    - "{{ ns.project_model_src_dir }}"
+    == super()
+<< endblock model_submodule_searchpath
+
+
+-- block model_tokenizer
+    -- include 'tokenizers/tiny_2k.yaml'
+<< endblock model_tokenizer
+
+
+-- block model_config
+    == super()
+    
+    # Project Overrides
+    hidden_size: 256
+    dim_feedforward: 1024
+    num_attention_heads: 4
+    num_hidden_layers: 4
+-- endblock model_config
+
+
+-- block positional_encoder
+# Using relative positional encoder; disable absolute PE
+positional_encoder: &positional_encoder null
+<< endblock positional_encoder
+
+
+-- block attention_factory
+# Replaced default attention with Alibi Attention
+attention_factory: &attention_factory !partial:.causal_alibi_attn:CausalAlibiAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    dropout: !var "attention_dropout"
+    bias: False
+    # Make the alibi biases trainable weights.
+    trainable_alibi: True
+<< endblock attention_factory

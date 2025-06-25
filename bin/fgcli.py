@@ -14,14 +14,19 @@ from forgather.config import ConfigEnvironment, fconfig
 from forgather.codegen import generate_code
 from forgather.yaml_encoder import to_yaml
 from forgather.latent import Latent
+from forgather.template_utils import (
+    get_extends_graph,
+    template_extends_iter,
+    template_data_iter,
+    extends_graph_iter,
+)
+
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
         formatter_class=RawTextHelpFormatter,
         description="Forgather CLI",
-        epilog=(
-            ""
-        ),
+        epilog=(""),
     )
     parser.add_argument(
         "-p",
@@ -40,18 +45,31 @@ def parse_args(args=None):
     )
 
     subparsers = parser.add_subparsers(dest="command", help="subcommand help")
-    
+
     index_parser = subparsers.add_parser("index", help="Show project index")
     ls_parser = subparsers.add_parser("ls", help="List available configurations")
     pp_parser = subparsers.add_parser("pp", help="Preprocess configuration")
-    templates_parser = subparsers.add_parser("templates", help="List referenced templates")
+    referenced_templates_parser = subparsers.add_parser(
+        "trefs", help="List referenced templates"
+    )
+    all_templates_parser = subparsers.add_parser(
+        "tlist", help="List available templates."
+    )
     meta_parser = subparsers.add_parser("meta", help="Show meta configuration")
     targets_parser = subparsers.add_parser("targets", help="Show output targets")
-    code_parser = subparsers.add_parser("code", help="Output configuration as Python code")
-    construct_parser = subparsers.add_parser("construct", help="Materialize and print a target")
-    graph_parser = subparsers.add_parser("graph", help="Preprocess and parse into node graph")
+    code_parser = subparsers.add_parser(
+        "code", help="Output configuration as Python code"
+    )
+    construct_parser = subparsers.add_parser(
+        "construct", help="Materialize and print a target"
+    )
+    graph_parser = subparsers.add_parser(
+        "graph", help="Preprocess and parse into node graph"
+    )
     tb_parser = subparsers.add_parser("tb", help="Start Tensorboard for project")
-    train_parser = subparsers.add_parser("train", help="Run configuration with train script")
+    train_parser = subparsers.add_parser(
+        "train", help="Run configuration with train script"
+    )
 
     code_parser.add_argument(
         "--target",
@@ -70,18 +88,33 @@ def parse_args(args=None):
     graph_parser.add_argument(
         "--format",
         type=str,
-        choices=['none', 'repr', 'yaml', 'fconfig', 'python'],
+        choices=["none", "repr", "yaml", "fconfig", "python"],
         default="yaml",
         help="Graph format",
     )
 
+    all_templates_parser.add_argument(
+        "--format",
+        type=str,
+        choices=["md", "files"],
+        default="files",
+        help="Output format.",
+    )
+
+    referenced_templates_parser.add_argument(
+        "--format",
+        type=str,
+        choices=["md", "files"],
+        default="files",
+        help="Output format.",
+    )
+
     tb_parser.add_argument(
-         "--all",
+        "--all",
         action="store_true",
         help="Configure TB to watch all model directories",
     )
 
-    
     tb_parser.add_argument(
         "remainder",
         nargs=argparse.REMAINDER,
@@ -99,7 +132,7 @@ def parse_args(args=None):
         "--devices",
         type=str,
         default=None,
-        help="CUDA Visible Devices e.g. \"0,1\"",
+        help='CUDA Visible Devices e.g. "0,1"',
     )
 
     train_parser.add_argument(
@@ -118,12 +151,14 @@ def parse_args(args=None):
 
     return args
 
+
 def get_meta(args):
     meta = MetaConfig(args.project_dir)
     if not args.config_template:
         default_config = meta.default_config()
         args.config_template = default_config
     return meta
+
 
 def get_env(meta, args):
     # Create new config environment and load configuration
@@ -133,13 +168,16 @@ def get_env(meta, args):
     )
     return environment
 
+
 def get_config(meta, env, args):
     return env.load(meta.config_path(args.config_template)).get()
+
 
 def list_configurations(args):
     meta = get_meta(args)
     for config, path in meta.find_templates(meta.config_prefix):
         print(config)
+
 
 def list_targets(args):
     meta = get_meta(args)
@@ -150,11 +188,13 @@ def list_targets(args):
         s += f"{target}\n"
     print(s)
 
+
 def preprocess(args):
     meta = get_meta(args)
     env = get_env(meta, args)
     pp_config = env.preprocess(meta.config_path(args.config_template))
     print(pp_config)
+
 
 def as_code(args):
     meta = get_meta(args)
@@ -163,47 +203,65 @@ def as_code(args):
     code = generate_code(config[args.target])
     print(code)
 
+
 def construct(args):
     proj = Project(args.config_template, args.project_dir)
     target = proj(args.target)
     pp(target)
+
 
 def show_meta(args):
     meta = get_meta(args)
     md = nb.render_meta(meta, "# Meta Config\n")
     print(md)
 
+
 def list_referenced_templates(args):
     meta = get_meta(args)
     env = get_env(meta, args)
-    # Yields # tuple(level: int, name: str, path: str)
-    for level, name, path in env.find_referenced_templates(meta.config_path(args.config_template)):
-        print(f"{' ' * 4 * level} {name} : {os.path.relpath(path)}")
+
+    match args.format:
+        case "md":
+            print(
+                nb.render_referenced_templates_tree(
+                    env, meta.config_path(args.config_template)
+                )
+            )
+        case "files":
+            # Yields # tuple(level: int, name: str, path: str)
+            for level, name, path in env.find_referenced_templates(
+                meta.config_path(args.config_template)
+            ):
+                print(os.path.relpath(path))
+        case _:
+            raise Exception(f"Unrecognized format {args.format}")
+
 
 def construct_graph(args):
     meta = get_meta(args)
     env = get_env(meta, args)
     config, pp_config = get_config(meta, env, args)
     match args.format:
-        case 'none':
+        case "none":
             pass
-        case 'fconfig':
+        case "fconfig":
             print(fconfig(config))
-        case 'repr':
+        case "repr":
             print(repr(config))
-        case 'yaml':
+        case "yaml":
             print(to_yaml(config))
-        case 'python':
+        case "python":
             print(generate_code(config["main"]))
         case _:
             raise Exception(f"Unrecognized format {args.format}")
+
 
 def start_tensorboard(args):
     meta = get_meta(args)
     env = get_env(meta, args)
     config, pp_config = get_config(meta, env, args)
     config_meta = Latent.materialize(config.meta)
-    
+
     if args.all:
         output_dir = os.path.abspath(config_meta["models_dir"])
     else:
@@ -215,7 +273,7 @@ def start_tensorboard(args):
         output_dir,
     ]
 
-    if len(args.remainder) > 1 and args.remainder[0] == '--':
+    if len(args.remainder) > 1 and args.remainder[0] == "--":
         cmd_args.extend(args.remainder[1:])
 
     cmd_str = ""
@@ -228,6 +286,7 @@ def start_tensorboard(args):
     if not args.dry_run:
         subprocess.run(cmd_args)
 
+
 def train_script(args):
     meta = get_meta(args)
     env = get_env(meta, args)
@@ -238,24 +297,28 @@ def train_script(args):
         config_meta["forgather_dir"], "scripts", "train_script.py"
     )
 
-    cmd_args = [ "torchrun" ]
+    cmd_args = ["torchrun"]
 
-    if len(args.remainder) > 1 and args.remainder[0] == '--':
+    if len(args.remainder) > 1 and args.remainder[0] == "--":
         cmd_args.extend(args.remainder[1:])
     else:
         # Apply defaults, if not specified
-        cmd_args.extend([
-            "--standalone",
-            "--nproc-per-node",
-            str(nproc_per_node),
-        ])
+        cmd_args.extend(
+            [
+                "--standalone",
+                "--nproc-per-node",
+                str(nproc_per_node),
+            ]
+        )
 
     # Apply path to script and project directory argument to script.
-    cmd_args.extend([
-        os.path.normpath(train_script_path),
-        "-p",
-        os.path.normpath(args.project_dir),
-    ])
+    cmd_args.extend(
+        [
+            os.path.normpath(train_script_path),
+            "-p",
+            os.path.normpath(args.project_dir),
+        ]
+    )
 
     # Optionally, apply system search path from meta.
     if meta.system_path is not None:
@@ -268,7 +331,7 @@ def train_script(args):
     cmd_str = ""
 
     if args.devices:
-        cmd_str += f"CUDA_VISIBLE_DEVICES=\"{args.devices}\" "
+        cmd_str += f'CUDA_VISIBLE_DEVICES="{args.devices}" '
         os.environ["CUDA_VISIBLE_DEVICES"] = args.devices
 
     for arg in cmd_args:
@@ -280,9 +343,23 @@ def train_script(args):
     if not args.dry_run:
         subprocess.run(cmd_args)
 
+
+def template_list(args):
+    meta = get_meta(args)
+    match args.format:
+        case "md":
+            print(nb.render_extends_graph(meta))
+        case "files":
+            for template_name, template_path in meta.find_templates():
+                print(template_path)
+        case _:
+            raise Exception(f"Unrecognized format {args.format}")
+
+
 def show_index(args):
     md = nb.render_project_index(args.project_dir)
     print(md)
+
 
 def main():
     args = parse_args()
@@ -295,9 +372,11 @@ def main():
             show_meta(args)
         case "targets":
             list_targets(args)
+        case "tlist":
+            template_list(args)
         case "graph":
             construct_graph(args)
-        case "templates":
+        case "trefs":
             list_referenced_templates(args)
         case "pp":
             preprocess(args)
@@ -311,6 +390,7 @@ def main():
             train_script(args)
         case _:
             show_index(args)
+
 
 if __name__ == "__main__":
     main()

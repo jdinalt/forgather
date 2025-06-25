@@ -32,13 +32,13 @@ loss_fn: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn []
 
 
     -- block layer_norm_factory
-layer_norm_factory: &layer_norm_factory !lambda:torch.nn:LayerNorm@layer_norm_factory
+layer_norm_factory: &layer_norm_factory !partial:torch.nn:LayerNorm@layer_norm_factory
     normalized_shape: !var "hidden_size"
     << endblock layer_norm_factory
 
 
     -- block feedforward_factory
-feedforward_factory: &feedforward_factory !lambda:.feedforward_layer:FeedforwardLayer@feedforward_factory
+feedforward_factory: &feedforward_factory !partial:.feedforward_layer:FeedforwardLayer@feedforward_factory
     d_model: !var "hidden_size"
     d_feedforward: !var "dim_feedforward"
     dropout: !var "activation_dropout"
@@ -46,7 +46,7 @@ feedforward_factory: &feedforward_factory !lambda:.feedforward_layer:Feedforward
 
 
     -- block attention_factory
-attention_factory: &attention_factory !lambda:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
+attention_factory: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
     d_model: !var "hidden_size"
     num_heads: !var "num_attention_heads"
     dropout: !var "attention_dropout"
@@ -54,7 +54,7 @@ attention_factory: &attention_factory !lambda:.causal_multihead_attn:CausalMulti
 
 
     -- block layer_factory
-layer_factory: &layer_factory !lambda:.post_ln_layer:PostLNLayer@layer_factory
+layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
     feedforward_factory: *feedforward_factory
     attention_factory: *attention_factory
     norm_factory: *layer_norm_factory
@@ -94,7 +94,7 @@ input_encoder: &input_encoder !singleton:.input_encoder:InputEncoder@input_encod
 
 
     -- block init_weights
-init_weights: &init_weights !lambda:.init_weights:simple_weight_init@init_weights []
+init_weights: &init_weights !partial:.init_weights:simple_weight_init@init_weights []
     << endblock init_weights
 
 

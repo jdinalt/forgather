@@ -165,7 +165,7 @@ class Trainer(BaseTrainer):
             self._init_optimizer()
 
         self.state = self._init_state()
-        
+
         if self.do_train:
             # Restore from checkpoint if specified (after state is initialized)
             checkpoint_path = self._resolve_checkpoint_path()
@@ -173,7 +173,7 @@ class Trainer(BaseTrainer):
                 logger.info(f"Resuming training from checkpoint: {checkpoint_path}")
                 self._load_model_from_checkpoint(checkpoint_path)
                 self._load_training_state(checkpoint_path)
-        
+
         self._dispatch_event("on_init_end")
 
     def _init_dataloaders(self, train_dataset, eval_dataset) -> None:

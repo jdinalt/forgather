@@ -29,7 +29,7 @@
 
 
 -- block datasets_definition
-    -- include 'datasets/tiny_stories_abridged.yaml'
+    -- include 'project.dataset'
 -- endblock datasets_definition
 
 
@@ -48,16 +48,6 @@
 << endblock trainer_callbacks
 
 
--- block datacollator
-# Data collator for causal model
-# Batches are dynamically padded to longest sequence
-# labels are set to input_ids, with pad tokens set to -100
-data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
-    tokenizer: *tokenizer
-    return_tensors: pt
--- endblock datacollator
-
-
 -- block lr_scheduler
     ##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
 # https://arxiv.org/html/2503.02844v1
@@ -74,10 +64,21 @@ optimizer: &optimizer !lambda:torch:optim.AdamW
 << endblock optimizer
 
 
+-- block datacollator
+    == super()
+    # Project Overrides
+    ## Limit maximum sequence length 512 tokens, at the data-collator level.
+    ## This can be useful for avoiding OOM errors, but can also be configured 
+    ## by overriding the dataset's arguments.
+    truncation: True
+    max_length: 512
+-- endblock datacollator
+
+
 #-------------------- project.trainer_config --------------------
 ## Select one-of:
-## trainers/( trainer.yaml | accel_trainer.yaml | hf_trainer.yaml )
--- extends 'trainers/accel_trainer.yaml'
+## trainers/( trainer.yaml | accel_trainer.yaml | hf_trainer.yaml | pipeline_trainer.yaml )
+-- extends 'trainers/trainer.yaml'
 
 
 -- block trainer_meta_config
@@ -89,32 +90,36 @@ optimizer: &optimizer !lambda:torch:optim.AdamW
 -- block trainer_args
     == super()
     # Project Overrides
-    learning_rate: 5.0e-4
-    per_device_train_batch_size: 16
+    per_device_train_batch_size: 32
     per_device_eval_batch_size: 64
     logging_steps: 100
     eval_steps: 500
-    lr_scheduler_type: "cosine"
-    
+    warmup_steps: 500
     ## Stop early for quick test.
     ## max_steps: 1000
+    
+    # Only used if lr_scheduler is null
+    lr_scheduler_type: "cosine"
+
+    # Only used if optimizer is null
+    learning_rate: 1.0e-3
+    
 << endblock trainer_args
 
 #-------------------- project.model_config --------------------
--- extends 'models/causal_transformer.yaml'
+-- extends 'models/example_model_config.yaml'
 
--- block model_config
-    == super()
-    
-    # Project Overrides
-<< endblock model_config
-
-
-## Add the project model_src directory to the search path
--- block model_submodule_searchpath
-    - "{{ ns.project_model_src_dir }}"
-    == super()
-<< endblock model_submodule_searchpath
 
 #-------------------- project.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'
+
+
+#-------------------- project.dataset --------------------
+-- extends 'datasets/tiny_stories_abridged.yaml'
+
+-- block tokenize_args
+## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
+    == super()
+    # project overrides
+    max_length: 512
+<< endblock tokenize_args
