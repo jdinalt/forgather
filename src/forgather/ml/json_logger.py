@@ -44,8 +44,6 @@ class JsonLogger(TrainerCallback):
         self.log_path = os.path.join(args.logging_dir, "trainer_logs.json")
         self.log_file = open(self.log_path, "x")
         self.log_file.write("[\n")
-        info, extra_info = format_train_info(args, state, control, **kwargs)
-        self._write_log(state, self.kwargs | info | extra_info)
 
     def on_evaluate(self, args, state, control, metrics, **kwargs):
         if self.log_file is None:
