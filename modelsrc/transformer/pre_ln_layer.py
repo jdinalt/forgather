@@ -30,13 +30,13 @@ class PreLNLayer(nn.Module):
         else:
             self.residual_dropout = nn.Dropout(residual_dropout)
 
-    def forward(self, x: FloatTensor) -> FloatTensor:
+    def forward(self, x: FloatTensor, **kwargs) -> FloatTensor:
         residual = self.residual_dropout(x)
         x = self.norm1(x)
-        x = self.attention(x)
+        x = self.attention(x, **kwargs)
         x = residual + self.dropout(x)
         residual = self.residual_dropout(x)
         x = self.norm2(x)
-        x = self.feedforward(x)
+        x = self.feedforward(x, **kwargs)
         x = residual + self.dropout(x)
         return x

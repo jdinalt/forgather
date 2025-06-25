@@ -30,7 +30,7 @@ class SingleHeadAttn(nn.Module):
     def extra_repr(self):
         return f"d_model={self.d_model}, bias={self.bias}"
 
-    def forward(self, x: FloatTensor) -> FloatTensor:
+    def forward(self, x: FloatTensor, **kwargs) -> FloatTensor:
         # x: (batch_size, seq_len, d_hidden)
         _, seq_len, _ = x.shape
 

@@ -29,7 +29,7 @@ class GLUFeedforwardLayer(nn.Module):
     def extra_repr(self):
         return f"d_model={self.d_model}, d_feedforward={self.d_feedforward}"
 
-    def forward(self, x: FloatTensor) -> FloatTensor:
+    def forward(self, x: FloatTensor, **kwargs) -> FloatTensor:
         x, gate = self.linear1(x).chunk(2, dim=-1)
         x = x * self.activation(gate)
         x = self.dropout(x)

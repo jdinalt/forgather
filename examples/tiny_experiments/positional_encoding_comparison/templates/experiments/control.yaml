@@ -1,0 +1,23 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Control - Sinusoidal PE"
+    -- set ns.config_description = "Baseline configuration using standard sinusoidal positional encoding"
+    -- set ns.model_name = "sinusoidal_pe"
+    -- set ns.log_name = "sinusoidal_pe"
+-- endblock config_metadata
+
+-- block construct_new_model
+    -- include 'experiment.model'
+-- endblock construct_new_model
+
+#-------------------- experiment.model --------------------
+-- extends 'project.model'
+
+-- block positional_encoder
+# Standard sinusoidal positional encoding (baseline)
+positional_encoder: &positional_encoder !singleton:.sinusoidal_pe:SinusoidalPE@positional_encoder
+    d_model: !var "hidden_size"
+    max_sequence_length: !var "max_sequence_length"
+<< endblock positional_encoder

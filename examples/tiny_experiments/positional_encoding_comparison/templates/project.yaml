@@ -1,0 +1,66 @@
+-- extends 'projects/tiny.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.create_new_model = True
+    -- set ns.save_model = False
+-- endblock config_metadata
+
+-- block trainer_definition
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
+-- block datasets_definition
+    -- include 'project.dataset_config'
+-- endblock datasets_definition
+
+-- block trainer_callbacks
+    -- include 'project.callbacks'
+<< endblock trainer_callbacks
+
+-- block construct_new_model
+    -- include 'project.model'
+-- endblock construct_new_model
+
+-- block optimizer
+optimizer: &optimizer !lambda:forgather.ml.optim.adafactor:Adafactor
+    lr: 2.0e-4
+    weight_decay: 0.01
+    
+<< endblock optimizer
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+-- block trainer_args
+    == super()
+    # project overrides - shorter training for quick comparison
+    # max_steps: 100
+-- endblock trainer_args
+
+#-------------------- project.dataset_config --------------------
+-- extends 'datasets/tiny_stories_abridged.yaml'
+
+#-------------------- project.callbacks --------------------
+-- extends 'tiny.callbacks'
+
+#-------------------- project.model --------------------
+-- extends 'models/tiny/tiny_causal.yaml'
+
+-- block model_config
+    == super()
+    
+    # Positional Encoding Comparison Project Overrides
+    # Smaller model for quick testing
+    hidden_size: 256
+    dim_feedforward: 1024
+    num_attention_heads: 4
+    num_hidden_layers: 6
+    embedding_dropout: 0.1
+    layer_dropout: 0.1
+<< endblock model_config
+
+-- block model_tokenizer
+    # Use a smaller tokenizer for faster training
+    -- include 'tokenizers/tiny_8k.yaml'
+<< endblock model_tokenizer

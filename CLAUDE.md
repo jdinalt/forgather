@@ -12,24 +12,34 @@ The `fgcli.py` command is the main way to interact with Forgather projects. It's
 # Basic usage
 fgcli.py [-p PROJECT_DIR] [-t CONFIG_TEMPLATE] <subcommand>
 
+# Help
+fgcli.py --help
+fgcli.pu <subcommand> --help
+
 # Common project exploration commands
 fgcli.py index                    # Show project overview
 fgcli.py ls                       # List available configurations
-fgcli.py -t config.yaml pp        # Show preprocessed configuration
-fgcli.py -t config.yaml templates # Show template inheritance hierarchy
-fgcli.py -t config.yaml targets   # List available output targets
+fgcli.py tlist                    # List all available template files
+fgcli.py tlist --format md        # Show template inheritance hierarchy for all templates as markdown.
+fgcli.py [-t config.yaml] pp      # Show preprocessed configuration; run before attempting to train!
+fgcli.py [-t config.yaml] refs    # Show template inheritance hierarchy, starting with configuration template.
+fgcli.py [-t config.yaml] targets # List available output targets
 
 # Configuration development and debugging
-fgcli.py -t config.yaml code --target model    # Generate Python code for target
-fgcli.py -t config.yaml construct --target model  # Materialize and print target
-fgcli.py -t config.yaml graph --format yaml       # Show node graph as YAML
+fgcli.py tlist | xargs grep SEARCH_PATTERN     # Search all templates for pattern
+fgcli.py -t config.yaml pp        # Useful for diagnosing configuration errors
 
-# Training and monitoring
+# Training
 fgcli.py -t config.yaml train                     # Train with default settings
 fgcli.py -t config.yaml train -d 0,1              # Train on specific GPUs
 fgcli.py -t config.yaml train --dry-run           # Show command without executing
-fgcli.py -t config.yaml tb                        # Start Tensorboard
-fgcli.py -t config.yaml tb --all                  # Tensorboard for all models
+
+# Get head and tail of training output logs
+head -n 10 output_models/my_custom_model/runs/my_custom_model_2025-06-25T03-16-59/trainer_logs.json
+tail -n 10 output_models/my_custom_model/runs/my_custom_model_2025-06-25T03-16-59/trainer_logs.json
+
+# Get config used by training run
+cat output_models/my_custom_model/runs/my_custom_model_2025-06-25T03-16-59/config.yaml
 ```
 
 ### Examples from Real Projects
@@ -37,23 +47,8 @@ fgcli.py -t config.yaml tb --all                  # Tensorboard for all models
 # Working with tiny_llama tutorial project
 cd examples/tutorials/tiny_llama
 fgcli.py ls                                        # List: train_tiny_llama.yaml, etc.
-fgcli.py -t train_tiny_llama.yaml templates        # Show template hierarchy
-fgcli.py -t train_tiny_llama.yaml train -d 0       # Train on GPU 0
-fgcli.py -t train_tiny_llama.yaml tb               # Monitor training
-
-# Working with tiny experiments
-cd examples/tiny_experiments/compare_trainers  
-fgcli.py -t trainer.yaml targets                   # Show available targets
-fgcli.py -t trainer.yaml code --target model       # Generate model code
-fgcli.py -t trainer.yaml train --dry-run           # Preview training command
-```
-
-### Direct Training Scripts (Alternative)
-```bash
-# Direct usage of train_script.py (lower-level interface)
-torchrun --standalone --nproc-per-node gpu scripts/train_script.py config_template -p project_dir
-CUDA_VISIBLE_DEVICES=0 torchrun --standalone --nproc-per-node gpu scripts/train_script.py config_template -p project_dir
-accelerate launch scripts/train_script.py config_template -p project_dir
+fgcli.py -t train_tiny_llama.yaml pp               # Show pre-processed configuration.
+fgcli.py -t train_tiny_llama.yaml train            # Train with selected configuration.
 ```
 
 ### Project Installation
@@ -118,14 +113,42 @@ project_dir/
 
 **Interactive Development**
 - Use `project_index.ipynb` notebooks for experiment development
-- Load projects with `Project(project_dir="path")`
-- Test configurations: `proj("config.yaml")` or `proj.environment.load("config.yaml")`
+- Load projects with `Project("config.yaml")`
+- Materialize from configurations: `model_factory, train_dataset = proj("model", "train_dataset")`
 
 **Template Development**
 - Templates use Jinja2 with custom line statement syntax
 - Inherit via `-- extends 'template_name.yaml'`
 - Override sections with `-- block section_name` / `-- endblock`
 - Include other templates with `-- include 'template_name.yaml'`
+- Inline template definition `#-------------------- template.name --------------------`
+- Jinja2 inheritance, via 'extends', only allows a single parent template. When overriding blocks from multiple parents,
+  use the 'include and extend' pattern. Example:
+
+```
+-- extends "types/training_script/causal_lm/causal_lm.yaml"
+-- block optimizer
+# Project override
+optimizer: &optimizer !lambda:torch:optim.AdamW
+    lr: 1.0e-3
+<< endblock optimizer
+
+-- block construct_new_model
+    ## Includes inline template.
+    -- include 'project.model_config'
+-- endblock construct_new_model
+
+# Inline template definition
+#-------------------- project.model_config --------------------
+
+-- block model_config
+    == super()
+    # Project overrides
+    hidden_size: 512
+<< endblock model_config
+```
+
+- For definitive syntax guide, see "docs/configuration/syntax-reference.md"
 
 **Code Generation**
 - Models materialized as standalone Python code in `output_models/`
@@ -137,8 +160,10 @@ project_dir/
 **Project Loading**
 ```python
 from forgather.project import Project
-proj = Project(project_dir="./examples/tutorials/tiny_llama")
-config = proj.environment.load("configs/train_tiny_llama.yaml")
+proj = Project("train_tiny_llama.yaml")
+training_script = proj()
+model_factory = proj("model")
+model = model_factory()
 ```
 
 **Template Inheritance**
@@ -157,3 +182,14 @@ config = proj.environment.load("configs/train_tiny_llama.yaml")
 - Generated models include training artifacts and source code
 
 The framework emphasizes systematic experimentation through template-based configuration management, enabling reproducible ML experiments with modular, reusable components.
+
+**Key Example Projects**
+Refer to these when creating new projects.
+- A template project to copy for starting a new one : "examples/template_project/"
+- Projects overview : "examples/tutorials/projects_overview/"
+- Forgather project structure : "examples/tutorials/project_composition/" 
+- Model training tutorial project : "examples/tutorials/tiny_llama/"
+
+**Style**
+
+Follow existing style conventions. Avoid emojis.

@@ -81,7 +81,7 @@ class CausalAlibiAttn(nn.Module):
             f"alt_alibi_init={self.alt_alibi_init}"
         )
 
-    def forward(self, qkv: FloatTensor) -> FloatTensor:
+    def forward(self, qkv: FloatTensor, **kwargs) -> FloatTensor:
         # qkv: (batch_size, seq_len, d_qkv)
         batch_size, seq_len, d_qkv = qkv.shape
 

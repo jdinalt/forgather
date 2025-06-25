@@ -119,7 +119,7 @@ class CausalMultiheadFlashAttn(nn.Module):
 
         return query, key, value
 
-    def forward(self, qkv: FloatTensor) -> FloatTensor:
+    def forward(self, qkv: FloatTensor, **kwargs) -> FloatTensor:
         if self.attn_type == "flash2":
             return self._flash2_forward(qkv)
 

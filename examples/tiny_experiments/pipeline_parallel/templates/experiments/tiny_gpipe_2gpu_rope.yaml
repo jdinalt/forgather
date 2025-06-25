@@ -1,0 +1,29 @@
+-- extends 'experiments/tiny_gpipe_2gpu.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Tiny GPipe with 2 GPUs - RoPE"
+    -- set ns.config_description = "Pipeline model testing RoPE with 2 GPUs"
+    -- set ns.log_name = "tiny_gpipe_2gpu_rope"
+-- endblock config_metadata
+
+-- block construct_new_model
+    -- include 'experiment.rope_model'
+-- endblock construct_new_model
+
+#-------------------- experiment.rope_model --------------------
+-- extends 'experiment.model'
+
+-- block attention_factory
+# Use RoPE attention instead of standard attention
+attention_factory: &attention_factory !partial:.causal_multihead_rope_attn:CausalMultiheadRoPEAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    max_seq_len: !var "max_sequence_length"
+    dropout: !var "attention_dropout"
+<< endblock attention_factory
+
+-- block positional_encoder
+# Use null positional encoder since RoPE handles position encoding
+positional_encoder: &positional_encoder !singleton:.null_pe:NullPE@positional_encoder []
+<< endblock positional_encoder

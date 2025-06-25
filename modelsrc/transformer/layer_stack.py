@@ -38,7 +38,7 @@ class LayerStack(nn.Module):
         **kwargs,
     ) -> FloatTensor:
         for layer in self.layers:
-            hidden_states = layer(hidden_states)
+            hidden_states = layer(hidden_states, **kwargs)
         if self.layer_norm:
             hidden_states = self.layer_norm(hidden_states)
         return hidden_states

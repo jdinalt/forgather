@@ -40,7 +40,7 @@ class CausalMultiheadAttn(nn.Module):
     def extra_repr(self):
         return f"d_model={self.d_model}, num_heads={self.num_heads}"
 
-    def forward(self, qkv: FloatTensor) -> FloatTensor:
+    def forward(self, qkv: FloatTensor, **kwargs) -> FloatTensor:
         # qkv: (batch_size, seq_len, d_qkv)
         batch_size, seq_len, d_qkv = qkv.shape
 
