@@ -6,7 +6,7 @@ import math
 from .rotary_embeddings import apply_rotary_emb
 
 
-class CausalRelPositionalAttn(nn.Module):
+class CausalRpeAttn(nn.Module):
     """
     Causal multi-head attention with Relative Positional Embeddings.
     """

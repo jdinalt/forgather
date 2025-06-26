@@ -14,16 +14,32 @@
 #-------------------- experiment.rope_model --------------------
 -- extends 'experiment.model'
 
--- block attention_factory
-# Use RoPE attention instead of standard attention
-attention_factory: &attention_factory !partial:.causal_multihead_rope_attn:CausalMultiheadRoPEAttn@attention_factory
-    d_model: !var "hidden_size"
-    num_heads: !var "num_attention_heads"
-    max_seq_len: !var "max_sequence_length"
-    dropout: !var "attention_dropout"
-<< endblock attention_factory
 
 -- block positional_encoder
-# Use null positional encoder since RoPE handles position encoding
-positional_encoder: &positional_encoder !singleton:.null_pe:NullPE@positional_encoder []
+# Use NullPE since RoPE is embedded in attention layers
+positional_encoder: &positional_encoder !factory:.null_pe:NullPE@positional_encoder
 << endblock positional_encoder
+
+
+-- block attention_factory
+# Use RoPE-enabled attention instead of standard attention
+attention_factory: &attention_factory !partial:.causal_rpe_attn:CausalRpeAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    dropout: !var "attention_dropout"
+    apply_pos_emb: !partial:.rotary_embeddings:apply_rotary_emb []
+<< endblock attention_factory
+
+
+-- block model_factory
+model_factory: &model_factory !factory:.causal_rpe_lm:CausalRpeLM@model_factory
+    loss_fn: *loss_fn
+    input_encoder: *input_encoder
+    output_decoder: *output_decoder
+    layer_stack: *layer_stack
+    init_weights: *init_weights
+    relative_pe: !partial:.rotary_embeddings:RotaryPE
+        d_head: 64
+        max_sequence_length: !var "max_sequence_length"
+        rope_theta: 10000.0
+<< endblock model_factory

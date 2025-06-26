@@ -37,7 +37,7 @@ init_weights: &init_weights !partial:.init_weights_by_regex:init_weights_by_rege
             padding_index: !var "pad_token_id"
             scale_rsqrt_d_model: False
             std: 1.0
-        linear: !lambda:.init_weights:init_torch_linear_default []
+        linear: !partial:.init_weights:init_torch_linear_default []
     # Print how each param is being initialized.
     debug: True
 << endblock init_weights

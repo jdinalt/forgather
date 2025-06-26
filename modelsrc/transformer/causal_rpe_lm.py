@@ -1,18 +1,9 @@
 from typing import Optional, Tuple, Callable
-
 from torch import nn, Tensor, LongTensor, FloatTensor
-
 from .rotary_embeddings import precompute_freqs_cis
 
 
-class CausalRoPELM(nn.Module):
-    """
-    Causal Language Model with efficient Rotary Position Embeddings (RoPE).
-    
-    This model computes RoPE frequencies once and passes them through all layers,
-    following the TorchTitan approach for memory efficiency in large models.
-    """
-
+class CausalRpeLM(nn.Module):
     def __init__(
         self,
         loss_fn: Callable,
@@ -20,10 +11,7 @@ class CausalRoPELM(nn.Module):
         output_decoder: Callable,
         layer_stack: Callable,
         init_weights: Callable,
-        *,
-        d_head: int,
-        max_sequence_length: int = 2048,
-        rope_theta: float = 10000.0,
+        relative_pe: Callable,
     ):
         super().__init__()
 
@@ -31,17 +19,11 @@ class CausalRoPELM(nn.Module):
         self.input_encoder = input_encoder
         self.output_decoder = output_decoder
         self.layer_stack = layer_stack
-        self.max_sequence_length = max_sequence_length
-        
-        # Precompute RoPE frequencies once for the entire model
-        # This is more memory efficient than storing frequencies in each attention layer
-        freqs_cis = precompute_freqs_cis(d_head, max_sequence_length, rope_theta)
-        self.register_buffer("freqs_cis", freqs_cis, persistent=True)
-        
+        self.relative_pe = relative_pe()
         init_weights(self)
 
     def extra_repr(self):
-        return f"loss_fn={self.loss_fn}, max_sequence_length={self.max_sequence_length}"
+        return f"loss_fn={self.loss_fn}"
 
     def forward(
         self,
@@ -53,16 +35,15 @@ class CausalRoPELM(nn.Module):
     ) -> dict[str, FloatTensor]:
         # Convert input_ids to embeddings and add positional information
         hidden_states = self.input_encoder(input_ids, position_ids)
-        
-        # Get sequence length for RoPE frequency slicing
-        seq_len = hidden_states.size(1)
-        
-        # Pass the RoPE frequencies to all layers via kwargs
+        seq_len = hidden_states.shape[1]
+        pos_embeddings = self.relative_pe(seq_len)
+
+        # Pass the relative positional embeddings to all layers via kwargs
         # Each attention layer will use these shared frequencies
         rope_kwargs = {
-            'freqs_cis': self.freqs_cis[:seq_len],
-            'attention_mask': attention_mask,
-            **kwargs
+            "pos_emb": pos_embeddings,
+            "attention_mask": attention_mask,
+            **kwargs,
         }
 
         # Pass the input through each of the layers

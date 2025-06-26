@@ -276,13 +276,7 @@ class Materializer:
                     args = list(args)
                     args.extend(self.args)
                     kwargs |= self.kwargs
-                try:
-                    value = obj.callable(*args, **kwargs)
-                except Exception as e:
-                    raise add_exception_notes(
-                        e,
-                        f"Exception occured while calling {obj.constructor}(*{repr(args)}, **{repr(kwargs)})",
-                    )
+                value = obj.callable(*args, **kwargs)
 
             if isinstance(obj, SingletonNode):
                 # Store object in map to return if called again.

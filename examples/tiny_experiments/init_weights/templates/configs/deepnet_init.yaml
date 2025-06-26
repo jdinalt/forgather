@@ -22,7 +22,7 @@
 
 
 -- block init_weights
-init_weights: &init_weights !lambda:.init_weights:init_weights@init_weights
+init_weights: &init_weights !partial:.init_weights:init_weights@init_weights
     regex_list:
         - [ 'norm', "pass" ]
         - [ 'bias', "zeros" ]

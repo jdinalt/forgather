@@ -64,28 +64,28 @@ layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
 
 
     -- block layer_stack
-layer_stack: &layer_stack !singleton:.layer_stack:LayerStack@layer_stack
+layer_stack: &layer_stack !factory:.layer_stack:LayerStack@layer_stack
     layer_factory: *layer_factory
     num_hidden_layers: !var "num_hidden_layers"
     << endblock layer_stack
 
 
     -- block output_decoder
-output_decoder: &output_decoder !singleton:torch.nn:Linear@output_decoder
+output_decoder: &output_decoder !factory:torch.nn:Linear@output_decoder
     - !var "hidden_size"
     - !var "vocab_size"
     << endblock output_decoder
 
 
     -- block positional_encoder
-positional_encoder: &positional_encoder !singleton:.sinusoidal_pe:SinusoidalPE@positional_encoder
+positional_encoder: &positional_encoder !factory:.sinusoidal_pe:SinusoidalPE@positional_encoder
     d_model: !var "hidden_size"
     max_sequence_length: !var "max_sequence_length"
     << endblock positional_encoder
 
 
     -- block input_encoder
-input_encoder: &input_encoder !singleton:.input_encoder:InputEncoder@input_encoder
+input_encoder: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
     d_model: !var "hidden_size"
     vocab_size: !var "vocab_size"
     dropout: !var "embedding_dropout"
@@ -99,7 +99,7 @@ init_weights: &init_weights !partial:.init_weights:simple_weight_init@init_weigh
 
 
     -- block model_factory
-model_factory: &model_factory !singleton:.causal_lm:CasualLM@model_factory
+model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     loss_fn: *loss_fn
     input_encoder: *input_encoder
     output_decoder: *output_decoder

@@ -25,7 +25,7 @@
 -- block lr_scheduler
     ##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
 # https://arxiv.org/html/2503.02844v1
-lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
     warmup_steps: 5000
     cooldown_steps: 50000
     constant_lr: 1.0e-4
