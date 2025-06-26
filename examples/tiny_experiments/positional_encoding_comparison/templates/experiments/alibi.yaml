@@ -24,12 +24,17 @@ positional_encoder: &positional_encoder null
 
 
 -- block attention_factory
-# Replaced default attention with Alibi Attention
+# Replaced default attention with improved ALiBi Attention
+# Now supports Grouped Query Attention (GQA) and uses SDPA with attention mask
 attention_factory: &attention_factory !partial:.causal_alibi_attn:CausalAlibiAttn@attention_factory
     d_model: !var "hidden_size"
     num_heads: !var "num_attention_heads"
+    # Test GQA: 8 query heads with 2 KV heads (4:1 ratio)
+    num_kv_heads: 2
     dropout: !var "attention_dropout"
     bias: False
-    # Make the alibi biases trainable weights.
+    # Make the ALiBi biases trainable weights
     trainable_alibi: True
+    # Use alternative initialization for better trainable slope behavior
+    alt_alibi_init: False
 << endblock attention_factory

@@ -72,7 +72,6 @@ optimizer: &optimizer !lambda:forgather.ml.optim.adafactor:Adafactor
     num_hidden_layers: 32
     embedding_dropout: 0.1
     layer_dropout: 0.1
-    attention_type: "torch_flash"
 << endblock model_config
 
 
@@ -80,15 +79,6 @@ optimizer: &optimizer !lambda:forgather.ml.optim.adafactor:Adafactor
     ## Use a smaller tokenizer.
     -- include 'tokenizers/tiny_8k.yaml'
 << endblock model_tokenizer
-
-
--- block attention_factory
-attention_factory: &attention_factory !lambda:.causal_multihead_flash_attn:CausalMultiheadFlashAttn@attention_factory
-    d_model: !var "hidden_size"
-    num_heads: !var "num_attention_heads"
-    dropout: !var "attention_dropout"
-    attn_type: !var "attention_type"
-<< endblock attention_factory
 
 
 -- block init_weights

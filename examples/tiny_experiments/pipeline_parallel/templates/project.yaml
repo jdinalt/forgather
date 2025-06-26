@@ -94,24 +94,12 @@ model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_t
     num_hidden_layers: 16
     embedding_dropout: 0.1
     layer_dropout: 0.1
-    # TODO: The context manager is not properly traced, so we can't control the exact implementation
-    # Possibly add the context manager to the pipeline trainer?
-    attention_type: "torch"
 << endblock model_config
 
 
 -- block model_tokenizer
     -- include 'tokenizers/tiny_8k.yaml'
 << endblock model_tokenizer
-
-
--- block attention_factory
-attention_factory: &attention_factory !partial:.causal_multihead_flash_attn:CausalMultiheadFlashAttn@attention_factory
-    d_model: !var "hidden_size"
-    num_heads: !var "num_attention_heads"
-    dropout: !var "attention_dropout"
-    attn_type: !var "attention_type"
-<< endblock attention_factory
 
 
 -- block layer_factory

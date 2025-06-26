@@ -1,6 +1,0 @@
--- extends "meta_defaults.yaml"
-
--- block configs
-config_prefix: "experiments"
-default_config: "adamw.yaml"
-<< endblock configs
