@@ -1,0 +1,35 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Baseline Tiny Experiment"
+    -- set ns.config_description = "Baseline configuration using Tiny Experiments defaults"
+    -- set ns.model_name = "control"
+    -- set ns.log_name = "control"
+-- endblock config_metadata
+
+
+-- block trainer_definition
+    -- include 'experiment.trainer_config'
+-- endblock trainer_definition
+
+
+-- block construct_new_model
+    -- include 'experiment.model_config'
+-- endblock construct_new_model
+
+#-------------------- experiment.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+-- block trainer_args
+    == super()
+    # Experiment overrides
+-- endblock trainer_args
+
+#-------------------- experiment.model_config --------------------
+-- extends 'project.model_config'
+
+-- block model_config
+    == super()
+    # Experiment overrides
+<< endblock model_config
