@@ -1,0 +1,48 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "RoPE Attention"
+    -- set ns.config_description = "RoPE (Rotary Position Embedding) attention mechanism with PyTorch SDPA"
+    -- set ns.model_name = "attention_rope"
+    -- set ns.log_name = "attention_rope"
+-- endblock config_metadata
+
+
+-- block construct_new_model
+    -- include 'experiment.model'
+-- endblock construct_new_model
+
+#-------------------- experiment.model --------------------
+-- extends 'project.model_config'
+
+
+-- block positional_encoder
+# Use NullPE since RoPE is embedded in attention layers
+positional_encoder: &positional_encoder !factory:.null_pe:NullPE@positional_encoder
+<< endblock positional_encoder
+
+
+-- block attention_factory
+# Use improved RoPE-enabled attention with injectable SDPA (no GQA for compatibility)
+attention_factory: &attention_factory !partial:.causal_rpe_attn:CausalRpeAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    dropout: !var "attention_dropout"
+    bias: False
+    apply_pos_emb: !partial:.rotary_embeddings:apply_rotary_emb []
+<< endblock attention_factory
+
+
+-- block model_factory
+model_factory: &model_factory !factory:.causal_rpe_lm:CausalRpeLM@model_factory
+    loss_fn: *loss_fn
+    input_encoder: *input_encoder
+    output_decoder: *output_decoder
+    layer_stack: *layer_stack
+    init_weights: *init_weights
+    relative_pe: !partial:.rotary_embeddings:RotaryPE
+        d_head: 128  # 256 / 2 = 128 for tiny model
+        max_sequence_length: !var "max_sequence_length"
+        rope_theta: 10000.0
+<< endblock model_factory

@@ -1,0 +1,27 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Standard Multi-Head Attention (Eager SDPA)"
+    -- set ns.config_description = "Baseline configuration using standard multi-head attention with eager SDPA implementation for validation"
+    -- set ns.model_name = "attention_multihead_eager"
+    -- set ns.log_name = "attention_multihead_eager"
+-- endblock config_metadata
+
+
+-- block construct_new_model
+    -- include 'experiment.model'
+-- endblock construct_new_model
+
+#-------------------- experiment.model --------------------
+-- extends 'project.model_config'
+
+
+-- block attention_factory
+# Standard multi-head attention with eager SDPA implementation for validation
+attention_factory: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    dropout: !var "attention_dropout"
+    sdpa_function: !partial:.eager_attention:eager_scaled_dot_product_attention []
+<< endblock attention_factory

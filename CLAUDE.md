@@ -80,6 +80,12 @@ modelsrc/transformer/     # Reusable transformer components
 - Jinja2 preprocessing with custom line statement syntax (`-- if`, `-- set`, `-- extends`, `-- block`)
 - Custom YAML tags: `!call`, `!factory`, `!partial`, `!var`, `!singleton`
 - Template inheritance via `-- extends` and `-- block`/`-- endblock`
+- **IMPORTANT YAML Tag Distinctions**:
+  - `!partial`: Constructs a Python partial function (produces Callable type)
+  - `!singleton`: Lazy object, called once and cached for subsequent accesses
+  - `!factory`: Called every time it's accessed (not cached)
+  - When using with no arguments, add empty list `[]`
+  - See docs/configuration/syntax-reference.md for details and examples
 
 ### Training System
 
@@ -111,6 +117,12 @@ project_dir/
 ```
 
 ### Development Workflow
+
+**Configuration Validation**
+- ALWAYS run `fgcli.py ls` to validate all configurations after making changes
+- Failed configs show as "PARSE ERROR" instead of their descriptive names
+- Use `fgcli.py -t config.yaml pp` to debug preprocessing issues
+- Check for syntax errors, missing imports, and template reference issues
 
 **Interactive Development**
 - Use `project_index.ipynb` notebooks for experiment development
@@ -190,6 +202,13 @@ Refer to these when creating new projects.
 - Projects overview : "examples/tutorials/projects_overview/"
 - Forgather project structure : "examples/tutorials/project_composition/" 
 - Model training tutorial project : "examples/tutorials/tiny_llama/"
+- Attention mechanisms testing project : "examples/tiny_experiments/attention/"
+
+**Common Issues and Solutions**
+- Missing import errors (e.g., `Callable` not imported): Add missing imports to affected files
+- YAML tag errors: Use `!partial` for function objects, `!singleton`/`!factory` for function calls
+- Configuration validation: Run `fgcli.py ls` to check all configs parse correctly
+- Complex64 serialization: RoPE models may fail to save due to safetensors limitations with complex tensors
 
 **Style**
 

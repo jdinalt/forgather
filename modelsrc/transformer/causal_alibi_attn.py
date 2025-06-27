@@ -2,7 +2,7 @@ import torch
 from torch import nn, Tensor, FloatTensor
 from torch.nn.functional import scaled_dot_product_attention
 import math
-from typing import Optional
+from typing import Optional, Callable
 
 # Attention layer with ALiBi relative positional encoding
 # TRAIN SHORT, TEST LONG: ATTENTION WITH LINEAR BIASES ENABLES INPUT LENGTH EXTRAPOLATION
