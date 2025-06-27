@@ -18,8 +18,9 @@ class GLUFeedforwardLayer(nn.Module):
         self.d_model = d_model
         self.d_feedforward = d_feedforward
 
-        self.linear1 = nn.Linear(self.d_model, self.d_feedforward * 2, bias=False)
-        self.linear2 = nn.Linear(self.d_feedforward, self.d_model, bias=False)
+        self.up_proj = nn.Linear(self.d_model, self.d_feedforward, bias=False)
+        self.gate_proj = nn.Linear(self.d_model, self.d_feedforward, bias=False)
+        self.down_proj = nn.Linear(self.d_feedforward, self.d_model, bias=False)
         self.activation = activation_factory()
         if dropout == 0.0:
             self.dropout = nn.Identity()
@@ -30,8 +31,9 @@ class GLUFeedforwardLayer(nn.Module):
         return f"d_model={self.d_model}, d_feedforward={self.d_feedforward}"
 
     def forward(self, x: FloatTensor, **kwargs) -> FloatTensor:
-        x, gate = self.linear1(x).chunk(2, dim=-1)
-        x = x * self.activation(gate)
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        x = up * self.activation(gate)
         x = self.dropout(x)
-        x = self.linear2(x)
+        x = self.down_proj(x)
         return x

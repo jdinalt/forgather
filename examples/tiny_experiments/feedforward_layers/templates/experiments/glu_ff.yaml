@@ -1,0 +1,31 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "GLU Layer"
+    -- set ns.config_description = "Test Gated Linear Unit (GLU) Layer"
+    -- set ns.model_name = "glu"
+    -- set ns.log_name = "glu"
+-- endblock config_metadata
+
+-- block construct_new_model
+    -- include 'experiment.model_config'
+-- endblock construct_new_model
+
+#-------------------- experiment.model_config --------------------
+-- extends 'project.model_config'
+
+-- block model_config
+    == super()
+    # Experiment overrides
+    # Scale ff dimension to compensate for extra parameters for fair comparison.
+    dim_feedforward: {{ (ns.d_feedforward * 2) // 3 }}
+<< endblock model_config
+
+
+-- block feedforward_factory
+feedforward_factory: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
+    d_model: !var "hidden_size"
+    d_feedforward: !var "dim_feedforward"
+    dropout: !var "activation_dropout"
+<< endblock feedforward_factory
