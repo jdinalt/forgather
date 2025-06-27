@@ -12,7 +12,6 @@ Forgather is a configuration-driven ML framework that uses template inheritance 
 
 - [Quick Start](#quick-start)
 - [Key Features](#key-features)
-- [Installation](#installation)
 - [Learning Forgather](#learning-forgather)
 - [Core Concepts](#core-concepts)
 - [Project Structure](#project-structure)
@@ -23,12 +22,23 @@ Forgather is a configuration-driven ML framework that uses template inheritance 
 
 **1. Install Forgather:**
 ```bash
+# Requires python >= 3.10
+# Setup python virtual envrionment for install
+# You can also use conda or whatever you are most comfortable with.
+python3 -m venv /path/to/new/venv
+
+# Activate the virtaul environment
+source /path/to/new/venv/bin/activate
+
 git clone https://github.com/jdinalt/forgather.git
 cd forgather
 pip install -e .
 
-# Optionally, add "./bin" to your path for CLI
+# Add "./bin" to your path for CLI
 PATH="/path/to/forgather/bin:$PATH"
+
+# Verify install works with CLI
+fgcli.py ls -r
 ```
 
 **2. Try a tutorial project:**
@@ -87,29 +97,6 @@ Models are generated as standalone Python code with no framework dependencies:
 - **PipelineTrainer**: Pipeline parallelism
 - **Custom Optimizers**: AdamW, SGD, AdaFactor, GaLore, Apollo
 
-## Installation
-
-**Requirements:**
-- Python 3.10+
-- PyTorch 2.3.1+
-- CUDA (optional, for GPU training)
-
-**Install from source:**
-```bash
-git clone https://github.com/your-repo/forgather.git
-cd forgather
-pip install -e .
-```
-**Optional**
-Add forgather/bin to your PATH.
-```bash
-PATH="/path/to/forgather/bin:$PATH"
-```
-
-**Verify installation:**
-```bash
-./bin/fgcli.py --help
-```
 ## Learning Forgather
 
 ### 1. **Start with Tutorials** (Recommended)
@@ -122,11 +109,17 @@ cd examples/tutorials/
 
 ### 2. **Explore Example Projects**
 ```bash
-cd examples/tiny_experiments/
+cd forgather
+
+# List all example projects and configurations
+fgcli.py ls -r
+
+# cd to example project directory
+cd examples/...
+
+# Show project info
+fgcli.py index
 ```
-- `compare_trainers/` - Different training approaches
-- `optimizers/` - Custom optimizer implementations
-- `tiny_models/` - Compare small language models
 
 ### 3. **Interactive Development**
 Each project includes a `project_index.ipynb` notebook for interactive exploration:
@@ -182,10 +175,11 @@ Templates → YAML → Node Graph → Python Code → Executable Objects
 
 Each step can be inspected:
 ```bash
-fgcli.py -t config.yaml pp                    # Preprocess with Jinja2 to YAML
-fgcli.py -t config.yaml graph --format yaml   # Node graph
-fgcli.py -t config.yaml code --target model   # [optional] Python code
-fgcli.py -t config.yaml construct --target model  # Live object
+fgcli.py -t config.yaml pp                          # Preprocess with Jinja2 to YAML
+fgcli.py -t config.yaml graph --format yaml         # Parsed node graph
+fgcli.py -t config.yaml targets                     # List constructable objects in graph
+fgcli.py -t config.yaml code [--target <target>]    # [optional] Equivalent Python code for target
+fgcli.py -t config.yaml construct [--target <target>] [--call] # Materialize and show constructed object
 ```
 
 ## Project Structure
@@ -199,12 +193,13 @@ fgcli.py -t config.yaml construct --target model  # Live object
 - `templatelib/` - Reusable templates
   - `base/` - Abstract base templates
   - `examples/` - Common models, datasets, tokenizers
-- `modelsrc/` - Transformer components library
+- `modelsrc/` - Modular model components library
 
 ### Example Projects
 - `examples/tutorials/` - Learning materials
 - `examples/tiny_experiments/` - Example experiments
 - `examples/standalone/` - Self-contained projects
+- `examples/template_project` - Starting point for new projects.
 
 ### Training and Monitoring
 ```bash
