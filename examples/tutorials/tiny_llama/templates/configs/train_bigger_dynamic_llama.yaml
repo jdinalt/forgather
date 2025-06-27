@@ -1,0 +1,14 @@
+-- extends 'bigger_llama_project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Bigger Dynamic Llama"
+    -- set ns.config_description = "A bigger Llama with dynamic modules"
+    -- set ns.model_name = "bigger_dllama"
+    -- set ns.log_name = "bigger_dllama"
+-- endblock config_metadata
+
+-- block construct_new_model
+    -- include 'models/bigger_dynamic_llama.yaml'
+-- endblock construct_new_model
+

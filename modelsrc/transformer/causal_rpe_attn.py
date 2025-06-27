@@ -4,8 +4,6 @@ from torch.nn.functional import scaled_dot_product_attention
 from typing import Callable, Optional
 import math
 
-from .rotary_embeddings import apply_rotary_emb
-
 
 class CausalRpeAttn(nn.Module):
     """

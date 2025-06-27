@@ -1,0 +1,136 @@
+-- extends 'models/causal_lm/custom_dynamic.yaml'
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Dynamic Llama"
+    -- set model_def.description = "A Llama compatible dynamic model."
+    -- set model_def.short_name = "dynllama"
+-- endblock model_meta_config
+
+
+-- block model_tokenizer
+    ## Default tokenizer
+<< endblock model_tokenizer
+
+-- block model_bits
+
+    -- block loss_fn
+loss_fn: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn []
+    << endblock loss_fn
+
+
+    -- block layer_norm_factory
+layer_norm_factory: &layer_norm_factory !partial:torch.nn:RMSNorm@layer_norm_factory
+    normalized_shape: !var "hidden_size"
+    eps: !var "rms_norm_eps"
+    << endblock layer_norm_factory
+
+
+    -- block feedforward_factory
+feedforward_factory: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
+    d_model: !var "hidden_size"
+    d_feedforward: !var "dim_feedforward"
+    activation_factory: !partial:torch.nn.SiLU []
+    dropout: !var "activation_dropout"
+    << endblock feedforward_factory
+
+
+    -- block attention_factory
+attention_factory: &attention_factory !partial:.causal_rpe_attn:CausalRpeAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    num_kv_heads: !var "num_kv_heads"
+    dropout: !var "attention_dropout"
+    bias: False
+    sdpa_function: !partial:torch.nn.functional:scaled_dot_product_attention []
+    apply_pos_emb: !partial:.rotary_embeddings:apply_rotary_emb []
+    << endblock attention_factory
+
+
+    -- block layer_factory
+layer_factory: &layer_factory !partial:.pre_ln_layer:PreLNLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+    dropout: !var "layer_dropout"
+    residual_dropout: !var "residual_dropout"
+    << endblock layer_factory
+
+
+    -- block layer_stack
+layer_stack: &layer_stack !factory:.layer_stack:LayerStack@layer_stack
+    layer_factory: *layer_factory
+    num_hidden_layers: !var "num_hidden_layers"
+    post_norm_factory: *layer_norm_factory
+    << endblock layer_stack
+
+
+    -- block output_decoder
+output_decoder: &output_decoder !factory:torch.nn:Linear@output_decoder
+    in_features: !var "hidden_size"
+    out_features: !var "vocab_size"
+    bias: False
+    << endblock output_decoder
+
+
+    -- block abs_positional_encoder
+absolute_pe: &absolute_pe null
+    << endblock abs_positional_encoder
+
+
+    -- block rel_positional_encoder
+relative_pe: &relative_pe !partial:.rotary_embeddings:RotaryPE@relative_pe
+    d_head: !var "d_head"
+    max_sequence_length: !var "max_sequence_length"
+    rope_theta: !var "rope_theta"
+    << endblock rel_positional_encoder
+
+
+    -- block input_encoder
+input_encoder: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
+    d_model: !var "hidden_size"
+    vocab_size: !var "vocab_size"
+    dropout: !var "embedding_dropout"
+    positional_encoder: *absolute_pe
+    << endblock input_encoder
+
+
+    -- block init_weights
+init_weights: &init_weights !partial:.init_weights:simple_weight_init@init_weights []
+    << endblock init_weights
+
+
+    -- block model_factory
+model_factory: &model_factory !factory:.causal_rpe_lm:CausalRpeLM@model_factory
+    loss_fn: *loss_fn
+    input_encoder: *input_encoder
+    output_decoder: *output_decoder
+    layer_stack: *layer_stack
+    init_weights: *init_weights
+    relative_pe: *relative_pe
+    << endblock model_factory
+
+
+<< endblock model_bits
+
+
+-- block model_config
+    == super()
+    hidden_size: 512
+    num_attention_heads: 8
+    # Default to MHA when null
+    num_kv_heads: null
+    d_head: 64 # Must be hidden_size // num_attention_heads
+    num_hidden_layers: 6
+    max_sequence_length: !singleton:getattr
+        - *tokenizer
+        - "model_max_length"
+    dim_feedforward: 2048
+    rope_theta: 10000.0
+    embedding_dropout: 0.0
+    rms_norm_eps: 1.0e-05
+    layer_dropout: 0.0
+    residual_dropout: 0.0
+    attention_dropout: 0.0
+    activation_dropout: 0.0
+<< endblock model_config
