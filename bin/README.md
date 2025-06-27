@@ -1,17 +1,18 @@
 # fgcli.py -- Forgather Command Line Interface
 
 ```
-usage: fgcli.py [-h] [-p PROJECT_DIR] [-t CONFIG_TEMPLATE] {index,ls,pp,templates,meta,targets,code,construct,graph,tb,train} ...
+usage: fgcli.py [-h] [-p PROJECT_DIR] [-t CONFIG_TEMPLATE] {index,ls,pp,trefs,tlist,meta,targets,code,construct,graph,tb,train} ...
 
 Forgather CLI
 
 positional arguments:
-  {index,ls,pp,templates,meta,targets,code,construct,graph,tb,train}
+  {index,ls,pp,trefs,tlist,meta,targets,code,construct,graph,tb,train}
                         subcommand help
     index               Show project index
     ls                  List available configurations
     pp                  Preprocess configuration
-    templates           List referenced templates
+    trefs               List referenced templates
+    tlist               List available templates.
     meta                Show meta configuration
     targets             Show output targets
     code                Output configuration as Python code
@@ -44,16 +45,32 @@ This allows for direct comparison of model archetectures.
 ...
 ```
 ---
-### ls : List available configuration
+### ls : Project List
 
-This lists the configurations available for use with the '-t CONFIG_TEMPLATE' argument.
+Lists projects and available configurations.
+
+```
+usage: fgcli.py ls [-h] [--recursive]
+
+options:
+  -h, --help       show this help message and exit
+  --recursive, -r  Search for projects in all sub-directories and list them.
+``` 
 
 ```
 fgcli.py ls
-tiny_causal.yaml
-tiny_gpt2.yaml
-tiny_llama.yaml
+Tiny Models : Train and compare performance of different small language model architectures
+    [tiny_causal.yaml]             Tiny Causal : A tiny causal transformer.
+    tiny_gpt2.yaml                 Tiny GPT2 : A tiny GPT2 model.
+    tiny_llama.yaml                Tiny LLama : A tiny llama model.
 ```
+
+Note that the default configuration is shown between square-brackets []
+
+As this requires preprocessing and parsing (YAML) all of the configurations, this is also very useful for finding
+configuration syntax errors. If such an error occurs, the configuration's name will be shown as "SYNTAX ERROR." This
+should be run before checking in changes to catch such errors.
+
 ---
 ### pp : Preprocess a configuration
 
@@ -69,7 +86,7 @@ fgcli.py -t tiny_llama.yaml pp
 ...
 ```
 ---
-### templates : List templates
+### trefs : List templates used by the configuration.
 
 This lists the template hierarchy, with the specified configuration at the root.
 
@@ -78,7 +95,7 @@ TEMPLATE_NAME : The name of the template, as viewed from the template namespace.
 TEMPLATE_PATH : The path to the template in the filesystem.
 
 ```
-fgcli.py -t tiny_llama.yaml templates
+fgcli.py -t tiny_llama.yaml trefs
  configs/tiny_llama.yaml : templates/configs/tiny_llama.yaml
      project.yaml : templates/project.yaml
          projects/tiny.yaml : ../tiny_templates/projects/tiny.yaml
@@ -87,8 +104,54 @@ fgcli.py -t tiny_llama.yaml templates
                  trainers/trainer.yaml : ../../../templatelib/base/trainers/trainer.yaml
 ...
 ```
+### tlist : List all available templates
+
+This list all templates available in the search-path and shows the inheritance hierarchy.
+
+```
+usage: fgcli.py tlist [-h] [--format {md,files}]
+
+options:
+  -h, --help           show this help message and exit
+  --format {md,files}  Output format.
+```
+
+md : Show as markdown
+files : List file paths to templates.
+
+```
+fgcli.py tlist
+templates/project.yaml
+templates/configs/tiny_causal.yaml
+templates/configs/tiny_gpt2.yaml
+templates/configs/tiny_llama.yaml
+../forgather_workspace/base_directories.yaml
+../forgather_workspace/meta_defaults.yaml
+...
+
+# Search for the word "extends" in all templates.
+fgcli.py tlist | xargs grep extends
+templates/project.yaml:-- extends 'projects/tiny.yaml'
+templates/project.yaml:-- extends 'tiny.trainer_config'
+templates/configs/tiny_causal.yaml:-- extends 'project.yaml'
+templates/configs/tiny_causal.yaml:-- extends 'models/tiny/tiny_causal.yaml'
+templates/configs/tiny_gpt2.yaml:-- extends 'project.yaml'
+...
+
+fgcli.py tlist --format md
+- [tiny.trainer_config](../forgather_workspace/projects/tiny.yaml)
+    - [project.trainer_config](templates/project.yaml)
+- [prompts/tiny_stories.yaml](../../../templatelib/examples/prompts/tiny_stories.yaml)
+- [trainers/minimal_trainer.yaml](../../../templatelib/base/trainers/minimal_trainer.yaml)
+    - [trainers/base_trainer.yaml](../../../templatelib/base/trainers/base_trainer.yaml)
+        - [trainers/trainer.yaml](../../../templatelib/base/trainers/trainer.yaml)
+            - [trainers/accel_trainer.yaml](../../../templatelib/base/trainers/accel_trainer.yaml)
+            - [trainers/pipeline_trainer.yaml](../../../templatelib/base/trainers/pipeline_trainer.yaml)
+            - [trainers/hf_trainer.yaml](../../../templatelib/base/trainers/hf_trainer.yaml)
+...
+```
 ---
-### targets : Show project available targets in the configuration
+### targets : Show available targets in the configuration
 
 ```
 fgcli.py -t tiny_llama.yaml targets
@@ -142,17 +205,21 @@ Format Options:
  - fconfig : Format using internal fconfig() call.
  - python : Convert entire graph to Python code.
 
+The 'yaml' target can be useful for more easily determining what the actual configuration is, when there are
+many overrides.
+
 ---
 ### tb : Start Tensorboard for project output directory.
 
 ```
-usage: fgcli.py tb [-h] [--dry-run] ...
+usage: fgcli.py tb [-h] [--all] [--dry-run] ...
 
 positional arguments:
   remainder   All arguments after -- will be forwarded as Tensroboard arguments.
 
 options:
   -h, --help  show this help message and exit
+  --all       Configure TB to watch all model directories
   --dry-run   Just show the generated commandline, without actually executing it.
 ```
 
@@ -162,6 +229,9 @@ fgcli.py -t tiny_llama.yaml tb
 
 # To bind to all interfaces
 fgcli.py -t tiny_llama.yaml tb -- --bind_all
+
+# To bind to all interfaces and show all models in models directory
+fgcli.py -t tiny_llama.yaml tb --all -- --bind_all
 ```
 
 ---
@@ -181,6 +251,9 @@ options:
 ```
 
 ```
+# Run training on the default target.
+fgcli.py train
+
 # Only run on GPU 0 and just print the command, without executing it.
 fgcli.py -t tiny_llama.yaml train -d 0 --dry-run
 CUDA_VISIBLE_DEVICES="0" torchrun --standalone --nproc-per-node gpu /path/to/forgather/scripts/train_script.py -p . tiny_llama.yaml

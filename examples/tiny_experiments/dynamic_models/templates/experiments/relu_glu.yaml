@@ -10,5 +10,5 @@
 
 
 -- block construct_new_model
-    -- include 'models/reu-glu.yaml'
+    -- include 'models/relu_glu.yaml'
 -- endblock construct_new_model

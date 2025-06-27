@@ -1,6 +1,8 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
+name: "Custom Tokenizers"
+description: "Demonstrates how to create a custom tokenizer and compare performance."
 config_prefix: "experiments"
 default_config: "control.yaml"
 << endblock configs

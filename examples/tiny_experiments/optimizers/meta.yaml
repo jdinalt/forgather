@@ -1,6 +1,8 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
+name: "Optimizers"
+description: "A testbed for different optimizer implementations"
 config_prefix: "experiments"
 default_config: "adamw.yaml"
 << endblock configs

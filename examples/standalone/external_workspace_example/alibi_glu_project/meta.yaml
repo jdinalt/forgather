@@ -1,6 +1,6 @@
 -- extends 'meta_defaults.yaml'
 
 -- block meta_config
-project_name: "Claude's Tiny Story Model"
-project_description: "External workspace example: 8M parameter model with ALiBi attention and GLU feedforward trained on TinyStories"
+name: "Claude's Tiny Story Model"
+description: "How to create a new Forgather Workspace; completely written by Claude."
 -- endblock meta_config

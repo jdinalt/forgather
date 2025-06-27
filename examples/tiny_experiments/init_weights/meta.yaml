@@ -1,6 +1,8 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
+name: "Weight Initialization"
+description: "Demonstrates how to use different weight initializations and compares them."
 config_prefix: "configs"
 default_config: "control.yaml"
 << endblock configs

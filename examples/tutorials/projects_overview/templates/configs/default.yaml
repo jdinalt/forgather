@@ -1,4 +1,6 @@
-meta: A simple list
+meta:
+    config_name: "List Example"
+    config_description: "Just constructs a simple list."
 main:
     - Alpha
     - Beta

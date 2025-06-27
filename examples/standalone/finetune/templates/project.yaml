@@ -141,5 +141,5 @@ text_gen_callback_args: &text_gen_callback_args
 << endblock callback_list
 
 #-------------------- project.dataset --------------------
--- extends 'datasets/examples/books.yaml'
+-- extends 'datasets/books.yaml'
 

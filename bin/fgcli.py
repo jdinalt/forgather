@@ -6,6 +6,7 @@ from argparse import RawTextHelpFormatter
 import sys
 from pprint import pp
 import subprocess
+import glob
 
 from forgather.project import Project
 import forgather.nb.notebooks as nb
@@ -127,6 +128,13 @@ def parse_args(args=None):
         help="Just show the generated commandline, without actually executing it.",
     )
 
+    ls_parser.add_argument(
+        "--recursive",
+        "-r",
+        action="store_true",
+        help="Search for project in all sub-directories and list them.",
+    )
+
     train_parser.add_argument(
         "-d",
         "--devices",
@@ -151,38 +159,62 @@ def parse_args(args=None):
 
     return args
 
-
-def get_meta(args):
-    meta = MetaConfig(args.project_dir)
+def set_default_template(meta, args):
     if not args.config_template:
         default_config = meta.default_config()
         args.config_template = default_config
-    return meta
 
-
-def get_env(meta, args):
+def get_env(meta, project_dir):
     # Create new config environment and load configuration
     environment = ConfigEnvironment(
         searchpath=meta.searchpath,
-        global_vars=preprocessor_globals(args.project_dir, meta.workspace_root),
+        global_vars=preprocessor_globals(project_dir, meta.workspace_root),
     )
     return environment
 
 
-def get_config(meta, env, args):
-    return env.load(meta.config_path(args.config_template)).get()
-
+def get_config(meta, env, config_template):
+    return env.load(meta.config_path(config_template)).get()
 
 def list_configurations(args):
-    meta = get_meta(args)
-    for config, path in meta.find_templates(meta.config_prefix):
-        print(config)
+    if args.recursive:
+        for root, dirs, files in os.walk(args.project_dir):
+            for file_name in files:
+                if file_name == "meta.yaml":
+                    print(f"\nProject Path: {root}\n")
+                    try:
+                        list_project(root)
+                    except:
+                        print(f"PARSE ERROR: {os.path.join(root, file_name)}")
+    else:
+        list_project(args.project_dir)
+
+def list_project(project_dir):
+    meta = MetaConfig(project_dir)
+    meta_config = meta.config_dict
+    project_name = meta_config.get("name", "Anonymous")
+    project_description = meta_config.get("description", "No Description")
+    print(f"{project_name} : {project_description}")
+    env = get_env(meta, project_dir)
+    for config_name, path in meta.find_templates(meta.config_prefix):
+        try:
+            config, pp_config = get_config(meta, env, config_name)
+            config_meta = Latent.materialize(config.meta)
+            config_long_name = config_meta.get("config_name", "Anonymous")
+            config_description = config_meta.get("config_description", "No Description")
+        except Exception as e:
+            config_long_name = "PARSE ERROR"
+            config_description = "An error occured while parsing the configuration."
+        if config_name == meta.default_config():
+            config_name = f"[{config_name}]"
+        print(f"    {config_name:<30} {config_long_name} : {config_description}")
 
 
 def list_targets(args):
-    meta = get_meta(args)
-    env = get_env(meta, args)
-    config, pp_config = get_config(meta, env, args)
+    meta = MetaConfig(args.project_dir)
+    set_default_template(meta, args)
+    env = get_env(meta, args.project_dir)
+    config, pp_config = get_config(meta, env, args.config_template)
     s = ""
     for target in config.keys():
         s += f"{target}\n"
@@ -190,16 +222,18 @@ def list_targets(args):
 
 
 def preprocess(args):
-    meta = get_meta(args)
-    env = get_env(meta, args)
+    meta = MetaConfig(args.project_dir)
+    set_default_template(meta, args)
+    env = get_env(meta, args.project_dir)
     pp_config = env.preprocess(meta.config_path(args.config_template))
     print(pp_config)
 
 
 def as_code(args):
-    meta = get_meta(args)
-    env = get_env(meta, args)
-    config, pp_config = get_config(meta, env, args)
+    meta = MetaConfig(args.project_dir)
+    set_default_template(meta, args)
+    env = get_env(meta, args.project_dir)
+    config, pp_config = get_config(meta, env, args.config_template)
     code = generate_code(config[args.target])
     print(code)
 
@@ -211,14 +245,16 @@ def construct(args):
 
 
 def show_meta(args):
-    meta = get_meta(args)
+    meta = MetaConfig(args.project_dir)
+    set_default_template(meta, args)
     md = nb.render_meta(meta, "# Meta Config\n")
     print(md)
 
 
 def list_referenced_templates(args):
-    meta = get_meta(args)
-    env = get_env(meta, args)
+    meta = MetaConfig(args.project_dir)
+    set_default_template(meta, args)
+    env = get_env(meta, args.project_dir)
 
     match args.format:
         case "md":
@@ -238,9 +274,10 @@ def list_referenced_templates(args):
 
 
 def construct_graph(args):
-    meta = get_meta(args)
-    env = get_env(meta, args)
-    config, pp_config = get_config(meta, env, args)
+    meta = MetaConfig(args.project_dir)
+    set_default_template(meta, args)
+    env = get_env(meta, args.project_dir)
+    config, pp_config = get_config(meta, env, args.config_template)
     match args.format:
         case "none":
             pass
@@ -257,9 +294,10 @@ def construct_graph(args):
 
 
 def start_tensorboard(args):
-    meta = get_meta(args)
-    env = get_env(meta, args)
-    config, pp_config = get_config(meta, env, args)
+    meta = MetaConfig(args.project_dir)
+    set_default_template(meta, args)
+    env = get_env(meta, args.project_dir)
+    config, pp_config = get_config(meta, env, args.config_template)
     config_meta = Latent.materialize(config.meta)
 
     if args.all:
@@ -288,9 +326,10 @@ def start_tensorboard(args):
 
 
 def train_script(args):
-    meta = get_meta(args)
-    env = get_env(meta, args)
-    config, pp_config = get_config(meta, env, args)
+    meta = MetaConfig(args.project_dir)
+    set_default_template(meta, args)
+    env = get_env(meta, args.project_dir)
+    config, pp_config = get_config(meta, env, args.config_template)
     config_meta = Latent.materialize(config.meta)
     nproc_per_node = config_meta["nproc_per_node"]
     train_script_path = os.path.join(
@@ -345,7 +384,8 @@ def train_script(args):
 
 
 def template_list(args):
-    meta = get_meta(args)
+    meta = MetaConfig(args.project_dir)
+    set_default_template(meta, args)
     match args.format:
         case "md":
             print(nb.render_extends_graph(meta))

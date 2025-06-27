@@ -12,3 +12,7 @@ config_prefix: "configs"
 # The name of the default configuration. If unspecified, the first configuration
 # in the "configs" namespace will be automatically chosen.
 default_config: "default.yaml"
+
+
+name: "Forgather Project Overview"
+description: "Learn Forgather Project anatomy -- how do Projects work?"

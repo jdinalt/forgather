@@ -17,12 +17,13 @@ fgcli.py --help
 fgcli.pu <subcommand> --help
 
 # Common project exploration commands
-fgcli.py index                    # Show project overview
-fgcli.py ls                       # List available configurations
+fgcli.py index                    # Show project overview as markdown
+fgcli.py ls                       # Show project name, short description, and all available configurations.
+fgcli.py ls -r                    # As above, but recursively search all sub-directories for projects and list them.
 fgcli.py tlist                    # List all available template files
 fgcli.py tlist --format md        # Show template inheritance hierarchy for all templates as markdown.
 fgcli.py [-t config.yaml] pp      # Show preprocessed configuration; run before attempting to train!
-fgcli.py [-t config.yaml] refs    # Show template inheritance hierarchy, starting with configuration template.
+fgcli.py [-t config.yaml] trefs    # Show template inheritance hierarchy, starting with configuration template.
 fgcli.py [-t config.yaml] targets # List available output targets
 
 # Configuration development and debugging

@@ -1,4 +1,6 @@
-meta: A list of poems.
+meta:
+    config_name: "Poems"
+    config_description: "A list of poems"
 main:
     -   name: The Raven
         author: Edgar Allan Po

@@ -1,1 +1,6 @@
 -- extends "meta_defaults.yaml"
+
+-- block configs
+name: "GPT2"
+description: "Demonsrates training a GPT2 model from scratch."
+-- endblock configs

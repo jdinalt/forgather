@@ -1,5 +1,7 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
+name: "Tiny Llama"
+description: "Learn how to train a LLM from scratch with Forgather"
 default_config: "train_tiny_llama.yaml"
 << endblock configs

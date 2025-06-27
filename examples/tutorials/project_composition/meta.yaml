@@ -3,3 +3,5 @@
 # config_prefix: "configs"
 
 default_config: "list.yaml"
+name: "Project Composition"
+description: "Learn how to factor a configuration with Jinja2 inheritance"

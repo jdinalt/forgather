@@ -50,9 +50,7 @@ class MetaConfig:
         self.searchpath = config.get(
             "searchdir", [os.path.join(project_dir, "templates")]
         )
-        self.searchpath = [
-            os.path.abspath(self.norm_path(path)) for path in self.searchpath
-        ]
+        self.searchpath = [os.path.abspath(path) for path in self.searchpath]
         self.config_prefix = config.get("config_prefix", "configs")
         self.default_cfg = config.get("default_config", None)
         self.system_path = config.get("system_path", None)

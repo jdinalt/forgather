@@ -1,6 +1,8 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
+name: "BPE Tokenizer"
+description: "Demonstrates how to create a new tokenizer from scratch"
 config_prefix: "configs"
 default_config: "2k.yaml"
 << endblock configs

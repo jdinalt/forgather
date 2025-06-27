@@ -1,5 +1,7 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
+name: "Tiny Models"
+description: "Train and compare performance of different small language model architectures"
 default_config: "tiny_causal.yaml"
 << endblock configs
