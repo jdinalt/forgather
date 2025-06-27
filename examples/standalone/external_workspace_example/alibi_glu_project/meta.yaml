@@ -4,3 +4,8 @@
 name: "Claude's Tiny Story Model"
 description: "How to create a new Forgather Workspace; completely written by Claude."
 -- endblock meta_config
+
+-- block configs  
+name: "External Workspace ALiBi GLU"
+description: "External workspace example demonstrating ALiBi attention with GLU feedforward"
+-- endblock configs

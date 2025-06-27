@@ -34,7 +34,6 @@ def parse_args(args=None):
         "--project-dir",
         type=str,
         default=".",
-        help="The relative path to the project directory.",
     )
 
     parser.add_argument(
@@ -82,9 +81,17 @@ def parse_args(args=None):
     construct_parser.add_argument(
         "--target",
         type=str,
-        default="",
+        default="main",
         help="Output target name",
     )
+
+
+    construct_parser.add_argument(
+        "--call",
+        action="store_true",
+        help="Call the materialized object",
+    )
+
 
     graph_parser.add_argument(
         "--format",
@@ -239,8 +246,12 @@ def as_code(args):
 
 
 def construct(args):
+    meta = MetaConfig(args.project_dir)
+    set_default_template(meta, args)
     proj = Project(args.config_template, args.project_dir)
     target = proj(args.target)
+    if args.call:
+        target = target()
     pp(target)
 
 

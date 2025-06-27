@@ -26,6 +26,9 @@ Forgather is a configuration-driven ML framework that uses template inheritance 
 git clone https://github.com/jdinalt/forgather.git
 cd forgather
 pip install -e .
+
+# Optionally, add "./bin" to your path for CLI
+PATH="/path/to/forgather/bin:$PATH"
 ```
 
 **2. Try a tutorial project:**
@@ -35,12 +38,12 @@ See: [./examples/tutorials/tiny_llama/project_index.ipynb](./examples/tutorials/
 Or, from the comamand-line...
 
 ```bash
+fgcli.py ls -r                                 # List all forgather projects
 cd examples/tutorials/tiny_llama
 fgcli.py index                                 # Show project summary
 fgcli.py ls                                    # List available configs
-fgcli.py -t train_tiny_llama.yaml templates    # Show template hierarchy
 fgcli.py -t train_tiny_llama.yaml pp | less    # Show pre-processed configuration
-fgcli.py -t train_tiny_llama.yaml train -d 0   # Train on GPU 0
+fgcli.py -t train_tiny_llama.yaml train        # Train model
 ```
 
 **3. Monitor training:**
@@ -123,8 +126,7 @@ cd examples/tiny_experiments/
 ```
 - `compare_trainers/` - Different training approaches
 - `optimizers/` - Custom optimizer implementations
-- `init_weights/` - Weight initialization experiments
-- `flash_attention/` - Attention mechanism comparisons
+- `tiny_models/` - Compare small language models
 
 ### 3. **Interactive Development**
 Each project includes a `project_index.ipynb` notebook for interactive exploration:
@@ -143,7 +145,7 @@ Master the `fgcli.py` interface:
 fgcli.py index                    # Project overview
 fgcli.py ls                       # List configs
 fgcli.py -t config.yaml pp        # Show preprocessed config
-fgcli.py -t config.yaml templates # Template hierarchy
+fgcli.py -t config.yaml tlist     # Template hierarchy
 fgcli.py -t config.yaml train     # Train model
 ```
 
@@ -169,6 +171,9 @@ Forgather uses **Jinja2 + YAML** with custom syntax:
 - `!partial:module:Class` - Partial function construction
 - `!factory:module:Class` - Factory construction
 - `!var "variable_name"` - Variable references
+- `##---- inline.template.name ----` - Split document into multiple templates
+
+See [Syntax Reference](./docs/configuration/syntax-reference.md)
 
 ### Code Generation Pipeline
 ```
@@ -207,8 +212,8 @@ fgcli.py -t config.yaml construct --target model  # Live object
 # Print command, but don't execute it.
 fgcli.py -t my_experiment.yaml train -d "0,1" --dry-run
 
-# Start Tensorboard to monitor progress
-fgcli.py -t my_experiment.yaml tb --all
+# Start Tensorboard to monitor progress on all models in project; bind to all ports.
+fgcli.py tb --all -- --bind_all
 ```
 
 ## Contributing
@@ -220,11 +225,3 @@ Forgather is actively developed and welcomes contributions:
 3. **Documentation**: Improve tutorials and examples
 4. **Community**: Share your experiments and templates
 
-**Development Setup:**
-```bash
-git clone https://github.com/jdinalt/forgather.git
-cd forgather
-pip install -e .
-# Run existing examples to verify setup
-cd examples/tutorials/tiny_llama && fgcli.py -t train_tiny_llama.yaml train --dry-run
-```

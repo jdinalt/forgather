@@ -1,6 +1,8 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
+name: "Positional Encoding Comparison"
+description: "Compare different positional encoding schemes (ALiBi, RoPE) against baseline"
 config_prefix: "experiments"
 default_config: "control.yaml"
 << endblock configs

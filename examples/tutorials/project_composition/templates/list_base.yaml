@@ -10,7 +10,7 @@
 
 ## Define project meta-data
 -- block project_meta
-    -- set ns.config_name = "Anonymous"
+    -- set ns.config_name = "Tutorial Config"
     -- set ns.config_description = "Construct a list"
 << endblock project_meta
 
@@ -27,8 +27,8 @@
 
 meta:
 -- block meta
-    name: "{{ ns.config_name }}"
-    description: "{{ ns.config_description }}"
+    config_name: "{{ ns.config_name }}"
+    config_description: "{{ ns.config_description }}"
 << endblock meta
 
 

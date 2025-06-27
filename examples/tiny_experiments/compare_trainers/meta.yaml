@@ -1,6 +1,8 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
+name: "Trainer Comparison"
+description: "Compare different trainer implementations (Simple, Accelerate, Pipeline)"
 config_prefix: "experiments"
 default_config: "trainer.yaml"
 << endblock configs
