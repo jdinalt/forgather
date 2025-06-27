@@ -23,7 +23,7 @@
 -- block trainer_args
     == super()
     # project overrides - shorter training for attention testing
-    max_steps: 500
+    # max_steps: 500
 -- endblock trainer_args
 
 

@@ -22,14 +22,16 @@ class SingleHeadAlibiAttn(nn.Module):
     def __init__(
         self,
         d_model: int,
+        *,
         bias: bool = True,
+        dropout: float = 0.0,
         slope_init: float = 0.5,
-        trainable_slope: bool = False,
+        trainable_alibi: bool = False,
     ):
         super().__init__()
         self.d_model = d_model
         self.slope_init = slope_init
-        self.trainable_slope = trainable_slope
+        self.trainable_alibi = trainable_alibi
         self.bias = bias
 
         # We scale the attention scores by the inverse-square-root of the head dimension
@@ -43,14 +45,15 @@ class SingleHeadAlibiAttn(nn.Module):
         self.value_linear = nn.Linear(self.d_model, self.d_model, bias=self.bias)
 
         # Unlike the original design, the slope is a learnable parameter.
-        if self.trainable_slope:
+        if self.trainable_alibi:
             self.alibi_slope = nn.Parameter(torch.tensor(self.slope_init))
         else:
             self.alibi_slope = self.slope_init
+        self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
     def extra_repr(self):
         return (
-            f"d_model={self.d_model}, slope_init={self.slope_init}, trainable_slope={self.trainable_slope} "
+            f"d_model={self.d_model}, slope_init={self.slope_init}, trainable_alibi={self.trainable_alibi} "
             f"bias={self.bias}"
         )
 
@@ -82,6 +85,9 @@ class SingleHeadAlibiAttn(nn.Module):
         # Calculate the attention weights; avoid NANs that might emerge from zeros in softmax's denominator
         attention_weights = torch.softmax(scores, dim=-1)
         del scores
+
+        # Apply dropout
+        attention_weights = self.dropout(attention_weights)
 
         # Use the attention weights to get a weighted combination of value vectors
         attended_values = torch.matmul(attention_weights, self.value_linear(x))
