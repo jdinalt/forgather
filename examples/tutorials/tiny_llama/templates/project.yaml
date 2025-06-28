@@ -4,21 +4,23 @@
     == super()
     ## Overrides
     -- set ns.config_name = "Tiny Llama"
-    -- set ns.config_description = "A demo of training a tiny llama model from scratch."
+    -- set ns.config_description = "A demo of training a tiny llama model from scratch"
     -- set ns.create_new_model = True
     -- set ns.save_model = True
+    -- set ns.model_name = "tiny_llama"
 -- endblock config_metadata
-
-## Add a dataset to train on from an existing definition
--- block datasets_definition
-    -- include 'datasets/tiny_stories_abridged.yaml'
--- endblock datasets_definition
 
 ## This includes an inline template, defined below.
 ## The need to do this relates to Jinja2 disallowing a template from
 ## directly having more than one parent template. We can get around 
 ## this limitation by extending in 'project.model_config' and including
 ## the resulting template.
+-- block datasets_definition
+    -- include 'project.dataset'
+-- endblock datasets_definition
+
+
+## As above, this is defined below
 -- block construct_new_model
     -- include 'project.model_config'
 -- endblock construct_new_model
@@ -30,18 +32,27 @@
 -- endblock trainer_definition
 
 
-## Add some Trainer callbacks
+## Override loggers
 -- block trainer_callbacks
-    ## Adds Tensorboard logging
-    -- include 'callbacks/loggers.yaml'
+    -- include 'project.logger_config'
 << endblock trainer_callbacks
 
 
 ## Explicitly set the optimizer.
 -- block optimizer
-optimizer: &optimizer !lambda:torch:optim.AdamW
+optimizer: &optimizer !partial:torch:optim.AdamW
     lr: 1.0e-3
 -- endblock optimizer
+
+
+## Override the default LR Scheduler
+-- block lr_scheduler
+# https://arxiv.org/html/2503.02844v1
+lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+    warmup_steps: 500
+    cooldown_steps: 50000
+    constant_lr: 1.0e-4
+<< endblock lr_scheduler
 
 
 -- block datacollator
@@ -53,8 +64,9 @@ optimizer: &optimizer !lambda:torch:optim.AdamW
 -- endblock datacollator
 
 #-------------------- project.model_config --------------------
--- extends "models/tiny_llama.yaml"
+-- extends "models/tiny_dynamic_llama.yaml"
 ## Project can override values here...
+
 
 #-------------------- project.trainer_config --------------------
 -- extends 'trainers/trainer.yaml'
@@ -69,4 +81,38 @@ optimizer: &optimizer !lambda:torch:optim.AdamW
     eval_steps: 500
     num_train_epochs: 1
     dataloader_num_workers: 1
+    # RoPE embeddings are complex tensors and safetensors can't handle these.
+    save_safetensors: False
 -- endblock trainer_args
+
+
+#-------------------- project.logger_config --------------------
+-- extends 'callbacks/loggers.yaml'
+## Add experiment loggers to the callbacks list.
+## The parent creates a Tensor Board SummaryWriter, which we can use.
+
+## This adds a text-generationn sample every 'generation_steps'
+-- block callback_list
+-- include 'prompts/tiny_stories.yaml'
+
+
+    == super()
+    - !singleton:forgather.ml.textgen_callback:TextgenCallback
+        summary_writer: *summary_writer
+        prompts: *testprompts
+        generation_config: *generation_config
+        max_new_tokens: 40
+        generation_steps: 1000
+<< endblock callback_list
+
+
+#-------------------- project.dataset --------------------
+-- extends 'datasets/tiny_stories_abridged.yaml'
+
+-- block tokenize_args
+## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
+    == super()
+    # project overrides
+    truncation: True
+    max_length: 512
+<< endblock tokenize_args
