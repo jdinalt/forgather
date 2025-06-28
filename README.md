@@ -84,18 +84,25 @@ optimizer: !partial:torch.optim.AdamW
     lr: 1.0e-3
     weight_decay: 0.01
 
-model: !factory:transformers.LlamaForCausalLM.from_pretrained
-    pretrained_model_name_or_path: "meta-llama/Llama-2-7b"
+-- block layer_factory
+# Experiment: Switch from PreLayerNorm to PostLayerNorm
+layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+    dropout: !var "layer_dropout"
+    residual_dropout: !var "residual_dropout"
+<< endblock layer_factory
 ```
 
 ### Code Generation
 Models are generated as standalone Python code with no framework dependencies:
 
 ### Built-in Training Infrastructure
-- **SimpleTrainer**: Fast single-GPU training
+- **Trainer**: Fast single-GPU training for small models.
 - **AccelTrainer**: Multi-GPU with Accelerate
 - **PipelineTrainer**: Pipeline parallelism
-- **Custom Optimizers**: AdamW, SGD, AdaFactor, GaLore, Apollo
+- **Custom Optimizers**: AdamW, AdaFactor, GaLore, Apollo
 
 ## Learning Forgather
 
@@ -103,9 +110,10 @@ Models are generated as standalone Python code with no framework dependencies:
 ```bash
 cd examples/tutorials/
 ```
-- `tiny_llama/` - Complete training pipeline from scratch
+- `tiny_llama/` - Train a small language model from scratch
 - `project_composition/` - Template inheritance patterns
 - `dynamic_lm/` - Dynamic model construction
+- `projects_overview/` - Overview of Forgather projects
 
 ### 2. **Explore Example Projects**
 ```bash
@@ -164,7 +172,7 @@ Forgather uses **Jinja2 + YAML** with custom syntax:
 - `!partial:module:Class` - Partial function construction
 - `!factory:module:Class` - Factory construction
 - `!var "variable_name"` - Variable references
-- `##---- inline.template.name ----` - Split document into multiple templates
+- `#---- inline.template.name ----` - Split document into multiple templates
 
 See [Syntax Reference](./docs/configuration/syntax-reference.md)
 

@@ -20,7 +20,7 @@ There is a custom Jinja2 preprocessor which implemnts an extended version of Jin
 - << : Line Statement w/ left-trim
 - \>> : Line Statement w/ right-trim
 - == : Print Command
-- '=>' : Print Command w/ right-trim
+- => : Print Command w/ right-trim
 
 Example Input:
 
@@ -118,7 +118,7 @@ Normally, this would require creating another template file, but who needs that!
 -- endblock
 
 
-##--------------------- foo.bar ---------------------
+#--------------------- foo.bar ---------------------
 ## This is a sub-template named 'foo.bar'
 -- extends 'some_other_base_template.jinja'
 
