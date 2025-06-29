@@ -43,7 +43,7 @@ attention_factory: &attention_factory !partial:.causal_rpe_attn:CausalRpeAttn@at
     dropout: !var "attention_dropout"
     bias: False
     sdpa_function: !partial:torch.nn.functional:scaled_dot_product_attention []
-    apply_pos_emb: !partial:.rotary_embeddings:apply_rotary_emb []
+    apply_pos_emb: !partial:.real_rotary_embeddings:apply_rotary_emb []
     << endblock attention_factory
 
 
@@ -79,7 +79,7 @@ absolute_pe: &absolute_pe null
 
 
     -- block rel_positional_encoder
-relative_pe: &relative_pe !partial:.rotary_embeddings:RotaryPE@relative_pe
+relative_pe: &relative_pe !partial:.real_rotary_embeddings:RealRotaryPE@relative_pe
     d_head: !var "d_head"
     max_sequence_length: !var "max_sequence_length"
     rope_theta: !var "rope_theta"
@@ -92,6 +92,8 @@ input_encoder: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
     vocab_size: !var "vocab_size"
     dropout: !var "embedding_dropout"
     positional_encoder: *absolute_pe
+    scale_sqrt_d_model: False
+    scale: 1.0
     << endblock input_encoder
 
 
@@ -128,7 +130,7 @@ model_factory: &model_factory !factory:.causal_rpe_lm:CausalRpeLM@model_factory
     dim_feedforward: 2048
     rope_theta: 10000.0
     embedding_dropout: 0.0
-    rms_norm_eps: 1.0e-05
+    rms_norm_eps: 1.0e-06
     layer_dropout: 0.0
     residual_dropout: 0.0
     attention_dropout: 0.0
