@@ -1,6 +1,5 @@
 from typing import Optional, Tuple, Callable
 from torch import nn, Tensor, LongTensor, FloatTensor
-from .rotary_embeddings import precompute_freqs_cis
 
 
 class CausalRpeLM(nn.Module):
