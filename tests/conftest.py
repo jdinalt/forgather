@@ -15,10 +15,11 @@ from forgather.ml.trainer_types import TrainingArguments
 
 class SimpleMockModel(nn.Module):
     """Simple model for testing purposes"""
+
     def __init__(self, input_size=10, output_size=1):
         super().__init__()
         self.linear = nn.Linear(input_size, output_size)
-    
+
     def forward(self, x):
         return self.linear(x)
 
@@ -39,7 +40,7 @@ def training_args(temp_dir):
         num_train_epochs=1,
         per_device_train_batch_size=2,
         save_steps=10,
-        save_total_limit=3
+        save_total_limit=3,
     )
 
 
@@ -60,14 +61,18 @@ def mock_dataset():
 @pytest.fixture
 def mock_optimizer():
     """Mock optimizer for testing"""
+
     def _create_optimizer(model_params):
         return torch.optim.Adam(model_params, lr=0.001)
+
     return _create_optimizer
 
 
 @pytest.fixture
 def mock_scheduler():
     """Mock scheduler factory for testing"""
+
     def _create_scheduler(optimizer):
         return torch.optim.lr_scheduler.StepLR(optimizer, step_size=10)
+
     return _create_scheduler
