@@ -7,7 +7,10 @@ import torch
 
 # https://arxiv.org/pdf/2407.17465
 @torch.no_grad()
-def simple_weight_init(model: nn.Module) -> None:
+def simple_weight_init(
+    model: nn.Module,
+    scale_rsqrt_d_model: bool = True,
+) -> None:
     """
     Simple and reasonable init for LLMs
     """
@@ -17,7 +20,11 @@ def simple_weight_init(model: nn.Module) -> None:
             if module.bias is not None:
                 module.bias.zero_()
         elif isinstance(module, nn.Embedding):
-            init_embeddings(module.weight, module.padding_idx)
+            init_embeddings(
+                module.weight,
+                module.padding_idx,
+                scale_rsqrt_d_model=scale_rsqrt_d_model,
+            )
 
 
 def init_torch_linear_default(weight: Tensor, gain: float = 1.0):

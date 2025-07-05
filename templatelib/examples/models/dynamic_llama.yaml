@@ -93,12 +93,32 @@ input_encoder: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
     dropout: !var "embedding_dropout"
     positional_encoder: *absolute_pe
     scale_sqrt_d_model: False
-    scale: 1.0
     << endblock input_encoder
 
 
     -- block init_weights
-init_weights: &init_weights !partial:.init_weights:simple_weight_init@init_weights []
+# Init method based upon https://github.com/pytorch/torchtitan/blob/main/torchtitan/models/llama3/model/model.py
+init_weights: &init_weights !partial:.init_weights:init_weights_by_regex@init_weights
+    # Note: Yaml treats single and double quotes differently WRT escapes. Use single
+    # quotes for regex expressions, wihc prevents Yaml from interpreting escapes.
+    # For a literal ' use ''
+    regex_list:
+        - [ 'norm', "pass" ]
+        - [ 'bias', "zeros" ]
+        - [ 'embedding\.weight', "init_embeddings" ]
+        - [ 'up_proj|query_linear|key_linear|value_linear', "trunc_normal_magic" ]
+        - [ 'gate_proj|down_proj|output_linear', "trunc_normal" ]
+        - [ 'output_decoder', "init_output_layer" ]
+    init_f_map:
+        pass: !partial:.init_weights:init_pass
+        zeros: !partial:torch.nn.init:zeros_ []
+        init_embeddings: !partial:.llama_init:init_embeddings []
+        trunc_normal_magic: !partial:.llama_init:trunc_normal_magic []
+        trunc_normal: !partial:.llama_init:trunc_normal
+            std: !call:.llama_init:llama_std [ !var "num_hidden_layers" ]
+        init_output_layer: !partial:.llama_init:init_output_layer { d_model: !var "hidden_size" }
+    # Print how each param is being initialized.
+    debug: False
     << endblock init_weights
 
 

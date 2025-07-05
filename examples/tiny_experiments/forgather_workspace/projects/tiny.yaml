@@ -66,7 +66,7 @@
 # https://arxiv.org/html/2503.02844v1
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
     # Linear warm-up steps
-    warmup_steps: 5000
+    warmup_steps: 500
 
     # Cosine decay from end of warmp-up to constant-lr
     cooldown_steps: 50000

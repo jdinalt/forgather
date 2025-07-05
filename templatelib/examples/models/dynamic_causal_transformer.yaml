@@ -90,11 +90,13 @@ input_encoder: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
     vocab_size: !var "vocab_size"
     dropout: !var "embedding_dropout"
     positional_encoder: *positional_encoder
+    scale_sqrt_d_model: True
     << endblock input_encoder
 
 
     -- block init_weights
-init_weights: &init_weights !partial:.init_weights:simple_weight_init@init_weights []
+init_weights: &init_weights !partial:.init_weights:simple_weight_init@init_weights
+    scale_rsqrt_d_model: True
     << endblock init_weights
 
 

@@ -1,0 +1,20 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Tiny Dynamic Llama HF Init"
+    -- set ns.config_description = "Init dynamic llama model with HF init method."
+    -- set ns.model_name = "tiny_dllama_hf"
+-- endblock config_metadata
+
+
+-- block construct_new_model
+    -- include 'experiment.model_config'
+-- endblock construct_new_model
+
+#-------------------- experiment.model_config --------------------
+-- extends 'models/tiny/tiny_dyn_llama.yaml'
+
+-- block init_weights
+init_weights: &init_weights !partial:.llama_init:hf_llama_weight_init@init_weights []
+<< endblock init_weights
