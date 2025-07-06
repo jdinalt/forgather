@@ -23,8 +23,6 @@ class LayerStack(nn.Module):
     ):
         super().__init__()
 
-        # Use module dict, rather than list, as this results in
-        # the module path names remaining static when sharding the model.
         self.layers = nn.ModuleList(
             [layer_factory() for layer_idx in range(num_hidden_layers)]
         )

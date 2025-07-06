@@ -11,13 +11,14 @@ from torch import nn, Tensor
     We also provide an implementation which matches that used by the HF Llama model.
 """
 
-
-def init_output_layer(weight: Tensor, d_model: int) -> None:
+def init_output_layer(
+    weight: Tensor,
+    d_model: int
+) -> None:
     """
     Output layer initialization
     """
-    print(f"{'*' * 20} {d_model=}")
-    std = d_model**-0.5
+    std = d_model ** -0.5
     cutoff_factor = 3
 
     nn.init.trunc_normal_(
@@ -28,7 +29,6 @@ def init_output_layer(weight: Tensor, d_model: int) -> None:
         b=cutoff_factor * std,
     )
 
-
 def trunc_normal_magic(weight: Tensor) -> None:
     """
     Init with truncated normal with magic std of 0.02
@@ -37,14 +37,12 @@ def trunc_normal_magic(weight: Tensor) -> None:
     """
     nn.init.trunc_normal_(weight, mean=0.0, std=0.02)
 
-
 def trunc_normal(weight: Tensor, std: float) -> None:
     """
     Init with explicit std
     See llama_std() and llama_std_depth()
     """
     nn.init.trunc_normal_(weight, mean=0.0, std=std)
-
 
 def llama_std(n_layers: int) -> float:
     """
@@ -53,13 +51,11 @@ def llama_std(n_layers: int) -> float:
     """
     return 0.02 / (2 * n_layers) ** 0.5
 
-
 def llama_std_depth(layer_id: int) -> float:
     """
     Alternative std, which varies with layer depth
     """
     return 0.02 / (2 * (layer_id + 1)) ** 0.5
-
 
 def init_embeddings(weight: Tensor) -> None:
     """
@@ -68,10 +64,9 @@ def init_embeddings(weight: Tensor) -> None:
     """
     nn.init.normal_(weight)
 
-
 def hf_llama_weight_init(
     model: nn.Module,
-    std: float = 0.02,
+    std: float=0.02,
 ) -> None:
     """
     Use same initialization as HF Llama model.
@@ -85,3 +80,4 @@ def hf_llama_weight_init(
             module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
+    
