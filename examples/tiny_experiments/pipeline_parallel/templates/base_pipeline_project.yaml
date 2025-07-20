@@ -15,6 +15,8 @@
     -- set ns.log_name = "pipeline_defaults"
     ## Change the trainer implementation.
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
+    ## Set to number of processes per node
+    ## -- set ns.nproc_per_node = N
 -- endblock config_metadata
 
 
@@ -55,6 +57,11 @@
 -- block trainer_args
     == super()
     # Pipeline Base Project Overrides
-    debug_pipeline: True
     load_weights_from_checkpoint: {{ not ns.create_new_model }}
+
+    # Debug settings
+    debug_pipeline: False
+    debug_split_model: False
+    debug_model_params: False
+    debug_model_init: False
 -- endblock trainer_args

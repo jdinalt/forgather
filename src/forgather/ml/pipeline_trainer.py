@@ -38,11 +38,27 @@ from .sharded_checkpoint import (
     save_sharded_checkpoint,
     load_checkpoint,
     index_file_name,
+    create_sharing_metadata,
+    retie_parameters,
+    get_all_fqns,
 )
+from .pipeline_buffer_fix import apply_pipeline_buffer_fix, validate_pipeline_buffers
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+def log_level_for(level, prefix, modules: List[str]):
+    for module_name in modules:
+        logging.getLogger(prefix + module_name).setLevel(level)
+
+# Enable debugging for various modules
+log_level_for(
+    logging.DEBUG,
+    "torch.distributed.pipelining.",
+    [
+        # Add modules to enable logging on here.
+    ]
+)
 
 @dataclass(kw_only=True)
 class PipelineTrainingArguments(TrainingArguments):
@@ -110,17 +126,21 @@ def set_parameter(mod, fqn, p):
 
 def replace_parameters(to_mod, from_mod):
     """
-    Replace the parmaeters in to_mod with those in from_mod
+    Replace the parameters in to_mod with those in from_mod
+    
+    IMPORTANT: Use remove_duplicate=False to ensure shared parameters are handled correctly
     """
-    for name, p in to_mod.named_parameters():
+    for name, p in to_mod.named_parameters(remove_duplicate=False):
         set_parameter(to_mod, name, from_mod.get_parameter(name))
 
 
 def replace_buffers(to_mod, from_mod):
     """
     Replace the buffers in to_mod with those in from_mod
+    
+    IMPORTANT: Use remove_duplicate=False to ensure shared buffers are handled correctly
     """
-    for name, p in to_mod.named_buffers():
+    for name, p in to_mod.named_buffers(remove_duplicate=False):
         set_parameter(to_mod, name, from_mod.get_buffer(name))
 
 
@@ -184,7 +204,7 @@ class ScheduleMultiEval(PipelineScheduleMulti):
             rank_ops = self._calculate_single_rank_operations(rank, stage_indices)
             self.pipeline_order[rank] = rank_ops
 
-        logger.debug(_format_pipeline_order(self.pipeline_order))
+        logger.debug(f"Eval Pipeline:\n{_format_pipeline_order(self.pipeline_order)}")
 
     def _calculate_single_rank_operations(self, rank, stage_indices):
         rank_stage_indices = stage_indices[rank]
@@ -259,11 +279,11 @@ class PipelineTrainer(Trainer):
     def _print_modules(self, modules):
         if self.args.debug_model_params:
             for mod in modules:
-                for name, p in mod.named_parameters():
+                for name, p in mod.named_parameters(remove_duplicate=False):
                     logger.debug(
                         f"P {self.denv.rank} {name} : device {p.device}, dtype {p.dtype}"
                     )
-                for name, p in mod.named_buffers():
+                for name, p in mod.named_buffers(remove_duplicate=False):
                     logger.debug(
                         f"B {self.denv.rank} {name} : device {p.device}, dtype {p.dtype}"
                     )
@@ -277,12 +297,16 @@ class PipelineTrainer(Trainer):
         self.eval_scheduler = None
         self.optimizer = None
         self.lr_scheduler = None
+        self.sharing_metadata = None
 
         # Construct model instance on the "meta" device; parameters have meta-data, but no actual data.
         # This allows us to construct a "huge" model, without having to have the memory for it.
         model = self._construct_model(device="meta")
         if self.denv.rank == 0:
             self._print_modules([model])
+        
+        # Get parameter sharing metadata
+        self.sharing_metadata = create_sharing_metadata(model)
 
         # Get a micro-batch from the train_dataloader to use for tracing.
         example_args, example_kwargs = self._get_example(self.train_dataloader)
@@ -303,12 +327,11 @@ class PipelineTrainer(Trainer):
         # all_pipeline_modules : A list of all modules in the pipeline
         # pipeline_modules : A list of modules assigned to this rank
         # pipeline_stages : A list of pipeline stages assigned to this rank
-
+        
         # Convert meta tensors to real tensor on assigned devices.
         for mod in pipeline_modules:
             mod.to_empty(device=self.denv.device)
-
-        self._print_modules(pipeline_modules)
+            retie_parameters(mod, self.sharing_metadata)
 
         # Load from checkpoint?
         if self.args.load_weights_from_checkpoint:
@@ -337,6 +360,8 @@ class PipelineTrainer(Trainer):
                 all_pipeline_modules, pipeline_modules, stage_indices, False
             )
 
+        self._print_modules(pipeline_modules)
+        
         # Construct the pipeline scheduler.
         # Depending upon the class, it either takes a single stage (PipelineScheduleSingle) or a list of stages,
         # PipelineScheduleMulti. See: https://docs.pytorch.org/docs/stable/distributed.pipelining.html#torch.distributed.pipelining.schedules.PipelineScheduleSingle
@@ -350,10 +375,12 @@ class PipelineTrainer(Trainer):
         self.shard_index = make_shard_index(
             [mod.state_dict() for mod in all_pipeline_modules],
             safetensors=self.args.save_safetensors,
+            param_sharing_metadata=self.sharing_metadata,
         )
         self.train_scheduler = self.pipe_schedule_factory(
             stages_arg, self.args.pipeline_chunks, loss_fn=self.loss_fn
         )
+        
         self.pipeline_modules = pipeline_modules
         self.stage_indices = stage_indices[self.denv.rank]
 
@@ -424,8 +451,10 @@ class PipelineTrainer(Trainer):
             with torch.no_grad():
                 pipe = build_pipeline(*args, **kwargs)
 
-        if self.args.debug_pipeline and rank == 0 and self.args.debug_split_model:
-            logger.debug(pipe.print_readable())
+        if rank == 0:
+            logger.info(pipe)
+            if self.args.debug_split_model:
+                logger.debug(pipe.print_readable())
 
         all_pipeline_modules = [
             pipe.get_stage_module(i) for i in range(self.n_pipeline_stages)
@@ -434,10 +463,15 @@ class PipelineTrainer(Trainer):
         pipeline_modules = [
             all_pipeline_modules[i] for i in stage_indices[self.denv.rank]
         ]
+        
         pipeline_stages = [
             pipe.build_stage(stage_index=i, device=self.denv.device)
             for i in stage_indices[self.denv.rank]
         ]
+
+        # Apply buffer fix after pipeline split but before to_empty()
+        # This fixes both zombie buffers and shared buffer accessibility issues
+        apply_pipeline_buffer_fix(all_pipeline_modules, model)
 
         return all_pipeline_modules, pipeline_modules, pipeline_stages
 
@@ -475,9 +509,10 @@ class PipelineTrainer(Trainer):
                     if name not in state_dict:
                         output_state_dict[name] = p.data
             else:
-                for name, p in mod.named_parameters():
+                # Include parameter alias names for shared parameters
+                for name, p in mod.named_parameters(remove_duplicate=False):
                     output_state_dict[name] = p.data
-                for name, p in mod.named_buffers():
+                for name, p in mod.named_buffers(remove_duplicate=False):
                     output_state_dict[name] = p.data
             return output_state_dict
 
@@ -486,10 +521,7 @@ class PipelineTrainer(Trainer):
             # initialized parameters.
             logger.debug("Constructing model on CPU")
             initialized_model = self._construct_model(device="cpu")
-            logger.debug("Making state dict")
             init_state_dict = make_state_dict(initialized_model, missing_buf_only)
-
-            logger.debug("Init self")
             # Initialize our own parameters first
             for mod in pipeline_modules:
                 for name, p in make_state_dict(mod, missing_buf_only).items():
@@ -515,9 +547,9 @@ class PipelineTrainer(Trainer):
                         # See: https://docs.pytorch.org/docs/stable/distributed.html
                         # I believe this will work for CPU to CPU, with gloo, but
                         # have yet to try it.
+                        p = init_state_dict[name].to(self.denv.device)
                         if self.args.debug_model_init:
                             logger.debug(f"rank0: Sending {name} to rank{dst_rank}")
-                        p = init_state_dict[name].to(self.denv.device)
                         distributed.send(p, dst=dst_rank)
                         p = None
         else:
@@ -529,11 +561,13 @@ class PipelineTrainer(Trainer):
             )
             for mod in pipeline_modules:
                 for name, p in make_state_dict(mod, missing_buf_only).items():
-                    distributed.recv(p, src=0)
                     if self.args.debug_model_init:
-                        logger.debug(f"rank{self.denv.rank}: Received {name}")
+                        logger.debug(f"rank{self.denv.rank}: Receiving {name}")
+                    distributed.recv(p, src=0)
 
+        logger.debug(f"rank{self.denv.rank} hit barrier")
         distributed.barrier()
+        logger.debug(f"rank{self.denv.rank} cleared barrier")
 
     def _load_weights_from_checkpoint(self, pipeline_modules):
         if isinstance(self.args.load_weights_from_checkpoint, bool):
@@ -547,7 +581,7 @@ class PipelineTrainer(Trainer):
                 mod,
                 device=self.denv.device,
                 strict=False,
-                debug=self.args.debug_pipeline,
+                debug=self.args.debug_model_params,
             )
 
     def _construct_eval_pipeline(self):
@@ -568,6 +602,7 @@ class PipelineTrainer(Trainer):
         for eval_mod, train_mod in zip(eval_pipeline_modules, self.pipeline_modules):
             replace_parameters(eval_mod, train_mod)
             replace_buffers(eval_mod, train_mod)
+            retie_parameters(eval_mod, self.sharing_metadata)
 
         if self.args.is_multistage:
             self.eval_scheduler = ScheduleMultiEval(

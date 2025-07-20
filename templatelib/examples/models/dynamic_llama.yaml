@@ -35,6 +35,14 @@ feedforward_factory: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwa
     << endblock feedforward_factory
 
 
+    -- block rel_positional_encoder
+relative_pe: &relative_pe !singleton:.real_rotary_embeddings:RealRotaryPE@relative_pe
+    d_head: !var "d_head"
+    max_sequence_length: !var "max_sequence_length"
+    rope_theta: !var "rope_theta"
+    << endblock rel_positional_encoder
+
+    
     -- block attention_factory
 attention_factory: &attention_factory !partial:.causal_rpe_attn:CausalRpeAttn@attention_factory
     d_model: !var "hidden_size"
@@ -43,7 +51,7 @@ attention_factory: &attention_factory !partial:.causal_rpe_attn:CausalRpeAttn@at
     dropout: !var "attention_dropout"
     bias: False
     sdpa_function: !partial:torch.nn.functional:scaled_dot_product_attention []
-    apply_pos_emb: !partial:.real_rotary_embeddings:apply_rotary_emb []
+    pos_encoder: *relative_pe
     << endblock attention_factory
 
 
@@ -76,14 +84,6 @@ output_decoder: &output_decoder !factory:torch.nn:Linear@output_decoder
     -- block abs_positional_encoder
 absolute_pe: &absolute_pe null
     << endblock abs_positional_encoder
-
-
-    -- block rel_positional_encoder
-relative_pe: &relative_pe !partial:.real_rotary_embeddings:RealRotaryPE@relative_pe
-    d_head: !var "d_head"
-    max_sequence_length: !var "max_sequence_length"
-    rope_theta: !var "rope_theta"
-    << endblock rel_positional_encoder
 
 
     -- block input_encoder
@@ -123,13 +123,12 @@ init_weights: &init_weights !partial:.init_weights:init_weights_by_regex@init_we
 
 
     -- block model_factory
-model_factory: &model_factory !factory:.causal_rpe_lm:CausalRpeLM@model_factory
+model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     loss_fn: *loss_fn
     input_encoder: *input_encoder
     output_decoder: *output_decoder
     layer_stack: *layer_stack
     init_weights: *init_weights
-    relative_pe: *relative_pe
     << endblock model_factory
 
 

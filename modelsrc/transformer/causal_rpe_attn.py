@@ -24,7 +24,7 @@ class CausalRpeAttn(nn.Module):
         num_heads: int,
         *,
         num_kv_heads: Optional[int] = None,  # GQA support
-        apply_pos_emb: Callable,
+        pos_encoder: Callable,
         sdpa_function: Callable = scaled_dot_product_attention,
         bias: bool = True,
         dropout: float = 0.0,
@@ -33,6 +33,7 @@ class CausalRpeAttn(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads or num_heads  # Default to MHA
+        self.pos_encoder = pos_encoder
         self.sdpa_function = sdpa_function
 
         assert d_model % num_heads == 0, "d_model must be evenly divisible by num_heads"
@@ -58,13 +59,10 @@ class CausalRpeAttn(nn.Module):
         # Store dropout probability for SDPA function
         self.dropout_p = dropout
 
-        # Generic relative positional embedding application function
-        self.apply_pos_emb = apply_pos_emb
-
     def extra_repr(self):
         return f"d_model={self.d_model}, num_heads={self.num_heads}, num_kv_heads={self.num_kv_heads}"
 
-    def forward(self, qkv: FloatTensor, pos_emb, **kwargs) -> FloatTensor:
+    def forward(self, qkv: FloatTensor, **kwargs) -> FloatTensor:
         batch_size, seq_len, d_model = qkv.shape
 
         # Project to Q, K, V
@@ -81,10 +79,7 @@ class CausalRpeAttn(nn.Module):
         value = value.view(batch_size, seq_len, self.num_kv_heads, self.d_head)
 
         # Apply relative positional embeddings to query and key tensors
-        # This is a generic interface that supports different RPE methods:
-        # - RoPE: Rotates Q/K vectors based on absolute positions
-        # - T5-style: Could add learned relative position biases
-        query_with_pos, key_with_pos = self.apply_pos_emb(query, key, pos_emb)
+        query_with_pos, key_with_pos = self.pos_encoder(query, key)
 
         # Transpose to [batch, heads, seq_len, d_head] for SDPA
         query = query_with_pos.transpose(1, 2)

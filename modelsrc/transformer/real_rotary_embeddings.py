@@ -77,7 +77,7 @@ def apply_rotary_pos_emb(
 
 class RealRotaryPE(torch.nn.Module):
     """
-    Real-valued RoPE positional encoder
+    Real-valued RoPE positional encoder module
     """
 
     def __init__(
@@ -87,35 +87,34 @@ class RealRotaryPE(torch.nn.Module):
         rope_theta: float = 10000.0,
     ):
         super().__init__()
+        self.d_head = d_head
+        self.max_sequence_length = max_sequence_length
+        self.rope_theta = rope_theta
+        
         # Precompute cos/sin tensors once for the entire model
         cos, sin = precompute_cos_sin(d_head, max_sequence_length, rope_theta)
-        self.register_buffer("cos_cached", cos, persistent=True)
-        self.register_buffer("sin_cached", sin, persistent=True)
 
-    def forward(self, seq_len: int) -> Tuple[Tensor, Tensor]:
+        # Note: Use nn.Buffer for buffers, rather than register_buffer(). The later does 
+        # not work properly with model splitting in torch.distributed.pipelining
+        self.cos_cached = torch.nn.Buffer(cos)
+        self.sin_cached = torch.nn.Buffer(sin)
+
+    def extra_repr(self):
+        return f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, rope_theta={self.rope_theta}"
+    
+    def forward(self, q: Tensor, k: Tensor) -> Tuple[Tensor, Tensor]:
         """
-        Return cos and sin tensors for the given sequence length.
+        Apply RoPE embedding to query and key
 
         Args:
-            seq_len: Sequence length to return embeddings for
+            q: Query tensor of shape (batch_size, seq_len, num_heads, d_head)
+            k: Key tensor of shape (batch_size, seq_len, num_heads, d_head)
 
         Returns:
-            Tuple of (cos, sin) tensors of shape (seq_len, d_head)
+            Tuple of (rotated_q, rotated_k) tensors with same shapes as input
         """
-        return self.cos_cached[:seq_len], self.sin_cached[:seq_len]
-
-
-def apply_rotary_emb(
-    q: Tensor, k: Tensor, pos_emb: Tuple[Tensor, Tensor]
-) -> Tuple[Tensor, Tensor]:
-    """
-    Args:
-        q: Query tensor of shape (batch_size, seq_len, num_heads, d_head)
-        k: Key tensor of shape (batch_size, seq_len, num_heads, d_head)
-        pos_emb: Tuple of (cos, sin) tensors from HFRotaryPE.forward()
-
-    Returns:
-        Tuple of (rotated_q, rotated_k) tensors with same shapes as input
-    """
-    cos, sin = pos_emb
-    return apply_rotary_pos_emb(q, k, cos, sin)
+        seq_len = q.shape[1]
+        assert seq_len == k.shape[1]
+        assert seq_len <= self.cos_cached.shape[0], f"seq_len {seq_len} > max_seq_len {self.cos_cached.shape[0]}"
+        return apply_rotary_pos_emb(
+            q, k, self.cos_cached[:seq_len], self.sin_cached[:seq_len])

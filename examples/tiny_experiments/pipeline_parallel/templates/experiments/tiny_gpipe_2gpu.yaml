@@ -5,6 +5,7 @@
     -- set ns.config_name = "Tiny GPipe with 2 GPUs"
     -- set ns.config_description = "Smaller pipeline model for testing RoPE with 2 GPUs"
     -- set ns.log_name = "tiny_gpipe_2gpu"
+    -- set ns.nproc_per_node = 2
 -- endblock config_metadata
 
 -- block trainer_definition
@@ -35,6 +36,12 @@
     # Smaller batch sizes for tiny model
     per_device_train_batch_size: 16
     per_device_eval_batch_size: 16
+
+    # Debug settings
+    debug_pipeline: True
+    debug_split_model: True
+    debug_model_params: True
+    debug_model_init: True
 -- endblock trainer_args
 
 #-------------------- experiment.model --------------------

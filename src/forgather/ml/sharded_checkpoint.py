@@ -2,10 +2,12 @@ import json
 import os
 from pprint import pp
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Set
 from types import NoneType
+from collections import defaultdict
 
 import torch
+from torch import nn
 from torch import Tensor
 from torch.nn import Module
 
@@ -103,6 +105,125 @@ SAFE_WEIGHTS_NAME = "model.safetensors"
 
 ShardIndex = Dict[str, Dict[str, str]]
 
+def id_to_fqn(module: nn.Module) -> Dict[int, Set[str]]:
+    """
+    Returns a dictionary mapping parameter ids to the set of FQNs which 
+    share the same storage (tied).
+    """
+    mapping = defaultdict(set)
+    for name, p in module.state_dict(keep_vars=True).items():
+        mapping[id(p)].add(name)
+    for name, b in module.named_buffers(remove_duplicate=False):
+        mapping[id(b)].add(name)
+    return mapping
+
+
+def get_all_fqns(module: nn.Module) -> Set[str]:
+    """
+    Get set of all FQN's in module
+    The keys of the state dictionary exclude non-persistent buffers, this returns
+    those in the set as well.
+    """
+    all_params = set((name for name, _ in module.named_parameters(remove_duplicate=False)))
+    all_buffers = set((name for name, _ in module.named_buffers(remove_duplicate=False)))
+    return all_params | all_buffers
+
+
+def make_cannonical_names(fqns: Set[str], sharing_metadata: List[List[str]]) -> Dict[str, List[str]]:
+    """
+    Given a set of FQN's in a module and parameter sharing meta-data, 
+    return a mapping of cannoical names (in fqns) to aliased names (other FQNs,
+    which share the same data representation.
+    """
+    cnames = {}
+    for parameter_names in sharing_metadata:
+        parameter_names = list(set(parameter_names).intersection(fqns))
+        if not len(parameter_names):
+            continue
+        cnames[parameter_names[0]] = parameter_names[1:]
+    return cnames
+
+
+def map_cannonical_names(cnames: Dict[str, List[str]]) -> Dict[str, str]:
+    """
+    Invert the output from make_cannonical_names(), such that each key in an aliased FQN and
+    """
+    cname_map = {}
+    for cname, fqns in cnames.items():
+        for fqn in fqns:
+            cname_map[fqn] = cname
+    return cname_map
+
+
+def create_sharing_metadata(model: nn.Module) -> List[List[str]]:
+    """
+    Create metadata about buffer sharing that can be stored in checkpoint index.
+    Returns list of lists, where the sublist is a set of parameters which are tied.
+    """
+    # Convert to a format suitable for JSON serialization
+    sharing_metadata = []
+    for parameter_names in filter(lambda x: len(x) > 1, id_to_fqn(model).values()):
+        sharing_metadata.append(list(parameter_names))
+    return sharing_metadata
+
+@torch.no_grad()
+def retie_parameters(module, sharing_metadata: List[List[str]]) -> None:
+    """
+    Re-tie buffers across multiple modules based on sharing metadata.
+    
+    This restores buffer sharing after loading from sharded checkpoints
+    where sharing was broken during the load process.
+    
+    Args:
+        modules: List of modules (e.g., pipeline stages) to re-tie buffers across
+        sharing_metadata: Buffer sharing metadata from checkpoint index
+    """
+    # Flatten shared parameters list and convert to set
+    all_shared = set([item for sublist in sharing_metadata for item in sublist])
+
+    # Get the set of all FQNs in the module
+    all_fqn = get_all_fqns(module)
+    
+    # The intersection of these sets is the set of parameters we need to tie for this module.
+    all_tied = get_all_fqns(module).intersection(all_shared)
+
+    # If this module does not have tied parameters, return early
+    if not len(all_tied):
+        return
+
+    # Convert the lists of shared FQNs into a mapping of 
+    # cannonical names and aliases. The choice of cannonical name is arbirary,
+    # with the only requirement that it be a a name in 'module'
+    cnames = make_cannonical_names(all_fqn, sharing_metadata)
+    print(f"rank{os.getenv('RANK')} CNAMES: {cnames}")
+
+    # Create a mapping of cname FQNs to tensors
+    cname_tensors = {}
+    for cname in cnames.keys():
+        fqn_atoms = cname.split('.')
+        # Navigate to cname
+        sub_module = module
+        for atom in fqn_atoms:
+            sub_module = getattr(sub_module, atom)
+        cname_tensors[cname] = sub_module
+
+    # Create inverse mapping of aliases to cnames
+    cname_map = map_cannonical_names(cnames)
+
+    # Assign tensors from cname_tensors to modules in cname_map
+    for aliased_name, cannonical_name in cname_map.items():
+        logger.info(f"rank{os.getenv('RANK')} Retie {aliased_name} to {cannonical_name}")
+        # Get the cannonical tensor
+        canonical_tensor = cname_tensors[cannonical_name]
+        
+        # Navigate to parent module
+        fqn_atoms = aliased_name.split('.')
+        sub_module = module
+        for atom in fqn_atoms[:-1]:
+            sub_module = getattr(sub_module, atom)
+        
+        setattr(sub_module, fqn_atoms[-1], canonical_tensor)
+
 
 def index_file_name(safetensors: bool) -> str:
     """
@@ -120,6 +241,7 @@ def make_shard_index(
     metadata: Dict = None,
     safetensors: bool = False,
     max_shard_size: int = 2**32,
+    param_sharing_metadata: Dict[str, Dict[str, Any]] = None,
 ) -> ShardIndex:
     """
     Given a list of state dictionaries, construct a shard index
@@ -188,6 +310,11 @@ def make_shard_index(
             weight_map[weight_name] = shard_file_name
 
     metadata["total_size"] = total_size
+    
+    # Add buffer sharing metadata if provided
+    if param_sharing_metadata:
+        metadata["param_sharing"] = param_sharing_metadata
+    
     return {"metadata": metadata, "weight_map": weight_map}
 
 
@@ -228,15 +355,27 @@ def save_checkpoint(
     safetensors: bool = False,
     max_shard_size: int = 2**31,
     debug: bool = False,
+    include_param_sharing: bool = True,
 ) -> None:
     """
     Save a sharded checkpoint for the whole model.
+    
+    Args:
+        include_param_sharing: If True, detect and include buffer sharing metadata
     """
+    # Detect buffer sharing if requested
+    param_sharing_metadata = None
+    if include_param_sharing:
+        param_sharing_metadata = create_sharing_metadata(module)
+        if param_sharing_metadata and debug:
+            logger.info(f"Detected {len(param_sharing_metadata)} shared buffer groups")
+    
     shard_index = make_shard_index(
         [module.state_dict()],
         metadata=metadata,
         safetensors=safetensors,
         max_shard_size=max_shard_size,
+        param_sharing_metadata=param_sharing_metadata,
     )
     if safetensors:
         index_name = SAFE_WEIGHTS_INDEX_NAME

@@ -71,6 +71,10 @@ def apply_rotary_emb(q: Tensor, k: Tensor, freqs_cis: Tensor) -> Tuple[Tensor, T
 
 
 class RotaryPE(torch.nn.Module):
+    """
+    Complex-valued RoPE positional encoder module
+    """
+    
     def __init__(
         self,
         d_head: int,
@@ -78,10 +82,30 @@ class RotaryPE(torch.nn.Module):
         rope_theta: float = 10000.0,
     ):
         super().__init__()
-        # Precompute RoPE frequencies once for the entire model
-        # This is more memory efficient than storing frequencies in each attention layer
+        self.d_head = d_head
+        self.max_sequence_length = max_sequence_length
+        self.rope_theta = rope_theta
+        
         freqs_cis = precompute_freqs_cis(d_head, max_sequence_length, rope_theta)
-        self.register_buffer("freqs_cis", freqs_cis, persistent=True)
+        # Note: Use nn.Buffer for buffers, rather than register_buffer(). The later does 
+        # not work properly with model splitting in torch.distributed.pipelining
+        self.torch.nn.Buffer = torch.nn.Buffer(freqs_cis)
 
-    def forward(self, seq_len: int) -> Tensor:
-        return self.freqs_cis[:seq_len]
+    def extra_repr(self):
+        return f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, rope_theta={self.rope_theta}"
+    
+    def forward(self, q: Tensor, k: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        Apply RoPE embedding to query and key
+
+        Args:
+            q: Query tensor of shape (batch_size, seq_len, num_heads, d_head)
+            k: Key tensor of shape (batch_size, seq_len, num_heads, d_head)
+
+        Returns:
+            Tuple of (rotated_q, rotated_k) tensors with same shapes as input
+        """
+        seq_len = q.shape[1]
+        assert seq_len == k.shape[1]
+        assert seq_len <= self.freqs_cis.shape[0], f"seq_len {seq_len} > max_seq_len {self.freqs_cis.shape[0]}"
+        return apply_rotary_emb(q, k, self.freqs_cis[:seq_len])

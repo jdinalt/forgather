@@ -105,75 +105,6 @@ def test_rms_norm(hf_model, forgather_model, hidden_states):
     return similar
 
 
-def test_rope_embeddings(hf_model, forgather_model, hidden_states, position_ids):
-    """Test RoPE implementations."""
-    print("\n=== Testing RoPE Embeddings ===")
-
-    batch_size, seq_len, hidden_size = hidden_states.shape
-
-    try:
-        # HF RoPE - get from model's internal rotary embedding
-        # Get the rotary embedding computation from a layer forward
-        with torch.no_grad():
-            hf_layer = hf_model.model.layers[0]
-
-            # Get cos/sin from HF model by calling the rotary embedding forward
-            # We need to simulate what happens in the forward pass
-            head_dim = 128
-            device = hidden_states.device
-
-            # Create inv_freq like HF does
-            inv_freq = 1.0 / (
-                10000.0 ** (torch.arange(0, head_dim, 2).float() / head_dim)
-            )
-
-            # Compute freqs like HF
-            t = position_ids.float()
-            freqs = torch.outer(t.squeeze(), inv_freq)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            cos = emb.cos().unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1, head_dim]
-            sin = emb.sin().unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1, head_dim]
-
-        # Forgather RoPE
-        forgather_rope = forgather_model.causal_lm.relative_pe
-        forgather_cos, forgather_sin = forgather_rope(seq_len)
-
-        # Reshape forgather outputs to match HF format
-        forgather_cos_reshaped = forgather_cos.unsqueeze(0).unsqueeze(
-            2
-        )  # [1, seq_len, 1, head_dim]
-        forgather_sin_reshaped = forgather_sin.unsqueeze(0).unsqueeze(
-            2
-        )  # [1, seq_len, 1, head_dim]
-
-        cos_similar = issimilar(cos, forgather_cos_reshaped)
-        sin_similar = issimilar(sin, forgather_sin_reshaped)
-
-        print(f"RoPE cos similar: {cos_similar}")
-        print(f"RoPE sin similar: {sin_similar}")
-
-        if not cos_similar:
-            print(
-                f"Cos shapes: HF {cos.shape}, Forgather {forgather_cos_reshaped.shape}"
-            )
-            print(
-                f"Cos max diff: {torch.max(torch.abs(cos - forgather_cos_reshaped)).item()}"
-            )
-        if not sin_similar:
-            print(
-                f"Sin shapes: HF {sin.shape}, Forgather {forgather_sin_reshaped.shape}"
-            )
-            print(
-                f"Sin max diff: {torch.max(torch.abs(sin - forgather_sin_reshaped)).item()}"
-            )
-
-        return cos_similar and sin_similar
-
-    except Exception as e:
-        print(f"RoPE test failed with error: {e}")
-        return False
-
-
 def test_attention_layer(
     hf_model, forgather_model, hidden_states, position_ids, layer_idx=0
 ):
@@ -186,10 +117,6 @@ def test_attention_layer(
         forgather_attn = forgather_model.causal_lm.layer_stack.layers[
             layer_idx
         ].attention
-
-        # Get position embeddings for Forgather
-        seq_len = hidden_states.shape[1]
-        forgather_pos_emb = forgather_model.causal_lm.relative_pe(seq_len)
 
         # Get position embeddings from HF model's actual rotary_emb
         cos, sin = hf_model.model.rotary_emb(hidden_states, position_ids)
@@ -207,7 +134,7 @@ def test_attention_layer(
         hf_output = hf_results[0] if isinstance(hf_results, tuple) else hf_results
 
         # Forgather attention forward
-        forgather_output = forgather_attn(qkv=hidden_states, pos_emb=forgather_pos_emb)
+        forgather_output = forgather_attn(qkv=hidden_states)
 
         similar = issimilar(hf_output, forgather_output)
         print(f"Attention layer {layer_idx} similar: {similar}")
@@ -275,9 +202,8 @@ def test_full_transformer_layer(
         # Forgather layer forward
         forgather_layer = forgather_model.causal_lm.layer_stack.layers[layer_idx]
         seq_len = hidden_states.shape[1]
-        pos_emb = forgather_model.causal_lm.relative_pe(seq_len)
 
-        forgather_output = forgather_layer(hidden_states, pos_emb=pos_emb)
+        forgather_output = forgather_layer(hidden_states)
 
         similar = issimilar(hf_output, forgather_output)
         print(f"Full transformer layer {layer_idx} similar: {similar}")
@@ -365,9 +291,7 @@ def main():
     results["rms_norm"] = test_rms_norm(hf_model, forgather_model, hidden_states)
 
     # 3. Test RoPE
-    results["rope"] = test_rope_embeddings(
-        hf_model, forgather_model, hidden_states, position_ids
-    )
+    # TODO: Rewrite
 
     # 4. Test individual components for first layer
     _, _, results["attention_0"] = test_attention_layer(
