@@ -15,7 +15,7 @@ from safetensors.torch import load_file as safetensors_load
 from safetensors.torch import save_file as safetensors_save
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 """
 This implements loading and saving sharded checkpoints
@@ -195,7 +195,7 @@ def retie_parameters(module, sharing_metadata: List[List[str]]) -> None:
     # cannonical names and aliases. The choice of cannonical name is arbirary,
     # with the only requirement that it be a a name in 'module'
     cnames = make_cannonical_names(all_fqn, sharing_metadata)
-    print(f"rank{os.getenv('RANK')} CNAMES: {cnames}")
+    logger.debug(f"rank{os.getenv('RANK')} CNAMES: {cnames}")
 
     # Create a mapping of cname FQNs to tensors
     cname_tensors = {}
@@ -212,7 +212,7 @@ def retie_parameters(module, sharing_metadata: List[List[str]]) -> None:
 
     # Assign tensors from cname_tensors to modules in cname_map
     for aliased_name, cannonical_name in cname_map.items():
-        logger.info(f"rank{os.getenv('RANK')} Retie {aliased_name} to {cannonical_name}")
+        logger.debug(f"rank{os.getenv('RANK')} Retie {aliased_name} to {cannonical_name}")
         # Get the cannonical tensor
         canonical_tensor = cname_tensors[cannonical_name]
         
@@ -367,8 +367,8 @@ def save_checkpoint(
     param_sharing_metadata = None
     if include_param_sharing:
         param_sharing_metadata = create_sharing_metadata(module)
-        if param_sharing_metadata and debug:
-            logger.info(f"Detected {len(param_sharing_metadata)} shared buffer groups")
+        if param_sharing_metadata:
+            logger.debug(f"Detected {len(param_sharing_metadata)} shared buffer groups")
     
     shard_index = make_shard_index(
         [module.state_dict()],
@@ -412,20 +412,18 @@ def save_sharded_checkpoint(
     os.makedirs(output_dir, exist_ok=True)
     shard_files = _make_shard_dictionaries(weight_map, module.state_dict())
     for shard_file_name, state_dict in shard_files.items():
-        if debug:
-            print(f"Writing File: {shard_file_name}")
-            total_size = 0
-            for weight_name, p in state_dict.items():
-                size = p.untyped_storage().nbytes()
-                total_size += size
-                print(f"{weight_name} : {p.shape=}, {p.dtype=}, {size=}")
+        logger.info(f"Writing File: {shard_file_name}")
+        total_size = 0
+        for weight_name, p in state_dict.items():
+            size = p.untyped_storage().nbytes()
+            total_size += size
+            logger.debug(f"{weight_name} : {p.shape=}, {p.dtype=}, {size=}")
         shard_file_path = os.path.join(output_dir, shard_file_name)
         if safetensors:
             safetensors_save(state_dict, shard_file_path)
         else:
-            torch.save(state_dict, shard_file_path)
-        if debug:
-            print(f"Wrote: {total_size} bytes")
+            torch.save(state_dict, shard_file_path, _use_new_zipfile_serialization=True)
+        logger.info(f"Wrote: {total_size} bytes")
 
 
 def validate_output_dir(output_dir: str, overwrite: bool = False) -> None:
@@ -512,7 +510,6 @@ def load_checkpoint(
 
     state_dict_path = os.path.join(model_dir, index_or_weights_name)
     if is_safetensors:
-
         state_dict = safetensors_load(state_dict_path, device=device)
     else:
         state_dict = torch.load(
@@ -572,13 +569,12 @@ def load_sharded_checkpoint(
         # Keep track of which keys we have yet to load
         all_module_keys = all_module_keys - set(state_dict.keys())
 
-        if debug:
-            print(f"loading state_dict in '{shard_file_name}'")
-            for key in state_dict.keys():
-                print(key)
+        logger.info(f"loading state_dict in '{shard_file_name}'")
 
         # Load state dictionary into model.
         module.load_state_dict(state_dict, strict=False, assign=assign)
+        for weight_name, p in module.state_dict(keep_vars=True).items():
+            logger.debug(f"{weight_name} : {p.shape=}, {p.dtype=}, {p.requires_grad=}")
         state_dict = None
 
     if len(all_module_keys):

@@ -7,6 +7,7 @@
     -- set ns.log_name = "tiny_llama_gpipe_3gpu"
     -- set ns.model_name = "tiny_llama_gpipe_3gpu"
     -- set ns.nproc_per_node = 3
+    -- set ns.save_model = True
 -- endblock config_metadata
 
 -- block construct_new_model
@@ -33,6 +34,13 @@
     
     # Quick testing - short run
     max_steps: 100
+    eval_steps: 25
+
+    # Safe Tensors can't handle tied params/weights
+    save_safetensors: False
+
+    # Test checkpoint loading
+    #load_weights_from_checkpoint: True
     
     # Smaller batch sizes for tiny model
     per_device_train_batch_size: 16
