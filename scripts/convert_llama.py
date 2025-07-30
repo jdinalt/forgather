@@ -13,6 +13,7 @@ from transformers import (
     AutoTokenizer,
 )
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
+from transformers.models.mistral import MistralConfig, MistralForCausalLM
 from forgather.config import ConfigEnvironment
 from forgather.latent import Latent
 from forgather.ml.remap_params import remap_state_dict
@@ -259,15 +260,71 @@ def load_state_dict_with_validation(
     return result
 
 
+def create_hf_config_and_model(src_model_config, max_model_length, model_type):
+    """Create appropriate HF config and model based on detected type"""
+    if model_type == "mistral":
+        print("Creating HuggingFace Mistral config...")
+        hf_config = MistralConfig(
+            vocab_size=src_model_config.vocab_size,
+            hidden_size=src_model_config.hidden_size,
+            intermediate_size=src_model_config.dim_feedforward,
+            num_hidden_layers=src_model_config.num_hidden_layers,
+            num_attention_heads=src_model_config.num_attention_heads,
+            num_key_value_heads=src_model_config.num_kv_heads,
+            head_dim=src_model_config.d_head,
+            max_position_embeddings=max_model_length,
+            rms_norm_eps=src_model_config.rms_norm_eps,
+            rope_theta=src_model_config.rope_theta,
+            attention_dropout=getattr(src_model_config, "attention_dropout", 0.0),
+            hidden_act="silu",
+            tie_word_embeddings=False,
+            sliding_window=4096,  # Default Mistral sliding window
+            pad_token_id=getattr(src_model_config, "pad_token_id", None),
+            bos_token_id=getattr(src_model_config, "bos_token_id", 1),
+            eos_token_id=getattr(src_model_config, "eos_token_id", 2),
+        )
+
+        print("Creating HuggingFace Mistral model...")
+        hf_model = MistralForCausalLM(hf_config)
+
+    else:  # llama
+        print("Creating HuggingFace Llama config...")
+        hf_config = LlamaConfig(
+            vocab_size=src_model_config.vocab_size,
+            hidden_size=src_model_config.hidden_size,
+            intermediate_size=src_model_config.dim_feedforward,
+            num_hidden_layers=src_model_config.num_hidden_layers,
+            num_attention_heads=src_model_config.num_attention_heads,
+            num_key_value_heads=src_model_config.num_kv_heads,
+            head_dim=src_model_config.d_head,
+            max_position_embeddings=max_model_length,
+            rms_norm_eps=src_model_config.rms_norm_eps,
+            rope_theta=src_model_config.rope_theta,
+            attention_dropout=getattr(src_model_config, "attention_dropout", 0.0),
+            hidden_act="silu",
+            mlp_bias=False,
+            attention_bias=False,
+            tie_word_embeddings=False,
+            pad_token_id=getattr(src_model_config, "pad_token_id", None),
+            bos_token_id=getattr(src_model_config, "bos_token_id", 1),
+            eos_token_id=getattr(src_model_config, "eos_token_id", 2),
+        )
+
+        print("Creating HuggingFace Llama model...")
+        hf_model = LlamaForCausalLM(hf_config)
+
+    return hf_config, hf_model, model_type
+
+
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
         formatter_class=RawTextHelpFormatter,
-        description="Convert between Huggingface Llama and Forgather Dynamic Llama models",
+        description="Convert between Huggingface Llama/Mistral and Forgather Dynamic Llama models",
     )
     parser.add_argument(
         "src_model_path",
         type=str,
-        help="Path to source model (HF Llama or Forgather model)",
+        help="Path to source model (HF Llama/Mistral or Forgather model)",
     )
     parser.add_argument(
         "dst_model_path",
@@ -276,7 +333,14 @@ def parse_args(args=None):
     parser.add_argument(
         "--reverse",
         action="store_true",
-        help="Convert from Forgather Dynamic Llama to HuggingFace Llama (default: HF to Forgather)",
+        help="Convert from Forgather Dynamic Llama to HuggingFace Llama/Mistral (default: HF to Forgather)",
+    )
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        choices=["llama", "mistral"],
+        default="llama",
+        help="Target model type for reverse conversion (default: llama)",
     )
     parser.add_argument(
         "--dtype",
@@ -371,7 +435,7 @@ def test_model_forward(model, tokenizer, prompt, device):
 
 
 def convert_hf_to_forgather(args):
-    """Convert HuggingFace Llama model to Forgather Dynamic Llama format"""
+    """Convert HuggingFace Llama/Mistral model to Forgather Dynamic Llama format"""
     src_model_path, dst_model_path, new_dtype = setup_conversion(args)
 
     from forgather.ml.construct import copy_package_files
@@ -379,12 +443,20 @@ def convert_hf_to_forgather(args):
     src_model_config = AutoConfig.from_pretrained(src_model_path)
 
     # Ensure only supported config values
-    assert src_model_config.model_type == "llama"
+    assert src_model_config.model_type in [
+        "llama",
+        "mistral",
+    ], f"Unsupported model type: {src_model_config.model_type}"
     assert src_model_config.hidden_act == "silu"
     assert src_model_config.tie_word_embeddings == False
-    assert src_model_config.mlp_bias == False
-    assert src_model_config.attention_bias == False
-    assert src_model_config.rope_scaling == None
+
+    # Llama-specific checks
+    if src_model_config.model_type == "llama":
+        assert src_model_config.mlp_bias == False
+        assert src_model_config.attention_bias == False
+        assert src_model_config.rope_scaling == None
+
+    # Mistral models have these hardcoded to False, so no need to check
 
     logger.info(src_model_config)
 
@@ -425,12 +497,16 @@ def convert_hf_to_forgather(args):
         forgather_root=forgather_root,
         model_output_dir=dst_model_path,
         tokenizer_path=src_model_path,
-        attention_dropout=src_model_config.attention_dropout,
+        attention_dropout=getattr(src_model_config, "attention_dropout", 0.0),
         max_model_length=max_model_length,
         hidden_size=src_model_config.hidden_size,
         num_attention_heads=src_model_config.num_attention_heads,
         num_kv_heads=src_model_config.num_key_value_heads,
-        d_head=src_model_config.head_dim,
+        d_head=getattr(
+            src_model_config,
+            "head_dim",
+            src_model_config.hidden_size // src_model_config.num_attention_heads,
+        ),
         num_hidden_layers=src_model_config.num_hidden_layers,
         dim_feedforward=src_model_config.intermediate_size,
         rope_theta=src_model_config.rope_theta,
@@ -520,32 +596,10 @@ def convert_forgather_to_hf(args):
     if args.max_length:
         max_model_length = args.max_length
 
-    # Create proper HuggingFace Llama config from Forgather config
-    print("Creating HuggingFace Llama config...")
-    hf_config = LlamaConfig(
-        vocab_size=src_model_config.vocab_size,
-        hidden_size=src_model_config.hidden_size,
-        intermediate_size=src_model_config.dim_feedforward,
-        num_hidden_layers=src_model_config.num_hidden_layers,
-        num_attention_heads=src_model_config.num_attention_heads,
-        num_key_value_heads=src_model_config.num_kv_heads,
-        head_dim=src_model_config.d_head,
-        max_position_embeddings=max_model_length,
-        rms_norm_eps=src_model_config.rms_norm_eps,
-        rope_theta=src_model_config.rope_theta,
-        attention_dropout=src_model_config.attention_dropout,
-        hidden_act="silu",
-        mlp_bias=False,
-        attention_bias=False,
-        tie_word_embeddings=False,
-        pad_token_id=src_model_config.pad_token_id,
-        bos_token_id=src_model_config.bos_token_id,
-        eos_token_id=src_model_config.eos_token_id,
+    # Create appropriate HF config and model based on specified type
+    hf_config, hf_model, model_type = create_hf_config_and_model(
+        src_model_config, max_model_length, args.model_type
     )
-
-    # Create proper HuggingFace Llama model
-    print("Creating HuggingFace Llama model...")
-    hf_model = LlamaForCausalLM(hf_config)
 
     if new_dtype:
         print(f"Converting model dtype to {new_dtype}")
@@ -569,13 +623,13 @@ def convert_forgather_to_hf(args):
         tokenizer,
         args.prompt,
         "Source Forgather",
-        "HuggingFace",
+        f"HuggingFace {model_type.capitalize()}",
         tolerance=1e-5,
     )
 
     test_generation_if_requested(hf_model, tokenizer, args)
 
-    print("Saving HuggingFace model...")
+    print(f"Saving HuggingFace {model_type.capitalize()} model...")
     hf_model.save_pretrained(dst_model_path)
     tokenizer.save_pretrained(dst_model_path)
 
@@ -583,11 +637,19 @@ def convert_forgather_to_hf(args):
 def main():
     args = parse_args()
 
+    # Validate arguments
+    if not args.reverse and args.model_type != "llama":
+        print(
+            "Warning: --model-type is only used for reverse conversion (--reverse). Ignoring."
+        )
+
     if args.reverse:
-        print("Converting Forgather Dynamic Llama to HuggingFace Llama")
+        print(
+            f"Converting Forgather Dynamic Llama to HuggingFace {args.model_type.capitalize()}"
+        )
         convert_forgather_to_hf(args)
     else:
-        print("Converting HuggingFace Llama to Forgather Dynamic Llama")
+        print("Converting HuggingFace Llama/Mistral to Forgather Dynamic Llama")
         convert_hf_to_forgather(args)
 
 
