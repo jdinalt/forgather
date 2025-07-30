@@ -42,7 +42,7 @@ split_spec: &split_spec !dict@split_spec
     # Loads from 'output_dir' if True.
     ## Note: Loading weights in you model constructor will not work with this trainer.
     ## See pipeline_trainer example project for checkpoint loading details.
-    load_weights_from_checkpoint: False
+    resume_from_checkpoint: False
     ##
     ## Optional:
     ## Enable Pipeline Debug logging

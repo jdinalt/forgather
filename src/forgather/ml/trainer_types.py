@@ -160,6 +160,9 @@ class TrainingArguments(MinimalTrainingArguments):
     restore_optimizer_state: bool = True
     restore_scheduler_state: bool = True
 
+    # Final checkpoint options
+    save_final_checkpoint: bool = True  # Always save checkpoint at end of training
+
     # Enhanced resume_from_checkpoint behavior: True = auto-discover, str = specific path
     resume_from_checkpoint: bool | str = False
 

@@ -41,15 +41,11 @@ class Adafactor(Optimizer):
     def _init_state(self, state, group, p, grad):
         state["step"] = torch.tensor(0.0)
         if grad.dim() <= 1:
-            state["row"] = torch.zeros_like(grad, dtype=torch.float32)
+            state["row"] = torch.zeros_like(grad, dtype=p.dtype)
             state["col"] = None
         else:
-            state["row"] = torch.zeros(
-                grad.shape[0], dtype=torch.float32, device=grad.device
-            )
-            state["col"] = torch.zeros(
-                grad.shape[1], dtype=torch.float32, device=grad.device
-            )
+            state["row"] = torch.zeros(grad.shape[0], dtype=p.dtype, device=grad.device)
+            state["col"] = torch.zeros(grad.shape[1], dtype=p.dtype, device=grad.device)
 
     @torch.no_grad()
     def step(self, closure: Callable = None):
@@ -290,15 +286,22 @@ def _adafactor(
     beta2t = (1.0 - step**decay_rate).clamp(max=beta2)
 
     # Vectors and scalars are not factored.
+    r32 = r.float()
     if c is None:
-        r.lerp_(update, 1.0 - beta2t)
-        update = grad32 / r.sqrt()
+        r32.lerp_(update, 1.0 - beta2t)
+        update = grad32 / r32.sqrt()
     # Matrix
     else:
+        c32 = c.float()
         # See adagrad_update_ref() for explanation of this implementation
-        r.lerp_(update.sum(dim=-1), 1.0 - beta2t)
-        c.lerp_(update.sum(dim=-2), 1.0 - beta2t)
-        update = grad32 * torch.outer(torch.rsqrt(r / r.sum()), torch.rsqrt(c))
+        r32.lerp_(update.sum(dim=-1), 1.0 - beta2t)
+        c32.lerp_(update.sum(dim=-2), 1.0 - beta2t)
+        update = grad32 * torch.outer(torch.rsqrt(r32 / r32.sum()), torch.rsqrt(c32))
+        if c32.dtype != c.dtype:
+            c.copy_(c32)
+
+    if r32.dtype != r.dtype:
+        r.copy_(r32)
 
     # Apply update clipping
     update /= (rms(update) / clip_threshold).clamp_(min=1.0)

@@ -33,12 +33,12 @@
 ## which can be constructed on "meta," then we will load the weights as a checkpoint, after
 ## we have sharded the model and moved the shards to their respective GPUs.
 ##
-## This use-cae requires setting the 'load_weights_from_checkpoint' trainer arg to True, which
+## This use-case requires setting the 'resume_from_checkpoint' trainer arg to True, which
 ## causes the PipelineTrainer to load the model weights saved in the output directory directly
 ## onto the GPU's. Alternatively, this can be a path to a different directory containing a 
 ## saved checkpoint.
 -- block load_model
-    -- include 'models/abstract/causal_lm_from_pretrained_config.yaml'
+    -- include 'models/causal_lm/from_pretrained_config.yaml'
 -- endblock load_model
 
 #-------------------- base_pipeline_project.trainer_config --------------------
@@ -57,7 +57,7 @@
 -- block trainer_args
     == super()
     # Pipeline Base Project Overrides
-    load_weights_from_checkpoint: {{ not ns.create_new_model }}
+    resume_from_checkpoint: {{ not ns.create_new_model }}
 
     # Debug settings
     debug_pipeline: False

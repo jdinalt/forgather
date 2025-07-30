@@ -1,0 +1,55 @@
+-- extends 'base_pipeline_project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Checkpoint Test - Training"
+    -- set ns.config_description = "Train pipeline model with multiple checkpoints to test checkpoint saving"
+    -- set ns.log_name = "checkpoint_test_train"
+    -- set ns.model_name = "checkpoint_test"
+    -- set ns.nproc_per_node = 2
+    ## Init new model
+    -- set ns.create_new_model = True
+-- endblock config_metadata
+
+-- block trainer_definition
+    -- include 'experiment.checkpoint_test_trainer_config'
+-- endblock trainer_definition
+
+-- block construct_new_model
+    -- include 'models/tiny_pipeline_model.yaml'
+-- endblock construct_new_model
+
+#-------------------- experiment.checkpoint_test_trainer_config --------------------
+-- extends 'base_pipeline_project.trainer_config'
+
+-- block trainer_meta_config
+    == super()
+    ## Use same small model as tiny_gpipe_2gpu for fast testing
+    -- set trainer_def.pipeline_layers = 6
+    -- set trainer_def.pipeline_segments = 2
+    -- set trainer_def.pipeline_microbatches = 4
+-- endblock trainer_meta_config
+
+-- block trainer_args
+    == super()
+    # Checkpoint test settings - create multiple checkpoints with final step not multiple of save_steps
+    save_strategy: "steps"           # Save every "save_steps" steps
+    max_steps: 237                   # Not a multiple of save_steps to test final checkpoint
+    save_steps: 50                   # Save every 10 steps: 10, 20, 30, then final at 37
+    save_total_limit: 2              # Keep 2 checkpoints
+    save_optimizer_state: True       # Test optimizer state saving per rank
+    save_scheduler_state: True       # Test scheduler state saving per rank
+    save_final_checkpoint: True      # Test our new final checkpoint feature
+    
+    # Quick testing settings
+    per_device_train_batch_size: 16
+    per_device_eval_batch_size: 16
+    logging_steps: 10                # Log frequently to see progress
+    eval_steps: 40                   # Evaluate occasionally
+    
+    # Debug settings
+    debug_pipeline: False
+    debug_split_model: False
+    debug_model_params: False
+    debug_model_init: False
+-- endblock trainer_args

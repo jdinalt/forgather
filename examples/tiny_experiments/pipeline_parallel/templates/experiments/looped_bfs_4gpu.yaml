@@ -5,6 +5,7 @@
     -- set ns.config_name = "Looped BFS with 4 GPUs"
     -- set ns.config_description = "Pipeline with 4 GPUs"
     -- set ns.log_name = "lbfs_4gpu"
+    -- set ns.nproc_per_node = 4
 -- endblock config_metadata
 
 -- block trainer_definition

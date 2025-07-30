@@ -5,6 +5,7 @@
     -- set ns.config_name = "Tiny GPipe with 2 GPUs"
     -- set ns.config_description = "Smaller pipeline model for testing RoPE with 2 GPUs"
     -- set ns.log_name = "tiny_gpipe_2gpu"
+    -- set ns.model_name = "tiny_pipeline"
     -- set ns.nproc_per_node = 2
 -- endblock config_metadata
 
@@ -13,7 +14,7 @@
 -- endblock trainer_definition
 
 -- block construct_new_model
-    -- include 'experiment.model'
+    -- include 'models/tiny_pipeline_model.yaml'
 -- endblock construct_new_model
 
 #-------------------- experiment.trainer_config --------------------
@@ -21,7 +22,7 @@
 
 -- block trainer_meta_config
     == super()
-    # Much smaller model for testing
+    ## Much smaller model for testing
     -- set trainer_def.pipeline_layers = 6
     -- set trainer_def.pipeline_segments = 2
     -- set trainer_def.pipeline_microbatches = 4
@@ -38,49 +39,8 @@
     per_device_eval_batch_size: 16
 
     # Debug settings
-    debug_pipeline: True
-    debug_split_model: True
-    debug_model_params: True
-    debug_model_init: True
+    debug_pipeline: False
+    debug_split_model: False
+    debug_model_params: False
+    debug_model_init: False
 -- endblock trainer_args
-
-#-------------------- experiment.model --------------------
--- extends 'project.model'
-
--- block model_config
-    == super()
-    
-    # Tiny model for testing pipeline parallel with RoPE
-    hidden_size: 256
-    dim_feedforward: 1024
-    num_attention_heads: 4
-    num_hidden_layers: 6
-    embedding_dropout: 0.1
-    layer_dropout: 0.1
-    
-    # Use standard torch attention for now (flash attention can be tricky with small models)
-    attention_type: "native"
-<< endblock model_config
-
--- block attention_factory
-# Use standard attention for baseline test
-attention_factory: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
-    d_model: !var "hidden_size"
-    num_heads: !var "num_attention_heads"
-    dropout: !var "attention_dropout"
-<< endblock attention_factory
-
--- block layer_factory
-# Use simpler PostLN layers instead of Deepnet for testing
-layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
-    feedforward_factory: *feedforward_factory
-    attention_factory: *attention_factory
-    norm_factory: *layer_norm_factory
-    dropout: !var "layer_dropout"
-    residual_dropout: !var "residual_dropout"
-<< endblock layer_factory
-
--- block init_weights
-# Use simple weight initialization
-init_weights: &init_weights !partial:.init_weights:simple_weight_init@init_weights []
-<< endblock init_weights

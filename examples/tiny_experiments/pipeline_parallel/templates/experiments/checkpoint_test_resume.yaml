@@ -1,0 +1,27 @@
+-- extends 'experiments/checkpoint_test_train.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Checkpoint Test - Resume"
+    -- set ns.config_description = "Resume training from latest checkpoint to test checkpoint loading"
+    -- set ns.log_name = "checkpoint_test_resume"
+    ## This will trigger loading from checkpoint
+    -- set ns.create_new_model = False
+-- endblock config_metadata
+
+-- block trainer_definition
+    -- include 'experiment.checkpoint_resume_trainer_config'
+-- endblock trainer_definition
+
+#-------------------- experiment.checkpoint_resume_trainer_config --------------------
+-- extends 'experiment.checkpoint_test_trainer_config'
+
+-- block trainer_args
+    == super()
+    # Resume from checkpoint settings
+    restore_optimizer_state: True    # Test optimizer state restoration per rank
+    restore_scheduler_state: True    # Test scheduler state restoration per rank
+    
+    # Continue training settings - train a bit more to verify resume works
+    max_steps: 500                    # Train to step 500 (resume from ~237)
+-- endblock trainer_args

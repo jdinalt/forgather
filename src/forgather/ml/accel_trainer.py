@@ -56,7 +56,7 @@ class AccelTrainer(Trainer):
         # Accelerate modifies the dataloaders, which can change both the length and the batch size.
         if train_dataset is not None:
             self._update_training_steps()
-        self.accelerator.wait_for_everyone()
+        self._barrier()
 
     # @override
     def _backward(self, loss):
@@ -105,24 +105,25 @@ class AccelTrainer(Trainer):
         )
 
     # @override
-    def _save_training_state(self, checkpoint_path: str) -> None:
+    def _save_training_state(self, output_dir: str) -> None:
         """Override to use Accelerate's checkpoint saving when possible."""
-        self.accelerator.wait_for_everyone()
-
-        if self.accelerator.is_main_process:
+        if self._should_save_unique():
             if (
                 hasattr(self.accelerator, "save_state")
                 and self._should_use_accelerate_checkpoint()
             ):
                 accelerate_checkpoint_path = os.path.join(
-                    checkpoint_path, "accelerate_state"
+                    output_dir, "accelerate_state"
                 )
                 self.accelerator.save_state(accelerate_checkpoint_path)
                 logger.info(f"Saved accelerate state to {accelerate_checkpoint_path}")
             else:
-                super()._save_training_state(checkpoint_path)
+                super()._save_training_state(output_dir)
 
-        self.accelerator.wait_for_everyone()
+    # @override
+    def _save_model(self, output_dir):
+        if self._should_save_unique():
+            super()._save_model()
 
     # @override
     def _load_training_state(self, checkpoint_path: str) -> None:
@@ -136,10 +137,15 @@ class AccelTrainer(Trainer):
             logger.info(f"Loaded accelerate state from {accelerate_checkpoint_path}")
         else:
             super()._load_training_state(checkpoint_path)
+        self._barrier()
 
+    # @override
+    def _barrier(self):
         self.accelerator.wait_for_everyone()
 
     # @override
-    def _save(self, output_dir):
-        self.accelerator.wait_for_everyone()
-        super()._save(output_dir)
+    def _should_save_unique(self):
+        """
+        Should this process save a unique file?
+        """
+        return self.accelerator.is_main_process

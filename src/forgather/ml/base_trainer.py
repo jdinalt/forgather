@@ -145,13 +145,18 @@ class BaseTrainer(ExtensibleTrainer):
             return
         if output_dir is None:
             output_dir = self.args.output_dir
-        if not self.args.overwrite_output_dir and self.model_exists(output_dir):
-            raise Exception(
-                "Would overwrite output model in output directory. "
-                f"Set 'args.overwrite_output_dir' to override: {output_dir}"
-            )
-        os.makedirs(output_dir, exist_ok=True)
-        self._save(output_dir)
+        if self._should_save_unique():
+            if not self.args.overwrite_output_dir and self.model_exists(output_dir):
+                raise Exception(
+                    "Would overwrite output model in output directory. "
+                    f"Set 'args.overwrite_output_dir' to override: {output_dir}"
+                )
+            os.makedirs(output_dir, exist_ok=True)
+            self._save_model_config(output_dir)
+            self._save_model_preprocessor(output_dir)
+        self._barrier()
+        self._save_model(output_dir)
+        self._barrier()
 
     def add_callback(self, callback):
         if isinstance(callback, type):
@@ -226,7 +231,19 @@ class BaseTrainer(ExtensibleTrainer):
         if not os.path.isdir(logging_dir):
             os.makedirs(logging_dir, exist_ok=True)
 
-    def _save(self, output_dir):
+    def _barrier(self):
+        """
+        Wait for all processes before continuing
+        """
+        pass
+
+    def _should_save_unique(self):
+        """
+        Should this process save a unique file?
+        """
+        return True
+
+    def _save_model(self, output_dir):
         model = self.unwrapped_model()
         if isinstance(model, PreTrainedModel):
             model.save_pretrained(
@@ -237,7 +254,13 @@ class BaseTrainer(ExtensibleTrainer):
         else:
             logger.info("Saving model as state-dictionary")
             torch.save(model.state_dict(), os.path.join(output_dir, WEIGHTS_NAME))
-        if self.processing_class is not None:
+
+    def _save_model_config(self, output_dir):
+        if isinstance(self.model, PreTrainedModel):
+            self.model.config.save_pretrained(output_dir)
+
+    def _save_model_preprocessor(self, output_dir):
+        if self.processing_class and hasattr(self.processing_class, "save_pretrained"):
             self.processing_class.save_pretrained(output_dir)
 
     def _validate_checkpoint(self, checkpoint_path: str) -> bool:
@@ -335,24 +358,30 @@ class BaseTrainer(ExtensibleTrainer):
         )
         logger.info(f"Saving checkpoint at {checkpoint_path}")
 
-        os.makedirs(checkpoints_dir, exist_ok=True)
-        os.makedirs(checkpoint_path, exist_ok=True)
-        self._save(checkpoint_path)
+        if self._should_save_unique():
+            os.makedirs(checkpoints_dir, exist_ok=True)
+            os.makedirs(checkpoint_path, exist_ok=True)
+            self._save_model_config(self.args.output_dir)
+            self._save_model_preprocessor(self.args.output_dir)
+
+        self._barrier()
+        self._save_model(checkpoint_path)
 
         # Save optimizer/scheduler state if enabled
         if self.args.save_optimizer_state or self.args.save_scheduler_state:
             self._save_training_state(checkpoint_path)
 
-        checkpoints = glob.glob(os.path.join(checkpoints_dir, "checkpoint-*"))
-        if len(checkpoints) > self.args.save_total_limit:
-            # Find oldest by modification time and delete it
-            oldest_path = min(checkpoints, key=lambda path: os.path.getmtime(path))
-            logger.info(f"Deleting oldest checkpoint at {oldest_path}")
-            shutil.rmtree(oldest_path)
+        if self._should_save_unique():
+            checkpoints = glob.glob(os.path.join(checkpoints_dir, "checkpoint-*"))
+            if len(checkpoints) > self.args.save_total_limit:
+                # Find oldest by modification time and delete it
+                oldest_path = min(checkpoints, key=lambda path: os.path.getmtime(path))
+                logger.info(f"Deleting oldest checkpoint at {oldest_path}")
+                shutil.rmtree(oldest_path)
         # Make available to sub-class for saving additional state
         return checkpoint_path
 
-    def _save_training_state(self, checkpoint_path: str) -> None:
+    def _save_training_state(self, output_dir: str) -> None:
         """Save optimizer and scheduler state. Subclasses can override for custom behavior."""
         training_state = {}
 
@@ -370,7 +399,7 @@ class BaseTrainer(ExtensibleTrainer):
             logger.debug(f"Saved global step {self.state.global_step} to checkpoint")
 
         if training_state:
-            training_state_path = os.path.join(checkpoint_path, "training_state.pt")
+            training_state_path = os.path.join(output_dir, "training_state.pt")
             torch.save(training_state, training_state_path)
             logger.info(f"Saved training state to {training_state_path}")
 
@@ -383,10 +412,8 @@ class BaseTrainer(ExtensibleTrainer):
             return
 
         try:
-            # Handle case where device might be None
-            device = self.args.device if self.args.device is not None else "cpu"
             training_state = torch.load(
-                training_state_path, map_location=torch.device(device)
+                training_state_path, map_location=torch.device("cpu")
             )
 
             if self.args.restore_optimizer_state and "optimizer" in training_state:
@@ -436,7 +463,7 @@ class BaseTrainer(ExtensibleTrainer):
             device = self.args.device if self.args.device is not None else "cpu"
 
             # Use the sharded checkpoint loader to handle all checkpoint formats
-            load_checkpoint(checkpoint_path, self.model, device=device, strict=False)
+            load_checkpoint(checkpoint_path, self.model, device=device, strict=True)
             logger.info(f"Loaded model weights from checkpoint: {checkpoint_path}")
 
         except Exception as e:

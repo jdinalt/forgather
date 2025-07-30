@@ -39,13 +39,13 @@ class DeepnetLayer(nn.Module):
             self.residual_dropout = nn.Dropout(residual_dropout)
         self.alpha = alpha
 
-    def forward(self, x: FloatTensor) -> FloatTensor:
+    def forward(self, x: FloatTensor, **kwargs) -> FloatTensor:
         residual = self.residual_dropout(x)
-        x = self.attention(x)
+        x = self.attention(x, **kwargs)
         x = self.dropout(x)
         x = self.norm1(residual * self.alpha + x)
         residual = self.residual_dropout(x)
-        x = self.feedforward(x)
+        x = self.feedforward(x, **kwargs)
         x = self.dropout(x)
         x = self.norm2(residual * self.alpha + x)
         return x

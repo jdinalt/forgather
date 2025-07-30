@@ -4,6 +4,7 @@ from typing import Callable, Any, Dict, List, Tuple, Optional, Union
 from collections.abc import Sequence
 from types import NoneType
 import logging
+import os
 
 import torch
 from torch import Tensor
@@ -75,7 +76,6 @@ class PipelineTrainingArguments(TrainingArguments):
     stages_per_rank: int = 1
     pp_stage_type: str = "loop"
     is_multistage: bool = False
-    load_weights_from_checkpoint: str | bool = False
 
 
 def missing_buffers(mod):
@@ -337,7 +337,7 @@ class PipelineTrainer(Trainer):
             retie_parameters(mod, self.sharing_metadata)
 
         # Load from checkpoint?
-        if self.args.load_weights_from_checkpoint:
+        if self.args.resume_from_checkpoint:
             missing_buffer_set = missing_buffers(model)
             if len(missing_buffer_set):
                 if self.denv.rank == 0:
@@ -349,9 +349,6 @@ class PipelineTrainer(Trainer):
                 self._initialize_params(
                     all_pipeline_modules, pipeline_modules, stage_indices, True
                 )
-            if self.denv.rank == 0:
-                logger.info("Loading weights from checkpoint...")
-            self._load_weights_from_checkpoint(pipeline_modules)
         else:
             if self.denv.rank == 0:
                 # If this results in OOM (really large model), you will have to initialize the model from a checkpoint
@@ -577,28 +574,6 @@ class PipelineTrainer(Trainer):
 
         distributed.barrier()
 
-    def _load_weights_from_checkpoint(self, pipeline_modules):
-        if isinstance(self.args.load_weights_from_checkpoint, bool):
-            checkpoint_path = self.args.output_dir
-        else:
-            checkpoint_path = self.args.load_weights_from_checkpoint
-
-        for mod in pipeline_modules:
-            load_checkpoint(
-                checkpoint_path,
-                mod,
-                device=self.denv.device,
-                strict=False,
-            )
-
-        for mod in pipeline_modules:
-            for weight_name, p in mod.state_dict(keep_vars=True).items():
-                logger.debug(
-                    f"{weight_name} : {p.shape=}, {p.dtype=}, {p.device=}, {p.requires_grad=}"
-                )
-
-        distributed.barrier()
-
     def _construct_eval_pipeline(self):
         # Construct an "eval" version of the pipelined model, which shares weights with the "train" version.
         if self.denv.rank:
@@ -753,23 +728,27 @@ class PipelineTrainer(Trainer):
         )
 
     # @override
-    def _save(self, output_dir):
+    def _should_save_unique(self):
+        """
+        Should this process save a unique file?
+        """
+        return self.denv.rank == 0 or (
+            self.args.save_on_each_node and self.denv.local_rank == 0
+        )
+
+    # @override
+    def _barrier(self):
+        distributed.barrier()
+
+    # @override
+    def _save_model(self, output_dir):
         shard_index = self.shard_index
         save_safetensors = self.args.save_safetensors
 
         # The primary process on each saves the common state
-        if self.denv.rank == 0 or (
-            self.args.save_on_each_node and self.denv.local_rank == 0
-        ):
+        if self._should_save_unique():
             # Save the shard index
             save_shard_index(shard_index, output_dir, index_file_name(save_safetensors))
-
-            # Save the config and tokenizer, if we know how to do so.
-            if isinstance(self.model, PreTrainedModel):
-                self.model.config.save_pretrained(output_dir)
-
-            if hasattr(self.processing_class, "save_pretrained"):
-                self.processing_class.save_pretrained(output_dir)
 
         # All processes save their own pipeline stages
         for mod in self.pipeline_modules:
@@ -782,26 +761,125 @@ class PipelineTrainer(Trainer):
             )
 
         # Wait for all processes, before continuing.
-        distributed.barrier()
 
     # @override
-    def _save_training_state(self, checkpoint_path: str) -> None:
-        """Override to handle distributed optimizer/scheduler state saving."""
-        # Only rank 0 saves training state to avoid conflicts
+    def _save_training_state(self, output_dir: str) -> None:
         if self.denv.rank == 0:
-            super()._save_training_state(checkpoint_path)
+            logger.info("Saving Training State")
+        """Override to handle distributed optimizer/scheduler state saving."""
+        # Each rank saves its own training state with rank-specific filename
+        training_state = {}
 
-        # Ensure all processes wait
-        distributed.barrier()
+        if self.args.save_optimizer_state and self.optimizer is not None:
+            training_state["optimizer"] = self.optimizer.state_dict()
+            logger.debug(f"Rank {self.denv.rank}: Saved optimizer state to checkpoint")
+
+        if self.args.save_scheduler_state and self.lr_scheduler is not None:
+            training_state["lr_scheduler"] = self.lr_scheduler.state_dict()
+            logger.debug(
+                f"Rank {self.denv.rank}: Saved LR scheduler state to checkpoint"
+            )
+
+        # Save global step (same across all ranks)
+        if hasattr(self, "state") and self.state is not None:
+            training_state["global_step"] = self.state.global_step
+            logger.debug(
+                f"Rank {self.denv.rank}: Saved global step {self.state.global_step} to checkpoint"
+            )
+
+        if training_state:
+            # Use rank-specific filename to avoid conflicts
+            training_state_path = os.path.join(
+                output_dir, f"training_state_rank_{self.denv.rank}.pt"
+            )
+            torch.save(training_state, training_state_path)
+            logger.info(
+                f"Rank {self.denv.rank}: Saved training state to {training_state_path}"
+            )
+
+    # @override
+    def _load_model_from_checkpoint(self, checkpoint_path: str) -> None:
+        for mod in self.pipeline_modules:
+            load_checkpoint(
+                checkpoint_path,
+                mod,
+                device=self.denv.device,
+                strict=False,
+            )
+
+        for mod in self.pipeline_modules:
+            for weight_name, p in mod.state_dict(keep_vars=True).items():
+                logger.debug(
+                    f"{weight_name} : {p.shape=}, {p.dtype=}, {p.device=}, {p.requires_grad=}"
+                )
+
+        self._barrier()
 
     # @override
     def _load_training_state(self, checkpoint_path: str) -> None:
         """Override to handle distributed optimizer/scheduler state loading."""
-        # All ranks load the same state
-        super()._load_training_state(checkpoint_path)
+        # Each rank loads its own training state from rank-specific file
+        training_state_path = os.path.join(
+            checkpoint_path, f"training_state_rank_{self.denv.rank}.pt"
+        )
 
-        # Ensure synchronization after loading
-        distributed.barrier()
+        if not os.path.exists(training_state_path):
+            logger.info(
+                f"Rank {self.denv.rank}: No training state file found at: {training_state_path}"
+            )
+        else:
+            try:
+                # Use the distributed environment device, not args.device
+                training_state = torch.load(
+                    training_state_path, map_location=torch.device("cpu")
+                )
+
+                if self.args.restore_optimizer_state and "optimizer" in training_state:
+                    if self.optimizer is not None:
+                        self.optimizer.load_state_dict(training_state["optimizer"])
+                        logger.info(
+                            f"Rank {self.denv.rank}: Restored optimizer state from checkpoint"
+                        )
+                    else:
+                        logger.warning(
+                            f"Rank {self.denv.rank}: Cannot restore optimizer state: optimizer not initialized"
+                        )
+
+                if (
+                    self.args.restore_scheduler_state
+                    and "lr_scheduler" in training_state
+                ):
+                    if self.lr_scheduler is not None:
+                        self.lr_scheduler.load_state_dict(
+                            training_state["lr_scheduler"]
+                        )
+                        logger.info(
+                            f"Rank {self.denv.rank}: Restored LR scheduler state from checkpoint"
+                        )
+                    else:
+                        logger.warning(
+                            f"Rank {self.denv.rank}: Cannot restore LR scheduler state: scheduler not initialized"
+                        )
+
+                # Restore global step if present (should be same across ranks)
+                if (
+                    "global_step" in training_state
+                    and hasattr(self, "state")
+                    and self.state is not None
+                ):
+                    self.state.global_step = training_state["global_step"]
+                    logger.info(
+                        f"Rank {self.denv.rank}: Restored global step to {self.state.global_step}"
+                    )
+                elif "global_step" in training_state:
+                    logger.warning(
+                        f"Rank {self.denv.rank}: Global step {training_state['global_step']} found in checkpoint, but trainer state not initialized yet"
+                    )
+
+            except Exception as e:
+                logger.error(
+                    f"Rank {self.denv.rank}: Failed to load training state from {training_state_path}: {e}"
+                )
 
     def _remove_vestigial_modules(self, all_pipeline_modules):
         """

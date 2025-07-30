@@ -5,13 +5,13 @@
     -- set ns.config_name = "Tiny Llama GPipe with 3 GPUs"
     -- set ns.config_description = "Pipeline model testing with 3 GPUs (3 stages)"
     -- set ns.log_name = "tiny_llama_gpipe_3gpu"
-    -- set ns.model_name = "tiny_llama_gpipe_3gpu"
+    -- set ns.model_name = "tiny_llama"
     -- set ns.nproc_per_node = 3
     -- set ns.save_model = True
 -- endblock config_metadata
 
 -- block construct_new_model
-    -- include 'experiment.llama_model'
+    -- include 'models/llama_pipeline_model.yaml'
 -- endblock construct_new_model
 
 -- block trainer_definition
@@ -52,22 +52,5 @@
     debug_model_params: False
     debug_model_init: False
 -- endblock trainer_args
-
-#-------------------- experiment.llama_model --------------------
--- extends 'models/tiny/tiny_dyn_llama.yaml'
-
-
--- block model_config
-    == super()
-    
-    # Tiny Llama GPipe Overrides
-    hidden_size: 256
-    dim_feedforward: 1024
-    num_attention_heads: 2
-    d_head: 128
-    num_hidden_layers: 8
-    embedding_dropout: 0.1
-    layer_dropout: 0.1
-<< endblock model_config
 
 

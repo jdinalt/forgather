@@ -263,6 +263,7 @@ class Trainer(BaseTrainer):
         # Tracks mean loss for each log-step
         total_loss = torch.zeros(1, device=self.args.device)
         loss_steps = 0
+        last_save_step = 0
         mean_loss = float("nan")
 
         # Context manager for setting model.train()/eval()
@@ -294,6 +295,7 @@ class Trainer(BaseTrainer):
                         self._eval_loop()
 
                     if periodic_save.step():
+                        last_save_step = self.state.global_step
                         self._save_checkpoint()
 
                     # Stop, if requested by callback.
@@ -310,6 +312,17 @@ class Trainer(BaseTrainer):
                         break
                     continue
                 break  # Break, if inner-loop breaks
+
+        # Save final checkpoint if requested and checkpointing is enabled
+        # Skip if we just saved a checkpoint in the final step
+        if (
+            self.args.save_final_checkpoint
+            and self.args.save_steps > 0
+            and self.state.global_step != last_save_step
+        ):
+            logger.info(f"Saving final checkpoint at step {self.state.global_step}")
+            self._save_checkpoint()
+
         metrics = self._end_train_loop(start_time)
         self.log(metrics)
         self._dispatch_event("on_train_end")
