@@ -4,13 +4,23 @@ import argparse
 from argparse import RawTextHelpFormatter
 import logging
 
-from transformers import AutoModelForCausalLM, GenerationConfig, AutoConfig, AutoTokenizer
+from transformers import (
+    AutoModelForCausalLM,
+    GenerationConfig,
+    AutoConfig,
+    AutoTokenizer,
+)
 from forgather.ml.construct import copy_package_files, torch_dtype
-from forgather.ml.sharded_checkpoint import load_checkpoint, create_sharing_metadata, retie_parameters
+from forgather.ml.sharded_checkpoint import (
+    load_checkpoint,
+    create_sharing_metadata,
+    retie_parameters,
+)
 import torch
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
@@ -37,13 +47,13 @@ def parse_args(args=None):
     parser.add_argument(
         "-c",
         "--as-sharded-checkpoint",
-        action='store_true',
+        action="store_true",
         help="Load using sharded_checkpoint.py",
     )
     parser.add_argument(
         "-g",
         "--generation-test",
-        action='store_true',
+        action="store_true",
         help="Test model generation with prompt",
     )
     parser.add_argument(
@@ -56,10 +66,11 @@ def parse_args(args=None):
     args = parser.parse_args(args)
     return args
 
+
 def generate_text(model, tokenizer, prompt, gen_config, max_new_tokens, device):
     model.to(device)
     model.eval()
-    
+
     with torch.inference_mode():
         tokenizer_outputs = tokenizer(
             [prompt],
@@ -68,7 +79,7 @@ def generate_text(model, tokenizer, prompt, gen_config, max_new_tokens, device):
             return_tensors="pt",
             return_attention_mask=True,
         )
-    
+
         input_ids = tokenizer_outputs["input_ids"].to(device)
         attention_mask = tokenizer_outputs["attention_mask"].to(device)
         use_cache = getattr(model, "_supports_cache_class", False)
@@ -88,10 +99,11 @@ def generate_text(model, tokenizer, prompt, gen_config, max_new_tokens, device):
         )
         return prompt + " [START] " + output_text[len(prompt) + 1 :]
 
+
 def main():
     args = parse_args()
     model_path = os.path.abspath(args.model_path)
-    
+
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
     print("Loading model...")
@@ -100,7 +112,7 @@ def main():
         with torch.device("meta"):
             model = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
         sharing_metadata = create_sharing_metadata(model)
-        
+
         model.to(dtype=torch_dtype(args.dtype))
         model.to_empty(device=args.device)
         retie_parameters(model, sharing_metadata)
@@ -108,6 +120,7 @@ def main():
     else:
         model = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
         from forgather.ml.construct import torch_dtype
+
         if args.dtype:
             model.to(dtype=torch_dtype(args.dtype))
         model.to(device=args.device)
@@ -123,8 +136,11 @@ def main():
             temperature=0.7,
             repitition_penalty=1.15,
         )
-        text = generate_text(model, tokenizer, args.prompt, gen_config, 100, args.device)
+        text = generate_text(
+            model, tokenizer, args.prompt, gen_config, 100, args.device
+        )
         print(f"Test Prompt: {text}")
+
 
 if __name__ == "__main__":
     main()

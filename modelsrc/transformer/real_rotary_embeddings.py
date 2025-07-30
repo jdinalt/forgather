@@ -90,18 +90,18 @@ class RealRotaryPE(torch.nn.Module):
         self.d_head = d_head
         self.max_sequence_length = max_sequence_length
         self.rope_theta = rope_theta
-        
+
         # Precompute cos/sin tensors once for the entire model
         cos, sin = precompute_cos_sin(d_head, max_sequence_length, rope_theta)
 
-        # Note: Use nn.Buffer for buffers, rather than register_buffer(). The later does 
+        # Note: Use nn.Buffer for buffers, rather than register_buffer(). The later does
         # not work properly with model splitting in torch.distributed.pipelining
         self.cos_cached = torch.nn.Buffer(cos)
         self.sin_cached = torch.nn.Buffer(sin)
 
     def extra_repr(self):
         return f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, rope_theta={self.rope_theta}"
-    
+
     def forward(self, q: Tensor, k: Tensor) -> Tuple[Tensor, Tensor]:
         """
         Apply RoPE embedding to query and key
@@ -115,6 +115,9 @@ class RealRotaryPE(torch.nn.Module):
         """
         seq_len = q.shape[1]
         assert seq_len == k.shape[1]
-        assert seq_len <= self.cos_cached.shape[0], f"seq_len {seq_len} > max_seq_len {self.cos_cached.shape[0]}"
+        assert (
+            seq_len <= self.cos_cached.shape[0]
+        ), f"seq_len {seq_len} > max_seq_len {self.cos_cached.shape[0]}"
         return apply_rotary_pos_emb(
-            q, k, self.cos_cached[:seq_len], self.sin_cached[:seq_len])
+            q, k, self.cos_cached[:seq_len], self.sin_cached[:seq_len]
+        )

@@ -13,6 +13,7 @@ from forgather.config import ConfigEnvironment
 
 """shared command utils"""
 
+
 def set_default_template(meta, args):
     """Set default template if not specified in args."""
     if not args.config_template:
@@ -47,7 +48,9 @@ class BaseCommand:
         """Get configuration for current template."""
         return get_config(self.meta, self.env, self.args.config_template)
 
+
 """Command Implementations"""
+
 
 def ls_cmd(args):
     """List available configurations."""

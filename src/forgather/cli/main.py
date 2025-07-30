@@ -184,6 +184,7 @@ def parse_args(args=None):
 
     return parser.parse_args(args)
 
+
 def main():
     """Main CLI entry point."""
     args = parse_args()

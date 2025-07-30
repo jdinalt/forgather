@@ -47,9 +47,11 @@ from .pipeline_buffer_fix import apply_pipeline_buffer_fix, validate_pipeline_bu
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 def log_level_for(level, prefix, modules: List[str]):
     for module_name in modules:
         logging.getLogger(prefix + module_name).setLevel(level)
+
 
 # Enable debugging for various modules
 log_level_for(
@@ -57,8 +59,9 @@ log_level_for(
     "torch.distributed.pipelining.",
     [
         # Add modules to enable logging on here.
-    ]
+    ],
 )
+
 
 @dataclass(kw_only=True)
 class PipelineTrainingArguments(TrainingArguments):
@@ -127,7 +130,7 @@ def set_parameter(mod, fqn, p):
 def replace_parameters(to_mod, from_mod):
     """
     Replace the parameters in to_mod with those in from_mod
-    
+
     IMPORTANT: Use remove_duplicate=False to ensure shared parameters are handled correctly
     """
     for name, p in to_mod.named_parameters(remove_duplicate=False):
@@ -137,7 +140,7 @@ def replace_parameters(to_mod, from_mod):
 def replace_buffers(to_mod, from_mod):
     """
     Replace the buffers in to_mod with those in from_mod
-    
+
     IMPORTANT: Use remove_duplicate=False to ensure shared buffers are handled correctly
     """
     for name, p in to_mod.named_buffers(remove_duplicate=False):
@@ -304,7 +307,7 @@ class PipelineTrainer(Trainer):
         model = self._construct_model(device="meta")
         if self.denv.rank == 0:
             self._print_modules([model])
-        
+
         # Get parameter sharing metadata
         self.sharing_metadata = create_sharing_metadata(model)
 
@@ -327,12 +330,12 @@ class PipelineTrainer(Trainer):
         # all_pipeline_modules : A list of all modules in the pipeline
         # pipeline_modules : A list of modules assigned to this rank
         # pipeline_stages : A list of pipeline stages assigned to this rank
-        
+
         # Convert meta tensors to real tensor on assigned devices.
         for mod in pipeline_modules:
             mod.to_empty(device=self.denv.device)
             retie_parameters(mod, self.sharing_metadata)
-        
+
         # Load from checkpoint?
         if self.args.load_weights_from_checkpoint:
             missing_buffer_set = missing_buffers(model)
@@ -361,7 +364,7 @@ class PipelineTrainer(Trainer):
             )
 
         self._print_modules(pipeline_modules)
-        
+
         # Construct the pipeline scheduler.
         # Depending upon the class, it either takes a single stage (PipelineScheduleSingle) or a list of stages,
         # PipelineScheduleMulti. See: https://docs.pytorch.org/docs/stable/distributed.pipelining.html#torch.distributed.pipelining.schedules.PipelineScheduleSingle
@@ -375,7 +378,7 @@ class PipelineTrainer(Trainer):
         # First, assert no duplicate FQNs exist across pipeline modules
         state_dicts = [mod.state_dict() for mod in all_pipeline_modules]
         self._assert_no_duplicate_fqns(state_dicts)
-        
+
         self.shard_index = make_shard_index(
             state_dicts,
             safetensors=self.args.save_safetensors,
@@ -384,7 +387,7 @@ class PipelineTrainer(Trainer):
         self.train_scheduler = self.pipe_schedule_factory(
             stages_arg, self.args.pipeline_chunks, loss_fn=self.loss_fn
         )
-        
+
         self.pipeline_modules = pipeline_modules
         self.stage_indices = stage_indices[self.denv.rank]
 
@@ -467,7 +470,7 @@ class PipelineTrainer(Trainer):
         pipeline_modules = [
             all_pipeline_modules[i] for i in stage_indices[self.denv.rank]
         ]
-        
+
         pipeline_stages = [
             pipe.build_stage(stage_index=i, device=self.denv.device)
             for i in stage_indices[self.denv.rank]
@@ -476,7 +479,7 @@ class PipelineTrainer(Trainer):
         # Apply buffer fix after pipeline split but before to_empty()
         # This fixes both zombie buffers and shared buffer accessibility issues
         apply_pipeline_buffer_fix(all_pipeline_modules, model)
-        
+
         # Remove vestigial modules to prevent duplicate FQN conflicts during checkpoint saving
         self._remove_vestigial_modules(all_pipeline_modules)
 
@@ -571,7 +574,7 @@ class PipelineTrainer(Trainer):
                     if self.args.debug_model_init:
                         logger.debug(f"rank{self.denv.rank}: Receiving {name}")
                     distributed.recv(p, src=0)
-        
+
         distributed.barrier()
 
     def _load_weights_from_checkpoint(self, pipeline_modules):
@@ -590,8 +593,10 @@ class PipelineTrainer(Trainer):
 
         for mod in pipeline_modules:
             for weight_name, p in mod.state_dict(keep_vars=True).items():
-                logger.debug(f"{weight_name} : {p.shape=}, {p.dtype=}, {p.device=}, {p.requires_grad=}")
-            
+                logger.debug(
+                    f"{weight_name} : {p.shape=}, {p.dtype=}, {p.device=}, {p.requires_grad=}"
+                )
+
         distributed.barrier()
 
     def _construct_eval_pipeline(self):
@@ -801,44 +806,46 @@ class PipelineTrainer(Trainer):
     def _remove_vestigial_modules(self, all_pipeline_modules):
         """
         Remove vestigial submodules that don't have FX graphs.
-        
+
         Vestigial modules are created during pipeline splitting but don't contain
         active computation paths. They can cause duplicate FQN conflicts during
         checkpoint saving if not removed.
         """
         from torch import fx
-        
+
         for i, module in enumerate(all_pipeline_modules):
             logger.debug(f"Cleaning vestigial modules from pipeline stage {i}")
             modules_to_remove = []
-            
+
             # Find all submodules and identify vestigial ones
             for name, submodule in module.named_modules():
                 if name == "":  # Skip root module
                     continue
-                    
+
                 # Check if submodule has an FX graph (active) or not (vestigial)
-                has_graph = hasattr(submodule, 'graph')
+                has_graph = hasattr(submodule, "graph")
                 is_fx_graph = has_graph and isinstance(submodule.graph, fx.Graph)
-                
+
                 if not is_fx_graph:
                     # This is a vestigial module - check if it can be safely removed
                     parent_name = ".".join(name.split(".")[:-1])
                     module_name = name.split(".")[-1]
-                    
+
                     try:
                         if parent_name:
                             parent_module = module.get_submodule(parent_name)
                         else:
                             parent_module = module
-                            
+
                         # Only remove if it's not referenced in any FX graph
                         if self._is_module_unreferenced(module, name):
                             modules_to_remove.append((parent_module, module_name, name))
-                            logger.debug(f"  Marking vestigial module for removal: {name}")
+                            logger.debug(
+                                f"  Marking vestigial module for removal: {name}"
+                            )
                     except AttributeError:
                         logger.debug(f"  Could not access parent of {name}, skipping")
-            
+
             # Remove vestigial modules
             for parent_module, module_name, full_name in modules_to_remove:
                 try:
@@ -853,10 +860,10 @@ class PipelineTrainer(Trainer):
         Returns True if the module is safe to remove.
         """
         from torch import fx
-        
+
         # Search all FX graphs for call_module operations referencing target_name
         for name, submodule in root_module.named_modules():
-            if hasattr(submodule, 'graph') and isinstance(submodule.graph, fx.Graph):
+            if hasattr(submodule, "graph") and isinstance(submodule.graph, fx.Graph):
                 for node in submodule.graph.nodes:
                     if node.op == "call_module" and node.target == target_name:
                         return False  # Module is referenced, don't remove
@@ -865,21 +872,21 @@ class PipelineTrainer(Trainer):
     def _assert_no_duplicate_fqns(self, state_dicts):
         """
         Assert that no FQN appears in multiple state dictionaries.
-        
+
         This is a critical invariant for pipeline checkpoint saving - duplicate FQNs
         cause multiple processes to write to the same shard file, resulting in
         checkpoint corruption.
         """
         all_fqns = set()
         duplicate_fqns = set()
-        
+
         for i, state_dict in enumerate(state_dicts):
             for fqn in state_dict.keys():
                 if fqn in all_fqns:
                     duplicate_fqns.add(fqn)
                     logger.error(f"Duplicate FQN found: '{fqn}' in pipeline modules")
                 all_fqns.add(fqn)
-        
+
         if duplicate_fqns:
             # Show which modules contain each duplicate FQN for debugging
             for fqn in duplicate_fqns:
@@ -888,7 +895,7 @@ class PipelineTrainer(Trainer):
                     if fqn in state_dict:
                         modules_with_fqn.append(f"module_{i}")
                 logger.error(f"FQN '{fqn}' appears in: {modules_with_fqn}")
-            
+
             raise AssertionError(
                 f"Duplicate FQNs detected across pipeline modules: {duplicate_fqns}. "
                 f"This will cause checkpoint saving conflicts. Each FQN must appear "

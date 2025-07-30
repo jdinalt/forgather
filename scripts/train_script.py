@@ -15,6 +15,7 @@ from forgather.ml.training_script import training_loop
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 def init_logging(args):
     # Default to zero, if not set.
     rank = int(os.environ.get("RANK", "0"))
@@ -24,7 +25,6 @@ def init_logging(args):
         transformers.utils.logging.set_verbosity_info()
     else:
         log_level = args.secondary_log_level
-
 
     logger.setLevel(log_level)
     datasets.utils.logging.set_verbosity(log_level)
@@ -83,6 +83,7 @@ def parse_args(args=None):
 
     return args
 
+
 @record
 def main():
     args = parse_args()
@@ -93,6 +94,7 @@ def main():
         # This can trigger a seg-fault on process exit. I get a warning without it and a crash with it... I'll take
         # the warning, unitl I can figure out what the issue is.
         # torch.distributed.destroy_process_group()
+
 
 if __name__ == "__main__":
     main()

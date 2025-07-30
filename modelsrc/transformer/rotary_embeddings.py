@@ -74,7 +74,7 @@ class RotaryPE(torch.nn.Module):
     """
     Complex-valued RoPE positional encoder module
     """
-    
+
     def __init__(
         self,
         d_head: int,
@@ -85,15 +85,15 @@ class RotaryPE(torch.nn.Module):
         self.d_head = d_head
         self.max_sequence_length = max_sequence_length
         self.rope_theta = rope_theta
-        
+
         freqs_cis = precompute_freqs_cis(d_head, max_sequence_length, rope_theta)
-        # Note: Use nn.Buffer for buffers, rather than register_buffer(). The later does 
+        # Note: Use nn.Buffer for buffers, rather than register_buffer(). The later does
         # not work properly with model splitting in torch.distributed.pipelining
         self.torch.nn.Buffer = torch.nn.Buffer(freqs_cis)
 
     def extra_repr(self):
         return f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, rope_theta={self.rope_theta}"
-    
+
     def forward(self, q: Tensor, k: Tensor) -> Tuple[Tensor, Tensor]:
         """
         Apply RoPE embedding to query and key
@@ -107,5 +107,7 @@ class RotaryPE(torch.nn.Module):
         """
         seq_len = q.shape[1]
         assert seq_len == k.shape[1]
-        assert seq_len <= self.freqs_cis.shape[0], f"seq_len {seq_len} > max_seq_len {self.freqs_cis.shape[0]}"
+        assert (
+            seq_len <= self.freqs_cis.shape[0]
+        ), f"seq_len {seq_len} > max_seq_len {self.freqs_cis.shape[0]}"
         return apply_rotary_emb(q, k, self.freqs_cis[:seq_len])
