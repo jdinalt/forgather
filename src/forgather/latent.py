@@ -225,7 +225,11 @@ class Materializer:
         self.args = args
 
         if mtargets is not None:
-            return self._selective_materialize(obj, set(mtargets))
+            if isinstance(mtargets, str):
+                objects = self._selective_materialize(obj, set((mtargets,)))
+                return objects[mtargets]
+            else:
+                return self._selective_materialize(obj, set(mtargets))
         else:
             return self._materialize(obj)
 

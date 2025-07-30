@@ -98,6 +98,9 @@ class PPLoader(FileSystemLoader):
             return main_template[1], filename, uptodate
         return template_info
 
+    def add_template(self, name, data):
+        self.templates[name] = (data, "", lambda: False)
+
 
 def _raise_on_undefined(*args):
     for arg in args:

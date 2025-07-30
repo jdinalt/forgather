@@ -50,38 +50,3 @@ def remap_state_dict(state_dict: PDict, psub_list: PSubList) -> PDict:
     for x, y in remap_parameter_fqns(state_dict.keys(), psub_list):
         output_dict[y] = state_dict[x]
     return output_dict
-
-
-"""
-Example PSubList for Huggingface Llama to Forgather Dynamidc Llama
-"""
-hflamma_to_dllama = [
-    (r"lm_head\.", r"causal_lm.output_decoder.", []),
-    (
-        r"model\.",
-        r"causal_lm.",
-        [
-            (r"embed_tokens\.", r"input_encoder.embedding.", []),
-            (r"norm\.", r"layer_stack.layer_norm.", []),
-            (
-                r"layers\.(\d+)\.",
-                r"layer_stack.layers.\1.",
-                [
-                    (
-                        r"self_attn\.",
-                        r"attention.",
-                        [
-                            (r"q_proj\.", r"query_linear.", []),
-                            (r"k_proj\.", r"key_linear.", []),
-                            (r"v_proj\.", r"value_linear.", []),
-                            (r"o_proj\.", r"output_linear.", []),
-                        ],
-                    ),
-                    (r"mlp\.", r"feedforward.", []),
-                    (r"input_layernorm\.", r"norm1.", []),
-                    (r"post_attention_layernorm\.", r"norm2.", []),
-                ],
-            ),
-        ],
-    ),
-]

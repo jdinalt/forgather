@@ -1,0 +1,128 @@
+-- extends "types/training_script/causal_lm/causal_lm.yaml"
+
+-- block resource_directories
+    == super()
+    ## Change this to point to where your models are stored
+    -- set ns.models_dir = joinpath(user_home_dir(), 'ai_assets', 'models')
+
+    ## Directory in which local datasets are stored
+    -- set ns.datasets_dir = joinpath(user_home_dir(), 'ai_assets', 'datasets')
+<< endblock resource_directories
+
+
+## Common project settings
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Pipeline Llama"
+    -- set ns.config_description = "Experimental pipeline parallel llama trainer"
+    -- set ns.create_new_model = False
+    -- set ns.save_model = False
+    -- set ns.log_name = "project_default"
+    -- set ns.model_name = "llama-2-7b-fg"
+    -- set ns.train = True
+    -- set ns.eval = False
+    -- set ns.trust_remote_code = True
+-- endblock config_metadata
+
+-- block trainer_definition
+    -- include 'project.trainer_config'
+<< endblock trainer_definition
+
+
+-- block datasets_definition
+    -- include 'project.dataset_config'
+-- endblock datasets_definition
+
+
+-- block trainer_callbacks
+    -- include 'project.callbacks'
+<< endblock trainer_callbacks
+
+
+-- block construct_new_model
+    -- include 'project.model'
+-- endblock construct_new_model
+
+
+-- block datacollator
+# Pipeline Parallel requires constant input tensor shapes. Use the datacollator to
+# generate constant sequence length batches, padding if too short and truncating if too long.
+data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
+    tokenizer: *tokenizer
+    return_tensors: pt
+    padding: "max_length"
+    truncation: True
+    max_length: 512
+-- endblock datacollator
+
+
+-- block optimizer
+optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
+    lr: 1.0e-5
+    weight_decay: 0.01
+<< endblock optimizer
+
+
+-- block lr_scheduler
+lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+    warmup_steps: 500
+    cooldown_steps: 0
+    constant_lr: 2.0e-5
+<< endblock lr_scheduler
+
+
+-- block load_model
+    -- include 'models/causal_lm/from_pretrained_config.yaml'
+-- endblock load_model
+
+#-------------------- project.trainer_config --------------------
+-- extends 'trainers/pipeline_trainer.yaml'
+
+-- block trainer_meta_config
+    == super()
+    -- set trainer_def.pipeline_layers = 32
+    ##-- set trainer_def.pipeline_segments = 4
+    ##-- set trainer_def.pipeline_microbatches = 8
+    -- set trainer_def.split_layer_prefix = "causal_lm.layer_stack.layers."
+-- endblock trainer_meta_config
+
+
+-- block trainer_args
+    == super()
+    # Project overrides
+    seed: 42
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 16
+    logging_steps: 25
+    eval_steps: 100
+    num_train_epochs: 1
+    dataloader_num_workers: 1
+    #max_steps: 250
+
+    # Pipeline args
+    debug_pipeline: False
+    debug_split_model: False
+    debug_model_params: False
+    debug_model_init: False
+    load_weights_from_checkpoint: True
+-- endblock trainer_args
+
+
+-- block model_preprocessor
+# Convert model to bfloat16 format
+model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_to_dtype [ *model, "bfloat16" ]
+<< endblock model_preprocessor
+
+
+#-------------------- project.dataset_config --------------------
+## Note: Switch to 'datasets/tiny_stories.yaml' for the full dataset.
+-- extends 'datasets/tiny_stories_abridged.yaml'
+
+-- block tokenize_args
+    == super()
+    # project overrides
+    max_length: 512
+<< endblock tokenize_args
+
+#-------------------- project.callbacks --------------------
+-- extends 'callbacks/loggers.yaml'

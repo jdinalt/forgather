@@ -15,7 +15,7 @@ from safetensors.torch import load_file as safetensors_load
 from safetensors.torch import save_file as safetensors_save
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 """
 This implements loading and saving sharded checkpoints
