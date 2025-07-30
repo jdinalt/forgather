@@ -6,12 +6,22 @@ import logging
 
 import torch
 from torch import Tensor
-from transformers import AutoModelForCausalLM, AutoConfig, GenerationConfig, AutoTokenizer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoConfig,
+    GenerationConfig,
+    AutoTokenizer,
+)
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from forgather.config import ConfigEnvironment
 from forgather.latent import Latent
 from forgather.ml.remap_params import remap_state_dict
-from forgather.ml.sharded_checkpoint import save_checkpoint, load_checkpoint, create_sharing_metadata, retie_parameters
+from forgather.ml.sharded_checkpoint import (
+    save_checkpoint,
+    load_checkpoint,
+    create_sharing_metadata,
+    retie_parameters,
+)
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -125,6 +135,130 @@ dllama_to_hflamma = [
     ),
 ]
 
+
+def setup_conversion(args):
+    """Setup and validate paths, dtype, and directories for conversion"""
+    src_model_path = os.path.abspath(args.src_model_path)
+    dst_model_path = os.path.abspath(args.dst_model_path)
+
+    from forgather.ml.construct import torch_dtype
+
+    if args.dtype:
+        new_dtype = torch_dtype(args.dtype)
+    else:
+        new_dtype = None
+
+    logger.info(f"Source: {src_model_path}")
+    logger.info(f"Destination: {dst_model_path}")
+    logger.info(f"DType: {new_dtype}")
+
+    assert os.path.isdir(src_model_path), "The source path must be a directory"
+    dest_dir = os.path.dirname(dst_model_path)
+    assert os.path.isdir(
+        dest_dir
+    ), f"The destination directory, {dest_dir}, does not exist"
+    assert not os.path.exists(
+        dst_model_path
+    ), "The destination path already exists. Will not overwrite."
+
+    return src_model_path, dst_model_path, new_dtype
+
+
+def print_debug_params(model, label, args):
+    """Print parameter names for debugging if requested"""
+    if args.debug_params:
+        print(f"{label} parameter names:")
+        for name in model.state_dict().keys():
+            print(f"  {name}")
+
+
+def compare_model_logits(
+    src_model,
+    dst_model,
+    tokenizer,
+    prompt,
+    src_label="Source",
+    dst_label="Destination",
+    tolerance=1e-5,
+):
+    """Compare logits between source and destination models"""
+    src_logits = test_model_forward(src_model, tokenizer, prompt, "cpu")
+    dst_logits = test_model_forward(dst_model, tokenizer, prompt, "cpu")
+
+    if not torch.allclose(src_logits, dst_logits, atol=tolerance):
+        print("Model logits are dissimilar")
+        print(f"{src_label} Model Logits")
+        print(src_logits.shape)
+        print(src_logits)
+
+        print(f"{dst_label} Model Logits")
+        print(dst_logits.shape)
+        print(dst_logits)
+
+        print(f"Max diff: {torch.max(torch.abs(src_logits - dst_logits)).item()}")
+        print(f"Mean diff: {torch.mean(torch.abs(src_logits - dst_logits)).item()}")
+        print(
+            f"{src_label} logits range: [{src_logits.min().item():.6f}, {src_logits.max().item():.6f}]"
+        )
+        print(
+            f"{dst_label} logits range: [{dst_logits.min().item():.6f}, {dst_logits.max().item():.6f}]"
+        )
+    else:
+        print("Model logits match.")
+
+
+def test_generation_if_requested(model, tokenizer, args):
+    """Test model generation if requested by user"""
+    if not args.generation_test:
+        return
+
+    if args.device != "cpu":
+        print(f"Moving model to {args.device}")
+        model.to(device=args.device)
+
+    print("Testing model generation...")
+    gen_config = GenerationConfig(
+        pad_token_id=model.config.pad_token_id,
+        bos_token_id=model.config.bos_token_id,
+        eos_token_id=model.config.eos_token_id,
+        do_sample=True,
+        top_k=20,
+        top_p=0.9,
+        temperature=0.7,
+        repitition_penalty=1.15,
+    )
+
+    text = generate_text(model, tokenizer, args.prompt, gen_config, 100, args.device)
+    print(f"Test Prompt: {text}")
+
+
+def load_state_dict_with_validation(
+    model, mapped_state_dict, strict=False, assign=True, validate_rope_only=False
+):
+    """Load state dict with validation and optional RoPE buffer checking"""
+    print("Loading mapped state dictionary...")
+    result = model.load_state_dict(mapped_state_dict, strict=strict, assign=assign)
+    print(f"load_state_dict() result: {result}")
+
+    # Validate that unused parameters are only RoPE cached buffers (for reverse conversion)
+    if validate_rope_only and result.unexpected_keys:
+        non_rope_unexpected = [
+            key
+            for key in result.unexpected_keys
+            if not (key.endswith(".cos_cached") or key.endswith(".sin_cached"))
+        ]
+        if non_rope_unexpected:
+            print(
+                f"Warning: Unexpected non-RoPE parameters not loaded: {non_rope_unexpected}"
+            )
+        else:
+            print(
+                f"As expected, {len(result.unexpected_keys)} RoPE cached buffers were not loaded (they will be recomputed)"
+            )
+
+    return result
+
+
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
         formatter_class=RawTextHelpFormatter,
@@ -141,7 +275,7 @@ def parse_args(args=None):
     )
     parser.add_argument(
         "--reverse",
-        action='store_true',
+        action="store_true",
         help="Convert from Forgather Dynamic Llama to HuggingFace Llama (default: HF to Forgather)",
     )
     parser.add_argument(
@@ -165,7 +299,7 @@ def parse_args(args=None):
     parser.add_argument(
         "-g",
         "--generation-test",
-        action='store_true',
+        action="store_true",
         help="Test model generation with prompt",
     )
     parser.add_argument(
@@ -176,12 +310,13 @@ def parse_args(args=None):
     )
     parser.add_argument(
         "--debug-params",
-        action='store_true',
+        action="store_true",
         help="Print parameter names for debugging mapping",
     )
 
     args = parser.parse_args(args)
     return args
+
 
 def generate_text(model, tokenizer, prompt, gen_config, max_new_tokens, device):
     model.to(device)
@@ -215,6 +350,7 @@ def generate_text(model, tokenizer, prompt, gen_config, max_new_tokens, device):
         )
         return prompt + " [START] " + output_text[len(prompt) + 1 :]
 
+
 def test_model_forward(model, tokenizer, prompt, device):
     model.to(device)
     model.eval()
@@ -233,25 +369,12 @@ def test_model_forward(model, tokenizer, prompt, device):
         logits = outputs.logits
     return logits
 
+
 def convert_hf_to_forgather(args):
     """Convert HuggingFace Llama model to Forgather Dynamic Llama format"""
-    src_model_path = os.path.abspath(args.src_model_path)
-    dst_model_path = os.path.abspath(args.dst_model_path)
+    src_model_path, dst_model_path, new_dtype = setup_conversion(args)
 
-    from forgather.ml.construct import copy_package_files, torch_dtype
-    if args.dtype:
-        new_dtype = torch_dtype(args.dtype)
-    else:
-        new_dtype = None
-
-    logger.info(f"Source: {src_model_path}")
-    logger.info(f"Destination: {dst_model_path}")
-    logger.info(f"DType: {new_dtype}")
-
-    assert os.path.isdir(src_model_path), "The source path must be a directory"
-    dest_dir = os.path.dirname(dst_model_path)
-    assert os.path.isdir(dest_dir), f"The destination directory, {dest_dir}, does not exist"
-    assert not os.path.exists(dst_model_path), "The destination path already exists. Will not overwrite."
+    from forgather.ml.construct import copy_package_files
 
     src_model_config = AutoConfig.from_pretrained(src_model_path)
 
@@ -275,12 +398,7 @@ def convert_hf_to_forgather(args):
         print(f"Converting model dtype to {new_dtype}")
         src_model.to(dtype=new_dtype)
 
-    if args.debug_params:
-        print("Source model parameter names:")
-        for name in src_model.state_dict().keys():
-            print(f"  {name}")
-
-    src_model_logits = test_model_forward(src_model, tokenizer, args.prompt, "cpu")
+    print_debug_params(src_model, "Source model", args)
 
     print("Remapping model weight names")
     src_state_dict = src_model.state_dict()
@@ -341,62 +459,16 @@ def convert_hf_to_forgather(args):
         print(f"Converting new model dtype to {new_dtype}")
         model.to(dtype=new_dtype)
 
-    if args.debug_params:
-        print("Destination model parameter names:")
-        for name in model.state_dict().keys():
-            print(f"  {name}")
+    print_debug_params(model, "Destination model", args)
 
-    print("Loading destination model state dictionary...")
-    result = model.load_state_dict(mapped_state_dict, strict=False, assign=True)
-    print(f"load_state_dict() result: {result}")
+    load_state_dict_with_validation(model, mapped_state_dict, strict=False, assign=True)
 
     # Confirm remapped model produces same logits as original
-    model_logits = test_model_forward(model, tokenizer, args.prompt, "cpu")
+    compare_model_logits(
+        src_model, model, tokenizer, args.prompt, "Source", "Destination"
+    )
 
-    if not torch.allclose(src_model_logits, model_logits):
-        print("Model logits are dissimilar")
-        print("Source Model Logits")
-        print(src_model_logits.shape)
-        print(src_model_logits)
-
-        print("Model Logits")
-        print(model_logits.shape)
-        print(model_logits)
-
-        print(
-            f"Max diff: {torch.max(torch.abs(src_model_logits - model_logits)).item()}"
-        )
-        print(
-            f"Mean diff: {torch.mean(torch.abs(src_model_logits - model_logits)).item()}"
-        )
-        print(
-            f"Src logits range: [{src_model_logits.min().item():.6f}, {src_model_logits.max().item():.6f}]"
-        )
-        print(
-            f"Dest logits range: [{model_logits.min().item():.6f}, {model_logits.max().item():.6f}]"
-        )
-    else:
-        print("Model logits match.")
-
-    if args.generation_test:
-        if args.device != "cpu":
-            print(f"Moving model to {args.device}")
-            model.to(device=args.device)
-
-        print("Testing model generation...")
-        gen_config = GenerationConfig(
-            pad_token_id=model.config.pad_token_id,
-            bos_token_id=model.config.bos_token_id,
-            eos_token_id=model.config.eos_token_id,
-            do_sample=True,
-            top_k=20,
-            top_p=0.9,
-            temperature=0.7,
-            repitition_penalty=1.15,
-        )
-
-        text = generate_text(model, tokenizer, args.prompt, gen_config, 100, args.device)
-        print(f"Test Prompt: {text}")
+    test_generation_if_requested(model, tokenizer, args)
 
     print("Saving model...")
     model_config.save_pretrained(save_directory=dst_model_path)
@@ -409,34 +481,23 @@ def convert_hf_to_forgather(args):
         include_param_sharing=True,
     )
 
+
 def convert_forgather_to_hf(args):
     """Convert Forgather Dynamic Llama model to HuggingFace Llama format"""
-    src_model_path = os.path.abspath(args.src_model_path)
-    dst_model_path = os.path.abspath(args.dst_model_path)
-
-    from forgather.ml.construct import torch_dtype
-    if args.dtype:
-        new_dtype = torch_dtype(args.dtype)
-    else:
-        new_dtype = None
-
-    logger.info(f"Source: {src_model_path}")
-    logger.info(f"Destination: {dst_model_path}")
-    logger.info(f"DType: {new_dtype}")
-
-    assert os.path.isdir(src_model_path), "The source path must be a directory"
-    dest_dir = os.path.dirname(dst_model_path)
-    assert os.path.isdir(dest_dir), f"The destination directory, {dest_dir}, does not exist"
-    assert not os.path.exists(dst_model_path), "The destination path already exists. Will not overwrite."
+    src_model_path, dst_model_path, new_dtype = setup_conversion(args)
 
     # Load the Forgather model configuration to get the original HF config
-    src_model_config = AutoConfig.from_pretrained(src_model_path, trust_remote_code=True)
+    src_model_config = AutoConfig.from_pretrained(
+        src_model_path, trust_remote_code=True
+    )
     tokenizer = AutoTokenizer.from_pretrained(src_model_path)
 
     print("Loading Forgather model...")
     # Load as meta model first
     with torch.device("meta"):
-        src_model = AutoModelForCausalLM.from_config(src_model_config, trust_remote_code=True)
+        src_model = AutoModelForCausalLM.from_config(
+            src_model_config, trust_remote_code=True
+        )
 
     # Create sharing metadata and materialize model
     sharing_metadata = create_sharing_metadata(src_model)
@@ -449,13 +510,7 @@ def convert_forgather_to_hf(args):
     # Load the actual weights
     load_checkpoint(src_model_path, src_model, device="cpu", strict=True)
 
-    if args.debug_params:
-        print("Source Forgather model parameter names:")
-        for name in src_model.state_dict().keys():
-            print(f"  {name}")
-
-    # Test forward pass with source model
-    src_model_logits = test_model_forward(src_model, tokenizer, args.prompt, "cpu")
+    print_debug_params(src_model, "Source Forgather model", args)
 
     print("Remapping model weight names to HuggingFace format")
     src_state_dict = src_model.state_dict()
@@ -496,79 +551,34 @@ def convert_forgather_to_hf(args):
         print(f"Converting model dtype to {new_dtype}")
         hf_model.to(dtype=new_dtype)
 
-    if args.debug_params:
-        print("Destination HuggingFace model parameter names:")
-        for name in hf_model.state_dict().keys():
-            print(f"  {name}")
+    print_debug_params(hf_model, "Destination HuggingFace model", args)
 
+    if args.debug_params:
         print("Mapped parameter names:")
         for name in mapped_state_dict.keys():
             print(f"  {name}")
 
-    print("Loading mapped state dictionary...")
-    result = hf_model.load_state_dict(mapped_state_dict, strict=False, assign=True)
-    print(f"load_state_dict() result: {result}")
-
-    # Validate that unused parameters are only RoPE cached buffers
-    if result.unexpected_keys:
-        non_rope_unexpected = [key for key in result.unexpected_keys
-                              if not (key.endswith('.cos_cached') or key.endswith('.sin_cached'))]
-        if non_rope_unexpected:
-            print(f"Warning: Unexpected non-RoPE parameters not loaded: {non_rope_unexpected}")
-        else:
-            print(f"As expected, {len(result.unexpected_keys)} RoPE cached buffers were not loaded (they will be recomputed)")
+    load_state_dict_with_validation(
+        hf_model, mapped_state_dict, strict=False, assign=True, validate_rope_only=True
+    )
 
     # Confirm remapped model produces same logits as original
-    hf_model_logits = test_model_forward(hf_model, tokenizer, args.prompt, "cpu")
+    compare_model_logits(
+        src_model,
+        hf_model,
+        tokenizer,
+        args.prompt,
+        "Source Forgather",
+        "HuggingFace",
+        tolerance=1e-5,
+    )
 
-    if not torch.allclose(src_model_logits, hf_model_logits, atol=1e-5):
-        print("Model logits are dissimilar")
-        print("Source Forgather Model Logits")
-        print(src_model_logits.shape)
-        print(src_model_logits)
-
-        print("HuggingFace Model Logits")
-        print(hf_model_logits.shape)
-        print(hf_model_logits)
-
-        print(
-            f"Max diff: {torch.max(torch.abs(src_model_logits - hf_model_logits)).item()}"
-        )
-        print(
-            f"Mean diff: {torch.mean(torch.abs(src_model_logits - hf_model_logits)).item()}"
-        )
-        print(
-            f"Src logits range: [{src_model_logits.min().item():.6f}, {src_model_logits.max().item():.6f}]"
-        )
-        print(
-            f"HF logits range: [{hf_model_logits.min().item():.6f}, {hf_model_logits.max().item():.6f}]"
-        )
-    else:
-        print("Model logits match.")
-
-    if args.generation_test:
-        if args.device != "cpu":
-            print(f"Moving model to {args.device}")
-            hf_model.to(device=args.device)
-
-        print("Testing model generation...")
-        gen_config = GenerationConfig(
-            pad_token_id=hf_model.config.pad_token_id,
-            bos_token_id=hf_model.config.bos_token_id,
-            eos_token_id=hf_model.config.eos_token_id,
-            do_sample=True,
-            top_k=20,
-            top_p=0.9,
-            temperature=0.7,
-            repitition_penalty=1.15,
-        )
-
-        text = generate_text(hf_model, tokenizer, args.prompt, gen_config, 100, args.device)
-        print(f"Test Prompt: {text}")
+    test_generation_if_requested(hf_model, tokenizer, args)
 
     print("Saving HuggingFace model...")
     hf_model.save_pretrained(dst_model_path)
     tokenizer.save_pretrained(dst_model_path)
+
 
 def main():
     args = parse_args()
