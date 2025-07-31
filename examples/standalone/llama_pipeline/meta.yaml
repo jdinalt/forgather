@@ -3,6 +3,6 @@
 -- block configs
 name: "Pipeline Parallelism"
 description: "A demo and test harness for the Pipleline Parallelism trainer implementation"
-config_prefix: "experiments"
+config_prefix: "configs"
 default_config: "gpipe_4gpu.yaml"
 << endblock configs

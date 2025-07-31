@@ -295,7 +295,8 @@ class BaseTrainer(ExtensibleTrainer):
             checkpoints_dir = os.path.join(self.args.output_dir, "checkpoints")
 
         if not os.path.exists(checkpoints_dir):
-            return None
+            logger.warning("No checkpoint directory found. Defaulting to main model directory.")
+            return self.args.output_dir
 
         checkpoints = glob.glob(os.path.join(checkpoints_dir, "checkpoint-*"))
         if not checkpoints:
