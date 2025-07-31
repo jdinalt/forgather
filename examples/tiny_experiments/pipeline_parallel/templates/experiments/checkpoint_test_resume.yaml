@@ -22,6 +22,7 @@
     resume_from_checkpoint: True
     restore_optimizer_state: True    # Test optimizer state restoration per rank
     restore_scheduler_state: True    # Test scheduler state restoration per rank
+    restore_rng_state: True          # Test RNG state restoration per rank
     
     # Continue training settings - train a bit more to verify resume works
     max_steps: 500                    # Train to step 500 (resume from ~237)

@@ -43,6 +43,7 @@
     save_on_each_node: False
     save_optimizer_state: True       # Test optimizer state saving per rank
     save_scheduler_state: True       # Test scheduler state saving per rank
+    save_rng_state: True             # Test RNG state saving per rank
     overwrite_output_dir: True
     
     # Quick testing settings

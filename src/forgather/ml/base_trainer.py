@@ -295,7 +295,9 @@ class BaseTrainer(ExtensibleTrainer):
             checkpoints_dir = os.path.join(self.args.output_dir, "checkpoints")
 
         if not os.path.exists(checkpoints_dir):
-            logger.warning("No checkpoint directory found. Defaulting to main model directory.")
+            logger.warning(
+                "No checkpoint directory found. Defaulting to main model directory."
+            )
             return self.args.output_dir
 
         checkpoints = glob.glob(os.path.join(checkpoints_dir, "checkpoint-*"))
@@ -399,6 +401,24 @@ class BaseTrainer(ExtensibleTrainer):
             training_state["global_step"] = self.state.global_step
             logger.debug(f"Saved global step {self.state.global_step} to checkpoint")
 
+        # Save RNG state for reproducibility
+        if self.args.save_rng_state:
+            rng_state = {
+                "torch_rng_state": torch.get_rng_state(),
+                "initial_seed": torch.initial_seed(),
+            }
+
+            # Save CUDA RNG state if available
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                current_device = torch.cuda.current_device()
+                rng_state["cuda_rng_state"] = torch.cuda.get_rng_state(
+                    device=current_device
+                )
+                rng_state["cuda_device"] = current_device
+
+            training_state["rng_state"] = rng_state
+            logger.debug("Saved RNG state to checkpoint")
+
         if training_state:
             training_state_path = os.path.join(output_dir, "training_state.pt")
             torch.save(training_state, training_state_path)
@@ -446,6 +466,39 @@ class BaseTrainer(ExtensibleTrainer):
             elif "global_step" in training_state:
                 logger.warning(
                     f"Global step {training_state['global_step']} found in checkpoint, but trainer state not initialized yet"
+                )
+
+            # Restore RNG state for reproducibility
+            if self.args.restore_rng_state and "rng_state" in training_state:
+                rng_state = training_state["rng_state"]
+
+                # Restore CPU RNG state
+                if "torch_rng_state" in rng_state:
+                    torch.set_rng_state(rng_state["torch_rng_state"])
+                    logger.debug("Restored CPU RNG state from checkpoint")
+
+                # Restore CUDA RNG state if available
+                if "cuda_rng_state" in rng_state and torch.cuda.is_available():
+                    current_device = torch.cuda.current_device()
+                    saved_device = rng_state.get("cuda_device", current_device)
+
+                    if current_device != saved_device:
+                        logger.warning(
+                            f"CUDA device mismatch: current={current_device}, saved={saved_device}. "
+                            "Restoring RNG state anyway (should be fine with identical GPU models)."
+                        )
+
+                    torch.cuda.set_rng_state(
+                        rng_state["cuda_rng_state"], device=current_device
+                    )
+                    logger.debug(
+                        f"Restored CUDA RNG state for device {current_device} from checkpoint"
+                    )
+
+                logger.info("Restored RNG state from checkpoint")
+            elif self.args.restore_rng_state:
+                logger.info(
+                    "No RNG state found in checkpoint - using current RNG state"
                 )
 
         except Exception as e:

@@ -21,6 +21,7 @@
     resume_from_checkpoint: True
     restore_optimizer_state: True
     restore_scheduler_state: True
+    restore_rng_state: True
 
     # Continue for another 500 steps
     max_steps: 1000

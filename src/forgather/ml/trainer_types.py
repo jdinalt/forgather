@@ -161,6 +161,10 @@ class TrainingArguments(MinimalTrainingArguments):
     restore_optimizer_state: bool = True
     restore_scheduler_state: bool = True
 
+    # RNG state checkpoint options
+    save_rng_state: bool = True
+    restore_rng_state: bool = True
+
     # Compatibility with HF Trainer -- would be better if they took a factory arg...
     lr_scheduler_type: str = "linear"
     lr_scheduler_kwargs: dict = None

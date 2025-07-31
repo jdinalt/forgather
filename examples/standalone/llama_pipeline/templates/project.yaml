@@ -108,10 +108,12 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     save_on_each_node: False         # Save common files on each node
     save_optimizer_state: True       # Test optimizer state saving per rank
     save_scheduler_state: True       # Test scheduler state saving per rank
+    save_rng_state: True             # Test RNG state saving per rank
 
     resume_from_checkpoint: True
     restore_optimizer_state: True    # Test optimizer state restoration per rank
     restore_scheduler_state: True    # Test scheduler state restoration per rank
+    restore_rng_state: True          # Test RNG state restoration per rank
 
     # Pipeline args
     debug_pipeline: False

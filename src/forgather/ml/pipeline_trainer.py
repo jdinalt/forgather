@@ -787,6 +787,24 @@ class PipelineTrainer(Trainer):
                 f"Rank {self.denv.rank}: Saved global step {self.state.global_step} to checkpoint"
             )
 
+        # Save RNG state per rank for reproducibility
+        if self.args.save_rng_state:
+            rng_state = {
+                "torch_rng_state": torch.get_rng_state(),
+                "initial_seed": torch.initial_seed(),
+            }
+
+            # Save CUDA RNG state using current device
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                current_device = torch.cuda.current_device()
+                rng_state["cuda_rng_state"] = torch.cuda.get_rng_state(
+                    device=current_device
+                )
+                rng_state["cuda_device"] = current_device
+
+            training_state["rng_state"] = rng_state
+            logger.debug(f"Rank {self.denv.rank}: Saved RNG state to checkpoint")
+
         if training_state:
             # Use rank-specific filename to avoid conflicts
             training_state_path = os.path.join(
@@ -874,6 +892,43 @@ class PipelineTrainer(Trainer):
                 elif "global_step" in training_state:
                     logger.warning(
                         f"Rank {self.denv.rank}: Global step {training_state['global_step']} found in checkpoint, but trainer state not initialized yet"
+                    )
+
+                # Restore RNG state per rank for reproducibility
+                if self.args.restore_rng_state and "rng_state" in training_state:
+                    rng_state = training_state["rng_state"]
+
+                    # Restore CPU RNG state
+                    if "torch_rng_state" in rng_state:
+                        torch.set_rng_state(rng_state["torch_rng_state"])
+                        logger.debug(
+                            f"Rank {self.denv.rank}: Restored CPU RNG state from checkpoint"
+                        )
+
+                    # Restore CUDA RNG state using current device
+                    if "cuda_rng_state" in rng_state and torch.cuda.is_available():
+                        current_device = torch.cuda.current_device()
+                        saved_device = rng_state.get("cuda_device", current_device)
+
+                        if current_device != saved_device:
+                            logger.warning(
+                                f"Rank {self.denv.rank}: CUDA device mismatch: current={current_device}, saved={saved_device}. "
+                                "Restoring RNG state anyway (should be fine with identical GPU models)."
+                            )
+
+                        torch.cuda.set_rng_state(
+                            rng_state["cuda_rng_state"], device=current_device
+                        )
+                        logger.debug(
+                            f"Rank {self.denv.rank}: Restored CUDA RNG state for device {current_device} from checkpoint"
+                        )
+
+                    logger.info(
+                        f"Rank {self.denv.rank}: Restored RNG state from checkpoint"
+                    )
+                elif self.args.restore_rng_state:
+                    logger.info(
+                        f"Rank {self.denv.rank}: No RNG state found in checkpoint - using current RNG state"
                     )
 
             except Exception as e:
