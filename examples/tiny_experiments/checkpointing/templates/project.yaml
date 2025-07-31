@@ -21,14 +21,11 @@
     # Checkpointing Project Overrides (must come after all parent overrides)
     # Enable checkpoint features
     save_strategy: "steps"
+    save_steps: 100
+    save_safetensors: True
+    save_total_limit: 3
     save_optimizer_state: true
     save_scheduler_state: true
-    restore_optimizer_state: true
-    restore_scheduler_state: true
-    
-    # Save checkpoints frequently for testing
-    save_steps: 100
-    save_total_limit: 3
     
     # Small training run for quick testing
     max_steps: 500

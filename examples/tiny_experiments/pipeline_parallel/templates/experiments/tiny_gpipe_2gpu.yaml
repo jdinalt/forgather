@@ -3,7 +3,7 @@
 -- block config_metadata
     == super()
     -- set ns.config_name = "Tiny GPipe with 2 GPUs"
-    -- set ns.config_description = "Smaller pipeline model for testing RoPE with 2 GPUs"
+    -- set ns.config_description = "Quick pipeline test for debug"
     -- set ns.log_name = "tiny_gpipe_2gpu"
     -- set ns.model_name = "tiny_pipeline"
     -- set ns.nproc_per_node = 2
@@ -23,7 +23,7 @@
 -- block trainer_meta_config
     == super()
     ## Much smaller model for testing
-    -- set trainer_def.pipeline_layers = 6
+    -- set trainer_def.pipeline_layers = 8
     -- set trainer_def.pipeline_segments = 2
     -- set trainer_def.pipeline_microbatches = 4
 -- endblock trainer_meta_config

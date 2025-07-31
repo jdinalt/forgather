@@ -18,6 +18,7 @@ class PeriodicFunction:
         self.phase = phase
         self.counter = 0
         self.enabled = True
+
         match strategy:
             case IntervalStrategy.NO:
                 self.enabled = False
@@ -28,8 +29,11 @@ class PeriodicFunction:
             case _:
                 pass
 
+        if self.period == 0:
+            self.enabled = False
+
     def count(self):
-        return self.counter % self.period
+        return self.counter % self.period if self.enabled else 0
 
     def step(self, *args, **kwargs) -> None:
         self.counter += 1

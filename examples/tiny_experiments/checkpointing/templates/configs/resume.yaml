@@ -5,6 +5,7 @@
     == super()
     -- set ns.config_name = "Resume Training from Checkpoint"
     -- set ns.config_description = "Continue training from the latest checkpoint, restoring optimizer and scheduler state"
+    -- set ns.create_new_model = False
 << endblock config_metadata
 
 -- block trainer_definition
@@ -12,31 +13,15 @@
 -- endblock trainer_definition
 
 #-------------------- resume.trainer_config --------------------
--- extends 'trainers/trainer.yaml'
+-- extends 'checkpointing.trainer_config'
 ## Override the trainer config for resume training
 
 -- block trainer_args
     == super()
-    
-    # Checkpointing Project Overrides (must come after all parent overrides)
-    # Enable checkpoint features
-    save_strategy: "steps"
-    save_optimizer_state: true
-    save_scheduler_state: true
-    restore_optimizer_state: true
-    restore_scheduler_state: true
-    
-    # Save checkpoints frequently for testing
-    save_steps: 100
-    save_total_limit: 3
-    
-    # Resume training configuration
-    resume_from_checkpoint: true
-    max_steps: 800
-    eval_steps: 200
-    logging_steps: 50
-    
-    # Smaller batch size for quick iterations
-    per_device_train_batch_size: 8
-    per_device_eval_batch_size: 16
+    resume_from_checkpoint: True
+    restore_optimizer_state: True
+    restore_scheduler_state: True
+
+    # Continue for another 500 steps
+    max_steps: 1000
 << endblock trainer_args

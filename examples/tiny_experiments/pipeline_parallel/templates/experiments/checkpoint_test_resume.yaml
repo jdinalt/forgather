@@ -19,6 +19,7 @@
 -- block trainer_args
     == super()
     # Resume from checkpoint settings
+    resume_from_checkpoint: True
     restore_optimizer_state: True    # Test optimizer state restoration per rank
     restore_scheduler_state: True    # Test scheduler state restoration per rank
     

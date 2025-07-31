@@ -92,7 +92,6 @@ class MinimalTrainingArguments:
 
     output_dir: str = OUTPUTDIR_NAME
     logging_dir: str = None
-    logging_steps: int = 500
     per_device_eval_batch_size: int = 16
     per_device_train_batch_size: int = 16
     num_train_epochs: int = 1
@@ -115,56 +114,52 @@ class TrainingArguments(MinimalTrainingArguments):
     Additional arguments can be added via sub-classing.
     """
 
+    seed: int = -1
+    use_cpu: bool = False
+
+    # Not if HF trainer; number of train-batches in an epoch, when dataset does not support len()
+    # This just becomes a relative value for book-keeping.
+    epoch_train_steps: int = 100000
     max_steps: int = -1
-    eval_steps: int = 500
-    save_steps: int = 500
+
     dataloader_num_workers: int = 0
     dataloader_pin_memory: int = True
     dataloader_persistent_workers: bool = False
     dataloader_prefetch_factor: int = None
     dataloader_drop_last: bool = False
-    overwrite_output_dir: bool = False
-    seed: int = -1
 
+    # Strategy may also be: "no" | "steps" | "epoch"
     eval_strategy: ConversionDescriptor = ConversionDescriptor(
         IntervalStrategy, default=IntervalStrategy.NO
     )
+    eval_steps: int = 500
+    eval_delay: int = 0
+
     logging_strategy: ConversionDescriptor = ConversionDescriptor(
         IntervalStrategy, default=IntervalStrategy.STEPS
     )
-    save_strategy: ConversionDescriptor = ConversionDescriptor(
-        IntervalStrategy, default=IntervalStrategy.STEPS
-    )
-
+    logging_steps: int = 500
     logging_first_step: bool = False
-    eval_delay: int = 0
-    save_total_limit: int = 2
-    use_cpu: bool = False
 
     torch_compile: bool = False
     torch_compile_backend: str | None = None
     torch_compile_mode: str | None = None
 
-    # Not if HF trainer; number of train-batches in an epoch, when dataset does not support len()
-    # This just becomes a relative value for book-keeping.
-    epoch_train_steps: int = 100000
-
+    # Checkpointing options
+    save_strategy: ConversionDescriptor = ConversionDescriptor(
+        IntervalStrategy, default=IntervalStrategy.STEPS
+    )
+    save_steps: int = 500
+    save_total_limit: int = 2
     save_safetensors: bool = True
     save_on_each_node: bool = False
-    save_only_model: bool = False
-    restore_callback_states_from_checkpoint: bool = False
-
-    # Optimizer and scheduler checkpoint options
-    save_optimizer_state: bool = False
-    save_scheduler_state: bool = False
+    save_optimizer_state: bool = True
+    save_scheduler_state: bool = True
+    overwrite_output_dir: bool = False
+    # True = auto-discover, str = specific path
+    resume_from_checkpoint: bool | str = False
     restore_optimizer_state: bool = True
     restore_scheduler_state: bool = True
-
-    # Final checkpoint options
-    save_final_checkpoint: bool = True  # Always save checkpoint at end of training
-
-    # Enhanced resume_from_checkpoint behavior: True = auto-discover, str = specific path
-    resume_from_checkpoint: bool | str = False
 
     # Compatibility with HF Trainer -- would be better if they took a factory arg...
     lr_scheduler_type: str = "linear"

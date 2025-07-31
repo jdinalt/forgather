@@ -313,11 +313,10 @@ class Trainer(BaseTrainer):
                     continue
                 break  # Break, if inner-loop breaks
 
-        # Save final checkpoint if requested and checkpointing is enabled
+        # Save final checkpoint if checkpointing is enabled
         # Skip if we just saved a checkpoint in the final step
         if (
-            self.args.save_final_checkpoint
-            and self.args.save_steps > 0
+            self.args.save_strategy != IntervalStrategy.NO
             and self.state.global_step != last_save_step
         ):
             logger.info(f"Saving final checkpoint at step {self.state.global_step}")

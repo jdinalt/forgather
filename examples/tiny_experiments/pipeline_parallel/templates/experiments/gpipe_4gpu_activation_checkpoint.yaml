@@ -36,7 +36,7 @@
 -- endblock trainer_args
 
 #-------------------- experiment.model --------------------
--- extends 'project.model'
+-- extends 'models/med_pipeline_model.yaml'
 
 -- block layer_stack
 .define: &layer_stack !singleton:.checkpoint_layer_stack:CheckpointLayerStack@layer_stack

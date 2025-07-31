@@ -1,36 +1,8 @@
--- extends 'models/med_pipeline_model.yaml'
+-- extends 'models/tiny/tiny_causal.yaml'
 
 -- block model_config
     == super()
-    
-    # Tiny model for testing pipeline parallel with RoPE
-    hidden_size: 256
-    dim_feedforward: 1024
-    num_attention_heads: 4
-    num_hidden_layers: 6
-    embedding_dropout: 0.1
-    layer_dropout: 0.1
+
+    # More layers for pipeline testing
+    num_hidden_layers: 8
 << endblock model_config
-
--- block attention_factory
-# Use standard attention for baseline test
-attention_factory: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
-    d_model: !var "hidden_size"
-    num_heads: !var "num_attention_heads"
-    dropout: !var "attention_dropout"
-<< endblock attention_factory
-
--- block layer_factory
-# Use simpler PostLN layers instead of Deepnet for testing
-layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
-    feedforward_factory: *feedforward_factory
-    attention_factory: *attention_factory
-    norm_factory: *layer_norm_factory
-    dropout: !var "layer_dropout"
-    residual_dropout: !var "residual_dropout"
-<< endblock layer_factory
-
--- block init_weights
-# Use simple weight initialization
-init_weights: &init_weights !partial:.init_weights:simple_weight_init@init_weights []
-<< endblock init_weights
