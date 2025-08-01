@@ -66,6 +66,7 @@ def set_train(model: torch.nn.Module, mode: bool):
 
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 class Trainer(BaseTrainer):
@@ -150,7 +151,7 @@ class Trainer(BaseTrainer):
         self._init_dataloaders(train_dataset, eval_dataset)
         self._prepare_model()
         if self.args.torch_compile:
-            print(
+            logger.info(
                 "Compiling model",
                 self.args.torch_compile_backend,
                 self.args.torch_compile_mode,
@@ -168,11 +169,8 @@ class Trainer(BaseTrainer):
 
         if self.do_train:
             # Restore from checkpoint if specified (after state is initialized)
-            checkpoint_path = self._resolve_checkpoint_path()
-            if checkpoint_path:
-                logger.info(f"Resuming training from checkpoint: {checkpoint_path}")
-                self._load_model_from_checkpoint(checkpoint_path)
-                self._load_training_state(checkpoint_path)
+            if self.args.resume_from_checkpoint:
+                self.load_checkpoint()
 
         self._dispatch_event("on_init_end")
 
@@ -296,7 +294,7 @@ class Trainer(BaseTrainer):
 
                     if periodic_save.step():
                         last_save_step = self.state.global_step
-                        self._save_checkpoint()
+                        self.save_checkpoint()
 
                     # Stop, if requested by callback.
                     control = self._dispatch_event("on_step_end")
@@ -320,7 +318,7 @@ class Trainer(BaseTrainer):
             and self.state.global_step != last_save_step
         ):
             logger.info(f"Saving final checkpoint at step {self.state.global_step}")
-            self._save_checkpoint()
+            self.save_checkpoint()
 
         metrics = self._end_train_loop(start_time)
         self.log(metrics)

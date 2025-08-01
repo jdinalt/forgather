@@ -155,11 +155,14 @@ class TrainingArguments(MinimalTrainingArguments):
     save_on_each_node: bool = False
     save_optimizer_state: bool = True
     save_scheduler_state: bool = True
+    save_dataset_state: bool = True
     overwrite_output_dir: bool = False
     # True = auto-discover, str = specific path
     resume_from_checkpoint: bool | str = False
     restore_optimizer_state: bool = True
     restore_scheduler_state: bool = True
+    restore_dataset_state: bool = True
+
 
     # RNG state checkpoint options
     save_rng_state: bool = True
@@ -223,6 +226,19 @@ class AbstractBaseTrainer(ABC):
         """
         ...
 
+    @abstractmethod
+    def save_checkpoint(self, checkpoint_path=None) -> None:
+        """
+        Save model / trainer checkpoint
+        """
+        ...
+
+    @abstractmethod
+    def load_checkpoint(self, checkpoint_path=None) -> None:
+        """
+        Load model / trainer checkpoint
+        """
+        ...
 
 class ExtensibleTrainer(AbstractBaseTrainer):
     """

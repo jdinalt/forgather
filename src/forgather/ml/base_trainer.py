@@ -354,11 +354,13 @@ class BaseTrainer(ExtensibleTrainer):
 
         return None
 
-    def _save_checkpoint(self):
-        checkpoints_dir = os.path.join(self.args.output_dir, "checkpoints")
-        checkpoint_path = os.path.join(
-            checkpoints_dir, f"checkpoint-{self.state.global_step}"
-        )
+    def save_checkpoint(self, checkpoint_path=None) -> None:
+        if not checkpoint_path:
+            checkpoints_dir = os.path.join(self.args.output_dir, "checkpoints")
+            checkpoint_path = os.path.join(
+                checkpoints_dir, f"checkpoint-{self.state.global_step}"
+            )
+
         logger.info(f"Saving checkpoint at {checkpoint_path}")
 
         if self._should_save_unique():
@@ -369,11 +371,9 @@ class BaseTrainer(ExtensibleTrainer):
 
         self._barrier()
         self._save_model(checkpoint_path)
+        self._save_training_state(checkpoint_path)
 
-        # Save optimizer/scheduler state if enabled
-        if self.args.save_optimizer_state or self.args.save_scheduler_state:
-            self._save_training_state(checkpoint_path)
-
+        # At most, one process per node should delete excess checkpoints
         if self._should_save_unique():
             checkpoints = glob.glob(os.path.join(checkpoints_dir, "checkpoint-*"))
             if len(checkpoints) > self.args.save_total_limit:
@@ -384,7 +384,18 @@ class BaseTrainer(ExtensibleTrainer):
         # Make available to sub-class for saving additional state
         return checkpoint_path
 
-    def _save_training_state(self, output_dir: str) -> None:
+    def load_checkpoint(self, checkpoint_path=None) -> None:
+        if not checkpoint_path:
+            checkpoint_path = self._resolve_checkpoint_path()
+
+        if checkpoint_path:
+            logger.info(f"Resuming training from checkpoint: {checkpoint_path}")
+            self._load_model_from_checkpoint(checkpoint_path)
+            self._load_training_state(checkpoint_path)
+        else:
+            logger.warn("No checkpoints found")
+
+    def _state_dict(self) -> Dict:
         """Save optimizer and scheduler state. Subclasses can override for custom behavior."""
         training_state = {}
 
@@ -397,7 +408,7 @@ class BaseTrainer(ExtensibleTrainer):
             logger.debug("Saved LR scheduler state to checkpoint")
 
         # Save global step for proper resume functionality
-        if hasattr(self, "state") and self.state is not None:
+        if self.args.save_dataset_state:
             training_state["global_step"] = self.state.global_step
             logger.debug(f"Saved global step {self.state.global_step} to checkpoint")
 
@@ -418,11 +429,81 @@ class BaseTrainer(ExtensibleTrainer):
 
             training_state["rng_state"] = rng_state
             logger.debug("Saved RNG state to checkpoint")
+        return training_state
 
+    def _save_training_state(self, output_dir: str) -> None:
+        training_state = self._state_dict()
         if training_state:
             training_state_path = os.path.join(output_dir, "training_state.pt")
             torch.save(training_state, training_state_path)
             logger.info(f"Saved training state to {training_state_path}")
+        else:
+            logger.warning("No training state saved!")
+
+    def _set_dataloader_step(self, step: int) -> None:
+        logger.warning("_set_dataloader_step() in not implemented")
+
+    def _load_state_dict(self, training_state) -> None:
+        if not training_state:
+            logger.warning("Training state was not loaded!")
+            return
+
+        if self.args.restore_optimizer_state and "optimizer" in training_state:
+            if self.optimizer is not None:
+                self.optimizer.load_state_dict(training_state["optimizer"])
+                logger.info("Restored optimizer state from checkpoint")
+            else:
+                logger.warning(
+                    "Cannot restore optimizer state: optimizer not initialized"
+                )
+
+        if self.args.restore_scheduler_state and "lr_scheduler" in training_state:
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.load_state_dict(training_state["lr_scheduler"])
+                logger.info("Restored LR scheduler state from checkpoint")
+            else:
+                logger.warning(
+                    "Cannot restore LR scheduler state: scheduler not initialized"
+                )
+
+        # Also restore global step if present in training state
+        if self.args.restore_dataset_state:
+            self.state.global_step = training_state["global_step"]
+            self._set_dataloader_step(self.state.global_step)
+            logger.info(f"Restored global step to {self.state.global_step}")
+
+        # Restore RNG state for reproducibility
+        if self.args.restore_rng_state and "rng_state" in training_state:
+            rng_state = training_state["rng_state"]
+
+            # Restore CPU RNG state
+            if "torch_rng_state" in rng_state:
+                torch.set_rng_state(rng_state["torch_rng_state"])
+                logger.debug("Restored CPU RNG state from checkpoint")
+
+            # Restore CUDA RNG state if available
+            if "cuda_rng_state" in rng_state and torch.cuda.is_available():
+                current_device = torch.cuda.current_device()
+                saved_device = rng_state.get("cuda_device", current_device)
+
+                if current_device != saved_device:
+                    logger.warning(
+                        f"CUDA device mismatch: current={current_device}, saved={saved_device}. "
+                        "Restoring RNG state anyway (should be fine with identical GPU models)."
+                    )
+
+                torch.cuda.set_rng_state(
+                    rng_state["cuda_rng_state"], device=current_device
+                )
+                logger.debug(
+                    f"Restored CUDA RNG state for device {current_device} from checkpoint"
+                )
+
+            logger.info("Restored RNG state from checkpoint")
+        elif self.args.restore_rng_state:
+            logger.info(
+                "No RNG state found in checkpoint - using current RNG state"
+            )
 
     def _load_training_state(self, checkpoint_path: str) -> None:
         """Load optimizer and scheduler state. Subclasses can override for custom behavior."""
@@ -430,81 +511,18 @@ class BaseTrainer(ExtensibleTrainer):
 
         if not os.path.exists(training_state_path):
             logger.info(f"No training state file found at: {training_state_path}")
-            return
+            return None
 
         try:
             training_state = torch.load(
                 training_state_path, map_location=torch.device("cpu")
             )
 
-            if self.args.restore_optimizer_state and "optimizer" in training_state:
-                if self.optimizer is not None:
-                    self.optimizer.load_state_dict(training_state["optimizer"])
-                    logger.info("Restored optimizer state from checkpoint")
-                else:
-                    logger.warning(
-                        "Cannot restore optimizer state: optimizer not initialized"
-                    )
-
-            if self.args.restore_scheduler_state and "lr_scheduler" in training_state:
-                if self.lr_scheduler is not None:
-                    self.lr_scheduler.load_state_dict(training_state["lr_scheduler"])
-                    logger.info("Restored LR scheduler state from checkpoint")
-                else:
-                    logger.warning(
-                        "Cannot restore LR scheduler state: scheduler not initialized"
-                    )
-
-            # Also restore global step if present in training state
-            if (
-                "global_step" in training_state
-                and hasattr(self, "state")
-                and self.state is not None
-            ):
-                self.state.global_step = training_state["global_step"]
-                logger.info(f"Restored global step to {self.state.global_step}")
-            elif "global_step" in training_state:
-                logger.warning(
-                    f"Global step {training_state['global_step']} found in checkpoint, but trainer state not initialized yet"
-                )
-
-            # Restore RNG state for reproducibility
-            if self.args.restore_rng_state and "rng_state" in training_state:
-                rng_state = training_state["rng_state"]
-
-                # Restore CPU RNG state
-                if "torch_rng_state" in rng_state:
-                    torch.set_rng_state(rng_state["torch_rng_state"])
-                    logger.debug("Restored CPU RNG state from checkpoint")
-
-                # Restore CUDA RNG state if available
-                if "cuda_rng_state" in rng_state and torch.cuda.is_available():
-                    current_device = torch.cuda.current_device()
-                    saved_device = rng_state.get("cuda_device", current_device)
-
-                    if current_device != saved_device:
-                        logger.warning(
-                            f"CUDA device mismatch: current={current_device}, saved={saved_device}. "
-                            "Restoring RNG state anyway (should be fine with identical GPU models)."
-                        )
-
-                    torch.cuda.set_rng_state(
-                        rng_state["cuda_rng_state"], device=current_device
-                    )
-                    logger.debug(
-                        f"Restored CUDA RNG state for device {current_device} from checkpoint"
-                    )
-
-                logger.info("Restored RNG state from checkpoint")
-            elif self.args.restore_rng_state:
-                logger.info(
-                    "No RNG state found in checkpoint - using current RNG state"
-                )
-
         except Exception as e:
             logger.error(
                 f"Failed to load training state from {training_state_path}: {e}"
             )
+        self._load_state_dict(training_state)
 
     def _load_model_from_checkpoint(self, checkpoint_path: str) -> None:
         """Load model weights from checkpoint using the sharded checkpoint loader."""

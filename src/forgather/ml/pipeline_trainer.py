@@ -760,51 +760,9 @@ class PipelineTrainer(Trainer):
                 debug=self.args.debug_pipeline,
             )
 
-        # Wait for all processes, before continuing.
-
     # @override
     def _save_training_state(self, output_dir: str) -> None:
-        if self.denv.rank == 0:
-            logger.info("Saving Training State")
-        """Override to handle distributed optimizer/scheduler state saving."""
-        # Each rank saves its own training state with rank-specific filename
-        training_state = {}
-
-        if self.args.save_optimizer_state and self.optimizer is not None:
-            training_state["optimizer"] = self.optimizer.state_dict()
-            logger.debug(f"Rank {self.denv.rank}: Saved optimizer state to checkpoint")
-
-        if self.args.save_scheduler_state and self.lr_scheduler is not None:
-            training_state["lr_scheduler"] = self.lr_scheduler.state_dict()
-            logger.debug(
-                f"Rank {self.denv.rank}: Saved LR scheduler state to checkpoint"
-            )
-
-        # Save global step (same across all ranks)
-        if hasattr(self, "state") and self.state is not None:
-            training_state["global_step"] = self.state.global_step
-            logger.debug(
-                f"Rank {self.denv.rank}: Saved global step {self.state.global_step} to checkpoint"
-            )
-
-        # Save RNG state per rank for reproducibility
-        if self.args.save_rng_state:
-            rng_state = {
-                "torch_rng_state": torch.get_rng_state(),
-                "initial_seed": torch.initial_seed(),
-            }
-
-            # Save CUDA RNG state using current device
-            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-                current_device = torch.cuda.current_device()
-                rng_state["cuda_rng_state"] = torch.cuda.get_rng_state(
-                    device=current_device
-                )
-                rng_state["cuda_device"] = current_device
-
-            training_state["rng_state"] = rng_state
-            logger.debug(f"Rank {self.denv.rank}: Saved RNG state to checkpoint")
-
+        training_state = self._state_dict()
         if training_state:
             # Use rank-specific filename to avoid conflicts
             training_state_path = os.path.join(
@@ -814,6 +772,8 @@ class PipelineTrainer(Trainer):
             logger.info(
                 f"Rank {self.denv.rank}: Saved training state to {training_state_path}"
             )
+        else:
+            logger.warning("No training state saved!")
 
     # @override
     def _load_model_from_checkpoint(self, checkpoint_path: str) -> None:
@@ -845,96 +805,17 @@ class PipelineTrainer(Trainer):
             logger.info(
                 f"Rank {self.denv.rank}: No training state file found at: {training_state_path}"
             )
-        else:
-            try:
-                # Use the distributed environment device, not args.device
-                training_state = torch.load(
-                    training_state_path, map_location=torch.device("cpu")
-                )
+            return None
+        try:
+            training_state = torch.load(
+                training_state_path, map_location=torch.device("cpu")
+            )
 
-                if self.args.restore_optimizer_state and "optimizer" in training_state:
-                    if self.optimizer is not None:
-                        self.optimizer.load_state_dict(training_state["optimizer"])
-                        logger.info(
-                            f"Rank {self.denv.rank}: Restored optimizer state from checkpoint"
-                        )
-                    else:
-                        logger.warning(
-                            f"Rank {self.denv.rank}: Cannot restore optimizer state: optimizer not initialized"
-                        )
-
-                if (
-                    self.args.restore_scheduler_state
-                    and "lr_scheduler" in training_state
-                ):
-                    if self.lr_scheduler is not None:
-                        self.lr_scheduler.load_state_dict(
-                            training_state["lr_scheduler"]
-                        )
-                        logger.info(
-                            f"Rank {self.denv.rank}: Restored LR scheduler state from checkpoint"
-                        )
-                    else:
-                        logger.warning(
-                            f"Rank {self.denv.rank}: Cannot restore LR scheduler state: scheduler not initialized"
-                        )
-
-                # Restore global step if present (should be same across ranks)
-                if (
-                    "global_step" in training_state
-                    and hasattr(self, "state")
-                    and self.state is not None
-                ):
-                    self.state.global_step = training_state["global_step"]
-                    logger.info(
-                        f"Rank {self.denv.rank}: Restored global step to {self.state.global_step}"
-                    )
-                elif "global_step" in training_state:
-                    logger.warning(
-                        f"Rank {self.denv.rank}: Global step {training_state['global_step']} found in checkpoint, but trainer state not initialized yet"
-                    )
-
-                # Restore RNG state per rank for reproducibility
-                if self.args.restore_rng_state and "rng_state" in training_state:
-                    rng_state = training_state["rng_state"]
-
-                    # Restore CPU RNG state
-                    if "torch_rng_state" in rng_state:
-                        torch.set_rng_state(rng_state["torch_rng_state"])
-                        logger.debug(
-                            f"Rank {self.denv.rank}: Restored CPU RNG state from checkpoint"
-                        )
-
-                    # Restore CUDA RNG state using current device
-                    if "cuda_rng_state" in rng_state and torch.cuda.is_available():
-                        current_device = torch.cuda.current_device()
-                        saved_device = rng_state.get("cuda_device", current_device)
-
-                        if current_device != saved_device:
-                            logger.warning(
-                                f"Rank {self.denv.rank}: CUDA device mismatch: current={current_device}, saved={saved_device}. "
-                                "Restoring RNG state anyway (should be fine with identical GPU models)."
-                            )
-
-                        torch.cuda.set_rng_state(
-                            rng_state["cuda_rng_state"], device=current_device
-                        )
-                        logger.debug(
-                            f"Rank {self.denv.rank}: Restored CUDA RNG state for device {current_device} from checkpoint"
-                        )
-
-                    logger.info(
-                        f"Rank {self.denv.rank}: Restored RNG state from checkpoint"
-                    )
-                elif self.args.restore_rng_state:
-                    logger.info(
-                        f"Rank {self.denv.rank}: No RNG state found in checkpoint - using current RNG state"
-                    )
-
-            except Exception as e:
-                logger.error(
-                    f"Rank {self.denv.rank}: Failed to load training state from {training_state_path}: {e}"
-                )
+        except Exception as e:
+            logger.error(
+                f"Rank {self.denv.rank}: Failed to load training state from {training_state_path}: {e}"
+            )
+        self._load_state_dict(training_state)
 
     def _remove_vestigial_modules(self, all_pipeline_modules):
         """
