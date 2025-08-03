@@ -53,22 +53,23 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
     return_tensors: pt
     padding: "max_length"
     truncation: True
-    max_length: 512
+    max_length: 1300
 -- endblock datacollator
 
 
 -- block optimizer
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
-    lr: 1.0e-5
-    weight_decay: 0.01
+    lr: 4.0e-5
+    weight_decay: 0.001
 << endblock optimizer
 
 
 -- block lr_scheduler
 lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
-    warmup_steps: 500
-    cooldown_steps: 0
-    constant_lr: 2.0e-5
+    warmup_steps: 1000
+    cooldown_steps: 2000
+    checkpoint_step: 3000
+    constant_lr: 1.0e-5
 << endblock lr_scheduler
 
 
@@ -82,8 +83,6 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 -- block trainer_meta_config
     == super()
     -- set trainer_def.pipeline_layers = 32
-    ##-- set trainer_def.pipeline_segments = 4
-    ##-- set trainer_def.pipeline_microbatches = 8
     -- set trainer_def.split_layer_prefix = "causal_lm.layer_stack.layers."
 -- endblock trainer_meta_config
 
@@ -94,15 +93,15 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     seed: 42
     per_device_train_batch_size: 8
     per_device_eval_batch_size: 16
-    logging_steps: 25
+    logging_steps: 10
     eval_steps: 100
-    num_train_epochs: 1
+    num_train_epochs: 5
     dataloader_num_workers: 1
-    max_steps: 500
+    #max_steps: 500
     
     # Checkpoint test settings - create multiple checkpoints with final step not multiple of save_steps
-    save_strategy: "steps"           # Save every "save_steps" steps
-    save_steps: 250
+    save_strategy: "steps"           # Set to "steps" to save every "save_steps"; set to "no" to disable
+    save_steps: 1000
     save_safetensors: False          # Safe tensors don't support shared weights
     save_total_limit: 2              # Keep 2 checkpoints
     save_on_each_node: False         # Save common files on each node
@@ -131,13 +130,18 @@ model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_t
 
 #-------------------- project.dataset_config --------------------
 ## Note: Switch to 'datasets/tiny_stories.yaml' for the full dataset.
--- extends 'datasets/tiny_stories_abridged.yaml'
+-- extends 'datasets/samantha.yaml'
 
 -- block tokenize_args
     == super()
     # project overrides
-    max_length: 512
 << endblock tokenize_args
 
 #-------------------- project.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'
+
+-- block callback_list
+    == super()
+    - !singleton:forgather.ml.peak_memory:PeakMemory
+        show_details: False
+<< endblock callback_list

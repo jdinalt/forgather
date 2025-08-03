@@ -278,6 +278,12 @@ class PipelineTrainer(Trainer):
                     self.args.split_spec[key] = SplitPoint.END
                 case _:
                     raise Exception(f"Unknown split-point type {value} for {key}")
+        self.sdpa_priority = [
+            torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+            torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION,
+            torch.nn.attention.SDPBackend.CUDNN_ATTENTION,
+            torch.nn.attention.SDPBackend.MATH,
+        ]
 
     def _print_modules(self, modules):
         if self.args.debug_model_params:
@@ -618,34 +624,36 @@ class PipelineTrainer(Trainer):
         # See: https://github.com/pytorch/torchtitan/blob/main/torchtitan/train.py#L377
         targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)
 
-        if self.pp_has_first_stage:
-            self.train_scheduler.step(*inputs, target=targets, losses=losses)
-        else:
-            self.train_scheduler.step(target=targets, losses=losses)
-
-        if self.pp_has_last_stage:
-            mean_loss = torch.stack([x.detach() for x in losses]).mean()
-            mean_loss = mean_loss.float()
-        else:
-            mean_loss = torch.tensor(0.0, device=self.denv.device)
-
-        return mean_loss
+        with torch.nn.attention.sdpa_kernel(self.sdpa_priority, set_priority=True):
+            if self.pp_has_first_stage:
+                self.train_scheduler.step(*inputs, target=targets, losses=losses)
+            else:
+                self.train_scheduler.step(target=targets, losses=losses)
+    
+            if self.pp_has_last_stage:
+                mean_loss = torch.stack([x.detach() for x in losses]).mean()
+                mean_loss = mean_loss.float()
+            else:
+                mean_loss = torch.tensor(0.0, device=self.denv.device)
+    
+            return mean_loss
 
     def _eval_pipeline_step(self, batch: dict | tuple) -> Tensor:
         args, kwargs = self._prepare_batch(batch)
         inputs = (kwargs["input_ids"],)
         labels = kwargs["labels"]
 
-        if self.pp_has_first_stage:
-            outputs = self.eval_scheduler.step(*inputs)
-        else:
-            outputs = self.eval_scheduler.step()
-
-        if self.pp_has_last_stage:
-            loss = self.loss_fn(outputs, labels).detach()
-            mean_loss = loss.float()
-        else:
-            mean_loss = torch.tensor(0.0, device=self.denv.device)
+        with torch.nn.attention.sdpa_kernel(self.sdpa_priority, set_priority=True):
+            if self.pp_has_first_stage:
+                outputs = self.eval_scheduler.step(*inputs)
+            else:
+                outputs = self.eval_scheduler.step()
+    
+            if self.pp_has_last_stage:
+                loss = self.loss_fn(outputs, labels).detach()
+                mean_loss = loss.float()
+            else:
+                mean_loss = torch.tensor(0.0, device=self.denv.device)
 
         return mean_loss
 

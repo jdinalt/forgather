@@ -4,7 +4,7 @@ from torch import nn, Tensor, FloatTensor
 import torch.utils.checkpoint as checkpoint
 
 
-class CheckpointLayerStack(nn.Module):
+class LayerStack(nn.Module):
     """
     This module is the same as LayerStack, except with activaiton checkpointing support.
 
@@ -49,6 +49,11 @@ class CheckpointLayerStack(nn.Module):
         if post_norm_factory is not None:
             self.layer_norm = post_norm_factory()
 
+    def extra_repr(self):
+        return (
+            f"enable_checkpoint={self.enable_checkpoint}, checkpoint_stride={self.checkpoint_stride}"
+        )
+    
     def forward(
         self,
         hidden_states: FloatTensor,

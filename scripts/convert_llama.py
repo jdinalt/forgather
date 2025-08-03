@@ -56,6 +56,7 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
     dim_feedforward: {{ dim_feedforward }}
     rope_theta: !!float {{ rope_theta }}
     rms_norm_eps: !!float {{ rms_norm_eps }}
+    enable_activation_checkpoint: {{ enable_activation_checkpoint }}
 -- endblock model_config
 
 -- block init_weights
@@ -355,6 +356,11 @@ def parse_args(args=None):
         help="Override max model length of exported model.",
     )
     parser.add_argument(
+        "--enable-checkpoint",
+        action="store_true",
+        help="Enable activation checkpointing.",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cpu",
@@ -376,6 +382,13 @@ def parse_args(args=None):
         "--debug-params",
         action="store_true",
         help="Print parameter names for debugging mapping",
+    )
+    parser.add_argument(
+        "-t",
+        "--chat-template-path",
+        type=str,
+        default=None,
+        help="Assign chat template at given path to output tokenizer.",
     )
 
     args = parser.parse_args(args)
@@ -459,7 +472,6 @@ def convert_hf_to_forgather(args):
     # Mistral models have these hardcoded to False, so no need to check
 
     logger.info(src_model_config)
-
     tokenizer = AutoTokenizer.from_pretrained(src_model_path)
 
     print("Loading source model...")
@@ -511,6 +523,7 @@ def convert_hf_to_forgather(args):
         dim_feedforward=src_model_config.intermediate_size,
         rope_theta=src_model_config.rope_theta,
         rms_norm_eps=src_model_config.rms_norm_eps,
+        enable_activation_checkpoint=args.enable_checkpoint,
     )
 
     logger.debug(pp_config)
@@ -519,6 +532,11 @@ def convert_hf_to_forgather(args):
 
     tokenizer = Latent.materialize(config, mtargets="tokenizer")
     logger.debug(tokenizer)
+    if args.chat_template_path:
+        with open(args.chat_template_path, "r") as f:
+            chat_template = f.read()
+        logger.info(f"Setting tokenizer chat template to: {chat_template}")
+        tokenizer.chat_template = chat_template
 
     model_config = Latent.materialize(config, mtargets="model_config")
     logger.info(model_config)

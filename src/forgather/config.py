@@ -240,6 +240,12 @@ class ConfigEnvironment:
         self.pp_environment = pp_environment
         self.pp_environment.globals |= global_vars
 
+    def get_pp_environment(self):
+        return self.pp_environment
+
+    def get_loader(self):
+        return self.pp_environment.loader
+
     def preprocess(
         self,
         config_path: os.PathLike | str,

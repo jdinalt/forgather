@@ -137,6 +137,8 @@ text_gen_callback_args: &text_gen_callback_args
     == super()
     - !singleton:forgather.ml.textgen_callback:TextgenCallback
         <<: *text_gen_callback_args
+    - !singleton:forgather.ml.peak_memory:PeakMemory
+        show_details: False
 << endblock callback_list
 
 #-------------------- tiny.dataset_config --------------------

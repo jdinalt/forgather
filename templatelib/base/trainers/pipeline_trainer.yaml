@@ -17,6 +17,7 @@
 -- block split_spec
 split_spec: &split_spec !dict@split_spec
     ## Define where to split the model, based upon the total number of layers and the number of segments.
+    ## While not optimal, this is probalby a good starting point.
 -- for i in range(1, trainer_def.pipeline_segments):
     {{ trainer_def.split_layer_prefix }}{{i * (trainer_def.pipeline_layers // trainer_def.pipeline_segments)}}: "beginning"
 -- endfor

@@ -15,3 +15,8 @@
 
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
+
+-- block trainer_args
+    == super()
+    #max_steps: 100
+-- endblock trainer_args
