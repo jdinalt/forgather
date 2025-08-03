@@ -226,6 +226,14 @@ class Trainer(BaseTrainer):
                     **self.args.lr_scheduler_kwargs,
                 )
 
+    def _dataloader_iter(self, dataloader: DataLoader) -> Iterable:
+        """
+        Get the next batch from the dataloader.
+        This is a generator that yields batches from the dataloader.
+        """
+        for batch in dataloader:
+            yield batch
+
     # @override
     def _train_loop(self) -> TrainOutput:
         """
@@ -270,7 +278,7 @@ class Trainer(BaseTrainer):
             while True:
                 self._dispatch_event("on_epoch_begin")
                 # Batch within epoch loop
-                for batch in self.train_dataloader:
+                for batch in self._dataloader_iter(self.train_dataloader):
                     self._dispatch_event("on_step_begin")
                     loss = self._train_step(batch)
                     loss = self._gather_reduce_loss(loss)
@@ -333,7 +341,7 @@ class Trainer(BaseTrainer):
         """
         with set_train(self.model, False):
             total_loss = torch.zeros(1, device=self.args.device)
-            for step, batch in enumerate(self.eval_dataloader):
+            for step, batch in enumerate(self._dataloader_iter(self.eval_dataloader)):
                 outputs = self._prediction_step(batch)
                 loss = self._gather_reduce_loss(outputs["loss"])
                 total_loss += loss
@@ -373,12 +381,12 @@ class Trainer(BaseTrainer):
         if self.train_ds_has_length:
             self.epoch_train_steps = len(self.train_dataloader)
 
+        # The total number of training steps in all epochs
+        self.max_steps = self.args.num_train_epochs * self.epoch_train_steps
+
         # If limit is specified, constrain to limit.
         if self.args.max_steps >= 0:
-            self.max_steps = min(self.args.max_steps, self.epoch_train_steps)
-        else:
-            # The total number of training steps in all epochs
-            self.max_steps = self.args.num_train_epochs * self.epoch_train_steps
+            self.max_steps = min(self.args.max_steps, self.max_steps)
 
     def _init_state(self) -> TrainerState:
         """

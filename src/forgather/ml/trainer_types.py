@@ -163,7 +163,6 @@ class TrainingArguments(MinimalTrainingArguments):
     restore_scheduler_state: bool = True
     restore_dataset_state: bool = True
 
-
     # RNG state checkpoint options
     save_rng_state: bool = True
     restore_rng_state: bool = True
@@ -239,6 +238,7 @@ class AbstractBaseTrainer(ABC):
         Load model / trainer checkpoint
         """
         ...
+
 
 class ExtensibleTrainer(AbstractBaseTrainer):
     """

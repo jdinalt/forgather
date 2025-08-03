@@ -2,19 +2,15 @@ from typing import (
     Callable,
     Optional,
     List,
-    Type,
     Dict,
 )
 from types import NoneType
 import os
 from abc import abstractmethod
-import glob
-import shutil
-import time
 
 import logging
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 from transformers import (
     PreTrainedModel,
 )

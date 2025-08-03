@@ -1,10 +1,13 @@
 # https://github.com/pytorch/pytorch/tree/main/torch/distributed/pipelining
 from dataclasses import dataclass, field
-from typing import Callable, Any, Dict, List, Tuple, Optional, Union
+from typing import Callable, Any, Dict, List, Tuple, Optional, Union, Iterable
 from collections.abc import Sequence
 from types import NoneType
 import logging
+import copy
 import os
+
+from torch.utils.data import DataLoader
 
 import torch
 from torch import Tensor
@@ -579,6 +582,60 @@ class PipelineTrainer(Trainer):
                     distributed.recv(p, src=0)
 
         distributed.barrier()
+
+    def _dataloader_iter(self, dataloader: DataLoader) -> Iterable:
+        """
+        Asynchronous pipeline-parallel dataloader iterator.
+
+        Rank 0: sends batches as soon as they are available.
+        Other ranks: receive batches asynchronously using non-blocking communication,
+        but only yield the batch after all tensors are fully received.
+        """
+        if self.denv.rank == 0:
+            for batch in dataloader:
+                # Signal start of new batch
+                distributed.broadcast(torch.tensor(1, device=self.denv.device), src=0)
+                # Send each tensor in the batch
+                for key, value in batch.items():
+                    assert isinstance(value, Tensor), (
+                        f"Batch item {key} is not a Tensor, got {type(value)}. "
+                        "Pipeline parallel requires all batch items to be Tensors."
+                    )
+                    distributed.broadcast(
+                        value.to(device=self.denv.device), src=0, async_op=False
+                    )
+                yield batch
+            # Signal end of dataloader
+            distributed.broadcast(torch.tensor(0, device=self.denv.device), src=0)
+        else:
+            flag = torch.tensor(0, device=self.denv.device)
+            reference_batch = next(iter(dataloader))
+            batch = {}
+            for key, value in reference_batch.items():
+                assert isinstance(value, Tensor), (
+                    f"Batch item {key} is not a Tensor, got {type(value)}. "
+                    "Pipeline parallel requires all batch items to be Tensors."
+                )
+                batch[key] = torch.empty_like(value, device=self.denv.device)
+            reference_batch = None
+
+            while True:
+                # Receive flag asynchronously
+                req_flag = distributed.broadcast(flag, src=0, async_op=True)
+                req_flag.wait()
+                if flag.item() == 0:
+                    break
+
+                # Start async receives for all tensors
+                requests = []
+                for value in batch.values():
+                    req = distributed.broadcast(value, src=0, async_op=True)
+                    requests.append(req)
+
+                # Wait for all tensors to be received before yielding
+                for req in requests:
+                    req.wait()
+                yield copy.copy(batch)
 
     def _construct_eval_pipeline(self):
         # Construct an "eval" version of the pipelined model, which shares weights with the "train" version.
