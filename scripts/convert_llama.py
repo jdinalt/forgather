@@ -22,6 +22,7 @@ from forgather.ml.sharded_checkpoint import (
     load_checkpoint,
     create_sharing_metadata,
     retie_parameters,
+    find_latest_checkpoint,
 )
 
 logging.basicConfig(level=logging.DEBUG)
@@ -361,6 +362,13 @@ def parse_args(args=None):
         help="Enable activation checkpointing.",
     )
     parser.add_argument(
+        "-c",
+        "--checkpoint-path",
+        type=str,
+        default=None,
+        help="Path to load Forgather checkpoint from (if not specified, will use latest checkpoint in src_model_path)",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cpu",
@@ -580,6 +588,19 @@ def convert_forgather_to_hf(args):
     """Convert Forgather Dynamic Llama model to HuggingFace Llama format"""
     src_model_path, dst_model_path, new_dtype = setup_conversion(args)
 
+    if not args.checkpoint_path:
+        print(f"Finding latest checkpoint in {src_model_path}")
+        latest_checkpoint = find_latest_checkpoint(src_model_path)
+        if not latest_checkpoint:
+            raise ValueError(
+                f"No checkpoints found in {src_model_path}. Please provide a valid Forgather model directory."
+            )
+    elif not os.path.exists(args.checkpoint_path):
+        print(f"Checkpoint path {args.checkpoint_path} does not exist.")
+        raise ValueError(f"Checkpoint path {args.checkpoint_path} does not exist.")
+    else:
+        latest_checkpoint = args.checkpoint_path
+    print(f"Using checkpoint: {latest_checkpoint}")
     # Load the Forgather model configuration to get the original HF config
     src_model_config = AutoConfig.from_pretrained(
         src_model_path, trust_remote_code=True
@@ -589,6 +610,7 @@ def convert_forgather_to_hf(args):
     print("Loading Forgather model...")
     # Load as meta model first
     with torch.device("meta"):
+
         src_model = AutoModelForCausalLM.from_config(
             src_model_config, trust_remote_code=True
         )
@@ -602,7 +624,7 @@ def convert_forgather_to_hf(args):
     retie_parameters(src_model, sharing_metadata)
 
     # Load the actual weights
-    load_checkpoint(src_model_path, src_model, device="cpu", strict=True)
+    load_checkpoint(latest_checkpoint, src_model, device="cpu", strict=True)
 
     print_debug_params(src_model, "Source Forgather model", args)
 

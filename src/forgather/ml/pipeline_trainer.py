@@ -629,13 +629,13 @@ class PipelineTrainer(Trainer):
                 self.train_scheduler.step(*inputs, target=targets, losses=losses)
             else:
                 self.train_scheduler.step(target=targets, losses=losses)
-    
+
             if self.pp_has_last_stage:
                 mean_loss = torch.stack([x.detach() for x in losses]).mean()
                 mean_loss = mean_loss.float()
             else:
                 mean_loss = torch.tensor(0.0, device=self.denv.device)
-    
+
             return mean_loss
 
     def _eval_pipeline_step(self, batch: dict | tuple) -> Tensor:
@@ -648,7 +648,7 @@ class PipelineTrainer(Trainer):
                 outputs = self.eval_scheduler.step(*inputs)
             else:
                 outputs = self.eval_scheduler.step()
-    
+
             if self.pp_has_last_stage:
                 loss = self.loss_fn(outputs, labels).detach()
                 mean_loss = loss.float()
@@ -686,7 +686,7 @@ class PipelineTrainer(Trainer):
             step = 0
             for step, batch in enumerate(self.eval_dataloader):
                 outputs = self._unified_prediction_step(batch)
-                loss = self._reduce_loss(outputs["loss"])
+                loss = self._gather_reduce_loss(outputs["loss"])
                 total_loss += loss
                 self._dispatch_event("on_prediction_step")
             metrics = {"eval_loss": (total_loss / step).item()}

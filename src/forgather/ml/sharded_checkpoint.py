@@ -5,6 +5,9 @@ import logging
 from typing import Any, Dict, List, Tuple, Set
 from types import NoneType
 from collections import defaultdict
+import time
+import glob
+import shutil
 
 import torch
 from torch import nn
@@ -627,3 +630,95 @@ def checkpoint_exists(
         return (SAFE_WEIGHTS_NAME, False, True)
     else:
         return (None, None, None)
+
+
+def validate_checkpoint(checkpoint_path: str) -> bool:
+    """Validate that a checkpoint directory contains the necessary files."""
+    if not os.path.isdir(checkpoint_path):
+        return False
+
+    # Check for at least one of the expected model files
+    expected_model_files = [
+        "pytorch_model.bin",
+        "model.safetensors",
+        "model.safetensors.index.json",
+        "pytorch_model.bin.index.json",
+    ]
+
+    has_checkpoint = any(
+        os.path.exists(os.path.join(checkpoint_path, filename))
+        for filename in expected_model_files
+    )
+
+    if not has_checkpoint:
+        logger.warning(
+            f"Checkpoint {checkpoint_path} appears to be incomplete (no model files found)"
+        )
+        return False
+
+    return True
+
+
+def find_latest_checkpoint(model_dir: str) -> str | None:
+    """Find the most recent valid checkpoint in the checkpoints directory based on modification time."""
+    checkpoints_dir = os.path.join(model_dir, "checkpoints")
+
+    # If checkpoints directory does not exist, check the model directory
+    if not os.path.exists(checkpoints_dir):
+        logger.info(
+            "No checkpoint directory found. Defaulting to main model directory."
+        )
+        if validate_checkpoint(model_dir):
+            return model_dir
+        else:
+            return None
+
+    checkpoints = glob.glob(os.path.join(checkpoints_dir, "checkpoint-*"))
+    if not checkpoints:
+        return None
+
+    # Filter to only valid checkpoints and sort by modification time
+    valid_checkpoints = [cp for cp in checkpoints if validate_checkpoint(cp)]
+
+    if not valid_checkpoints:
+        logger.warning("No valid checkpoints found in checkpoint directory")
+        return None
+
+    try:
+        latest = max(valid_checkpoints, key=lambda path: os.path.getmtime(path))
+        step_num = (
+            os.path.basename(latest).split("-")[1]
+            if "-" in os.path.basename(latest)
+            else "unknown"
+        )
+        mtime = os.path.getmtime(latest)
+        mtime_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
+        logger.info(
+            f"Found latest valid checkpoint: {latest} (step {step_num}, modified {mtime_str})"
+        )
+        return latest
+    except (OSError, IndexError) as e:
+        logger.warning(f"Error finding latest checkpoint: {e}")
+        return None
+
+
+def next_checkpoint_path(model_dir: str, global_step: int) -> str:
+    """Get path to save next checkpoint, given model directory and global_step"""
+    checkpoints_dir = os.path.join(model_dir, "checkpoints")
+    checkpoint_path = os.path.join(checkpoints_dir, f"checkpoint-{global_step}")
+    return checkpoints_dir
+
+
+def maybe_delete_oldest_checkpoint(model_dir: str, max_checkpoints) -> None:
+    checkpoints_dir = os.path.join(model_dir, "checkpoints")
+    if not os.path.isdir(checkpoints_dir):
+        logger.debug(
+            f"No checkpoints directory found at {checkpoints_dir}, skipping deletion"
+        )
+        return
+    checkpoints = glob.glob(os.path.join(checkpoints_dir, "checkpoint-*"))
+    if len(checkpoints) > max_checkpoints:
+        # Find oldest by modification time and delete it
+        oldest_path = min(checkpoints, key=lambda path: os.path.getmtime(path))
+        logger.info(f"Deleting oldest checkpoint at {oldest_path}")
+        shutil.rmtree(oldest_path)

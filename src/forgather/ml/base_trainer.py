@@ -25,7 +25,13 @@ from .trainer_types import (
     TrainOutput,
     TrainerControl,
 )
-from .sharded_checkpoint import load_checkpoint
+from .sharded_checkpoint import (
+    load_checkpoint,
+    validate_checkpoint,
+    find_latest_checkpoint,
+    next_checkpoint_path,
+    maybe_delete_oldest_checkpoint,
+)
 
 WEIGHTS_NAME = "pytorch_model.bin"
 WEIGHTS_INDEX_NAME = "pytorch_model.bin.index.json"
@@ -263,71 +269,6 @@ class BaseTrainer(ExtensibleTrainer):
         if self.processing_class and hasattr(self.processing_class, "save_pretrained"):
             self.processing_class.save_pretrained(output_dir)
 
-    def _validate_checkpoint(self, checkpoint_path: str) -> bool:
-        """Validate that a checkpoint directory contains the necessary files."""
-        if not os.path.isdir(checkpoint_path):
-            return False
-
-        # Check for at least one of the expected model files
-        expected_model_files = [
-            "pytorch_model.bin",
-            "model.safetensors",
-            "model.safetensors.index.json",
-            "pytorch_model.bin.index.json",
-        ]
-
-        has_model = any(
-            os.path.exists(os.path.join(checkpoint_path, filename))
-            for filename in expected_model_files
-        )
-
-        if not has_model:
-            logger.warning(
-                f"Checkpoint {checkpoint_path} appears to be incomplete (no model files found)"
-            )
-            return False
-
-        return True
-
-    def _find_latest_checkpoint(self, checkpoints_dir: str = None) -> str | None:
-        """Find the most recent valid checkpoint in the checkpoints directory based on modification time."""
-        if checkpoints_dir is None:
-            checkpoints_dir = os.path.join(self.args.output_dir, "checkpoints")
-
-        if not os.path.exists(checkpoints_dir):
-            logger.warning(
-                "No checkpoint directory found. Defaulting to main model directory."
-            )
-            return self.args.output_dir
-
-        checkpoints = glob.glob(os.path.join(checkpoints_dir, "checkpoint-*"))
-        if not checkpoints:
-            return None
-
-        # Filter to only valid checkpoints and sort by modification time
-        valid_checkpoints = [cp for cp in checkpoints if self._validate_checkpoint(cp)]
-
-        if not valid_checkpoints:
-            logger.warning("No valid checkpoints found in checkpoint directory")
-            return None
-
-        try:
-            latest = max(valid_checkpoints, key=lambda path: os.path.getmtime(path))
-            step_num = (
-                os.path.basename(latest).split("-")[1]
-                if "-" in os.path.basename(latest)
-                else "unknown"
-            )
-            mtime = os.path.getmtime(latest)
-            mtime_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
-            logger.info(
-                f"Found latest valid checkpoint: {latest} (step {step_num}, modified {mtime_str})"
-            )
-            return latest
-        except (OSError, IndexError) as e:
-            logger.warning(f"Error finding latest checkpoint: {e}")
-            return None
-
     def _resolve_checkpoint_path(self) -> str | None:
         """Resolve the checkpoint path based on resume_from_checkpoint setting."""
         if not self.args.resume_from_checkpoint:
@@ -336,7 +277,7 @@ class BaseTrainer(ExtensibleTrainer):
         if isinstance(self.args.resume_from_checkpoint, str):
             # Explicit path provided
             if os.path.exists(self.args.resume_from_checkpoint):
-                if self._validate_checkpoint(self.args.resume_from_checkpoint):
+                if validate_checkpoint(self.args.resume_from_checkpoint):
                     return self.args.resume_from_checkpoint
                 else:
                     logger.warning(
@@ -350,21 +291,20 @@ class BaseTrainer(ExtensibleTrainer):
                 return None
         elif self.args.resume_from_checkpoint is True:
             # Auto-discover latest checkpoint
-            return self._find_latest_checkpoint()
+            return find_latest_checkpoint(self.args.output_dir)
 
         return None
 
     def save_checkpoint(self, checkpoint_path=None) -> None:
         if not checkpoint_path:
-            checkpoints_dir = os.path.join(self.args.output_dir, "checkpoints")
-            checkpoint_path = os.path.join(
-                checkpoints_dir, f"checkpoint-{self.state.global_step}"
+            checkpoint_path = next_checkpoint_path(
+                self.args.output_dir, self.state.global_step
             )
 
         logger.info(f"Saving checkpoint at {checkpoint_path}")
 
         if self._should_save_unique():
-            os.makedirs(checkpoints_dir, exist_ok=True)
+            # Ensure the checkpoint directory exists
             os.makedirs(checkpoint_path, exist_ok=True)
             self._save_model_config(self.args.output_dir)
             self._save_model_preprocessor(self.args.output_dir)
@@ -375,12 +315,10 @@ class BaseTrainer(ExtensibleTrainer):
 
         # At most, one process per node should delete excess checkpoints
         if self._should_save_unique():
-            checkpoints = glob.glob(os.path.join(checkpoints_dir, "checkpoint-*"))
-            if len(checkpoints) > self.args.save_total_limit:
-                # Find oldest by modification time and delete it
-                oldest_path = min(checkpoints, key=lambda path: os.path.getmtime(path))
-                logger.info(f"Deleting oldest checkpoint at {oldest_path}")
-                shutil.rmtree(oldest_path)
+            maybe_delete_oldest_checkpoint(
+                self.args.output_dir, self.args.save_total_limit
+            )
+
         # Make available to sub-class for saving additional state
         return checkpoint_path
 
@@ -501,9 +439,7 @@ class BaseTrainer(ExtensibleTrainer):
 
             logger.info("Restored RNG state from checkpoint")
         elif self.args.restore_rng_state:
-            logger.info(
-                "No RNG state found in checkpoint - using current RNG state"
-            )
+            logger.info("No RNG state found in checkpoint - using current RNG state")
 
     def _load_training_state(self, checkpoint_path: str) -> None:
         """Load optimizer and scheduler state. Subclasses can override for custom behavior."""
