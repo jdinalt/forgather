@@ -15,6 +15,7 @@
     -- set ns.trainer_class = 'trainers/trainer.yaml'
     ## We make use of custom models in these projects
     -- set ns.trust_remote_code = True
+    -- set ns.log_peak_memmory = False
 -- endblock config_metadata
 
 
@@ -139,6 +140,8 @@ text_gen_callback_args: &text_gen_callback_args
         <<: *text_gen_callback_args
     - !singleton:forgather.ml.peak_memory:PeakMemory
         show_details: False
+        do_log: {{ ns.log_peak_memmory }}
+        summary_writer: *summary_writer
 << endblock callback_list
 
 #-------------------- tiny.dataset_config --------------------
