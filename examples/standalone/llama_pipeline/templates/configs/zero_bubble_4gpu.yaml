@@ -29,6 +29,17 @@
     # Experiment Overrides
     is_multistage: True
     stages_per_rank: 2
+
+    # For reasons TBD, using a separate model / pipeline for eval generates non-deterministic
+    # memory-spikes on eval, with random OOM. Until this is resolved, it's safer to run with
+    # the unified model.
+    
+    # Note that this model runs in train mode, vs eval mode, so the eval loss is not directly comparable to
+    # a pipeline with a seperate eval pipeline.
+    unified_model: True
+
+    # This needs to match the train batch size, when using unified_model: True
+    per_device_eval_batch_size: 8
 -- endblock trainer_args
 
 

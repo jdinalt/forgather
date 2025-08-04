@@ -4,5 +4,5 @@
 name: "Pipeline Parallelism"
 description: "A demo and test harness for the Pipleline Parallelism trainer implementation"
 config_prefix: "configs"
-default_config: "zero_bubble_4gpu.yaml"
+default_config: "interleaved_1f1b_4gpu.yaml"
 << endblock configs

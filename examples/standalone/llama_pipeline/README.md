@@ -49,3 +49,24 @@ python3 convert_llama.py --reverse --device 'cuda:0' --dtype bfloat16 -g ~/model
 ```
 
 At present, this works as a proof-of-concept, but still needs considerable refinement. This is ongoing.
+
+### Issues
+
+The appears to be a persistant CPU memory leak. The cause is TBD.
+
+It would appear that activation checkpointing does not work with DPP at present. Hopefully this is something we can get working!
+
+The fixed batch introduces a few difficulties. In theory, this can be partially mitigated with Flex Attention, which is on the TODO list.
+
+vbvz_4gpu.yaml: Presently does not support a separate inference model, which makes evalution slow. Otherwise, works very well.
+zero_bubble_4gpu.yaml: This works reasonably well, except for a non-deterministic jump in CUDA memory when using the separate inference model. As a work around, it's using the train model for inference, which is slow.
+gpipe_4gpu.yaml: Fairly reliable, but slow and uses more memory than most others. The batch size has been reduced to prevent OOM issues.
+looped_bfs_4gpu: It works, but it's not very fast and, like GPipe, had to have the batch size reduced to avoid OOM issues.
+1f1b.yaml: Not the fastest, but has the lowest memory utilization. It's also pretty reliable.
+interleaved_1f1b_4gpu.yaml: Faster than 1f1b, but slighlty higher memory usage. It's pretty stable, so it's the default implementation at present.
+
+### Testing Hardware Config
+
+These configurations were tested with a single node using 4 RTX 4090 cards, 256 GB of DRAM, and an AMD Ryzen Threadripper PRO 5955WX 16-Cores.
+
+I don't have a setup to easily test a multi-node configuration. If anyone has such a setup to test on, I would welcome feedback. This would likely entail a bit of work for setting up communications.

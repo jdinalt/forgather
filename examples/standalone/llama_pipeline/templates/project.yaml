@@ -59,17 +59,28 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 
 -- block optimizer
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
-    lr: 4.0e-5
+    lr: 5.0e-6
     weight_decay: 0.001
 << endblock optimizer
 
 
 -- block lr_scheduler
+# See https://arxiv.org/html/2503.02844v1
 lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
-    warmup_steps: 1000
-    cooldown_steps: 2000
-    checkpoint_step: 3000
-    constant_lr: 1.0e-5
+    # This seems sufficient to maintain stability.
+    warmup_steps: 200
+
+    # Don't both with cooldown.
+    # Note: It non-zero, warm-up will proceed to the LR configured in the optimizer, rather than to
+    # constant_lr, then perform cosine annealing for this many steps to the constant_lr
+    cooldown_steps: 0
+    
+    # Start annealing after first checkpoint.
+    # This is an exponential decay after checkpoint_step.
+    checkpoint_step: 1000
+
+    # Hold at this LR after warmup.
+    constant_lr: 5.0e-6
 << endblock lr_scheduler
 
 
@@ -94,16 +105,17 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     per_device_train_batch_size: 8
     per_device_eval_batch_size: 16
     logging_steps: 10
-    eval_steps: 100
-    num_train_epochs: 5
+    eval_steps: 50
+    num_train_epochs: 2
     dataloader_num_workers: 1
-    #max_steps: 500
+    max_grad_norm: 1.0
+    #max_steps: 1000
     
     # Checkpoint test settings - create multiple checkpoints with final step not multiple of save_steps
     save_strategy: "steps"           # Set to "steps" to save every "save_steps"; set to "no" to disable
     save_steps: 1000
     save_safetensors: False          # Safe tensors don't support shared weights
-    save_total_limit: 2              # Keep 2 checkpoints
+    save_total_limit: 3              # Keep 3 checkpoints
     save_on_each_node: False         # Save common files on each node
     save_optimizer_state: True       # Test optimizer state saving per rank
     save_scheduler_state: True       # Test scheduler state saving per rank
@@ -113,6 +125,7 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     restore_optimizer_state: True    # Test optimizer state restoration per rank
     restore_scheduler_state: True    # Test scheduler state restoration per rank
     restore_rng_state: True          # Test RNG state restoration per rank
+    restore_dataset_state: False     # Not fully implemented yet!
 
     # Pipeline args
     debug_pipeline: False
@@ -144,4 +157,6 @@ model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_t
     == super()
     - !singleton:forgather.ml.peak_memory:PeakMemory
         show_details: False
+        #summary_writer: *summary_writer
+        do_log: True
 << endblock callback_list

@@ -19,7 +19,7 @@
 -- block trainer_meta_config
     == super()
     -- set trainer_def.pipeline_segments = 4
-    -- set trainer_def.pipeline_microbatches = 8
+    -- set trainer_def.pipeline_microbatches = 4
 -- endblock trainer_meta_config
 
 
@@ -27,4 +27,7 @@
     == super()
 
     # Experiment Overrides
+    # This config seems to run out of memory with a batch sizeo 8, so reducing it.
+    per_device_train_batch_size: 4
+    per_device_eval_batch_size: 16
 -- endblock trainer_args
