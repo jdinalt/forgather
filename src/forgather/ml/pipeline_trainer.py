@@ -4,6 +4,7 @@ from typing import Callable, Any, Dict, List, Tuple, Optional, Union, Iterable
 from collections.abc import Sequence
 from types import NoneType
 import logging
+import math
 import copy
 import os
 
@@ -12,6 +13,7 @@ from torch.utils.data import DataLoader
 import torch
 from torch import Tensor
 from torch import distributed
+import torch.distributed as dist
 from torch.distributed.pipelining import SplitPoint, ScheduleGPipe, PipelineStage
 from torch.distributed.pipelining.schedules import (
     PipelineScheduleMulti,
@@ -753,6 +755,7 @@ class PipelineTrainer(Trainer):
     # @override
     def _train_step(self, batch: dict | tuple) -> Tensor:
         mean_loss = self._train_pipeline_step(batch)
+        self._clip_grad_norm(self.args.max_grad_norm)
         self.optimizer.step()
         self._dispatch_event("on_optimizer_step")
         if self.lr_scheduler is not None:
@@ -780,6 +783,42 @@ class PipelineTrainer(Trainer):
             "logits": None,
             "labels": None,
         }
+
+    # @override
+    def _clip_grad_norm(self, max_grad_norm, norm_type=2.0) -> Optional[Tensor]:
+        if max_grad_norm is None or max_grad_norm == 0:
+            return None
+
+        parameters = [
+            p
+            for mod in self.pipeline_modules
+            for p in mod.parameters()
+            if p.grad is not None
+        ]
+        grads = [p.grad for p in parameters if p.grad is not None]
+
+        total_norm = torch.nn.utils.get_total_norm(
+            grads, norm_type=norm_type, foreach=True
+        )
+        # logger.debug(f"RANK{self.denv.rank}: {total_norm=}, {norm_type=}, {max_grad_norm=}")
+        if math.isinf(norm_type):
+            dist.all_reduce(total_norm, op=dist.ReduceOp.MAX)
+        else:
+            total_norm **= norm_type
+            dist.all_reduce(total_norm, op=dist.ReduceOp.SUM)
+            total_norm **= 1.0 / norm_type
+
+        # if self.denv.rank == 0:
+        #    logger.info(f"RANK{self.denv.rank}: Clipping gradients with total norm {total_norm:.4f} and max norm {max_grad_norm:.4f}")
+
+        torch.nn.utils.clip_grads_with_norm_(
+            parameters,
+            max_grad_norm,
+            total_norm,
+            foreach=True,
+        )
+
+        return total_norm
 
     # @override
     def _gather_reduce_loss(self, loss: Tensor):

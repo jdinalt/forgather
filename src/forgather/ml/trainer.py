@@ -350,6 +350,28 @@ class Trainer(BaseTrainer):
             self._dispatch_event("on_evaluate", metrics=metrics)
             return metrics
 
+    def _clip_grad_norm(self, max_grad_norm, norm_type=2.0) -> Optional[Tensor]:
+        """
+        Clip gradients by norm.
+
+        Returns:
+            The total norm of the parameters (as per PyTorch's API), or None if no clipping is performed.
+
+        Raises:
+            RuntimeError: If parameters are not of supported types for foreach=True.
+        """
+        if max_grad_norm is None or max_grad_norm == 0:
+            return None
+
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            self.model.parameters(),
+            max_grad_norm,
+            norm_type=norm_type,
+            foreach=False if self.args.device == "cpu" else True,
+        )
+
+        return grad_norm
+
     def _train_step(self, batch: dict | tuple) -> Tensor:
         """
         Perform a single training step
@@ -360,6 +382,7 @@ class Trainer(BaseTrainer):
         loss = self.model(*args, **kwargs)[0]
 
         self._backward(loss)
+        self._clip_grad_norm(self.args.max_grad_norm)
         self.optimizer.step()
         self._dispatch_event("on_optimizer_step")
         if self.lr_scheduler is not None:

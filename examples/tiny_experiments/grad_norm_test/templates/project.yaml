@@ -1,0 +1,46 @@
+-- extends 'projects/tiny.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.create_new_model = True
+    -- set ns.save_model = False
+    -- set ns.trainer_class = 'trainers/trainer.yaml'
+    -- set ns.model_name = "gradnorm"
+-- endblock config_metadata
+
+
+-- block construct_new_model
+    -- include 'project.model_config'
+-- endblock construct_new_model
+
+
+-- block trainer_definition
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
+
+-- block datasets_definition
+    -- include 'project.dataset_config'
+-- endblock datasets_definition
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+-- block trainer_args
+    == super()
+    # project overrides
+    max_steps: 500
+-- endblock trainer_args
+
+#-------------------- project.model_config --------------------
+-- extends 'tiny.model_config'
+
+-- block model_config
+    == super()
+    # Project overrides
+<< endblock model_config
+
+#-------------------- project.dataset_config --------------------
+## Note: Switch to 'datasets/tiny_stories.yaml' for the full dataset.
+-- extends 'datasets/tiny_stories_abridged.yaml'
+
