@@ -15,7 +15,12 @@
     -- set ns.trainer_class = 'trainers/trainer.yaml'
     ## We make use of custom models in these projects
     -- set ns.trust_remote_code = True
+
+    ## memory debugging
+    -- set ns.debug_memory_detials = False
     -- set ns.log_peak_memmory = False
+    ## Debug logging to TensorBoard vs console
+    -- set ns.log_memory_to_tb = True
 -- endblock config_metadata
 
 
@@ -139,9 +144,11 @@ text_gen_callback_args: &text_gen_callback_args
     - !singleton:forgather.ml.textgen_callback:TextgenCallback
         <<: *text_gen_callback_args
     - !singleton:forgather.ml.peak_memory:PeakMemory
-        show_details: False
+        show_details: {{ ns.debug_memory_detials }}
         do_log: {{ ns.log_peak_memmory }}
+    -- if ns.log_memory_to_tb
         summary_writer: *summary_writer
+    -- endif
 << endblock callback_list
 
 #-------------------- tiny.dataset_config --------------------

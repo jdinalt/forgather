@@ -1,10 +1,10 @@
--- extends 'models/dynamic_causal_transformer.yaml'
+-- extends 'models/deepone.yaml'
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "Tiny Causal"
-    -- set model_def.description = "A scaled-down version of the base Causal Transformer"
-    -- set model_def.short_name = "tiny_causal_transformer"
+    -- set model_def.name = "Tiny Deep One"
+    -- set model_def.description = "A scaled-down version of the full sized Deep One"
+    -- set model_def.short_name = "tiny_deepone"
 << endblock model_meta_config
 
 
@@ -14,7 +14,7 @@
 << endblock model_tokenizer
 
 
-## Add overrides to make the model smaller and disable all dropouts.
+## Add overrides to make the model smaller
 -- block model_config
     == super()
     

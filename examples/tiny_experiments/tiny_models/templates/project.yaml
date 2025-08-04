@@ -13,10 +13,23 @@
     -- include 'project.trainer_config'
 -- endblock trainer_definition
 
+
+-- block datasets_definition
+    -- include 'project.dataset_config'
+-- endblock datasets_definition
+
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
 
 -- block trainer_args
     == super()
+
+    # Project Overrides
+    max_grad_norm: 1.0
     #max_steps: 100
 -- endblock trainer_args
+
+#-------------------- project.dataset_config --------------------
+-- extends 'datasets/tiny_stories_abridged.yaml'
+## Switch to this for the full dataset.
+##-- extends 'datasets/tiny_stories.yaml'
