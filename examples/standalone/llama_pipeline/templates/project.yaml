@@ -80,7 +80,10 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     checkpoint_step: 1000
 
     # Hold at this LR after warmup.
-    constant_lr: 5.0e-6
+    constant_lr: !!float 5.0e-6
+
+    # Decay rate
+    tau: !!float 1.0e2,
 << endblock lr_scheduler
 
 

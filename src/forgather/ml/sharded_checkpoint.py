@@ -706,7 +706,7 @@ def next_checkpoint_path(model_dir: str, global_step: int) -> str:
     """Get path to save next checkpoint, given model directory and global_step"""
     checkpoints_dir = os.path.join(model_dir, "checkpoints")
     checkpoint_path = os.path.join(checkpoints_dir, f"checkpoint-{global_step}")
-    return checkpoints_dir
+    return checkpoint_path
 
 
 def maybe_delete_oldest_checkpoint(model_dir: str, max_checkpoints) -> None:
