@@ -16,7 +16,7 @@ from threading import Thread
 from queue import Queue
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig, TextIteratorStreamer
+from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig, TextIteratorStreamer, AutoConfig
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -171,9 +171,21 @@ class CompletionStreamResponse(BaseModel):
 
 
 class InferenceServer:
-    def __init__(self, model_path: str, device: str = "auto", chat_template_path: Optional[str] = None, dtype: Optional[str] = None, stop_sequences: Optional[List[str]] = None):
+    def __init__(
+        self,
+        model_path: str,
+        device: str = "auto",
+        from_checkpoint: bool|str = False,
+        chat_template_path: Optional[str] = None,
+        dtype: Optional[str] = None,
+        stop_sequences: Optional[List[str]] = None
+    ):
+        # Create dedicated logger for this application
+        self.logger = logging.getLogger('inference_server')
+        
         self.model_path = model_path
         self.device = device
+        self.from_checkpoint = from_checkpoint
         self.chat_template_path = chat_template_path
         self.dtype = self._resolve_dtype(dtype)
         self.stop_sequences = stop_sequences or []
@@ -187,42 +199,90 @@ class InferenceServer:
         self._setup_stop_tokens()
 
     def load_model(self):
-        logging.info(f"Loading model from {self.model_path}...")
+        self.logger.info(f"Loading model from {self.model_path}...")
         
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_path,
-            torch_dtype=self.dtype,
-            device_map=self.device if self.device != "auto" else "auto",
-            trust_remote_code=True
-        )
+        if self.from_checkpoint:
+            if self.device == "auto":
+                raise ValueError("Cannot use 'auto' device with checkpoint loading. Please specify a device explicitly.")
+            
+            from forgather.ml.sharded_checkpoint import (
+                load_checkpoint,
+                retie_parameters,
+                find_latest_checkpoint,
+                create_sharing_metadata,
+            )
+
+            if isinstance(self.from_checkpoint, bool):
+                checkpoint_path = find_latest_checkpoint(self.model_path)
+                if not checkpoint_path:
+                    raise ValueError(
+                        f"No checkpoints found in {self.model_path}. Please provide a valid model directory."
+                    )
+            elif isinstance(self.from_checkpoint, str):
+                checkpoint_path = self.from_checkpoint
+            else:
+                raise ValueError("from_checkpoint must be a boolean or a string path")
+            if not os.path.exists(checkpoint_path):
+                raise ValueError(f"Checkpoint path {checkpoint_path} does not exist.")
+            
+            self.logger.info(f"Loading model from checkpoint: {checkpoint_path}")
+            model_config = AutoConfig.from_pretrained(
+                self.model_path, trust_remote_code=True
+            )
+
+            # Use meta device for empty model creation
+            with torch.device("meta"):
+                model = AutoModelForCausalLM.from_config(
+                    model_config, trust_remote_code=True
+                )
+            
+            sharing_metadata = create_sharing_metadata(model)
+
+            # Convert model to the specified dtype and device
+            model.to(dtype=self.dtype)
+            model.to_empty(device=self.device)
+
+            # When converted to empty, tied parameters are not automatically retied.
+            retie_parameters(model, sharing_metadata)
+            load_checkpoint(checkpoint_path, model, device=self.device, strict=True)
+            self.model = model
+            
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_path,
+                torch_dtype=self.dtype,
+                device_map=self.device if self.device != "auto" else "auto",
+                trust_remote_code=True
+            )
         
-        if self.device != "auto" and torch.cuda.is_available():
-            self.model = self.model.to(self.device)
+            if self.device != "auto" and torch.cuda.is_available():
+                self.model = self.model.to(self.device)
         
         # Load generation config from model directory if available
         self._load_generation_config()
         
-        logging.info(f"Model loaded successfully on device: {self.model.device} with dtype: {self.dtype}")
+        self.logger.info(f"Model loaded successfully on device: {self.model.device} with dtype: {self.dtype}")
     
     def _load_generation_config(self):
         """Load generation config from model directory if available."""
         try:
             self.default_generation_config = GenerationConfig.from_pretrained(self.model_path)
-            logging.info(f"Loaded generation config from model directory: {self.model_path}")
-            logging.info(f"Default generation config: {self.default_generation_config}")
+            self.logger.info(f"Loaded generation config from model directory: {self.model_path}")
+            self.logger.info(f"Default generation config: {self.default_generation_config}")
         except Exception as e:
-            logging.info(f"No generation config found in model directory or failed to load: {e}")
+            self.logger.info(f"No generation config found in model directory or failed to load: {e}")
             # Fallback to model's generation config if available
             if hasattr(self.model, 'generation_config') and self.model.generation_config is not None:
                 self.default_generation_config = self.model.generation_config
-                logging.info("Using model's built-in generation config")
+                self.logger.info("Using model's built-in generation config")
             else:
                 self.default_generation_config = GenerationConfig()
-                logging.info("Using default GenerationConfig")
+                self.logger.info("Using default GenerationConfig")
+        self.logger.info(f"Final default generation config: {self.default_generation_config}")
     
     def _resolve_dtype(self, dtype_str: Optional[str]) -> torch.dtype:
         """Resolve dtype string to torch.dtype with intelligent defaults."""
@@ -259,7 +319,7 @@ class InferenceServer:
         
         # Validate bfloat16 support
         if requested_dtype == torch.bfloat16 and torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
-            logging.warning(f"bfloat16 not supported on this GPU, falling back to float16")
+            self.logger.warning(f"bfloat16 not supported on this GPU, falling back to float16")
             return torch.float16
         
         return requested_dtype
@@ -270,15 +330,16 @@ class InferenceServer:
             # Use custom template file
             with open(self.chat_template_path, 'r') as f:
                 self.chat_template = f.read()
-            logging.info(f"Using custom chat template from: {self.chat_template_path}")
+            self.logger.info(f"Using custom chat template from: {self.chat_template_path}")
         elif hasattr(self.tokenizer, 'chat_template') and self.tokenizer.chat_template:
             # Use tokenizer's built-in template
             self.chat_template = self.tokenizer.chat_template
-            logging.info("Using tokenizer's built-in chat template")
+            self.logger.info("Using tokenizer's built-in chat template")
         else:
             # Use default fallback template
             self.chat_template = self.get_default_chat_template()
-            logging.info("Using default fallback chat template")
+            self.logger.info("Using default fallback chat template")
+        self.logger.info(f"Chat template loaded: {repr(self.chat_template)}")
     
     def _setup_stop_tokens(self):
         """Setup stop token IDs from stop sequences."""
@@ -295,14 +356,14 @@ class InferenceServer:
                 if len(token_ids) == 1:
                     # Single token - can use as direct stopping criterion
                     self.stop_token_ids.add(token_ids[0])
-                    logging.info(f"Added single-token stop sequence: {repr(sequence)} -> token ID {token_ids[0]}")
+                    self.logger.info(f"Added single-token stop sequence: {repr(sequence)} -> token ID {token_ids[0]}")
                 else:
                     # Multi-token sequence - will need post-processing
-                    logging.info(f"Added multi-token stop sequence: {repr(sequence)} -> token IDs {token_ids}")
+                    self.logger.info(f"Added multi-token stop sequence: {repr(sequence)} -> token IDs {token_ids}")
             except Exception as e:
-                logging.warning(f"Failed to tokenize stop sequence {repr(sequence)}: {e}")
+                self.logger.warning(f"Failed to tokenize stop sequence {repr(sequence)}: {e}")
         
-        logging.info(f"Stop token IDs: {sorted(self.stop_token_ids)}")
+        self.logger.info(f"Stop token IDs: {sorted(self.stop_token_ids)}")
     
     def _build_generation_config(self, request: Union[ChatCompletionRequest, CompletionRequest]) -> GenerationConfig:
         """Build a GenerationConfig from request parameters."""
@@ -390,11 +451,11 @@ class InferenceServer:
             return formatted
             
         except TemplateError as e:
-            logging.error(f"Template error: {e}")
+            self.logger.error(f"Template error: {e}")
             # Fallback to simple formatting if template fails
             return self._fallback_format_messages(messages)
         except Exception as e:
-            logging.error(f"Unexpected error in template rendering: {e}")
+            self.logger.error(f"Unexpected error in template rendering: {e}")
             return self._fallback_format_messages(messages)
     
     def _fallback_format_messages(self, messages: List[ChatMessage]) -> str:
@@ -414,16 +475,16 @@ class InferenceServer:
     def generate_response(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
         # Log incoming request details
         request_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-        logging.info(f"[{request_id}] New chat completion request: model={request.model}, "
+        self.logger.info(f"[{request_id}] New chat completion request: model={request.model}, "
                     f"max_tokens={request.max_tokens}, temperature={request.temperature}, "
                     f"top_p={request.top_p}, messages_count={len(request.messages)}")
         
         # Log individual messages
         for i, msg in enumerate(request.messages):
-            logging.info(f"[{request_id}] Message {i}: role={msg.role}, content={repr(msg.content)}")
+            self.logger.info(f"[{request_id}] Message {i}: role={msg.role}, content={repr(msg.content)}")
         
         prompt = self.format_messages(request.messages)
-        logging.info(f"[{request_id}] Formatted prompt: {repr(prompt)}")
+        self.logger.info(f"[{request_id}] Formatted prompt: {repr(prompt)}")
         
         inputs = self.tokenizer(
             prompt,
@@ -445,12 +506,12 @@ class InferenceServer:
         
         # Log tokenized input with special token representations
         input_token_ids = input_ids[0].tolist()
-        logging.info(f"[{request_id}] Input token IDs: {input_token_ids}")
-        logging.info(f"[{request_id}] Input tokens with special tokens: {repr(self.tokenizer.decode(input_token_ids, skip_special_tokens=False))}")
+        self.logger.info(f"[{request_id}] Input token IDs: {input_token_ids}")
+        self.logger.info(f"[{request_id}] Input tokens with special tokens: {repr(self.tokenizer.decode(input_token_ids, skip_special_tokens=False))}")
         
         # Build generation configuration
         generation_config = self._build_generation_config(request)
-        logging.info(f"[{request_id}] Generation config: {generation_config}")
+        self.logger.info(f"[{request_id}] Generation config: {generation_config}")
         
         with torch.no_grad():
             outputs = self.model.generate(
@@ -486,31 +547,31 @@ class InferenceServer:
             finish_reason = "length"  # Reached max tokens
         elif stopped_by_sequence:
             finish_reason = "stop"  # Stopped by custom sequence
-            logging.info(f"[{request_id}] Generation stopped due to stop sequence: {repr(stop_sequence_found)}")
+            self.logger.info(f"[{request_id}] Generation stopped due to stop sequence: {repr(stop_sequence_found)}")
         elif (self.tokenizer.eos_token_id is not None and 
               len(generated_token_ids) > 0 and 
               generated_token_ids[-1] == self.tokenizer.eos_token_id):
             finish_reason = "stop"  # EOS token found
-            logging.info(f"[{request_id}] Generation stopped due to EOS token")
+            self.logger.info(f"[{request_id}] Generation stopped due to EOS token")
         elif (len(generated_token_ids) > 0 and 
               generated_token_ids[-1] in self.stop_token_ids):
             finish_reason = "stop"  # Stopped by configured stop token
-            logging.info(f"[{request_id}] Generation stopped due to stop token ID: {generated_token_ids[-1]}")
+            self.logger.info(f"[{request_id}] Generation stopped due to stop token ID: {generated_token_ids[-1]}")
         elif len(generated_token_ids) < request.max_tokens:
             # Stopped early but not due to obvious reasons
             finish_reason = "stop"
         
         # Log generated tokens with special token representations
-        logging.info(f"[{request_id}] Generated token IDs: {generated_token_ids}")
-        logging.info(f"[{request_id}] Generated tokens with special tokens: {repr(self.tokenizer.decode(generated_token_ids, skip_special_tokens=False))}")
+        self.logger.info(f"[{request_id}] Generated token IDs: {generated_token_ids}")
+        self.logger.info(f"[{request_id}] Generated tokens with special tokens: {repr(self.tokenizer.decode(generated_token_ids, skip_special_tokens=False))}")
         
         response_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         completion_tokens = len(generated_tokens)
         
         # Log final response details
-        logging.info(f"[{request_id}] Response text (clean): {repr(response_text)}")
-        logging.info(f"[{request_id}] Finish reason: {finish_reason}")
-        logging.info(f"[{request_id}] Token usage: prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
+        self.logger.info(f"[{request_id}] Response text (clean): {repr(response_text)}")
+        self.logger.info(f"[{request_id}] Finish reason: {finish_reason}")
+        self.logger.info(f"[{request_id}] Token usage: prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
         
         return ChatCompletionResponse(
             id=request_id,
@@ -542,10 +603,10 @@ class InferenceServer:
 
         # Log incoming request details
         request_id = f"cmpl-{uuid.uuid4().hex[:8]}"
-        logging.info(f"[{request_id}] New completion request: model={request.model}, "
+        self.logger.info(f"[{request_id}] New completion request: model={request.model}, "
                     f"max_tokens={request.max_tokens}, temperature={request.temperature}, "
                     f"top_p={request.top_p}, prompt_length={len(prompt)}")
-        logging.info(f"[{request_id}] Prompt: {repr(prompt)}")
+        self.logger.info(f"[{request_id}] Prompt: {repr(prompt)}")
 
         # Parse stop sequences from request
         request_stop_sequences = []
@@ -578,12 +639,12 @@ class InferenceServer:
 
         # Log tokenized input
         input_token_ids = input_ids[0].tolist()
-        logging.info(f"[{request_id}] Input token IDs: {input_token_ids}")
-        logging.info(f"[{request_id}] Input tokens with special tokens: {repr(self.tokenizer.decode(input_token_ids, skip_special_tokens=False))}")
+        self.logger.info(f"[{request_id}] Input token IDs: {input_token_ids}")
+        self.logger.info(f"[{request_id}] Input tokens with special tokens: {repr(self.tokenizer.decode(input_token_ids, skip_special_tokens=False))}")
 
         # Build generation configuration
         generation_config = self._build_generation_config(request)
-        logging.info(f"[{request_id}] Generation config: {generation_config}")
+        self.logger.info(f"[{request_id}] Generation config: {generation_config}")
         
         with torch.no_grad():
             outputs = self.model.generate(input_ids, generation_config=generation_config)
@@ -616,20 +677,20 @@ class InferenceServer:
             finish_reason = "length"
         elif stopped_by_sequence:
             finish_reason = "stop"
-            logging.info(f"[{request_id}] Generation stopped due to stop sequence: {repr(stop_sequence_found)}")
+            self.logger.info(f"[{request_id}] Generation stopped due to stop sequence: {repr(stop_sequence_found)}")
         elif (self.tokenizer.eos_token_id is not None and 
               len(generated_token_ids) > 0 and 
               generated_token_ids[-1] == self.tokenizer.eos_token_id):
             finish_reason = "stop"
-            logging.info(f"[{request_id}] Generation stopped due to EOS token")
+            self.logger.info(f"[{request_id}] Generation stopped due to EOS token")
         elif (len(generated_token_ids) > 0 and 
               generated_token_ids[-1] in self.stop_token_ids):
             finish_reason = "stop"
-            logging.info(f"[{request_id}] Generation stopped due to stop token ID: {generated_token_ids[-1]}")
+            self.logger.info(f"[{request_id}] Generation stopped due to stop token ID: {generated_token_ids[-1]}")
 
         # Log generated tokens
-        logging.info(f"[{request_id}] Generated token IDs: {generated_token_ids}")
-        logging.info(f"[{request_id}] Generated tokens with special tokens: {repr(self.tokenizer.decode(generated_token_ids, skip_special_tokens=False))}")
+        self.logger.info(f"[{request_id}] Generated token IDs: {generated_token_ids}")
+        self.logger.info(f"[{request_id}] Generated tokens with special tokens: {repr(self.tokenizer.decode(generated_token_ids, skip_special_tokens=False))}")
 
         response_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         completion_tokens = len(generated_tokens)
@@ -639,9 +700,9 @@ class InferenceServer:
             response_text = prompt + response_text
 
         # Log final response details
-        logging.info(f"[{request_id}] Response text (clean): {repr(response_text)}")
-        logging.info(f"[{request_id}] Finish reason: {finish_reason}")
-        logging.info(f"[{request_id}] Token usage: prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
+        self.logger.info(f"[{request_id}] Response text (clean): {repr(response_text)}")
+        self.logger.info(f"[{request_id}] Finish reason: {finish_reason}")
+        self.logger.info(f"[{request_id}] Token usage: prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
 
         return CompletionResponse(
             id=request_id,
@@ -666,17 +727,17 @@ class InferenceServer:
         request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         
         # Log request details
-        logging.info(f"[{request_id}] New streaming chat completion request: model={request.model}, max_tokens={request.max_tokens}, temperature={request.temperature}, top_p={request.top_p}, messages_count={len(request.messages)}")
+        self.logger.info(f"[{request_id}] New streaming chat completion request: model={request.model}, max_tokens={request.max_tokens}, temperature={request.temperature}, top_p={request.top_p}, messages_count={len(request.messages)}")
         
         # Log each message
         for i, message in enumerate(request.messages):
-            logging.info(f"[{request_id}] Message {i}: role={message.role}, content={repr(message.content)}")
+            self.logger.info(f"[{request_id}] Message {i}: role={message.role}, content={repr(message.content)}")
         
         try:
             # Format messages using chat template
             template = self.jinja_env.from_string(self.chat_template)
             formatted_prompt = template.render(messages=request.messages, add_generation_prompt=True)
-            logging.info(f"[{request_id}] Formatted prompt: {repr(formatted_prompt)}")
+            self.logger.info(f"[{request_id}] Formatted prompt: {repr(formatted_prompt)}")
             
             # Tokenize input
             inputs = self.tokenizer(formatted_prompt, return_tensors="pt", return_token_type_ids=False).to(self.model.device)
@@ -684,12 +745,12 @@ class InferenceServer:
             prompt_tokens = len(input_ids[0])
             
             # Log input token details
-            logging.info(f"[{request_id}] Input token IDs: {input_ids[0].tolist()}")
-            logging.info(f"[{request_id}] Input tokens with special tokens: {repr(self.tokenizer.decode(input_ids[0], skip_special_tokens=False))}")
+            self.logger.info(f"[{request_id}] Input token IDs: {input_ids[0].tolist()}")
+            self.logger.info(f"[{request_id}] Input tokens with special tokens: {repr(self.tokenizer.decode(input_ids[0], skip_special_tokens=False))}")
             
             # Build generation config
             generation_config = self._build_generation_config(request)
-            logging.info(f"[{request_id}] Generation config: {generation_config}")
+            self.logger.info(f"[{request_id}] Generation config: {generation_config}")
             
             # Setup streaming
             streamer = TextIteratorStreamer(self.tokenizer, timeout=60.0, skip_prompt=True, skip_special_tokens=True)
@@ -795,9 +856,9 @@ class InferenceServer:
             generated_token_ids = self.tokenizer.encode(full_response, add_special_tokens=False)
             completion_tokens = len(generated_token_ids)
             
-            logging.info(f"[{request_id}] Generated token IDs: {generated_token_ids}")
-            logging.info(f"[{request_id}] Generated tokens with special tokens: {repr(full_response)}")
-            logging.info(f"[{request_id}] Response text (clean): {repr(full_response)}")
+            self.logger.info(f"[{request_id}] Generated token IDs: {generated_token_ids}")
+            self.logger.info(f"[{request_id}] Generated tokens with special tokens: {repr(full_response)}")
+            self.logger.info(f"[{request_id}] Response text (clean): {repr(full_response)}")
             
             # Determine finish reason
             finish_reason = "stop"  # Default for streaming
@@ -806,13 +867,13 @@ class InferenceServer:
             elif any(stop_seq in full_response for stop_seq in self.stop_sequences):
                 finish_reason = "stop"
                 stop_sequence_found = next(stop_seq for stop_seq in self.stop_sequences if stop_seq in full_response)
-                logging.info(f"[{request_id}] Generation stopped due to stop sequence: {repr(stop_sequence_found)}")
+                self.logger.info(f"[{request_id}] Generation stopped due to stop sequence: {repr(stop_sequence_found)}")
             
-            logging.info(f"[{request_id}] Finish reason: {finish_reason}")
-            logging.info(f"[{request_id}] Token usage: prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
+            self.logger.info(f"[{request_id}] Finish reason: {finish_reason}")
+            self.logger.info(f"[{request_id}] Token usage: prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
             
         except Exception as e:
-            logging.error(f"[{request_id}] Streaming generation failed: {str(e)}")
+            self.logger.error(f"[{request_id}] Streaming generation failed: {str(e)}")
             # Send error as final chunk
             chunk = ChatCompletionStreamResponse(
                 id=request_id,
@@ -834,7 +895,7 @@ class InferenceServer:
         request_id = f"cmpl-{uuid.uuid4().hex[:12]}"
         
         # Log request details
-        logging.info(f"[{request_id}] New streaming completion request: model={request.model}, max_tokens={request.max_tokens}, prompt={repr(request.prompt)}")
+        self.logger.info(f"[{request_id}] New streaming completion request: model={request.model}, max_tokens={request.max_tokens}, prompt={repr(request.prompt)}")
         
         try:
             # Tokenize input
@@ -843,11 +904,12 @@ class InferenceServer:
             prompt_tokens = len(input_ids[0])
             
             # Log input token details
-            logging.info(f"[{request_id}] Input token IDs: {input_ids[0].tolist()}")
-            logging.info(f"[{request_id}] Input tokens with special tokens: {repr(self.tokenizer.decode(input_ids[0], skip_special_tokens=False))}")
+            self.logger.info(f"[{request_id}] Input token IDs: {input_ids[0].tolist()}")
+            self.logger.info(f"[{request_id}] Input tokens with special tokens: {repr(self.tokenizer.decode(input_ids[0], skip_special_tokens=False))}")
             
             # Build generation config
             generation_config = self._build_generation_config(request)
+            self.logger.info(f"[{request_id}] Generation config: {generation_config}")
             
             # Setup streaming
             streamer = TextIteratorStreamer(self.tokenizer, timeout=60.0, skip_prompt=not request.echo, skip_special_tokens=True)
@@ -934,8 +996,28 @@ class InferenceServer:
             # Wait for generation to complete
             thread.join()
             
+            # Log output details (similar to non-streaming version)
+            generated_token_ids = self.tokenizer.encode(full_response, add_special_tokens=False)
+            completion_tokens = len(generated_token_ids)
+            
+            self.logger.info(f"[{request_id}] Generated token IDs: {generated_token_ids}")
+            self.logger.info(f"[{request_id}] Generated tokens with special tokens: {repr(full_response)}")
+            self.logger.info(f"[{request_id}] Response text (clean): {repr(full_response)}")
+            
+            # Determine finish reason
+            finish_reason = "stop"  # Default for streaming
+            if completion_tokens >= request.max_tokens:
+                finish_reason = "length"
+            elif any(stop_seq in full_response for stop_seq in self.stop_sequences):
+                finish_reason = "stop"
+                stop_sequence_found = next(stop_seq for stop_seq in self.stop_sequences if stop_seq in full_response)
+                self.logger.info(f"[{request_id}] Generation stopped due to stop sequence: {repr(stop_sequence_found)}")
+            
+            self.logger.info(f"[{request_id}] Finish reason: {finish_reason}")
+            self.logger.info(f"[{request_id}] Token usage: prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
+            
         except Exception as e:
-            logging.error(f"[{request_id}] Streaming generation failed: {str(e)}")
+            self.logger.error(f"[{request_id}] Streaming generation failed: {str(e)}")
             # Send error as final chunk
             chunk = CompletionStreamResponse(
                 id=request_id,
@@ -1068,14 +1150,15 @@ def merge_config_with_args(config: Dict[str, Any], args: argparse.Namespace, par
 def main():
     parser = argparse.ArgumentParser(description="OpenAI API-compatible inference server")
     parser.add_argument("config", nargs="?", help="YAML configuration file (optional)")
-    parser.add_argument("--model", help="HuggingFace model path or name")
-    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
-    parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
-    parser.add_argument("--device", default="auto", help="Device to use (cuda, cpu, auto)")
-    parser.add_argument("--chat-template", help="Path to custom Jinja2 chat template file")
-    parser.add_argument("--dtype", help="Model data type (float32/fp32, float16/fp16/half, bfloat16/bf16, float64/fp64/double). Default: bfloat16 if supported, otherwise float16 on GPU, float32 on CPU")
-    parser.add_argument("--stop-sequences", nargs="*", help="Custom stop sequences (e.g., --stop-sequences '<|im_end|>' '</s>'). Default includes EOS token.")
-    parser.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
+    parser.add_argument("-m", "--model", help="HuggingFace model path or name")
+    parser.add_argument("-H", "--host", default="127.0.0.1", help="Host to bind to")
+    parser.add_argument("-p", "--port", type=int, default=8000, help="Port to bind to")
+    parser.add_argument("-d", "--device", default="auto", help="Device to use (cuda, cpu, auto)")
+    parser.add_argument("-t", "--chat-template", help="Path to custom Jinja2 chat template file")
+    parser.add_argument("-T", "--dtype", help="Model data type (float32/fp32, float16/fp16/half, bfloat16/bf16, float64/fp64/double). Default: bfloat16 if supported, otherwise float16 on GPU, float32 on CPU")
+    parser.add_argument("-s", "--stop-sequences", nargs="*", help="Custom stop sequences (e.g., --stop-sequences '<|im_end|>' '</s>'). Default includes EOS token.")
+    parser.add_argument("-l", "--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
+    parser.add_argument("-c", "--from-checkpoint", nargs="?", const=True, default=False, help="Load model from checkpoint")
     
     args = parser.parse_args()
     
@@ -1088,7 +1171,7 @@ def main():
     if not args.model:
         parser.error("--model is required (can be specified in config file)")
     
-    # Setup logging - configure the root logger and ensure it propagates properly
+    # Setup logging - configure the root logger and our dedicated application logger
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
     logging.basicConfig(
         level=log_level,
@@ -1099,14 +1182,18 @@ def main():
         force=True  # Force reconfiguration even if logging was already configured
     )
     
-    # Ensure our application logger is set to the same level
-    app_logger = logging.getLogger(__name__)
+    # Configure our dedicated application logger
+    app_logger = logging.getLogger('inference_server')
     app_logger.setLevel(log_level)
+    
+    # Ensure the logger propagates to the root logger
+    app_logger.propagate = True
     
     global inference_server
     inference_server = InferenceServer(
         args.model, 
-        args.device, 
+        args.device,
+        args.from_checkpoint,
         getattr(args, 'chat_template', None), 
         args.dtype,
         args.stop_sequences
