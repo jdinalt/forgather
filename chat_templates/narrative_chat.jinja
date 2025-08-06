@@ -1,0 +1,18 @@
+{%- for message in messages %}
+    {%- if message['role'] == 'system' -%}
+        Once upon a time, {{ message['content'] }}
+
+    {%- elif message['role'] == 'user' -%}
+        {%- if loop.first -%}
+            There was a story about {{ message['content'] }}
+        {%- else -%}
+            Then someone said, "{{ message['content'] }}" 
+        {%- endif -%}
+    {%- elif message['role'] == 'assistant' -%}
+        And then {{ message['content'] }}
+
+    {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    And then  
+{%- endif -%}

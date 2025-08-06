@@ -1,0 +1,21 @@
+# Server Configuration for Samantha (Llama 2 7B trained on Samantha dataset)
+# This configurtion is based upon the model from the Pipeline Trainer demo.
+
+# Model configuration
+# Adjust path to match your output model.
+model: "/home/dinalt/ai_assets/models/llama-2-7b-hf"
+device: "cuda:0"
+dtype: "bfloat16"
+
+# Server configuration
+host: "127.0.0.1"
+port: 8000
+log-level: "INFO"
+
+# Chat template - ChatML format for Samantha training
+chat-template: "../../chat_templates/chatml.jinja"
+
+# Stop sequences for Samantha model (ChatML format)
+stop-sequences:
+  - "<|im_end|>"
+  - "</s>"

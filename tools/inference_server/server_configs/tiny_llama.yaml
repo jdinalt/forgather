@@ -1,0 +1,21 @@
+# Server Configuration for HuggingFace OpenAI API Server
+# This example configuration is for the tiny_llama tutorial.
+
+# Model configuration
+model: "../../examples/tutorials/tiny_llama/output_models/tiny_llama"
+device: "cuda:0"
+dtype: "float32"
+
+# Server configuration
+host: "127.0.0.1"
+port: 8000
+log-level: "INFO"
+
+# Chat template - custom narrative template for story-focused models
+chat-template: "../../chat_templates/narrative_chat.jinja"
+
+# Stop sequences for tiny_llama - it tends to end stories naturally with these
+stop-sequences:
+  - "The end"
+  - "The End"
+  - "THE END"

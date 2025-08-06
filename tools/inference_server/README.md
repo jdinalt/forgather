@@ -9,16 +9,72 @@ cd tools/inference_server
 pip install -r requirements.txt
 ```
 
+**Key Dependencies:**
+- `fastapi>=0.104.0` - Web framework
+- `transformers>=4.35.0` - HuggingFace model support  
+- `torch>=2.0.0` - PyTorch backend
+- `openai>=1.0.0` - OpenAI client for testing
+- `pyyaml>=6.0.0` - YAML configuration support
+
+## Quick Start
+
+1. **Create server configuration:**
+```yaml
+# server_config.yaml
+model: "/path/to/your/model"
+device: "cuda:0"
+port: 8007
+stop-sequences: ["The end", "</s>"]
+```
+
+2. **Start server:**
+```bash
+python server.py server_config.yaml
+```
+
+3. **Create client configuration:**
+```yaml
+# client_config.yaml  
+url: "http://localhost:8007/v1"
+max-tokens: 100
+show-usage: true
+repetition-penalty: 1.2
+```
+
+4. **Test with client:**
+```bash
+# Chat mode
+python client.py client_config.yaml --message "Tell me a story"
+
+# Completion mode with echo (default)
+python client.py client_config.yaml --completion "Once upon a time"
+
+# Pipeline mode (reads from stdin)
+echo "In a magical forest" | python client.py client_config.yaml
+```
+
 ## Usage
 
 ### Start the server
 
+#### Using Command Line Arguments
 ```bash
 python server.py --model microsoft/DialoGPT-medium
 ```
 
+#### Using YAML Configuration File
+```bash
+python server.py server_config.yaml
+```
+
+#### Using YAML Configuration with CLI Overrides
+```bash
+python server.py server_config.yaml --port 8001 --log-level DEBUG
+```
+
 Options:
-- `--model`: HuggingFace model path or name (required)
+- `config`: YAML configuration file (optional positional argument)
+- `--model`: HuggingFace model path or name (required, can be in config file)
 - `--host`: Host to bind to (default: 127.0.0.1)
 - `--port`: Port to bind to (default: 8000)
 - `--device`: Device to use - cuda, cpu, or auto (default: auto)
@@ -26,6 +82,56 @@ Options:
 - `--dtype`: Model data type (optional, see Data Types section)
 - `--stop-sequences`: Custom stop sequences to halt generation (optional)
 - `--log-level`: Logging level - DEBUG, INFO, WARNING, ERROR (default: INFO)
+
+**Note**: CLI arguments always override values from the configuration file.
+
+### YAML Configuration Files
+
+The server supports YAML configuration files for convenient parameter management and reusable configurations.
+
+#### Server Configuration Format
+
+Create a `server_config.yaml` file:
+
+```yaml
+# Model configuration
+model: "/path/to/your/model"
+device: "cuda:0"
+dtype: "bfloat16"
+
+# Server configuration  
+host: "127.0.0.1"
+port: 8007
+log-level: "INFO"
+
+# Chat template (optional)
+chat-template: "/path/to/custom/template.jinja"
+
+# Stop sequences (optional)
+stop-sequences:
+  - "The end"
+  - "The End"
+  - "</s>"
+```
+
+#### Usage Patterns
+
+```bash
+# Use config file only
+python server.py my_config.yaml
+
+# Override specific values
+python server.py my_config.yaml --port 8001
+
+# Multiple overrides
+python server.py my_config.yaml --device cpu --log-level DEBUG
+```
+
+#### Benefits
+- **Reusable configurations**: Save common parameter combinations
+- **Environment-specific configs**: Development, testing, production
+- **Parameter documentation**: YAML files serve as configuration reference
+- **CLI flexibility**: Any parameter can still be overridden from command line
 
 ### Chat Template Support
 
@@ -40,8 +146,35 @@ The server supports three chat template sources, in order of priority:
 python server.py --model /path/to/model --chat-template /path/to/chat_templates/chatml.jinja
 ```
 
-#### Example custom template
-Create a Jinja2 template file:
+#### Narrative Template for Story-Focused Models
+For models trained on story/narrative data (like tiny language models), a narrative-style template often works better:
+
+Create `narrative_chat.jinja`:
+```jinja2
+{%- for message in messages %}
+    {%- if message['role'] == 'system' -%}
+        Once upon a time, {{ message['content'] }}
+
+    {%- elif message['role'] == 'user' -%}
+        {%- if loop.first -%}
+            There was a story about {{ message['content'] }}
+        {%- else -%}
+            Then someone said: "{{ message['content'] }}" 
+        {%- endif -%}
+    {%- elif message['role'] == 'assistant' -%}
+        And the story continued: {{ message['content'] }}
+
+    {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    The story goes on: 
+{%- endif -%}
+```
+
+This template frames conversations as storytelling, which can improve output quality for story-focused models.
+
+#### Standard Assistant Template
+Create a traditional assistant template:
 ```jinja2
 {%- for message in messages %}
     {%- if message['role'] == 'system' -%}
@@ -168,6 +301,40 @@ pip install openai  # Or use requirements.txt
 
 ### Usage
 
+#### YAML Configuration for Client
+
+The client supports YAML configuration files for convenient parameter management:
+
+**Create `client_config.yaml`:**
+```yaml
+# Connection settings
+url: "http://localhost:8007/v1"
+model: "my-model"
+
+# Generation parameters
+max-tokens: 60
+temperature: 0.8
+top-p: 0.9
+show-usage: true
+
+# HuggingFace generation parameters
+repetition-penalty: 1.2
+top-k: 40
+no-repeat-ngram-size: 2
+```
+
+**Usage with configuration:**
+```bash
+# Use config file
+python client.py client_config.yaml --message "Tell me a story"
+
+# Override config values
+python client.py client_config.yaml --message "Hello" --max-tokens 30 --temperature 0.5
+
+# Completion mode with config
+python client.py client_config.yaml --completion "Once upon a time"
+```
+
 #### Single Message
 ```bash
 # Basic usage
@@ -184,20 +351,20 @@ python client.py --message "Explain AI" --show-usage --max-tokens 200
 ```
 
 #### Text Completion (Completions API)
-The server also supports the older `/v1/completions` endpoint for raw text completion without chat formatting:
+The server also supports the older `/v1/completions` endpoint for raw text completion without chat formatting. **By default, the prompt is included in the output (echo enabled)** for better pipeline compatibility.
 
 ```bash
-# Basic text completion
+# Basic text completion (includes prompt in output by default)
 python client.py --completion "Once upon a time"
 
 # With custom parameters
 python client.py --completion "The weather today is" --max-tokens 50 --temperature 0.8
 
+# Disable echo (only show generated text)
+python client.py --completion "Python is" --no-echo --max-tokens 30
+
 # With stop sequences
 python client.py --completion "Q: What is AI? A:" --stop "Q:" --max-tokens 100
-
-# Echo the prompt in response
-python client.py --completion "Python is" --echo --max-tokens 30
 
 # Show detailed usage information
 python client.py --completion "Hello world" --show-usage
@@ -208,6 +375,32 @@ python client.py --completion "Once upon a time" --repetition-penalty 1.2 --top-
 # Multiple parameters for fine control
 python client.py --completion "The story begins" --repetition-penalty 1.1 --no-repeat-ngram-size 3 --top-k 40 --num-beams 2
 ```
+
+#### Pipeline Support (Stdin Input)
+The client supports reading prompts from stdin, making it perfect for Unix pipelines:
+
+```bash
+# Pipe from file
+cat prompt.txt | python client.py --max-tokens 50
+
+# Pipe from echo
+echo "The brave knight ventured forth" | python client.py --max-tokens 40
+
+# Pipe with config file
+cat story_prompt.txt | python client.py client_config.yaml
+
+# Pipe with parameters and output redirection
+echo "In a distant galaxy" | python client.py --max-tokens 60 --temperature 0.8 > story_output.txt
+
+# Chain operations (completion only, no prompt)
+echo "Once upon a time" | python client.py --no-echo --max-tokens 100 | grep -v "Usage:"
+```
+
+**Pipeline Benefits:**
+- **Echo by default**: Includes original prompt for context
+- **Stream-friendly**: Outputs to stdout for redirection
+- **Config compatible**: Works with YAML configurations
+- **Scriptable**: Perfect for automation and batch processing
 
 #### Interactive Chat Mode
 ```bash
@@ -242,6 +435,9 @@ When in interactive mode, use these commands:
 
 #### Client Options
 
+**Configuration:**
+- `config` - YAML configuration file (optional positional argument)
+
 **Basic Options:**
 - `--url` - Server base URL (default: http://localhost:8000/v1)
 - `--model` - Model name (default: inference-server)
@@ -251,10 +447,18 @@ When in interactive mode, use these commands:
 - `--system` - System prompt (chat mode only)
 - `--show-usage` - Display token usage information
 
-**Completion-Specific Options:**
+**Mode Options:**
+- `--message` - Single message to send (chat mode)
 - `--completion` - Generate text completion for the given prompt
+- `--interactive` - Run in interactive chat mode
 - `--stop` - Stop sequences for completion mode (can specify multiple)
-- `--echo` - Echo the prompt in the completion response
+- `--echo` - Echo the prompt in the completion response (default for completion mode)
+- `--no-echo` - Don't echo the prompt in the completion response
+
+**Input Methods:**
+- Command line argument: `--completion "prompt text"`
+- Standard input (stdin): `echo "prompt text" | python client.py`
+- File input: `cat prompt.txt | python client.py`
 
 **Advanced Generation Parameters:**
 - `--repetition-penalty` - Repetition penalty (e.g., 1.2 to reduce repetition)
@@ -372,14 +576,19 @@ This mechanism allows you to use any HuggingFace generation parameter while main
 ## Features
 
 - **OpenAI API Compatibility**: Full support for both chat completions and text completions endpoints
+- **YAML Configuration Support**: Both server and client support YAML config files with CLI override capability
+- **HuggingFace GenerationConfig Integration**: Automatically loads generation_config.json from model directories
 - **HuggingFace Generation Parameters**: Comprehensive support for all HuggingFace generation options
-- **Flexible Chat Templates**: Support for custom Jinja2 templates, tokenizer templates, or fallback formatting
+- **Flexible Chat Templates**: Support for custom Jinja2 templates, including narrative templates for story models
 - **Stop Sequence Control**: Configurable stop sequences for precise generation control
 - **Data Type Support**: Intelligent dtype selection with bfloat16, float16, and float32 support
 - **Automatic Device Selection**: Smart GPU/CPU device placement
 - **Detailed Logging**: Structured request/response logging with token-level information
 - **Token Usage Tracking**: Accurate prompt, completion, and total token counts
 - **EOS Token Handling**: Proper early stopping on end-of-sequence tokens
+- **Extra Body Parameter Support**: Client supports HuggingFace parameters via OpenAI's extra_body mechanism
+- **Pipeline Support**: Stdin input support for Unix-style command chaining and automation
+- **Smart Echo Defaults**: Completion mode includes prompt by default for better pipeline compatibility
 
 ## HuggingFace Generation Parameters
 

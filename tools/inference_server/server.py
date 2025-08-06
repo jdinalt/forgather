@@ -8,12 +8,18 @@ import logging
 import os
 import time
 import uuid
-from typing import List, Optional, Dict, Any, Union
+import yaml
+import json
+import asyncio
+from typing import List, Optional, Dict, Any, Union, Iterator
+from threading import Thread
+from queue import Queue
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig, TextIteratorStreamer
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from jinja2 import Environment, BaseLoader, TemplateError
 
@@ -49,7 +55,6 @@ class ChatCompletionRequest(BaseModel):
     epsilon_cutoff: Optional[float] = None
     eta_cutoff: Optional[float] = None
     guidance_scale: Optional[float] = None
-    low_cpu_mem_usage: Optional[bool] = None
     seed: Optional[int] = None
 
 
@@ -111,7 +116,6 @@ class CompletionRequest(BaseModel):
     epsilon_cutoff: Optional[float] = None
     eta_cutoff: Optional[float] = None
     guidance_scale: Optional[float] = None
-    low_cpu_mem_usage: Optional[bool] = None
     seed: Optional[int] = None
 
 
@@ -131,6 +135,41 @@ class CompletionResponse(BaseModel):
     usage: ChatCompletionUsage  # Same usage format
 
 
+# Streaming response models
+class ChatCompletionStreamDelta(BaseModel):
+    role: Optional[str] = None
+    content: Optional[str] = None
+
+
+class ChatCompletionStreamChoice(BaseModel):
+    index: int
+    delta: ChatCompletionStreamDelta
+    finish_reason: Optional[str] = None
+
+
+class ChatCompletionStreamResponse(BaseModel):
+    id: str
+    object: str = "chat.completion.chunk"
+    created: int
+    model: str
+    choices: List[ChatCompletionStreamChoice]
+
+
+class CompletionStreamChoice(BaseModel):
+    text: str
+    index: int
+    logprobs: Optional[Any] = None
+    finish_reason: Optional[str] = None
+
+
+class CompletionStreamResponse(BaseModel):
+    id: str
+    object: str = "text_completion"
+    created: int
+    model: str
+    choices: List[CompletionStreamChoice]
+
+
 class InferenceServer:
     def __init__(self, model_path: str, device: str = "auto", chat_template_path: Optional[str] = None, dtype: Optional[str] = None, stop_sequences: Optional[List[str]] = None):
         self.model_path = model_path
@@ -141,6 +180,7 @@ class InferenceServer:
         self.chat_template = None
         self.tokenizer = None
         self.model = None
+        self.default_generation_config = None
         self.jinja_env = Environment(loader=BaseLoader())
         self.load_model()
         self.setup_chat_template()
@@ -163,7 +203,26 @@ class InferenceServer:
         if self.device != "auto" and torch.cuda.is_available():
             self.model = self.model.to(self.device)
         
+        # Load generation config from model directory if available
+        self._load_generation_config()
+        
         logging.info(f"Model loaded successfully on device: {self.model.device} with dtype: {self.dtype}")
+    
+    def _load_generation_config(self):
+        """Load generation config from model directory if available."""
+        try:
+            self.default_generation_config = GenerationConfig.from_pretrained(self.model_path)
+            logging.info(f"Loaded generation config from model directory: {self.model_path}")
+            logging.info(f"Default generation config: {self.default_generation_config}")
+        except Exception as e:
+            logging.info(f"No generation config found in model directory or failed to load: {e}")
+            # Fallback to model's generation config if available
+            if hasattr(self.model, 'generation_config') and self.model.generation_config is not None:
+                self.default_generation_config = self.model.generation_config
+                logging.info("Using model's built-in generation config")
+            else:
+                self.default_generation_config = GenerationConfig()
+                logging.info("Using default GenerationConfig")
     
     def _resolve_dtype(self, dtype_str: Optional[str]) -> torch.dtype:
         """Resolve dtype string to torch.dtype with intelligent defaults."""
@@ -245,22 +304,33 @@ class InferenceServer:
         
         logging.info(f"Stop token IDs: {sorted(self.stop_token_ids)}")
     
-    def _build_generation_kwargs(self, request: Union[ChatCompletionRequest, CompletionRequest]) -> Dict[str, Any]:
-        """Build generation kwargs from request parameters, filtering out None values."""
+    def _build_generation_config(self, request: Union[ChatCompletionRequest, CompletionRequest]) -> GenerationConfig:
+        """Build a GenerationConfig from request parameters."""
         # Base parameters that are always used
         max_tokens = getattr(request, 'max_new_tokens', None) or getattr(request, 'max_tokens', 16)
         
-        kwargs = {
-            'max_new_tokens': max_tokens,
-            'temperature': request.temperature,
-            'top_p': request.top_p,
-            'do_sample': request.temperature > 0,
-            'pad_token_id': self.tokenizer.pad_token_id,
-            'eos_token_id': self.tokenizer.eos_token_id,
-            'early_stopping': getattr(request, 'early_stopping', None) or True,
-            'return_dict_in_generate': True,
-            'output_scores': False
-        }
+        # Start with the loaded default generation config
+        if self.default_generation_config is not None:
+            # Create a copy to avoid modifying the default
+            generation_config = GenerationConfig(**self.default_generation_config.to_dict())
+        else:
+            generation_config = GenerationConfig()
+        
+        # Core parameters
+        generation_config.max_new_tokens = max_tokens
+        generation_config.temperature = request.temperature
+        generation_config.top_p = request.top_p
+        generation_config.do_sample = request.temperature > 0
+        generation_config.pad_token_id = self.tokenizer.pad_token_id
+        generation_config.eos_token_id = self.tokenizer.eos_token_id
+        generation_config.return_dict_in_generate = True
+        generation_config.output_scores = False
+        
+        # Set early_stopping properly - only use with beam search (num_beams > 1)
+        early_stopping_value = getattr(request, 'early_stopping', None)
+        if early_stopping_value is not None:
+            generation_config.early_stopping = early_stopping_value
+        # Don't set early_stopping=True by default since it only works with beam search
         
         # Add HuggingFace specific parameters if they are not None
         hf_params = [
@@ -268,25 +338,27 @@ class InferenceServer:
             'encoder_no_repeat_ngram_size', 'bad_words_ids', 'min_length',
             'num_beams', 'num_beam_groups', 'diversity_penalty', 
             'temperature_last_layer', 'top_k', 'typical_p',
-            'epsilon_cutoff', 'eta_cutoff', 'guidance_scale', 'low_cpu_mem_usage'
+            'epsilon_cutoff', 'eta_cutoff', 'guidance_scale'
         ]
         
         for param in hf_params:
             value = getattr(request, param, None)
             if value is not None:
-                kwargs[param] = value
+                setattr(generation_config, param, value)
         
         # Handle special cases
         if hasattr(request, 'seed') and request.seed is not None:
             # Set random seed for reproducibility
-            import torch
             torch.manual_seed(request.seed)
         
-        # If using beam search, adjust sampling
-        if kwargs.get('num_beams', 1) > 1:
-            kwargs['do_sample'] = False  # Beam search doesn't use sampling
+        # If using beam search, adjust sampling and early_stopping
+        if generation_config.num_beams and generation_config.num_beams > 1:
+            generation_config.do_sample = False  # Beam search doesn't use sampling
+            # Only enable early_stopping with beam search if not explicitly set
+            if early_stopping_value is None:
+                generation_config.early_stopping = True
         
-        return kwargs
+        return generation_config
     
     def get_default_chat_template(self) -> str:
         """Return a reasonable default chat template as Jinja2."""
@@ -376,18 +448,14 @@ class InferenceServer:
         logging.info(f"[{request_id}] Input token IDs: {input_token_ids}")
         logging.info(f"[{request_id}] Input tokens with special tokens: {repr(self.tokenizer.decode(input_token_ids, skip_special_tokens=False))}")
         
+        # Build generation configuration
+        generation_config = self._build_generation_config(request)
+        logging.info(f"[{request_id}] Generation config: {generation_config}")
+        
         with torch.no_grad():
             outputs = self.model.generate(
                 input_ids,
-                max_new_tokens=request.max_tokens,
-                temperature=request.temperature,
-                top_p=request.top_p,
-                do_sample=request.temperature > 0,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-                early_stopping=True,  # Stop generation when EOS is encountered
-                return_dict_in_generate=True,  # Return additional info for finish reasons
-                output_scores=False  # We don't need generation scores
+                generation_config=generation_config
             )
         
         generated_tokens = outputs.sequences[0][prompt_tokens:]
@@ -513,12 +581,12 @@ class InferenceServer:
         logging.info(f"[{request_id}] Input token IDs: {input_token_ids}")
         logging.info(f"[{request_id}] Input tokens with special tokens: {repr(self.tokenizer.decode(input_token_ids, skip_special_tokens=False))}")
 
-        # Build generation parameters
-        generation_kwargs = self._build_generation_kwargs(request)
-        logging.info(f"[{request_id}] Generation parameters: {generation_kwargs}")
+        # Build generation configuration
+        generation_config = self._build_generation_config(request)
+        logging.info(f"[{request_id}] Generation config: {generation_config}")
         
         with torch.no_grad():
-            outputs = self.model.generate(input_ids, **generation_kwargs)
+            outputs = self.model.generate(input_ids, generation_config=generation_config)
 
         generated_tokens = outputs.sequences[0][prompt_tokens:]
         generated_token_ids = generated_tokens.tolist()
@@ -593,6 +661,297 @@ class InferenceServer:
             )
         )
 
+    def generate_stream_response(self, request: ChatCompletionRequest) -> Iterator[str]:
+        """Generate a streaming chat completion response."""
+        request_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        
+        # Log request details
+        logging.info(f"[{request_id}] New streaming chat completion request: model={request.model}, max_tokens={request.max_tokens}, temperature={request.temperature}, top_p={request.top_p}, messages_count={len(request.messages)}")
+        
+        # Log each message
+        for i, message in enumerate(request.messages):
+            logging.info(f"[{request_id}] Message {i}: role={message.role}, content={repr(message.content)}")
+        
+        try:
+            # Format messages using chat template
+            template = self.jinja_env.from_string(self.chat_template)
+            formatted_prompt = template.render(messages=request.messages, add_generation_prompt=True)
+            logging.info(f"[{request_id}] Formatted prompt: {repr(formatted_prompt)}")
+            
+            # Tokenize input
+            inputs = self.tokenizer(formatted_prompt, return_tensors="pt", return_token_type_ids=False).to(self.model.device)
+            input_ids = inputs["input_ids"]
+            prompt_tokens = len(input_ids[0])
+            
+            # Log input token details
+            logging.info(f"[{request_id}] Input token IDs: {input_ids[0].tolist()}")
+            logging.info(f"[{request_id}] Input tokens with special tokens: {repr(self.tokenizer.decode(input_ids[0], skip_special_tokens=False))}")
+            
+            # Build generation config
+            generation_config = self._build_generation_config(request)
+            logging.info(f"[{request_id}] Generation config: {generation_config}")
+            
+            # Setup streaming
+            streamer = TextIteratorStreamer(self.tokenizer, timeout=60.0, skip_prompt=True, skip_special_tokens=True)
+            generation_kwargs = {
+                "input_ids": input_ids,
+                "generation_config": generation_config,
+                "streamer": streamer,
+                "return_dict_in_generate": True,
+                "output_scores": False,
+            }
+            
+            # Start generation in background thread
+            thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+            thread.start()
+            
+            # Send initial chunk with role
+            created = int(time.time())
+            chunk = ChatCompletionStreamResponse(
+                id=request_id,
+                created=created,
+                model=request.model,
+                choices=[
+                    ChatCompletionStreamChoice(
+                        index=0,
+                        delta=ChatCompletionStreamDelta(role="assistant", content=""),
+                        finish_reason=None
+                    )
+                ]
+            )
+            yield f"data: {chunk.model_dump_json()}\n\n"
+            
+            # Stream tokens
+            full_response = ""
+            for new_text in streamer:
+                if new_text:  # Skip empty strings
+                    full_response += new_text
+                    
+                    # Check for stop sequences
+                    should_stop = False
+                    for stop_seq in self.stop_sequences:
+                        if stop_seq in full_response:
+                            # Trim at stop sequence
+                            stop_index = full_response.find(stop_seq)
+                            trimmed_response = full_response[:stop_index]
+                            remaining_text = trimmed_response[len(full_response) - len(new_text):]
+                            if remaining_text:
+                                chunk = ChatCompletionStreamResponse(
+                                    id=request_id,
+                                    created=created,
+                                    model=request.model,
+                                    choices=[
+                                        ChatCompletionStreamChoice(
+                                            index=0,
+                                            delta=ChatCompletionStreamDelta(content=remaining_text),
+                                            finish_reason=None
+                                        )
+                                    ]
+                                )
+                                yield f"data: {chunk.model_dump_json()}\n\n"
+                            should_stop = True
+                            break
+                    
+                    if should_stop:
+                        break
+                    
+                    # Send token chunk
+                    chunk = ChatCompletionStreamResponse(
+                        id=request_id,
+                        created=created,
+                        model=request.model,
+                        choices=[
+                            ChatCompletionStreamChoice(
+                                index=0,
+                                delta=ChatCompletionStreamDelta(content=new_text),
+                                finish_reason=None
+                            )
+                        ]
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+            
+            # Send final chunk
+            chunk = ChatCompletionStreamResponse(
+                id=request_id,
+                created=created,
+                model=request.model,
+                choices=[
+                    ChatCompletionStreamChoice(
+                        index=0,
+                        delta=ChatCompletionStreamDelta(),
+                        finish_reason="stop"
+                    )
+                ]
+            )
+            yield f"data: {chunk.model_dump_json()}\n\n"
+            
+            # Send [DONE] marker
+            yield "data: [DONE]\n\n"
+            
+            # Wait for generation to complete
+            thread.join()
+            
+            # Log output details (similar to non-streaming version)
+            generated_token_ids = self.tokenizer.encode(full_response, add_special_tokens=False)
+            completion_tokens = len(generated_token_ids)
+            
+            logging.info(f"[{request_id}] Generated token IDs: {generated_token_ids}")
+            logging.info(f"[{request_id}] Generated tokens with special tokens: {repr(full_response)}")
+            logging.info(f"[{request_id}] Response text (clean): {repr(full_response)}")
+            
+            # Determine finish reason
+            finish_reason = "stop"  # Default for streaming
+            if completion_tokens >= request.max_tokens:
+                finish_reason = "length"
+            elif any(stop_seq in full_response for stop_seq in self.stop_sequences):
+                finish_reason = "stop"
+                stop_sequence_found = next(stop_seq for stop_seq in self.stop_sequences if stop_seq in full_response)
+                logging.info(f"[{request_id}] Generation stopped due to stop sequence: {repr(stop_sequence_found)}")
+            
+            logging.info(f"[{request_id}] Finish reason: {finish_reason}")
+            logging.info(f"[{request_id}] Token usage: prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
+            
+        except Exception as e:
+            logging.error(f"[{request_id}] Streaming generation failed: {str(e)}")
+            # Send error as final chunk
+            chunk = ChatCompletionStreamResponse(
+                id=request_id,
+                created=int(time.time()),
+                model=request.model,
+                choices=[
+                    ChatCompletionStreamChoice(
+                        index=0,
+                        delta=ChatCompletionStreamDelta(),
+                        finish_reason="stop"
+                    )
+                ]
+            )
+            yield f"data: {chunk.model_dump_json()}\n\n"
+            yield "data: [DONE]\n\n"
+
+    def generate_stream_completion(self, request: CompletionRequest) -> Iterator[str]:
+        """Generate a streaming text completion response."""
+        request_id = f"cmpl-{uuid.uuid4().hex[:12]}"
+        
+        # Log request details
+        logging.info(f"[{request_id}] New streaming completion request: model={request.model}, max_tokens={request.max_tokens}, prompt={repr(request.prompt)}")
+        
+        try:
+            # Tokenize input
+            inputs = self.tokenizer(request.prompt, return_tensors="pt", return_token_type_ids=False).to(self.model.device)
+            input_ids = inputs["input_ids"]
+            prompt_tokens = len(input_ids[0])
+            
+            # Log input token details
+            logging.info(f"[{request_id}] Input token IDs: {input_ids[0].tolist()}")
+            logging.info(f"[{request_id}] Input tokens with special tokens: {repr(self.tokenizer.decode(input_ids[0], skip_special_tokens=False))}")
+            
+            # Build generation config
+            generation_config = self._build_generation_config(request)
+            
+            # Setup streaming
+            streamer = TextIteratorStreamer(self.tokenizer, timeout=60.0, skip_prompt=not request.echo, skip_special_tokens=True)
+            generation_kwargs = {
+                "input_ids": input_ids,
+                "generation_config": generation_config,
+                "streamer": streamer,
+                "return_dict_in_generate": True,
+                "output_scores": False,
+            }
+            
+            # Start generation in background thread
+            thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+            thread.start()
+            
+            # Stream tokens
+            created = int(time.time())
+            full_response = ""
+            for new_text in streamer:
+                if new_text:  # Skip empty strings
+                    full_response += new_text
+                    
+                    # Check for stop sequences
+                    should_stop = False
+                    for stop_seq in self.stop_sequences:
+                        if stop_seq in full_response:
+                            # Trim at stop sequence
+                            stop_index = full_response.find(stop_seq)
+                            trimmed_response = full_response[:stop_index]
+                            remaining_text = trimmed_response[len(full_response) - len(new_text):]
+                            if remaining_text:
+                                chunk = CompletionStreamResponse(
+                                    id=request_id,
+                                    created=created,
+                                    model=request.model,
+                                    choices=[
+                                        CompletionStreamChoice(
+                                            index=0,
+                                            text=remaining_text,
+                                            finish_reason=None
+                                        )
+                                    ]
+                                )
+                                yield f"data: {chunk.model_dump_json()}\n\n"
+                            should_stop = True
+                            break
+                    
+                    if should_stop:
+                        break
+                    
+                    # Send token chunk
+                    chunk = CompletionStreamResponse(
+                        id=request_id,
+                        created=created,
+                        model=request.model,
+                        choices=[
+                            CompletionStreamChoice(
+                                index=0,
+                                text=new_text,
+                                finish_reason=None
+                            )
+                        ]
+                    )
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+            
+            # Send final chunk
+            chunk = CompletionStreamResponse(
+                id=request_id,
+                created=created,
+                model=request.model,
+                choices=[
+                    CompletionStreamChoice(
+                        index=0,
+                        text="",
+                        finish_reason="stop"
+                    )
+                ]
+            )
+            yield f"data: {chunk.model_dump_json()}\n\n"
+            
+            # Send [DONE] marker
+            yield "data: [DONE]\n\n"
+            
+            # Wait for generation to complete
+            thread.join()
+            
+        except Exception as e:
+            logging.error(f"[{request_id}] Streaming generation failed: {str(e)}")
+            # Send error as final chunk
+            chunk = CompletionStreamResponse(
+                id=request_id,
+                created=int(time.time()),
+                model=request.model,
+                choices=[
+                    CompletionStreamChoice(
+                        index=0,
+                        text="",
+                        finish_reason="stop"
+                    )
+                ]
+            )
+            yield f"data: {chunk.model_dump_json()}\n\n"
+            yield "data: [DONE]\n\n"
+
 
 # Global inference server instance
 inference_server: Optional[InferenceServer] = None
@@ -617,34 +976,42 @@ async def list_models():
 
 
 @app.post("/v1/chat/completions")
-async def create_chat_completion(request: ChatCompletionRequest) -> ChatCompletionResponse:
+async def create_chat_completion(request: ChatCompletionRequest):
     """Create a chat completion."""
     if inference_server is None:
         raise HTTPException(status_code=500, detail="Model not loaded")
     
-    if request.stream:
-        raise HTTPException(status_code=400, detail="Streaming not supported yet")
-    
     try:
-        return inference_server.generate_response(request)
+        if request.stream:
+            return StreamingResponse(
+                inference_server.generate_stream_response(request),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+            )
+        else:
+            return inference_server.generate_response(request)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
 
 @app.post("/v1/completions")
-async def create_completion(request: CompletionRequest) -> CompletionResponse:
+async def create_completion(request: CompletionRequest):
     """Create a text completion."""
     if inference_server is None:
         raise HTTPException(status_code=500, detail="Model not loaded")
-    
-    if request.stream:
-        raise HTTPException(status_code=400, detail="Streaming not supported yet")
     
     if request.n != 1:
         raise HTTPException(status_code=400, detail="n > 1 not supported yet")
     
     try:
-        return inference_server.generate_completion(request)
+        if request.stream:
+            return StreamingResponse(
+                inference_server.generate_stream_completion(request),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+            )
+        else:
+            return inference_server.generate_completion(request)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
@@ -655,9 +1022,53 @@ async def health_check():
     return {"status": "healthy", "model_loaded": inference_server is not None}
 
 
+def load_config_from_yaml(config_path: str) -> Dict[str, Any]:
+    """Load configuration from YAML file."""
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        logging.info(f"Loaded configuration from: {config_path}")
+        return config or {}
+    except Exception as e:
+        logging.error(f"Failed to load configuration from {config_path}: {e}")
+        raise
+
+
+def merge_config_with_args(config: Dict[str, Any], args: argparse.Namespace, parser: argparse.ArgumentParser) -> argparse.Namespace:
+    """Merge YAML config with command line arguments, with CLI args taking precedence."""
+    # Convert config keys to match argument names (replace - with _)
+    normalized_config = {}
+    for key, value in config.items():
+        normalized_key = key.replace('-', '_')
+        normalized_config[normalized_key] = value
+    
+    # Get default values from parser to detect which args were actually set
+    defaults = {}
+    for action in parser._actions:
+        if action.dest != 'help' and action.dest != 'config':
+            defaults[action.dest] = action.default
+    
+    # For each config value, set it if the argument uses the default value
+    for key, value in normalized_config.items():
+        if hasattr(args, key):
+            current_value = getattr(args, key)
+            default_value = defaults.get(key)
+            
+            # Only override if the current value is the default (wasn't explicitly set)
+            if current_value == default_value:
+                if key == 'stop_sequences':
+                    # Special handling for stop_sequences which uses nargs="*"
+                    setattr(args, key, value if isinstance(value, list) else [value] if value else None)
+                else:
+                    setattr(args, key, value)
+    
+    return args
+
+
 def main():
     parser = argparse.ArgumentParser(description="OpenAI API-compatible inference server")
-    parser.add_argument("--model", required=True, help="HuggingFace model path or name")
+    parser.add_argument("config", nargs="?", help="YAML configuration file (optional)")
+    parser.add_argument("--model", help="HuggingFace model path or name")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
     parser.add_argument("--device", default="auto", help="Device to use (cuda, cpu, auto)")
@@ -668,15 +1079,29 @@ def main():
     
     args = parser.parse_args()
     
-    # Setup logging
+    # Load config file if provided
+    if args.config:
+        config = load_config_from_yaml(args.config)
+        args = merge_config_with_args(config, args, parser)
+    
+    # Validate required arguments
+    if not args.model:
+        parser.error("--model is required (can be specified in config file)")
+    
+    # Setup logging - configure the root logger and ensure it propagates properly
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
     logging.basicConfig(
         level=log_level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.StreamHandler(),
-        ]
+        ],
+        force=True  # Force reconfiguration even if logging was already configured
     )
+    
+    # Ensure our application logger is set to the same level
+    app_logger = logging.getLogger(__name__)
+    app_logger.setLevel(log_level)
     
     global inference_server
     inference_server = InferenceServer(
@@ -690,7 +1115,9 @@ def main():
     logging.info(f"Starting server on {args.host}:{args.port}")
     logging.info(f"OpenAI API endpoint: http://{args.host}:{args.port}/v1/chat/completions")
     
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level.lower())
+    # Configure uvicorn to use the same log level but not override our logger
+    uvicorn_log_level = args.log_level.lower()
+    uvicorn.run(app, host=args.host, port=args.port, log_level=uvicorn_log_level, access_log=True)
 
 
 if __name__ == "__main__":

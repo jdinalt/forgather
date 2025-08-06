@@ -1,0 +1,22 @@
+# Client Configuration for HuggingFace OpenAI API Client
+# This configuration is for the Tiny Llama tutorial model.
+
+# Connection settings
+url: "http://localhost:8000/v1"
+model: "tiny-llama"
+
+# Generation parameters
+max-tokens: 512
+temperature: 0.8
+top-p: 0.9
+#show-usage: true
+
+# HuggingFace generation parameters
+repetition-penalty: 1.2
+top-k: 40
+no-repeat-ngram-size: 2
+
+# Mode settings for quick testing
+# message: "Tell me a story about a cat"
+# completion: "Once upon a time there was a wise old owl"
+# system: "You are a helpful storytelling assistant"

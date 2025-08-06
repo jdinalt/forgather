@@ -14,6 +14,12 @@ except ImportError:
     print("Error: OpenAI Python client not installed. Run: pip install openai")
     sys.exit(1)
 
+try:
+    import yaml
+except ImportError:
+    print("Error: PyYAML not installed. Run: pip install pyyaml")
+    sys.exit(1)
+
 
 class InferenceClient:
     def __init__(self, base_url: str, api_key: str = "dummy"):
@@ -75,7 +81,8 @@ class InferenceClient:
         max_tokens: int = 512,
         temperature: float = 0.7,
         top_p: float = 1.0,
-        show_usage: bool = False
+        show_usage: bool = False,
+        stream: bool = False
     ) -> str:
         """Send a single message and get a response without conversation history."""
         messages = []
@@ -86,21 +93,45 @@ class InferenceClient:
         messages.append({"role": "user", "content": message})
         
         try:
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p
-            )
-            
-            assistant_message = response.choices[0].message.content
-            
-            if show_usage:
-                usage = response.usage
-                print(f"\\nUsage: {usage.prompt_tokens} prompt + {usage.completion_tokens} completion = {usage.total_tokens} total tokens")
-            
-            return assistant_message
+            if stream:
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    stream=True
+                )
+                
+                assistant_message = ""
+                for chunk in response:
+                    if chunk.choices[0].delta.content is not None:
+                        content = chunk.choices[0].delta.content
+                        print(content, end="", flush=True)
+                        assistant_message += content
+                print()  # Add newline at end
+                
+                # Note: Usage is not available with streaming
+                if show_usage:
+                    print("\\nUsage: Not available with streaming")
+                
+                return assistant_message
+            else:
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p
+                )
+                
+                assistant_message = response.choices[0].message.content
+                
+                if show_usage:
+                    usage = response.usage
+                    print(f"\\nUsage: {usage.prompt_tokens} prompt + {usage.completion_tokens} completion = {usage.total_tokens} total tokens")
+                
+                return assistant_message
             
         except Exception as e:
             return f"Error: {str(e)}"
@@ -115,6 +146,7 @@ class InferenceClient:
         stop: Optional[Union[str, List[str]]] = None,
         echo: bool = False,
         show_usage: bool = False,
+        stream: bool = False,
         repetition_penalty: Optional[float] = None,
         length_penalty: Optional[float] = None,
         no_repeat_ngram_size: Optional[int] = None,
@@ -134,7 +166,8 @@ class InferenceClient:
                 'temperature': temperature,
                 'top_p': top_p,
                 'stop': stop,
-                'echo': echo
+                'echo': echo,
+                'stream': stream
             }
             
             # Build HuggingFace parameters for extra_body
@@ -161,14 +194,29 @@ class InferenceClient:
             
             response = self.client.completions.create(**params)
             
-            completion_text = response.choices[0].text
-            
-            if show_usage:
-                usage = response.usage
-                print(f"\\nUsage: {usage.prompt_tokens} prompt + {usage.completion_tokens} completion = {usage.total_tokens} total tokens")
-                print(f"Finish reason: {response.choices[0].finish_reason}")
-            
-            return completion_text
+            if stream:
+                completion_text = ""
+                for chunk in response:
+                    if chunk.choices[0].text is not None:
+                        content = chunk.choices[0].text
+                        print(content, end="", flush=True)
+                        completion_text += content
+                print()  # Add newline at end
+                
+                # Note: Usage is not available with streaming
+                if show_usage:
+                    print("\\nUsage: Not available with streaming")
+                
+                return completion_text
+            else:
+                completion_text = response.choices[0].text
+                
+                if show_usage:
+                    usage = response.usage
+                    print(f"\\nUsage: {usage.prompt_tokens} prompt + {usage.completion_tokens} completion = {usage.total_tokens} total tokens")
+                    print(f"Finish reason: {response.choices[0].finish_reason}")
+                
+                return completion_text
             
         except Exception as e:
             return f"Error: {str(e)}"
@@ -268,9 +316,62 @@ def interactive_mode(client: InferenceClient, args: argparse.Namespace):
             break
 
 
+def load_config_from_yaml(config_path: str) -> Dict[str, Any]:
+    """Load configuration from YAML file."""
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        print(f"Loaded configuration from: {config_path}")
+        return config or {}
+    except Exception as e:
+        print(f"Error: Failed to load configuration from {config_path}: {e}")
+        sys.exit(1)
+
+
+def merge_config_with_args(config: Dict[str, Any], args: argparse.Namespace, parser: argparse.ArgumentParser) -> argparse.Namespace:
+    """Merge YAML config with command line arguments, with CLI args taking precedence."""
+    # Convert config keys to match argument names (replace - with _)
+    normalized_config = {}
+    for key, value in config.items():
+        normalized_key = key.replace('-', '_')
+        normalized_config[normalized_key] = value
+    
+    # Get default values from parser to detect which args were actually set
+    defaults = {}
+    for action in parser._actions:
+        if action.dest != 'help' and action.dest != 'config':
+            defaults[action.dest] = action.default
+    
+    # For each config value, set it if the argument uses the default value
+    for key, value in normalized_config.items():
+        if hasattr(args, key):
+            current_value = getattr(args, key)
+            default_value = defaults.get(key)
+            
+            # Only override if the current value is the default (wasn't explicitly set)
+            if current_value == default_value:
+                if key == 'stop' and isinstance(value, list):
+                    # Handle stop sequences list
+                    setattr(args, key, value)
+                elif key in ['echo', 'no_echo'] and isinstance(value, bool):
+                    # Handle boolean flags correctly
+                    setattr(args, key, value)
+                else:
+                    setattr(args, key, value)
+    
+    return args
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="CLI client for HuggingFace OpenAI API-compatible inference server"
+    )
+    
+    # Configuration file option
+    parser.add_argument(
+        "config", 
+        nargs="?", 
+        help="YAML configuration file (optional)"
     )
     
     # Connection options
@@ -331,7 +432,12 @@ def main():
     parser.add_argument(
         "--echo", 
         action="store_true", 
-        help="Echo the prompt in the completion response"
+        help="Echo the prompt in the completion response (default for completion mode)"
+    )
+    parser.add_argument(
+        "--no-echo", 
+        action="store_true", 
+        help="Don't echo the prompt in the completion response"
     )
     parser.add_argument(
         "--show-usage", 
@@ -371,6 +477,13 @@ def main():
         help="Random seed for reproducible generation"
     )
     
+    # Streaming option
+    parser.add_argument(
+        "--stream", 
+        action="store_true", 
+        help="Enable streaming response"
+    )
+    
     # Utility options
     parser.add_argument(
         "--health", 
@@ -384,6 +497,23 @@ def main():
     )
     
     args = parser.parse_args()
+    
+    # Load config file if provided
+    if args.config:
+        config = load_config_from_yaml(args.config)
+        args = merge_config_with_args(config, args, parser)
+    
+    # Handle stdin input for completion mode
+    stdin_prompt = None
+    if not sys.stdin.isatty():
+        # Data is being piped in
+        stdin_prompt = sys.stdin.read().strip()
+        if stdin_prompt and not args.completion:
+            # If we have stdin input and no explicit mode, use completion mode
+            args.completion = stdin_prompt
+        elif stdin_prompt and args.completion:
+            # If both stdin and --completion, prefer stdin
+            args.completion = stdin_prompt
     
     # Create client
     client = InferenceClient(args.url)
@@ -426,12 +556,17 @@ def main():
             max_tokens=args.max_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
-            show_usage=args.show_usage
+            show_usage=args.show_usage,
+            stream=args.stream
         )
-        print(response)
+        if not args.stream:
+            print(response)
     
     # Completion mode
     elif args.completion:
+        # Default echo behavior for completion mode (echo unless --no-echo specified)
+        echo_enabled = not args.no_echo
+        
         response = client.completion(
             args.completion,
             model=args.model,
@@ -439,8 +574,9 @@ def main():
             temperature=args.temperature,
             top_p=args.top_p,
             stop=args.stop,
-            echo=args.echo,
+            echo=echo_enabled,
             show_usage=args.show_usage,
+            stream=args.stream,
             repetition_penalty=args.repetition_penalty,
             no_repeat_ngram_size=args.no_repeat_ngram_size,
             top_k=args.top_k,
@@ -448,7 +584,8 @@ def main():
             min_length=args.min_length,
             seed=args.seed
         )
-        print(response)
+        if not args.stream:
+            print(response)
     
     # Default: show help
     else:
