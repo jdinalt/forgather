@@ -269,7 +269,7 @@ def interactive_mode(client: InferenceClient, args: argparse.Namespace):
     
     while True:
         try:
-            user_input = input("You: ").strip()
+            user_input = input("> ").strip()
             
             if user_input.lower() in ['quit', 'exit', 'q']:
                 print("Goodbye!")
@@ -310,7 +310,7 @@ def interactive_mode(client: InferenceClient, args: argparse.Namespace):
             
             client.add_user_message(user_input)
             
-            print("Assistant: ", end="", flush=True)
+            # Get response and print without "Assistant:" prefix
             response = client.get_completion(
                 model=args.model,
                 max_tokens=args.max_tokens,
@@ -320,7 +320,11 @@ def interactive_mode(client: InferenceClient, args: argparse.Namespace):
             )
             if not args.stream:
                 print(response)
-            print()
+                print()  # Extra blank line for non-streaming mode
+            else:
+                # Streaming mode needs two newlines (no trailing newline from streaming)
+                print()  # First newline after streamed response
+                print()  # Second newline for proper spacing
             
         except KeyboardInterrupt:
             print("\\n\\nGoodbye!")
