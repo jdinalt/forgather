@@ -54,7 +54,8 @@ class InferenceClient:
         model: str = "inference-server", 
         max_tokens: int = 512,
         temperature: float = 0.7,
-        top_p: float = 1.0
+        top_p: float = 1.0,
+        stream: bool = False
     ) -> str:
         """Get a completion from the server."""
         try:
@@ -63,12 +64,23 @@ class InferenceClient:
                 messages=self.conversation_history,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                top_p=top_p
+                top_p=top_p,
+                stream=stream
             )
             
-            assistant_message = response.choices[0].message.content
-            self.add_assistant_message(assistant_message)
-            return assistant_message
+            if stream:
+                assistant_message = ""
+                for chunk in response:
+                    if chunk.choices[0].delta.content is not None:
+                        content = chunk.choices[0].delta.content
+                        print(content, end="", flush=True)
+                        assistant_message += content
+                self.add_assistant_message(assistant_message)
+                return assistant_message
+            else:
+                assistant_message = response.choices[0].message.content
+                self.add_assistant_message(assistant_message)
+                return assistant_message
             
         except Exception as e:
             return f"Error: {str(e)}"
@@ -303,9 +315,11 @@ def interactive_mode(client: InferenceClient, args: argparse.Namespace):
                 model=args.model,
                 max_tokens=args.max_tokens,
                 temperature=args.temperature,
-                top_p=args.top_p
+                top_p=args.top_p,
+                stream=args.stream
             )
-            print(response)
+            if not args.stream:
+                print(response)
             print()
             
         except KeyboardInterrupt:

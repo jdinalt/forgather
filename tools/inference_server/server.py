@@ -208,7 +208,7 @@ class InferenceServer:
         if self.from_checkpoint:
             if self.device == "auto":
                 raise ValueError("Cannot use 'auto' device with checkpoint loading. Please specify a device explicitly.")
-            
+            # We only want a weak dependency of Forgather.
             from forgather.ml.sharded_checkpoint import (
                 load_checkpoint,
                 retie_parameters,
@@ -831,28 +831,7 @@ class InferenceServer:
                     )
                     yield f"data: {chunk.model_dump_json()}\n\n"
             
-            # Send final chunk
-            chunk = ChatCompletionStreamResponse(
-                id=request_id,
-                created=created,
-                model=request.model,
-                choices=[
-                    ChatCompletionStreamChoice(
-                        index=0,
-                        delta=ChatCompletionStreamDelta(),
-                        finish_reason="stop"
-                    )
-                ]
-            )
-            yield f"data: {chunk.model_dump_json()}\n\n"
-            
-            # Send [DONE] marker
-            yield "data: [DONE]\n\n"
-            
-            # Wait for generation to complete
-            thread.join()
-            
-            # Log output details (similar to non-streaming version)
+            # Log output details immediately after streaming completes (before sending final chunks)
             generated_token_ids = self.tokenizer.encode(full_response, add_special_tokens=False)
             completion_tokens = len(generated_token_ids)
             
@@ -871,6 +850,30 @@ class InferenceServer:
             
             self.logger.info(f"[{request_id}] Finish reason: {finish_reason}")
             self.logger.info(f"[{request_id}] Token usage: prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
+            
+            # Send final chunk
+            chunk = ChatCompletionStreamResponse(
+                id=request_id,
+                created=created,
+                model=request.model,
+                choices=[
+                    ChatCompletionStreamChoice(
+                        index=0,
+                        delta=ChatCompletionStreamDelta(),
+                        finish_reason="stop"
+                    )
+                ]
+            )
+            yield f"data: {chunk.model_dump_json()}\n\n"
+            
+            # Send [DONE] marker
+            yield "data: [DONE]\n\n"
+            
+            # Don't wait for thread - let it complete asynchronously to avoid blocking the client
+            # The generation is already complete from the client's perspective
+            
+            # Ensure the generator function exits cleanly to close the HTTP connection
+            return
             
         except Exception as e:
             self.logger.error(f"[{request_id}] Streaming generation failed: {str(e)}")
@@ -975,28 +978,7 @@ class InferenceServer:
                     )
                     yield f"data: {chunk.model_dump_json()}\n\n"
             
-            # Send final chunk
-            chunk = CompletionStreamResponse(
-                id=request_id,
-                created=created,
-                model=request.model,
-                choices=[
-                    CompletionStreamChoice(
-                        index=0,
-                        text="",
-                        finish_reason="stop"
-                    )
-                ]
-            )
-            yield f"data: {chunk.model_dump_json()}\n\n"
-            
-            # Send [DONE] marker
-            yield "data: [DONE]\n\n"
-            
-            # Wait for generation to complete
-            thread.join()
-            
-            # Log output details (similar to non-streaming version)
+            # Log output details immediately after streaming completes (before sending final chunks)
             generated_token_ids = self.tokenizer.encode(full_response, add_special_tokens=False)
             completion_tokens = len(generated_token_ids)
             
@@ -1015,6 +997,30 @@ class InferenceServer:
             
             self.logger.info(f"[{request_id}] Finish reason: {finish_reason}")
             self.logger.info(f"[{request_id}] Token usage: prompt={prompt_tokens}, completion={completion_tokens}, total={prompt_tokens + completion_tokens}")
+            
+            # Send final chunk
+            chunk = CompletionStreamResponse(
+                id=request_id,
+                created=created,
+                model=request.model,
+                choices=[
+                    CompletionStreamChoice(
+                        index=0,
+                        text="",
+                        finish_reason="stop"
+                    )
+                ]
+            )
+            yield f"data: {chunk.model_dump_json()}\n\n"
+            
+            # Send [DONE] marker
+            yield "data: [DONE]\n\n"
+            
+            # Don't wait for thread - let it complete asynchronously to avoid blocking the client
+            # The generation is already complete from the client's perspective
+            
+            # Ensure the generator function exits cleanly to close the HTTP connection
+            return
             
         except Exception as e:
             self.logger.error(f"[{request_id}] Streaming generation failed: {str(e)}")
@@ -1068,7 +1074,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
             return StreamingResponse(
                 inference_server.generate_stream_response(request),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+                headers={"Cache-Control": "no-cache", "Connection": "close"}
             )
         else:
             return inference_server.generate_response(request)
@@ -1090,7 +1096,7 @@ async def create_completion(request: CompletionRequest):
             return StreamingResponse(
                 inference_server.generate_stream_completion(request),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+                headers={"Cache-Control": "no-cache", "Connection": "close"}
             )
         else:
             return inference_server.generate_completion(request)
