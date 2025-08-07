@@ -513,29 +513,41 @@ class InferenceServer:
         generation_config = self._build_generation_config(request)
         self.logger.info(f"[{request_id}] Generation config: {generation_config}")
         
+        # Convert stop sequences to token IDs for proper stopping
+        stop_strings = self.stop_sequences.copy()
+        self.logger.info(f"[{request_id}] Passing stop_strings to model.generate: {stop_strings}")
+        
         with torch.no_grad():
             outputs = self.model.generate(
                 input_ids,
-                generation_config=generation_config
+                generation_config=generation_config,
+                return_dict_in_generate=True,
+                output_scores=False,
+                stop_strings=stop_strings,
+                tokenizer=self.tokenizer
             )
         
         generated_tokens = outputs.sequences[0][prompt_tokens:]
         generated_token_ids = generated_tokens.tolist()
         
+        # Log raw generated output before any trimming
+        raw_generated_text = self.tokenizer.decode(generated_token_ids, skip_special_tokens=False)
+        self.logger.info(f"[{request_id}] Generated token IDs: {generated_token_ids}")
+        self.logger.info(f"[{request_id}] Generated tokens with special tokens: {repr(raw_generated_text)}")
+        
         # Check for stop sequences in generated text
-        generated_text_with_special = self.tokenizer.decode(generated_token_ids, skip_special_tokens=False)
         stopped_by_sequence = False
         stop_sequence_found = None
         
         for sequence in self.stop_sequences:
-            if sequence in generated_text_with_special:
+            if sequence in raw_generated_text:
                 stopped_by_sequence = True
                 stop_sequence_found = sequence
                 # Trim the generated text at the stop sequence
-                stop_index = generated_text_with_special.find(sequence)
-                generated_text_with_special = generated_text_with_special[:stop_index]
+                stop_index = raw_generated_text.find(sequence)
+                trimmed_text = raw_generated_text[:stop_index]
                 # Re-encode to get the trimmed tokens
-                trimmed_tokens = self.tokenizer.encode(generated_text_with_special, add_special_tokens=False)
+                trimmed_tokens = self.tokenizer.encode(trimmed_text, add_special_tokens=False)
                 if len(trimmed_tokens) < len(generated_token_ids):
                     generated_token_ids = trimmed_tokens
                     generated_tokens = torch.tensor(generated_token_ids, device=generated_tokens.device)
@@ -560,10 +572,6 @@ class InferenceServer:
         elif len(generated_token_ids) < request.max_tokens:
             # Stopped early but not due to obvious reasons
             finish_reason = "stop"
-        
-        # Log generated tokens with special token representations
-        self.logger.info(f"[{request_id}] Generated token IDs: {generated_token_ids}")
-        self.logger.info(f"[{request_id}] Generated tokens with special tokens: {repr(self.tokenizer.decode(generated_token_ids, skip_special_tokens=False))}")
         
         response_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         completion_tokens = len(generated_tokens)
@@ -646,14 +654,29 @@ class InferenceServer:
         generation_config = self._build_generation_config(request)
         self.logger.info(f"[{request_id}] Generation config: {generation_config}")
         
+        # Convert stop sequences to strings for proper stopping
+        stop_strings = all_stop_sequences.copy()
+        self.logger.info(f"[{request_id}] Passing stop_strings to model.generate: {stop_strings}")
+        
         with torch.no_grad():
-            outputs = self.model.generate(input_ids, generation_config=generation_config)
+            outputs = self.model.generate(
+                input_ids, 
+                generation_config=generation_config,
+                return_dict_in_generate=True,
+                output_scores=False,
+                stop_strings=stop_strings,
+                tokenizer=self.tokenizer
+            )
 
         generated_tokens = outputs.sequences[0][prompt_tokens:]
         generated_token_ids = generated_tokens.tolist()
-
-        # Check for stop sequences in generated text
+        
+        # Log raw generated output before any trimming
         generated_text_with_special = self.tokenizer.decode(generated_token_ids, skip_special_tokens=False)
+        self.logger.info(f"[{request_id}] Generated token IDs: {generated_token_ids}")
+        self.logger.info(f"[{request_id}] Generated tokens with special tokens: {repr(generated_text_with_special)}")
+        
+        # Check for stop sequences in generated text
         stopped_by_sequence = False
         stop_sequence_found = None
 
@@ -663,9 +686,9 @@ class InferenceServer:
                 stop_sequence_found = sequence
                 # Trim the generated text at the stop sequence
                 stop_index = generated_text_with_special.find(sequence)
-                generated_text_with_special = generated_text_with_special[:stop_index]
+                trimmed_text = generated_text_with_special[:stop_index]
                 # Re-encode to get the trimmed tokens
-                trimmed_tokens = self.tokenizer.encode(generated_text_with_special, add_special_tokens=False)
+                trimmed_tokens = self.tokenizer.encode(trimmed_text, add_special_tokens=False)
                 if len(trimmed_tokens) < len(generated_token_ids):
                     generated_token_ids = trimmed_tokens
                     generated_tokens = torch.tensor(generated_token_ids, device=generated_tokens.device)
@@ -687,10 +710,6 @@ class InferenceServer:
               generated_token_ids[-1] in self.stop_token_ids):
             finish_reason = "stop"
             self.logger.info(f"[{request_id}] Generation stopped due to stop token ID: {generated_token_ids[-1]}")
-
-        # Log generated tokens
-        self.logger.info(f"[{request_id}] Generated token IDs: {generated_token_ids}")
-        self.logger.info(f"[{request_id}] Generated tokens with special tokens: {repr(self.tokenizer.decode(generated_token_ids, skip_special_tokens=False))}")
 
         response_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         completion_tokens = len(generated_tokens)
