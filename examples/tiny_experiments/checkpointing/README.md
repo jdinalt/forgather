@@ -30,7 +30,7 @@ Train a model with checkpointing enabled:
 
 ```bash
 cd examples/tiny_experiments/checkpointing
-python ../../../bin/fgcli.py -t train.yaml train -d 0
+python ../../../bin/forgather -t train.yaml train -d 0
 ```
 
 This should:
@@ -42,7 +42,7 @@ This should:
 Continue from the latest checkpoint:
 
 ```bash
-python ../../../bin/fgcli.py -t resume.yaml train -d 0
+python ../../../bin/forgather -t resume.yaml train -d 0
 ```
 
 This should:

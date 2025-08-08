@@ -2,6 +2,7 @@
 
 import argparse
 from argparse import RawTextHelpFormatter
+import os
 
 from .commands import (
     index_cmd,
@@ -188,6 +189,8 @@ def parse_args(args=None):
 def main():
     """Main CLI entry point."""
     args = parse_args()
+    if args.config_template:
+        args.config_template = os.path.basename(args.config_template)
     match args.command:
         case "index":
             index_cmd(args)

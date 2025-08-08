@@ -34,11 +34,8 @@ git clone https://github.com/jdinalt/forgather.git
 cd forgather
 pip install -e .
 
-# Add "./bin" to your path for CLI
-PATH="/path/to/forgather/bin:$PATH"
-
 # Verify install works with CLI
-fgcli.py ls -r
+forgather ls -r
 ```
 
 **2. Try a tutorial project:**
@@ -48,17 +45,17 @@ See: [./examples/tutorials/tiny_llama/project_index.ipynb](./examples/tutorials/
 Or, from the comamand-line...
 
 ```bash
-fgcli.py ls -r                                 # List all forgather projects
+forgather ls -r                                 # List all forgather projects
 cd examples/tutorials/tiny_llama
-fgcli.py index                                 # Show project summary
-fgcli.py ls                                    # List available configs
-fgcli.py -t train_tiny_llama.yaml pp | less    # Show pre-processed configuration
-fgcli.py -t train_tiny_llama.yaml train        # Train model
+forgather index                                 # Show project summary
+forgather ls                                    # List available configs
+forgather -t train_tiny_llama.yaml pp | less    # Show pre-processed configuration
+forgather -t train_tiny_llama.yaml train        # Train model
 ```
 
 **3. Monitor training:**
 ```bash
-fgcli.py -t train_tiny_llama.yaml tb           # Start Tensorboard
+forgather -t train_tiny_llama.yaml tb           # Start Tensorboard
 ```
 
 That's it! You've just trained a small language model using Forgather's template system.
@@ -120,13 +117,13 @@ cd examples/tutorials/
 cd forgather
 
 # List all example projects and configurations
-fgcli.py ls -r
+forgather ls -r
 
 # cd to example project directory
 cd examples/...
 
 # Show project info
-fgcli.py index
+forgather index
 ```
 
 ### 3. **Interactive Development**
@@ -140,14 +137,14 @@ training_script.run() # Train model
 ```
 
 ### 4. **Command Line Tools**
-Master the `fgcli.py` interface:
+Master the `forgather` interface:
 
 ```bash
-fgcli.py index                    # Project overview
-fgcli.py ls                       # List configs
-fgcli.py -t config.yaml pp        # Show preprocessed config
-fgcli.py -t config.yaml tlist     # Template hierarchy
-fgcli.py -t config.yaml train     # Train model
+forgather index                    # Project overview
+forgather ls                       # List configs
+forgather -t config.yaml pp        # Show preprocessed config
+forgather -t config.yaml tlist     # Template hierarchy
+forgather -t config.yaml train     # Train model
 ```
 
 ## Core Concepts
@@ -183,11 +180,11 @@ Templates → YAML → Node Graph → Python Code → Executable Objects
 
 Each step can be inspected:
 ```bash
-fgcli.py -t config.yaml pp                          # Preprocess with Jinja2 to YAML
-fgcli.py -t config.yaml graph --format yaml         # Parsed node graph
-fgcli.py -t config.yaml targets                     # List constructable objects in graph
-fgcli.py -t config.yaml code [--target <target>]    # [optional] Equivalent Python code for target
-fgcli.py -t config.yaml construct [--target <target>] [--call] # Materialize and show constructed object
+forgather -t config.yaml pp                          # Preprocess with Jinja2 to YAML
+forgather -t config.yaml graph --format yaml         # Parsed node graph
+forgather -t config.yaml targets                     # List constructable objects in graph
+forgather -t config.yaml code [--target <target>]    # [optional] Equivalent Python code for target
+forgather -t config.yaml construct [--target <target>] [--call] # Materialize and show constructed object
 ```
 
 ## Project Structure
@@ -213,10 +210,10 @@ fgcli.py -t config.yaml construct [--target <target>] [--call] # Materialize and
 ```bash
 # Generate command to run "my_experiment.yaml" on GPUs 0 and 1
 # Print command, but don't execute it.
-fgcli.py -t my_experiment.yaml train -d "0,1" --dry-run
+forgather -t my_experiment.yaml train -d "0,1" --dry-run
 
 # Start Tensorboard to monitor progress on all models in project; bind to all ports.
-fgcli.py tb --all -- --bind_all
+forgather tb --all -- --bind_all
 ```
 
 ## Contributing

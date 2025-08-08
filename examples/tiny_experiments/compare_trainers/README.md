@@ -18,15 +18,15 @@ This project compares different trainer implementations available in Forgather t
 
 ```bash
 # List available configurations
-fgcli.py ls
+forgather ls
 
 # View preprocessed configuration
-fgcli.py -t trainer.yaml pp
+forgather -t trainer.yaml pp
 
 # Run training comparison
-fgcli.py -t trainer.yaml train
-fgcli.py -t accel_trainer.yaml train
-fgcli.py -t hf_trainer.yaml train
+forgather -t trainer.yaml train
+forgather -t accel_trainer.yaml train
+forgather -t hf_trainer.yaml train
 ```
 
 ## Purpose

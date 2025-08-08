@@ -515,15 +515,15 @@ The easiest way to train is using the Forgather CLI:
 cd /path/to/your/workspace/my_project
 
 # Single GPU training
-fgcli.py -t baseline.yaml train
+forgather -t baseline.yaml train
 
 # Specify GPU device
-fgcli.py -t baseline.yaml train -d 0
+forgather -t baseline.yaml train -d 0
 
 # Run different configurations on different GPUs
-fgcli.py -t baseline.yaml train -d 0 &
-fgcli.py -t higher_lr.yaml train -d 1 &
-fgcli.py -t larger_batch.yaml train -d 2 &
+forgather -t baseline.yaml train -d 0 &
+forgather -t higher_lr.yaml train -d 1 &
+forgather -t larger_batch.yaml train -d 2 &
 ```
 
 ### Legacy Training Scripts
@@ -648,7 +648,7 @@ This example showcases:
 #### 5. RANK Environment Variable Issues
 **Problem**: Training script requires RANK environment variable
 **Solution**: 
-- Use Forgather CLI: `fgcli.py -t config.yaml train`
+- Use Forgather CLI: `forgather -t config.yaml train`
 - Or set RANK for legacy scripts: `RANK=0 python scripts/train_script.py`
 - Note: This is a temporary workaround; the training script should be fixed
 

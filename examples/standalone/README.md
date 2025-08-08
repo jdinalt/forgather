@@ -13,6 +13,6 @@ Each project contains its own configuration and can be run independently:
 
 ```bash
 cd external_workspace_example/alibi_glu_project
-fgcli.py ls
-fgcli.py -t train_alibi_glu.yaml train
+forgather ls
+forgather -t train_alibi_glu.yaml train
 ```

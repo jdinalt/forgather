@@ -326,10 +326,10 @@ Use the CLI tool to examine preprocessed configuration:
 
 ```bash
 # View preprocessed configuration
-fgcli.py -t my_config.yaml pp
+forgather -t my_config.yaml pp
 
 # View specific component
-fgcli.py -t my_config.yaml pp trainer_args
+forgather -t my_config.yaml pp trainer_args
 ```
 
 ### Common Configuration Issues
@@ -427,7 +427,7 @@ Keep trainer configuration separate from model/data configuration:
 ```yaml
 # Configuration: Multi-GPU Training with Checkpointing
 # Purpose: Train large model with automatic checkpointing
-# Usage: fgcli.py train.yaml
+# Usage: forgather train.yaml
 
 -- extends 'trainers/accel_trainer.yaml'
 

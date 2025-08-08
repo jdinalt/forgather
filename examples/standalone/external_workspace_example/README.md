@@ -99,17 +99,17 @@ Train with different configurations:
 cd alibi_glu_project
 
 # Use Forgather CLI for training (automatically detects trainer type and GPU setup)
-fgcli.py -t baseline.yaml train
-fgcli.py -t higher_lr.yaml train  
-fgcli.py -t larger_batch.yaml train
+forgather -t baseline.yaml train
+forgather -t higher_lr.yaml train  
+forgather -t larger_batch.yaml train
 
 # For multi-GPU training on specific GPUs (useful for concurrent experiments)
-fgcli.py -t baseline.yaml train -d 0           # Use GPU 0
-fgcli.py -t higher_lr.yaml train -d 1          # Use GPU 1  
-fgcli.py -t larger_batch.yaml train -d 2       # Use GPU 2
+forgather -t baseline.yaml train -d 0           # Use GPU 0
+forgather -t higher_lr.yaml train -d 1          # Use GPU 1  
+forgather -t larger_batch.yaml train -d 2       # Use GPU 2
 
 # To see what command will be run without executing
-fgcli.py -t baseline.yaml train --dry-run
+forgather -t baseline.yaml train --dry-run
 ```
 
 ## Training Configurations
@@ -139,10 +139,10 @@ This example includes several experiments to explore the architectural choices:
 Compare the models:
 ```bash
 # Train ALiBi model
-fgcli.py -t baseline.yaml train
+forgather -t baseline.yaml train
 
 # Train AbsPE model (can run concurrently on different GPU)
-fgcli.py -t abspe_comparison.yaml train -d 1
+forgather -t abspe_comparison.yaml train -d 1
 
 # Compare training curves in TensorBoard
 tensorboard --logdir ./output_models/

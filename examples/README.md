@@ -15,12 +15,12 @@ Each subdirectory contains projects with their own README files and documentatio
 
 ```bash
 # List all projects recursively
-fgcli.py ls -r
+forgather ls -r
 
 # Navigate to a specific project and explore
 cd tutorials/tiny_llama
-fgcli.py ls
-fgcli.py -t train_tiny_llama.yaml pp
+forgather ls
+forgather -t train_tiny_llama.yaml pp
 ```
 
 For detailed information about Forgather project structure and usage, see the main project documentation.

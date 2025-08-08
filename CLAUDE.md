@@ -4,36 +4,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Commands
 
-### Forgather CLI (fgcli.py) - Primary Interface
+### Forgather CLI (forgather) - Primary Interface
 
-The `fgcli.py` command is the main way to interact with Forgather projects. It's available in PATH and provides comprehensive project management capabilities.
+The `forgather` command is the main way to interact with Forgather projects. It's available in PATH and provides comprehensive project management capabilities.
 
 ```bash
 # Basic usage
-fgcli.py [-p PROJECT_DIR] [-t CONFIG_TEMPLATE] <subcommand>
+forgather [-p PROJECT_DIR] [-t CONFIG_TEMPLATE] <subcommand>
 
 # Help
-fgcli.py --help
+forgather --help
 fgcli.pu <subcommand> --help
 
 # Common project exploration commands
-fgcli.py index                    # Show project overview as markdown
-fgcli.py ls                       # Show project name, short description, and all available configurations.
-fgcli.py ls -r                    # As above, but recursively search all sub-directories for projects and list them.
-fgcli.py tlist                    # List all available template files
-fgcli.py tlist --format md        # Show template inheritance hierarchy for all templates as markdown.
-fgcli.py [-t config.yaml] pp      # Show preprocessed configuration; run before attempting to train!
-fgcli.py [-t config.yaml] trefs    # Show template inheritance hierarchy, starting with configuration template.
-fgcli.py [-t config.yaml] targets # List available output targets
+forgather index                    # Show project overview as markdown
+forgather ls                       # Show project name, short description, and all available configurations.
+forgather ls -r                    # As above, but recursively search all sub-directories for projects and list them.
+forgather tlist                    # List all available template files
+forgather tlist --format md        # Show template inheritance hierarchy for all templates as markdown.
+forgather [-t config.yaml] pp      # Show preprocessed configuration; run before attempting to train!
+forgather [-t config.yaml] trefs    # Show template inheritance hierarchy, starting with configuration template.
+forgather [-t config.yaml] targets # List available output targets
 
 # Configuration development and debugging
-fgcli.py tlist | xargs grep SEARCH_PATTERN     # Search all templates for pattern
-fgcli.py -t config.yaml pp        # Useful for diagnosing configuration errors
+forgather tlist | xargs grep SEARCH_PATTERN     # Search all templates for pattern
+forgather -t config.yaml pp        # Useful for diagnosing configuration errors
 
 # Training
-fgcli.py -t config.yaml train                     # Train with default settings
-fgcli.py -t config.yaml train -d 0,1              # Train on specific GPUs
-fgcli.py -t config.yaml train --dry-run           # Show command without executing
+forgather -t config.yaml train                     # Train with default settings
+forgather -t config.yaml train -d 0,1              # Train on specific GPUs
+forgather -t config.yaml train --dry-run           # Show command without executing
 
 # Get head and tail of training output logs
 head -n 10 output_models/my_custom_model/runs/my_custom_model_2025-06-25T03-16-59/trainer_logs.json
@@ -47,9 +47,9 @@ cat output_models/my_custom_model/runs/my_custom_model_2025-06-25T03-16-59/confi
 ```bash
 # Working with tiny_llama tutorial project
 cd examples/tutorials/tiny_llama
-fgcli.py ls                                        # List: train_tiny_llama.yaml, etc.
-fgcli.py -t train_tiny_llama.yaml pp               # Show pre-processed configuration.
-fgcli.py -t train_tiny_llama.yaml train            # Train with selected configuration.
+forgather ls                                        # List: train_tiny_llama.yaml, etc.
+forgather -t train_tiny_llama.yaml pp               # Show pre-processed configuration.
+forgather -t train_tiny_llama.yaml train            # Train with selected configuration.
 ```
 
 ### Project Installation
@@ -119,9 +119,9 @@ project_dir/
 ### Development Workflow
 
 **Configuration Validation**
-- ALWAYS run `fgcli.py ls` to validate all configurations after making changes
+- ALWAYS run `forgather ls` to validate all configurations after making changes
 - Failed configs show as "PARSE ERROR" instead of their descriptive names
-- Use `fgcli.py -t config.yaml pp` to debug preprocessing issues
+- Use `forgather -t config.yaml pp` to debug preprocessing issues
 - Check for syntax errors, missing imports, and template reference issues
 
 **Interactive Development**
@@ -207,7 +207,7 @@ Refer to these when creating new projects.
 **Common Issues and Solutions**
 - Missing import errors (e.g., `Callable` not imported): Add missing imports to affected files
 - YAML tag errors: Use `!partial` for function objects, `!singleton`/`!factory` for function calls
-- Configuration validation: Run `fgcli.py ls` to check all configs parse correctly
+- Configuration validation: Run `forgather ls` to check all configs parse correctly
 - Complex64 serialization: RoPE models may fail to save due to safetensors limitations with complex tensors
 
 **Style**

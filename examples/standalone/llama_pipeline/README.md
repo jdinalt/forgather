@@ -39,7 +39,7 @@ Remember to change the path in the project config to point to where your convert
 Train on 4 GPUs
 
 ```bash
-fgcli.py -t gpipe_4gpu.yaml train
+forgather -t gpipe_4gpu.yaml train
 ```
 
 Convert model back to HF model

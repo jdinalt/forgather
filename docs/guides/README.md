@@ -31,10 +31,10 @@ from forgather.ml import Trainer, TrainingArguments
 #### Debugging Configuration
 ```bash
 # See preprocessed configuration
-fgcli.py -t config.yaml pp
+forgather -t config.yaml pp
 
 # Validate configuration
-fgcli.py -t config.yaml validate
+forgather -t config.yaml validate
 ```
 
 #### Performance Tuning
