@@ -38,7 +38,7 @@ def parse_args(args=None):
     )
 
     parser.add_argument(
-        "-y",
+        "-t",
         "--config-template",
         type=str,
         default=None,

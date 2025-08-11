@@ -39,8 +39,19 @@ preprocess_args: &preprocess_args
 == h3('Preprocessed Datasets')
 
 -- filter trim()
--- block datasets required
+-- block datasets
+
+    -- filter trim()
+    -- block train_dataset required
 ##train_dataset: &train_dataset
+    << endblock train_dataset
+    -- endfilter
+
+
+    -- filter trim()
+    -- block eval_dataset required
 ##eval_dataset: &eval_dataset
+    << endblock eval_dataset
+    -- endfilter
 << endblock datasets
 -- endfilter

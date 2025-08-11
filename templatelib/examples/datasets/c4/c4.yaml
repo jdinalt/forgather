@@ -1,18 +1,26 @@
 -- extends "datasets/tokenized_dataset.yaml"
 
 -- block datasets_meta_config
-    -- set ns.datasets_name = "Wikepedia Dataset"
-    -- set ns.datasets_description = "Wikipedia dataset containing cleaned articles from the English Wikipedia."
-    -- set ns.datasets_source = "https://huggingface.co/datasets/wikimedia/wikipedia"
+    -- set ns.datasets_name = "C4"
+    -- set ns.datasets_description = "A colossal, cleaned version of Common Crawl's web crawl corpus. Based on Common Crawl dataset https://commoncrawl.org"
+    -- set ns.datasets_source = "https://huggingface.co/datasets/allenai/c4"
 -- endblock datasets_meta_config
 
 -- block source_datasets
 train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train_dataset_split
     args:
-        - "wikimedia/wikipedia"
-        - "20231101.en"
+        - "allenai/c4"
+        - "en"
     kwargs:
         split: "train"
+
+
+eval_dataset_split: &eval_dataset_split !singleton:datasets:load_dataset@eval_dataset_split
+    args:
+        - "allenai/c4"
+        - "en"
+    kwargs:
+        split: "validation"
 << endblock source_datasets
 
 
@@ -24,21 +32,17 @@ train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train
 train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
     dataset: *train_dataset_split
     tokenizer: *tokenizer
-    # We will reserve the first 1000 records for evaluation
-    select_range: [ 1000, -1 ]
     desc: "Tokenizing train"
     fn_kwargs:
         <<: *preprocess_args
     map_kwargs:
         batch_size: 32
-    # This thing is really big, so we will make it iterable, thus performing lazy tokenization
     to_iterable: true
     num_shards: 1024
     shuffle: true
     parallel_tokenizer: false
     #seed: 42
 << endblock train_dataset
-
 
 -- block eval_dataset
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
