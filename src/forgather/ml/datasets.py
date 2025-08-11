@@ -17,6 +17,16 @@ def normalize_range(
 ) -> range:
     """
     Convert various input types to a range
+    Args:
+        length: The length of the dataset.
+        select_range: The range to normalize. Can be:
+            - None: No range, use the full dataset.
+            - int: Use the first 'n' records.
+            - float: Use the first 'n' percent of records.
+            - Sequence: A sequence of two values, interpreted as (start, end).
+            - range: A range object to use directly.
+    Returns:
+        A range object representing the normalized range.
 
     Examples:
     ```
@@ -64,6 +74,8 @@ def normalize_range(
 class SplitSpec:
     """
     Holds a split specification, which describes and input to output split mapping.
+    This is used to specify how to process a dataset split, including the input and output splits,
+    the range of records to select, and the feature to process.
     """
 
     input_split: str
@@ -77,6 +89,16 @@ class SplitSpec:
 
 
 def default_tokenize_map_fn(element, tokenizer, feature, **kwargs):
+    """
+    Default map function for tokenizing a dataset element.
+    Args:
+        element: The dataset element to tokenize.
+        tokenizer: The tokenizer to use for tokenization.
+        feature: The feature in the element to tokenize.
+        **kwargs: Additional keyword arguments for the tokenizer.
+    Returns:
+        A dictionary with a single key "input_ids" containing the tokenized input.
+    """
     outputs = tokenizer(
         element[feature],
         **kwargs,
@@ -142,6 +164,28 @@ def block_tokenize_fn(
     combine=False,
     truncate_at=None,
 ):
+    """
+    Tokenizes the input element into blocks of tokens.
+
+    The typical use case is to tokenize text into blocks of a given size, with options for overflow,
+    stride, and special tokens. Useful when examples are too long for the model's maximum input size.
+
+    Args:
+        element: The input element to tokenize.
+        tokenizer: The tokenizer to use for tokenization.
+        feature: The feature in the element to tokenize.
+        block_size: The maximum size of each output block.
+        overflow: If True, allows overflow of input tokens into multiple outputs.
+        stride: Number of tokens to overlap between blocks.
+        min_len: Minimum length of the output blocks.
+        max_len: Maximum length of the output blocks (optional).
+        add_bos: If True, adds a beginning-of-sequence token.
+        add_eos: If True, adds an end-of-sequence token.
+        combine: If True, combines input into multiple outputs.
+        truncate_at: If provided, truncates input at the first match of this regex.
+    Returns:
+        A dictionary with a single key "input_ids" containing a list of tokenized blocks.
+    """
     assert min_len >= 1
 
     # If given a regex to truncate at, truncate at the first match.
@@ -266,19 +310,25 @@ def preprocess_dataset(
     parallel_tokenizer=True,
 ):
     """
-    Tokenize a dataset
-
-    tokenizer: The tokenizer to use
-    select_range: See normalize_range()
-    feature: The name of the feature to tokenize
-    shuffle: Shuffle the dataset first
-    desc: Description to show while processing.
-    map_fn: The map function to use
-    map_kwargs: Additional args passed to dataset.map()
-    fn_kwargs: Additional args passed to map_fn.
-        The default map function passes these args to tokenizer.__call__
-
-    returns: tokenized dataset
+    Preprocess a dataset by tokenizing it with the provided tokenizer.
+    Args:
+        dataset: The dataset to preprocess.
+        tokenizer: The tokenizer to use for tokenization.
+        select_range: Range of records to select from the dataset.
+        to_iterable: If True, convert the dataset to an iterable dataset.
+        feature: The feature in the dataset to tokenize (default is 'text').
+        shuffle: If True, shuffle the dataset before processing.
+        num_shards: Number of shards for the iterable dataset.
+        distributed_environment: Environment for distributed processing.
+        desc: Description for the progress bar.
+        seed: Random seed for shuffling.
+        shuffle_buffer_size: Buffer size for shuffling in iterable datasets.
+        map_fn: Function to apply for tokenization.
+        map_kwargs: Additional keyword arguments for the map function.
+        fn_kwargs: Additional keyword arguments for the map function.
+        parallel_tokenizer: If True, enable parallel tokenization.
+    Returns:
+        The tokenized dataset.    
     """
 
     os.environ["TOKENIZERS_PARALLELISM"] = "true" if parallel_tokenizer else "false"
@@ -347,6 +397,17 @@ def test_with_dataloader(
 ):
     """
     Simple test function to test a dataset with a standard dataloader
+    Args:
+        ds: The dataset to test
+        tokenizer: The tokenizer to use
+        collate_fn: The collate function to use
+        n: Number of batches to print
+        batch_size: Batch size for the dataloader
+        prefetch_factor: Prefetch factor for the dataloader
+        drop_last: Whether to drop the last incomplete batch
+        num_workers: Number of workers for the dataloader
+        pin_memory: Whether to pin memory for the dataloader
+        **dataloder_kwargs: Additional arguments for DataLoader
     """
     dl = DataLoader(
         ds,
@@ -365,3 +426,50 @@ def test_with_dataloader(
             print(repr(tokenizer.decode(input_ids)))
         if i == n:
             break
+
+def plot_token_length_histogram(
+        dataset,
+        tokenizer,
+        output_file=None,
+        sample_size=1000,
+        feature='text',
+        min=None,
+        max=None
+):
+    """
+    Plot a histogram of token lengths in the dataset.
+    If output_file is provided, save the histogram to that file.
+    Otherwise, display the histogram.
+    Args:
+        dataset: The dataset to analyze.
+        tokenizer: The tokenizer to use for tokenization.
+        output_file: Optional; if provided, save the histogram to this file.
+        sample_size: Number of samples to use for the histogram.
+        feature: The feature in the dataset to analyze (default is 'text').
+        min: Minimum length for the histogram (optional).
+        max: Maximum length for the histogram (optional).
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    texts = dataset.shuffle()[:sample_size][feature]
+    outputs = tokenizer(
+        texts,
+        return_length=True,
+    )
+    
+    lengths = torch.tensor(outputs['length'])
+    print(f"sample size: {len(lengths)}")
+    print(f"min: {lengths.min()}")
+    print(f"max: {lengths.max()}")
+    print(f"mean: {lengths.float().mean()}")
+    print(f"median: {lengths.float().median()}")
+    print(f"std: {lengths.float().std()}")
+    counts, bins = np.histogram(lengths.numpy(), bins=100, density=True)
+    fig, axs = plt.subplots(1, 1, figsize=(20, 5))
+    axs.stairs(counts, bins)
+    
+    if output_file:
+        plt.savefig(output_file, format="svg")
+    else:
+        plt.show()

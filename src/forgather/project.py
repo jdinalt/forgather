@@ -64,7 +64,7 @@ class Project:
         )
 
         if config_name is not None:
-            self.load_config(config_name)
+            self.load_config(config_name, **kwargs)
         else:
             self.config = None
             self.pp_config = None
