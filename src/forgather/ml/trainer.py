@@ -180,10 +180,6 @@ class Trainer(BaseTrainer):
         self.epoch_train_steps = self.args.epoch_train_steps
         self.train_ds_has_length = False
 
-        self.max_steps = 0
-        self.epoch_train_steps = self.args.epoch_train_steps
-        self.train_ds_has_length = False
-
         self.do_train = train_dataset is not None
         self.do_eval = eval_dataset is not None
 

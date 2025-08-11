@@ -82,7 +82,7 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     # Hold at this LR after warmup.
     constant_lr: 5.0e-6
 
-    # Decay rate
+    # Decay time constant
     tau: !!float 1.0e2
 << endblock lr_scheduler
 
