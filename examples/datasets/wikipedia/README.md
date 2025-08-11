@@ -4,10 +4,10 @@ Example Wikipedia dataset
 
 https://huggingface.co/datasets/wikimedia/wikipedia
 
-This demonstrates a minimal dataset configuration for a fairly large dataset. Template abstraction is kept to a minimum
-as to make it more readable.
+Wikipedia dataset test harness.
 
-The test-harness, test_dataset.py, test the dataset configuration with the specified tokenizer and can generate a token
-length historgram of the dataset.
+This includes two configurations at present. There is a "standalone" config, which demonstrates how to write a dataset
+configuration from scratch, without the template base-class. There is also a version which uses the new
+tokenized_dataset base-class.
 
-TODO: Make this dataset bit more configurable.
+This is still a work-in-progress.

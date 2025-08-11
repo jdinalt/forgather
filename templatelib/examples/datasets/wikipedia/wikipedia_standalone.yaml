@@ -11,6 +11,7 @@ train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train
     kwargs:
         split: "train"
 
+## It's common to need to modify these setting in a project.
 -- block preprocess_args
 preprocess_args: &preprocess_args
     truncation: True

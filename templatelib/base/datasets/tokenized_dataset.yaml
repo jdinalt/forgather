@@ -1,0 +1,46 @@
+-- from 'inc/formatting.jinja' import h3
+-- filter trim()
+
+-- block datasets_meta_config
+-- set datasets_ns.name = "Undefined"
+-- set datasets_ns.description = ""
+-- set datasets_ns.source = ""
+-- endblock datasets_meta_config
+
+-- endfilter
+-- block datasets_header
+# Name: {{ ns.datasets_name }}
+# Description: {{ ns.datasets_description }}
+# Source: {{ ns.datasets_source }}
+<< endblock datasets_header
+
+
+== h3('Dataset Splits')
+
+-- filter trim()
+-- block source_datasets
+## Raw dataset splits go here
+<< endblock source_datasets
+-- endfilter
+
+
+== h3('Preprocess Dataset Args')
+
+-- filter trim()
+-- block preprocess_args
+## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
+preprocess_args: &preprocess_args
+    truncation: True
+<< endblock preprocess_args
+
+-- endfilter
+
+
+== h3('Preprocessed Datasets')
+
+-- filter trim()
+-- block datasets required
+##train_dataset: &train_dataset
+##eval_dataset: &eval_dataset
+<< endblock datasets
+-- endfilter

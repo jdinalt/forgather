@@ -38,6 +38,14 @@ def parse_args(args=None):
     )
 
     parser.add_argument(
+        "-y",
+        "--config-template",
+        type=str,
+        default=None,
+        help="Config template to use for the project",
+    )
+
+    parser.add_argument(
         "--sample-eval",
         action="store_true",
         help="If set, sample from the eval dataset instead of the train dataset",
@@ -48,7 +56,14 @@ def parse_args(args=None):
 
 def main():
     args = parse_args()
-    proj = Project(tokenizer_path=args.tokenizer_path)
+    config_name = args.config_template
+    if args.config_template:
+        # Ensure config template is just the name, not a path
+        args.config_template = os.path.basename(args.config_template)
+    else:
+        # Use default config template
+        args.config_template = "" 
+    proj = Project(args.config_template, tokenizer_path=args.tokenizer_path)
     
     print("Preprocessed configuration:")
     print(proj.pp_config)
