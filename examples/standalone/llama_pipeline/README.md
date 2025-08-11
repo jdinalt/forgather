@@ -52,8 +52,6 @@ At present, this works as a proof-of-concept, but still needs considerable refin
 
 ### Issues
 
-The appears to be a persistant CPU memory leak. The cause is TBD.
-
 It would appear that activation checkpointing does not work with DPP at present. Hopefully this is something we can get working!
 
 The fixed batch introduces a few difficulties. In theory, this can be partially mitigated with Flex Attention, which is on the TODO list.

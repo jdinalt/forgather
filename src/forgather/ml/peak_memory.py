@@ -21,6 +21,10 @@ class PeakMemory(TrainerCallback):
     This callback is designed to help diagnose and optimize GPU memory consumption in PyTorch-based training loops,
     especially when using distributed training. It records the maximum memory allocated on each GPU device throughout
     the training process, and can optionally log detailed memory statistics and write them to TensorBoard for visualization.
+    
+    IMPORTANT: Memory history recording is disabled by default to prevent memory leaks.
+    The torch.cuda.memory._record_memory_history feature can consume 1GB+ of memory during training.
+    
     Key Features:
     - Tracks the peak CUDA memory allocated on each GPU during training.
     - Supports both single-GPU and multi-GPU (distributed) training environments.
@@ -31,6 +35,8 @@ class PeakMemory(TrainerCallback):
         summary_writer (SummaryWriter, optional): TensorBoard SummaryWriter instance for logging memory statistics.
         show_details (bool, optional): If True, logs detailed CUDA memory statistics at each logging step and at the end of training.
         do_log (bool, optional): If True, logs peak memory usage at each logging step (on_log callback).
+        enable_memory_history (bool, optional): If True, enables comprehensive CUDA memory history recording. 
+                                               WARNING: This can consume 1GB+ memory and cause memory leaks.
     Attributes:
         rank (int): The process rank in distributed training.
         world_size (int): The total number of processes in distributed training.
@@ -38,6 +44,7 @@ class PeakMemory(TrainerCallback):
         enabled (bool): Whether CUDA is available and memory tracking is enabled.
         show_details (bool): Whether to log detailed memory statistics.
         do_log (bool): Whether to log memory usage on each log step.
+        enable_memory_history (bool): Whether to enable comprehensive memory history recording.
         max_allocated (int): The maximum CUDA memory allocated during training (in bytes).
     Methods:
         on_train_begin: Initializes memory tracking at the start of training.
@@ -46,11 +53,12 @@ class PeakMemory(TrainerCallback):
         _format_peak_memory: Formats memory usage in human-readable GB units.
     """
 
-    def __init__(self, summary_writer=None, show_details=False, do_log=False):
+    def __init__(self, summary_writer=None, show_details=False, do_log=False, enable_memory_history=False):
         """
         :param summary_writer: Optional TensorBoard SummaryWriter to log peak memory
         :param show_details: Whether to log detailed memory stats
         :param do_log: Whether to log on each log step
+        :param enable_memory_history: Whether to enable CUDA memory history recording (WARNING: memory intensive)
         """
         super().__init__()
         self.rank = int(os.environ.get("RANK", 0))
@@ -59,12 +67,16 @@ class PeakMemory(TrainerCallback):
         self.enabled = torch.cuda.is_available()
         self.show_details = show_details
         self.do_log = do_log
+        self.enable_memory_history = enable_memory_history
 
     def on_train_begin(self, args, state, control, **kwargs):
         if not self.enabled:
             return
         self.max_allocated = 0
-        torch.cuda.memory._record_memory_history(enabled="all")
+        # This feature can consume 1GB+ of memory during training
+        if self.enable_memory_history:
+            logger.warning(f"RANK{self.rank}: Enabling CUDA memory history recording - this can consume 1GB+ memory!")
+            torch.cuda.memory._record_memory_history(enabled="all")
 
     @staticmethod
     def _format_peak_memory(max_allocated):
@@ -131,7 +143,9 @@ class PeakMemory(TrainerCallback):
             return
         max_allocated = torch.cuda.max_memory_allocated()
         self.max_allocated = max(self.max_allocated, max_allocated)
-        torch.cuda.memory._record_memory_history(enabled=None)
+        if self.enable_memory_history:
+            torch.cuda.memory._record_memory_history(enabled=None)
+            logger.info(f"RANK{self.rank}: CUDA memory history recording disabled")
         logger.info(
             f"RANK{self.rank} MAX CUDA MEMORY ALLOCATED: {self._format_peak_memory(self.max_allocated)}"
         )
