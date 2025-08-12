@@ -90,7 +90,7 @@ def dataset_cmd(args):
             print("Tokenized train dataset:")
             print(train_dataset)
 
-            eval_dataset = proj("train_dataset")
+            eval_dataset = proj("eval_dataset")
             print("Eval dataset:")
             print(eval_dataset)
 

@@ -1,0 +1,26 @@
+-- extends "datasets/books/books.yaml"
+## This is an example of how to use "load_from_disk()" for a large local dataset.
+-- block datasets_meta_config
+    == super()
+    -- set ns.datasets_name = "[local] Togethercomputer RedPajama 1T-Book"
+    -- set ns.datasets_description = "A locally saved version of the RPJ 1T-Book dataset"
+    ## Be sure to set datasets_dir to where your datasets are stored!
+    ## And set these to match the directory names containing the datasets in your config_meta
+    ##-- set ns.datasets_train_path = joinpath(ns.datasets_dir, "books-1t-train")
+    ##-- set ns.datasets_eval_path = joinpath(ns.datasets_dir, "bools-1t-eval")
+-- endblock datasets_meta_config
+
+-- block source_datasets
+train_dataset_split: &train_dataset_split !singleton:operator:getitem 
+    - !singleton:datasets:load_from_disk@train_dataset_split
+        - "{{ ns.datasets_train_path }}"
+    - "train"
+
+# This is a custom subset of the main dataset for evaluation.
+# You can obviously substitute whatever seems appropriate here.
+eval_dataset_split: &eval_dataset_split !singleton:operator:getitem
+    - !singleton:datasets:load_from_disk@eval_dataset_split
+        - "{{ ns.datasets_train_path }}"
+    - "train"
+<< endblock source_datasets
+
