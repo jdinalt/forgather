@@ -7,6 +7,8 @@
     -- set ns.datasets_source = "https://huggingface.co/datasets/togethercomputer/RedPajama-Data-1T"
 -- endblock datasets_meta_config
 
+-- set block_tokenizer_src = joinpath(ns.forgather_dir, 'examples', 'datasets', 'src', 'block_tokenizer.py')
+
 -- block source_datasets
 # Note: Only the local one has been tested, as redownloading this beast for testing is not practical right now.
 # This is /probably/ correct. If not, let me know.
@@ -30,7 +32,7 @@ preprocess_args: &preprocess_args
 train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
     dataset: *train_dataset_split
     tokenizer: *tokenizer
-    map_fn: !lambda:forgather.ml.datasets:block_tokenize_fn
+    map_fn: !partial:{{ block_tokenizer_src }}:block_tokenize_fn
     desc: "Tokenizing train"
     fn_kwargs:
         <<: *preprocess_args
@@ -48,7 +50,7 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
     dataset: *train_dataset_split
     tokenizer: *tokenizer
-    map_fn: !lambda:forgather.ml.datasets:block_tokenize_fn
+    map_fn: !partial:{{ block_tokenizer_src }}:block_tokenize_fn
     # Use first 1000 records for evaluation
     select_range: 10
     desc: "Tokenizing eval"
