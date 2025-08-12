@@ -32,6 +32,7 @@ meta: !dict
     config_name: "{{ ns.datasets_name }}"
     config_description: "{{ ns.datasets_description }}"
     config_class: "{{ ns.config_class }}"
+    main_feature: "{{ ns.datasets_main_feature }}"
 << endblock meta_output
 
 

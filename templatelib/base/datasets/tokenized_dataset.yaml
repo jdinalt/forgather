@@ -5,6 +5,7 @@
     -- set ns.datasets_name = "Undefined"
     -- set ns.datasets_description = ""
     -- set ns.datasets_source = ""
+    -- set ns.datasets_main_feature = "text"
 -- endblock datasets_meta_config
 
 -- endfilter

@@ -146,7 +146,7 @@ model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_t
 
 #-------------------- project.dataset_config --------------------
 ## Note: Switch to 'datasets/tinystories/tinystories.yaml' for the full dataset.
--- extends 'datasets/samantha.yaml'
+-- extends 'datasets/samantha/samantha.yaml'
 
 -- block tokenize_args
     == super()

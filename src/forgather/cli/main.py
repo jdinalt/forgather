@@ -47,7 +47,7 @@ def parse_args(args=None):
     subparsers = parser.add_subparsers(dest="command", help="subcommand help")
 
     """ index """
-    index_parser = subparsers.add_parser("index", help="Show project index")
+    subparsers.add_parser("index", help="Show project index")
 
     """ ls """
     ls_parser = subparsers.add_parser("ls", help="List available configurations")
@@ -60,10 +60,10 @@ def parse_args(args=None):
     )
 
     """ meta """
-    meta_parser = subparsers.add_parser("meta", help="Show meta configuration")
+    subparsers.add_parser("meta", help="Show meta configuration")
 
     """ targets """
-    targets_parser = subparsers.add_parser("targets", help="Show output targets")
+    subparsers.add_parser("targets", help="Show output targets")
 
     """ tlist """
     all_templates_parser = subparsers.add_parser(
@@ -183,6 +183,69 @@ def parse_args(args=None):
         help="All arguments after -- will be forwarded as torchrun arguments.",
     )
 
+    """ dataset """
+    ds_parser = subparsers.add_parser(
+        "dataset", help="Dataset preprocessing and testing"
+    )
+
+    ds_parser.add_argument(
+        "-T",
+        "--tokenizer-path",
+        type=str,
+        default=None,
+        help="Path to tokenizer to test",
+    )
+
+    ds_parser.add_argument(
+        "--pp",
+        action="store_true",
+        help="Show preprocessed configuration",
+    )
+
+    ds_parser.add_argument(
+        "-H",
+        "--histogram-path",
+        type=str,
+        default=None,
+        help="Path to save the token-length histogram plot (.svg), if provided",
+    )
+
+    ds_parser.add_argument(
+        "--use-split",
+        action="store_true",
+        help="Perform historgram with split, rather than the tokenized dataset",
+    )
+
+    ds_parser.add_argument(
+        "--histogram-samples",
+        type=int,
+        default=1000,
+        help="Number of samples to use for histogram",
+    )
+
+    ds_parser.add_argument(
+        "-c",
+        "--chat-template",
+        type=str,
+        default=None,
+        help="Path to chat template",
+    )
+
+    ds_parser.add_argument(
+        "-n",
+        "--examples",
+        type=int,
+        default=None,
+        help="Number of examples to print",
+    )
+
+    ds_parser.add_argument(
+        "-s",
+        "--sample-eval",
+        action="store_true",
+        help="If set, sample from the eval dataset instead of the train dataset",
+    )
+
     return parser.parse_args(args)
 
 
@@ -216,5 +279,8 @@ def main():
             construct_cmd(args)
         case "train":
             train_cmd(args)
+        case "dataset":
+            from .dataset import dataset_cmd
+            dataset_cmd(args)
         case _:
             index_cmd(args)

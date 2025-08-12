@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from types import NoneType
 
+import logging
 import torch
 from datasets import DatasetDict, Dataset
 from torch.utils.data import DataLoader
@@ -451,14 +452,20 @@ def plot_token_length_histogram(
     """
     import matplotlib.pyplot as plt
     import numpy as np
+    from itertools import islice
 
-    texts = dataset.shuffle()[:sample_size][feature]
-    outputs = tokenizer(
-        texts,
-        return_length=True,
-    )
+    # Suppress matplotlib warnings about missing fonts
+    logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)
     
-    lengths = torch.tensor(outputs['length'])
+    if tokenizer:
+        samples = [sample[feature] for sample in islice(dataset.shuffle(), sample_size)]
+        outputs = tokenizer(
+            samples,
+            return_length=True,
+        )
+        lengths = torch.tensor(outputs['length'])
+    else:
+        lengths = torch.tensor([len(sample['input_ids']) for sample in islice(dataset.shuffle(), sample_size)])
     print(f"sample size: {len(lengths)}")
     print(f"min: {lengths.min()}")
     print(f"max: {lengths.max()}")

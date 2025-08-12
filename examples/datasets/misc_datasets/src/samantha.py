@@ -26,7 +26,7 @@ def samantha_conversation(conversation):
     return messages
 
 def samantha_map_function(input_batch, tokenizer, chat_template, template_args, tokenizer_args):
-    conversations = [ 
+    conversations = [
         chat_template.render(
             messages=samantha_conversation(batch),
             **template_args,
@@ -34,7 +34,7 @@ def samantha_map_function(input_batch, tokenizer, chat_template, template_args, 
     ]
     if not tokenizer:
         return {"text": conversations}
-    
+
     outputs = tokenizer(
         conversations,
         **tokenizer_args,
@@ -51,8 +51,8 @@ def preprocess_samantha(
     desc="Tokenizing Dataset",
     parallel_tokenizer=False,
 ):
-    os.environ["TOKENIZERS_PARALLELISM"] = "true" if parallel_tokenizer else "false"
-    
+    #os.environ["TOKENIZERS_PARALLELISM"] = "true" if parallel_tokenizer else "false"
+
     if tokenizer_args is None:
         tokenizer_args = dict()
     if map_args is None:
