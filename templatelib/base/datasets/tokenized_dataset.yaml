@@ -2,9 +2,9 @@
 -- filter trim()
 
 -- block datasets_meta_config
--- set datasets_ns.name = "Undefined"
--- set datasets_ns.description = ""
--- set datasets_ns.source = ""
+    -- set ns.datasets_name = "Undefined"
+    -- set ns.datasets_description = ""
+    -- set ns.datasets_source = ""
 -- endblock datasets_meta_config
 
 -- endfilter

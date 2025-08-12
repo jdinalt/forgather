@@ -1,6 +1,7 @@
 -- extends "datasets/tokenized_dataset.yaml"
 
 -- block datasets_meta_config
+    == super()
     -- set ns.datasets_name = "Wikepedia Dataset"
     -- set ns.datasets_description = "Wikipedia dataset containing cleaned articles from the English Wikipedia."
     -- set ns.datasets_source = "https://huggingface.co/datasets/wikimedia/wikipedia"

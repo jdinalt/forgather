@@ -1,0 +1,14 @@
+-- extends "datasets/tinystories/tinystories.yaml"
+
+-- block datasets_meta_config
+    == super()
+    -- set ns.datasets_name = "Tiny Stories Abridged"
+    -- set ns.datasets_description = "First 10% of Tiny Stories dataset."
+    -- set ns.datasets_source = "https://arxiv.org/abs/2305.07759"
+-- endblock datasets_meta_config
+
+
+-- block train_dataset
+    == super()
+    select_range: 0.1
+<< endblock train_dataset
