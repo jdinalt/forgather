@@ -8,7 +8,7 @@
     -- set ns.datasets_main_feature = "conversations"
 -- endblock datasets_meta_config
 
--- set samantha_src = joinpath(ns.forgather_dir, 'examples', 'datasets', 'misc_datasets', 'src', 'samantha.py')
+-- set samantha_src = joinpath(ns.forgather_dir, 'examples', 'datasets', 'src', 'samantha.py')
 -- set samantha_default_chat_template = joinpath(ns.forgather_dir, 'chat_templates', 'chatml.jinja')
 -- set samantha_chat_template = chat_template | default(samantha_default_chat_template)
 

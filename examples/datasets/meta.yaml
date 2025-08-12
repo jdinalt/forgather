@@ -4,5 +4,5 @@
 name: "Wikipedia Dataset"
 description: "Test harness for Wikipedia dataset"
 config_prefix: "configs"
-default_config: "wikipedia.yaml"
+default_config: "tinystories_abridged.yaml"
 << endblock configs
