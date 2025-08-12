@@ -270,7 +270,7 @@ Create `templates/project.yaml` using the split document approach for complex in
 -- endblock model_definition
 
 -- block datasets_definition
-    -- include 'datasets/tiny_stories_abridged.yaml'
+    -- include 'datasets/tinystories/tinystories_abridged.yaml'
 -- endblock datasets_definition
 
 -- block trainer_definition

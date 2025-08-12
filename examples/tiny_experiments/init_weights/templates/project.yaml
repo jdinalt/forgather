@@ -59,8 +59,8 @@
 << endblock model_config
 
 #-------------------- project.dataset_config --------------------
--- extends 'datasets/tiny_stories_abridged.yaml'
-##-- extends 'datasets/tiny_stories.yaml'
+-- extends 'datasets/tinystories/tinystories_abridged.yaml'
+##-- extends 'datasets/tinystories/tinystories.yaml'
 
 
 -- block tokenize_args

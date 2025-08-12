@@ -59,8 +59,8 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 
 
 #-------------------- project.dataset_config --------------------
-##-- extends 'datasets/tiny_stories_abridged.yaml'
--- extends 'datasets/tiny_stories.yaml'
+##-- extends 'datasets/tinystories/tinystories_abridged.yaml'
+-- extends 'datasets/tinystories/tinystories.yaml'
 
 
 #-------------------- project.callbacks --------------------

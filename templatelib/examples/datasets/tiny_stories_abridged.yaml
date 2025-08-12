@@ -1,8 +1,0 @@
--- extends 'datasets/tiny_stories.yaml'
-
--- block datasets_meta_config
-    == super()
-    -- set datasets_ns.name = "TinyStories Abridged"
-    -- set datasets_ns.description = "Abridged to 10% of original size; " + datasets_ns.description
-    -- set datasets_ns.train_select_range = 0.1
--- endblock datasets_meta_config

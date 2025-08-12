@@ -107,7 +107,7 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 
 
 #-------------------- project.dataset --------------------
--- extends 'datasets/tiny_stories_abridged.yaml'
+-- extends 'datasets/tinystories/tinystories_abridged.yaml'
 
 -- block tokenize_args
 ## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
