@@ -1,0 +1,86 @@
+-- extends 'projects/tiny.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.create_new_model = True
+    -- set ns.save_model = False
+-- endblock config_metadata
+
+-- block trainer_definition
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
+
+-- block datasets_definition
+    -- include 'project.dataset_config'
+-- endblock datasets_definition
+
+
+-- block trainer_callbacks
+    -- include 'project.callbacks'
+<< endblock trainer_callbacks
+
+
+-- block construct_new_model
+    -- include 'project.model'
+-- endblock construct_new_model
+
+-- block optimizer
+optimizer: &optimizer !lambda:forgather.ml.optim.adafactor:Adafactor
+    lr: 2.0e-4
+    weight_decay: 0.01
+    
+<< endblock optimizer
+
+
+-- block datacollator
+# To control for sequence length, always use the same length -- padding out to max_length, if short, and 
+# truncating if long.
+data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
+    tokenizer: *tokenizer
+    return_tensors: pt
+    # Comment out this line to use variable length batches.
+    padding: "max_length"
+    truncation: True
+    max_length: 768
+-- endblock datacollator
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+
+-- block trainer_args
+    == super()
+    # project overrides
+    per_device_train_batch_size: 4
+    per_device_eval_batch_size: 8
+    logging_steps: 10
+    eval_steps: 100
+    max_steps: 100
+    # See: https://docs.pytorch.org/docs/stable/generated/torch.nn.attention.SDPBackend.html
+    sdpa_backend: "efficient"
+    # Set on NVIDIA Ampere or later GPUs when training in 32-bit precision for a significant speedup
+    # float32_matmul_precision: "high"
+-- endblock trainer_args
+
+#-------------------- project.dataset_config --------------------
+-- extends 'datasets/tinystories/tinystories_abridged.yaml'
+##-- extends 'datasets/tinystories/tinystories.yaml'
+
+
+#-------------------- project.callbacks --------------------
+-- extends 'callbacks/loggers.yaml'
+## Add experiment loggers to the callbacks list.
+## The parent creates a Tensor Board SummaryWriter, which we can use.
+
+-- block callback_list
+    == super()
+    - !singleton:forgather.ml.peak_memory:PeakMemory
+        show_details: True
+        do_log: True
+        summary_writer: *summary_writer
+<< endblock callback_list
+
+
+#-------------------- project.model --------------------
+-- extends 'models/full_deepone.yaml'

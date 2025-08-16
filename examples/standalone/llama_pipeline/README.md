@@ -52,9 +52,7 @@ At present, this works as a proof-of-concept, but still needs considerable refin
 
 ### Issues
 
-It would appear that activation checkpointing does not work with DPP at present. Hopefully this is something we can get working!
-
-The fixed batch introduces a few difficulties. In theory, this can be partially mitigated with Flex Attention, which is on the TODO list.
+The fixed batch size introduces a few difficulties. In theory, this can be partially mitigated with Flex Attention, which is on the TODO list.
 
 vbvz_4gpu.yaml: Presently does not support a separate inference model, which makes evalution slow. Otherwise, works very well.
 zero_bubble_4gpu.yaml: This works reasonably well, except for a non-deterministic jump in CUDA memory when using the separate inference model. As a work around, it's using the train model for inference, which is slow.

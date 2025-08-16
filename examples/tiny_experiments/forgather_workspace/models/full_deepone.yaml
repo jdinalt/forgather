@@ -1,0 +1,15 @@
+-- extends 'models/deepone.yaml'
+
+-- block model_meta_config
+    == super()
+    -- set model_def.name = "Full Deep One"
+    -- set model_def.description = "Full Deepone, with Tiny Stories 8K tokenizer."
+    -- set model_def.short_name = "full_deepone"
+<< endblock model_meta_config
+
+
+-- block model_tokenizer
+    ## Use a smaller tokenizer.
+    -- include 'tokenizers/tiny_8k.yaml'
+<< endblock model_tokenizer
+

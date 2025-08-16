@@ -69,6 +69,11 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+def optimzer_hook(optimizer, parameter):
+    optimizer.step()
+    optimizer.zero_grad()
+
+
 class Trainer(BaseTrainer):
     """
     This transformer trainer is a simplified version of the HF Trainer class
@@ -83,7 +88,7 @@ class Trainer(BaseTrainer):
     def __init__(
         self,
         *,
-        args,
+        args: TrainingArguments,
         optimizer_factory: Optional[Callable] = None,
         # Alernative, for compatibility with transformers.Trainer
         optimizer_cls_and_kwargs: Optional[
@@ -92,6 +97,7 @@ class Trainer(BaseTrainer):
         lr_scheduler_factory: Optional[Callable] = None,
         **kwargs,
     ):
+        assert isinstance(args, TrainingArguments)
         # HF Trainer compatibility.
         if not optimizer_factory:
             if not optimizer_cls_and_kwargs:
@@ -115,6 +121,11 @@ class Trainer(BaseTrainer):
         assert (self.model is not None) or (
             self.model_init is not None
         ), "Either a model or a model constructor must be specified."
+
+        assert (
+            self.args.max_grad_norm is None or not self.args.fuse_optim_with_backward
+        ), "max_grad_norm is incompatible with fuse_optim_with_backward"
+
         if self.data_collator is None:
             self.data_collator = torch.utils.data.default_collate
 
@@ -148,19 +159,26 @@ class Trainer(BaseTrainer):
         if self.args.seed != -1:
             set_seed(self.args.seed)
 
+        if self.args.activation_memory_budget:
+            logger.info(
+                f"Setting memory budget to {self.args.activation_memory_budget}"
+            )
+            torch._functorch.config.activation_memory_budget = (
+                self.args.activation_memory_budget
+            )
+            
         self._init_dataloaders(train_dataset, eval_dataset)
         self._prepare_model()
         if self.args.torch_compile:
             logger.info(
-                "Compiling model",
-                self.args.torch_compile_backend,
-                self.args.torch_compile_mode,
+                f"Compiling model: backend={self.args.torch_compile_backend}, mode={self.args.torch_compile_mode},"
+                f"dynamic={self.args.torch_compile_dynamic}, fullgraph={self.args.torch_compile_full_graph},"
+                f"activation_memory_budget={self.args.activation_memory_budget}"
             )
-            self.model.compile(
-                backend=self.args.torch_compile_backend,
-                mode=self.args.torch_compile_mode,
-                dynamic=True,
-            )
+            
+            if os.environ.get("PARTITIONER_MEMORY_BUDGET_PARETO", 0):
+                logger.warning("Computing paritioner Pareto memory budget -- be patient, this takes time...")
+            self._compile_model()
 
         if self.do_train:
             self._init_optimizer()
@@ -173,6 +191,14 @@ class Trainer(BaseTrainer):
                 self.load_checkpoint()
 
         self._dispatch_event("on_init_end")
+
+    def _compile_model(self):
+        self.model.compile(
+            backend=self.args.torch_compile_backend,
+            mode=self.args.torch_compile_mode,
+            dynamic=self.args.torch_compile_dynamic,
+            fullgraph=self.args.torch_compile_full_graph,
+        )
 
     def _init_dataloaders(self, train_dataset, eval_dataset) -> None:
         # _prepare() sub-step 1
@@ -208,6 +234,14 @@ class Trainer(BaseTrainer):
         # _prepare() sub-step 3
         if self.optimizer is None:
             self.optimizer = self.optimizer_factory(self.model.named_parameters())
+
+            # Combine backward with optimizer step?
+            if self.args.fuse_optim_with_backward:
+                hook = partial(optimzer_hook, self.optimizer)
+                for p in self.model.parameters():
+                    if p.requires_grad:
+                        p.register_post_accumulate_grad_hook(hook)
+
         if self.lr_scheduler is None:
             if self.lr_scheduler_factory is not None:
                 self.lr_scheduler = self.lr_scheduler_factory(
@@ -232,9 +266,6 @@ class Trainer(BaseTrainer):
 
     # @override
     def _train_loop(self) -> TrainOutput:
-        """
-        The inner training loop
-        """
         self._dispatch_event("on_train_begin")
 
         start_time = time.time()
@@ -379,11 +410,13 @@ class Trainer(BaseTrainer):
 
         self._backward(loss)
         self._clip_grad_norm(self.args.max_grad_norm)
-        self.optimizer.step()
+        if not self.args.fuse_optim_with_backward:
+            self.optimizer.step()
+            self.optimizer.zero_grad()
         self._dispatch_event("on_optimizer_step")
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
-        self.optimizer.zero_grad()
+
         return loss.detach().mean()
 
     def _backward(self, loss):

@@ -7,9 +7,11 @@ from typing import (
 from types import NoneType
 import os
 from abc import abstractmethod
+from contextlib import ExitStack
 
 import logging
 import torch
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.utils.data import Dataset
 from transformers import (
     PreTrainedModel,
@@ -103,6 +105,14 @@ class BaseTrainer(ExtensibleTrainer):
         self.is_world_process_zero = True
         self.num_processes = 1
 
+        if self.args.detect_anomaly:
+            logger.warning("Enabling autograd detect anomaly; expect performance degradation")
+            torch.autograd.set_detect_anomaly(True)
+
+        if self.args.float32_matmul_precision is not None:
+            logger.info(f"Setting float32_matmul_precision to \"{self.args.float32_matmul_precision}\"")
+            torch.set_float32_matmul_precision(self.args.float32_matmul_precision)
+
         self._post_init()
         self._validate_dirs()
 
@@ -124,8 +134,20 @@ class BaseTrainer(ExtensibleTrainer):
         """
         The main entry point to start training the model.
         """
-        self._prepare(train_dataset=self.train_dataset, eval_dataset=self.eval_dataset)
-        return self._train_loop()
+        with ExitStack() as stack:
+            backends = self._get_sdpa_backends(self.args.sdpa_backend)
+            if backends:
+                logger.info(
+                    f"sdpa_backends={backends}, set_priority={self.args.sdpa_set_priority}"
+                )
+                stack.enter_context(
+                    sdpa_kernel(backends, set_priority=self.args.sdpa_set_priority)
+                )
+
+            self._prepare(
+                train_dataset=self.train_dataset, eval_dataset=self.eval_dataset
+            )
+            return self._train_loop()
 
     def evaluate(
         self, eval_dataset: Optional[Dataset] = None, **kwargs
@@ -136,8 +158,14 @@ class BaseTrainer(ExtensibleTrainer):
         if eval_dataset is None:
             eval_dataset = self.eval_dataset
 
-        self._prepare(train_dataset=None, eval_dataset=eval_dataset)
-        return self._eval_loop()
+        with ExitStack() as stack:
+            backends = self._get_sdpa_backends(self.args.sdpa_backend)
+            if backends:
+                stack.enter_context(
+                    sdpa_kernel(backends, set_priority=self.args.sdpa_set_priority)
+                )
+            self._prepare(train_dataset=None, eval_dataset=eval_dataset)
+            return self._eval_loop()
 
     def save_model(self, output_dir: os.PathLike | str = None) -> None:
         """
@@ -472,6 +500,35 @@ class BaseTrainer(ExtensibleTrainer):
 
         except Exception as e:
             logger.error(f"Failed to load model weights from {checkpoint_path}: {e}")
+
+    @staticmethod
+    def _get_sdpa_backends(
+        backend: List[str | SDPBackend] | str | SDPBackend | None,
+    ) -> List[SDPBackend] | SDPBackend | None:
+        """
+        Normalize various SDPA backend specification types
+        """
+        if backend is None:
+            return None
+
+        sdpa_mapping = {
+            "math": SDPBackend.MATH,
+            "flash": SDPBackend.FLASH_ATTENTION,
+            "efficient": SDPBackend.EFFICIENT_ATTENTION,
+            "cudnn": SDPBackend.CUDNN_ATTENTION,
+        }
+
+        def get_backend(b):
+            if isinstance(b, SDPBackend):
+                return b
+            return sdpa_mapping[b]
+
+        if isinstance(backend, str):
+            return get_backend(backend)
+        elif isinstance(backend, list):
+            return [get_backend(i) for i in backend]
+        else:
+            raise ValueError("sdpa-backend must be a List[str] or str")
 
     def _dispatch_event(self, event: str, **kwargs):
         """

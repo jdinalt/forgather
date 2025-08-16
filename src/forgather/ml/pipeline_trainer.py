@@ -7,10 +7,13 @@ import logging
 import math
 import copy
 import os
-
-from torch.utils.data import DataLoader
+from functools import partial
+import re
 
 import torch
+from torch.utils.data import DataLoader
+from torch.export.unflatten import InterpreterModule, UnflattenedModule
+from torch.fx import GraphModule
 from torch import Tensor
 from torch import distributed
 import torch.distributed as dist
@@ -33,7 +36,7 @@ from transformers import (
 )
 
 from .trainer_types import TrainingArguments, TrainerState
-from .trainer import Trainer, set_train
+from .trainer import Trainer, optimzer_hook
 from .distributed import DistributedEnvironment, main_process_first
 from .sharded_checkpoint import (
     validate_output_dir,
@@ -81,6 +84,45 @@ class PipelineTrainingArguments(TrainingArguments):
     stages_per_rank: int = 1
     pp_stage_type: str = "loop"
     is_multistage: bool = False
+    enable_activation_checkpoints: bool = False
+
+
+def insert_activation_checkpoints(module, targets):
+    targets_re = re.compile(targets)
+
+    for name, submod in module.named_modules():
+        if isinstance(
+            submod,
+            (
+                GraphModule,
+                InterpreterModule,
+                UnflattenedModule,
+            ),
+        ):
+            dirty = False
+            logger.debug(f"Processing Checkpoint for: {name}, {type(submod)}")
+            for node in submod.graph.nodes:
+                if node.op == "call_module":
+                    if not targets_re.match(node.target):
+                        continue
+                    dirty = True
+                    logger.debug(f"fixing up node {node.target}")
+                    node.args = (submod.get_submodule(node.target), *node.args)
+                    node.kwargs = dict(use_reentrant=False, **node.kwargs)
+                    node.target = torch.utils.checkpoint.checkpoint
+                    node.op = "call_function"
+
+            if not dirty:
+                continue
+
+            if isinstance(submod, GraphModule):
+                graph_module = submodule
+                submod.graph.lint()
+                submod.recompile()
+            else:
+                submod.graph.lint()
+                # Recompiing appears to trigger a syntax error!? By default, these
+                # are interpreted, so recompilation is not required, but why the error?
 
 
 def missing_buffers(mod):
@@ -231,15 +273,17 @@ class PipelineTrainer(Trainer):
     def __init__(
         self,
         *,
+        args: PipelineTrainingArguments,
         distributed_env: DistributedEnvironment,
         loss_fn: Callable,
         pipe_schedule_factory: Callable = ScheduleGPipe,
         **kwargs,
     ):
+        assert isinstance(args, PipelineTrainingArguments)
         self.denv = distributed_env
         self.loss_fn = loss_fn
         self.pipe_schedule_factory = pipe_schedule_factory
-        super().__init__(**kwargs)
+        super().__init__(args=args, **kwargs)
 
     # @override
     def _post_init(self) -> None:
@@ -283,12 +327,6 @@ class PipelineTrainer(Trainer):
                     self.args.split_spec[key] = SplitPoint.END
                 case _:
                     raise Exception(f"Unknown split-point type {value} for {key}")
-        self.sdpa_priority = [
-            torch.nn.attention.SDPBackend.FLASH_ATTENTION,
-            torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION,
-            torch.nn.attention.SDPBackend.CUDNN_ATTENTION,
-            torch.nn.attention.SDPBackend.MATH,
-        ]
 
     def _print_modules(self, modules):
         if self.args.debug_model_params:
@@ -308,6 +346,7 @@ class PipelineTrainer(Trainer):
         self.train_scheduler = None
         self.model = None
         self.pipeline_modules = None
+        self.eval_pipeline_modules = None
         self.eval_scheduler = None
         self.optimizer = None
         self.lr_scheduler = None
@@ -396,6 +435,11 @@ class PipelineTrainer(Trainer):
             stages_arg, self.args.pipeline_chunks, loss_fn=self.loss_fn
         )
 
+        if self.args.enable_activation_checkpoints:
+            # Enable activation checkpointing for all modules in the pipeline.
+            for mod in pipeline_modules:
+                insert_activation_checkpoints(mod, r"^layers\.(\d+)$")
+
         self.pipeline_modules = pipeline_modules
         self.stage_indices = stage_indices[self.denv.rank]
 
@@ -429,6 +473,19 @@ class PipelineTrainer(Trainer):
             model = self.model_init()
 
         return model
+    
+    def _compile_model(self):
+        pipelines = [ self.pipeline_modules ]
+        if not self.args.unified_model:
+            pipelines.append(self.eval_pipeline_modules)
+        for pipeline_modules in pipelines:
+            for mod in pipeline_modules:
+                mod.compile(
+                    backend=self.args.torch_compile_backend,
+                    mode=self.args.torch_compile_mode,
+                    dynamic=self.args.torch_compile_dynamic,
+                    fullgraph=self.args.torch_compile_full_graph,
+                )
 
     def _get_example(self, example_dataloader):
         # Note that pipeline parallel requires all batches to have the same shape!
@@ -467,7 +524,7 @@ class PipelineTrainer(Trainer):
                 pipe = build_pipeline(*args, **kwargs)
 
         if rank == 0:
-            logger.info(pipe)
+            logger.debug(pipe)
             if self.args.debug_split_model:
                 logger.debug(pipe.print_readable())
 
@@ -670,6 +727,7 @@ class PipelineTrainer(Trainer):
             self.eval_scheduler = _ScheduleForwardOnly(
                 eval_pipeline_stages[0], self.args.pipeline_chunks
             )
+        self.eval_pipeline_modules = eval_pipeline_modules
 
     def _train_pipeline_step(self, batch: dict | tuple) -> Tensor:
         args, kwargs = self._prepare_batch(batch)
@@ -683,36 +741,34 @@ class PipelineTrainer(Trainer):
         # See: https://github.com/pytorch/torchtitan/blob/main/torchtitan/train.py#L377
         targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)
 
-        with torch.nn.attention.sdpa_kernel(self.sdpa_priority, set_priority=True):
-            if self.pp_has_first_stage:
-                self.train_scheduler.step(*inputs, target=targets, losses=losses)
-            else:
-                self.train_scheduler.step(target=targets, losses=losses)
+        if self.pp_has_first_stage:
+            self.train_scheduler.step(*inputs, target=targets, losses=losses)
+        else:
+            self.train_scheduler.step(target=targets, losses=losses)
 
-            if self.pp_has_last_stage:
-                mean_loss = torch.stack([x.detach() for x in losses]).mean()
-                mean_loss = mean_loss.float()
-            else:
-                mean_loss = torch.tensor(0.0, device=self.denv.device)
+        if self.pp_has_last_stage:
+            mean_loss = torch.stack([x.detach() for x in losses]).mean()
+            mean_loss = mean_loss.float()
+        else:
+            mean_loss = torch.tensor(0.0, device=self.denv.device)
 
-            return mean_loss
+        return mean_loss
 
     def _eval_pipeline_step(self, batch: dict | tuple) -> Tensor:
         args, kwargs = self._prepare_batch(batch)
         inputs = (kwargs["input_ids"],)
         labels = kwargs["labels"]
 
-        with torch.nn.attention.sdpa_kernel(self.sdpa_priority, set_priority=True):
-            if self.pp_has_first_stage:
-                outputs = self.eval_scheduler.step(*inputs)
-            else:
-                outputs = self.eval_scheduler.step()
+        if self.pp_has_first_stage:
+            outputs = self.eval_scheduler.step(*inputs)
+        else:
+            outputs = self.eval_scheduler.step()
 
-            if self.pp_has_last_stage:
-                loss = self.loss_fn(outputs, labels).detach()
-                mean_loss = loss.float()
-            else:
-                mean_loss = torch.tensor(0.0, device=self.denv.device)
+        if self.pp_has_last_stage:
+            loss = self.loss_fn(outputs, labels).detach()
+            mean_loss = loss.float()
+        else:
+            mean_loss = torch.tensor(0.0, device=self.denv.device)
 
         return mean_loss
 
@@ -728,6 +784,13 @@ class PipelineTrainer(Trainer):
             self.optimizer = self.optimizer_factory(
                 named_parameters(self.pipeline_modules)
             )
+
+            if self.args.fuse_optim_with_backward:
+                hook = partial(optimzer_hook, self.optimizer)
+                for name, p in named_parameters(self.pipeline_modules):
+                    if p.requires_grad:
+                        p.register_post_accumulate_grad_hook(hook)
+
         if self.lr_scheduler is None and self.lr_scheduler_factory is not None:
             self.lr_scheduler = self.lr_scheduler_factory(
                 optimizer=self.optimizer,
@@ -756,11 +819,13 @@ class PipelineTrainer(Trainer):
     def _train_step(self, batch: dict | tuple) -> Tensor:
         mean_loss = self._train_pipeline_step(batch)
         self._clip_grad_norm(self.args.max_grad_norm)
-        self.optimizer.step()
+        if not self.args.fuse_optim_with_backward:
+            self.optimizer.step()
+            self.optimizer.zero_grad()
         self._dispatch_event("on_optimizer_step")
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
-        self.optimizer.zero_grad()
+
         return mean_loss
 
     # @override
@@ -888,12 +953,6 @@ class PipelineTrainer(Trainer):
                 device=self.denv.device,
                 strict=False,
             )
-
-        for mod in self.pipeline_modules:
-            for weight_name, p in mod.state_dict(keep_vars=True).items():
-                logger.debug(
-                    f"{weight_name} : {p.shape=}, {p.dtype=}, {p.device=}, {p.requires_grad=}"
-                )
 
         self._barrier()
 

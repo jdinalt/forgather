@@ -58,9 +58,11 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 
 
 -- block optimizer
-optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
+##optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
+##    lr: 5.0e-6
+##    weight_decay: 0.001
+optimizer: &optimizer !partial:torch.optim:SGD
     lr: 5.0e-6
-    weight_decay: 0.001
 << endblock optimizer
 
 
@@ -112,7 +114,15 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     num_train_epochs: 2
     dataloader_num_workers: 1
     max_grad_norm: 1.0
-    #max_steps: 1000
+    # max_steps: 11
+    
+    # fuse_optim_with_backward: True
+    # max_grad_norm: null              # Disable when using fuse_optim_with_backward
+    #sdpa_backend: "flash"
+    #torch_compile: True
+    #torch_compile_dynamic: False
+    #activation_memory_budget: 0.2
+    float32_matmul_precision: "high" # May still help for explicit float32 precision...
     
     # Checkpoint test settings - create multiple checkpoints with final step not multiple of save_steps
     save_strategy: "steps"           # Set to "steps" to save every "save_steps"; set to "no" to disable
@@ -131,6 +141,7 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     restore_dataset_state: False     # Not fully implemented yet!
 
     # Pipeline args
+    # enable_activation_checkpoints: True # Experimental: Inject activation checkpoints into graph
     debug_pipeline: False
     debug_split_model: False
     debug_model_params: False

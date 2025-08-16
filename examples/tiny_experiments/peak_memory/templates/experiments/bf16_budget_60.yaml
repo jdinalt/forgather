@@ -1,0 +1,32 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Bf16 Fused Ckpt Mem"
+    -- set ns.config_description = "bfloat16, activation checkpoints, and fused backward/optimizer step, memeory budget 0.60"
+    -- set ns.model_name = "control"
+    -- set ns.log_name = "bf16_fused_ckpt_60"
+-- endblock config_metadata
+
+
+-- block trainer_definition
+    -- include 'experiment.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- experiment.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+
+-- block trainer_args
+    == super()
+    # experiment overrides
+    torch_compile: True
+    torch_compile_dynamic: False
+    activation_memory_budget: 0.60
+-- endblock trainer_args
+
+
+-- block model_preprocessor
+model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_to_dtype [ *model, "bfloat16" ]
+<< endblock model_preprocessor
+

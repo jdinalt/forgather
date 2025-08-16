@@ -143,7 +143,9 @@ class TrainingArguments(MinimalTrainingArguments):
 
     torch_compile: bool = False
     torch_compile_backend: str | None = None
-    torch_compile_mode: str | None = None
+    torch_compile_mode: str | None = "default"
+    torch_compile_dynamic: bool = True
+    torch_compile_full_graph: bool = False
 
     max_grad_norm: float = None
     gradient_accumulation_steps: int = 1  # Unimplemented in Trainer
@@ -181,18 +183,38 @@ class TrainingArguments(MinimalTrainingArguments):
     adam_beta2: float = 0.999
     adam_epsilon: float = 1.0e-8
 
+    ## These options are not supported by HF Trainer ##
+
+    # Combine gradient calculation with optimizer step, to save memory.
+    # https://docs.pytorch.org/tutorials/intermediate/optimizer_step_in_backward_tutorial.html
+    fuse_optim_with_backward: bool = False
+
+    # Set torch.autograd.set_detect_anomaly
+    # https://docs.pytorch.org/docs/stable/autograd.html#debugging-and-anomaly-detection
+    detect_anomaly: bool = False
+
+    # https://pytorch.org/blog/activation-checkpointing-techniques/
+    # Requires "torch_compile = True" option
+    activation_memory_budget: float = None
+
+    # Set SDPA Kernel backend(s)
+    # https://docs.pytorch.org/docs/stable/generated/torch.nn.attention.sdpa_kernel.html#torch.nn.attention.sdpa_kernel
+    sdpa_backend: List[str] | str = None  # "math" | "flash" | "efficient" | "cudnn"
+    sdpa_set_priority: bool = False  # If list, interpret as priority order
+
+    # Set on NVIDIA Ampere or later GPUs to "high" when training in 32-bit precision for a significant speedup
+    # https://docs.pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html
+    float32_matmul_precision: str = None # "highest" | "high" | "medium" 
+
     def __post_init__(self):
         super().__post_init__()
         # As per https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader
         if self.dataloader_prefetch_factor is None and self.dataloader_num_workers > 0:
             self.dataloader_prefetch_factor = 2
-        if (
-            self.torch_compile_backend is not None
-            or self.torch_compile_mode is not None
-        ):
-            self.torch_compile = True
         if self.torch_compile_backend is None:
             self.torch_compile_backend = "inductor"
+        if self.torch_compile_mode is None:
+            self.torch_compile_backend = "default"
 
         if self.lr_scheduler_kwargs is None:
             self.lr_scheduler_kwargs = {}

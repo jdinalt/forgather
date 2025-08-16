@@ -148,7 +148,7 @@ def fix_zombie_buffers(
     if not zombie_buffers:
         return 0
 
-    logger.info(f"Fixing {len(zombie_buffers)} zombie buffers in pipeline stage")
+    logger.debug(f"Fixing {len(zombie_buffers)} zombie buffers in pipeline stage")
 
     # Fix each zombie buffer
     for mod, name, tensor, persistent, full_name in zombie_buffers:
@@ -261,7 +261,7 @@ def apply_pipeline_buffer_fix(
     }
 
     if shared_buffers:
-        logger.info(f"Detected {len(shared_buffers)} shared buffer groups")
+        logger.debug(f"Detected {len(shared_buffers)} shared buffer groups")
         for buf_id, names in shared_buffers.items():
             logger.debug(f"Shared buffer {buf_id}: {names}")
 
@@ -274,7 +274,7 @@ def apply_pipeline_buffer_fix(
         if zombies_fixed > 0:
             fix_stats["stages_fixed"] += 1
             fix_stats["total_zombies_fixed"] += zombies_fixed
-            logger.info(f"Fixed {zombies_fixed} zombie buffers in stage {i}")
+            logger.debug(f"Fixed {zombies_fixed} zombie buffers in stage {i}")
 
     if fix_stats["total_zombies_fixed"] > 0:
         logger.info(

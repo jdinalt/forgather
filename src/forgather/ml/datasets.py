@@ -107,7 +107,6 @@ def default_tokenize_map_fn(element, tokenizer, feature, **kwargs):
     return {"input_ids": outputs["input_ids"]}
 
 
-
 @main_process_first()
 def preprocess_dataset(
     dataset: Dataset,
@@ -146,7 +145,7 @@ def preprocess_dataset(
         fn_kwargs: Additional keyword arguments for the map function.
         parallel_tokenizer: If True, enable parallel tokenization.
     Returns:
-        The tokenized dataset.    
+        The tokenized dataset.
     """
 
     os.environ["TOKENIZERS_PARALLELISM"] = "true" if parallel_tokenizer else "false"
@@ -245,14 +244,15 @@ def test_with_dataloader(
         if i == n:
             break
 
+
 def plot_token_length_histogram(
-        dataset,
-        tokenizer,
-        output_file=None,
-        sample_size=1000,
-        feature='text',
-        min=None,
-        max=None
+    dataset,
+    tokenizer,
+    output_file=None,
+    sample_size=1000,
+    feature="text",
+    min=None,
+    max=None,
 ):
     """
     Plot a histogram of token lengths in the dataset.
@@ -272,17 +272,22 @@ def plot_token_length_histogram(
     from itertools import islice
 
     # Suppress matplotlib warnings about missing fonts
-    logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)
-    
+    logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
+
     if tokenizer:
         samples = [sample[feature] for sample in islice(dataset.shuffle(), sample_size)]
         outputs = tokenizer(
             samples,
             return_length=True,
         )
-        lengths = torch.tensor(outputs['length'])
+        lengths = torch.tensor(outputs["length"])
     else:
-        lengths = torch.tensor([len(sample['input_ids']) for sample in islice(dataset.shuffle(), sample_size)])
+        lengths = torch.tensor(
+            [
+                len(sample["input_ids"])
+                for sample in islice(dataset.shuffle(), sample_size)
+            ]
+        )
     print(f"sample size: {len(lengths)}")
     print(f"min: {lengths.min()}")
     print(f"max: {lengths.max()}")
@@ -292,7 +297,7 @@ def plot_token_length_histogram(
     counts, bins = np.histogram(lengths.numpy(), bins=100, density=True)
     fig, axs = plt.subplots(1, 1, figsize=(20, 5))
     axs.stairs(counts, bins)
-    
+
     if output_file:
         plt.savefig(output_file, format="svg")
     else:

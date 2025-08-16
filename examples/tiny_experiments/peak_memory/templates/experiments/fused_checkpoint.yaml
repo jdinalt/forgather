@@ -1,0 +1,40 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Fused Checkpoint"
+    -- set ns.config_description = "Fuse optimizer with backward and activation checkpoint"
+    -- set ns.model_name = "checkpoint"
+    -- set ns.log_name = "fused_checkpoint"
+-- endblock config_metadata
+
+
+-- block construct_new_model
+    -- include 'experiment.model'
+-- endblock construct_new_model
+
+
+-- block trainer_definition
+    -- include 'experiment.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- experiment.model --------------------
+-- extends 'project.model'
+
+
+-- block model_config
+    == super()
+    # Enable checkpointing
+    enable_activation_checkpoint: True
+    checkpoint_stride: 1
+<< endblock model_config
+
+#-------------------- experiment.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+
+-- block trainer_args
+    == super()
+    # experiment overrides
+    fuse_optim_with_backward: True
+-- endblock trainer_args

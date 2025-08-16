@@ -2,8 +2,8 @@
 
 -- block config_metadata
     == super()
-    -- set ns.config_name = "Test Activation Checkpoint"
-    -- set ns.config_description = ""
+    -- set ns.config_name = "Checkpoint"
+    -- set ns.config_description = "Activation checkpoint"
     -- set ns.model_name = "checkpoint"
     -- set ns.log_name = "checkpoint"
 -- endblock config_metadata

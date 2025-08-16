@@ -582,7 +582,7 @@ def load_sharded_checkpoint(
         # Keep track of which keys we have yet to load
         all_module_keys = all_module_keys - set(state_dict.keys())
 
-        logger.info(f"loading state_dict in '{shard_file_name}'")
+        logger.debug(f"loading state_dict in '{shard_file_name}'")
 
         # Load state dictionary into model.
         module.load_state_dict(state_dict, strict=False, assign=assign)

@@ -252,8 +252,6 @@ def parse_args(args=None):
 def main():
     """Main CLI entry point."""
     args = parse_args()
-    if args.config_template:
-        args.config_template = os.path.basename(args.config_template)
     match args.command:
         case "index":
             index_cmd(args)
@@ -281,6 +279,7 @@ def main():
             train_cmd(args)
         case "dataset":
             from .dataset import dataset_cmd
+
             dataset_cmd(args)
         case _:
             index_cmd(args)

@@ -10,6 +10,7 @@ from .trainer_types import (
     TrainerControl,
     TrainerCallback,
 )
+from .utils import format_mapping
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -94,11 +95,23 @@ class PeakMemory(TrainerCallback):
         gib = 1024**3
         return f"{max_allocated / gib:.3f} GiB" if max_allocated else "0 GiB"
 
+    @staticmethod
+    def _mapping_as_markdown(mapping):
+        """
+        Format dictionary as markdown
+
+        Tensorboard expects text to be in markdown format...
+        """
+        s = "```\n"
+        s += format_mapping(mapping)
+        s += "```"
+        return s
+
     def on_log(self, args, state, control, logs, **kwargs):
-        if not self.enabled or not self.do_log:
+        if not self.enabled or (not self.do_log and not self.summary_writer):
             return
         device = torch.cuda.current_device()
-        max_allocated = torch.cuda.max_memory_allocated()
+        max_allocated = torch.cuda.max_memory_allocated(device=device)
         torch.cuda.reset_peak_memory_stats(device=device)
         self.max_allocated = max(self.max_allocated, max_allocated)
         if self.world_size > 1:
@@ -127,16 +140,16 @@ class PeakMemory(TrainerCallback):
             if self.show_details:
                 details = torch.cuda.memory_stats(device)
                 self.summary_writer.add_text(
-                    f"peak_memory_details_rank{i}",
-                    pformat(details),
+                    f"peak_memory_details",
+                    self._mapping_as_markdown(details),
                     global_step=state.global_step,
                 )
-        else:
+        if self.do_log:
             s = "Peak CUDA Memory Allocated: "
             for i, mem in enumerate(max_allocated_list):
                 s += f"RANK{i} {self._format_peak_memory(mem)}, "
             logger.info(s)
-            if self.show_details:
+            if self.show_details and not self.summary_writer:
                 details = torch.cuda.memory_stats(device)
                 logger.info(f"RANK{self.rank} Peak Memory Details: {pformat(details)}")
 
@@ -157,6 +170,12 @@ class PeakMemory(TrainerCallback):
         logger.info(
             f"RANK{self.rank} MAX CUDA MEMORY ALLOCATED: {self._format_peak_memory(self.max_allocated)}"
         )
-        if self.show_details:
+        if self.show_details and not self.do_log:
             details = torch.cuda.memory_stats(torch.cuda.current_device())
+            if self.summary_writer:
+                self.summary_writer.add_text(
+                    "peak_memory_details",
+                    self._mapping_as_markdown(details),
+                    global_step=state.global_step,
+                )
             logger.info(f"RANK{self.rank}: {pformat(details)}")

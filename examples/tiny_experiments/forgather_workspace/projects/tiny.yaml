@@ -20,7 +20,7 @@
     -- set ns.debug_memory_detials = False
     -- set ns.log_peak_memmory = False
     ## Debug logging to TensorBoard vs console
-    -- set ns.log_memory_to_tb = True
+    -- set ns.log_memory_to_tb = False
 -- endblock config_metadata
 
 

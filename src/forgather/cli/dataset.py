@@ -5,13 +5,14 @@ from forgather.latent import Latent
 from forgather.ml.datasets import plot_token_length_histogram
 from forgather import Project
 
+
 def dataset_cmd(args):
     config_name = args.config_template
     project_args = dict(
         project_dir=args.project_dir,
         tokenizer_path=args.tokenizer_path,
     )
-    
+
     if args.config_template is None:
         args.config_template = ""
     if args.chat_template:
@@ -21,7 +22,9 @@ def dataset_cmd(args):
     proj_meta = proj("meta")
     config_class = proj_meta["config_class"]
     main_feature = proj_meta["main_feature"]
-    assert config_class == "type.dataset", f"Expected class type.dataset, found {config_class}"
+    assert (
+        config_class == "type.dataset"
+    ), f"Expected class type.dataset, found {config_class}"
 
     if args.pp:
         print("Preprocessed configuration:")
@@ -34,7 +37,7 @@ def dataset_cmd(args):
     except KeyError:
         train_dataset_split = None
         print("No train dataset found.")
-    
+
     try:
         eval_dataset_split = proj("eval_dataset_split")
         print("Eval dataset:")
@@ -53,10 +56,14 @@ def dataset_cmd(args):
         print("Plotting token length histogram...")
         if args.use_split:
             if args.sample_eval:
-                assert eval_dataset_split, "Eval dataset split must be exist to sample from eval dataset"
+                assert (
+                    eval_dataset_split
+                ), "Eval dataset split must be exist to sample from eval dataset"
                 split = eval_dataset_split
             else:
-                assert train_dataset_split, "Train dataset split must exist to sample from train dataset"
+                assert (
+                    train_dataset_split
+                ), "Train dataset split must exist to sample from train dataset"
                 split = train_dataset_split
             plot_token_length_histogram(
                 split,
@@ -96,7 +103,7 @@ def dataset_cmd(args):
 
             dataset = eval_dataset if args.sample_eval else train_dataset
             for i, example in enumerate(dataset):
-                print('-'*40)
+                print("-" * 40)
                 print(tokenizer.decode(example["input_ids"]))
                 if i >= args.examples - 1:
                     break
@@ -104,11 +111,15 @@ def dataset_cmd(args):
         else:
             print("Tokenizer path not provided, skipping tokenization.")
             if args.sample_eval:
-                assert eval_dataset_split, "Eval dataset split must be exist to sample from eval dataset"
+                assert (
+                    eval_dataset_split
+                ), "Eval dataset split must be exist to sample from eval dataset"
                 split = eval_dataset_split
             else:
-                assert train_dataset_split, "Train dataset split must exist to sample from train dataset"
+                assert (
+                    train_dataset_split
+                ), "Train dataset split must exist to sample from train dataset"
                 split = train_dataset_split
             for example in split.shuffle().select(range(args.examples)):
-                print('-'*40)
+                print("-" * 40)
                 print(example[main_feature])

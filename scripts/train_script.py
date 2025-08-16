@@ -86,6 +86,7 @@ def parse_args(args=None):
 
 @record
 def main():
+    logging.basicConfig(level=logging.INFO)
     args = parse_args()
     init_logging(args)
     training_loop(args.project_dir, args.config_template)
