@@ -7,7 +7,6 @@
     -- set ns.tokenizer_name = "custom_tokenizer"
     -- set ns.model_max_length = 2048
     -- set ns.vocab_size = 32000
-    -- set ns.dataset_split = 'train'
     ## Define special tokens
     -- set ns.pad_token = "<|PAD|>"
     -- set ns.bos_token = "<|BOS|>"
@@ -15,8 +14,6 @@
     -- set ns.unk_token = "<|UNK|>"
     ## This should match the position in special_tokens_map
     -- set ns.bos_token_id = 0
-    ## The following args are required
-    ## -- set ns.dataset_id = 'dataset_id'
 -- endblock config_metadata
 
 
@@ -31,8 +28,6 @@
 # output_dir: '{{ ns.output_dir }}'
 # model_max_length: '{{ ns.model_max_length }}'
 # vocab_size: '{{ ns.vocab_size }}'
-# dataset_id: '{{ ns.dataset_id }}'
-# dataset_split: '{{ ns.dataset_split }}'
 << endblock variable_listing
 
 
@@ -62,7 +57,7 @@ tokenizer_args: &tokenizer_args !dict:@tokenizer_args
     eos_token: "{{ ns.eos_token }}"
     unk_token: "{{ ns.unk_token }}"
     pad_token: "{{ ns.pad_token }}"
-    return_special_tokens_mask: True
+    return_special_tokens_mask: False
     model_max_length: {{ ns.model_max_length }}
     padding_side: "right"
     truncation_side: "right"
@@ -73,12 +68,8 @@ tokenizer_args: &tokenizer_args !dict:@tokenizer_args
 == h2('Tokenizer Training Dataset')
 
 -- filter trim()
-## This directly loads the entire dataset
-## For large datasets, a subset should be selected.
--- block tokenizer_dataset
-tokenizer_dataset: &tokenizer_dataset !singleton:operator:getitem@tokenizer_dataset
-    - !singleton:datasets:load_dataset [ "{{ ns.dataset_id }}" ]
-    - "{{ ns.dataset_split }}"
+-- block tokenizer_dataset required
+## tokenizer_dataset: 
 << endblock tokenizer_dataset
 -- endfilter
 

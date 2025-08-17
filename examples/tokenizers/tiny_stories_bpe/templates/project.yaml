@@ -4,8 +4,11 @@
     == super()
     -- set ns.config_name = "Tiny Stories"
     -- set ns.config_description = "BPE tokenizer trained on Tiny Stories dataset"
-    -- set ns.dataset_id = 'roneneldan/TinyStories'
-    -- set ns.model_max_length = 2048
 -- endblock config_metadata
 
 
+-- block tokenizer_dataset
+tokenizer_dataset: &tokenizer_dataset !singleton:datasets:load_dataset@tokenizer_dataset
+    args: [ "roneneldan/TinyStories" ]
+    kwargs: { split: "train" }
+<< endblock tokenizer_dataset

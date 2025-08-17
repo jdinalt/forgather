@@ -10,6 +10,6 @@
 
 -- block model_tokenizer
     ## Use a smaller tokenizer.
-    -- include 'tokenizers/tiny_8k.yaml'
+    -- include 'tokenizers/wikitext/32k.yaml'
 << endblock model_tokenizer
 

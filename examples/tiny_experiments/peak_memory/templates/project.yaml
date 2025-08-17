@@ -84,3 +84,8 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 
 #-------------------- project.model --------------------
 -- extends 'models/full_deepone.yaml'
+
+-- block model_tokenizer
+	## Use a smaller tokenizer to allow baseline to not OOM
+	-- include 'tokenizers/wikitext/8k.yaml'
+<< endblock model_tokenizer

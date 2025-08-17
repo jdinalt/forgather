@@ -1,0 +1,4 @@
+# Load custom tokenizer from sub-project definition
+tokenizer: &tokenizer !singleton:forgather.ml.construct:load_from_config@tokenizer
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "8k.yaml"

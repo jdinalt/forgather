@@ -1,14 +1,13 @@
 from dataclasses import dataclass, field
 from types import NoneType
-
 import logging
-import torch
-from datasets import DatasetDict, Dataset
-from torch.utils.data import DataLoader
-from datasets.distributed import split_dataset_by_node
 from collections.abc import Sequence
 import os
-import re
+
+import torch
+from torch.utils.data import DataLoader
+from datasets import Dataset
+from datasets.distributed import split_dataset_by_node
 
 from .distributed import main_process_first
 

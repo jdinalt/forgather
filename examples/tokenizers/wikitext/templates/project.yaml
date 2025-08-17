@@ -1,0 +1,28 @@
+-- extends 'types/tokenizer/bpe/bpe.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Wikietext Document Level Tokenizer"
+    -- set ns.config_description = "BPE tokenizer trained on Wikietext Document Level dataset"
+-- endblock config_metadata
+
+
+-- block tokenizer_dataset
+tokenizer_dataset: &tokenizer_dataset !singleton:datasets:load_dataset@tokenizer_dataset
+    args: [ "EleutherAI/wikitext_document_level", "wikitext-103-raw-v1" ]
+    kwargs: { split: "train" }
+<< endblock tokenizer_dataset
+
+
+-- block tokenizer_trainer
+    == super()
+    feature: "page"
+<< endblock tokenizer_trainer
+
+
+-- block tokenizer_special_tokens_map
+    == super()
+    # Add ChatML tokens
+    im_start: "<|im_start|>"
+    im_end: "<|im_end|>"
+<< endblock tokenizer_special_tokens_map
