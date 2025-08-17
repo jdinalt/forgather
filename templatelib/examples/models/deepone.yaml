@@ -9,8 +9,9 @@
 
 
 -- block model_tokenizer
-    ## Default tokenizer
+    -- include 'tokenizers/wikitext/32k.yaml'
 << endblock model_tokenizer
+
 
 -- block model_bits
 
