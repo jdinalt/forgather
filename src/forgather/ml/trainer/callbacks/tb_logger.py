@@ -5,8 +5,8 @@ import math
 from pprint import pformat
 from torch.utils.tensorboard import SummaryWriter
 
-from .utils import format_train_info, format_mapping
-from .trainer_types import TrainerCallback
+from ...utils import format_train_info, format_mapping
+from ..trainer_types import TrainerCallback
 
 
 # Log loss to TensorBoard

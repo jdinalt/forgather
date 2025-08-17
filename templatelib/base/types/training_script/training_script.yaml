@@ -44,6 +44,7 @@
 # ns.save_model: {{ ns.save_model }}
 # ns.train: {{ ns.train }}
 # ns.eval: {{ ns.eval }}
+# ns.nproc_per_node: {{ ns.nproc_per_node }}
 << endblock variable_listing
 
 

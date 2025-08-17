@@ -6,8 +6,8 @@ from pprint import pformat
 import logging
 import torch.distributed as dist
 
-from .memory_monitor import get_memory_monitor
-from .trainer_types import (
+from ...memory_monitor import get_memory_monitor
+from ..trainer_types import (
     TrainingArguments,
     TrainerState,
     TrainerControl,

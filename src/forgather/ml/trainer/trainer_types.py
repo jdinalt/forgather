@@ -6,8 +6,11 @@ from collections import namedtuple
 import platform
 import time
 
-from torch.utils.data import DataLoader, Dataset
 import torch
+from torch.utils.data import DataLoader, Dataset
+import numpy as np
+
+from ..utils import ConversionDescriptor, DiagnosticEnum
 
 
 def sequential_lr_factory(optimizer, schedulers, milestones, last_epoch=-1):
@@ -18,10 +21,6 @@ def sequential_lr_factory(optimizer, schedulers, milestones, last_epoch=-1):
         last_epoch=last_epoch,
     )
 
-
-import numpy as np
-
-from .utils import ConversionDescriptor, DiagnosticEnum
 
 OUTPUTDIR_NAME = "tmp_trainer"
 
@@ -204,7 +203,7 @@ class TrainingArguments(MinimalTrainingArguments):
 
     # Set on NVIDIA Ampere or later GPUs to "high" when training in 32-bit precision for a significant speedup
     # https://docs.pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html
-    float32_matmul_precision: str = None # "highest" | "high" | "medium" 
+    float32_matmul_precision: str = None  # "highest" | "high" | "medium"
 
     def __post_init__(self):
         super().__post_init__()

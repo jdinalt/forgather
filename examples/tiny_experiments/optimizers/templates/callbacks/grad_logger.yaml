@@ -2,7 +2,7 @@
 
 -- block callback_list
     == super()
-    - !singleton:forgather.ml.grad_logger:GradLogger
+    - !singleton:forgather.ml.train.callbacks.grad_logger:GradLogger
         ## output_decoder|input_encoder|feedforward|attention
         summary_writer: *summary_writer
         neg_re: 'bias'

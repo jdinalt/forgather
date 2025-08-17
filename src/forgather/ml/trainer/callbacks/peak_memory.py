@@ -4,13 +4,13 @@ from pprint import pformat
 import logging
 import torch.distributed as dist
 
-from .trainer_types import (
+from ..trainer_types import (
     TrainingArguments,
     TrainerState,
     TrainerControl,
     TrainerCallback,
 )
-from .utils import format_mapping
+from ...utils import format_mapping
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

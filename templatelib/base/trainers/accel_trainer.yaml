@@ -1,7 +1,7 @@
 -- extends 'trainers/trainer.yaml'
 -- block trainer_meta_config
     == super()
-    -- set trainer_def.name = "forgather.ml.accel_trainer:AccelTrainer"
+    -- set trainer_def.name = "forgather.ml.trainer.accelerate:AccelTrainer"
     -- set trainer_def.description = "A lightweight, extensible trainer w/ Accelerate support"
     -- set ns.nproc_per_node = "gpu"
 -- endblock trainer_meta_config
@@ -20,9 +20,9 @@
 
 
 -- block trainer_constructor
-trainer: &trainer !singleton:forgather.ml.accel_trainer:AccelTrainer@trainer
+trainer: &trainer !singleton:forgather.ml.trainer.accelerate:AccelTrainer@trainer
     model_init: *model_preprocessor
-    args: !singleton:forgather.ml.accel_trainer:AccelTrainingArguments
+    args: !singleton:forgather.ml.trainer.accelerate:AccelTrainingArguments
         <<: *trainer_args
     data_collator: *data_collator
     train_dataset: *train_dataset

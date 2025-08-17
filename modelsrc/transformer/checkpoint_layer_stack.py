@@ -50,10 +50,8 @@ class LayerStack(nn.Module):
             self.layer_norm = post_norm_factory()
 
     def extra_repr(self):
-        return (
-            f"enable_checkpoint={self.enable_checkpoint}, checkpoint_stride={self.checkpoint_stride}"
-        )
-    
+        return f"enable_checkpoint={self.enable_checkpoint}, checkpoint_stride={self.checkpoint_stride}"
+
     def forward(
         self,
         hidden_states: FloatTensor,

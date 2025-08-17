@@ -141,9 +141,9 @@ text_gen_callback_args: &text_gen_callback_args
 ## This adds a text-generationn sample every 'generation_steps'
 -- block callback_list
     == super()
-    - !singleton:forgather.ml.textgen_callback:TextgenCallback
+    - !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         <<: *text_gen_callback_args
-    - !singleton:forgather.ml.peak_memory:PeakMemory
+    - !singleton:forgather.ml.trainer.callbacks:PeakMemory
         show_details: {{ ns.debug_memory_detials }}
         do_log: {{ ns.log_peak_memmory }}
     -- if ns.log_memory_to_tb

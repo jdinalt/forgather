@@ -8,7 +8,7 @@
 << endblock trainer_meta_config
 
 
-## Supports at least the sub-set of args from forgather.ml.trainer_types.TrainingArguments
+## Supports at least the sub-set of args from forgather.ml.trainer.TrainingArguments
 -- block trainer_args
     == super()
     # Base Trainer Defaults

@@ -8,8 +8,8 @@ import torch
 from torch import Tensor
 from accelerate import Accelerator
 
-from .trainer_types import TrainingArguments, TrainerState
-from .trainer import Trainer
+from ..trainer_types import TrainingArguments, TrainerState
+from ..trainer import Trainer
 
 logger = logging.getLogger(__name__)
 

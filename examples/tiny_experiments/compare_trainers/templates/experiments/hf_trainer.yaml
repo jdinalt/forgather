@@ -9,3 +9,11 @@
     ## Set trainer
     -- set ns.trainer_class = 'trainers/hf_trainer.yaml'
 -- endblock config_metadata
+
+-- block trainer_definition
+    -- include 'hf_trainer.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- hf_trainer.trainer_config --------------------
+-- extends 'project.trainer_config'
+## Stub, for extension

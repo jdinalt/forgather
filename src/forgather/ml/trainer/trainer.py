@@ -34,7 +34,7 @@ from .trainer_types import (
     TrainerCallback,
     IntervalStrategy,
 )
-from .default_callbacks import (
+from .callbacks.default_callbacks import (
     ProgressCallback,
     InfoCallback,
 )
@@ -166,7 +166,7 @@ class Trainer(BaseTrainer):
             torch._functorch.config.activation_memory_budget = (
                 self.args.activation_memory_budget
             )
-            
+
         self._init_dataloaders(train_dataset, eval_dataset)
         self._prepare_model()
         if self.args.torch_compile:
@@ -175,9 +175,11 @@ class Trainer(BaseTrainer):
                 f"dynamic={self.args.torch_compile_dynamic}, fullgraph={self.args.torch_compile_full_graph},"
                 f"activation_memory_budget={self.args.activation_memory_budget}"
             )
-            
+
             if os.environ.get("PARTITIONER_MEMORY_BUDGET_PARETO", 0):
-                logger.warning("Computing paritioner Pareto memory budget -- be patient, this takes time...")
+                logger.warning(
+                    "Computing paritioner Pareto memory budget -- be patient, this takes time..."
+                )
             self._compile_model()
 
         if self.do_train:

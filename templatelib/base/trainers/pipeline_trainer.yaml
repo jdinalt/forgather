@@ -1,7 +1,7 @@
 -- extends 'trainers/trainer.yaml'
 -- block trainer_meta_config
     == super()
-    -- set trainer_def.name = "forgather.ml.pipeline_trainer:PipelineTrainer"
+    -- set trainer_def.name = "forgather.ml.trainer.pipeline:PipelineTrainer"
     -- set trainer_def.description = "Pipeline parallel trainer"
     ## Set these in your sub-project
     ##-- set trainer_def.pipeline_layers = 16
@@ -72,9 +72,9 @@ split_spec: &split_spec !dict@split_spec
 
 
 -- block trainer_constructor
-trainer: &trainer !singleton:forgather.ml.pipeline_trainer:PipelineTrainer@trainer
+trainer: &trainer !singleton:forgather.ml.trainer.pipeline:PipelineTrainer@trainer
     model_init: *model_preprocessor
-    args: !singleton:forgather.ml.pipeline_trainer:PipelineTrainingArguments
+    args: !singleton:forgather.ml.trainer.pipeline:PipelineTrainingArguments
         <<: *trainer_args
     data_collator: *data_collator
     train_dataset: *train_dataset

@@ -169,7 +169,7 @@ model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_t
 
 -- block callback_list
     == super()
-    - !singleton:forgather.ml.peak_memory:PeakMemory
+    - !singleton:forgather.ml.trainer.callbacks:PeakMemory
         show_details: False
         #summary_writer: *summary_writer
         do_log: True

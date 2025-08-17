@@ -7,7 +7,7 @@ import torch
 from pprint import pformat
 from torch.utils.tensorboard import SummaryWriter
 
-from .trainer_types import TrainerCallback
+from ..trainer_types import TrainerCallback
 
 
 class GradLogger(TrainerCallback):

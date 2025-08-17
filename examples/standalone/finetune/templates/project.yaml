@@ -136,7 +136,7 @@ text_gen_callback_args: &text_gen_callback_args
 ## This adds a text-generationn sample every 'generation_steps'
 -- block callback_list
     == super()
-    - !singleton:forgather.ml.textgen_callback:TextgenCallback
+    - !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         <<: *text_gen_callback_args
 << endblock callback_list
 

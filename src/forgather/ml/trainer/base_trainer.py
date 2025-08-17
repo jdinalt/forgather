@@ -23,7 +23,7 @@ from .trainer_types import (
     TrainOutput,
     TrainerControl,
 )
-from .sharded_checkpoint import (
+from ..sharded_checkpoint import (
     load_checkpoint,
     validate_checkpoint,
     find_latest_checkpoint,
@@ -106,11 +106,15 @@ class BaseTrainer(ExtensibleTrainer):
         self.num_processes = 1
 
         if self.args.detect_anomaly:
-            logger.warning("Enabling autograd detect anomaly; expect performance degradation")
+            logger.warning(
+                "Enabling autograd detect anomaly; expect performance degradation"
+            )
             torch.autograd.set_detect_anomaly(True)
 
         if self.args.float32_matmul_precision is not None:
-            logger.info(f"Setting float32_matmul_precision to \"{self.args.float32_matmul_precision}\"")
+            logger.info(
+                f'Setting float32_matmul_precision to "{self.args.float32_matmul_precision}"'
+            )
             torch.set_float32_matmul_precision(self.args.float32_matmul_precision)
 
         self._post_init()

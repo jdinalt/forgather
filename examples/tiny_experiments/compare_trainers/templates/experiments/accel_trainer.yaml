@@ -3,9 +3,23 @@
 -- block config_metadata
     == super()
     -- set ns.config_name = "Accelerate Trainer"
-    -- set ns.config_description = "Train with forgather.ml.accel_trainer.AccelTrainer implementation"
+    -- set ns.config_description = "Train with forgather.trainer.accelerate.AccelTrainer implementation"
     -- set ns.log_name = "accel_trainer"
 
     ## Set trainer
     -- set ns.trainer_class = 'trainers/accel_trainer.yaml'
 -- endblock config_metadata
+
+
+-- block trainer_definition
+    -- include 'accel_trainer.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- accel_trainer.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+-- block trainer_args
+    == super()
+    # Not supported by HF trainer.
+    float32_matmul_precision: "high"
+-- endblock trainer_args

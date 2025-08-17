@@ -35,10 +35,10 @@ from transformers import (
     PretrainedConfig,
 )
 
-from .trainer_types import TrainingArguments, TrainerState
-from .trainer import Trainer, optimzer_hook
-from .distributed import DistributedEnvironment, main_process_first
-from .sharded_checkpoint import (
+from ..trainer_types import TrainingArguments, TrainerState
+from ..trainer import Trainer, optimzer_hook
+from ...distributed import DistributedEnvironment, main_process_first
+from ...sharded_checkpoint import (
     validate_output_dir,
     make_shard_index,
     save_shard_index,
@@ -473,9 +473,9 @@ class PipelineTrainer(Trainer):
             model = self.model_init()
 
         return model
-    
+
     def _compile_model(self):
-        pipelines = [ self.pipeline_modules ]
+        pipelines = [self.pipeline_modules]
         if not self.args.unified_model:
             pipelines.append(self.eval_pipeline_modules)
         for pipeline_modules in pipelines:

@@ -4,8 +4,8 @@ import os
 from transformers import GenerationConfig, StoppingCriteria
 from torch.utils.tensorboard import SummaryWriter
 import torch
-from .utils import format_train_info
-from .trainer_types import TrainerCallback
+from ...utils import format_train_info
+from ..trainer_types import TrainerCallback
 
 
 # Stop generation after all batch elements have generated an EOS token.
