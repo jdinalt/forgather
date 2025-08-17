@@ -188,6 +188,10 @@ class TrainingArguments(MinimalTrainingArguments):
     # https://docs.pytorch.org/tutorials/intermediate/optimizer_step_in_backward_tutorial.html
     fuse_optim_with_backward: bool = False
 
+    # Offload activation tensors to CPU memory -- best combined with some form of activation checkpointing.
+    # https://docs.pytorch.org/tutorials/intermediate/autograd_saved_tensors_hooks_tutorial.html#saving-tensors-to-cpu
+    enable_activation_offloading: bool = False
+
     # Set torch.autograd.set_detect_anomaly
     # https://docs.pytorch.org/docs/stable/autograd.html#debugging-and-anomaly-detection
     detect_anomaly: bool = False

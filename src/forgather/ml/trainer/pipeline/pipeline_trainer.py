@@ -8,6 +8,7 @@ import math
 import copy
 import os
 from functools import partial
+from contextlib import ExitStack
 import re
 
 import torch
@@ -741,16 +742,21 @@ class PipelineTrainer(Trainer):
         # See: https://github.com/pytorch/torchtitan/blob/main/torchtitan/train.py#L377
         targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)
 
-        if self.pp_has_first_stage:
-            self.train_scheduler.step(*inputs, target=targets, losses=losses)
-        else:
-            self.train_scheduler.step(target=targets, losses=losses)
+        with ExitStack() as stack:
+            if self.args.enable_activation_offloading:
+                stack.enter_context(
+                    torch.autograd.graph.save_on_cpu(pin_memory=True)
+                )
+            if self.pp_has_first_stage:
+                self.train_scheduler.step(*inputs, target=targets, losses=losses)
+            else:
+                self.train_scheduler.step(target=targets, losses=losses)
 
-        if self.pp_has_last_stage:
-            mean_loss = torch.stack([x.detach() for x in losses]).mean()
-            mean_loss = mean_loss.float()
-        else:
-            mean_loss = torch.tensor(0.0, device=self.denv.device)
+            if self.pp_has_last_stage:
+                mean_loss = torch.stack([x.detach() for x in losses]).mean()
+                mean_loss = mean_loss.float()
+            else:
+                mean_loss = torch.tensor(0.0, device=self.denv.device)
 
         return mean_loss
 

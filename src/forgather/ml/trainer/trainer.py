@@ -11,13 +11,13 @@ from typing import (
     # override, # PEP-698, introduced in Python 3.12
 )
 from collections.abc import Sequence
-
 from functools import partial
 from dataclasses import dataclass, field
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import os
 import logging
+
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
@@ -201,6 +201,7 @@ class Trainer(BaseTrainer):
             dynamic=self.args.torch_compile_dynamic,
             fullgraph=self.args.torch_compile_full_graph,
         )
+
 
     def _init_dataloaders(self, train_dataset, eval_dataset) -> None:
         # _prepare() sub-step 1
@@ -408,7 +409,13 @@ class Trainer(BaseTrainer):
         Returns: mean loss (detached from graph)
         """
         args, kwargs = self._prepare_batch(batch)
-        loss = self.model(*args, **kwargs)[0]
+        
+        with ExitStack() as stack:
+            if self.args.enable_activation_offloading:
+                stack.enter_context(
+                    torch.autograd.graph.save_on_cpu(pin_memory=True)
+                )
+            loss = self.model(*args, **kwargs)[0]
 
         self._backward(loss)
         self._clip_grad_norm(self.args.max_grad_norm)

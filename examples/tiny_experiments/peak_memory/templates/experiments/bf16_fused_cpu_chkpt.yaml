@@ -1,0 +1,47 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Bf16 Fused CPU Offloaded Checkpoint"
+    -- set ns.config_description = "Bfloat16, Fuse optimizer with backward and CPU offloaded activation checkpoints"
+    -- set ns.model_name = "checkpoint"
+    -- set ns.log_name = "bf16_fused_cpu_checkpoint"
+-- endblock config_metadata
+
+
+-- block construct_new_model
+    -- include 'experiment.model'
+-- endblock construct_new_model
+
+
+-- block trainer_definition
+    -- include 'experiment.trainer_config'
+-- endblock trainer_definition
+
+
+#-------------------- experiment.model --------------------
+-- extends 'project.model'
+
+
+-- block model_config
+    == super()
+    # Enable checkpointing
+    enable_activation_checkpoint: True
+    checkpoint_stride: 1
+<< endblock model_config
+
+#-------------------- experiment.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+
+-- block trainer_args
+    == super()
+    # experiment overrides
+    fuse_optim_with_backward: True
+    enable_activation_offloading: True
+-- endblock trainer_args
+
+
+-- block model_preprocessor
+model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_to_dtype [ *model, "bfloat16" ]
+<< endblock model_preprocessor
