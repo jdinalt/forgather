@@ -49,29 +49,47 @@
 
 
 -- block lr_scheduler
-    ##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
+##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
 # https://arxiv.org/html/2503.02844v1
 lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+    # This seems sufficient to maintain stability.
     warmup_steps: 5000
+
+    # Don't both with cooldown.
+    # Note: It non-zero, warm-up will proceed to the LR configured in the optimizer, rather than to
+    # constant_lr, then perform cosine annealing for this many steps to the constant_lr
     cooldown_steps: 50000
-    constant_lr: 1.0e-4
+    
+    # Start annealing after first checkpoint.
+    # This is an exponential decay after checkpoint_step.
+    checkpoint_step: 100000
+
+    # Hold at this LR after cooldown.
+    constant_lr: 5.0e-6
+
+    # Decay time constant for checkpoint
+    tau: !!float 1.0e2
 << endblock lr_scheduler
 
 
 -- block optimizer
 optimizer: &optimizer !lambda:torch:optim.AdamW
-    lr: 1.0e-3
+    lr: 1.0e-4
 << endblock optimizer
 
 
 -- block datacollator
-    == super()
-    # Project Overrides
+data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
+    tokenizer: *tokenizer
+    return_tensors: pt
+    truncation: True
     ## Limit maximum sequence length 512 tokens, at the data-collator level.
     ## This can be useful for avoiding OOM errors, but can also be configured 
     ## by overriding the dataset's arguments.
-    truncation: True
-    max_length: 512
+    ## max_length: 512
+    ##
+    ## Setting 'padding' to "max_length," combined with "truncation," will produce a constant batch length
+    ## padding: "max_length"
 -- endblock datacollator
 
 
@@ -89,22 +107,63 @@ optimizer: &optimizer !lambda:torch:optim.AdamW
 
 -- block trainer_args
     == super()
-    # Project Overrides
-    per_device_train_batch_size: 32
-    per_device_eval_batch_size: 64
+    # Project overrides
+    seed: 42
+    per_device_train_batch_size: 64
+    per_device_eval_batch_size: 128
     logging_steps: 100
-    eval_steps: 500
-    warmup_steps: 500
+    eval_steps: 1000
+    num_train_epochs: 2
+    dataloader_num_workers: 1
+    max_grad_norm: 1.0               # Gradient norm clipping threshold
+
     ## Stop early for quick test.
     ## max_steps: 1000
     
+    # Checkpoint Save Settings
+    save_strategy: "steps"           # Set to "steps" to save every "save_steps"; set to "no" to disable
+    save_steps: 10000                # Checkpoint every N steps
+    save_safetensors: True           # Safe tensors?
+    save_total_limit: 3              # Keep at most N checkpoints
+    save_on_each_node: False         # Save common files on each node
+    save_optimizer_state: True       # Save optimizer state with checkpoint
+    save_scheduler_state: True       # Save LR scheduler state with checkpoint
+    save_rng_state: True             # Save RNG state with checkpoint
+    
+    # Checkpoint Load Settings
+    resume_from_checkpoint: False    # Load latest checkpoint
+    restore_optimizer_state: True    # Test optimizer state restoration per rank
+    restore_scheduler_state: True    # Test scheduler state restoration per rank
+    restore_rng_state: True          # Test RNG state restoration per rank
+    restore_dataset_state: False     # Not fully implemented yet!
+    
     # Only used if lr_scheduler is null
     lr_scheduler_type: "cosine"
-
+    warmup_steps: 500
+    
     # Only used if optimizer is null
     learning_rate: 1.0e-3
     
+    # Torch Compile Settings
+    torch_compile: True
+    torch_compile_backend: "inductor"
+    torch_compile_dynamic: True
+    torch_compile_mode: "default"
+    torch_compile_full_graph: False
+    activation_memory_budget: 0.6
+
+    float32_matmul_precision: "high" # Improves 32-bit MM performance on Ampere and later GPUs
+    # Set SDPA Kernel backend(s)
+    # https://docs.pytorch.org/docs/stable/generated/torch.nn.attention.sdpa_kernel.html#torch.nn.attention.sdpa_kernel
+    sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
+    sdpa_set_priority: False # If list, interpret as priority order
 << endblock trainer_args
+
+
+## -- block model_preprocessor
+## Convert model to bfloat16 format
+## model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_to_dtype [ *model, "bfloat16" ]
+### << endblock model_preprocessor
 
 #-------------------- project.model_config --------------------
 -- extends 'models/example_model_config.yaml'
@@ -113,6 +172,9 @@ optimizer: &optimizer !lambda:torch:optim.AdamW
 #-------------------- project.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'
 
+-- block callback_list
+    == super()
+<< endblock callback_list
 
 #-------------------- project.dataset --------------------
 -- extends 'datasets/tinystories/tinystories_abridged.yaml'

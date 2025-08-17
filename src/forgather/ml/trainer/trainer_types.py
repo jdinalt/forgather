@@ -148,7 +148,7 @@ class TrainingArguments(MinimalTrainingArguments):
 
     max_grad_norm: float = None
     gradient_accumulation_steps: int = 1  # Unimplemented in Trainer
-    gradient_checkpointing: bool = False  # Unimplemented in Trainer
+    gradient_checkpointing: bool = False  # Unimplemented in Trainer; see activation_memory_budget
 
     # Checkpointing options
     save_strategy: ConversionDescriptor = ConversionDescriptor(
