@@ -58,11 +58,9 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 
 
 -- block optimizer
-##optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
-##    lr: 5.0e-6
-##    weight_decay: 0.001
-optimizer: &optimizer !partial:torch.optim:SGD
+optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     lr: 5.0e-6
+    weight_decay: 0.001
 << endblock optimizer
 
 
