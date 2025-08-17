@@ -204,10 +204,9 @@ def parse_args(args=None):
 
     ds_parser.add_argument(
         "-H",
-        "--histogram-path",
-        type=str,
-        default=None,
-        help="Path to save the token-length histogram plot (.svg), if provided",
+        "--histogram",
+        action="store_true",
+        help="Generate dataset token length historgram and statistics",
     )
 
     ds_parser.add_argument(

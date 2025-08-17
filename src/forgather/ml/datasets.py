@@ -76,13 +76,12 @@ class SplitSpec:
     """
     Holds a split specification, which describes and input to output split mapping.
     This is used to specify how to process a dataset split, including the input and output splits,
-    the range of records to select, and the feature to process.
+    the range of records to select.
     """
 
     input_split: str
     output_split: str | NoneType = None
     select_range: range | int | float | Sequence | NoneType = None
-    feature: str = "text"
 
     def __post_init__(self):
         if self.output_split is None:

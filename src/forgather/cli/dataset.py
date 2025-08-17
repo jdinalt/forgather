@@ -51,9 +51,14 @@ def dataset_cmd(args):
         print("Tokenizer:")
         print(tokenizer)
 
-    if args.histogram_path:
+    if args.histogram:
         assert args.tokenizer_path, "Tokenizer path must be provided to plot histogram"
-        print("Plotting token length histogram...")
+        args.project_dir
+        args.config_template
+        cfg_name, _ = os.path.splitext(os.path.basename(args.config_template))
+        cfg_name += ".svg"
+        histogram_path = os.path.join(os.path.realpath(args.project_dir), cfg_name)
+        print(f"Generating token-length histogram: {histogram_path}")
         if args.use_split:
             if args.sample_eval:
                 assert (
@@ -72,7 +77,7 @@ def dataset_cmd(args):
                 feature=main_feature,
                 min=None,
                 max=None,
-                output_file=args.histogram_path,
+                output_file=histogram_path,
             )
         else:
             if args.sample_eval:
@@ -86,7 +91,7 @@ def dataset_cmd(args):
                 feature="input_ids",
                 min=None,
                 max=None,
-                output_file=args.histogram_path,
+                output_file=histogram_path,
             )
 
     if args.examples:
