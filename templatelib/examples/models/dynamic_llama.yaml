@@ -139,19 +139,19 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
 
 -- block model_config
     == super()
-    hidden_size: 512
-    num_attention_heads: 8
+    hidden_size: 4096
+    num_attention_heads: 32
     # Default to MHA when null
     num_kv_heads: null
-    d_head: 64 # Must be hidden_size // num_attention_heads
-    num_hidden_layers: 6
+    d_head: 128 # Must be hidden_size // num_attention_heads
+    num_hidden_layers: 32
     max_sequence_length: !singleton:getattr
         - *tokenizer
         - "model_max_length"
-    dim_feedforward: 2048
+    dim_feedforward: 11008
     rope_theta: 10000.0
     embedding_dropout: 0.0
-    rms_norm_eps: 1.0e-06
+    rms_norm_eps: 1.0e-05
     layer_dropout: 0.0
     residual_dropout: 0.0
     attention_dropout: 0.0
