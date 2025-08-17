@@ -79,6 +79,10 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
         show_details: True
         do_log: True
         summary_writer: *summary_writer
+        # Uncomment to write a PyTorch memory snampshot file at the first log step.
+        # See: https://pytorch.org/blog/understanding-gpu-memory-1/
+        # enable_memory_snapshot: True
+        file_prefix: "memory_snapshot"
 << endblock callback_list
 
 

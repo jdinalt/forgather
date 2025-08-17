@@ -59,13 +59,14 @@ class PeakMemory(TrainerCallback):
         summary_writer=None,
         show_details=False,
         do_log=False,
-        enable_memory_history=False,
+        enable_memory_snapshot=False,
+        file_prefix="memory_snapshot",
     ):
         """
         :param summary_writer: Optional TensorBoard SummaryWriter to log peak memory
         :param show_details: Whether to log detailed memory stats
         :param do_log: Whether to log on each log step
-        :param enable_memory_history: Whether to enable CUDA memory history recording (WARNING: memory intensive)
+        :param enable_memory_snapshot: Whether to enable CUDA memory history recording and snapshot
         """
         super().__init__()
         self.rank = int(os.environ.get("RANK", 0))
@@ -74,17 +75,15 @@ class PeakMemory(TrainerCallback):
         self.enabled = torch.cuda.is_available()
         self.show_details = show_details
         self.do_log = do_log
-        self.enable_memory_history = enable_memory_history
+        self.enable_memory_snapshot = enable_memory_snapshot
+        self.file_prefix = file_prefix
 
     def on_train_begin(self, args, state, control, **kwargs):
         if not self.enabled:
             return
         self.max_allocated = 0
         # This feature can consume 1GB+ of memory during training
-        if self.enable_memory_history:
-            logger.warning(
-                f"RANK{self.rank}: Enabling CUDA memory history recording - this can consume 1GB+ memory!"
-            )
+        if self.enable_memory_snapshot:
             torch.cuda.memory._record_memory_history(enabled="all")
 
     @staticmethod
@@ -111,6 +110,19 @@ class PeakMemory(TrainerCallback):
         if not self.enabled or (not self.do_log and not self.summary_writer):
             return
         device = torch.cuda.current_device()
+        if self.enable_memory_snapshot:
+            # Decode at https://docs.pytorch.org/memory_viz
+            output_file = f"{self.file_prefix}_rank{self.rank}.pickle"
+            logger.info(f"Saving memory snapshot to {output_file}")
+            try:
+                torch.cuda.memory._dump_snapshot(output_file)
+            except Exception as e:
+                logger.error(f"Failed to capture memory snapshot {output_file}")
+            torch.cuda.memory._record_memory_history(enabled=None)
+            # Only take a single snapshot
+            self.enable_memory_snapshot = False
+
+
         max_allocated = torch.cuda.max_memory_allocated(device=device)
         torch.cuda.reset_peak_memory_stats(device=device)
         self.max_allocated = max(self.max_allocated, max_allocated)
@@ -164,9 +176,8 @@ class PeakMemory(TrainerCallback):
             return
         max_allocated = torch.cuda.max_memory_allocated()
         self.max_allocated = max(self.max_allocated, max_allocated)
-        if self.enable_memory_history:
+        if self.enable_memory_snapshot:
             torch.cuda.memory._record_memory_history(enabled=None)
-            logger.info(f"RANK{self.rank}: CUDA memory history recording disabled")
         logger.info(
             f"RANK{self.rank} MAX CUDA MEMORY ALLOCATED: {self._format_peak_memory(self.max_allocated)}"
         )
