@@ -157,6 +157,11 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
     # https://docs.pytorch.org/docs/stable/generated/torch.nn.attention.sdpa_kernel.html#torch.nn.attention.sdpa_kernel
     sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
     sdpa_set_priority: False # If list, interpret as priority order
+
+    ## Low memory options
+    ## max_grad_norm: null
+    ## fuse_optim_with_backward: True
+    ## enable_activation_offloading: True
 << endblock trainer_args
 
 

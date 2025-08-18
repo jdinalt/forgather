@@ -1,0 +1,8 @@
+-- extends "meta_defaults.yaml"
+
+-- block configs
+name: "Samantha Finetune"
+description: "Finetune a model on the Samantha dataset"
+config_prefix: "configs"
+default_config: "1gpu_llama_7b/default.yaml"
+<< endblock configs

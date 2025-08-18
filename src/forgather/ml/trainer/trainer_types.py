@@ -209,6 +209,13 @@ class TrainingArguments(MinimalTrainingArguments):
     # https://docs.pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html
     float32_matmul_precision: str = None  # "highest" | "high" | "medium"
 
+    # Construct model on meta-device and materialize directly on device
+    # default: Construct model on CPU on move to device; slow, but reliable.
+    # device: Construct model directly on device. This is can faster, but may result in OOM
+    # meta: Construct on meta device and materialize on target device. The resulting model
+    #   is uninitialized and will need to be loaded with a checkpoint.
+    construct_model_on: str = "default" # "default" | "meta" | "device"
+
     def __post_init__(self):
         super().__post_init__()
         # As per https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader

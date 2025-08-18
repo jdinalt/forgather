@@ -10,58 +10,63 @@
 << endblock resource_directories
 
 
-## Common project settings
 -- block config_metadata
     == super()
-    -- set ns.config_name = "Pipeline Llama"
-    -- set ns.config_description = "Experimental pipeline parallel llama trainer"
+    -- set ns.config_name = "Finetune"
+    -- set ns.config_description = "Experiments in finetuning"
+    -- set ns.trainer_class = 'trainers/trainer.yaml'
+    -- set ns.trust_remote_code = True
     -- set ns.create_new_model = False
     -- set ns.save_model = False
     -- set ns.log_name = "project_default"
-    -- set ns.model_name = "llama-2-7b-fg"
+
+    ## Set to name of model, in "ns.models_dir"
+    ## -- set ns.model_name = "llama-2-7b-fg"
     -- set ns.train = True
     -- set ns.eval = False
     -- set ns.create_new_model = False
     -- set ns.trust_remote_code = True
--- endblock config_metadata
 
--- block trainer_definition
-    -- include 'project.trainer_config'
-<< endblock trainer_definition
+    ## memory debugging
+    -- set ns.debug_memory_detials = False
+    -- set ns.log_peak_memmory = False
+    -- set ns.log_memory_to_tb = False
+-- endblock config_metadata
 
 
 -- block datasets_definition
-    -- include 'project.dataset_config'
+    -- include 'finetune.dataset_config'
 -- endblock datasets_definition
 
 
+## Defaults to the basic trainer implementation
+## Note: This is unsuitable for multiple GPUs.
+## Override 'ns.trainer_class' to change the trainer class.
+-- block trainer_definition
+    ## See definition below
+    -- include 'finetune.trainer_config'
+-- endblock trainer_definition
+
+
 -- block trainer_callbacks
-    -- include 'project.callbacks'
+    ## See definition below
+    -- include 'finetune.callbacks'
 << endblock trainer_callbacks
 
 
--- block construct_new_model
-    -- include 'project.model'
--- endblock construct_new_model
+## Override, to construct model from config
+-- block load_model
+    -- include 'models/causal_lm/from_pretrained_config.yaml'
+-- endblock load_model
 
 
 -- block datacollator
-# Pipeline Parallel requires constant input tensor shapes. Use the datacollator to
-# generate constant sequence length batches, padding if too short and truncating if too long.
 data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
     tokenizer: *tokenizer
     return_tensors: pt
-    padding: "max_length"
     truncation: True
-    max_length: 1300
+    max_length: 4096
 -- endblock datacollator
-
-
--- block optimizer
-optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
-    lr: 5.0e-6
-    weight_decay: 0.001
-<< endblock optimizer
 
 
 -- block lr_scheduler
@@ -87,63 +92,61 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 << endblock lr_scheduler
 
 
--- block load_model
-    -- include 'models/causal_lm/from_pretrained_config.yaml'
--- endblock load_model
+## Add a default memory efficient optimizer
+-- block optimizer
+optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
+    lr: 5.0e-6
+    weight_decay: 0.001
+<< endblock optimizer
 
-#-------------------- project.trainer_config --------------------
--- extends 'trainers/pipeline_trainer.yaml'
+#-------------------- finetune.trainer_config --------------------
+-- extends ns.trainer_class
+## Note: We use dynamic inheritance for the trainer-class
+## This has a side effect of not being able to statically resolve the
+## parent template, which is named in the 'ns.trainer_class' variable,
+## the value of which is defined in the 'config_metadata' block, above.
 
 -- block trainer_meta_config
     == super()
-    -- set trainer_def.pipeline_layers = 32
-    -- set trainer_def.split_layer_prefix = "causal_lm.layer_stack.layers."
+    -- set trainer_def.name = "Custom " + trainer_def.name
 -- endblock trainer_meta_config
 
 
+## Setup some defaults for this type of project
 -- block trainer_args
     == super()
-    # Project overrides
+    # Finetune overrides
     seed: 42
     per_device_train_batch_size: 8
     per_device_eval_batch_size: 16
     logging_steps: 10
     eval_steps: 50
-    num_train_epochs: 2
+    num_train_epochs: 3
     dataloader_num_workers: 1
     max_grad_norm: 1.0
-    # max_steps: 11
-    
-    # fuse_optim_with_backward: True
-    # max_grad_norm: null              # Disable when using fuse_optim_with_backward
-    #sdpa_backend: "flash"
-    #torch_compile: True
-    #torch_compile_dynamic: False
-    #activation_memory_budget: 0.2
-    float32_matmul_precision: "high" # May still help for explicit float32 precision...
-    
-    # Checkpoint test settings - create multiple checkpoints with final step not multiple of save_steps
-    save_strategy: "steps"           # Set to "steps" to save every "save_steps"; set to "no" to disable
-    save_steps: 1000
-    save_safetensors: False          # Safe tensors don't support shared weights
-    save_total_limit: 3              # Keep 3 checkpoints
-    save_on_each_node: False         # Save common files on each node
-    save_optimizer_state: True       # Test optimizer state saving per rank
-    save_scheduler_state: True       # Test scheduler state saving per rank
-    save_rng_state: True             # Test RNG state saving per rank
+    float32_matmul_precision: "high"
 
+    # Checkpoint Save Settings
+    save_strategy: "steps"           # Set to "steps" to save every "save_steps"; set to "no" to disable
+    save_steps: 10000                # Checkpoint every N steps
+    save_safetensors: False          # Safe tensors don't support shared weights
+    save_total_limit: 3              # Keep at most N checkpoints
+    save_on_each_node: False         # Save common files on each node
+    save_optimizer_state: True       # Save optimizer state with checkpoint
+    save_scheduler_state: True       # Save LR scheduler state with checkpoint
+    save_rng_state: True             # Save RNG state with checkpoint
+
+    # We load the model via the newest checkpoint
     resume_from_checkpoint: True
     restore_optimizer_state: True    # Test optimizer state restoration per rank
     restore_scheduler_state: True    # Test scheduler state restoration per rank
     restore_rng_state: True          # Test RNG state restoration per rank
     restore_dataset_state: False     # Not fully implemented yet!
+    construct_model_on: "meta"       # Construct empty model on meta device
 
-    # Pipeline args
-    # enable_activation_checkpoints: True # Experimental: Inject activation checkpoints into graph
-    debug_pipeline: False
-    debug_split_model: False
-    debug_model_params: False
-    debug_model_init: False
+    # Enable all SDPA backends and let PyTorch choose which to use.
+    sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
+    sdpa_set_priority: False # If list, interpret as priority order
 -- endblock trainer_args
 
 
@@ -153,21 +156,21 @@ model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_t
 << endblock model_preprocessor
 
 
-#-------------------- project.dataset_config --------------------
--- extends 'datasets/samantha/samantha.yaml'
-
--- block tokenize_args
-    == super()
-    # project overrides
-<< endblock tokenize_args
-
-#-------------------- project.callbacks --------------------
+#-------------------- finetune.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'
+## Add experiment loggers to the callbacks list.
+## The parent creates a Tensor Board SummaryWriter, which we can use.
+
+-- block callback_dependencies
+    == super()
+<< endblock callback_dependencies
 
 -- block callback_list
     == super()
     - !singleton:forgather.ml.trainer.callbacks:PeakMemory
-        show_details: False
-        #summary_writer: *summary_writer
-        do_log: True
+        show_details: {{ ns.debug_memory_detials }}
+        do_log: {{ ns.log_peak_memmory }}
+    -- if ns.log_memory_to_tb
+        summary_writer: *summary_writer
+    -- endif
 << endblock callback_list

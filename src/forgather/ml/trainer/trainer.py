@@ -39,6 +39,10 @@ from .callbacks.default_callbacks import (
     InfoCallback,
 )
 from .periodic_function import PeriodicFunction
+from ..sharded_checkpoint import (
+    create_sharing_metadata,
+    retie_parameters,
+)
 
 
 @dataclass(kw_only=True)
@@ -202,7 +206,6 @@ class Trainer(BaseTrainer):
             fullgraph=self.args.torch_compile_full_graph,
         )
 
-
     def _init_dataloaders(self, train_dataset, eval_dataset) -> None:
         # _prepare() sub-step 1
         self.max_steps = 0
@@ -227,11 +230,26 @@ class Trainer(BaseTrainer):
 
     def _prepare_model(self) -> None:
         # _prepare() sub-step 2
-        if self.model_init:
-            self.optimizer = None
-            self.lr_scheduler = None
-            self.model = self.model_init()
-        self.model = self.model.to(self.args.device)
+        match self.args.construct_model_on:
+            case "default":
+                if self.model_init:
+                    self.model = self.model_init()
+                self.model = self.model.to(self.args.device)
+            case "meta":
+                assert self.model_init, "Constructing the model on meta device requires model_init"
+                logger.warning("Constructing model on meta device; parameters must be loaded from checkpoint.")
+                with torch.device("meta"):
+                    self.model = self.model_init()
+                sharing_metadata = create_sharing_metadata(self.model)
+                self.model.to_empty(device=self.args.device)
+                # to_empty() will break tied parameters. Fix them!
+                retie_parameters(self.model, sharing_metadata)
+            case "device":
+                assert self.model_init, "Constructing the model on device requires model_init"
+                with torch.device(self.args.device):
+                    self.model = self.model_init()
+            case _:
+                raise ValueError("Requires one of: default|meta|device")
 
     def _init_optimizer(self) -> None:
         # _prepare() sub-step 3
@@ -412,6 +430,7 @@ class Trainer(BaseTrainer):
         
         with ExitStack() as stack:
             if self.args.enable_activation_offloading:
+                print("CPU offload enabled")
                 stack.enter_context(
                     torch.autograd.graph.save_on_cpu(pin_memory=True)
                 )

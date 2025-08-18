@@ -490,20 +490,15 @@ class BaseTrainer(ExtensibleTrainer):
 
     def _load_model_from_checkpoint(self, checkpoint_path: str) -> None:
         """Load model weights from checkpoint using the sharded checkpoint loader."""
-        if self.model is None:
-            logger.warning("Cannot load model weights: model not initialized")
-            return
+        assert self.model is not None
+        logger.warning("Cannot load model weights: model not initialized")
 
-        try:
-            # Handle case where device might be None
-            device = self.args.device if self.args.device is not None else "cpu"
+        # Handle case where device might be None
+        device = self.args.device if self.args.device is not None else "cpu"
 
-            # Use the sharded checkpoint loader to handle all checkpoint formats
-            load_checkpoint(checkpoint_path, self.model, device=device, strict=True)
-            logger.info(f"Loaded model weights from checkpoint: {checkpoint_path}")
-
-        except Exception as e:
-            logger.error(f"Failed to load model weights from {checkpoint_path}: {e}")
+        # Use the sharded checkpoint loader to handle all checkpoint formats
+        logger.info(f"Loading model weights from checkpoint: {checkpoint_path}")
+        load_checkpoint(checkpoint_path, self.model, device=torch.device(device), strict=True)
 
     @staticmethod
     def _get_sdpa_backends(
