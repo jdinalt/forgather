@@ -237,7 +237,10 @@ class Trainer(BaseTrainer):
                 self.model = self.model.to(self.args.device)
             case "meta":
                 assert self.model_init, "Constructing the model on meta device requires model_init"
-                logger.warning("Constructing model on meta device; parameters must be loaded from checkpoint.")
+                assert self.args.resume_from_checkpoint, (
+                    "Constructing model on meta-device requires loading parameters from checkpoint"
+                )
+
                 with torch.device("meta"):
                     self.model = self.model_init()
                 sharing_metadata = create_sharing_metadata(self.model)
@@ -427,7 +430,7 @@ class Trainer(BaseTrainer):
         Returns: mean loss (detached from graph)
         """
         args, kwargs = self._prepare_batch(batch)
-        
+
         with ExitStack() as stack:
             if self.args.enable_activation_offloading:
                 print("CPU offload enabled")
