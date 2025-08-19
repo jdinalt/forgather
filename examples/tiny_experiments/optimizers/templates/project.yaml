@@ -43,8 +43,8 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 
 
 #-------------------- project.dataset_config --------------------
--- extends 'datasets/tinystories/tinystories_abridged.yaml'
-##-- extends 'datasets/tinystories/tinystories.yaml'
+-- extends 'datasets/roneneldan/tinystories-abridged.yaml'
+##-- extends 'datasets/roneneldan/tinystories.yaml'
 
 
 #-------------------- project.callbacks --------------------

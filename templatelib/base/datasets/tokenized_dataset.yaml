@@ -17,10 +17,41 @@
 
 
 == h3('Dataset Splits')
+## Notes on split:
+## Including the splits here is optional, although doing so makes it possible for the CLI
+## to sample directly from the splits, without having to tokenize anything.
+##
+## Naming Conventions:
+##   train: The main training dataset
+##   validation: Samples held-out from the model for the purpose of hypter-parameter tuning,
+##       measuring over/underfit, etc.
+##   test: Additional helt-out samples, which should only be used for testin the final model.
+##   eval: The dataset used by the trainer to measure performance. This should be 'validaiton,' for 
+##       periodic testing, while training, and 'test,' for testing the final model.
 
 -- filter trim()
 -- block source_datasets
-## Raw dataset splits go here
+    -- filter trim()
+    -- block train_dataset_split
+## train_dataset_split: &train_dataset_split
+    << endblock train_dataset_split
+    -- endfilter
+
+
+    -- filter trim()
+    -- block validation_dataset_split
+## validation_dataset_split: &validation_dataset_split
+    << endblock validation_dataset_split
+    -- endfilter
+
+
+    -- filter trim()
+    -- block test_dataset_split
+## test_dataset_split: &test_dataset_split
+    << endblock test_dataset_split
+    -- endfilter
+
+
 << endblock source_datasets
 -- endfilter
 

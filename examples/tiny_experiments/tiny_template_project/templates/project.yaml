@@ -45,6 +45,6 @@
 << endblock model_config
 
 #-------------------- project.dataset_config --------------------
-## Note: Switch to 'datasets/tinystories/tinystories.yaml' for the full dataset.
--- extends 'datasets/tinystories/tinystories_abridged.yaml'
+## Note: Switch to 'datasets/roneneldan/tinystories.yaml' for the full dataset.
+-- extends 'datasets/roneneldan/tinystories-abridged.yaml'
 

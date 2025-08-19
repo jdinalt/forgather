@@ -1,0 +1,12 @@
+-- extends "datasets/HuggingFaceTB/smollm-corpus/cosmopedia-v2.yaml"
+
+-- block datasets_meta_config
+    == super()
+    -- set ns.datasets_name = ns.datasets_name + " Abridged"
+-- endblock datasets_meta_config
+
+
+-- block train_dataset_split
+    == super()
+    kwargs: { split: "train[10000:5000000]", num_proc: 16 }
+<< endblock train_dataset_split

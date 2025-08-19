@@ -154,7 +154,7 @@ model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_t
 
 
 #-------------------- project.dataset_config --------------------
--- extends 'datasets/samantha/samantha.yaml'
+-- extends 'datasets/QuixiAI/samantha.yaml'
 
 -- block tokenize_args
     == super()

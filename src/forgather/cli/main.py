@@ -210,9 +210,10 @@ def parse_args(args=None):
     )
 
     ds_parser.add_argument(
-        "--use-split",
-        action="store_true",
-        help="Perform historgram with split, rather than the tokenized dataset",
+        "--target",
+        type=str,
+        default="train_dataset_split",
+        help="The dataset to sample from; see \"forgather targets\"",
     )
 
     ds_parser.add_argument(
@@ -240,9 +241,9 @@ def parse_args(args=None):
 
     ds_parser.add_argument(
         "-s",
-        "--sample-eval",
+        "--tokenized",
         action="store_true",
-        help="If set, sample from the eval dataset instead of the train dataset",
+        help="The split is already tokenized",
     )
 
     return parser.parse_args(args)

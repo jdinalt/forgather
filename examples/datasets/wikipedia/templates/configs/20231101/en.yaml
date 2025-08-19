@@ -1,0 +1,5 @@
+-- extends 'types/dataset/dataset_wrapper.yaml'
+
+-- block dataset
+    -- include 'datasets/wikipedia/20231101/en.yaml'
+-- endblock dataset

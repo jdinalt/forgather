@@ -8,19 +8,25 @@
     -- set ns.datasets_main_feature = "page"
 -- endblock datasets_meta_config
 
--- block source_datasets
+-- block train_dataset_split
 train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train_dataset_split
     args: [ "EleutherAI/wikitext_document_level", "wikitext-103-raw-v1" ]
     kwargs: { split: "train" }
+<< endblock train_dataset_split
 
+
+-- block validation_dataset_split
 validation_dataset_split: &validation_dataset_split !singleton:datasets:load_dataset@validation_dataset_split
     args: [ "EleutherAI/wikitext_document_level", "wikitext-103-raw-v1" ]
     kwargs: { split: "validation" }
+<< endblock validation_dataset_split
 
-eval_dataset_split: &eval_dataset_split !singleton:datasets:load_dataset@eval_dataset_split
+
+-- block test_dataset_split
+test_dataset_split: &test_dataset_split !singleton:datasets:load_dataset@test_dataset_split
     args: [ "EleutherAI/wikitext_document_level", "wikitext-103-raw-v1" ]
     kwargs: { split: "test" }
-<< endblock source_datasets
+<< endblock test_dataset_split
 
 
 -- block preprocess_args

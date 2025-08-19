@@ -43,4 +43,4 @@
 -- endblock trainer_args
 
 #-------------------- samantha.dataset_config --------------------
--- extends 'datasets/samantha/samantha.yaml'
+-- extends 'datasets/QuixiAI/samantha.yaml'

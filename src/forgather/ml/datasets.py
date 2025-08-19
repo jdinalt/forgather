@@ -5,7 +5,7 @@ from collections.abc import Sequence
 import os
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import get_worker_info
 from datasets import Dataset
 from datasets.distributed import split_dataset_by_node
 
@@ -70,23 +70,6 @@ def normalize_range(
         )
 
 
-@dataclass(kw_only=True)
-class SplitSpec:
-    """
-    Holds a split specification, which describes and input to output split mapping.
-    This is used to specify how to process a dataset split, including the input and output splits,
-    the range of records to select.
-    """
-
-    input_split: str
-    output_split: str | NoneType = None
-    select_range: range | int | float | Sequence | NoneType = None
-
-    def __post_init__(self):
-        if self.output_split is None:
-            self.output_split = self.input_split
-
-
 def default_tokenize_map_fn(element, tokenizer, feature, **kwargs):
     """
     Default map function for tokenizing a dataset element.
@@ -104,7 +87,10 @@ def default_tokenize_map_fn(element, tokenizer, feature, **kwargs):
     )
     return {"input_ids": outputs["input_ids"]}
 
-
+# This ensures that the dataset is preprocessed by rank0 and cached before other
+# ranks join in. In the context of Huggingace datasets, the result is that the
+# preprocessed dataset will be cached by rank0 and the cached dataset will be loaded
+# by the other ranks, which avoid potential race conditions and duplicate work.
 @main_process_first()
 def preprocess_dataset(
     dataset: Dataset,
@@ -122,10 +108,11 @@ def preprocess_dataset(
     map_fn=default_tokenize_map_fn,
     map_kwargs=None,
     fn_kwargs=None,
-    parallel_tokenizer=True,
 ):
     """
-    Preprocess a dataset by tokenizing it with the provided tokenizer.
+    This is a farily generic and flxible dataset preprocessor to quickly get a dataset 
+    up and running for evaluation. For production use, write a custom preprocessor!
+    
     Args:
         dataset: The dataset to preprocess.
         tokenizer: The tokenizer to use for tokenization.
@@ -146,8 +133,12 @@ def preprocess_dataset(
         The tokenized dataset.
     """
 
-    os.environ["TOKENIZERS_PARALLELISM"] = "true" if parallel_tokenizer else "false"
+    #assert hasattr(dataset, __getitem__), "A map-style dataset is required for this function"
 
+    # Disable parallelism, when running in dataworker to avoid fast-tokenizer use-after-fork warning.
+    if get_worker_info():
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        
     if fn_kwargs is None:
         fn_kwargs = dict()
 
@@ -196,51 +187,6 @@ def preprocess_dataset(
         **map_kwargs,
     )
     return tokenized_data
-
-
-def test_with_dataloader(
-    ds,
-    tokenizer,
-    collate_fn,
-    n=4,
-    batch_size=2,
-    prefetch_factor=2,
-    drop_last=True,
-    num_workers=1,
-    pin_memory=True,
-    **dataloder_kwargs,
-):
-    """
-    Simple test function to test a dataset with a standard dataloader
-    Args:
-        ds: The dataset to test
-        tokenizer: The tokenizer to use
-        collate_fn: The collate function to use
-        n: Number of batches to print
-        batch_size: Batch size for the dataloader
-        prefetch_factor: Prefetch factor for the dataloader
-        drop_last: Whether to drop the last incomplete batch
-        num_workers: Number of workers for the dataloader
-        pin_memory: Whether to pin memory for the dataloader
-        **dataloder_kwargs: Additional arguments for DataLoader
-    """
-    dl = DataLoader(
-        ds,
-        batch_size=batch_size,
-        collate_fn=collate_fn,
-        prefetch_factor=prefetch_factor,
-        drop_last=drop_last,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        **dataloder_kwargs,
-    )
-    for i, batch in enumerate(dl):
-        print(f"batch {i}")
-        for input_ids in batch["input_ids"]:
-            print("---")
-            print(repr(tokenizer.decode(input_ids)))
-        if i == n:
-            break
 
 
 def plot_token_length_histogram(

@@ -1,0 +1,12 @@
+-- extends "datasets/roneneldan/tinystories.yaml"
+
+-- block datasets_meta_config
+    == super()
+    -- set ns.datasets_name = ns.datasets_name + " Abridged"
+-- endblock datasets_meta_config
+
+
+-- block train_dataset_split
+    == super()
+    kwargs: { split: "train[:10%]" }
+<< endblock train_dataset_split
