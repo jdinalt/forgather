@@ -546,6 +546,12 @@ def convert_hf_to_forgather(args):
         logger.info(f"Setting tokenizer chat template to: {chat_template}")
         tokenizer.chat_template = chat_template
 
+    if tokenizer.pad_token is None:
+        print("No PAD token defined. Setting pad token to EOS")
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        tokenizer.padding_side = 'right'
+    
     model_config = Latent.materialize(config, mtargets="model_config")
     logger.info(model_config)
 
