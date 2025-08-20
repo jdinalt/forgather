@@ -76,6 +76,16 @@
 -- endfilter
 
 
+== h3('Dynamic Args')
+-- filter trim()
+-- block dynamic_args
+## A list of dynamic arguments for CLI tools
+dynamic_args: !dlist
+    null: ~
+<< endblock dynamic_args
+-- endfilter
+
+
 == h1('Configuration Output')
 -- filter trim()
 -- block config_output

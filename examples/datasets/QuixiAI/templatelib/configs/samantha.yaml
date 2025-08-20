@@ -61,3 +61,11 @@ eval_dataset: &eval_dataset !singleton:{{ ns.samantha_src }}:preprocess_samantha
         eos_token: !call:getattr [ *tokenizer, 'eos_token' ]
     desc: "Tokenizing eval"
 << endblock eval_dataset
+
+
+-- block dynamic_args
+    == super()
+    max_steps:
+        names: "--chat-template"
+        help: "Path to chat template"
+<< endblock dynamic_args

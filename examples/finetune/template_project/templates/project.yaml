@@ -15,8 +15,8 @@
     -- set ns.model_name = "my_model_name"
 
     ## Set these to the dataset project to use
-    -- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
-    -- set ns.dataset_config = "samantha.yaml"
+    -- set ns.dataset_proj = dataset_proj | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI'))
+    -- set ns.dataset_config = dataset_config | default("samantha.yaml")
 -- endblock config_metadata
 
 

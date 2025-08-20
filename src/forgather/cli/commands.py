@@ -12,6 +12,8 @@ from forgather.meta_config import preprocessor_globals, MetaConfig
 from forgather.config import ConfigEnvironment
 from forgather.preprocess import LineStatementProcessor
 
+from .dynamic_args import get_dynamic_args
+
 """shared command utils"""
 
 
@@ -101,12 +103,19 @@ def targets_cmd(args):
 
 
 def pp_cmd(args):
-    """Show pp_cmded configuration."""
+    """Show preprocessed configuration."""
     if args.debug:
         LineStatementProcessor.preserve_line_numbers = True
         LineStatementProcessor.pp_verbose = True
+    
+    # Get dynamic arguments (configuration-specific args)
+    dynamic_args = get_dynamic_args(args)
+    if dynamic_args:
+        print(f"# Dynamic arguments received: {dynamic_args}")
+        print()
+    
     cmd = BaseCommand(args)
-    pp_config = cmd.env.preprocess(cmd.meta.config_path(args.config_template))
+    pp_config = cmd.env.preprocess(cmd.meta.config_path(args.config_template), **dynamic_args)
     print(pp_config)
 
 
@@ -212,6 +221,8 @@ def tb_cmd(args):
 
 def train_cmd(args):
     """Run configuration with train script."""
+    import json
+    
     cmd = BaseCommand(args)
     config, pp_config = cmd.get_config()
     config_meta = Latent.materialize(config.meta)
@@ -246,6 +257,13 @@ def train_cmd(args):
     # Optionally, apply system search path from meta.
     if cmd.meta.system_path is not None:
         cmd_args.extend(["-s", cmd.meta.system_path])
+
+    # Add dynamic arguments as JSON if any exist
+    dynamic_args = get_dynamic_args(args)
+    if dynamic_args:
+        # Serialize dynamic args to JSON and pass to training script
+        dynamic_args_json = json.dumps(dynamic_args)
+        cmd_args.extend(["--dynamic-args", dynamic_args_json])
 
     # Add the config template name
     cmd_args.append(args.config_template)

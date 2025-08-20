@@ -5,7 +5,6 @@ from collections.abc import Sequence
 import os
 
 import torch
-from torch.utils.data import get_worker_info
 from datasets import Dataset
 from datasets.distributed import split_dataset_by_node
 
@@ -134,11 +133,6 @@ def preprocess_dataset(
     """
 
     #assert hasattr(dataset, __getitem__), "A map-style dataset is required for this function"
-
-    # Disable parallelism, when running in dataworker to avoid fast-tokenizer use-after-fork warning.
-    if get_worker_info():
-        os.environ["TOKENIZERS_PARALLELISM"] = "false"
-        
     if fn_kwargs is None:
         fn_kwargs = dict()
 

@@ -13,10 +13,9 @@
     # Set ot name of model to train
     -- set ns.model_name = "llama-2-7b-fg"
     -- set ns.debug_memory_detials = False
-    -- set ns.log_peak_memmory = True
     -- set ns.log_memory_to_tb = True
-    -- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
-    -- set ns.dataset_config = "samantha.yaml"
+    -- set ns.dataset_proj = dataset_proj | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI'))
+    -- set ns.dataset_config = dataset_config | default("samantha.yaml")
     -- set ns.samantha_default_chat_template = joinpath(ns.forgather_dir, 'chat_templates', 'chatml.jinja')
     -- set ns.samantha_chat_template = chat_template | default(ns.samantha_default_chat_template)
 -- endblock config_metadata
@@ -26,6 +25,12 @@
     -- include 'samantha.trainer_config'
 -- endblock trainer_definition
 
+-- block dynamic_args
+    == super()
+    chat_template:
+        names: "--chat-template"
+        help: "Path to the chat template to use"
+<< endblock dynamic_args
 
 #-------------------- samantha.trainer_config --------------------
 -- extends 'finetune.trainer_config'

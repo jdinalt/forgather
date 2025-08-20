@@ -20,6 +20,11 @@ from .commands import (
     train_cmd,
 )
 
+from .dynamic_args import (
+    parse_dynamic_args,
+    partition_args,
+    get_dynamic_args,
+)
 
 def parse_global_args(args=None):
     """Parse global arguments and return global args + remaining args for subcommand."""
@@ -45,12 +50,17 @@ def parse_global_args(args=None):
         help="Configuration Template Name",
     )
 
+    parser.add_argument(
+        "--no-dyn",
+        action="store_true",
+        help="Disable processing of dynamic args defined in configuration templates",
+    )
+
     # Parse known args to separate global from subcommand args
     global_args, remaining_args = parser.parse_known_args(args)
     
     return global_args, remaining_args
-
-
+        
 def get_subcommand_registry():
     """Registry of all available subcommands and their argument parsers."""
     return {
@@ -70,7 +80,7 @@ def get_subcommand_registry():
     }
 
 
-def create_index_parser():
+def create_index_parser(global_args):
     """Create parser for index command."""
     parser = argparse.ArgumentParser(
         prog="forgather index",
@@ -80,7 +90,7 @@ def create_index_parser():
     return parser
 
 
-def create_ls_parser():
+def create_ls_parser(global_args):
     """Create parser for ls command."""
     parser = argparse.ArgumentParser(
         prog="forgather ls",
@@ -96,7 +106,7 @@ def create_ls_parser():
     return parser
 
 
-def create_meta_parser():
+def create_meta_parser(global_args):
     """Create parser for meta command."""
     parser = argparse.ArgumentParser(
         prog="forgather meta",
@@ -106,7 +116,7 @@ def create_meta_parser():
     return parser
 
 
-def create_targets_parser():
+def create_targets_parser(global_args):
     """Create parser for targets command."""
     parser = argparse.ArgumentParser(
         prog="forgather targets",
@@ -116,7 +126,7 @@ def create_targets_parser():
     return parser
 
 
-def create_tlist_parser():
+def create_tlist_parser(global_args):
     """Create parser for tlist command."""
     parser = argparse.ArgumentParser(
         prog="forgather tlist",
@@ -133,7 +143,7 @@ def create_tlist_parser():
     return parser
 
 
-def create_graph_parser():
+def create_graph_parser(global_args):
     """Create parser for graph command."""
     parser = argparse.ArgumentParser(
         prog="forgather graph",
@@ -156,7 +166,7 @@ def create_graph_parser():
     return parser
 
 
-def create_trefs_parser():
+def create_trefs_parser(global_args):
     """Create parser for trefs command."""
     parser = argparse.ArgumentParser(
         prog="forgather trefs",
@@ -173,7 +183,7 @@ def create_trefs_parser():
     return parser
 
 
-def create_pp_parser():
+def create_pp_parser(global_args):
     """Create parser for pp command."""
     parser = argparse.ArgumentParser(
         prog="forgather pp",
@@ -192,10 +202,12 @@ def create_pp_parser():
         action="store_true",
         help="Shows additional debug information",
     )
+
+    parse_dynamic_args(parser, global_args)
     return parser
 
 
-def create_tb_parser():
+def create_tb_parser(global_args):
     """Create parser for tb command."""
     parser = argparse.ArgumentParser(
         prog="forgather tb",
@@ -220,7 +232,7 @@ def create_tb_parser():
     return parser
 
 
-def create_code_parser():
+def create_code_parser(global_args):
     """Create parser for code command."""
     parser = argparse.ArgumentParser(
         prog="forgather code",
@@ -236,7 +248,7 @@ def create_code_parser():
     return parser
 
 
-def create_construct_parser():
+def create_construct_parser(global_args):
     """Create parser for construct command."""
     parser = argparse.ArgumentParser(
         prog="forgather construct",
@@ -257,7 +269,7 @@ def create_construct_parser():
     return parser
 
 
-def create_train_parser():
+def create_train_parser(global_args):
     """Create parser for train command."""
     parser = argparse.ArgumentParser(
         prog="forgather train",
@@ -281,10 +293,10 @@ def create_train_parser():
         nargs=argparse.REMAINDER,
         help="All arguments after -- will be forwarded as torchrun arguments.",
     )
+    parse_dynamic_args(parser, global_args)
     return parser
 
-
-def create_dataset_parser():
+def create_dataset_parser(global_args):
     """Create parser for dataset command."""
     parser = argparse.ArgumentParser(
         prog="forgather dataset",
@@ -321,13 +333,13 @@ def create_dataset_parser():
         default=1000,
         help="Number of samples to use for histogram",
     )
-    parser.add_argument(
-        "-c",
-        "--chat-template",
-        type=str,
-        default=None,
-        help="Path to chat template",
-    )
+    #parser.add_argument(
+    #    "-c",
+    #    "--chat-template",
+    #    type=str,
+    #    default=None,
+    #    help="Path to chat template",
+    #)
     parser.add_argument(
         "-n",
         "--examples",
@@ -341,8 +353,8 @@ def create_dataset_parser():
         action="store_true",
         help="The split is already tokenized",
     )
+    parse_dynamic_args(parser, global_args)
     return parser
-
 
 def show_main_help():
     """Show the main help message with available subcommands."""
@@ -358,8 +370,13 @@ def show_main_help():
     print("Available subcommands:")
     registry = get_subcommand_registry()
     for cmd_name in sorted(registry.keys()):
-        parser = registry[cmd_name]()
-        print(f"  {cmd_name:<12} {parser.description}")
+        # Create a dummy global_args for the registry call
+        dummy_global_args = argparse.Namespace(project_dir=".", config_template=None)
+        try:
+            parser = registry[cmd_name](dummy_global_args)
+            print(f"  {cmd_name:<12} {parser.description}")
+        except:
+            print(f"  {cmd_name:<12} [Error loading description]")
     print()
     print("Use 'forgather <subcommand> --help' for help on a specific subcommand.")
 
@@ -388,7 +405,7 @@ def parse_args(args=None):
         sys.exit(1)
     
     # Create subcommand parser and parse its arguments
-    subcommand_parser = registry[subcommand]()
+    subcommand_parser = registry[subcommand](global_args)
     
     try:
         sub_args = subcommand_parser.parse_args(subcommand_args)
@@ -396,19 +413,32 @@ def parse_args(args=None):
         # argparse calls sys.exit on help or error - let it through
         raise
     
-    # Combine global and subcommand args into a single namespace
+    # Get dynamic argument names from the parser (if available)
+    dynamic_arg_names = getattr(subcommand_parser, '_dynamic_arg_names', [])
+    
+    # Partition the subcommand arguments
+    if dynamic_arg_names:
+        built_in_sub_args, dynamic_sub_args = partition_args(sub_args, dynamic_arg_names)
+    else:
+        built_in_sub_args = vars(sub_args)
+        dynamic_sub_args = {}
+    
+    # Combine global and built-in subcommand args into a single namespace
     combined_args = argparse.Namespace()
     
     # Add global args
     for key, value in vars(global_args).items():
         setattr(combined_args, key, value)
     
-    # Add subcommand args
-    for key, value in vars(sub_args).items():
+    # Add built-in subcommand args
+    for key, value in built_in_sub_args.items():
         setattr(combined_args, key, value)
     
     # Add the command name
     combined_args.command = subcommand
+    
+    # Store dynamic args separately for easy access
+    combined_args._dynamic_args = dynamic_sub_args
     
     return combined_args
 

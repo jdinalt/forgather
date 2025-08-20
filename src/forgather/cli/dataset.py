@@ -1,26 +1,31 @@
 import os
+import argparse
+from argparse import RawTextHelpFormatter
 
 from transformers import AutoTokenizer
 
 from forgather.config import ConfigEnvironment
-from forgather.latent import Latent
 from forgather.ml.datasets import plot_token_length_histogram
 from forgather import Project
 
+from .dynamic_args import get_dynamic_args
 
 def dataset_cmd(args):
     config_name = args.config_template
     project_args = dict(
-        project_dir=args.project_dir,
         tokenizer_path=args.tokenizer_path,
     )
 
     if args.config_template is None:
         args.config_template = ""
-    if args.chat_template:
-        project_args["chat_template"] = args.chat_template
 
-    proj = Project(args.config_template, **project_args)
+    # Merge in dynamic args
+    project_args |= get_dynamic_args(args)
+    proj = Project(
+        config_name=args.config_template,
+        project_dir=args.project_dir,
+        **project_args
+    )
     proj_meta = proj("meta")
     config_class = proj_meta["config_class"]
     main_feature = proj_meta["main_feature"]

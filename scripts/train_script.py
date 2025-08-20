@@ -74,6 +74,12 @@ def parse_args(args=None):
         default=".",
         help="The relative path to the project directory.",
     )
+    parser.add_argument(
+        "--dynamic-args",
+        type=str,
+        default=None,
+        help="JSON-encoded dynamic arguments to pass to the Project constructor",
+    )
 
     args = parser.parse_args(args)
     logger.info(f"args: {args}")
@@ -86,10 +92,28 @@ def parse_args(args=None):
 
 @record
 def main():
+    import json
+    from forgather.project import Project
+    
     logging.basicConfig(level=logging.INFO)
     args = parse_args()
     init_logging(args)
-    training_loop(args.project_dir, args.config_template)
+    
+    # Parse dynamic args from JSON if provided
+    dynamic_args = {}
+    if args.dynamic_args:
+        try:
+            dynamic_args = json.loads(args.dynamic_args)
+            logger.info(f"Parsed dynamic args: {dynamic_args}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse dynamic args JSON: {e}")
+            sys.exit(1)
+    
+    # Create Project with dynamic args and run training
+    proj = Project(args.config_template, args.project_dir, **dynamic_args)
+    training_script = proj()
+    training_script.run()
+    
     if torch.distributed.is_initialized():
         torch.distributed.barrier()
         # This can trigger a seg-fault on process exit. I get a warning without it and a crash with it... I'll take

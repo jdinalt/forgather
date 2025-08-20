@@ -49,10 +49,7 @@ def preprocess_samantha(
     map_args=None,
     template_args=None,
     desc="Tokenizing Dataset",
-    parallel_tokenizer=False,
 ):
-    #os.environ["TOKENIZERS_PARALLELISM"] = "true" if parallel_tokenizer else "false"
-
     if tokenizer_args is None:
         tokenizer_args = dict()
     if map_args is None:

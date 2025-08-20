@@ -14,19 +14,19 @@
 
     ## The configuration in the dataset sub-project
     -- set ns.dataset_config = "tinystories-abridged.yaml"
--- endblock config_metadata
+<< endblock config_metadata
 
 
 -- block datasets_preprocessor_args
 tokenizer_args: &tokenizer_args !dict
     truncation: True
     max_length: 512
--- endblock datasets_preprocessor_args
+<< endblock datasets_preprocessor_args
 
 ## Pull dataset loader from template definition
 -- block datasets_definition
     -- include 'datasets/llm_dataset_project.yaml'
--- endblock datasets_definition
+<< endblock datasets_definition
 
 
 ## This includes an inline template, defined below.
@@ -36,13 +36,13 @@ tokenizer_args: &tokenizer_args !dict
 ## the resulting template.
 -- block construct_new_model
     -- include 'project.model_config'
--- endblock construct_new_model
+<< endblock construct_new_model
 
 
 ## Definition is inlined, below.
 -- block trainer_definition
     -- include 'project.trainer_config'
--- endblock trainer_definition
+<< endblock trainer_definition
 
 
 ## Override loggers
@@ -55,7 +55,7 @@ tokenizer_args: &tokenizer_args !dict
 -- block optimizer
 optimizer: &optimizer !partial:torch:optim.AdamW
     lr: 1.0e-3
--- endblock optimizer
+<< endblock optimizer
 
 
 ## Override the default LR Scheduler
@@ -74,7 +74,20 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     ## Limit maximum sequence length 512 tokens, at the data-collator level.
     truncation: True
     max_length: 512
--- endblock datacollator
+<< endblock datacollator
+
+## This is an example of adding a dynamic argument to the configuraiton.
+## When using the command line tool, the tool will parse the configuration's
+## meta-data to setup dynamic arguments. These will show in the commands "help"
+## and will be injected into the configuration.
+## See the trainer_args section, below, where we use the "max_steps" argument, and
+## set a default value of -1 (limited by epochs).
+-- block dynamic_args
+    == super()
+    max_steps:
+        names: "--max-steps"
+        help: "Set maximum training steps"
+<< endblock dynamic_args
 
 
 #-------------------- project.model_config --------------------
@@ -97,7 +110,9 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     dataloader_num_workers: 1
     # Safetensors can't handle tied parameters/buffers, so fallback to PyTorch format.
     save_safetensors: False
--- endblock trainer_args
+    ## This is a dynamic argument, with a default value of 1. We can set this from the CLI.
+    max_steps: {{ max_steps | default(-1) }}
+<< endblock trainer_args
 
 
 #-------------------- project.logger_config --------------------

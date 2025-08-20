@@ -55,6 +55,8 @@ class Project:
 
         # Get the default configuration
         default_config = self.meta.default_config()
+        if config_name is None:
+            config_name = ""
         self.config_name = config_name if len(config_name) else default_config
 
         # Construct a project environment

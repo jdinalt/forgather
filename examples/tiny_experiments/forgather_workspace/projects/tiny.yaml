@@ -18,16 +18,15 @@
 
     ## memory debugging
     -- set ns.debug_memory_detials = False
-    -- set ns.log_peak_memmory = False
     ## Debug logging to TensorBoard vs console
     -- set ns.log_memory_to_tb = False
 
     ## The dataset sub-project to use
-    -- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan')
+    -- set ns.dataset_proj = dataset_proj | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
 
     ## The configuration in the dataset sub-project
     ## Note: Switch to 'tinystories.yaml' for the full dataset.
-    -- set ns.dataset_config = "tinystories-abridged.yaml"
+    -- set ns.dataset_config = dataset_config | default("tinystories-abridged.yaml")
 -- endblock config_metadata
 
 
@@ -101,6 +100,24 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 
 << endblock optimizer
 
+
+-- block dynamic_args
+    == super()
+    max_steps:
+        names: "--max-steps"
+        help: "Set maximum training steps"
+    log_peak_memory:
+        names: "--log-peak-memory"
+        action: "store_true"
+        help: "Log peak GPU memory at each log step"
+    dataset_config:
+        names: "--dataset-config"
+        help: "The name of the dataset configuration to use"
+    dataset_proj:
+        names: "--dataset-proj"
+        help: "Path to dataset project to use"
+<< endblock dynamic_args
+
 #-------------------- tiny.trainer_config --------------------
 -- extends ns.trainer_class
 ## Note: We use dynamic inheritance for the trainer-class
@@ -125,6 +142,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
     eval_steps: 500
     num_train_epochs: 1
     dataloader_num_workers: 1
+    max_steps: {{ max_steps | default(-1) }}
 -- endblock trainer_args
 
 #-------------------- tiny.model_config --------------------
@@ -158,7 +176,7 @@ text_gen_callback_args: &text_gen_callback_args
         <<: *text_gen_callback_args
     - !singleton:forgather.ml.trainer.callbacks:PeakMemory
         show_details: {{ ns.debug_memory_detials }}
-        do_log: {{ ns.log_peak_memmory }}
+        do_log: {{ log_peak_memory | default(False) }}
     -- if ns.log_memory_to_tb
         summary_writer: *summary_writer
     -- endif

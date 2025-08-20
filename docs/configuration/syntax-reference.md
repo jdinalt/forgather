@@ -258,6 +258,38 @@ graph()
 {'foo': 1, 'bar': 2, 'baz': 3}
 ```
 
+### !dlist : Named Dictionary-List
+
+Syntax: !dlist\[:@\<name\>\] \<mapping\>
+
+Construct a Dictionary-List. What is that, you may ask? It's a dictionary which resolves to a list type.
+
+Why would you need such a thing? YAML allows us to override an existing value in a dictionary by redeclaring it, which is something we make
+extensive use of in our templates. List can only be extended, but not overriden. By declaring a list as a dictionary, we can override previous
+list items by redeclaring them by name -- or erase them from the list by setting their value to Null (~)
+
+```yaml
+!dlist
+    foo: 1
+    bar: 2
+    baz: 3
+    bax: 4
+    bar: ~ # Erase bar
+    foo: 3 # Override foo
+```
+
+```python
+graph()
+[ 3, 3, 4 ]
+```
+
+This also allows one to declare an empty list, which can be extended later, like this
+
+```yaml
+!dlist:
+    null: ~
+```
+
 ---
 #### !var
 

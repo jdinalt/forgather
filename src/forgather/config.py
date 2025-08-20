@@ -37,6 +37,7 @@ from .yaml_utils import (
     load_depth_first,
     tuple_constructor,
     list_constructor,
+    dlist_constructor,
     var_constructor,
     dict_constructor,
 )
@@ -193,6 +194,7 @@ ConfigLoader.add_multi_constructor("!meta", CallableConstructor(MetaNode))
 ConfigLoader.add_constructor("!var", var_constructor)
 ConfigLoader.add_multi_constructor("!tuple", tuple_constructor)
 ConfigLoader.add_multi_constructor("!list", list_constructor)
+ConfigLoader.add_multi_constructor("!dlist", dlist_constructor)
 ConfigLoader.add_multi_constructor("!dict", dict_constructor)
 
 

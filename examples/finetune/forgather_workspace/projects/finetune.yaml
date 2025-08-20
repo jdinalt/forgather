@@ -9,8 +9,8 @@
     -- set ns.datasets_dir = joinpath(user_home_dir(), 'ai_assets', 'datasets')
 
     ## Set these to the dataset project to use
-    ##-- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
-    ##-- set ns.dataset_config = "samantha.yaml"
+    -- set ns.dataset_proj = dataset_proj | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI'))
+    -- set ns.dataset_config = dataset_config | default("samantha.yaml")
 << endblock resource_directories
 
 
@@ -33,7 +33,6 @@
 
     ## memory debugging
     -- set ns.debug_memory_detials = False
-    -- set ns.log_peak_memmory = False
     -- set ns.log_memory_to_tb = False
 -- endblock config_metadata
 
@@ -109,6 +108,24 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     weight_decay: 0.001
 << endblock optimizer
 
+
+-- block dynamic_args
+    == super()
+    max_steps:
+        names: "--max-steps"
+        help: "Set maximum training steps"
+    log_peak_memory:
+        names: "--log-peak-memory"
+        action: "store_true"
+        help: "Log peak GPU memory at each log step"
+    dataset_config:
+        names: "--dataset-config"
+        help: "The name of the dataset configuration to use"
+    dataset_proj:
+        names: "--dataset-proj"
+        help: "Path to dataset project to use"
+<< endblock dynamic_args
+
 #-------------------- finetune.trainer_config --------------------
 -- extends ns.trainer_class
 ## Note: We use dynamic inheritance for the trainer-class
@@ -132,6 +149,7 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     logging_steps: 10
     eval_steps: 50
     num_train_epochs: 3
+    max_steps: {{ max_steps | default(-1) }}
     dataloader_num_workers: 1
     max_grad_norm: 1.0
     float32_matmul_precision: "high"
@@ -165,7 +183,6 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
 model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_to_dtype [ *model, "bfloat16" ]
 << endblock model_preprocessor
 
-
 #-------------------- finetune.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'
 ## Add experiment loggers to the callbacks list.
@@ -179,7 +196,7 @@ model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_t
     == super()
     - !singleton:forgather.ml.trainer.callbacks:PeakMemory
         show_details: {{ ns.debug_memory_detials }}
-        do_log: {{ ns.log_peak_memmory }}
+        do_log: {{ log_peak_memory | default(False) }}
     -- if ns.log_memory_to_tb
         summary_writer: *summary_writer
     -- endif

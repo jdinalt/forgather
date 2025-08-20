@@ -105,6 +105,13 @@ class BaseTrainer(ExtensibleTrainer):
         self.is_world_process_zero = True
         self.num_processes = 1
 
+        # Silence annoying Huggingface FastTokenizer warnings
+        # If knows if it is safe or not, and does the right thing, why 
+        # do I need to hear about it and create a janky workaround for
+        # a non-issue!?
+        if self.args.dataloader_num_workers > 0:
+            os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        
         if self.args.detect_anomaly:
             logger.warning(
                 "Enabling autograd detect anomaly; expect performance degradation"
