@@ -20,4 +20,4 @@ class CausalLoss:
             reduction="mean",
         )
 
-        return loss.nan_to_num()
+        return loss
