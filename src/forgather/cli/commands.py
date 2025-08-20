@@ -10,6 +10,7 @@ from forgather.yaml_encoder import to_yaml
 from forgather.latent import Latent
 from forgather.meta_config import preprocessor_globals, MetaConfig
 from forgather.config import ConfigEnvironment
+from forgather.preprocess import LineStatementProcessor
 
 """shared command utils"""
 
@@ -101,6 +102,9 @@ def targets_cmd(args):
 
 def pp_cmd(args):
     """Show pp_cmded configuration."""
+    if args.debug:
+        LineStatementProcessor.preserve_line_numbers = True
+        LineStatementProcessor.pp_verbose = True
     cmd = BaseCommand(args)
     pp_config = cmd.env.preprocess(cmd.meta.config_path(args.config_template))
     print(pp_config)
@@ -155,6 +159,9 @@ def trefs_cmd(args):
 
 def graph_cmd(args):
     """Preprocess and parse into node graph."""
+    if args.debug:
+        LineStatementProcessor.preserve_line_numbers = True
+        LineStatementProcessor.pp_verbose = True
     cmd = BaseCommand(args)
     config, pp_config = cmd.get_config()
     match args.format:

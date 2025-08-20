@@ -8,19 +8,32 @@
     -- set ns.create_new_model = True
     -- set ns.save_model = True
     -- set ns.model_name = "tiny_llama"
+
+    ## The dataset sub-project to use
+    -- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan')
+
+    ## The configuration in the dataset sub-project
+    -- set ns.dataset_config = "tinystories-abridged.yaml"
 -- endblock config_metadata
+
+
+-- block datasets_preprocessor_args
+tokenizer_args: &tokenizer_args !dict
+    truncation: True
+    max_length: 512
+-- endblock datasets_preprocessor_args
+
+## Pull dataset loader from template definition
+-- block datasets_definition
+    -- include 'datasets/llm_dataset_project.yaml'
+-- endblock datasets_definition
+
 
 ## This includes an inline template, defined below.
 ## The need to do this relates to Jinja2 disallowing a template from
 ## directly having more than one parent template. We can get around 
 ## this limitation by extending in 'project.model_config' and including
 ## the resulting template.
--- block datasets_definition
-    -- include 'project.dataset'
--- endblock datasets_definition
-
-
-## As above, this is defined below
 -- block construct_new_model
     -- include 'project.model_config'
 -- endblock construct_new_model
@@ -63,6 +76,7 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     max_length: 512
 -- endblock datacollator
 
+
 #-------------------- project.model_config --------------------
 -- extends "models/tiny_dynamic_llama.yaml"
 ## Project can override values here...
@@ -81,7 +95,7 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     eval_steps: 500
     num_train_epochs: 1
     dataloader_num_workers: 1
-    # RoPE embeddings are complex tensors and safetensors can't handle these.
+    # Safetensors can't handle tied parameters/buffers, so fallback to PyTorch format.
     save_safetensors: False
 -- endblock trainer_args
 
@@ -104,15 +118,3 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
         max_new_tokens: 40
         generation_steps: 1000
 << endblock callback_list
-
-
-#-------------------- project.dataset --------------------
--- extends 'datasets/roneneldan/tinystories-abridged.yaml'
-
--- block tokenize_args
-## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
-    == super()
-    # project overrides
-    truncation: True
-    max_length: 512
-<< endblock tokenize_args

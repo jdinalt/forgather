@@ -18,11 +18,6 @@
     -- include 'project.trainer_config'
 -- endblock trainer_definition
 
-
--- block datasets_definition
-    -- include 'project.dataset_config'
--- endblock datasets_definition
-
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
 
@@ -39,8 +34,3 @@
     == super()
     # Project overrides
 << endblock model_config
-
-#-------------------- project.dataset_config --------------------
-## Note: Switch to 'datasets/roneneldan/tinystories.yaml' for the full dataset.
--- extends 'datasets/roneneldan/tinystories-abridged.yaml'
-

@@ -163,6 +163,8 @@ class PyEncoder(GraphEncoder):
                     return self._keys(obj)
                 case "items":
                     return self._items(obj)
+                case "getitem":
+                    return self._getitem(obj)
                 case "named_list":
                     return self._named_list(obj)
                 case "named_dict":
@@ -234,6 +236,12 @@ class PyEncoder(GraphEncoder):
     def _keys(self, obj):
         o = obj.args[0]
         s = self._encode(o) + f".keys()"
+        return s
+
+    def _getitem(self, obj):
+        o = obj.args[0]
+        key = obj.args[1]
+        s = self._encode(o) + "[" + self._encode(key) + "]"
         return s
 
     def _encode_items(self, obj):

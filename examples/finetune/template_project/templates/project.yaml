@@ -11,8 +11,12 @@
 
 -- block config_metadata
     == super()
-    # Set ot name of model to train
+    ## Set ot name of model to train
     -- set ns.model_name = "my_model_name"
+
+    ## Set these to the dataset project to use
+    -- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
+    -- set ns.dataset_config = "samantha.yaml"
 -- endblock config_metadata
 
 
@@ -20,10 +24,6 @@
     -- include 'project.trainer_config'
 -- endblock trainer_definition
 
-
--- block datasets_definition
-    -- include 'project.dataset_config'
--- endblock datasets_definition
 
 #-------------------- project.trainer_config --------------------
 -- extends 'finetune.trainer_config'
@@ -38,12 +38,3 @@
     ## eval_steps: 500
     ## num_train_epochs: 1
 -- endblock trainer_args
-
-#-------------------- project.dataset_config --------------------
-## Select a dataset, for example, Samantha
--- extends 'datasets/samantha/samantha.yaml'
-
--- block tokenize_args
-    == super()
-    # project overrides
-<< endblock tokenize_args

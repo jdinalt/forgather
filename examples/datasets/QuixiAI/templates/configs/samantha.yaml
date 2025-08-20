@@ -1,5 +1,0 @@
--- extends 'types/dataset/dataset_wrapper.yaml'
-
--- block dataset
-    -- include 'datasets/QuixiAI/samantha.yaml'
--- endblock dataset

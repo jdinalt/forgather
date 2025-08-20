@@ -1,0 +1,22 @@
+-- set ns = namespace()
+
+## Import default paths; common to meta and regular templates.
+-- include "base_directories.yaml"
+
+## Search these directories for templates
+## The list is split, which makes it easier to selectively append or prepend.
+searchdir:
+-- block searchdir_project
+    - "{{ joinpath(project_dir, 'templatelib') }}"
+-- endblock searchdir_project
+
+
+-- block searchdir_common
+    - "{{ joinpath(workspace_root, 'forgather_workspace') }}"
+    - "{{ joinpath(ns.forgather_dir, "templatelib", "base") }}"
+-- endblock searchdir_common
+
+
+-- block configs
+config_prefix: "configs"
+-- endblock configs

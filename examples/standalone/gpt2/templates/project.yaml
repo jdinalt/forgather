@@ -7,12 +7,21 @@
     -- set ns.config_name = "GPT2 From Scratch"
     -- set ns.config_description = "Train the base GPT2 model from scratch."
     -- set ns.create_new_model = True
-    -- set ns.save_model = True 
+    -- set ns.save_model = True
+    -- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan')
+    -- set ns.dataset_config = "tinystories-abridged.yaml"
 -- endblock config_metadata
 
 
+-- block datasets_preprocessor_args
+tokenizer_args: &tokenizer_args !dict
+    truncation: True
+    max_length: 512
+-- endblock datasets_preprocessor_args
+
+
 -- block datasets_definition
-    -- include 'datasets/roneneldan/tinystories-abridged.yaml'
+    -- include 'datasets/llm_dataset_project.yaml'
 -- endblock datasets_definition
 
 

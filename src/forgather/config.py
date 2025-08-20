@@ -186,6 +186,8 @@ ConfigLoader.add_multi_constructor("!call", CallableConstructor(SingletonNode))
 
 # Depricated
 ConfigLoader.add_multi_constructor("!lambda", CallableConstructor(LambdaNode))
+
+
 ConfigLoader.add_multi_constructor("!partial", CallableConstructor(LambdaNode))
 ConfigLoader.add_multi_constructor("!meta", CallableConstructor(MetaNode))
 ConfigLoader.add_constructor("!var", var_constructor)

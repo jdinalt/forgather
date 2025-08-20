@@ -27,11 +27,6 @@
     -- include 'project.model_config'
 -- endblock construct_new_model
 
--- block datasets_definition
-    -- include 'project.dataset_config'
--- endblock datasets_definition
-
-
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
 
@@ -57,15 +52,3 @@
     
     # Project Overrides
 << endblock model_config
-
-#-------------------- project.dataset_config --------------------
--- extends 'datasets/roneneldan/tinystories-abridged.yaml'
-##-- extends 'datasets/roneneldan/tinystories.yaml'
-
-
--- block tokenize_args
-## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
-    == super()
-    # project overrides
-    max_length: 512
-<< endblock tokenize_args

@@ -43,7 +43,7 @@ def preprocess(source):
             # Completely delete full comment lines
             if (re_match := full_line_comment.fullmatch(line)) is not None:
                 if LineStatementProcessor.preserve_line_numbers:
-                    line = r"{# " + r" #}"
+                    line = r"{# " + re_match[1] + r" #}"
                 else:
                     continue
             # Delete training comments to end-of-line

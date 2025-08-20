@@ -1,0 +1,44 @@
+-- extends "datasets/tokenized_dataset.yaml"
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "C4"
+    -- set ns.config_name = "A colossal, cleaned version of Common Crawl's web crawl corpus. Based on Common Crawl dataset https://commoncrawl.org"
+    -- set ns.config_name = "https://huggingface.co/datasets/allenai/c4"
+-- endblock config_metadata
+
+
+-- block train_dataset_split
+train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train_dataset_split
+    args: [ "allenai/c4", "en" ]
+    kwargs: { split: "train", num_proc: 16 }
+<< endblock train_dataset_split
+
+
+-- block validation_dataset_split
+validation_dataset_split: &validation_dataset_split !singleton:datasets:load_dataset@validation_dataset_split
+    args: [ "allenai/c4", "en" ]
+    kwargs: { split: "validation[:1000]" }
+<< endblock validation_dataset_split
+
+
+-- block train_dataset
+train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
+    dataset: *train_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing train"
+    fn_kwargs: !var "preprocess_args"
+    map_kwargs:
+        batch_size: 32
+    to_iterable: true
+    num_shards: 1024
+<< endblock train_dataset
+
+
+-- block eval_dataset
+eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
+    dataset: *validation_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing eval"
+    fn_kwargs: !var "preprocess_args"
+<< endblock eval_dataset

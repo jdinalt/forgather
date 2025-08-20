@@ -13,11 +13,6 @@
 -- endblock trainer_definition
 
 
--- block datasets_definition
-    -- include 'project.dataset_config'
--- endblock datasets_definition
-
-
 -- block trainer_callbacks
     -- include 'project.callbacks'
 << endblock trainer_callbacks
@@ -65,11 +60,6 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
 -- block model_preprocessor
 model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_to_dtype [ *model, "bfloat16" ]
 << endblock model_preprocessor
-
-#-------------------- project.dataset_config --------------------
--- extends 'datasets/roneneldan/tinystories-abridged.yaml'
-##-- extends 'datasets/roneneldan/tinystories.yaml'
-
 
 #-------------------- project.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'

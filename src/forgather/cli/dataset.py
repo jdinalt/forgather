@@ -1,5 +1,7 @@
 import os
 
+from transformers import AutoTokenizer
+
 from forgather.config import ConfigEnvironment
 from forgather.latent import Latent
 from forgather.ml.datasets import plot_token_length_histogram
@@ -30,12 +32,18 @@ def dataset_cmd(args):
         print("Preprocessed configuration:")
         print(proj.pp_config)
 
-    split = proj(args.target)
-
+    template_args = dict(
+        tokenizer=None,
+        preprocess_args=dict(),
+    )
+    
     if args.tokenizer_path:
-        tokenizer = proj("tokenizer")
+        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
         print("Tokenizer:")
         print(tokenizer)
+        template_args["tokenizer"] = tokenizer
+
+    split = proj(args.target, **template_args)
 
     if args.histogram:
         assert args.tokenizer_path, "Tokenizer must be provided to plot histogram"

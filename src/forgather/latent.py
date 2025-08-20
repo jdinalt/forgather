@@ -91,6 +91,7 @@ class CallableNode(Node, metaclass=ABCMeta):
         items=lambda x: x.items(),
         keys=lambda x: x.keys(),
         values=lambda x: x.values(),
+        getitem=lambda x, y: x[y],
         named_list=list,
         named_tuple=tuple,
         named_dict=dict,

@@ -4,5 +4,5 @@
 name: "Generic Datasets Meta"
 description: "Some datasets"
 config_prefix: "configs"
-default_config: "wikitext_document_level/wikitext-103-raw.yaml"
+default_config: "wikitext_document_level/wikitext-103-raw-v1.yaml"
 << endblock configs

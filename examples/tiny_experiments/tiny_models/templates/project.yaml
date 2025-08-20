@@ -14,10 +14,6 @@
 -- endblock trainer_definition
 
 
--- block datasets_definition
-    -- include 'project.dataset_config'
--- endblock datasets_definition
-
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
 
@@ -28,8 +24,3 @@
     max_grad_norm: 1.0
     #max_steps: 100
 -- endblock trainer_args
-
-#-------------------- project.dataset_config --------------------
--- extends 'datasets/roneneldan/tinystories-abridged.yaml'
-## Switch to this for the full dataset.
-##-- extends 'datasets/roneneldan/tinystories.yaml'

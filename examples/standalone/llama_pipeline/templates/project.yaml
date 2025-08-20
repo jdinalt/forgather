@@ -23,16 +23,25 @@
     -- set ns.eval = False
     -- set ns.create_new_model = False
     -- set ns.trust_remote_code = True
+    -- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
+    -- set ns.dataset_config = "samantha.yaml"
 -- endblock config_metadata
+
+
+-- block datasets_preprocessor_args
+tokenizer_args: &tokenizer_args !dict
+    truncation: True
+-- endblock datasets_preprocessor_args
+
+
+-- block datasets_definition
+    -- include 'datasets/llm_dataset_project.yaml'
+-- endblock datasets_definition
+
 
 -- block trainer_definition
     -- include 'project.trainer_config'
 << endblock trainer_definition
-
-
--- block datasets_definition
-    -- include 'project.dataset_config'
--- endblock datasets_definition
 
 
 -- block trainer_callbacks
@@ -152,14 +161,6 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_to_dtype [ *model, "bfloat16" ]
 << endblock model_preprocessor
 
-
-#-------------------- project.dataset_config --------------------
--- extends 'datasets/QuixiAI/samantha.yaml'
-
--- block tokenize_args
-    == super()
-    # project overrides
-<< endblock tokenize_args
 
 #-------------------- project.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'

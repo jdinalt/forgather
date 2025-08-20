@@ -1,0 +1,20 @@
+## A simple wrapper to avoid writing boiler-plate for the common use-case
+## of loading a dataset from a Forgather project.
+## Arguments:
+##   ns.dataset_proj (str): Path to a Forgather project
+##   ns.dataset_config (str): Project configuration name
+##   tokenizer (Tokenizer): A fully constructed tokenizer object
+##   tokenizer_args: (Dict): Arguments to pass to the tokenizer, See: https://huggingface.co/docs/transformers/main_classes/tokenizer
+## Outputs:
+##   train_dataset: Training dataset, loaded from project
+##   eval_dataset: Either the validation or test dataset, depending upon configuration.
+# Load dataset from sub-project
+.define: &dataset_dict !call:forgather:from_project
+    project_dir: "{{ ns.dataset_proj }}"
+    config_template: "{{ ns.dataset_config }}"
+    targets: [  "train_dataset", "eval_dataset" ] 
+    preprocess_args: *tokenizer_args
+    tokenizer: *tokenizer
+
+train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
+eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]

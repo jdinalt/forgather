@@ -1,0 +1,51 @@
+-- extends "datasets/tokenized_dataset.yaml"
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Wikepedia Dataset"
+    -- set ns.config_description = "Wikipedia dataset containing cleaned articles from the English Wikipedia."
+    -- set ns.source = "https://huggingface.co/datasets/wikimedia/wikipedia"
+-- endblock config_metadata
+
+
+-- block train_dataset_split
+train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train_dataset_split
+    args: [ "wikimedia/wikipedia", "20231101.en" ]
+    kwargs: { split: "train[10000:]", num_proc: 16 }
+<< endblock train_dataset_split
+
+
+-- block validation_dataset_split
+validation_dataset_split: &validation_dataset_split !singleton:datasets:load_dataset@validation_dataset_split
+    args: [ "wikimedia/wikipedia", "20231101.en" ]
+    kwargs: { split: "train[0:1000]" }
+<< endblock validation_dataset_split
+
+
+-- block test_dataset_split
+test_dataset_split: &test_dataset_split !singleton:datasets:load_dataset@test_dataset_split
+    args: [ "wikimedia/wikipedia", "20231101.en" ]
+    kwargs: { split: "train[1000:10000]" }
+<< endblock test_dataset_split
+
+
+-- block train_dataset
+train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
+    dataset: *train_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing train"
+    ffn_kwargs: !var "preprocess_args"
+    map_kwargs:
+        batch_size: 32
+    to_iterable: true
+    num_shards: 1024
+<< endblock train_dataset
+
+
+-- block eval_dataset
+eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
+    dataset: *validation_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing eval"
+    fn_kwargs: !var "preprocess_args"
+<< endblock eval_dataset

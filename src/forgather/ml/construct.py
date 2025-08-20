@@ -128,7 +128,12 @@ def module_to_dtype(module_ctor, dtype: str, **kwargs):
     return m.to(dtype=torch_dtype(dtype))
 
 
-def load_from_config(project_dir: str, config_template: str | NoneType = None):
+def load_from_config(
+    project_dir: str,
+    config_template: str | NoneType = None,
+    targets: str | List[str] = "",
+    **config_kwargs,
+):
     """
     Construct an object from a project configuration
 
@@ -137,7 +142,7 @@ def load_from_config(project_dir: str, config_template: str | NoneType = None):
     """
 
     proj = Project(config_template, project_dir)
-    return proj()
+    return proj(targets, **config_kwargs)
 
 
 def _should_write_file(file_path: str, exists: str) -> bool:

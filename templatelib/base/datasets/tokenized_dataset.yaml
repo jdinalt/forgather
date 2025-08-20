@@ -1,20 +1,30 @@
+-- extends 'types/dataset/dataset_type.yaml'
+
 -- from 'inc/formatting.jinja' import h3
--- filter trim()
 
--- block datasets_meta_config
-    -- set ns.datasets_name = "Undefined"
-    -- set ns.datasets_description = ""
-    -- set ns.datasets_source = ""
-    -- set ns.datasets_main_feature = "text"
--- endblock datasets_meta_config
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Undefined"
+    -- set ns.config_description = ""
+    -- set ns.source = ""
+    -- set ns.main_feature = "text"
+-- endblock config_metadata
 
--- endfilter
--- block datasets_header
-# Name: {{ ns.datasets_name }}
-# Description: {{ ns.datasets_description }}
-# Source: {{ ns.datasets_source }}
-<< endblock datasets_header
+    
 
+-- block main_body
+== h3('Tokenizer')
+
+    -- filter trim()
+    -- block tokenizer
+tokenizer: &tokenizer !var "tokenizer"
+    << endblock tokenizer
+    -- endfilter
+
+
+    -- block datasets
+        -- filter trim()
+        -- block dataset_splits
 
 == h3('Dataset Splits')
 ## Notes on split:
@@ -29,61 +39,51 @@
 ##   eval: The dataset used by the trainer to measure performance. This should be 'validaiton,' for 
 ##       periodic testing, while training, and 'test,' for testing the final model.
 
--- filter trim()
--- block source_datasets
-    -- filter trim()
-    -- block train_dataset_split
+            -- filter trim()
+            -- block train_dataset_split
 ## train_dataset_split: &train_dataset_split
-    << endblock train_dataset_split
-    -- endfilter
+            << endblock train_dataset_split
+            -- endfilter
 
 
-    -- filter trim()
-    -- block validation_dataset_split
+            -- filter trim()
+            -- block validation_dataset_split
 ## validation_dataset_split: &validation_dataset_split
-    << endblock validation_dataset_split
-    -- endfilter
+            << endblock validation_dataset_split
+            -- endfilter
 
 
-    -- filter trim()
-    -- block test_dataset_split
+            -- filter trim()
+            -- block test_dataset_split
 ## test_dataset_split: &test_dataset_split
-    << endblock test_dataset_split
-    -- endfilter
+            << endblock test_dataset_split
+            -- endfilter
 
 
-<< endblock source_datasets
--- endfilter
-
-
-== h3('Preprocess Dataset Args')
-
--- filter trim()
--- block preprocess_args
-## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
-preprocess_args: &preprocess_args
-    truncation: True
-<< endblock preprocess_args
-
--- endfilter
+        << endblock dataset_splits
+        -- endfilter
 
 
 == h3('Preprocessed Datasets')
 
--- filter trim()
--- block datasets
-
-    -- filter trim()
-    -- block train_dataset required
+        -- filter trim()
+        -- block preprocessed_datasets
+        
+            -- filter trim()
+            -- block train_dataset required
 ##train_dataset: &train_dataset
-    << endblock train_dataset
-    -- endfilter
+            << endblock train_dataset
+            -- endfilter
 
 
-    -- filter trim()
-    -- block eval_dataset required
+            -- filter trim()
+            -- block eval_dataset required
 ##eval_dataset: &eval_dataset
-    << endblock eval_dataset
-    -- endfilter
-<< endblock datasets
--- endfilter
+            << endblock eval_dataset
+            -- endfilter
+
+        << endblock preprocessed_datasets
+        -- endfilter
+    << endblock datasets
+
+<< endblock main_body

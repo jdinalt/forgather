@@ -11,11 +11,6 @@
 -- endblock trainer_definition
 
 
--- block datasets_definition
-    -- include 'project.dataset_config'
--- endblock datasets_definition
-
-
 -- block trainer_callbacks
     -- include 'project.callbacks'
 << endblock trainer_callbacks
@@ -62,10 +57,6 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
     # Set on NVIDIA Ampere or later GPUs when training in 32-bit precision for a significant speedup
     # float32_matmul_precision: "high"
 -- endblock trainer_args
-
-#-------------------- project.dataset_config --------------------
--- extends 'datasets/roneneldan/tinystories-abridged.yaml'
-##-- extends 'datasets/roneneldan/tinystories.yaml'
 
 
 #-------------------- project.callbacks --------------------

@@ -6,9 +6,6 @@
     == super()
     ## Change this to point to where your models are stored
     -- set ns.models_dir = joinpath(user_home_dir(), 'ai_assets', 'models')
-
-    ## Directory in which local datasets are stored
-    -- set ns.datasets_dir = joinpath(user_home_dir(), 'ai_assets', 'datasets')
 << endblock resource_directories
 
 -- block config_metadata
@@ -18,17 +15,16 @@
     -- set ns.debug_memory_detials = False
     -- set ns.log_peak_memmory = True
     -- set ns.log_memory_to_tb = True
+    -- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
+    -- set ns.dataset_config = "samantha.yaml"
+    -- set ns.samantha_default_chat_template = joinpath(ns.forgather_dir, 'chat_templates', 'chatml.jinja')
+    -- set ns.samantha_chat_template = chat_template | default(ns.samantha_default_chat_template)
 -- endblock config_metadata
 
 
 -- block trainer_definition
     -- include 'samantha.trainer_config'
 -- endblock trainer_definition
-
-
--- block datasets_definition
-    -- include 'samantha.dataset_config'
--- endblock datasets_definition
 
 
 #-------------------- samantha.trainer_config --------------------
@@ -41,6 +37,3 @@
     sdpa_set_priority: True
     ## max_steps: 500
 -- endblock trainer_args
-
-#-------------------- samantha.dataset_config --------------------
--- extends 'datasets/QuixiAI/samantha.yaml'

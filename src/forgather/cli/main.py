@@ -91,6 +91,13 @@ def parse_args(args=None):
         help="Graph format",
     )
 
+    graph_parser.add_argument(
+        "-d",
+        "--debug",
+        action="store_true",
+        help="Shows details of template preprocessing to assist with debugging",
+    )
+
     """ trefs """
     referenced_templates_parser = subparsers.add_parser(
         "trefs", help="List referenced templates"
@@ -106,6 +113,20 @@ def parse_args(args=None):
 
     """ pp """
     pp_parser = subparsers.add_parser("pp", help="Preprocess configuration")
+
+    pp_parser.add_argument(
+        "-d",
+        "--debug",
+        action="store_true",
+        help="Shows details of template preprocessing to assist with debugging",
+    )
+
+    pp_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Shows additional debug information",
+    )
 
     """ tb """
     tb_parser = subparsers.add_parser("tb", help="Start Tensorboard for project")

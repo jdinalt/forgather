@@ -88,6 +88,11 @@ model_constructor_args: &model_constructor_args {}
 == h2('Datasets')
 
     -- filter trim()
+    -- block datasets_preprocessor_args
+    << endblock datasets_preprocessor_args
+    -- endfilter
+
+    -- filter trim()
     -- block datasets_definition required
 ## train_dataset: &train_dataset
 ## eval_dataset: &eval_dataset

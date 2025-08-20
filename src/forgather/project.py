@@ -132,3 +132,13 @@ class Project:
             return outputs[mtargets[0]]
         else:
             return (outputs[key] for key in mtargets)
+
+
+def from_project(
+    project_dir: str,
+    config_template: str | None = None,
+    targets: str | List[str] = "",
+    **config_kwargs,
+):
+    proj = Project(config_template, project_dir)
+    return proj(targets, **config_kwargs)

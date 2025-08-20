@@ -13,11 +13,6 @@
 -- endblock trainer_definition
 
 
--- block datasets_definition
-    -- include 'project.dataset_config'
--- endblock datasets_definition
-
-
 -- block trainer_callbacks
     -- include 'project.callbacks'
 << endblock trainer_callbacks
@@ -40,12 +35,6 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     # project overrides
     ## max_steps: 3
 -- endblock trainer_args
-
-
-#-------------------- project.dataset_config --------------------
--- extends 'datasets/roneneldan/tinystories-abridged.yaml'
-##-- extends 'datasets/roneneldan/tinystories.yaml'
-
 
 #-------------------- project.callbacks --------------------
 -- extends 'tiny.callbacks'

@@ -21,6 +21,13 @@
     -- set ns.log_peak_memmory = False
     ## Debug logging to TensorBoard vs console
     -- set ns.log_memory_to_tb = False
+
+    ## The dataset sub-project to use
+    -- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan')
+
+    ## The configuration in the dataset sub-project
+    ## Note: Switch to 'tinystories.yaml' for the full dataset.
+    -- set ns.dataset_config = "tinystories-abridged.yaml"
 -- endblock config_metadata
 
 
@@ -32,8 +39,14 @@
 -- endblock pre_model_setup
 
 
+-- block datasets_preprocessor_args
+tokenizer_args: &tokenizer_args !dict
+    truncation: True
+-- endblock datasets_preprocessor_args
+
+
 -- block datasets_definition
-    -- include 'tiny.dataset_config'
+    -- include 'datasets/llm_dataset_project.yaml'
 -- endblock datasets_definition
 
 
@@ -150,14 +163,3 @@ text_gen_callback_args: &text_gen_callback_args
         summary_writer: *summary_writer
     -- endif
 << endblock callback_list
-
-#-------------------- tiny.dataset_config --------------------
-## Note: Switch to 'datasets/roneneldan/tinystories.yaml' for the full dataset.
--- extends 'datasets/roneneldan/tinystories-abridged.yaml'
-
--- block tokenize_args
-## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
-    == super()
-    # project overrides
-    max_length: 512
-<< endblock tokenize_args

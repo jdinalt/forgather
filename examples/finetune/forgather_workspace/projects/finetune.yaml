@@ -7,6 +7,10 @@
 
     ## Directory in which local datasets are stored
     -- set ns.datasets_dir = joinpath(user_home_dir(), 'ai_assets', 'datasets')
+
+    ## Set these to the dataset project to use
+    ##-- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
+    ##-- set ns.dataset_config = "samantha.yaml"
 << endblock resource_directories
 
 
@@ -34,8 +38,14 @@
 -- endblock config_metadata
 
 
+-- block datasets_preprocessor_args
+tokenizer_args: &tokenizer_args !dict
+    truncation: True
+-- endblock datasets_preprocessor_args
+
+
 -- block datasets_definition
-    -- include 'finetune.dataset_config'
+    -- include 'datasets/llm_dataset_project.yaml'
 -- endblock datasets_definition
 
 

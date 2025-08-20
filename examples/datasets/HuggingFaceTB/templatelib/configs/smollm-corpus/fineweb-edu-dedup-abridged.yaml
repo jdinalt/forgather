@@ -1,0 +1,14 @@
+-- extends "configs/smollm-corpus/fineweb-edu-dedup.yaml"
+
+-- block datasets_meta_config
+    == super()
+    -- set ns.config_name = config_name + " Abridged"
+-- endblock datasets_meta_config
+
+
+-- block train_dataset_split
+train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train_dataset_split
+    args: [ "HuggingFaceTB/smollm-corpus", "fineweb-edu-dedup" ]
+    kwargs: { split: "train[10000:5000000]", num_proc: 16 }
+<< endblock train_dataset_split
+
