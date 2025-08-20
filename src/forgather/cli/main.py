@@ -3,6 +3,7 @@
 import argparse
 from argparse import RawTextHelpFormatter
 import os
+import sys
 
 from .commands import (
     index_cmd,
@@ -20,12 +21,13 @@ from .commands import (
 )
 
 
-def parse_args(args=None):
-    # Common args
+def parse_global_args(args=None):
+    """Parse global arguments and return global args + remaining args for subcommand."""
     parser = argparse.ArgumentParser(
         formatter_class=RawTextHelpFormatter,
         description="Forgather CLI",
         epilog=(""),
+        add_help=False,  # We'll handle help at the subcommand level
     )
 
     parser.add_argument(
@@ -43,264 +45,411 @@ def parse_args(args=None):
         help="Configuration Template Name",
     )
 
-    # Sub-commands
-    subparsers = parser.add_subparsers(dest="command", help="subcommand help")
+    # Parse known args to separate global from subcommand args
+    global_args, remaining_args = parser.parse_known_args(args)
+    
+    return global_args, remaining_args
 
-    """ index """
-    subparsers.add_parser("index", help="Show project index")
 
-    """ ls """
-    ls_parser = subparsers.add_parser("ls", help="List available configurations")
+def get_subcommand_registry():
+    """Registry of all available subcommands and their argument parsers."""
+    return {
+        "index": create_index_parser,
+        "ls": create_ls_parser,
+        "meta": create_meta_parser,
+        "targets": create_targets_parser,
+        "tlist": create_tlist_parser,
+        "graph": create_graph_parser,
+        "trefs": create_trefs_parser,
+        "pp": create_pp_parser,
+        "tb": create_tb_parser,
+        "code": create_code_parser,
+        "construct": create_construct_parser,
+        "train": create_train_parser,
+        "dataset": create_dataset_parser,
+    }
 
-    ls_parser.add_argument(
+
+def create_index_parser():
+    """Create parser for index command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather index",
+        description="Show project index",
+        formatter_class=RawTextHelpFormatter,
+    )
+    return parser
+
+
+def create_ls_parser():
+    """Create parser for ls command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather ls",
+        description="List available configurations",
+        formatter_class=RawTextHelpFormatter,
+    )
+    parser.add_argument(
         "--recursive",
         "-r",
         action="store_true",
         help="Search for project in all sub-directories and list them.",
     )
+    return parser
 
-    """ meta """
-    subparsers.add_parser("meta", help="Show meta configuration")
 
-    """ targets """
-    subparsers.add_parser("targets", help="Show output targets")
-
-    """ tlist """
-    all_templates_parser = subparsers.add_parser(
-        "tlist", help="List available templates."
+def create_meta_parser():
+    """Create parser for meta command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather meta",
+        description="Show meta configuration",
+        formatter_class=RawTextHelpFormatter,
     )
+    return parser
 
-    all_templates_parser.add_argument(
+
+def create_targets_parser():
+    """Create parser for targets command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather targets",
+        description="Show output targets",
+        formatter_class=RawTextHelpFormatter,
+    )
+    return parser
+
+
+def create_tlist_parser():
+    """Create parser for tlist command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather tlist",
+        description="List available templates",
+        formatter_class=RawTextHelpFormatter,
+    )
+    parser.add_argument(
         "--format",
         type=str,
         choices=["md", "files"],
         default="files",
         help="Output format.",
     )
+    return parser
 
-    """ graph """
-    graph_parser = subparsers.add_parser(
-        "graph", help="Preprocess and parse into node graph"
+
+def create_graph_parser():
+    """Create parser for graph command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather graph",
+        description="Preprocess and parse into node graph",
+        formatter_class=RawTextHelpFormatter,
     )
-
-    graph_parser.add_argument(
+    parser.add_argument(
         "--format",
         type=str,
         choices=["none", "repr", "yaml", "fconfig", "python"],
         default="yaml",
         help="Graph format",
     )
-
-    graph_parser.add_argument(
+    parser.add_argument(
         "-d",
         "--debug",
         action="store_true",
         help="Shows details of template preprocessing to assist with debugging",
     )
+    return parser
 
-    """ trefs """
-    referenced_templates_parser = subparsers.add_parser(
-        "trefs", help="List referenced templates"
+
+def create_trefs_parser():
+    """Create parser for trefs command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather trefs",
+        description="List referenced templates",
+        formatter_class=RawTextHelpFormatter,
     )
-
-    referenced_templates_parser.add_argument(
+    parser.add_argument(
         "--format",
         type=str,
         choices=["md", "files"],
         default="files",
         help="Output format.",
     )
+    return parser
 
-    """ pp """
-    pp_parser = subparsers.add_parser("pp", help="Preprocess configuration")
 
-    pp_parser.add_argument(
+def create_pp_parser():
+    """Create parser for pp command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather pp",
+        description="Preprocess configuration",
+        formatter_class=RawTextHelpFormatter,
+    )
+    parser.add_argument(
         "-d",
         "--debug",
         action="store_true",
         help="Shows details of template preprocessing to assist with debugging",
     )
-
-    pp_parser.add_argument(
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
         help="Shows additional debug information",
     )
+    return parser
 
-    """ tb """
-    tb_parser = subparsers.add_parser("tb", help="Start Tensorboard for project")
 
-    tb_parser.add_argument(
+def create_tb_parser():
+    """Create parser for tb command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather tb",
+        description="Start Tensorboard for project",
+        formatter_class=RawTextHelpFormatter,
+    )
+    parser.add_argument(
         "--all",
         action="store_true",
         help="Configure TB to watch all model directories",
     )
-
-    tb_parser.add_argument(
+    parser.add_argument(
         "remainder",
         nargs=argparse.REMAINDER,
         help="All arguments after -- will be forwarded as Tensorboard arguments.",
     )
-
-    tb_parser.add_argument(
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Just show the generated commandline, without actually executing it.",
     )
+    return parser
 
-    """ code """
-    code_parser = subparsers.add_parser(
-        "code", help="Output configuration as Python code"
+
+def create_code_parser():
+    """Create parser for code command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather code",
+        description="Output configuration as Python code",
+        formatter_class=RawTextHelpFormatter,
     )
-
-    code_parser.add_argument(
+    parser.add_argument(
         "--target",
         type=str,
         default="main",
         help="Output target name",
     )
+    return parser
 
-    """ construct """
-    construct_parser = subparsers.add_parser(
-        "construct", help="Materialize and print a target"
+
+def create_construct_parser():
+    """Create parser for construct command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather construct",
+        description="Materialize and print a target",
+        formatter_class=RawTextHelpFormatter,
     )
-
-    construct_parser.add_argument(
+    parser.add_argument(
         "--target",
         type=str,
         default="main",
         help="Output target name",
     )
-
-    construct_parser.add_argument(
+    parser.add_argument(
         "--call",
         action="store_true",
         help="Call the materialized object",
     )
+    return parser
 
-    """ train """
-    train_parser = subparsers.add_parser(
-        "train", help="Run configuration with train script"
+
+def create_train_parser():
+    """Create parser for train command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather train",
+        description="Run configuration with train script",
+        formatter_class=RawTextHelpFormatter,
     )
-
-    train_parser.add_argument(
+    parser.add_argument(
         "-d",
         "--devices",
         type=str,
         default=None,
         help='CUDA Visible Devices e.g. "0,1"',
     )
-
-    train_parser.add_argument(
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Just show the generated commandline, without actually executing it.",
     )
-
-    train_parser.add_argument(
+    parser.add_argument(
         "remainder",
         nargs=argparse.REMAINDER,
         help="All arguments after -- will be forwarded as torchrun arguments.",
     )
+    return parser
 
-    """ dataset """
-    ds_parser = subparsers.add_parser(
-        "dataset", help="Dataset preprocessing and testing"
+
+def create_dataset_parser():
+    """Create parser for dataset command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather dataset",
+        description="Dataset preprocessing and testing",
+        formatter_class=RawTextHelpFormatter,
     )
-
-    ds_parser.add_argument(
+    parser.add_argument(
         "-T",
         "--tokenizer-path",
         type=str,
         default=None,
         help="Path to tokenizer to test",
     )
-
-    ds_parser.add_argument(
+    parser.add_argument(
         "--pp",
         action="store_true",
         help="Show preprocessed configuration",
     )
-
-    ds_parser.add_argument(
+    parser.add_argument(
         "-H",
         "--histogram",
         action="store_true",
         help="Generate dataset token length historgram and statistics",
     )
-
-    ds_parser.add_argument(
+    parser.add_argument(
         "--target",
         type=str,
         default="train_dataset_split",
         help="The dataset to sample from; see \"forgather targets\"",
     )
-
-    ds_parser.add_argument(
+    parser.add_argument(
         "--histogram-samples",
         type=int,
         default=1000,
         help="Number of samples to use for histogram",
     )
-
-    ds_parser.add_argument(
+    parser.add_argument(
         "-c",
         "--chat-template",
         type=str,
         default=None,
         help="Path to chat template",
     )
-
-    ds_parser.add_argument(
+    parser.add_argument(
         "-n",
         "--examples",
         type=int,
         default=None,
         help="Number of examples to print",
     )
-
-    ds_parser.add_argument(
+    parser.add_argument(
         "-s",
         "--tokenized",
         action="store_true",
         help="The split is already tokenized",
     )
+    return parser
 
-    return parser.parse_args(args)
+
+def show_main_help():
+    """Show the main help message with available subcommands."""
+    print("Forgather CLI")
+    print()
+    print("Usage: forgather [global options] <subcommand> [subcommand options]")
+    print()
+    print("Global options:")
+    print("  -p, --project-dir DIR    Project directory (default: current directory)")
+    print("  -t, --config-template T  Configuration template name")
+    print("  --help                   Show this help message")
+    print()
+    print("Available subcommands:")
+    registry = get_subcommand_registry()
+    for cmd_name in sorted(registry.keys()):
+        parser = registry[cmd_name]()
+        print(f"  {cmd_name:<12} {parser.description}")
+    print()
+    print("Use 'forgather <subcommand> --help' for help on a specific subcommand.")
+
+
+def parse_args(args=None):
+    """Parse arguments with dynamic subcommand handling."""
+    global_args, remaining_args = parse_global_args(args)
+    
+    # Handle case where no subcommand is provided or --help is requested globally
+    if not remaining_args or (remaining_args and remaining_args[0] in ["--help", "-h"]):
+        show_main_help()
+        sys.exit(0)
+    
+    # Extract subcommand name
+    subcommand = remaining_args[0]
+    subcommand_args = remaining_args[1:]
+    
+    # Get subcommand registry
+    registry = get_subcommand_registry()
+    
+    # Check if subcommand exists
+    if subcommand not in registry:
+        print(f"Error: Unknown subcommand '{subcommand}'")
+        print()
+        show_main_help()
+        sys.exit(1)
+    
+    # Create subcommand parser and parse its arguments
+    subcommand_parser = registry[subcommand]()
+    
+    try:
+        sub_args = subcommand_parser.parse_args(subcommand_args)
+    except SystemExit:
+        # argparse calls sys.exit on help or error - let it through
+        raise
+    
+    # Combine global and subcommand args into a single namespace
+    combined_args = argparse.Namespace()
+    
+    # Add global args
+    for key, value in vars(global_args).items():
+        setattr(combined_args, key, value)
+    
+    # Add subcommand args
+    for key, value in vars(sub_args).items():
+        setattr(combined_args, key, value)
+    
+    # Add the command name
+    combined_args.command = subcommand
+    
+    return combined_args
 
 
 def main():
     """Main CLI entry point."""
-    args = parse_args()
-    match args.command:
-        case "index":
-            index_cmd(args)
-        case "ls":
-            ls_cmd(args)
-        case "meta":
-            meta_cmd(args)
-        case "targets":
-            targets_cmd(args)
-        case "tlist":
-            template_list(args)
-        case "graph":
-            graph_cmd(args)
-        case "trefs":
-            trefs_cmd(args)
-        case "pp":
-            pp_cmd(args)
-        case "tb":
-            tb_cmd(args)
-        case "code":
-            code_cmd(args)
-        case "construct":
-            construct_cmd(args)
-        case "train":
-            train_cmd(args)
-        case "dataset":
-            from .dataset import dataset_cmd
+    try:
+        args = parse_args()
+        match args.command:
+            case "index":
+                index_cmd(args)
+            case "ls":
+                ls_cmd(args)
+            case "meta":
+                meta_cmd(args)
+            case "targets":
+                targets_cmd(args)
+            case "tlist":
+                template_list(args)
+            case "graph":
+                graph_cmd(args)
+            case "trefs":
+                trefs_cmd(args)
+            case "pp":
+                pp_cmd(args)
+            case "tb":
+                tb_cmd(args)
+            case "code":
+                code_cmd(args)
+            case "construct":
+                construct_cmd(args)
+            case "train":
+                train_cmd(args)
+            case "dataset":
+                from .dataset import dataset_cmd
 
-            dataset_cmd(args)
-        case _:
-            index_cmd(args)
+                dataset_cmd(args)
+            case _:
+                index_cmd(args)
+    except SystemExit:
+        # Let argparse's sys.exit calls through (for help, errors, etc.)
+        raise
+    except KeyboardInterrupt:
+        sys.exit(1)
