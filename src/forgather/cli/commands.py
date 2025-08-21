@@ -130,15 +130,17 @@ def pp_cmd(args):
     if args.debug:
         LineStatementProcessor.preserve_line_numbers = True
         LineStatementProcessor.pp_verbose = True
-    
+
     # Get dynamic arguments (configuration-specific args)
     dynamic_args = get_dynamic_args(args)
     if dynamic_args:
         print(f"# Dynamic arguments received: {dynamic_args}")
         print()
-    
+
     cmd = BaseCommand(args)
-    pp_config = cmd.env.preprocess(cmd.meta.config_path(args.config_template), **dynamic_args)
+    pp_config = cmd.env.preprocess(
+        cmd.meta.config_path(args.config_template), **dynamic_args
+    )
     print(pp_config)
 
 
@@ -245,7 +247,7 @@ def tb_cmd(args):
 def train_cmd(args):
     """Run configuration with train script."""
     import json
-    
+
     cmd = BaseCommand(args)
     config, pp_config = cmd.get_config()
     config_meta = Latent.materialize(config.meta)
@@ -325,6 +327,7 @@ def index_cmd(args):
     """Show project index."""
     md = nb.render_project_index(args.project_dir)
     print(md)
+
 
 def ws_cmd(args):
     workspace_dir = MetaConfig.find_workspace_dir(args.project_dir)

@@ -107,7 +107,9 @@ class MetaConfig:
         elif not os.path.isdir(project_directory):
             raise ValueError(f"The directory, '{project_directory}', does not exist.")
         elif not os.path.isfile(config_path):
-            raise ValueError(f"'The template, '{template_name}', does not exist in '{project_directory}'")
+            raise ValueError(
+                f"'The template, '{template_name}', does not exist in '{project_directory}'"
+            )
         # Build searchpath for meta-config.
         # We include the project, the workspace config, and the user's Forgather config directory.
         searchpath = [project_directory]
@@ -129,10 +131,9 @@ class MetaConfig:
         """
         Recurisvely search parent directories for Forgather workspace config directory
         """
+
         def is_workspace(root_dir):
-            workspace_config_dir = os.path.join(
-                root_dir, WORKSPACE_CONFIG_DIR_NAME
-            )
+            workspace_config_dir = os.path.join(root_dir, WORKSPACE_CONFIG_DIR_NAME)
             return os.path.isdir(workspace_config_dir)
 
         workspace_root = MetaConfig._find_dir(project_dir, is_workspace)
@@ -141,26 +142,22 @@ class MetaConfig:
                 f"Workspace directory,'forgather_workspace', was not found under project directory {project_dir}"
             )
         return workspace_root
-    
+
     @staticmethod
     def find_project_dir(project_dir):
         def is_project(root_dir):
-            target_dir = os.path.join(
-                root_dir, PROJECT_META_NAME
-            )
+            target_dir = os.path.join(root_dir, PROJECT_META_NAME)
             return os.path.isfile(target_dir)
-        
+
         found_project_dir = MetaConfig._find_dir(project_dir, is_project)
         if not found_project_dir:
-            raise ValueError(
-                f"No projects where fouund at or below {project_dir}"
-            )
+            raise ValueError(f"No projects where fouund at or below {project_dir}")
         return found_project_dir
-        
+
     @staticmethod
     def _find_dir(root, match_raget):
         root = os.path.abspath(root)
-        
+
         while True:
             if match_raget(root):
                 return root
@@ -168,4 +165,3 @@ class MetaConfig:
             if parent_dir == root:
                 return None
             root = parent_dir
-

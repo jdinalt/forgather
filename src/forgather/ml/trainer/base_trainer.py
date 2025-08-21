@@ -106,12 +106,12 @@ class BaseTrainer(ExtensibleTrainer):
         self.num_processes = 1
 
         # Silence annoying Huggingface FastTokenizer warnings
-        # If knows if it is safe or not, and does the right thing, why 
+        # If knows if it is safe or not, and does the right thing, why
         # do I need to hear about it and create a janky workaround for
         # a non-issue!?
         if self.args.dataloader_num_workers > 0:
             os.environ["TOKENIZERS_PARALLELISM"] = "false"
-        
+
         if self.args.detect_anomaly:
             logger.warning(
                 "Enabling autograd detect anomaly; expect performance degradation"
@@ -505,7 +505,9 @@ class BaseTrainer(ExtensibleTrainer):
 
         # Use the sharded checkpoint loader to handle all checkpoint formats
         logger.info(f"Loading model weights from checkpoint: {checkpoint_path}")
-        load_checkpoint(checkpoint_path, self.model, device=torch.device(device), strict=True)
+        load_checkpoint(
+            checkpoint_path, self.model, device=torch.device(device), strict=True
+        )
 
     @staticmethod
     def _get_sdpa_backends(

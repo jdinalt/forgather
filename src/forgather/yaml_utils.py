@@ -72,18 +72,20 @@ def list_constructor(loader, tag_suffix, node):
     else:
         raise TypeError(f"list nodes must be sequencess. Found {node}")
 
+
 def dlist_constructor(loader, tag_suffix, node):
     constructor, identity = split_tag_idenity(tag_suffix)
     if isinstance(node, yaml.MappingNode):
         sequence = list(
             filter(
-                lambda item: not item is None,
-                loader.construct_mapping(node).values()
+                lambda item: not item is None, loader.construct_mapping(node).values()
             )
         )
-                
+
         return SingletonNode(
-            "named_list", sequence, _identity=identity,
+            "named_list",
+            sequence,
+            _identity=identity,
         )
     else:
         raise TypeError(f"dlist nodes must be mappings. Found {node}")

@@ -10,27 +10,28 @@ chatml_template = """{% for message in messages %}{{'<|im_start|>' + message['ro
 '}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
 ' }}{% endif %}"""
 
+
 def samantha_conversation(conversation):
     messages = []
     for human, gpt in zip(conversation["human"], conversation["gpt"]):
-        messages.extend([
-            {
-                "role": "user",
-                "content": human
-            },
-            {
-                "role": "assistant",
-                "content": gpt
-            },
-        ])
+        messages.extend(
+            [
+                {"role": "user", "content": human},
+                {"role": "assistant", "content": gpt},
+            ]
+        )
     return messages
 
-def samantha_map_function(input_batch, tokenizer, chat_template, template_args, tokenizer_args):
+
+def samantha_map_function(
+    input_batch, tokenizer, chat_template, template_args, tokenizer_args
+):
     conversations = [
         chat_template.render(
             messages=samantha_conversation(batch),
             **template_args,
-        ) for batch in input_batch["conversations"]
+        )
+        for batch in input_batch["conversations"]
     ]
     if not tokenizer:
         return {"text": conversations}
@@ -39,7 +40,8 @@ def samantha_map_function(input_batch, tokenizer, chat_template, template_args, 
         conversations,
         **tokenizer_args,
     )
-    return { "input_ids": outputs["input_ids"] }
+    return {"input_ids": outputs["input_ids"]}
+
 
 def preprocess_samantha(
     dataset,
@@ -67,7 +69,7 @@ def preprocess_samantha(
         with open(chat_template, "r") as f:
             chat_template = f.read()
 
-    environment =  jinja2.sandbox.ImmutableSandboxedEnvironment(
+    environment = jinja2.sandbox.ImmutableSandboxedEnvironment(
         trim_blocks=True,
         lstrip_blocks=True,
     )
@@ -83,6 +85,6 @@ def preprocess_samantha(
             template_args=template_args,
             tokenizer_args=tokenizer_args,
         ),
-        **map_args
+        **map_args,
     )
     return output_dataset

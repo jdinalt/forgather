@@ -217,7 +217,7 @@ class TrainingArguments(MinimalTrainingArguments):
     # device: Construct model directly on device. This is can faster, but may result in OOM
     # meta: Construct on meta device and materialize on target device. The resulting model
     #   is uninitialized and will need to be loaded with a checkpoint.
-    construct_model_on: str = "default" # "default" | "meta" | "device"
+    construct_model_on: str = "default"  # "default" | "meta" | "device"
 
     def __post_init__(self):
         super().__post_init__()
@@ -234,6 +234,7 @@ class TrainingArguments(MinimalTrainingArguments):
 
         if self.gradient_checkpointing_kwargs is None:
             self.gradient_checkpointing_kwargs = {}
+
 
 class AbstractBaseTrainer(ABC):
     """

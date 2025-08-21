@@ -236,10 +236,12 @@ class Trainer(BaseTrainer):
                     self.model = self.model_init()
                 self.model = self.model.to(self.args.device)
             case "meta":
-                assert self.model_init, "Constructing the model on meta device requires model_init"
-                assert self.args.resume_from_checkpoint, (
-                    "Constructing model on meta-device requires loading parameters from checkpoint"
-                )
+                assert (
+                    self.model_init
+                ), "Constructing the model on meta device requires model_init"
+                assert (
+                    self.args.resume_from_checkpoint
+                ), "Constructing model on meta-device requires loading parameters from checkpoint"
 
                 with torch.device("meta"):
                     self.model = self.model_init()
@@ -248,7 +250,9 @@ class Trainer(BaseTrainer):
                 # to_empty() will break tied parameters. Fix them!
                 retie_parameters(self.model, sharing_metadata)
             case "device":
-                assert self.model_init, "Constructing the model on device requires model_init"
+                assert (
+                    self.model_init
+                ), "Constructing the model on device requires model_init"
                 with torch.device(self.args.device):
                     self.model = self.model_init()
             case _:
@@ -256,10 +260,13 @@ class Trainer(BaseTrainer):
         if self.args.gradient_checkpointing:
             if hasattr(self.model, "gradient_checkpointing_enable"):
                 logger.info("Enabling gradient checkpointing")
-                self.model.gradient_checkpointing_enable(**self.args.gradient_checkpointing_kwargs)
+                self.model.gradient_checkpointing_enable(
+                    **self.args.gradient_checkpointing_kwargs
+                )
             else:
-                logger.warning("Gradient checkpointing requested, but model does not support it!")
-
+                logger.warning(
+                    "Gradient checkpointing requested, but model does not support it!"
+                )
 
     def _init_optimizer(self) -> None:
         # _prepare() sub-step 3
@@ -441,9 +448,7 @@ class Trainer(BaseTrainer):
         with ExitStack() as stack:
             if self.args.enable_activation_offloading:
                 print("CPU offload enabled")
-                stack.enter_context(
-                    torch.autograd.graph.save_on_cpu(pin_memory=True)
-                )
+                stack.enter_context(torch.autograd.graph.save_on_cpu(pin_memory=True))
             loss = self.model(*args, **kwargs)[0]
 
         self._backward(loss)

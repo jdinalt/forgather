@@ -86,6 +86,7 @@ def default_tokenize_map_fn(element, tokenizer, feature, **kwargs):
     )
     return {"input_ids": outputs["input_ids"]}
 
+
 # This ensures that the dataset is preprocessed by rank0 and cached before other
 # ranks join in. In the context of Huggingace datasets, the result is that the
 # preprocessed dataset will be cached by rank0 and the cached dataset will be loaded
@@ -109,9 +110,9 @@ def preprocess_dataset(
     fn_kwargs=None,
 ):
     """
-    This is a farily generic and flxible dataset preprocessor to quickly get a dataset 
+    This is a farily generic and flxible dataset preprocessor to quickly get a dataset
     up and running for evaluation. For production use, write a custom preprocessor!
-    
+
     Args:
         dataset: The dataset to preprocess.
         tokenizer: The tokenizer to use for tokenization.
@@ -132,7 +133,7 @@ def preprocess_dataset(
         The tokenized dataset.
     """
 
-    #assert hasattr(dataset, __getitem__), "A map-style dataset is required for this function"
+    # assert hasattr(dataset, __getitem__), "A map-style dataset is required for this function"
     if fn_kwargs is None:
         fn_kwargs = dict()
 

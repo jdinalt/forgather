@@ -10,6 +10,7 @@ from forgather import Project
 
 from .dynamic_args import get_dynamic_args
 
+
 def dataset_cmd(args):
     config_name = args.config_template
     project_args = dict(
@@ -22,9 +23,7 @@ def dataset_cmd(args):
     # Merge in dynamic args
     project_args |= get_dynamic_args(args)
     proj = Project(
-        config_name=args.config_template,
-        project_dir=args.project_dir,
-        **project_args
+        config_name=args.config_template, project_dir=args.project_dir, **project_args
     )
     proj_meta = proj("meta")
     config_class = proj_meta["config_class"]
@@ -41,7 +40,7 @@ def dataset_cmd(args):
         tokenizer=None,
         preprocess_args=dict(),
     )
-    
+
     if args.tokenizer_path:
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
         print("Tokenizer:")

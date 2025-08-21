@@ -293,7 +293,7 @@ class PipelineTrainer(Trainer):
         super()._post_init()
         assert self.model is None
         assert self.model_init
-        
+
         for batch_size in (
             self.args.per_device_train_batch_size,
             self.args.per_device_eval_batch_size,
@@ -744,9 +744,7 @@ class PipelineTrainer(Trainer):
 
         with ExitStack() as stack:
             if self.args.enable_activation_offloading:
-                stack.enter_context(
-                    torch.autograd.graph.save_on_cpu(pin_memory=True)
-                )
+                stack.enter_context(torch.autograd.graph.save_on_cpu(pin_memory=True))
             if self.pp_has_first_stage:
                 self.train_scheduler.step(*inputs, target=targets, losses=losses)
             else:

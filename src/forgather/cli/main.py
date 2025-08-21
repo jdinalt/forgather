@@ -27,6 +27,7 @@ from .dynamic_args import (
     get_dynamic_args,
 )
 
+
 def parse_global_args(args=None):
     """Parse global arguments and return global args + remaining args for subcommand."""
     parser = argparse.ArgumentParser(
@@ -59,9 +60,10 @@ def parse_global_args(args=None):
 
     # Parse known args to separate global from subcommand args
     global_args, remaining_args = parser.parse_known_args(args)
-    
+
     return global_args, remaining_args
-        
+
+
 def get_subcommand_registry():
     """Registry of all available subcommands and their argument parsers."""
     return {
@@ -304,6 +306,7 @@ def create_train_parser(global_args):
     parse_dynamic_args(parser, global_args)
     return parser
 
+
 def create_dataset_parser(global_args):
     """Create parser for dataset command."""
     parser = argparse.ArgumentParser(
@@ -333,7 +336,7 @@ def create_dataset_parser(global_args):
         "--target",
         type=str,
         default="train_dataset_split",
-        help="The dataset to sample from; see \"forgather targets\"",
+        help='The dataset to sample from; see "forgather targets"',
     )
     parser.add_argument(
         "--histogram-samples",
@@ -341,13 +344,13 @@ def create_dataset_parser(global_args):
         default=1000,
         help="Number of samples to use for histogram",
     )
-    #parser.add_argument(
+    # parser.add_argument(
     #    "-c",
     #    "--chat-template",
     #    type=str,
     #    default=None,
     #    help="Path to chat template",
-    #)
+    # )
     parser.add_argument(
         "-n",
         "--examples",
@@ -364,6 +367,7 @@ def create_dataset_parser(global_args):
     parse_dynamic_args(parser, global_args)
     return parser
 
+
 def create_ws_parser(global_args):
     """Create parser for targets command."""
     parser = argparse.ArgumentParser(
@@ -372,6 +376,7 @@ def create_ws_parser(global_args):
         formatter_class=RawTextHelpFormatter,
     )
     return parser
+
 
 def show_main_help():
     """Show the main help message with available subcommands."""
@@ -401,62 +406,64 @@ def show_main_help():
 def parse_args(args=None):
     """Parse arguments with dynamic subcommand handling."""
     global_args, remaining_args = parse_global_args(args)
-    
+
     # Handle case where no subcommand is provided or --help is requested globally
     if not remaining_args or (remaining_args and remaining_args[0] in ["--help", "-h"]):
         show_main_help()
         sys.exit(0)
-    
+
     # Extract subcommand name
     subcommand = remaining_args[0]
     subcommand_args = remaining_args[1:]
-    
+
     # Get subcommand registry
     registry = get_subcommand_registry()
-    
+
     # Check if subcommand exists
     if subcommand not in registry:
         print(f"Error: Unknown subcommand '{subcommand}'")
         print()
         show_main_help()
         sys.exit(1)
-    
+
     # Create subcommand parser and parse its arguments
     subcommand_parser = registry[subcommand](global_args)
-    
+
     try:
         sub_args = subcommand_parser.parse_args(subcommand_args)
     except SystemExit:
         # argparse calls sys.exit on help or error - let it through
         raise
-    
+
     # Get dynamic argument names from the parser (if available)
-    dynamic_arg_names = getattr(subcommand_parser, '_dynamic_arg_names', [])
-    
+    dynamic_arg_names = getattr(subcommand_parser, "_dynamic_arg_names", [])
+
     # Partition the subcommand arguments
     if dynamic_arg_names:
-        built_in_sub_args, dynamic_sub_args = partition_args(sub_args, dynamic_arg_names)
+        built_in_sub_args, dynamic_sub_args = partition_args(
+            sub_args, dynamic_arg_names
+        )
     else:
         built_in_sub_args = vars(sub_args)
         dynamic_sub_args = {}
-    
+
     # Combine global and built-in subcommand args into a single namespace
     combined_args = argparse.Namespace()
-    
+
     # Add global args
     for key, value in vars(global_args).items():
         setattr(combined_args, key, value)
-    
+
     # Add built-in subcommand args
     for key, value in built_in_sub_args.items():
         setattr(combined_args, key, value)
-    
+
     # Add the command name
     combined_args.command = subcommand
-    
+
     # Store dynamic args separately for easy access
     combined_args._dynamic_args = dynamic_sub_args
-    
+
     return combined_args
 
 
