@@ -3,14 +3,22 @@
 -- block resource_directories
     == super()
     ## Change this to point to where your models are stored
-    -- set ns.models_dir = joinpath(user_home_dir(), 'ai_assets', 'models')
+    -- set ns.models_dir = models_dir | default(joinpath(user_home_dir(), 'models'))
 
     ## Directory in which local datasets are stored
-    -- set ns.datasets_dir = joinpath(user_home_dir(), 'ai_assets', 'datasets')
+    -- set ns.datasets_dir = datasets_dir | default(joinpath(user_home_dir(), 'datasets'))
 
     ## Set these to the dataset project to use
     -- set ns.dataset_proj = dataset_proj | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI'))
     -- set ns.dataset_config = dataset_config | default("samantha.yaml")
+
+    ## Some models may have issues loading using our checkpoint method. Set safe_load to fallback
+    ## to constructing model with AutoModelForCausalLM.from_pretrained().
+    -- set ns.safe_load = safe_load | default(False)
+
+    ## Some HF models support enabling gradient (activation) checkpointing via the 
+    ## gradient_checkpointing_enable() method. If True, try to use this API to enable checkpointing.
+    -- set ns.gradient_checkpointing = gradient_checkpointing | default(False)
 << endblock resource_directories
 
 
@@ -21,11 +29,11 @@
     -- set ns.trainer_class = 'trainers/trainer.yaml'
     -- set ns.trust_remote_code = True
     -- set ns.create_new_model = False
+    ## We use the checkpointing functionality to save.
+    ## If set to True, the model weights of the original model will be overwritten.
     -- set ns.save_model = False
-    -- set ns.log_name = "project_default"
-
-    ## Set to name of model, in "ns.models_dir"
-    ## -- set ns.model_name = "llama-2-7b-fg"
+    -- set ns.log_name = "default"
+    -- set ns.model_name = model_name | default('undefined-model')
     -- set ns.train = True
     -- set ns.eval = False
     -- set ns.create_new_model = False
@@ -65,7 +73,11 @@ tokenizer_args: &tokenizer_args !dict
 
 ## Override, to construct model from config
 -- block load_model
-    -- include 'models/causal_lm/from_pretrained_config.yaml'
+    -- if ns.safe_load
+        -- include 'models/causal_lm/from_pretrained.yaml'
+    -- else
+        -- include 'models/causal_lm/from_pretrained_config.yaml'
+    -- endif
 -- endblock load_model
 
 
@@ -74,6 +86,7 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
     tokenizer: *tokenizer
     return_tensors: pt
     truncation: True
+    ## Put a reasonable limit on the sequence length
     max_length: 4096
 -- endblock datacollator
 
@@ -89,14 +102,14 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     # constant_lr, then perform cosine annealing for this many steps to the constant_lr
     cooldown_steps: 0
     
-    # Start annealing after first checkpoint.
+    # Set this to the last checkpoint before stopping.
     # This is an exponential decay after checkpoint_step.
     checkpoint_step: 1000
 
     # Hold at this LR after warmup.
     constant_lr: 5.0e-6
 
-    # Decay time constant
+    # Exponential decay constant, tau
     tau: !!float 1.0e2
 << endblock lr_scheduler
 
@@ -114,6 +127,9 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     max_steps:
         names: "--max-steps"
         help: "Set maximum training steps"
+    train_epoch:
+        names: "--train-epochs"
+        help: "Set the number of epochs to train for"
     log_peak_memory:
         names: "--log-peak-memory"
         action: "store_true"
@@ -124,7 +140,23 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     dataset_proj:
         names: "--dataset-proj"
         help: "Path to dataset project to use"
+    models_dir:
+        names: "--models-dir"
+        help: "The directory in which to look for models"
+    model_name:
+        names: "--model-name"
+        help: "The name of the model to train in models_dir"
+    safe_load:
+        names: "--safe-load"
+        action: "store_true"
+        help: "Fallback to the more compatible HF model loading method"
+    gradient_checkpointing:
+        names: "--gradient-checkpointing"
+        action: "store_true"
+        help: "Enable gradient (activation) checkpoint, when supported"
+
 << endblock dynamic_args
+
 
 #-------------------- finetune.trainer_config --------------------
 -- extends ns.trainer_class
@@ -148,11 +180,12 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     per_device_eval_batch_size: 16
     logging_steps: 10
     eval_steps: 50
-    num_train_epochs: 3
+    num_train_epochs: {{ train_epochs | default(1) }}
     max_steps: {{ max_steps | default(-1) }}
     dataloader_num_workers: 1
     max_grad_norm: 1.0
     float32_matmul_precision: "high"
+    gradient_checkpointing: {{ ns.gradient_checkpointing }}
 
     # Checkpoint Save Settings
     save_strategy: "steps"           # Set to "steps" to save every "save_steps"; set to "no" to disable
@@ -165,13 +198,23 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     save_rng_state: True             # Save RNG state with checkpoint
 
     # We load the model via the newest checkpoint
+-- if ns.safe_load
+    resume_from_checkpoint: False
+-- else
     resume_from_checkpoint: True
+-- endif
     restore_optimizer_state: True    # Test optimizer state restoration per rank
     restore_scheduler_state: True    # Test scheduler state restoration per rank
     restore_rng_state: True          # Test RNG state restoration per rank
     restore_dataset_state: False     # Not fully implemented yet!
+    ## WARNING: If the model has any buffers with "peristent=False," construct the model
+    ## on the "default" device; otherwise, there is no way to initialize these buffers from
+    ## a checkpoint! OTOH, not constructing the model on "meta" is very slow...
+-- if ns.safe_load
+    construct_model_on: "default"    # Construct model on CPU
+-- else
     construct_model_on: "meta"       # Construct empty model on meta device
-
+-- endif
     # Enable all SDPA backends and let PyTorch choose which to use.
     sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
     sdpa_set_priority: False # If list, interpret as priority order

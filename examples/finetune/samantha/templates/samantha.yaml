@@ -1,17 +1,7 @@
 -- extends 'projects/finetune.yaml'
 
-## Default Assumptions:
-## The
--- block resource_directories
-    == super()
-    ## Change this to point to where your models are stored
-    -- set ns.models_dir = joinpath(user_home_dir(), 'ai_assets', 'models')
-<< endblock resource_directories
-
 -- block config_metadata
     == super()
-    # Set ot name of model to train
-    -- set ns.model_name = "llama-2-7b-fg"
     -- set ns.debug_memory_detials = False
     -- set ns.log_memory_to_tb = True
     -- set ns.dataset_proj = dataset_proj | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI'))

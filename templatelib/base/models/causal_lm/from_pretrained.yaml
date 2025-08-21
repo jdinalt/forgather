@@ -4,7 +4,7 @@
     == super()
     -- set model_def.name = "Pretrained Causal LM"
     -- set model_def.description = ""
-##  -- set model_def.model_id_or_path = '<pretrained model id>'
+    -- set model_def.model_id_or_path = ns.output_dir
 << endblock model_meta_config
 
 
@@ -25,5 +25,8 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
 model: &model !lambda:transformers:AutoModelForCausalLM.from_pretrained@model
     args: [ "{{ model_def.model_id_or_path }}" ]
     kwargs:
+    -- if ns.trust_remote_code
+        trust_remote_code: True
+    -- endif
         <<: *model_constructor_args
 << endblock model_constructor
