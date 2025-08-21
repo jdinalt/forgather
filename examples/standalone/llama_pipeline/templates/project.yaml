@@ -129,6 +129,7 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     #torch_compile: True
     #torch_compile_dynamic: False
     #activation_memory_budget: 0.2
+    #gradient_checkpointing: True
     float32_matmul_precision: "high" # May still help for explicit float32 precision...
     
     # Checkpoint test settings - create multiple checkpoints with final step not multiple of save_steps
@@ -148,7 +149,6 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     restore_dataset_state: False     # Not fully implemented yet!
 
     # Pipeline args
-    # enable_activation_checkpoints: True # Experimental: Inject activation checkpoints into graph
     debug_pipeline: False
     debug_split_model: False
     debug_model_params: False

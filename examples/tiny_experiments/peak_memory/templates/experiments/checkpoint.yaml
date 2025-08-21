@@ -13,6 +13,11 @@
     -- include 'experiment.model'
 -- endblock construct_new_model
 
+
+-- block trainer_definition
+    -- include 'experiment.trainer_config'
+-- endblock trainer_definition
+
 #-------------------- experiment.model --------------------
 -- extends 'project.model'
 
@@ -20,6 +25,15 @@
 -- block model_config
     == super()
     # Enable checkpointing
-    enable_activation_checkpoint: True
     checkpoint_stride: 1
 << endblock model_config
+
+#-------------------- experiment.trainer_config--------------------
+-- extends 'project.trainer_config'
+
+
+-- block trainer_args
+    == super()
+    # experiment overrides
+    gradient_checkpointing: True
+-- endblock trainer_args

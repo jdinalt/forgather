@@ -24,10 +24,32 @@ model_type = "{{ model_type }}"
 class DynamicCausalLMConfig(PretrainedConfig):
     model_type = model_type
 
-
+# PreTrainedModel: https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_utils.py
 class DynamicCasualLM(PreTrainedModel, GenerationMixin):
     config_class = DynamicCausalLMConfig
     model_type = model_type
+    main_input_name = "{{ main_input_name | default('input_ids') }}"
+    model_tags = {{ model_tags | default(None) }}
+    _no_split_modules = {{ no_split_modules | default(None) }}
+    _skip_keys_device_placement = {{ skip_keys_device_placement | default(None) }}
+    _keep_in_fp32_modules = {{ keep_in_fp32_modules | default(None) }}
+    _keep_in_fp32_modules_strict = {{ keep_in_fp32_modules_strict | default(None) }}
+    _keys_to_ignore_on_load_missing = {{ keys_to_ignore_on_load_missing | default(None) }}
+    _keys_to_ignore_on_load_unexpected = {{ keys_to_ignore_on_load_unexpected | default(None) }}
+    _keys_to_ignore_on_save = {{ keys_to_ignore_on_save | default(None) }}
+    _tied_weights_keys = {{ tied_weights_keys | default(None) }}
+    is_parallelizable = {{ is_parallelizable | default(False) }}
+    supports_gradient_checkpointing = {{ supports_gradient_checkpointing | default(False) }}
+    _is_stateful = {{ is_stateful | default(False) }}
+    _supports_flash_attn = {{ supports_flash_attn | default(False) }}
+    _supports_sdpa = {{ supports_sdpa | default(True) }}
+    _supports_flex_attn = {{ supports_flex_attn | default(False) }}
+    _can_compile_fullgraph = {{ can_compile_fullgraph | default(False) }}
+    _tp_plan = {{ tp_plan | default(None) }}
+    _tp_size = {{ tp_size | default(None) }}
+    _pp_plan = {{ pp_plan | default(None) }}
+    _supports_attention_backend = {{ supports_attention_backend | default(False) }}
+    _can_record_outputs = {{ can_record_outputs | default(None) }}
 
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)

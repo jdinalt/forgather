@@ -39,7 +39,15 @@ class LayerStack(nn.Module):
         if checkpoint_kwargs:
             self.checkpoint_kwargs |= checkpoint_kwargs
 
-        self.enable_checkpoint = enable_checkpoint
+        # HR PretrainedModel will set gradient_checkpointing to True,
+        # if gradient_checkpointing_enable() is called and an attribute
+        # named gradient_checkpointing exists.
+        #
+        # It will also set self._gradient_checkpointing_func, which is a partial
+        # function wrapping the checkpoint args passed into the config.
+        # We ignore this and use our own, as we wassume this module knows the ground-truth
+        # about which args should actually be used.
+        self.gradient_checkpointing = enable_checkpoint
         self.checkpoint_stride = checkpoint_stride
         self.layers = nn.ModuleList(
             [layer_factory() for layer_idx in range(num_hidden_layers)]
@@ -50,14 +58,14 @@ class LayerStack(nn.Module):
             self.layer_norm = post_norm_factory()
 
     def extra_repr(self):
-        return f"enable_checkpoint={self.enable_checkpoint}, checkpoint_stride={self.checkpoint_stride}"
+        return f"gradient_checkpointing={self.gradient_checkpointing}, checkpoint_stride={self.checkpoint_stride}"
 
     def forward(
         self,
         hidden_states: FloatTensor,
         **kwargs,
     ) -> FloatTensor:
-        if self.enable_checkpoint:
+        if self.gradient_checkpointing:
             for i, layer in enumerate(self.layers):
                 if i % self.checkpoint_stride == 0:
                     hidden_states = checkpoint.checkpoint(

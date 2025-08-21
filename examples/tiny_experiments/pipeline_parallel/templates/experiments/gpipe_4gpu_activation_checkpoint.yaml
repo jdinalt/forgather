@@ -33,13 +33,8 @@
     == super()
 
     # Experiment Overrides
+    gradient_checkpointing: True
 -- endblock trainer_args
 
 #-------------------- experiment.model --------------------
 -- extends 'models/med_pipeline_model.yaml'
-
--- block layer_stack
-.define: &layer_stack !singleton:.checkpoint_layer_stack:CheckpointLayerStack@layer_stack
-    layer_factory: *layer_factory
-    num_hidden_layers: !var "num_hidden_layers"
-<< endblock layer_stack

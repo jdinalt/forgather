@@ -416,4 +416,5 @@ def generate_code(
     else:
         template = env.get_template(template_name)
 
+    print(f"kwargs= {kwargs}")
     return template.render(**kwargs | py_output).strip()

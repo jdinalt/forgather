@@ -8,6 +8,7 @@ from collections import defaultdict
 import time
 import glob
 import shutil
+import gc
 
 import torch
 from torch import nn
@@ -592,7 +593,9 @@ def load_sharded_checkpoint(
         module.load_state_dict(state_dict, strict=False, assign=assign)
         for weight_name, p in module.state_dict(keep_vars=True).items():
             logger.debug(f"{weight_name} : {p.shape=}, {p.dtype=}, {p.requires_grad=}")
+        # Evict shard from memory
         state_dict = None
+        gc.collect()
 
     if len(all_module_keys):
         msg = f"The following keys were not found in the shards {all_module_keys}"

@@ -64,9 +64,11 @@ layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
 
 
     -- block layer_stack
-layer_stack: &layer_stack !factory:.layer_stack:LayerStack@layer_stack
+layer_stack: &layer_stack !factory:.checkpoint_layer_stack:LayerStack@layer_stack
     layer_factory: *layer_factory
     num_hidden_layers: !var "num_hidden_layers"
+    enable_checkpoint: !var "enable_activation_checkpoint"
+    checkpoint_stride: !var "checkpoint_stride"
     << endblock layer_stack
 
 
@@ -127,4 +129,13 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     residual_dropout: 0.0
     attention_dropout: 0.0
     activation_dropout: 0.0
+    enable_activation_checkpoint: False
+    checkpoint_stride: 1
 << endblock model_config
+
+
+-- block model_code_generator
+    == super()
+    # Dynamic Llama
+    supports_gradient_checkpointing: True
+<< endblock model_code_generator

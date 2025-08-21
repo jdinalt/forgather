@@ -85,6 +85,8 @@ class PipelineTrainingArguments(TrainingArguments):
     stages_per_rank: int = 1
     pp_stage_type: str = "loop"
     is_multistage: bool = False
+
+    # Depricated
     enable_activation_checkpoints: bool = False
 
 
@@ -436,7 +438,9 @@ class PipelineTrainer(Trainer):
             stages_arg, self.args.pipeline_chunks, loss_fn=self.loss_fn
         )
 
-        if self.args.enable_activation_checkpoints:
+        if self.args.enable_activation_checkpoints or self.args.gradient_checkpointing:
+            if self.denv.rank == 0:
+                logger.info("Applying activation checkpointing via FX graph")
             # Enable activation checkpointing for all modules in the pipeline.
             for mod in pipeline_modules:
                 insert_activation_checkpoints(mod, r"^layers\.(\d+)$")
