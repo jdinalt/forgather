@@ -148,7 +148,6 @@ class TrainingArguments(MinimalTrainingArguments):
 
     max_grad_norm: float = None
     gradient_accumulation_steps: int = 1  # Unimplemented in Trainer
-    gradient_checkpointing: bool = False  # Unimplemented in Trainer; see activation_memory_budget
 
     # Checkpointing options
     save_strategy: ConversionDescriptor = ConversionDescriptor(
@@ -181,6 +180,10 @@ class TrainingArguments(MinimalTrainingArguments):
     adam_beta1: float = 0.9
     adam_beta2: float = 0.999
     adam_epsilon: float = 1.0e-8
+
+    # Enable gradient checkpointing (a.k.a activation checkpointing) on models which support the HF API
+    gradient_checkpointing: bool = False
+    gradient_checkpointing_kwargs: dict | None = None
 
     ## These options are not supported by HF Trainer ##
 
@@ -229,6 +232,8 @@ class TrainingArguments(MinimalTrainingArguments):
         if self.lr_scheduler_kwargs is None:
             self.lr_scheduler_kwargs = {}
 
+        if self.gradient_checkpointing_kwargs is None:
+            self.gradient_checkpointing_kwargs = {}
 
 class AbstractBaseTrainer(ABC):
     """

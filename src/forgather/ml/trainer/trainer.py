@@ -253,6 +253,13 @@ class Trainer(BaseTrainer):
                     self.model = self.model_init()
             case _:
                 raise ValueError("Requires one of: default|meta|device")
+        if self.args.gradient_checkpointing:
+            if hasattr(self.model, "gradient_checkpointing_enable"):
+                logger.info("Enabling gradient checkpointing")
+                self.model.gradient_checkpointing_enable(**self.args.gradient_checkpointing_kwargs)
+            else:
+                logger.warning("Gradient checkpointing requested, but model does not support it!")
+
 
     def _init_optimizer(self) -> None:
         # _prepare() sub-step 3
