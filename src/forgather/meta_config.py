@@ -27,6 +27,7 @@ def preprocessor_globals(project_dir, workspace_root):
 
 
 WORKSPACE_CONFIG_DIR_NAME = "forgather_workspace"
+PROJECT_META_NAME = "meta.yaml"
 
 
 @dataclass()
@@ -41,7 +42,7 @@ class MetaConfig:
     config_dict: dict
     workspace_root: str
 
-    def __init__(self, project_dir=".", meta_name="meta.yaml"):
+    def __init__(self, project_dir=".", meta_name=PROJECT_META_NAME):
         self.name = meta_name
         self.meta_path = os.path.join(project_dir, meta_name)
         config = self._load_config(self.meta_path, project_dir=project_dir)
@@ -101,21 +102,17 @@ class MetaConfig:
 
     def _load_config(self, config_path: str | os.PathLike, /, **kwargs) -> ConfigDict:
         project_directory, template_name = os.path.split(config_path)
-        assert os.path.exists(
-            project_directory
-        ), f"The directory, '{project_directory}', does not exist."
-        assert os.path.isdir(
-            project_directory
-        ), f"'{project_directory}' is not a directory."
-        assert os.path.isfile(
-            config_path
-        ), f"'The template, '{template_name}', does not exist in '{project_directory}'"
-
+        if not os.path.exists(project_directory):
+            raise ValueError("fThe directory, '{project_directory}', does not exist.")
+        elif not os.path.isdir(project_directory):
+            raise ValueError(f"The directory, '{project_directory}', does not exist.")
+        elif not os.path.isfile(config_path):
+            raise ValueError(f"'The template, '{template_name}', does not exist in '{project_directory}'")
         # Build searchpath for meta-config.
         # We include the project, the workspace config, and the user's Forgather config directory.
         searchpath = [project_directory]
 
-        self.workspace_root = self._find_workspace_dir(project_directory)
+        self.workspace_root = self.find_workspace_dir(project_directory)
         searchpath.append(os.path.join(self.workspace_root, WORKSPACE_CONFIG_DIR_NAME))
         kwargs["workspace_root"] = self.workspace_root
 
@@ -127,21 +124,48 @@ class MetaConfig:
         config = self.environment.load(template_name, **kwargs)
         return config.config
 
-    def _find_workspace_dir(self, project_dir):
+    @staticmethod
+    def find_workspace_dir(project_dir):
         """
         Recurisvely search parent directories for Forgather workspace config directory
         """
-        workspace_root = os.path.abspath(project_dir)
-
-        while True:
+        def is_workspace(root_dir):
             workspace_config_dir = os.path.join(
-                workspace_root, WORKSPACE_CONFIG_DIR_NAME
+                root_dir, WORKSPACE_CONFIG_DIR_NAME
             )
-            if os.path.isdir(workspace_config_dir):
-                return workspace_root
-            parent_dir, _ = os.path.split(workspace_root)
-            if parent_dir == workspace_root:
-                raise RuntimeError(
-                    f"Workspace directory,'forgather_workspace', was not found under project directory {project_dir}"
-                )
-            workspace_root = parent_dir
+            return os.path.isdir(workspace_config_dir)
+
+        workspace_root = MetaConfig._find_dir(project_dir, is_workspace)
+        if not workspace_root:
+            raise ValueError(
+                f"Workspace directory,'forgather_workspace', was not found under project directory {project_dir}"
+            )
+        return workspace_root
+    
+    @staticmethod
+    def find_project_dir(project_dir):
+        def is_project(root_dir):
+            target_dir = os.path.join(
+                root_dir, PROJECT_META_NAME
+            )
+            return os.path.isfile(target_dir)
+        
+        found_project_dir = MetaConfig._find_dir(project_dir, is_project)
+        if not found_project_dir:
+            raise ValueError(
+                f"No projects where fouund at or below {project_dir}"
+            )
+        return found_project_dir
+        
+    @staticmethod
+    def _find_dir(root, match_raget):
+        root = os.path.abspath(root)
+        
+        while True:
+            if match_raget(root):
+                return root
+            parent_dir, _ = os.path.split(root)
+            if parent_dir == root:
+                return None
+            root = parent_dir
+

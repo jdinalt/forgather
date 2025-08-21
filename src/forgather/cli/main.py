@@ -18,6 +18,7 @@ from .commands import (
     code_cmd,
     construct_cmd,
     train_cmd,
+    ws_cmd,
 )
 
 from .dynamic_args import (
@@ -77,6 +78,7 @@ def get_subcommand_registry():
         "construct": create_construct_parser,
         "train": create_train_parser,
         "dataset": create_dataset_parser,
+        "ws": create_ws_parser,
     }
 
 
@@ -102,6 +104,12 @@ def create_ls_parser(global_args):
         "-r",
         action="store_true",
         help="Search for project in all sub-directories and list them.",
+    )
+    parser.add_argument(
+        "project",
+        type=str,
+        nargs="*",
+        help="List configurations in projects",
     )
     return parser
 
@@ -356,6 +364,15 @@ def create_dataset_parser(global_args):
     parse_dynamic_args(parser, global_args)
     return parser
 
+def create_ws_parser(global_args):
+    """Create parser for targets command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather ws",
+        description="Forgather workspace",
+        formatter_class=RawTextHelpFormatter,
+    )
+    return parser
+
 def show_main_help():
     """Show the main help message with available subcommands."""
     print("Forgather CLI")
@@ -476,6 +493,8 @@ def main():
                 from .dataset import dataset_cmd
 
                 dataset_cmd(args)
+            case "ws":
+                ws_cmd(args)
             case _:
                 index_cmd(args)
     except SystemExit:

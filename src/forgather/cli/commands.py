@@ -41,7 +41,9 @@ def get_config(meta, env, config_template):
 class BaseCommand:
     """Base class for CLI commands with common setup patterns."""
 
-    def __init__(self, args):
+    def __init__(self, args, search_for_project=True):
+        if search_for_project:
+            args.project_dir = MetaConfig.find_project_dir(args.project_dir)
         self.args = args
         self.meta = MetaConfig(args.project_dir)
         set_default_template(self.meta, args)
@@ -57,17 +59,38 @@ class BaseCommand:
 
 def ls_cmd(args):
     """List available configurations."""
-    if args.recursive:
-        for root, dirs, files in os.walk(args.project_dir):
-            for file_name in files:
-                if file_name == "meta.yaml":
-                    print(f"\nProject Path: {root}\n")
-                    try:
-                        list_project(root)
-                    except:
-                        print(f"PARSE ERROR: {os.path.join(root, file_name)}")
+    if args.project:
+        for project_dir in args.project:
+            if args.recursive:
+                list_project_recurse(project_dir)
+            else:
+                try:
+                    print(f"\nProject Path: {project_dir}\n")
+                    list_project(project_dir)
+                except ValueError as e:
+                    print(e)
+    elif args.recursive:
+        list_project_recurse(args.project_dir)
     else:
-        list_project(args.project_dir)
+        try:
+            # Search upward for the nearest project directory
+            project_dir = MetaConfig.find_project_dir(args.project_dir)
+            if os.path.realpath(project_dir) != os.path.realpath(args.project_dir):
+                print(f"\nProject Path: {project_dir}\n")
+            list_project(project_dir)
+        except Exception as e:
+            print(e)
+
+
+def list_project_recurse(project_dir):
+    for root, dirs, files in os.walk(project_dir):
+        for file_name in files:
+            if file_name == "meta.yaml":
+                print(f"\nProject Path: {root}\n")
+                try:
+                    list_project(root)
+                except Exception as e:
+                    print(f"PARSE ERROR: {os.path.join(root, file_name)} '{e}'")
 
 
 def list_project(project_dir):
@@ -302,3 +325,7 @@ def index_cmd(args):
     """Show project index."""
     md = nb.render_project_index(args.project_dir)
     print(md)
+
+def ws_cmd(args):
+    workspace_dir = MetaConfig.find_workspace_dir(args.project_dir)
+    print(f"Workspace Directory: {workspace_dir}")
