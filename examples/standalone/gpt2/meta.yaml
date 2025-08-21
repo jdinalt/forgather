@@ -2,5 +2,5 @@
 
 -- block configs
 name: "GPT2"
-description: "Demonsrates training a GPT2 model from scratch."
+description: "Demonstrates training a GPT2 model from scratch."
 -- endblock configs

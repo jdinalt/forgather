@@ -1,8 +1,8 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
-name: "Generic Datasets Meta"
-description: "Some datasets"
+name: "EleutherAI"
+description: "...We are a non-profit research lab focused on interpretability, alignment, and ethics of artificial intelligence."
 config_prefix: "configs"
 default_config: "wikitext_document_level/wikitext-103-raw-v1.yaml"
 << endblock configs

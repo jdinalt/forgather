@@ -12,12 +12,6 @@
 -- endblock config_metadata
 
 
--- block datasets_definition
-    ## Note: Switch to 'datasets/tiny/tiny_stories.yaml' for the full dataset.
-    -- include 'datasets/roneneldan/tinystories-abridged.yaml'
--- endblock datasets_definition
-
-
 -- block trainer_definition
     -- include 'project.trainer_config'
 -- endblock trainer_definition

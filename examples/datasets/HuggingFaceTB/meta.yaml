@@ -1,8 +1,8 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
-name: "Generic Datasets Meta"
-description: "Some datasets"
+name: "HuggingFaceTB"
+description: "Hugging Face Smol Models Research"
 config_prefix: "configs"
 default_config: "smollm-corpus/fineweb-edu-dedup-abridged.yaml"
 << endblock configs

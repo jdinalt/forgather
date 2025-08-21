@@ -3,7 +3,7 @@
 -- block config_metadata
     == super()
     -- set ns.config_name = "Cosmopedia v2"
-    -- set ns.config_description = "Cosmopedia v2 is an enhanced version of Cosmopedia, the largest synthetic dataset for pre-training, consisting of over 39 million textbooks, blog posts, and stories..."
+    -- set ns.config_description = "FineWeb-Edu-Dedup is a deduplicated subset of the FineWeb-Edu dataset, containing 220 billion tokens of educational web pages."
     -- set ns.source = "https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus"
 -- endblock config_metadata
 

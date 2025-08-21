@@ -1,8 +1,8 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
-name: "Generic Datasets Meta"
-description: "Some datasets"
+name: "roneneldan"
+description: "Datasets published by Ronen Eldan"
 config_prefix: "configs"
 default_config: "tinystories-abridged.yaml"
 << endblock configs

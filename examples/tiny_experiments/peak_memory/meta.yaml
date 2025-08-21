@@ -1,8 +1,8 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
-name: "Tiny Template Project"
-description: "Copy me to create a new Tiny Experiment"
+name: "Peak Memory"
+description: "Experiments in reducing GPU memory usage"
 config_prefix: "experiments"
 default_config: "control.yaml"
 << endblock configs

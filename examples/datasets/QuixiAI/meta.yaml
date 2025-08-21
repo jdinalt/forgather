@@ -1,8 +1,8 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
-name: "Generic Datasets Meta"
-description: "Some datasets"
+name: "QuixiAI"
+description: "Quixi AI (Previously Cognitive Computations) is a group founded by Eric Hartford"
 config_prefix: "configs"
 default_config: "samantha.yaml"
 << endblock configs

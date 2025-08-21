@@ -25,12 +25,26 @@
 
     ## Required to load a custom model
     -- set ns.trust_remote_code = True
+
+    ## Set a default dataset
+    -- set ns.dataset_proj = dataset_proj | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
+
+    ## The configuration in the dataset sub-project
+    ## Note: Switch to 'tinystories.yaml' for the full dataset.
+    -- set ns.dataset_config = dataset_config | default("tinystories-abridged.yaml")
 -- endblock config_metadata
 
 
+-- block datasets_preprocessor_args
+tokenizer_args: &tokenizer_args !dict
+    truncation: True
+-- endblock datasets_preprocessor_args
+
+
 -- block datasets_definition
-    -- include 'project.dataset'
+    -- include 'datasets/llm_dataset_project.yaml'
 -- endblock datasets_definition
+
 
 
 -- block trainer_definition
@@ -93,6 +107,20 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 -- endblock datacollator
 
 
+-- block dynamic_args
+    == super()
+    max_steps:
+        names: "--max-steps"
+        help: "Set maximum training steps"
+    dataset_config:
+        names: "--dataset-config"
+        help: "The name of the dataset configuration to use"
+    dataset_proj:
+        names: "--dataset-proj"
+        help: "Path to dataset project to use"
+<< endblock dynamic_args
+
+
 #-------------------- project.trainer_config --------------------
 ## Select one-of:
 ## trainers/( trainer.yaml | accel_trainer.yaml | hf_trainer.yaml | pipeline_trainer.yaml )
@@ -118,7 +146,7 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
     max_grad_norm: 1.0               # Gradient norm clipping threshold
 
     ## Stop early for quick test.
-    ## max_steps: 1000
+    max_steps: {{ max_steps | default(-1) }}
     
     # Checkpoint Save Settings
     save_strategy: "steps"           # Set to "steps" to save every "save_steps"; set to "no" to disable
@@ -180,13 +208,3 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 -- block callback_list
     == super()
 << endblock callback_list
-
-#-------------------- project.dataset --------------------
--- extends 'datasets/roneneldan/tinystories-abridged.yaml'
-
--- block tokenize_args
-## See: https://huggingface.co/docs/transformers/main_classes/tokenizer
-    == super()
-    # project overrides
-    max_length: 512
-<< endblock tokenize_args
