@@ -95,6 +95,23 @@ class ForgatherShell(cmd.Cmd):
             # Return empty list if we can't get targets (e.g., no template set)
             return []
     
+    def _get_all_template_files(self) -> List[tuple]:
+        """Get all available template files with their paths."""
+        try:
+            meta = MetaConfig(self.project_dir)
+            templates = []
+            for template_name, template_path in meta.find_templates():
+                # Make path relative to project directory for cleaner display
+                try:
+                    rel_path = os.path.relpath(template_path, self.project_dir)
+                except ValueError:
+                    # Can't make relative (different drives on Windows), use absolute
+                    rel_path = template_path
+                templates.append((template_name, template_path, rel_path))
+            return sorted(templates, key=lambda x: x[2])  # Sort by relative path
+        except Exception:
+            return []
+    
     def _invalidate_cache(self):
         """Invalidate cached template and command lists."""
         self._cached_templates = None
@@ -123,6 +140,74 @@ class ForgatherShell(cmd.Cmd):
         else:
             # Print normally for short output
             print(text)
+    
+    def _interactive_template_selector(self) -> Optional[str]:
+        """Interactive template selector with arrow key navigation.
+        
+        Returns:
+            Path to selected template file, or None if cancelled
+        """
+        templates = self._get_all_template_files()
+        if not templates:
+            print("No templates found.")
+            return None
+        
+        # For simplicity, use a numbered menu approach that works universally
+        # (Arrow key navigation would require more complex terminal handling)
+        print("\nAvailable templates:")
+        print("=" * 50)
+        
+        # Group templates by category for better organization
+        categories = {}
+        for template_name, template_path, rel_path in templates:
+            # Determine category from path
+            if 'experiments/' in rel_path or 'configs/' in rel_path:
+                category = "Project Configs"
+            elif 'templatelib/examples/' in rel_path:
+                category = "Example Templates"
+            elif 'templatelib/base/' in rel_path:
+                category = "Base Templates"
+            elif 'forgather_workspace/' in rel_path:
+                category = "Workspace Templates"
+            else:
+                category = "Project Templates"
+            
+            if category not in categories:
+                categories[category] = []
+            categories[category].append((template_name, template_path, rel_path))
+        
+        # Display categorized templates with numbers
+        template_list = []
+        current_num = 1
+        
+        for category in sorted(categories.keys()):
+            print(f"\n{category}:")
+            for template_name, template_path, rel_path in categories[category]:
+                print(f"  {current_num:2d}. {rel_path}")
+                template_list.append((template_name, template_path, rel_path))
+                current_num += 1
+        
+        print(f"\n   0. Cancel")
+        print("=" * 50)
+        
+        # Get user selection
+        while True:
+            try:
+                choice = input(f"Select template (0-{len(template_list)}): ").strip()
+                if choice == '0' or choice.lower() in ['cancel', 'quit', 'exit']:
+                    return None
+                
+                choice_num = int(choice)
+                if 1 <= choice_num <= len(template_list):
+                    selected = template_list[choice_num - 1]
+                    return selected[1]  # Return full path
+                else:
+                    print(f"Please enter a number between 0 and {len(template_list)}")
+            except ValueError:
+                print("Please enter a valid number")
+            except KeyboardInterrupt:
+                print("\nCancelled")
+                return None
     
     def _complete_path(self, text: str, only_dirs: bool = False) -> List[str]:
         """Complete file/directory paths like bash does.
@@ -325,6 +410,83 @@ class ForgatherShell(cmd.Cmd):
         for command in sorted(commands):
             print(f"  {command}")
     
+    def do_edit(self, arg):
+        """Interactively select and edit a template file
+        
+        Usage: 
+          edit                    # Interactive template selector
+          edit <template_path>    # Edit specific template file
+        """
+        if arg:
+            # Direct edit of specified file
+            template_path = arg
+            if not os.path.isabs(template_path):
+                # Try to resolve relative to project directory
+                full_path = os.path.join(self.project_dir, template_path)
+                if os.path.exists(full_path):
+                    template_path = full_path
+                elif not os.path.exists(template_path):
+                    print(f"Template file not found: {template_path}")
+                    return
+        else:
+            # Interactive template selection
+            template_path = self._interactive_template_selector()
+            if not template_path:
+                return
+        
+        # Determine editor to use
+        editor = os.environ.get('EDITOR', 'vim')
+        
+        # Ensure the file exists (create if it's a new template)
+        if not os.path.exists(template_path):
+            # Ask if user wants to create a new file
+            try:
+                create = input(f"Template file doesn't exist. Create {template_path}? (y/N): ").strip().lower()
+                if create not in ['y', 'yes']:
+                    return
+                
+                # Create directory if needed
+                os.makedirs(os.path.dirname(template_path), exist_ok=True)
+                
+                # Create empty file
+                with open(template_path, 'w') as f:
+                    f.write("# New template file\n")
+            except KeyboardInterrupt:
+                print("\nCancelled")
+                return
+        
+        # Launch editor
+        print(f"Opening {template_path} in {editor}...")
+        try:
+            subprocess.run([editor, template_path])
+            print("Editor closed.")
+            
+            # Invalidate template cache since file might have changed
+            self._invalidate_cache()
+            
+        except FileNotFoundError:
+            print(f"Editor '{editor}' not found. Set EDITOR environment variable to your preferred editor.")
+        except Exception as e:
+            print(f"Error launching editor: {e}")
+    
+    def complete_edit(self, text, line, begidx, endidx):
+        """Tab completion for edit command - complete template file paths."""
+        # Get all template files for completion
+        templates = self._get_all_template_files()
+        completions = []
+        
+        for template_name, template_path, rel_path in templates:
+            # Offer both relative path and basename completion
+            if rel_path.startswith(text):
+                completions.append(rel_path)
+            
+            # Also offer completion by filename (basename of rel_path)
+            basename = os.path.basename(rel_path)
+            if basename.startswith(text):
+                completions.append(rel_path)  # Return full relative path for clarity
+        
+        return sorted(set(completions))  # Remove duplicates and sort
+    
     def do_exit(self, arg):
         """Exit the interactive shell"""
         print("Goodbye!")
@@ -454,7 +616,7 @@ class ForgatherShell(cmd.Cmd):
     def completenames(self, text, *ignored):
         """Tab completion for command names."""
         # First, try built-in commands
-        builtins = ['cd', 'pwd', 'templates', 'template', 'commands', 'exit', 'quit']
+        builtins = ['cd', 'pwd', 'templates', 'template', 'commands', 'edit', 'exit', 'quit']
         builtin_matches = [cmd for cmd in builtins if cmd.startswith(text)]
         
         # Then, try forgather subcommands
