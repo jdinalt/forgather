@@ -51,7 +51,7 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
     per_device_eval_batch_size: 8
     logging_steps: 10
     eval_steps: 100
-    max_steps: 100
+    max_steps: {{ max_steps | default(100) }}
     # See: https://docs.pytorch.org/docs/stable/generated/torch.nn.attention.SDPBackend.html
     sdpa_backend: "efficient"
     # Set on NVIDIA Ampere or later GPUs when training in 32-bit precision for a significant speedup
