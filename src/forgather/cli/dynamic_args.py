@@ -1,13 +1,12 @@
-import traceback
-
-
 def parse_dynamic_args(parser, global_args):
     if global_args.no_dyn:
         return
-    from forgather import Project
+    from forgather import Project, MetaConfig
+    import traceback
 
     dynamic_arg_names = []
     try:
+        global_args.project_dir = MetaConfig.find_project_dir(global_args.project_dir)
         proj = Project(
             config_name=global_args.config_template,
             project_dir=global_args.project_dir,

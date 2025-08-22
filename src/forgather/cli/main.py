@@ -58,6 +58,13 @@ def parse_global_args(args=None):
         help="Disable processing of dynamic args defined in configuration templates",
     )
 
+    parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help="Start interactive shell with tab completion",
+    )
+
     # Parse known args to separate global from subcommand args
     global_args, remaining_args = parser.parse_known_args(args)
 
@@ -383,10 +390,12 @@ def show_main_help():
     print("Forgather CLI")
     print()
     print("Usage: forgather [global options] <subcommand> [subcommand options]")
+    print("       forgather -i                      # Interactive mode with tab completion")
     print()
     print("Global options:")
     print("  -p, --project-dir DIR    Project directory (default: current directory)")
     print("  -t, --config-template T  Configuration template name")
+    print("  -i, --interactive        Start interactive shell with tab completion")
     print("  --help                   Show this help message")
     print()
     print("Available subcommands:")
@@ -406,6 +415,12 @@ def show_main_help():
 def parse_args(args=None):
     """Parse arguments with dynamic subcommand handling."""
     global_args, remaining_args = parse_global_args(args)
+
+    # Handle interactive mode
+    if global_args.interactive:
+        from .interactive import interactive_main
+        interactive_main(global_args.project_dir)
+        sys.exit(0)
 
     # Handle case where no subcommand is provided or --help is requested globally
     if not remaining_args or (remaining_args and remaining_args[0] in ["--help", "-h"]):
