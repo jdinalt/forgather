@@ -447,7 +447,6 @@ class Trainer(BaseTrainer):
 
         with ExitStack() as stack:
             if self.args.enable_activation_offloading:
-                print("CPU offload enabled")
                 stack.enter_context(torch.autograd.graph.save_on_cpu(pin_memory=True))
             loss = self.model(*args, **kwargs)[0]
 
