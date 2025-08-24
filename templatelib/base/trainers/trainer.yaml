@@ -1,22 +1,16 @@
 -- extends 'trainers/base_trainer.yaml'
 -- block trainer_meta_config
     == super()
-    -- set trainer_def.name = "forgather.ml.trainer:Trainer"
-    -- set trainer_def.description = "A lightweight, extensible trainer; does not support multiple GPUs"
+    -- set ns.trainer_name = "Forgather Trainer"
+    -- set ns.trainer_description = "A lightweight, extensible trainer; does not support multiple GPUs"
+    -- set ns.trainer_config_class = "forgather.ml.trainer:TrainingArguments"
+    -- set ns.trainer_class = "forgather.ml.trainer:Trainer"
 -- endblock trainer_meta_config
 
 
 -- block trainer_constructor
-trainer: &trainer !singleton:forgather.ml.trainer:Trainer@trainer
-    model_init: *model_preprocessor
-    args: !singleton:forgather.ml.trainer:TrainingArguments@trainer_args
-        <<: *trainer_args
-    data_collator: *data_collator
-    train_dataset: *train_dataset
-    eval_dataset: *eval_dataset
-    processing_class: *tokenizer
-    callbacks: *trainer_callbacks
-    ## Not in HF Trainer
+    == super()
+    # Trainer Args
     optimizer_factory: *optimizer
     lr_scheduler_factory: *lr_scheduler
 << endblock trainer_constructor

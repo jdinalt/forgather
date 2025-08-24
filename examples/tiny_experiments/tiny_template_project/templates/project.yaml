@@ -2,8 +2,6 @@
 
 -- block config_metadata
     == super()
-    -- set ns.create_new_model = True
-    -- set ns.save_model = False
     ##-- set ns.trainer_class = 'trainers/trainer.yaml'
 -- endblock config_metadata
 
@@ -23,12 +21,6 @@
 -- block trainer_args
     == super()
     # project overrides
-    ## max_steps: 500
-    ## per_device_train_batch_size: 32
-    ## per_device_eval_batch_size: 64
-    ## logging_steps: 100
-    ## eval_steps: 500
-    ## num_train_epochs: 1
 -- endblock trainer_args
 
 #-------------------- project.model_config --------------------

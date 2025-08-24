@@ -2,8 +2,6 @@
 
 -- block config_metadata
     == super()
-    -- set ns.create_new_model = True
-    -- set ns.save_model = True
 -- endblock config_metadata
 
 

@@ -22,21 +22,16 @@
     -- include 'default.trainer_config'
 -- endblock trainer_definition
 
-
--- block construct_new_model
-    -- include 'default.model_config'
--- endblock construct_new_model
-
 #-------------------- default.trainer_config --------------------
 -- extends 'samantha.trainer_config'
 
 
 -- block trainer_meta_config
     == super()
-    -- set trainer_def.pipeline_layers = 60
-    -- set trainer_def.split_layer_prefix = "causal_lm.layer_stack.layers."
-    -- set trainer_def.pipeline_segments = 6
-    -- set trainer_def.pipeline_microbatches = 12
+    -- set ns.pipeline_layers = 60
+    -- set ns.split_layer_prefix = "causal_lm.layer_stack.layers."
+    -- set ns.pipeline_segments = 6
+    -- set ns.pipeline_microbatches = 12
 -- endblock trainer_meta_config
 
 

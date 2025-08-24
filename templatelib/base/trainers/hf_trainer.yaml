@@ -1,19 +1,29 @@
--- extends 'trainers/trainer.yaml'
+-- extends 'trainers/base_trainer.yaml'
 -- block trainer_meta_config
     == super()
-    -- set trainer_def.name = "transformers.Trainer"
-    -- set trainer_def.description = "Huggingface Transformers Trainer"
+    -- set ns.trainer_name = "Huggingface Traice"
+    -- set ns.trainer_description = "https://huggingface.co/docs/transformers/main_classes/trainer"
     -- set ns.nproc_per_node = "gpu"
+    -- set ns.trainer_config_class = "transformers:TrainingArguments"
+    -- set ns.trainer_class = "transformers:Trainer"
 -- endblock trainer_meta_config
+
+
+-- block trainer_dependencies
+    == super()
+    -- block accelerator_config
+accelerator_config: &accelerator_config !dict
+    dispatch_batches: False
+    split_batches: False
+    -- endblock accelerator_config
+-- endblock trainer_dependencies
+
 
 -- block trainer_args
     == super()
-    
     # HF Trainer Defaults
     lr_scheduler_type: "constant"
-    accelerator_config:
-        dispatch_batches: False
-        split_batches: False
+    accelerator_config: *accelerator_config
     ddp_find_unused_parameters: False
     report_to: "none"
     logging_nan_inf_filter: False
@@ -21,15 +31,7 @@
 
 
 -- block trainer_constructor
-trainer: &trainer !singleton:transformers:Trainer@trainer
-    model_init: *model_preprocessor
-    args: !singleton:transformers:TrainingArguments
-        <<: *trainer_args
-    data_collator: *data_collator
-    train_dataset: *train_dataset
-    eval_dataset: *eval_dataset
-    processing_class: *tokenizer
-    callbacks: *trainer_callbacks
+    == super()
     # Disabled until bug is fixed.
     # optimizer_cls_and_kwargs: !tuple [ *optimizer, {} ]
 << endblock trainer_constructor

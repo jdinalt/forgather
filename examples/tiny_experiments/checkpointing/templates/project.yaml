@@ -20,7 +20,7 @@
     
     # Checkpointing Project Overrides (must come after all parent overrides)
     # Enable checkpoint features
-    save_strategy: "steps"
+    save_strategy: "{{ save_strategy | default('steps') }}"
     save_steps: 100
     save_safetensors: True
     save_total_limit: 3
@@ -29,7 +29,7 @@
     save_rng_state: true
     
     # Small training run for quick testing
-    max_steps: 500
+    max_steps: {{ max_steps | default(500) }}
     eval_steps: 200
     logging_steps: 50
     

@@ -6,7 +6,6 @@
     -- set ns.config_description = "Test with larger model."
     -- set ns.log_name = "deepone_4x"
     -- set ns.model_name = "deepone"
-    -- set ns.nproc_per_node = 4
 -- endblock config_metadata
 
 -- block trainer_definition
@@ -23,16 +22,17 @@
 -- block trainer_meta_config
     == super()
     ## Much smaller model for testing
-    -- set trainer_def.pipeline_layers = 32
-    -- set trainer_def.pipeline_segments = 4
-    -- set trainer_def.pipeline_microbatches = 4
+    -- set ns.nproc_per_node = 4
+    -- set ns.pipeline_layers = 32
+    -- set ns.pipeline_segments = 4
+    -- set ns.pipeline_microbatches = 4
 -- endblock trainer_meta_config
 
 -- block trainer_args
     == super()
     
     # Quick testing - short run
-    max_steps: 100
+    max_steps: {{ max_steps | default(100) }}
     
     # Smaller batch sizes for tiny model
     per_device_train_batch_size: 32

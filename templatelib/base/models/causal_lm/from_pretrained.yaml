@@ -1,10 +1,12 @@
+## Given a model-id or a path to a model, construct the model
+## and load the weight, using AutoModelForCausalLM.from_pretrained()
 -- extends 'models/base_language_model.yaml'
 
 -- block model_meta_config
     == super()
     -- set model_def.name = "Pretrained Causal LM"
     -- set model_def.description = ""
-    -- set model_def.model_id_or_path = ns.output_dir
+    -- set model_def.model_id_or_path = ns.model_id_or_path
 << endblock model_meta_config
 
 

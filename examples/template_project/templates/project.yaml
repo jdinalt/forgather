@@ -149,7 +149,7 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
     max_steps: {{ max_steps | default(-1) }}
     
     # Checkpoint Save Settings
-    save_strategy: "steps"           # Set to "steps" to save every "save_steps"; set to "no" to disable
+    save_strategy: "{{ save_strategy | default('steps') }}"           # Set to "steps" to save every "save_steps"; set to "no" to disable
     save_steps: 10000                # Checkpoint every N steps
     save_safetensors: True           # Safe tensors?
     save_total_limit: 3              # Keep at most N checkpoints

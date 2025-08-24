@@ -45,6 +45,11 @@ feedforward_factory: &feedforward_factory !partial:.feedforward_layer:Feedforwar
     << endblock feedforward_factory
 
 
+    -- block rel_positional_encoder
+## Undefined
+    << endblock rel_positional_encoder
+
+
     -- block attention_factory
 attention_factory: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
     d_model: !var "hidden_size"
@@ -136,6 +141,6 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
 
 -- block model_code_generator
     == super()
-    # Dynamic Llama
     supports_gradient_checkpointing: True
+    supports_sdpa: True
 << endblock model_code_generator

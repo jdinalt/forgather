@@ -1,5 +1,5 @@
 ## Given an id-or-path, construct a newly initialized model from that config.
-## This can be substituted for "load_model.yaml" to construct a model from
+## This can be substituted for "from_pretrained.yaml" to construct a model from
 ## a configuration, without loading the weights. This can be useful for 
 ## constructing the model on the "meta" device for inspection or for
 ## customizing how the weights are loaded.
@@ -10,7 +10,7 @@
     -- set model_def.name = "Causal Language Model from Pretrained Config"
     -- set model_def.description = "A newly initialized model from a pretrained config model id-or-path."
     -- set model_def.source = ""
-    -- set model_def.model_id_or_path = ns.output_dir
+    -- set model_def.model_id_or_path = ns.model_id_or_path
 << endblock model_meta_config
 
 

@@ -1,29 +1,39 @@
 -- extends 'trainers/trainer.yaml'
 -- block trainer_meta_config
     == super()
-    -- set trainer_def.name = "forgather.ml.trainer.pipeline:PipelineTrainer"
-    -- set trainer_def.description = "Pipeline parallel trainer"
+    -- set ns.trainer_name = "forgather.ml.trainer.pipeline:PipelineTrainer"
+    -- set ns.trainer_description = "Pipeline parallel trainer"
+    -- set ns.trainer_config_class = "forgather.ml.trainer.pipeline:PipelineTrainingArguments"
+    -- set ns.trainer_class = "forgather.ml.trainer.pipeline:PipelineTrainer"
     ## Set these in your sub-project
-    ##-- set trainer_def.pipeline_layers = 16
-    ##-- set trainer_def.pipeline_segments = 4
-    ##-- set trainer_def.pipeline_microbatches = 4
-    ##-- set trainer_def.split_layer_prefix = "causal_lm.layer_stack.layers."
+    ##-- set ns.pipeline_layers = 16
+    ##-- set ns.pipeline_segments = 4
+    ##-- set ns.pipeline_microbatches = 4
+    ##-- set ns.split_layer_prefix = "causal_lm.layer_stack.layers."
     ## Set to match number of pipeline segments on each node
-    ## -- set ns.nproc_per_node = "gpu"
+    ## -- set ns.nproc_per_node = N
 -- endblock trainer_meta_config
+
+
+-- block trainer_header
+    == super()
+# pipeline_layers: {{ ns.pipeline_layers }}
+# pipeline_segments: {{ ns.pipeline_segments }}
+# pipeline_microbatches: {{ ns.pipeline_microbatches }}
+# split_layer_prefix: "{{ ns.split_layer_prefix }}"
+<< endblock trainer_header
+
 
 -- block trainer_dependencies
     == super()
--- block split_spec
+    -- block split_spec
 split_spec: &split_spec !dict@split_spec
     ## Define where to split the model, based upon the total number of layers and the number of segments.
     ## While not optimal, this is probalby a good starting point.
--- for i in range(1, trainer_def.pipeline_segments):
-    {{ trainer_def.split_layer_prefix }}{{i * (trainer_def.pipeline_layers // trainer_def.pipeline_segments)}}: "beginning"
+-- for i in range(1, ns.pipeline_segments):
+    {{ ns.split_layer_prefix }}{{i * (ns.pipeline_layers // ns.pipeline_segments)}}: "beginning"
 -- endfor
--- endblock split_spec
-
-
+    -- endblock split_spec
 -- endblock trainer_dependencies
 
 
@@ -33,7 +43,7 @@ split_spec: &split_spec !dict@split_spec
     split_spec: *split_spec
 
     # Split batches into N micro-batches; batch-sizes must be divisble by this value.
-    pipeline_chunks: {{ trainer_def.pipeline_microbatches }}
+    pipeline_chunks: {{ ns.pipeline_microbatches }}
     ## Must be 1 for PipelineScheduleSingle. Otherwise, see scheduler documentation for reqiriements.
     stages_per_rank: 1
     ## Set to True, if pipe_schedule_factory is a sub-class of PipelineScheduleMulti
@@ -72,19 +82,10 @@ split_spec: &split_spec !dict@split_spec
 
 
 -- block trainer_constructor
-trainer: &trainer !singleton:forgather.ml.trainer.pipeline:PipelineTrainer@trainer
-    model_init: *model_preprocessor
-    args: !singleton:forgather.ml.trainer.pipeline:PipelineTrainingArguments
-        <<: *trainer_args
-    data_collator: *data_collator
-    train_dataset: *train_dataset
-    eval_dataset: *eval_dataset
-    tokenizer: *tokenizer
-    callbacks: *trainer_callbacks
-    optimizer_factory: *optimizer
-    lr_scheduler_factory: *lr_scheduler
+    == super()
+    # Pipeline requires explicit loss function
+    compute_loss_func: !singleton:forgather.ml.loss:CausalLoss
     distributed_env: *distributed_env
-    loss_fn: !singleton:forgather.ml.loss:CausalLoss
     # https://docs.pytorch.org/docs/stable/distributed.pipelining.html#module-torch.distributed.pipelining.schedules
     pipe_schedule_factory: !lambda:torch.distributed.pipelining:ScheduleGPipe
 << endblock trainer_constructor

@@ -44,7 +44,7 @@
     
     ## Checkpointing
     save_steps: 500
-    save_strategy: "steps"
+    save_strategy: "{{ save_strategy | default('steps') }}"
     save_total_limit: 2
     
 -- endblock trainer_args

@@ -8,17 +8,13 @@
     ## This block introduces new settings and defines defautls.
     -- set ns.log_name = "log"
     -- set ns.model_name = "default_model"
-    -- set ns.create_new_model = True
-    -- set ns.save_model = True
-    -- set ns.train = True
-    -- set ns.eval = False
     ## Assume single process training, unless overridden
     -- set ns.nproc_per_node = 1
 << endblock config_metadata
 
 
 -- block globals
-    ## Compute directories from above blocks.
+    ## Generate directories from above blocks.
     -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
     -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
 << endblock globals
@@ -40,10 +36,6 @@
 # ns.model_src_dir: "{{ ns.model_src_dir }}"
 # ns.output_dir: "{{ ns.output_dir }}"
 # ns.logging_dir: "{{ ns.logging_dir }}"
-# ns.create_new_model: {{ ns.create_new_model }}
-# ns.save_model: {{ ns.save_model }}
-# ns.train: {{ ns.train }}
-# ns.eval: {{ ns.eval }}
 # ns.nproc_per_node: {{ ns.nproc_per_node }}
 << endblock variable_listing
 
@@ -145,30 +137,34 @@ lr_scheduler: &lr_scheduler ~
     -- endfilter
 << endblock main_body
 
+-- block dynamic_args
+    == super()
+    max_steps:
+        names: "--max-steps"
+        type: "int"
+        help: "Set maximum training steps"
+    save_strategy:
+        names: "--save-strategy"
+        choices: [ "no", "steps", "epoch" ]
+        type: "str"
+        help: "When to save checkpoints"
+<< endblock dynamic_args
 
 -- block meta_output
     == super()
     output_dir: "{{ ns.output_dir }}"
     model_src_dir: "{{ ns.model_src_dir }}"
-    logging_dir: "{{ns.logging_dir}}"
-    create_new_model: "{{ns.create_new_model}}"
-    save_model: "{{ns.save_model}}"
-    train: "{{ns.train}}"
-    eval: "{{ns.eval}}"
-    nproc_per_node: {{ns.nproc_per_node}}
+    logging_dir: "{{ ns.logging_dir }}"
+    nproc_per_node: {{ ns.nproc_per_node }}
 << endblock meta_output
 
 
 -- block main_output
 main: !singleton:forgather.ml.training_script:TrainingScript@training_script
     meta: *meta_output
-    do_save: {{ ns.save_model }}
-    do_train: {{ ns.train }}
-    do_eval: {{ ns.eval }}
-    # Init distributed envrionment before initializing anyting which depends on it.
+    do_train: True
+    do_save: False
+    do_eval: False
     distributed_env: *distributed_env
     trainer: *trainer
-    ## Feed the preprocessed config back in as an argument; it will be saved
-    ## in the logging directory.
-    pp_config: !var "pp_config"
 << endblock main_output

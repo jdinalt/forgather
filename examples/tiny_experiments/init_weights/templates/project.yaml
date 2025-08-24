@@ -6,15 +6,6 @@
     == super()
     -- set ns.config_name = "Init Test"
     -- set ns.config_description = "Test performance of various initialization methods."
-    
-    ## Initialize a new model from scratch
-    -- set ns.create_new_model = True
-
-    ## Save model, when training is complete
-    -- set ns.save_model = False
-
-    ## Required to load a custom model
-    -- set ns.trust_remote_code = True
 -- endblock config_metadata
 
 
@@ -34,7 +25,6 @@
 -- block trainer_args
     == super()
     # project overrides
-    ## max_steps: 3
 -- endblock trainer_args
 
 #-------------------- project.model_config --------------------

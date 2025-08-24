@@ -3,8 +3,6 @@
 ## Common project settings
 -- block config_metadata
     == super()
-    -- set ns.create_new_model = True
-    -- set ns.save_model = False
     -- set ns.model_name = "test_model"
 -- endblock config_metadata
 
@@ -47,19 +45,28 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
 -- block trainer_args
     == super()
     # Project Overrides
-    
     # Different train and eval batch sizes works for all schedulers, except ZBVZ, at present.
     per_device_train_batch_size: 64
     per_device_eval_batch_size: 64
     logging_steps: 10
     eval_steps: 50
-    max_steps: 250
+    max_steps: {{ max_steps | default(250) }}
 -- endblock trainer_args
 
 
 -- block model_preprocessor
 model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_to_dtype [ *model, "bfloat16" ]
 << endblock model_preprocessor
+
+
+-- block trainer_constructor
+    == super()
+    # Project overrides
+    # This is actually the default, but we are using this to verify that this arg works
+    # and to keep it consistent with the pipeline trainer.
+    compute_loss_func: !singleton:forgather.ml.loss:CausalLoss
+<< endblock trainer_constructor
+
 
 #-------------------- project.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'

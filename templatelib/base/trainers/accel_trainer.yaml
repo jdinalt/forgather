@@ -1,34 +1,40 @@
 -- extends 'trainers/trainer.yaml'
 -- block trainer_meta_config
     == super()
-    -- set trainer_def.name = "forgather.ml.trainer.accelerate:AccelTrainer"
-    -- set trainer_def.description = "A lightweight, extensible trainer w/ Accelerate support"
+    -- set ns.trainer_name = "forgather.ml.trainer.accelerate:AccelTrainer"
+    -- set ns.trainer_description = "A lightweight, extensible trainer w/ Accelerate support"
     -- set ns.nproc_per_node = "gpu"
+    -- set ns.trainer_config_class = "forgather.ml.trainer.accelerate:AccelTrainingArguments"
+    -- set ns.trainer_class = "forgather.ml.trainer.accelerate:AccelTrainer"
 -- endblock trainer_meta_config
+
+
+-- block trainer_dependencies
+    == super()
+    -- block dataloader_config
+dataloader_config: &dataloader_config !singleton:accelerate:DataLoaderConfiguration
+    dispatch_batches: False
+    split_batches: False
+    -- endblock dataloader_config
+
+
+    -- block accelerator_config
+accelerator_args: &accelerator_args !dict
+    device_placement: True
+    dataloader_config: *dataloader_config
+    -- endblock accelerator_config
+-- endblock trainer_dependencies
 
 
 -- block trainer_args
     == super()
-    
     # Accel Trainer Defaults
-    accelerator_args:
-        device_placement: True
-        dataloader_config: !singleton:accelerate:DataLoaderConfiguration
-            dispatch_batches: False
-            split_batches: False
+    accelerator_args: *accelerator_args
 << endblock trainer_args
 
 
 -- block trainer_constructor
-trainer: &trainer !singleton:forgather.ml.trainer.accelerate:AccelTrainer@trainer
-    model_init: *model_preprocessor
-    args: !singleton:forgather.ml.trainer.accelerate:AccelTrainingArguments
-        <<: *trainer_args
-    data_collator: *data_collator
-    train_dataset: *train_dataset
-    eval_dataset: *eval_dataset
-    tokenizer: *tokenizer
-    callbacks: *trainer_callbacks
+    == super()
     optimizer_factory: *optimizer
     lr_scheduler_factory: *lr_scheduler
 << endblock trainer_constructor

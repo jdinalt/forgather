@@ -1,6 +1,4 @@
-## Note: This project assumes that the model has manual activation checkpointing
-## enabled!
-## NOTE: This one is not working quite yet!
+## Note: This one is not quite working yet!
 -- extends 'samantha.yaml'
 
 -- block config_metadata
@@ -15,17 +13,12 @@
     # Limit sequence length to avoid OOM
     max_length: 4096
     ## Set to always use max_length; useful for profiling, to avoid surprises.
-    ## padding: "max_length"
+    padding: "max_length"
 -- endblock datacollator
 
 -- block trainer_definition
     -- include 'default.trainer_config'
 -- endblock trainer_definition
-
-
--- block construct_new_model
-    -- include 'default.model_config'
--- endblock construct_new_model
 
 #-------------------- default.trainer_config --------------------
 -- extends 'samantha.trainer_config'
@@ -34,6 +27,7 @@
     == super()
     # Experiment overrides
     max_grad_norm: null
+    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
     fuse_optim_with_backward: True
     enable_activation_offloading: True
 -- endblock trainer_args

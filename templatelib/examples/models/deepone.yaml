@@ -151,4 +151,5 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     == super()
     # Deepone
     supports_gradient_checkpointing: True
+    supports_sdpa: True
 << endblock model_code_generator

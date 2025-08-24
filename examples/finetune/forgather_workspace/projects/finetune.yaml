@@ -7,37 +7,21 @@
 
     ## Directory in which local datasets are stored
     -- set ns.datasets_dir = datasets_dir | default(joinpath(user_home_dir(), 'datasets'))
-
-    ## Set these to the dataset project to use
-    -- set ns.dataset_proj = dataset_proj | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI'))
-    -- set ns.dataset_config = dataset_config | default("samantha.yaml")
-
-    ## Some models may have issues loading using our checkpoint method. Set safe_load to fallback
-    ## to constructing model with AutoModelForCausalLM.from_pretrained().
-    -- set ns.safe_load = safe_load | default(False)
-
-    ## Some HF models support enabling gradient (activation) checkpointing via the 
-    ## gradient_checkpointing_enable() method. If True, try to use this API to enable checkpointing.
-    -- set ns.gradient_checkpointing = gradient_checkpointing | default(False)
 << endblock resource_directories
 
 
 -- block config_metadata
     == super()
-    -- set ns.config_name = "Finetune"
-    -- set ns.config_description = "Experiments in finetuning"
+    -- set ns.config_name = 'Finetune'
+    -- set ns.config_description = 'Experiments in finetuning'
     -- set ns.trainer_class = 'trainers/trainer.yaml'
     -- set ns.trust_remote_code = True
-    -- set ns.create_new_model = False
-    ## We use the checkpointing functionality to save.
-    ## If set to True, the model weights of the original model will be overwritten.
-    -- set ns.save_model = False
-    -- set ns.log_name = "default"
-    -- set ns.model_name = model_name | default('undefined-model')
-    -- set ns.train = True
-    -- set ns.eval = False
-    -- set ns.create_new_model = False
-    -- set ns.trust_remote_code = True
+    -- set ns.model_name = 'default_model'
+    -- set ns.log_name = 'log'
+    
+    ## Some models may have issues loading using our checkpoint method. Set safe_load to fallback
+    ## to constructing model with AutoModelForCausalLM.from_pretrained().
+    -- set ns.safe_load = safe_load | default(False)
 
     ## memory debugging
     -- set ns.debug_memory_detials = False
@@ -45,10 +29,36 @@
 -- endblock config_metadata
 
 
+-- block globals
+	# If not specified, default to model-dir and model-name
+	-- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
+
+    ## If explicity specified, use 'output_dir,' otherwise assume that 'ns.model_id_or_path'
+    -- set ns.output_dir = output_dir | default(ns.model_id_or_path)
+    -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
+<< endblock globals
+
+
+-- block variable_listing
+    == super()
+# ns.safe_load: {{ ns.safe_load }}
+# ns.dataset_proj: {{ ns.dataset_proj }}
+# ns.dataset_config: {{ ns.dataset_config }}
+# ns.debug_memory_detials: {{ ns.debug_memory_detials }}
+# ns.log_memory_to_tb: {{ ns.log_memory_to_tb }}
+# ns.model_id_or_path: {{ ns.model_id_or_path }}
+-- endblock variable_listing
+
+
 -- block datasets_preprocessor_args
 tokenizer_args: &tokenizer_args !dict
     truncation: True
 -- endblock datasets_preprocessor_args
+
+
+-- block construct_new_model
+    -- include 'models/causal_lm/from_pretrained_config.yaml'
+-- endblock construct_new_model
 
 
 -- block datasets_definition
@@ -69,16 +79,6 @@ tokenizer_args: &tokenizer_args !dict
     ## See definition below
     -- include 'finetune.callbacks'
 << endblock trainer_callbacks
-
-
-## Override, to construct model from config
--- block load_model
-    -- if ns.safe_load
-        -- include 'models/causal_lm/from_pretrained.yaml'
-    -- else
-        -- include 'models/causal_lm/from_pretrained_config.yaml'
-    -- endif
--- endblock load_model
 
 
 -- block datacollator
@@ -124,11 +124,9 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
 
 -- block dynamic_args
     == super()
-    max_steps:
-        names: "--max-steps"
-        help: "Set maximum training steps"
-    train_epoch:
+    train_epochs:
         names: "--train-epochs"
+        type: "int"
         help: "Set the number of epochs to train for"
     log_peak_memory:
         names: "--log-peak-memory"
@@ -136,16 +134,20 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
         help: "Log peak GPU memory at each log step"
     dataset_config:
         names: "--dataset-config"
+        type: "str"
         help: "The name of the dataset configuration to use"
     dataset_proj:
         names: "--dataset-proj"
+        type: "path"
         help: "Path to dataset project to use"
-    models_dir:
-        names: "--models-dir"
-        help: "The directory in which to look for models"
-    model_name:
-        names: "--model-name"
-        help: "The name of the model to train in models_dir"
+    model_id_or_path:
+        names: "--model-id-or-path"
+        type: "path"
+        help: "HF model ID or local path to model"
+    output_dir:
+        names: [ "--output-dir", "-o" ]
+        type: "path"
+        help: "Training output director. Defaults to model_id_or_path"
     safe_load:
         names: "--safe-load"
         action: "store_true"
@@ -165,12 +167,6 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
 ## parent template, which is named in the 'ns.trainer_class' variable,
 ## the value of which is defined in the 'config_metadata' block, above.
 
--- block trainer_meta_config
-    == super()
-    -- set trainer_def.name = "Custom " + trainer_def.name
--- endblock trainer_meta_config
-
-
 ## Setup some defaults for this type of project
 -- block trainer_args
     == super()
@@ -181,15 +177,14 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     logging_steps: 10
     eval_steps: 50
     num_train_epochs: {{ train_epochs | default(1) }}
-    max_steps: {{ max_steps | default(-1) }}
     dataloader_num_workers: 1
     max_grad_norm: 1.0
     float32_matmul_precision: "high"
-    gradient_checkpointing: {{ ns.gradient_checkpointing }}
+    gradient_checkpointing: {{ gradient_checkpointing | default(False) }}
 
     # Checkpoint Save Settings
-    save_strategy: "steps"           # Set to "steps" to save every "save_steps"; set to "no" to disable
-    save_steps: 10000                # Checkpoint every N steps
+    save_strategy: "{{ save_strategy | default('steps') }}" # Set to "steps" to save every "save_steps"; set to "no" to disable
+    save_steps: 1000                 # Checkpoint every N steps
     save_safetensors: False          # Safe tensors don't support shared weights
     save_total_limit: 3              # Keep at most N checkpoints
     save_on_each_node: False         # Save common files on each node
@@ -198,11 +193,7 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     save_rng_state: True             # Save RNG state with checkpoint
 
     # We load the model via the newest checkpoint
--- if ns.safe_load
-    resume_from_checkpoint: False
--- else
     resume_from_checkpoint: True
--- endif
     restore_optimizer_state: True    # Test optimizer state restoration per rank
     restore_scheduler_state: True    # Test scheduler state restoration per rank
     restore_rng_state: True          # Test RNG state restoration per rank

@@ -3,7 +3,7 @@
 -- block model_meta_config
     == super()
     -- set model_def.name = "Llama"
-    -- set model_def.description = "Llama model"
+    -- set model_def.description = "A newly initialized HF Llama model"
     -- set model_def.source = ""
     -- set model_def.model_config_cls = 'transformers:LlamaConfig'
 << endblock model_meta_config

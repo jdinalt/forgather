@@ -5,7 +5,6 @@
     -- set ns.create_new_model = False
     -- set ns.save_model = False
     -- set ns.model_name = "tiny_causal"
-    -- set ns.model_dtype = "bfloat16"
 -- endblock config_metadata
 
 -- block trainer_definition
@@ -33,9 +32,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 -- block trainer_args
     == super()
     # project overrides
-    ## max_steps: 3
 -- endblock trainer_args
 
 #-------------------- project.callbacks --------------------
 -- extends 'tiny.callbacks'
-##-- extends 'callbacks/grad_logger.yaml'

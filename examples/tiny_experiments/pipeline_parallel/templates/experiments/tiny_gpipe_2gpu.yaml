@@ -6,7 +6,6 @@
     -- set ns.config_description = "Quick pipeline test for debug"
     -- set ns.log_name = "tiny_gpipe_2gpu"
     -- set ns.model_name = "tiny_pipeline"
-    -- set ns.nproc_per_node = 2
 -- endblock config_metadata
 
 -- block trainer_definition
@@ -23,16 +22,17 @@
 -- block trainer_meta_config
     == super()
     ## Much smaller model for testing
-    -- set trainer_def.pipeline_layers = 8
-    -- set trainer_def.pipeline_segments = 2
-    -- set trainer_def.pipeline_microbatches = 4
+    -- set ns.nproc_per_node = 2
+    -- set ns.pipeline_layers = 8
+    -- set ns.pipeline_segments = 2
+    -- set ns.pipeline_microbatches = 4
 -- endblock trainer_meta_config
 
 -- block trainer_args
     == super()
     
     # Quick testing - short run
-    max_steps: 100
+    max_steps: {{ max_steps | default(100) }}
     
     # Smaller batch sizes for tiny model
     per_device_train_batch_size: 16

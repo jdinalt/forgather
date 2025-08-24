@@ -5,9 +5,9 @@
     ## Overrides
     -- set ns.config_name = "Tiny Llama"
     -- set ns.config_description = "A demo of training a tiny llama model from scratch"
-    -- set ns.create_new_model = True
-    -- set ns.save_model = True
     -- set ns.model_name = "tiny_llama"
+    ## This will trigger a save at the end of training; this is in addtion to the checkpoint settings.
+    -- set ns.do_save = True
 
     ## The dataset sub-project to use
     -- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan')
@@ -76,19 +76,17 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     max_length: 512
 << endblock datacollator
 
-## This is an example of adding a dynamic argument to the configuraiton.
-## When using the command line tool, the tool will parse the configuration's
-## meta-data to setup dynamic arguments. These will show in the commands "help"
-## and will be injected into the configuration.
-## See the trainer_args section, below, where we use the "max_steps" argument, and
-## set a default value of -1 (limited by epochs).
--- block dynamic_args
-    == super()
-    max_steps:
-        names: "--max-steps"
-        help: "Set maximum training steps"
-<< endblock dynamic_args
 
+-- block main_output
+    == super()
+    ## This will trigger saving the model weights in the output directory at end.
+    ## We normally would just use checkpointin (see save_strategy), but this saves
+    ## the weights in a "checkpoints" sub-directory. For the tutorial, we would like
+    ## to be able to just load the model with .from_pretrained() at the end, which 
+    ## requires saving the weights directly in the model directory.
+    ## TODO: Find a good way to not have to use this kludge!
+    do_save: True
+<< endblock main_output
 
 #-------------------- project.model_config --------------------
 -- extends "models/tiny_dynamic_llama.yaml"
@@ -101,6 +99,10 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 -- block trainer_args
     == super()
     # Tiny Llama Project Overrides
+    save_strategy: "{{ save_strategy | default('steps') }}"
+    save_steps: 10000
+    # Safetensors can't handle tied parameters/buffers, so fallback to PyTorch format.
+    save_safetensors: False
     seed: 42
     per_device_train_batch_size: 32
     per_device_eval_batch_size: 64
@@ -108,10 +110,6 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     eval_steps: 500
     num_train_epochs: 1
     dataloader_num_workers: 1
-    # Safetensors can't handle tied parameters/buffers, so fallback to PyTorch format.
-    save_safetensors: False
-    ## This is a dynamic argument, with a default value of 1. We can set this from the CLI.
-    max_steps: {{ max_steps | default(-1) }}
 << endblock trainer_args
 
 

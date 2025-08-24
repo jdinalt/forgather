@@ -1,40 +1,70 @@
--- extends 'trainers/minimal_trainer.yaml'
-
+-- set default = namespace()
+-- from 'inc/formatting.jinja' import h2, h3, sep
+-- filter trim()
 
 -- block trainer_meta_config
-    == super()
-    -- set trainer_def.name = "Base Trainer"
-    -- set trainer_def.description = "A ML model trainer"
+    -- set ns.trainer_name = "Base Trainer"
+    -- set ns.trainer_description = "A ML model trainer"
+    -- set ns.nproc_per_node = 1
+    -- set ns.trainer_config_class = "forgather.ml:TrainingArguments"
+    -- set ns.trainer_class = "forgather.ml:Trainer"
 << endblock trainer_meta_config
 
 
-## Supports at least the sub-set of args from forgather.ml.trainer.TrainingArguments
+-- block trainer_header
+# Name: {{ ns.trainer_name }}
+# Description: {{ ns.trainer_description }}
+# Trainer Config Class: {{ ns.trainer_config_class }}
+# Trainer Class: {{ ns.trainer_class }}
+# nproc_per_node: {{ ns.nproc_per_node }}
+<< endblock trainer_header
+-- endfilter ## trim()
+
+
+== h3('Trainer Args')
+
+-- filter trim()
+-- block trainer_dependencies
+## Additional definitions required for trainer_args block
+<< endblock trainer_dependencies
+-- endfilter
+
+
+-- filter trim()
 -- block trainer_args
-    == super()
-    # Base Trainer Defaults
-    # https://huggingface.co/docs/transformers/en/main_classes/trainer#transformers.TrainingArguments
-    overwrite_output_dir: True
-    eval_steps: 100
-    eval_strategy: "steps"
-    save_strategy: "no"
-    logging_strategy: "steps"
-    ## Additional common params
-    ## save_steps: 500
-    ## logging_steps: 500
-    ## warmup_steps: 0
-    ## use_cpu: True ; Set in config for debugging
-    ## max_steps: -1
-    ## seed: -1
-    ## device: null
-    ## dataloader_num_workers: 0
-    ## dataloader_pin_memory: True
-    ## dataloader_persistent_workers: False
-    ## dataloader_prefetch_factor: null ; defaults to 2, if num_workers
-    ## dataloader_drop_last: False
-    ## logging_first_step: False
-    ## eval_delay: 0
-    ## save_total_limit: 2
-    ## torch_compile: False
-    ## torch_compile_backend: null
-    ## torch_compile_mode: null
+trainer_args: &trainer_args !singleton:{{ ns.trainer_config_class  }}@trainer_args
+    ## Base Trainer Defaults ; this is a common subset on these two interfaces
+    ## https://huggingface.co/docs/transformers/en/main_classes/trainer#transformers.TrainingArguments
+    ## forgather.ml.TrainerArgs
+    save_strategy: "{{ save_strategy | default('no') }}"
+    max_steps: {{ max_steps | default(-1) }}
+    output_dir: "{{ ns.output_dir }}"
+    logging_dir: "{{ ns.logging_dir }}"
 << endblock trainer_args
+-- endfilter
+
+
+-- filter trim()
+-- block model_preprocessor
+## This can be used to modify the constructed model, before it is passed to the trainer.
+## For example, it could be used to change the model's dtype.
+model_preprocessor: &model_preprocessor !partial:call
+    - *model
+<< endblock model_preprocessor
+-- endfilter
+
+
+== h3('Trainer Constructor')
+
+-- filter trim()
+-- block trainer_constructor
+trainer: &trainer !singleton:{{ ns.trainer_class }}@trainer
+    args: *trainer_args
+    model_init: *model_preprocessor
+    data_collator: *data_collator
+    train_dataset: *train_dataset
+    eval_dataset: *eval_dataset
+    processing_class: *tokenizer
+    callbacks: *trainer_callbacks
+<< endblock trainer_constructor
+-- endfilter

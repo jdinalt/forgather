@@ -24,6 +24,8 @@
     num_kv_heads: 2  # 4:1 ratio for meaningful GQA testing
     dim_feedforward: 1024
     num_hidden_layers: 6
+    d_head: 64 # Must be hidden_size // num_attention_heads
+    rope_theta: 10000.0
 << endblock model_config
 
 
@@ -33,27 +35,31 @@ positional_encoder: &positional_encoder !factory:.null_pe:NullPE@positional_enco
 << endblock positional_encoder
 
 
+-- block rel_positional_encoder
+relative_pe: &relative_pe !singleton:.real_rotary_embeddings:RealRotaryPE@relative_pe
+    d_head: !var "d_head"
+    max_sequence_length: !var "max_sequence_length"
+    rope_theta: !var "rope_theta"
+<< endblock rel_positional_encoder
+
+
 -- block attention_factory
-# Use improved RoPE-enabled attention with injectable SDPA and GQA
 attention_factory: &attention_factory !partial:.causal_rpe_attn:CausalRpeAttn@attention_factory
     d_model: !var "hidden_size"
     num_heads: !var "num_attention_heads"
     num_kv_heads: !var "num_kv_heads"
     dropout: !var "attention_dropout"
     bias: False
-    apply_pos_emb: !partial:.rotary_embeddings:apply_rotary_emb []
+    sdpa_function: !partial:torch.nn.functional:scaled_dot_product_attention []
+    pos_encoder: *relative_pe
 << endblock attention_factory
 
 
 -- block model_factory
-model_factory: &model_factory !factory:.causal_rpe_lm:CausalRpeLM@model_factory
+model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     loss_fn: *loss_fn
     input_encoder: *input_encoder
     output_decoder: *output_decoder
     layer_stack: *layer_stack
     init_weights: *init_weights
-    relative_pe: !partial:.rotary_embeddings:RotaryPE
-        d_head: 64  # 512 / 8 = 64
-        max_sequence_length: !var "max_sequence_length"
-        rope_theta: 10000.0
 << endblock model_factory

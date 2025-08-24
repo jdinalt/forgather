@@ -34,15 +34,9 @@ model_constructor_args: &model_constructor_args {}
 ## The details for constructing a new model need to be filled in by
 ## a child template, while an existing model should work 'as-is'
 -- filter trim()
-    -- if ns.create_new_model
-        -- block construct_new_model
-# Undefined model constructor
-        << endblock construct_new_model
-    -- else
-        -- block load_model
-            -- include 'models/causal_lm/load_model.yaml'
-        << endblock load_model
-    -- endif
+    -- block construct_new_model required
+## Undefined model constructor
+    << endblock construct_new_model
 -- endfilter
 -- endblock model_definition
 

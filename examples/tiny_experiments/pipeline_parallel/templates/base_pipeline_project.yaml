@@ -15,8 +15,6 @@
     -- set ns.log_name = "pipeline_defaults"
     ## Change the trainer implementation.
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
-    ## Set to number of processes per node
-    ## -- set ns.nproc_per_node = N
 -- endblock config_metadata
 
 
@@ -47,18 +45,15 @@
 
 -- block trainer_meta_config
     == super()
-    -- set trainer_def.pipeline_layers = 16
-    -- set trainer_def.pipeline_segments = 2
-    -- set trainer_def.pipeline_microbatches = 4
-    -- set trainer_def.split_layer_prefix = "causal_lm.layer_stack.layers."
+    -- set ns.pipeline_layers = 16
+    -- set ns.pipeline_segments = 2
+    -- set ns.pipeline_microbatches = 4
+    -- set ns.split_layer_prefix = "causal_lm.layer_stack.layers."
 -- endblock trainer_meta_config
 
 
 -- block trainer_args
     == super()
-    # Pipeline Base Project Overrides
-    resume_from_checkpoint: {{ not ns.create_new_model }}
-
     # Debug settings
     debug_pipeline: False
     debug_split_model: False

@@ -19,11 +19,6 @@
     -- include 'default.trainer_config'
 -- endblock trainer_definition
 
-
--- block construct_new_model
-    -- include 'default.model_config'
--- endblock construct_new_model
-
 #-------------------- default.trainer_config --------------------
 -- extends 'samantha.trainer_config'
 

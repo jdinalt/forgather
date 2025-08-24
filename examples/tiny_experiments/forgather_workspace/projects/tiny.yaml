@@ -103,18 +103,17 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 
 -- block dynamic_args
     == super()
-    max_steps:
-        names: "--max-steps"
-        help: "Set maximum training steps"
     log_peak_memory:
         names: "--log-peak-memory"
         action: "store_true"
         help: "Log peak GPU memory at each log step"
     dataset_config:
         names: "--dataset-config"
+        type: "str"
         help: "The name of the dataset configuration to use"
     dataset_proj:
         names: "--dataset-proj"
+        type: "path"
         help: "Path to dataset project to use"
 << endblock dynamic_args
 
@@ -124,13 +123,6 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 ## This has a side effect of not being able to statically resolve the
 ## parent template, which is named in the 'ns.trainer_class' variable,
 ## the value of which is defined in the 'config_metadata' block, above.
-
-## Set sane trainer defaults for 'tiny' projects.
--- block trainer_meta_config
-    == super()
-    -- set trainer_def.name = "Custom " + trainer_def.name
--- endblock trainer_meta_config
-
 
 -- block trainer_args
     == super()
@@ -142,7 +134,6 @@ optimizer: &optimizer !partial:torch:optim.AdamW
     eval_steps: 500
     num_train_epochs: 1
     dataloader_num_workers: 1
-    max_steps: {{ max_steps | default(-1) }}
 -- endblock trainer_args
 
 #-------------------- tiny.model_config --------------------

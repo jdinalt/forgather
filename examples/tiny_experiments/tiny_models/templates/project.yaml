@@ -2,17 +2,12 @@
 
 -- block config_metadata
     == super()
-    -- set ns.create_new_model = True
-    -- set ns.save_model = False
-    ##-- set ns.log_name = "alternate"
-    ##-- set ns.trainer_class = 'trainers/accel_trainer.yaml'
 -- endblock config_metadata
 
 
 -- block trainer_definition
     -- include 'project.trainer_config'
 -- endblock trainer_definition
-
 
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
@@ -21,6 +16,4 @@
     == super()
 
     # Project Overrides
-    max_grad_norm: 1.0
-    #max_steps: 100
 -- endblock trainer_args

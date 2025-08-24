@@ -5,7 +5,6 @@
     -- set ns.config_name = "GPipe with 2 GPUs"
     -- set ns.config_description = "Pipeline with 2 GPUs"
     -- set ns.log_name = "gpipe_2gpu"
-    -- set ns.nproc_per_node = 2
 -- endblock config_metadata
 
 -- block trainer_definition
@@ -18,8 +17,9 @@
 
 -- block trainer_meta_config
     == super()
-    -- set trainer_def.pipeline_segments = ns.nproc_per_node
-    -- set trainer_def.pipeline_microbatches = ns.nproc_per_node * 2
+    -- set ns.nproc_per_node = 2
+    -- set ns.pipeline_segments = ns.nproc_per_node
+    -- set ns.pipeline_microbatches = ns.nproc_per_node * 2
 -- endblock trainer_meta_config
 
 
