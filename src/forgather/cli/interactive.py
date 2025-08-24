@@ -7,6 +7,7 @@ import os
 import subprocess
 import shutil
 from typing import List, Optional
+import traceback
 
 from forgather.meta_config import MetaConfig
 from .commands import get_env
@@ -593,7 +594,7 @@ class ForgatherShell(cmd.Cmd):
         print(f"Executing: forgather {' '.join(forgather_args)}")
 
         # Check if this is a command that should use pager in interactive mode
-        should_page = command_args[0] in ["pp", "graph", "code", "construct"]
+        should_page = command_args[0] in ["pp", "graph", "code", "construct", "dataset"]
 
         if should_page:
             # Capture output for paging
@@ -629,6 +630,7 @@ class ForgatherShell(cmd.Cmd):
                 output = captured_output.getvalue()
                 if output.strip():
                     self._page_output(output)
+                traceback.print_exc()
             finally:
                 # Restore original sys.argv
                 sys.argv = orig_argv
@@ -649,6 +651,7 @@ class ForgatherShell(cmd.Cmd):
                 print("\nCommand interrupted")
             except Exception as e:
                 print(f"Error executing command: {e}")
+                traceback.print_exc()
             finally:
                 # Restore original sys.argv
                 sys.argv = orig_argv

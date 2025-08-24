@@ -322,7 +322,7 @@ def create_dataset_parser(global_args):
     parser.add_argument(
         "-T",
         "--tokenizer-path",
-        type=str,
+        type=os.path.expanduser,
         default=None,
         help="Path to tokenizer to test",
     )
@@ -355,6 +355,12 @@ def create_dataset_parser(global_args):
         type=int,
         default=None,
         help="Number of examples to print",
+    )
+    parser.add_argument(
+        "--features",
+        type=str,
+        nargs="*",
+        help="Features to show",
     )
     parser.add_argument(
         "-s",

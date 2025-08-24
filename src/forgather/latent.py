@@ -4,7 +4,6 @@ import sys
 import os
 from abc import ABCMeta
 from functools import partial
-import traceback
 import logging
 
 logger = logging.getLogger(__name__)
