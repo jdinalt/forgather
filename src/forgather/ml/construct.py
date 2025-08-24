@@ -128,6 +128,7 @@ def module_to_dtype(module_ctor, dtype: str, **kwargs):
     return m.to(dtype=torch_dtype(dtype))
 
 
+# Depricated: use forgather.from_project()
 def load_from_config(
     project_dir: str,
     config_template: str | NoneType = None,
