@@ -3,6 +3,7 @@ import datetime
 import time
 import re
 import getpass
+from contextlib import contextmanager
 
 from jinja2 import FileSystemLoader, StrictUndefined, Undefined
 from jinja2.ext import Extension
@@ -152,6 +153,22 @@ class LineStatementProcessor(Extension):
             print(f"{' '+name+' ':-^80}")
             print(format_line_numbers(source))
         return source
+
+
+@contextmanager
+def debug_pp(debug):
+    """
+    Context manager, which enabled pp debug and restores it to the previous state on exit
+    """
+    preserve_line_numbers = LineStatementProcessor.preserve_line_numbers
+    pp_verbose = LineStatementProcessor.pp_verbose
+    try:
+        LineStatementProcessor.preserve_line_numbers = debug
+        LineStatementProcessor.pp_verbose = debug
+        yield
+    finally:
+        LineStatementProcessor.preserve_line_numbers = preserve_line_numbers
+        LineStatementProcessor.pp_verbose = pp_verbose
 
 
 class PPEnvironment(SandboxedEnvironment):
