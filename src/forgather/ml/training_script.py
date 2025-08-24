@@ -2,72 +2,48 @@ from typing import Any, Dict
 from dataclasses import dataclass, field
 import os
 import sys
-from pprint import pformat
-from random import seed as py_seed
+import logging
 
-from torch import manual_seed as torch_seed
 from torch import distributed
-from numpy.random import seed as np_seed
 from torch.distributed.elastic.multiprocessing.errors import record
 
-from forgather.config import ConfigEnvironment, fconfig, pconfig
-from forgather.meta_config import MetaConfig, preprocessor_globals
 from forgather.ml.distributed import DistributedEnvironment
-from forgather.latent import Latent
 from forgather.ml.distributed import main_process_first
 from forgather.dotdict import DotDict
 from forgather.project import Project
 
-
-def set_seed(seed: int):
-    torch_seed(seed)
-    np_seed(seed)
-    py_seed(seed)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 @dataclass(kw_only=True)
 class TrainingScript:
+    """
+    This is just a wrapper around a trainer class which calls the requested
+    trainer methods.
+    """
+
     meta: dict
     do_save: bool = True
     do_train: bool = True
     do_eval: bool = False
     distributed_env: DistributedEnvironment
     trainer: Any
-    pp_config: str
 
     def __post_init__(self):
         self.meta = DotDict(self.meta)
 
-    def validate_dirs(self):
-        """
-        Ensure that output directory exists and make it more difficult to accidentally
-        overwrite a model directory.
-        """
-        for dir in (self.meta.output_dir, self.meta.logging_dir):
-            if dir is not None and not os.path.isdir(dir):
-                print(f"Creating directory: {dir}")
-                os.makedirs(dir, exist_ok=True)
-
     @record
     def run(self):
-        with main_process_first():
-            self.validate_dirs()
-
         # In a distriubted environment, we only want one process to print messages
         is_main_process = self.distributed_env.local_rank == 0
 
         if is_main_process:
-            print("**** Training Script Started *****")
-            print(f"config_name: {self.meta.config_name}")
-            print(f"config_description: {self.meta.config_description}")
-            print(f"output_dir: {self.meta.output_dir}")
-            print(f"logging_dir: {self.meta.logging_dir}")
-
-        if self.pp_config is not None:
-            # Store a copy of the pre-processed configuration in the logging directory.
-            os.makedirs(self.meta.logging_dir, exist_ok=True)
-            with open(os.path.join(self.meta.logging_dir, "config.yaml"), "w") as f:
-                f.write(self.pp_config)
+            logger.info("**** Training Script Started *****")
+            logger.info(f"config_name: {self.meta.config_name}")
+            logger.info(f"config_description: {self.meta.config_description}")
+            logger.info(f"output_dir: {self.meta.output_dir}")
+            logger.info(f"logging_dir: {self.meta.logging_dir}")
 
         if self.do_train:
             # This is where the actual 'loop' is.
@@ -76,20 +52,20 @@ class TrainingScript:
                 distributed.barrier()
 
             if is_main_process:
-                print("**** Training Completed *****")
-                print(metrics)
+                logger.info("**** Training Completed *****")
+                logger.info(metrics)
 
         if self.do_eval:
             metrics = self.trainer.evaluate()
 
             if is_main_process:
-                print("**** Evaluation Completed *****")
-                print(metrics)
+                logger.info("**** Evaluation Completed *****")
+                logger.info(metrics)
 
         if self.do_save:
             self.trainer.save_model(self.meta.output_dir)
             if is_main_process:
-                print(f"Model saved to: {self.meta.output_dir}")
+                logger.info(f"Model saved to: {self.meta.output_dir}")
 
 
 def training_loop(project_directory, config_template=""):
@@ -114,7 +90,6 @@ def training_loop(project_directory, config_template=""):
     log_level: The log-level to use.
     ```
     """
-    set_seed(42)
 
     # Load the project
     proj = Project(config_template, project_directory)
