@@ -1,0 +1,8 @@
+-- extends "meta_defaults.yaml"
+
+-- block configs
+name: "Open-Orca"
+description: "This rich collection of augmented FLAN data aligns, as best as possible, with the distributions outlined in the Orca paper."
+config_prefix: "configs"
+default_config: "openorca.yaml"
+<< endblock configs
