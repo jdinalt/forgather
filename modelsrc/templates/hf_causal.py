@@ -42,7 +42,7 @@ class DynamicCasualLM(PreTrainedModel, GenerationMixin):
     supports_gradient_checkpointing = {{ supports_gradient_checkpointing | default(False) }}
     _is_stateful = {{ is_stateful | default(False) }}
     _supports_flash_attn = {{ supports_flash_attn | default(False) }}
-    _supports_sdpa = {{ supports_sdpa | default(True) }}
+    _supports_sdpa = {{ supports_sdpa | default(False) }}
     _supports_flex_attn = {{ supports_flex_attn | default(False) }}
     _can_compile_fullgraph = {{ can_compile_fullgraph | default(False) }}
     _tp_plan = {{ tp_plan | default(None) }}
