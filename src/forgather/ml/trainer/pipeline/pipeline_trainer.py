@@ -278,13 +278,11 @@ class PipelineTrainer(Trainer):
         *,
         args: PipelineTrainingArguments,
         distributed_env: DistributedEnvironment,
-        loss_fn: Callable,
         pipe_schedule_factory: Callable = ScheduleGPipe,
         **kwargs,
     ):
         assert isinstance(args, PipelineTrainingArguments)
         self.denv = distributed_env
-        self.loss_fn = loss_fn
         self.pipe_schedule_factory = pipe_schedule_factory
         super().__init__(args=args, **kwargs)
 

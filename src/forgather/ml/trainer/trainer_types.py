@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from collections import namedtuple
 import platform
 import time
+from pprint import pformat
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -234,6 +235,9 @@ class TrainingArguments(MinimalTrainingArguments):
 
         if self.gradient_checkpointing_kwargs is None:
             self.gradient_checkpointing_kwargs = {}
+
+    def __str__(self):
+        return pformat(self)
 
 
 class AbstractBaseTrainer(ABC):

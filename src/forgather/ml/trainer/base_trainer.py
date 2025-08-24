@@ -67,6 +67,7 @@ class BaseTrainer(ExtensibleTrainer):
         callbacks: List = None,
         # Depreicated; use processing_class
         tokenizer=None,
+        compute_loss_func: Callable = None,
     ):
         if callbacks is None:
             callbacks = []
@@ -94,6 +95,7 @@ class BaseTrainer(ExtensibleTrainer):
         self.model_init = model_init
         self.callbacks = self.default_callbacks()
         self.callbacks.extend(callbacks)
+        self.loss_fn = compute_loss_func
 
         # Init attributes
         self.train_dataloader = None
@@ -125,7 +127,7 @@ class BaseTrainer(ExtensibleTrainer):
             torch.set_float32_matmul_precision(self.args.float32_matmul_precision)
 
         self._post_init()
-        self._validate_dirs()
+        # self._validate_dirs()
 
     def __repr__(self):
         return (
@@ -498,7 +500,6 @@ class BaseTrainer(ExtensibleTrainer):
     def _load_model_from_checkpoint(self, checkpoint_path: str) -> None:
         """Load model weights from checkpoint using the sharded checkpoint loader."""
         assert self.model is not None
-        logger.warning("Cannot load model weights: model not initialized")
 
         # Handle case where device might be None
         device = self.args.device if self.args.device is not None else "cpu"

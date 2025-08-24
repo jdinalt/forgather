@@ -233,7 +233,12 @@ class Trainer(BaseTrainer):
         match self.args.construct_model_on:
             case "default":
                 if self.model_init:
+                    logger.info(
+                        f"Constructing model on default device and moving to {self.args.device}"
+                    )
                     self.model = self.model_init()
+                else:
+                    logger.info(f"Moving model to {self.args.device}")
                 self.model = self.model.to(self.args.device)
             case "meta":
                 assert (
@@ -243,6 +248,14 @@ class Trainer(BaseTrainer):
                     self.args.resume_from_checkpoint
                 ), "Constructing model on meta-device requires loading parameters from checkpoint"
 
+                logger.info(
+                    f"Consturcting model on meta device and materializing on {self.args.device}"
+                )
+                # TODO: Identify if the model has buffers with "persist=False" and warn loudly!
+                if not self.args.resume_from_checkpoint:
+                    logger.warning(
+                        f"Uninitialized model constructed on meta-device and not loading from checkpoint!"
+                    )
                 with torch.device("meta"):
                     self.model = self.model_init()
                 sharing_metadata = create_sharing_metadata(self.model)
@@ -253,6 +266,9 @@ class Trainer(BaseTrainer):
                 assert (
                     self.model_init
                 ), "Constructing the model on device requires model_init"
+                logger.info(
+                    f"Constructig and initializing model directly on {self.args.device}"
+                )
                 with torch.device(self.args.device):
                     self.model = self.model_init()
             case _:
@@ -448,7 +464,18 @@ class Trainer(BaseTrainer):
         with ExitStack() as stack:
             if self.args.enable_activation_offloading:
                 stack.enter_context(torch.autograd.graph.save_on_cpu(pin_memory=True))
-            loss = self.model(*args, **kwargs)[0]
+            if self.loss_fn:
+                # TODO: We are making a guess as to how to interpret the args. Can we do better?
+                if len(args):
+                    main_input = args[0]
+                    labels = args[1]
+                else:
+                    main_input = kwargs[self.model.main_input_name]
+                    labels = kwargs["labels"]
+                outputs = self.model(main_input)
+                loss = self.loss_fn(outputs, labels)
+            else:
+                loss = self.model(*args, **kwargs)[0]
 
         self._backward(loss)
         self._clip_grad_norm(self.args.max_grad_norm)
