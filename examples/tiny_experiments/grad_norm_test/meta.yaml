@@ -1,8 +1,0 @@
--- extends "meta_defaults.yaml"
-
--- block configs
-name: "Grad Norm"
-description: "Test the impact of using the grad_norm option"
-config_prefix: "tests"
-default_config: "gradnorm.yaml"
-<< endblock configs

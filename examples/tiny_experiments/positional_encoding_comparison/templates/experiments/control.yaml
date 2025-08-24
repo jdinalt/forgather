@@ -1,9 +1,0 @@
--- extends 'project.yaml'
-
--- block config_metadata
-    == super()
-    -- set ns.config_name = "Control - Sinusoidal PE"
-    -- set ns.config_description = "Baseline configuration using standard sinusoidal positional encoding"
-    -- set ns.model_name = "sinusoidal_pe"
-    -- set ns.log_name = "sinusoidal_pe"
--- endblock config_metadata

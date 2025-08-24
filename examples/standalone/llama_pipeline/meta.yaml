@@ -1,8 +1,0 @@
--- extends "meta_defaults.yaml"
-
--- block configs
-name: "Pipeline Parallelism"
-description: "A demo and test harness for the Pipleline Parallelism trainer implementation"
-config_prefix: "configs"
-default_config: "interleaved_1f1b_4gpu.yaml"
-<< endblock configs

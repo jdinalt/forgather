@@ -1,8 +1,0 @@
--- extends "meta_defaults.yaml"
-
--- block configs
-name: "Feedforward Layers"
-description: "Test and compare feedforward implementations"
-config_prefix: "experiments"
-default_config: "mlp.yaml"
-<< endblock configs

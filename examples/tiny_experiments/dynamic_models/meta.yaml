@@ -1,8 +1,0 @@
--- extends "meta_defaults.yaml"
-
--- block configs
-name: "Dynamic Models"
-description: "Demonstrates how to define dynamic model architectures and compares them"
-config_prefix: "experiments"
-default_config: "control.yaml"
-<< endblock configs
