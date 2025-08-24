@@ -7,32 +7,33 @@ def parse_dynamic_args(parser, global_args):
 
     def _convert_type_string(type_str):
         """Convert type string to appropriate callable for argparse.
-        
+
         Args:
             type_str: String representation of the type (e.g., 'int', 'str', 'float', 'path')
-            
+
         Returns:
             Callable that can be used as argparse type parameter
         """
-        if type_str == 'int':
+        if type_str == "int":
             return int
-        elif type_str == 'str':
+        elif type_str == "str":
             return str
-        elif type_str == 'float':
+        elif type_str == "float":
             return float
-        elif type_str == 'bool':
+        elif type_str == "bool":
             # For bool, we'll use a custom converter that handles common boolean strings
             def bool_converter(value):
                 if isinstance(value, bool):
                     return value
-                if value.lower() in ('true', '1', 'yes', 'on'):
+                if value.lower() in ("true", "1", "yes", "on"):
                     return True
-                elif value.lower() in ('false', '0', 'no', 'off'):
+                elif value.lower() in ("false", "0", "no", "off"):
                     return False
                 else:
                     raise ValueError(f"Invalid boolean value: {value}")
+
             return bool_converter
-        elif type_str == 'path':
+        elif type_str == "path":
             # For path type, use os.path.expanduser to handle ~ expansion
             return os.path.expanduser
         else:
@@ -62,10 +63,10 @@ def parse_dynamic_args(parser, global_args):
                 # Remove 'default' from kwargs to let template defaults take precedence
                 # This prevents argparse from setting unspecified args to a default value
                 dynamic_arg.pop("default", None)
-                
+
                 # Handle type conversion for string-based types
-                if 'type' in dynamic_arg and isinstance(dynamic_arg['type'], str):
-                    dynamic_arg['type'] = _convert_type_string(dynamic_arg['type'])
+                if "type" in dynamic_arg and isinstance(dynamic_arg["type"], str):
+                    dynamic_arg["type"] = _convert_type_string(dynamic_arg["type"])
 
                 parser.add_argument(
                     *names,

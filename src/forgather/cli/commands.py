@@ -1,6 +1,7 @@
 import os
 import subprocess
 from pprint import pp
+import traceback
 
 from forgather.project import Project
 import forgather.nb.notebooks as nb
@@ -10,7 +11,7 @@ from forgather.yaml_encoder import to_yaml
 from forgather.latent import Latent
 from forgather.meta_config import preprocessor_globals, MetaConfig
 from forgather.config import ConfigEnvironment
-from forgather.preprocess import LineStatementProcessor
+from forgather.preprocess import debug_pp
 
 from .dynamic_args import get_dynamic_args
 
@@ -33,9 +34,9 @@ def get_env(meta, project_dir):
     return environment
 
 
-def get_config(meta, env, config_template):
+def get_config(meta, env, config_template, **kwargs):
     """Load and return configuration from template."""
-    return env.load(meta.config_path(config_template)).get()
+    return env.load(meta.config_path(config_template), **kwargs).get()
 
 
 class BaseCommand:
@@ -49,9 +50,9 @@ class BaseCommand:
         set_default_template(self.meta, args)
         self.env = get_env(self.meta, args.project_dir)
 
-    def get_config(self):
+    def get_config(self, **kwargs):
         """Get configuration for current template."""
-        return get_config(self.meta, self.env, self.args.config_template)
+        return get_config(self.meta, self.env, self.args.config_template, **kwargs)
 
 
 """Command Implementations"""
@@ -110,6 +111,8 @@ def list_project(project_dir):
         except Exception as e:
             config_long_name = "PARSE ERROR"
             config_description = "An error occured while parsing the configuration."
+            # traceback.print_exc()
+
         if config_name == meta.default_config():
             config_name = f"[{config_name}]"
         print(f"    {config_name:<30} {config_long_name} : {config_description}")
@@ -127,27 +130,25 @@ def targets_cmd(args):
 
 def pp_cmd(args):
     """Show preprocessed configuration."""
-    if args.debug:
-        LineStatementProcessor.preserve_line_numbers = True
-        LineStatementProcessor.pp_verbose = True
+    with debug_pp(args.debug):
+        # Get dynamic arguments (configuration-specific args)
+        dynamic_args = get_dynamic_args(args)
+        if dynamic_args:
+            print(f"# Dynamic arguments received: {dynamic_args}")
+            print()
 
-    # Get dynamic arguments (configuration-specific args)
-    dynamic_args = get_dynamic_args(args)
-    if dynamic_args:
-        print(f"# Dynamic arguments received: {dynamic_args}")
-        print()
-
-    cmd = BaseCommand(args)
-    pp_config = cmd.env.preprocess(
-        cmd.meta.config_path(args.config_template), **dynamic_args
-    )
-    print(pp_config)
+        cmd = BaseCommand(args)
+        pp_config = cmd.env.preprocess(
+            cmd.meta.config_path(args.config_template), **dynamic_args
+        )
+        print(pp_config)
 
 
 def code_cmd(args):
     """Generate Python code from configuration."""
     cmd = BaseCommand(args)
-    config, pp_config = cmd.get_config()
+    dynamic_args = get_dynamic_args(args)
+    config, pp_config = cmd.get_config(**dynamic_args)
     code = generate_code(config[args.target])
     print(code)
 
@@ -156,7 +157,8 @@ def construct_cmd(args):
     """Materialize and print a target."""
     meta = MetaConfig(args.project_dir)
     set_default_template(meta, args)
-    proj = Project(args.config_template, args.project_dir)
+    dynamic_args = get_dynamic_args(args)
+    proj = Project(args.config_template, args.project_dir, **dynamic_args)
     target = proj(args.target)
     if args.call:
         target = target()
@@ -193,24 +195,23 @@ def trefs_cmd(args):
 
 def graph_cmd(args):
     """Preprocess and parse into node graph."""
-    if args.debug:
-        LineStatementProcessor.preserve_line_numbers = True
-        LineStatementProcessor.pp_verbose = True
-    cmd = BaseCommand(args)
-    config, pp_config = cmd.get_config()
-    match args.format:
-        case "none":
-            pass
-        case "fconfig":
-            print(fconfig(config))
-        case "repr":
-            print(repr(config))
-        case "yaml":
-            print(to_yaml(config))
-        case "python":
-            print(generate_code(config["main"]))
-        case _:
-            raise Exception(f"Unrecognized format {args.format}")
+    with debug_pp(args.debug):
+        cmd = BaseCommand(args)
+        dynamic_args = get_dynamic_args(args)
+        config, pp_config = cmd.get_config(**dynamic_args)
+        match args.format:
+            case "none":
+                pass
+            case "fconfig":
+                print(fconfig(config))
+            case "repr":
+                print(repr(config))
+            case "yaml":
+                print(to_yaml(config))
+            case "python":
+                print(generate_code(config["main"]))
+            case _:
+                raise Exception(f"Unrecognized format {args.format}")
 
 
 def tb_cmd(args):

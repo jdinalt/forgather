@@ -2,6 +2,7 @@
 
 import argparse
 from argparse import RawTextHelpFormatter
+import logging
 import os
 import sys
 
@@ -180,6 +181,7 @@ def create_graph_parser(global_args):
         action="store_true",
         help="Shows details of template preprocessing to assist with debugging",
     )
+    parse_dynamic_args(parser, global_args)
     return parser
 
 
@@ -212,12 +214,6 @@ def create_pp_parser(global_args):
         "--debug",
         action="store_true",
         help="Shows details of template preprocessing to assist with debugging",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Shows additional debug information",
     )
 
     parse_dynamic_args(parser, global_args)
@@ -262,6 +258,7 @@ def create_code_parser(global_args):
         default="main",
         help="Output target name",
     )
+    parse_dynamic_args(parser, global_args)
     return parser
 
 
@@ -283,6 +280,7 @@ def create_construct_parser(global_args):
         action="store_true",
         help="Call the materialized object",
     )
+    parse_dynamic_args(parser, global_args)
     return parser
 
 
@@ -351,13 +349,6 @@ def create_dataset_parser(global_args):
         default=1000,
         help="Number of samples to use for histogram",
     )
-    # parser.add_argument(
-    #    "-c",
-    #    "--chat-template",
-    #    type=str,
-    #    default=None,
-    #    help="Path to chat template",
-    # )
     parser.add_argument(
         "-n",
         "--examples",
@@ -390,12 +381,15 @@ def show_main_help():
     print("Forgather CLI")
     print()
     print("Usage: forgather [global options] <subcommand> [subcommand options]")
-    print("       forgather -i                      # Interactive mode with tab completion")
+    print(
+        "       forgather -i                      # Interactive mode with tab completion"
+    )
     print()
     print("Global options:")
     print("  -p, --project-dir DIR    Project directory (default: current directory)")
     print("  -t, --config-template T  Configuration template name")
     print("  -i, --interactive        Start interactive shell with tab completion")
+    print("  --no-dyn                 Disable dynamic help (from config meta-data)")
     print("  --help                   Show this help message")
     print()
     print("Available subcommands:")
@@ -419,6 +413,7 @@ def parse_args(args=None):
     # Handle interactive mode
     if global_args.interactive:
         from .interactive import interactive_main
+
         interactive_main(global_args.project_dir)
         sys.exit(0)
 
@@ -483,6 +478,7 @@ def parse_args(args=None):
 
 
 def main():
+    logging.basicConfig(level=logging.WARNING)
     """Main CLI entry point."""
     try:
         args = parse_args()
