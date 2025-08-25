@@ -22,7 +22,7 @@ train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train
 -- block validation_dataset_split
 validation_dataset_split: &validation_dataset_split !singleton:datasets:load_dataset@validation_dataset_split
     args: [ "Open-Orca/OpenOrca" ]
-    kwargs: { split: "train[:1000]" }
+    kwargs: { split: "train[:200]" }
 << endblock validation_dataset_split
 
 
