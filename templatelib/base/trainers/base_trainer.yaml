@@ -11,6 +11,11 @@
 << endblock trainer_meta_config
 
 
+-- block trainer_globals
+## Computed values
+<< endblock trainer_globals
+
+
 -- block trainer_header
 # Name: {{ ns.trainer_name }}
 # Description: {{ ns.trainer_description }}
