@@ -107,24 +107,37 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 
 -- block lr_scheduler
 # See https://arxiv.org/html/2503.02844v1
+## This lr_scheduler is pretty flexible, as it can be used to implement many common LR schedules
+## - Linear warmup
+## - Constant LR
+## - Cosine annealing
+## - Exponential decay
+## Combinations of any of the above, e.g.
+## - Linear warmup + constant LR
+## - Linear warmup + cosine annealing
+## - Linear warmup + cosine annealing + constant
+## - Linear warmup + cosine annealing + constant + exponential decay
 lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
-    # This seems sufficient to maintain stability.
+    # Linear warmup steps
     warmup_steps: 200
 
-    # Don't both with cooldown.
-    # Note: It non-zero, warm-up will proceed to the LR configured in the optimizer, rather than to
-    # constant_lr, then perform cosine annealing for this many steps to the constant_lr
+    # If 0, training will warmup to constant_lr, followed by constant lr, until checkpoint_step.
+    # If > 0, training will warmup to the lr specified in the optimizer, followed by 
+    # cosine annealing to constant_lr, completing at step warmup_steps + cooldown_steps.
     cooldown_steps: 0
-    
-    # Set this to the last checkpoint before stopping.
-    # This is an exponential decay after checkpoint_step.
-    checkpoint_step: 1000
+
+    # Begin exponential decay, from constant_lr to minimum_lr, at this absolute step
+    # Disable by setting to < 0
+    checkpoint_step: -1
 
     # Hold at this LR after warmup.
     constant_lr: 5.0e-6
 
     # Exponential decay constant, tau
     tau: !!float 1.0e2
+
+    # Exponetial decay limit
+    min_lr: 1.0e-8
 << endblock lr_scheduler
 
 
