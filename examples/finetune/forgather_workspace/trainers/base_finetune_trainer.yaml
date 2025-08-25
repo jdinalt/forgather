@@ -1,0 +1,56 @@
+-- extends ns.trainer_class
+## Note: We use dynamic inheritance for the trainer-class
+## This has a side effect of not being able to statically resolve the
+## parent template, which is named in the 'ns.trainer_class' variable,
+## the value of which is defined in the 'config_metadata' block, above.
+
+## Setup some defaults for this type of project
+-- block trainer_args
+    == super()
+    # Finetune overrides
+    seed: 42
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 16
+    logging_steps: 10
+    eval_steps: 50
+    num_train_epochs: {{ train_epochs | default(1) }}
+    dataloader_num_workers: 1
+    max_grad_norm: 1.0
+    float32_matmul_precision: "high"
+    gradient_checkpointing: {{ gradient_checkpointing | default(False) }}
+
+    # Checkpoint Save Settings
+    save_strategy: "{{ save_strategy | default('steps') }}" # Set to "steps" to save every "save_steps"; set to "no" to disable
+    save_steps: 1000                 # Checkpoint every N steps
+    save_safetensors: False          # Safe tensors don't support shared weights
+    save_total_limit: 3              # Keep at most N checkpoints
+    save_on_each_node: False         # Save common files on each node
+    save_optimizer_state: True       # Save optimizer state with checkpoint
+    save_scheduler_state: True       # Save LR scheduler state with checkpoint
+    save_rng_state: True             # Save RNG state with checkpoint
+
+    # We load the model via the newest checkpoint
+    resume_from_checkpoint: True
+    restore_optimizer_state: True    # Test optimizer state restoration per rank
+    restore_scheduler_state: True    # Test scheduler state restoration per rank
+    restore_rng_state: True          # Test RNG state restoration per rank
+    restore_dataset_state: False     # Not fully implemented yet!
+    ## WARNING: If the model has any buffers with "peristent=False," construct the model
+    ## on the "default" device; otherwise, there is no way to initialize these buffers from
+    ## a checkpoint! OTOH, not constructing the model on "meta" is very slow...
+-- if ns.safe_load
+    construct_model_on: "default"    # Construct model on CPU
+-- else
+    construct_model_on: "meta"       # Construct empty model on meta device
+-- endif
+    # Enable all SDPA backends and let PyTorch choose which to use.
+    sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
+    sdpa_set_priority: False # If list, interpret as priority order
+-- endblock trainer_args
+
+
+-- block model_preprocessor
+# Convert model to bfloat16 format
+model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_to_dtype [ *model, "bfloat16" ]
+<< endblock model_preprocessor
+

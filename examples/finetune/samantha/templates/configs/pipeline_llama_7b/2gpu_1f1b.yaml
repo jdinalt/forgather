@@ -2,9 +2,9 @@
 
 -- block config_metadata
     == super()
-    -- set ns.config_name = "Samantha Llama 7B 1F!B Pipe x4"
-    -- set ns.config_description = "Train Samantha on 1F!B 4 GPU Pipeline"
-    -- set ns.log_name = "1f1b_4gpu"
+    -- set ns.config_name = "Samantha Llama 7B 1F1B Pipe x2"
+    -- set ns.config_description = "Train Samantha on 1F1B 2 GPU Pipeline"
+    -- set ns.log_name = "1f1b_2gpu"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
 -- endblock config_metadata
 
@@ -22,10 +22,9 @@
 
 
 #-------------------- default.trainer_config --------------------
--- extends 'trainers/pipeline/1f1b_4gpu.yaml'
+-- extends 'trainers/pipeline/2gpu.yaml'
 
 -- block trainer_args
     == super()
     # Experiment overrides
 -- endblock trainer_args
-

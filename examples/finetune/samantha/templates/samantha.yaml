@@ -1,34 +1,11 @@
--- extends 'projects/finetune.yaml'
+-- extends 'projects/base_finetune_proj.yaml'
 
 -- block config_metadata
     == super()
-    -- set ns.debug_memory_detials = False
-    -- set ns.log_memory_to_tb = True
-    -- set ns.dataset_proj = dataset_proj | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI'))
-    -- set ns.dataset_config = dataset_config | default("samantha.yaml")
-    -- set ns.samantha_default_chat_template = joinpath(ns.forgather_dir, 'chat_templates', 'chatml.jinja')
-    -- set ns.samantha_chat_template = chat_template | default(ns.samantha_default_chat_template)
+    -- set ns.config_name = "Samantha Finetune"
+    -- set ns.config_description = ""
+    -- set ns.log_name = "default"
+    -- set ns.default_dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
+    -- set ns.default_dataset_config = "samantha.yaml"
 -- endblock config_metadata
 
-
--- block trainer_definition
-    -- include 'samantha.trainer_config'
--- endblock trainer_definition
-
-
--- block dynamic_args
-    == super()
-    chat_template:
-        names: "--chat-template"
-        help: "Path to the chat template to use"
-<< endblock dynamic_args
-
-#-------------------- samantha.trainer_config --------------------
--- extends 'finetune.trainer_config'
-
--- block trainer_args
-    == super()
-    # project overrides
-    sdpa_backend: [ "flash", "efficient" ]
-    sdpa_set_priority: True
--- endblock trainer_args

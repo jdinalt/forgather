@@ -1,5 +1,3 @@
-## Note: This project assumes that the model has manual activation checkpointing
-## enabled!
 -- extends 'samantha.yaml'
 
 -- block config_metadata
@@ -8,9 +6,13 @@
     -- set ns.config_description = "Train Samantha on 1F!B 6 GPU Pipeline"
     -- set ns.log_name = "1f1b_6gpu"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
-    -- set ns.nproc_per_node = 6
-    -- set ns.model_name = "llama-2-30b-fg"
 -- endblock config_metadata
+
+
+-- block trainer_definition
+    -- include 'default.trainer_config'
+-- endblock trainer_definition
+
 
 -- block datacollator
     == super()
@@ -18,38 +20,24 @@
     max_length: 1300
 -- endblock datacollator
 
--- block trainer_definition
-    -- include 'default.trainer_config'
--- endblock trainer_definition
 
 #-------------------- default.trainer_config --------------------
--- extends 'samantha.trainer_config'
-
+-- extends 'trainers/pipeline/1f1b_6gpu.yaml'
 
 -- block trainer_meta_config
     == super()
     -- set ns.pipeline_layers = 60
-    -- set ns.split_layer_prefix = "causal_lm.layer_stack.layers."
-    -- set ns.pipeline_segments = 6
+    -- set ns.per_device_train_batch_size = 12
+    -- set ns.per_device_eval_batch_size = 24
     -- set ns.pipeline_microbatches = 12
--- endblock trainer_meta_config
-
-
--- block trainer_constructor
-    == super()
-    # Config Overrides
-    pipe_schedule_factory: !lambda:torch.distributed.pipelining:Schedule1F1B
--- endblock trainer_constructor
+<< endblock trainer_meta_config
 
 
 -- block trainer_args
     == super()
-    per_device_train_batch_size: 12
-    per_device_eval_batch_size: 24
-    eval_steps: 11
-    # Config overrides
+    # Experiment overrides
+    max_grad_norm: null
+    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
     fuse_optim_with_backward: True
     #enable_activation_offloading: True
-    max_grad_norm: null
-    enable_activation_checkpoints: True
 -- endblock trainer_args

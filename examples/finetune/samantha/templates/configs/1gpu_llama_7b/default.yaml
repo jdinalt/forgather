@@ -1,5 +1,3 @@
-## Note: This project assumes that the model has manual activation checkpointing
-## enabled!
 -- extends 'samantha.yaml'
 
 -- block config_metadata
@@ -9,22 +7,28 @@
     -- set ns.log_name = "default"
 -- endblock config_metadata
 
--- block datacollator
-    == super()
-    # Limit sequence length to avoid OOM
-    max_length: 512
--- endblock datacollator
 
 -- block trainer_definition
     -- include 'default.trainer_config'
 -- endblock trainer_definition
 
+
+-- block datacollator
+    == super()
+    max_length: 512
+-- endblock datacollator
+
+
 #-------------------- default.trainer_config --------------------
--- extends 'samantha.trainer_config'
+-- extends 'trainers/base_finetune_trainer.yaml'
+
 
 -- block trainer_args
     == super()
-    # Experiment overrides
+    # Config overrides
+    # Setting for llama 7B on single GPU (16 GB)
     max_grad_norm: null
+    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
     fuse_optim_with_backward: True
 -- endblock trainer_args
+

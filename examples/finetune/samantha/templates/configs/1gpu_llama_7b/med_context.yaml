@@ -4,28 +4,34 @@
     == super()
     -- set ns.config_name = "Samantha Llama7B Medium"
     -- set ns.config_description = "Train with 1300 token context on single GPU, 24 GBs"
-    -- set ns.log_name = "1x_med"
+    -- set ns.log_name = "1gpu_1300"
 -- endblock config_metadata
 
--- block datacollator
-    == super()
-    # Limit sequence length to avoid OOM
-    max_length: 1300
-    ## Set to always use max_length; useful for profiling, to avoid surprises.
-    padding: "max_length"
--- endblock datacollator
 
 -- block trainer_definition
     -- include 'default.trainer_config'
 -- endblock trainer_definition
 
+
+-- block datacollator
+    == super()
+    # This is about as long as is needed for Samantha...
+    # This should work on a 24 GB GPU
+    max_length: 1300
+    ## Set to always use max_length; useful for profiling, to avoid surprises.
+    ## adding: "max_length"
+-- endblock datacollator
+
+
 #-------------------- default.trainer_config --------------------
--- extends 'samantha.trainer_config'
+-- extends 'trainers/base_finetune_trainer.yaml'
 
 -- block trainer_args
     == super()
+    # Config overrides
     # Experiment overrides
-    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
     max_grad_norm: null
+    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
     fuse_optim_with_backward: True
 -- endblock trainer_args
+

@@ -1,5 +1,3 @@
-## Note: This project assumes that the model has manual activation checkpointing
-## enabled!
 -- extends 'samantha.yaml'
 
 -- block config_metadata
@@ -8,8 +6,13 @@
     -- set ns.config_description = "Train Samantha on ZBVZ 4 GPU Pipeline"
     -- set ns.log_name = "zbvz_4gpu"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
-    -- set ns.nproc_per_node = 4
 -- endblock config_metadata
+
+
+-- block trainer_definition
+    -- include 'default.trainer_config'
+-- endblock trainer_definition
+
 
 -- block datacollator
     == super()
@@ -17,45 +20,11 @@
     max_length: 1300
 -- endblock datacollator
 
--- block trainer_definition
-    -- include 'default.trainer_config'
--- endblock trainer_definition
 
 #-------------------- default.trainer_config --------------------
--- extends 'samantha.trainer_config'
-
-
--- block trainer_meta_config
-    == super()
-    -- set ns.pipeline_layers = 32
-    -- set ns.split_layer_prefix = "causal_lm.layer_stack.layers."
-    -- set ns.pipeline_segments = 8
-    -- set ns.pipeline_microbatches = 8
--- endblock trainer_meta_config
-
-
--- block trainer_constructor
-    == super()
-    # Config Overrides
-    pipe_schedule_factory: !lambda:torch.distributed.pipelining:ScheduleZBVZeroBubble
--- endblock trainer_constructor
-
+-- extends 'trainers/pipeline/zb_4gpu.yaml'
 
 -- block trainer_args
     == super()
-    # Config overrides
-    per_device_train_batch_size: 8
-    per_device_eval_batch_size: 8
-    
-    # Pipeline settings
-    is_multistage: True
-    stages_per_rank: 2
-
-    # ZBVZeroBubble uses a different stage indexing layout than the others.
-    pp_stage_type: "v"
-
-    # The different index scheme presently breaks the multi-eval scheduler
-    # fall-back to using the same scheduler for eval -- much slower.
-    # TODO: Debug and fix.
-    unified_model: True
+    # Experiment overrides
 -- endblock trainer_args

@@ -23,7 +23,8 @@ Some of the examples are broken. I have added notes to the config, where applica
 The finetuning template adds a number of additional arguments to "forgather train":
 
 ```bash
-usage: forgather train [-h] [-d DEVICES] [--dry-run] [--max-steps MAX_STEPS] [--train-epochs TRAIN_EPOCHS] [--log-peak-memory] [--dataset-config DATASET_CONFIG] [--dataset-proj DATASET_PROJ] [--models-dir MODELS_DIR] [--model-name MODEL_NAME] [--safe-load] [--gradient-checkpointing] [--chat-template CHAT_TEMPLATE] ...
+forgather train --help
+usage: forgather train [-h] [-d DEVICES] [--dry-run] [--max-steps MAX_STEPS] [--save-strategy {no,steps,epoch}] [--train-epochs TRAIN_EPOCHS] [--log-peak-memory] [--dataset-config DATASET_CONFIG] [--dataset-proj DATASET_PROJ] [--model-id-or-path MODEL_ID_OR_PATH] [--output-dir OUTPUT_DIR] [--safe-load] [--gradient-checkpointing] [--chat-template CHAT_TEMPLATE] ...
 
 Run configuration with train script
 
@@ -37,6 +38,8 @@ options:
   --dry-run             Just show the generated commandline, without actually executing it.
   --max-steps MAX_STEPS
                         Set maximum training steps
+  --save-strategy {no,steps,epoch}
+                        When to save checkpoints
   --train-epochs TRAIN_EPOCHS
                         Set the number of epochs to train for
   --log-peak-memory     Log peak GPU memory at each log step
@@ -44,10 +47,10 @@ options:
                         The name of the dataset configuration to use
   --dataset-proj DATASET_PROJ
                         Path to dataset project to use
-  --models-dir MODELS_DIR
-                        The directory in which to look for models
-  --model-name MODEL_NAME
-                        The name of the model to train in models_dir
+  --model-id-or-path MODEL_ID_OR_PATH
+                        HF model ID or local path to model
+  --output-dir OUTPUT_DIR, -o OUTPUT_DIR
+                        Training output director. Defaults to model_id_or_path
   --safe-load           Fallback to the more compatible HF model loading method
   --gradient-checkpointing
                         Enable gradient (activation) checkpoint, when supported
@@ -71,19 +74,55 @@ The problem arises when some of the model's parameters are missing from the stat
 
 In practical terms, the relative positional encoder buffer, on HF Llama models, have "persist=False" set, so this does not work.
 
-The work-around is to use the "--safe-load" flag, which falls back to constructing the model with .from_pretrained(). The downside is
-that this will not work with the pipeline trainer, which needs to control the process of loading weights.
+The work-around is to use the "--safe-load" flag, which falls back to constructing the the model on the cpu, loading the weights, then moving it to the GPU. It's much slower! I should be able to optimize this partially, be disabling the standard PyTorch weight init methods; this is on the TODO list.
 
 To address this (and other pipeline compatibility issues) with the HF Llama-like models, use "scripts/convert_llama.py" to convert the model
 to a more pipeline friendly format. You can then covert the resulting model back to HF format, when done.
 
 ## Examples
 
+The CLI can be (optional) run as an interactive shell. This has tab-completion and history support, which may make it easier to work with than from bash.
+
+```bash
+forgather -i
+Welcome to the Forgather interactive shell.
+Project found at: /home/dinalt/ai_assets/forgather/examples/finetune/samantha
+Use tab completion for templates, commands, and directories.
+Examples: "template <TAB>", "-t <TAB>", "tr<TAB>", "cd <TAB>"
+Type help or ? to list commands.
+
+forgather:samantha> ?
+
+Documented commands (type help <topic>):
+========================================
+EOF  cd  commands  config  configs  debug  edit  exit  help  pwd  quit
+
+forgather:samantha> commands
+Available commands:
+  code
+  construct
+  dataset
+  graph
+  index
+  ls
+  meta
+  pp
+  targets
+  tb
+  tlist
+  train
+  trefs
+  ws
+forgather:samantha> config pipeline_llama_7b/1f1b_4gpu.yaml
+Set template to: pipeline_llama_7b/1f1b_4gpu.yaml
+forgather:samantha [pipeline_llama_7b/1f1b_4gpu.yaml]>
+```
+
 Train a HF Llama 7B (or similar) model on a single GPU (24 GB)
 
 ```bash
 # From the samantha directory
-forgather train --models-dir ~/ai_assets/models/ --model-name meta-llama--Llama-2-7b-hf --chat-template ~/ai_assets/forgather/chat_templates/chatml.jinja --log-peak-memory --safe-load --gradient-checkpointing
+forgather train --model-id-or-path ~/ai_assets/models/meta-llama--Llama-2-7b-hf --chat-template ~/ai_assets/forgather/chat_templates/chatml.jinja --log-peak-memory --safe-load --gradient-checkpointing
 ```
 
 Convert the HF model to Forgather's format
@@ -104,11 +143,11 @@ forgather train --models-dir ~/ai_assets/models/ --model-name llama-2-7b-fg --lo
 Train the 7B model on a 2 GPU Pipeline
 
 ```bash
-forgather -t pipeline_llama_7b/2gpu.yaml  train --models-dir ~/ai_assets/models/ --model-name llama-2-7b-fg --log-peak-memory
+forgather -t pipeline_llama_7b/2gpu.yaml  train --model-id-or-path ~/ai_assets/models/llama-2-7b-fg --log-peak-memory
 ```
 
 Train a 30B model with a 4 GPU pipeline
 
 ```bash
-forgather -t pipeline_llama_30b/1f1b_4gpu.yaml train --models-dir ~/ai_assets/models/ --model-name llama-2-30b-fg --log-peak-memory
+forgather -t pipeline_llama_30b/1f1b_4gpu.yaml train --model-id-or-path ~/ai_assets/models/llama-2-7b-fg --log-peak-memory --gradient-checkpointing
 ```

@@ -1,33 +1,40 @@
-## Note: This one is not quite working yet!
 -- extends 'samantha.yaml'
 
 -- block config_metadata
     == super()
     -- set ns.config_name = "Samantha Llama7B Long"
     -- set ns.config_description = "Train with 4096 token context on single GPU, 24 GBs"
-    -- set ns.log_name = "1x_long"
+    -- set ns.log_name = "1gpu_4096"
 -- endblock config_metadata
 
--- block datacollator
-    == super()
-    # Limit sequence length to avoid OOM
-    max_length: 4096
-    ## Set to always use max_length; useful for profiling, to avoid surprises.
-    padding: "max_length"
--- endblock datacollator
 
 -- block trainer_definition
     -- include 'default.trainer_config'
 -- endblock trainer_definition
 
+
+-- block datacollator
+    == super()
+    # Demonstrate that we /can/ train with this sequence length! But not fast...
+    max_length: 4096
+    ## Set to always use max_length; useful for profiling, to avoid surprises.
+    ## padding: "max_length"
+-- endblock datacollator
+
+
 #-------------------- default.trainer_config --------------------
--- extends 'samantha.trainer_config'
+-- extends 'trainers/base_finetune_trainer.yaml'
 
 -- block trainer_args
     == super()
-    # Experiment overrides
+    # Config overrides
+    # Setting for llama 7B on single GPU (24 GB)
+    per_device_train_batch_size: 4
+    per_device_eval_batch_size: 6
+    
     max_grad_norm: null
     gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
     fuse_optim_with_backward: True
     enable_activation_offloading: True
 -- endblock trainer_args
+
