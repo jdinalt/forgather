@@ -300,7 +300,7 @@ class PipelineTrainer(Trainer):
         ):
             assert (
                 batch_size % self.args.pipeline_chunks == 0
-            ), f"Batch size ({batch_size})must be evenly divisible by pipeline_chunks ({self.args.pipeline_chunks})"
+            ), f"Batch size ({batch_size}) must be evenly divisible by pipeline_chunks ({self.args.pipeline_chunks})"
         assert (
             self.args.is_multistage or self.args.stages_per_rank == 1
         ), "Only multistage schedulers may have more than one stages_per_rank"
