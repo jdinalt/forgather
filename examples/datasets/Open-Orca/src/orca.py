@@ -1,6 +1,7 @@
 import jinja2
 import logging
 import os
+from forgather.ml.distributed import main_process_first
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ def map_function(
     return {"input_ids": outputs["input_ids"]}
 
 
+@main_process_first()
 def preprocess_orca(
     dataset,
     chat_template=None,
