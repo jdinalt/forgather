@@ -8,10 +8,18 @@ import subprocess
 import shutil
 from typing import List, Optional
 import traceback
+import signal
+import atexit
 
 from forgather.meta_config import MetaConfig
 from .commands import get_env
 from .main import get_subcommand_registry, parse_args, main as cli_main
+
+try:
+    import readline
+    HAS_READLINE = True
+except ImportError:
+    HAS_READLINE = False
 
 
 class ForgatherShell(cmd.Cmd):
@@ -32,6 +40,12 @@ class ForgatherShell(cmd.Cmd):
         self.current_template = None
         self._cached_templates = None
         self._cached_commands = None
+        
+        # Setup command history
+        self._setup_history()
+        
+        # Setup signal handlers
+        self._setup_signal_handlers()
 
         # Create dynamic intro message
         if project_found:
@@ -57,6 +71,61 @@ class ForgatherShell(cmd.Cmd):
         dir_name = os.path.basename(self.project_dir) or "root"
         template_part = f" [{self.current_template}]" if self.current_template else ""
         self.prompt = f"forgather:{dir_name}{template_part}> "
+    
+    def _setup_history(self):
+        """Setup persistent command history."""
+        if not HAS_READLINE:
+            return
+        
+        # Find workspace root for history file using existing MetaConfig method
+        try:
+            workspace_root = MetaConfig.find_workspace_dir(self.project_dir)
+        except Exception:
+            # Fallback to project directory if workspace discovery fails
+            workspace_root = self.project_dir
+            
+        self.history_file = os.path.join(workspace_root, '.forgather_history')
+        
+        # Load existing history
+        try:
+            if os.path.exists(self.history_file):
+                readline.read_history_file(self.history_file)
+        except (OSError, IOError):
+            pass  # Ignore if we can't read the history file
+        
+        # Set history size limit (like bash default)
+        readline.set_history_length(1000)
+        
+        # Register cleanup function to save history on exit
+        atexit.register(self._save_history)
+    
+    def _save_history(self):
+        """Save command history to file."""
+        if not HAS_READLINE or not hasattr(self, 'history_file'):
+            return
+        
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(self.history_file), exist_ok=True)
+            readline.write_history_file(self.history_file)
+        except (OSError, IOError):
+            pass  # Ignore if we can't save
+    
+    def _setup_signal_handlers(self):
+        """Setup signal handlers for better user experience."""
+        # Store original SIGINT handler for restoration if needed
+        self._original_sigint = signal.signal(signal.SIGINT, signal.default_int_handler)
+    
+    def cmdloop(self, intro=None):
+        """Enhanced cmdloop with better Ctrl+C handling."""
+        while True:
+            try:
+                super().cmdloop(intro)
+                break  # Normal exit
+            except KeyboardInterrupt:
+                # Ctrl+C pressed - clear line and continue
+                print()  # Move to new line
+                # Continue the loop to show prompt again
 
     def _get_available_templates(self) -> List[str]:
         """Get list of available template names."""
@@ -422,9 +491,34 @@ class ForgatherShell(cmd.Cmd):
                 print("Available templates:", ", ".join(sorted(templates)))
 
     def complete_config(self, text, line, begidx, endidx):
-        """Tab completion for template command."""
+        """Tab completion for config command - supports nested template paths."""
         templates = self._get_available_templates()
-        return [t for t in templates if t.startswith(text)]
+        
+        # Reconstruct the full template path being completed
+        # For config command, the template starts after 'config '
+        template_path = self._reconstruct_config_template_path(line, begidx, endidx, text)
+        
+        # Find matching templates
+        matching_templates = [t for t in templates if t.startswith(template_path)]
+        
+        # Return the completion parts that should replace 'text'
+        if template_path == text:
+            # Simple case: text contains the full path
+            return matching_templates
+        else:
+            # Complex case: text is only the part after the last '/'
+            results = []
+            for template in matching_templates:
+                if '/' in template_path:
+                    # Get the part after the last '/' in the template path
+                    prefix = template_path.rsplit('/', 1)[0] + '/'
+                    if template.startswith(prefix):
+                        completion_part = template[len(prefix):]
+                        results.append(completion_part)
+                else:
+                    # No '/' in template_path, return the full template
+                    results.append(template)
+            return results
 
     def do_commands(self, arg):
         """List available commands"""
@@ -682,12 +776,117 @@ class ForgatherShell(cmd.Cmd):
 
         return builtin_matches + command_matches
 
+    def _reconstruct_template_path(self, line: str, begidx: int, endidx: int, text: str) -> str:
+        """Reconstruct the full template path being completed.
+        
+        The cmd module treats '/' as word boundaries, so when completing 
+        'pipeline_llama_30b/1f', the text parameter might only contain '1f'.
+        This method reconstructs the full path by looking at the command line.
+        
+        Args:
+            line: Full command line
+            begidx: Start position of text being completed
+            endidx: End position of text being completed  
+            text: The text fragment being completed
+            
+        Returns:
+            The full template path being completed
+        """
+        # Extract everything after '-t ' 
+        t_pos = line.find('-t ')
+        if t_pos == -1:
+            return text
+            
+        # Get the template part starting after '-t '
+        template_start = t_pos + 3  # After '-t '
+        template_part = line[template_start:endidx]
+        
+        # Remove any trailing spaces
+        template_part = template_part.strip()
+        
+        return template_part
+
+    def _reconstruct_config_template_path(self, line: str, begidx: int, endidx: int, text: str) -> str:
+        """Reconstruct the full template path being completed for config command.
+        
+        Similar to _reconstruct_template_path but for 'config' command instead of '-t'.
+        
+        Args:
+            line: Full command line
+            begidx: Start position of text being completed
+            endidx: End position of text being completed  
+            text: The text fragment being completed
+            
+        Returns:
+            The full template path being completed
+        """
+        # Extract everything after 'config ' 
+        config_pos = line.find('config ')
+        if config_pos == -1:
+            return text
+            
+        # Get the template part starting after 'config '
+        template_start = config_pos + 7  # After 'config '
+        template_part = line[template_start:endidx]
+        
+        # Remove any trailing spaces
+        template_part = template_part.strip()
+        
+        return template_part
+
     def completedefault(self, text, line, begidx, endidx):
         """Tab completion for default commands (forgather subcommands)."""
+        # Debug output to help diagnose completion issues
+        if hasattr(self, '_debug_completion') and self._debug_completion:
+            print(f"\n[DEBUG] completedefault called:")
+            print(f"  text: '{text}'")
+            print(f"  line: '{line}'")
+            print(f"  begidx: {begidx}, endidx: {endidx}")
+            print(f"  line[:begidx]: '{line[:begidx]}'")
+            print(f"  line[begidx:endidx]: '{line[begidx:endidx]}'")
+        
         args = shlex.split(line[:begidx])
 
         # Handle template completion after -t
-        if len(args) >= 1 and args[-1] == "-t":
+        # Check if -t is anywhere in the args and we're completing a template
+        if len(args) >= 2 and "-t" in args:
+            # Find the position of -t
+            t_index = None
+            for i, arg in enumerate(args):
+                if arg == "-t":
+                    t_index = i
+                    break
+            
+            if t_index is not None and t_index < len(args) - 1:
+                # We're completing something after -t (either a new template or continuing one)
+                templates = self._get_available_templates()
+                
+                # Reconstruct the full template path being completed
+                template_path = self._reconstruct_template_path(line, begidx, endidx, text)
+                
+                # Find matching templates
+                matching_templates = [t for t in templates if t.startswith(template_path)]
+                
+                # Return the completion parts that should replace 'text'
+                if template_path == text:
+                    # Simple case: text contains the full path
+                    return matching_templates
+                else:
+                    # Complex case: text is only the part after the last '/'
+                    results = []
+                    for template in matching_templates:
+                        if '/' in template_path:
+                            # Get the part after the last '/' in the template path
+                            prefix = template_path.rsplit('/', 1)[0] + '/'
+                            if template.startswith(prefix):
+                                completion_part = template[len(prefix):]
+                                results.append(completion_part)
+                        else:
+                            # No '/' in template_path, return the full template
+                            results.append(template)
+                    return results
+        elif len(args) >= 1 and args[-1] == "-t":
+            # Simple case: completing right after -t with no partial template yet
             templates = self._get_available_templates()
             return [t for t in templates if t.startswith(text)]
 
@@ -725,29 +924,91 @@ class ForgatherShell(cmd.Cmd):
                     elif not text and word.endswith("/"):
                         # We're completing inside this directory
                         path_to_complete = word
+                    elif not text:
+                        # Empty text at end of line - complete this path
+                        # This handles cases like "~/path/partial-name" where we want to complete "partial-name"
+                        path_to_complete = word
                     break
 
         # Get completions using the same method as cd
         completions = self._complete_path(path_to_complete, only_dirs=False)
 
-        # Filter completions to only those that start with the text being typed
-        if text:
-            filtered = [
-                comp
-                for comp in completions
-                if os.path.basename(comp.rstrip("/")).startswith(text)
-            ]
-            # Return just the filename part that would replace 'text'
-            return [
-                os.path.basename(comp.rstrip("/")) + ("/" if comp.endswith("/") else "")
-                for comp in filtered
-            ]
+        # Handle expandable path completion - check if this is an expansion case
+        # Also handle case where text is empty but path_to_complete is expandable
+        is_expandable_path = ((text and (text.startswith('~') or '$' in text)) or
+                             (not text and path_to_complete and (path_to_complete.startswith('~') or '$' in path_to_complete)))
+        
+        if is_expandable_path:
+            # For expandable paths, we need different logic
+            # The completions already have full expanded paths
+            # We need to return what should replace the expandable text
+            
+            # Handle the case where text is empty but we have an expandable path_to_complete
+            if not text and path_to_complete:
+                # Use path_to_complete for expansion logic
+                expanded_text = os.path.expanduser(path_to_complete)
+                if '$' in path_to_complete:
+                    expanded_text = os.path.expandvars(expanded_text)
+                original_path = path_to_complete
+            else:
+                # Use text for expansion logic (original case)
+                expanded_text = os.path.expanduser(text)
+                if '$' in text:
+                    expanded_text = os.path.expandvars(expanded_text)
+                original_path = text
+                
+            text_basename = os.path.basename(expanded_text)
+            
+            # Filter completions based on the basename pattern
+            filtered = []
+            for comp in completions:
+                comp_basename = os.path.basename(comp.rstrip("/"))
+                if comp_basename.startswith(text_basename):
+                    if not text and path_to_complete:
+                        # Special case: text is empty, we're completing a partial path
+                        # Return just the suffix that completes the partial name
+                        # For ~/ai_assets/models/llama-2- completing to llama-2-30b-fg/
+                        # We want to return just the suffix: 30b-fg/
+                        if comp_basename.startswith(text_basename):
+                            suffix = comp_basename[len(text_basename):]
+                            if comp.endswith('/'):
+                                suffix += '/'
+                            filtered.append(suffix)
+                    else:
+                        # Original logic for when text is not empty
+                        if original_path.startswith('~'):
+                            # Keep the tilde format
+                            expanded_prefix = os.path.expanduser('~')
+                            if comp.startswith(expanded_prefix):
+                                # Replace the expanded home with ~
+                                completed_path = '~' + comp[len(expanded_prefix):]
+                                filtered.append(completed_path)
+                            else:
+                                filtered.append(comp)
+                        else:
+                            # For $HOME or other env vars, return expanded path
+                            filtered.append(comp)
+            
+            return filtered
         else:
-            # Return just the filename parts, not full paths
-            return [
-                os.path.basename(comp.rstrip("/")) + ("/" if comp.endswith("/") else "")
-                for comp in completions
-            ]
+            # Regular filesystem completion (non-expandable paths)
+            if text:
+                filtered = [
+                    comp
+                    for comp in completions
+                    if os.path.basename(comp.rstrip("/")).startswith(text)
+                ]
+                # Return just the filename part that would replace 'text'
+                return [
+                    os.path.basename(comp.rstrip("/")) + ("/" if comp.endswith("/") else "")
+                    for comp in filtered
+                ]
+            else:
+                # Return just the filename parts, not full paths
+                return [
+                    os.path.basename(comp.rstrip("/")) + ("/" if comp.endswith("/") else "")
+                    for comp in completions
+                ]
 
 
 def interactive_main(project_dir: str = "."):
