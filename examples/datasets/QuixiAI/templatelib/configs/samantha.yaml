@@ -68,4 +68,5 @@ eval_dataset: &eval_dataset !singleton:{{ ns.samantha_src }}:preprocess_samantha
     max_steps:
         names: "--chat-template"
         help: "Path to chat template"
+        type: "path"
 << endblock dynamic_args
