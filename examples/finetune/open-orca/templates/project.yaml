@@ -1,0 +1,11 @@
+-- extends 'projects/base_finetune_proj.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Open-Orca Finetune"
+    -- set ns.config_description = "Train a model on the Open-Orca dataset"
+    -- set ns.log_name = "default"
+    -- set ns.default_dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'Open-Orca')
+    -- set ns.default_dataset_config = "openorca.yaml"
+-- endblock config_metadata
+
