@@ -242,6 +242,7 @@ def create_tb_parser(global_args):
         action="store_true",
         help="Just show the generated commandline, without actually executing it.",
     )
+    parse_dynamic_args(parser, global_args)
     return parser
 
 

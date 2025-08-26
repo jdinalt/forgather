@@ -217,7 +217,8 @@ def graph_cmd(args):
 def tb_cmd(args):
     """Start Tensorboard for project."""
     cmd = BaseCommand(args)
-    config, pp_config = cmd.get_config()
+    dynamic_args = get_dynamic_args(args)
+    config, pp_config = cmd.get_config(**dynamic_args)
     config_meta = Latent.materialize(config.meta)
 
     if args.all:
