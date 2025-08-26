@@ -2,6 +2,7 @@ import jinja2
 import logging
 import os
 from forgather.ml.distributed import main_process_first
+from forgather.ml.datasets import to_iterable_dataset_with_length
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ def preprocess_orca(
     chat_template = environment.from_string(chat_template)
     
     if to_iterable:
-        dataset = dataset.to_iterable_dataset(num_shards=num_shards)
+        dataset = to_iterable_dataset_with_length(dataset, num_shards=num_shards)
     else:
         map_args["desc"] = desc
     
