@@ -11,6 +11,15 @@ from accelerate import Accelerator
 from ..trainer_types import TrainingArguments, TrainerState
 from ..trainer import Trainer
 
+# Import StatefulDataLoader if available
+try:
+    from torchdata.stateful_dataloader import StatefulDataLoader
+
+    STATEFUL_DATALOADER_AVAILABLE = True
+except ImportError:
+    StatefulDataLoader = None
+    STATEFUL_DATALOADER_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,6 +77,38 @@ class AccelTrainer(Trainer):
         Reduces loss accross processes
         """
         return self.accelerator.reduce(loss, "mean")
+
+    def _save_dataloader_state(self):
+        """Save StatefulDataLoader state if available, accounting for Accelerate wrapping."""
+        # After accelerate.prepare(), the dataloader may be wrapped
+        dataloader = getattr(self, "train_dataloader", None)
+        if dataloader is None:
+            return None
+
+        # Try to get state from wrapped dataloader
+        if hasattr(dataloader, "state_dict"):
+            try:
+                return dataloader.state_dict()
+            except Exception as e:
+                logger.warning(f"Failed to save dataloader state: {e}")
+
+        return super()._save_dataloader_state()
+
+    def _load_dataloader_state(self, dataloader_state):
+        """Load StatefulDataLoader state if available, accounting for Accelerate wrapping."""
+        dataloader = getattr(self, "train_dataloader", None)
+        if dataloader is None:
+            return
+
+        # Try to load state into wrapped dataloader
+        if hasattr(dataloader, "load_state_dict"):
+            try:
+                dataloader.load_state_dict(dataloader_state)
+                return
+            except Exception as e:
+                logger.warning(f"Failed to load dataloader state: {e}")
+
+        super()._load_dataloader_state(dataloader_state)
 
     # @override
     def _prepare_batch(self, batch):

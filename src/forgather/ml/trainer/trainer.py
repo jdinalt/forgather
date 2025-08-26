@@ -24,6 +24,15 @@ from torch.utils.data import DataLoader, Dataset
 import transformers
 from transformers import set_seed
 
+# Import StatefulDataLoader if available
+try:
+    from torchdata.stateful_dataloader import StatefulDataLoader
+
+    STATEFUL_DATALOADER_AVAILABLE = True
+except ImportError:
+    StatefulDataLoader = None
+    STATEFUL_DATALOADER_AVAILABLE = False
+
 from .base_trainer import BaseTrainer
 from .trainer_types import TrainerState as BaseTrainerState
 from .trainer_types import (
@@ -143,16 +152,22 @@ class Trainer(BaseTrainer):
             self.args.device = "cpu"
 
     def _get_dataloader(self, dataset, batch_size):
-        return DataLoader(
-            dataset,
-            batch_size=batch_size,
-            collate_fn=self.data_collator,
-            drop_last=self.args.dataloader_drop_last,
-            num_workers=self.args.dataloader_num_workers,
-            pin_memory=self.args.dataloader_pin_memory,
-            prefetch_factor=self.args.dataloader_prefetch_factor,
-            persistent_workers=self.args.dataloader_persistent_workers,
-        )
+        dataloader_kwargs = {
+            "batch_size": batch_size,
+            "collate_fn": self.data_collator,
+            "drop_last": self.args.dataloader_drop_last,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "prefetch_factor": self.args.dataloader_prefetch_factor,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        # Use StatefulDataLoader for datasets with state if available and requested
+        if STATEFUL_DATALOADER_AVAILABLE and self.args.save_dataset_state:
+            logger.info("Using StatefulDataLoader for checkpoint support")
+            return StatefulDataLoader(dataset, **dataloader_kwargs)
+        else:
+            return DataLoader(dataset, **dataloader_kwargs)
 
     # @override
     def _prepare(self, train_dataset, eval_dataset) -> None:
@@ -490,6 +505,38 @@ class Trainer(BaseTrainer):
 
     def _backward(self, loss):
         loss.backward()
+
+    def _save_dataloader_state(self):
+        """Save StatefulDataLoader state if available."""
+        logger.debug(
+            f"_save_dataloader_state called, train_dataloader type: {type(getattr(self, 'train_dataloader', None))}"
+        )
+
+        if hasattr(self, "train_dataloader") and hasattr(
+            self.train_dataloader, "state_dict"
+        ):
+            try:
+                state = self.train_dataloader.state_dict()
+                logger.debug(
+                    f"Successfully saved dataloader state with keys: {list(state.keys())}"
+                )
+                return state
+            except Exception as e:
+                logger.warning(f"Failed to save dataloader state: {e}")
+        else:
+            logger.debug("train_dataloader doesn't have state_dict method")
+        return None
+
+    def _load_dataloader_state(self, dataloader_state):
+        """Load StatefulDataLoader state if available."""
+        if hasattr(self, "train_dataloader") and hasattr(
+            self.train_dataloader, "load_state_dict"
+        ):
+            try:
+                logger.info(f"Loading dataloader state: {dataloader_state.keys()}")
+                self.train_dataloader.load_state_dict(dataloader_state)
+            except Exception as e:
+                logger.warning(f"Failed to load dataloader state: {e}")
 
     def _update_training_steps(self) -> None:
         """

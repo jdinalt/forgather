@@ -1,0 +1,12 @@
+## Initial training configuration with checkpointing enabled
+-- extends "project.yaml"
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Initial Training with Checkpoints -- Iterable"
+    -- set ns.config_description = "Train a small model from scratch with optimizer/scheduler checkpointing enabled"
+    ## Init new model
+    -- set ns.create_new_model = True
+    -- set ns.model_name = "iterable"
+    -- set ns.dataset_config = dataset_config | default("tinystories-iter.yaml")
+<< endblock config_metadata

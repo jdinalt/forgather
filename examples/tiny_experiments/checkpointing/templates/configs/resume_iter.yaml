@@ -1,10 +1,9 @@
 ## Resume training configuration that loads from the latest checkpoint
--- extends "project.yaml"
+-- extends "configs/train_iter.yaml"
 
 -- block config_metadata
     == super()
-    -- set ns.config_name = "Resume Training from Checkpoint"
-    -- set ns.config_description = "Continue training from the latest checkpoint, restoring optimizer and scheduler state"
+    -- set ns.config_name = "Resume Training from Checkpoint -- Iterable"
     -- set ns.create_new_model = False
 << endblock config_metadata
 

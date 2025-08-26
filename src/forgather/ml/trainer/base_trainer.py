@@ -387,6 +387,16 @@ class BaseTrainer(ExtensibleTrainer):
             training_state["global_step"] = self.state.global_step
             logger.debug(f"Saved global step {self.state.global_step} to checkpoint")
 
+            # Save dataloader state if available
+            dataloader_state = self._save_dataloader_state()
+            if dataloader_state:
+                training_state["dataloader_state"] = dataloader_state
+                logger.info(
+                    f"Saved dataloader state to checkpoint with keys: {list(dataloader_state.keys())}"
+                )
+            else:
+                logger.warning("No dataloader state to save to checkpoint")
+
         # Save RNG state for reproducibility
         if self.args.save_rng_state:
             rng_state = {
@@ -415,9 +425,6 @@ class BaseTrainer(ExtensibleTrainer):
         else:
             logger.warning("No training state saved!")
 
-    def _set_dataloader_step(self, step: int) -> None:
-        logger.warning("_set_dataloader_step() in not implemented")
-
     def _load_state_dict(self, training_state) -> None:
         if not training_state:
             logger.warning("Training state was not loaded!")
@@ -442,10 +449,14 @@ class BaseTrainer(ExtensibleTrainer):
                 )
 
         # Also restore global step if present in training state
-        if self.args.restore_dataset_state:
+        if self.args.restore_dataset_state and "global_step" in training_state:
             self.state.global_step = training_state["global_step"]
-            self._set_dataloader_step(self.state.global_step)
             logger.info(f"Restored global step to {self.state.global_step}")
+
+            # Restore dataloader state if available
+            if "dataloader_state" in training_state:
+                self._load_dataloader_state(training_state["dataloader_state"])
+                logger.info("Restored dataloader state from checkpoint")
 
         # Restore RNG state for reproducibility
         if self.args.restore_rng_state and "rng_state" in training_state:
@@ -477,6 +488,19 @@ class BaseTrainer(ExtensibleTrainer):
             logger.info("Restored RNG state from checkpoint")
         elif self.args.restore_rng_state:
             logger.info("No RNG state found in checkpoint - using current RNG state")
+
+    def _save_dataloader_state(self):
+        """
+        Save dataloader state for checkpointing. Subclasses should override.
+        Returns dict or None if no state to save.
+        """
+        return None
+
+    def _load_dataloader_state(self, dataloader_state):
+        """
+        Load dataloader state from checkpoint. Subclasses should override.
+        """
+        pass
 
     def _load_training_state(self, checkpoint_path: str) -> None:
         """Load optimizer and scheduler state. Subclasses can override for custom behavior."""

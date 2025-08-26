@@ -26,6 +26,7 @@
     save_total_limit: 3
     save_optimizer_state: true
     save_scheduler_state: true
+    save_dataset_state: true
     save_rng_state: true
     
     # Small training run for quick testing
