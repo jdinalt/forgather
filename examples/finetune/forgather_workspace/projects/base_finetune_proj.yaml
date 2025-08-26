@@ -156,7 +156,7 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
         type: "int"
         help: "Set the number of epochs to train for"
     log_peak_memory:
-        names: "--log-peak-memory"
+        names: [ "--log-peak-memory", "-P" ]
         action: "store_true"
         help: "Log peak GPU memory at each log step"
     dataset_config:
@@ -168,7 +168,7 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
         type: "path"
         help: "Path to dataset project to use"
     model_id_or_path:
-        names: "--model-id-or-path"
+        names: [ "--model-id-or-path", "-M" ]
         type: "path"
         help: "HF model ID or local path to model"
     output_dir:
@@ -180,11 +180,11 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
         action: "store_true"
         help: "Fallback to the more compatible HF model loading method"
     gradient_checkpointing:
-        names: "--gradient-checkpointing"
+        names: [ "--gradient-checkpointing", "-G"]
         action: "store_true"
         help: "Enable gradient (activation) checkpoint, when supported"
     chat_template:
-        names: "--chat-template"
+        names: [ "--chat-template", "-C" ]
         help: "Path to the chat template to use"
 << endblock dynamic_args
 

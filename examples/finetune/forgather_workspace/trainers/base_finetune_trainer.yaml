@@ -7,10 +7,9 @@
 ## Setup some defaults for this type of project
 -- block trainer_args
     == super()
-    # Finetune overrides
+
+    # **finetune**
     seed: 42
-    per_device_train_batch_size: 8
-    per_device_eval_batch_size: 16
     logging_steps: 10
     eval_steps: 100
     eval_strategy: "steps"
@@ -47,7 +46,7 @@
     # Enable all SDPA backends and let PyTorch choose which to use.
     sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
     sdpa_set_priority: False # If list, interpret as priority order
--- endblock trainer_args
+<< endblock trainer_args
 
 
 -- block model_preprocessor

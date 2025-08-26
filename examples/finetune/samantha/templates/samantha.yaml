@@ -9,3 +9,13 @@
     -- set ns.default_dataset_config = "samantha.yaml"
 -- endblock config_metadata
 
+
+#-------------------- project.trainer --------------------
+-- extends "trainers/base_finetune_trainer.yaml"
+
+
+-- block trainer_args
+    == super()
+    
+    # **samantha**
+<< endblock trainer_args

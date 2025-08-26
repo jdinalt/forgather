@@ -145,7 +145,7 @@ lr_scheduler: &lr_scheduler ~
         type: "int"
         help: "Set maximum training steps"
     save_strategy:
-        names: "--save-strategy"
+        names: [ "--save-strategy", "-S" ]
         choices: [ "no", "steps", "epoch" ]
         type: "str"
         help: "When to save checkpoints"

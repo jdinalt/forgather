@@ -5,12 +5,12 @@
     -- set ns.config_name = "Samantha Llama 7B i1F1B Pipe x6"
     -- set ns.config_description = "Train Samantha on i1F1B 6 GPU Pipeline"
     -- set ns.log_name = "i1f1b_6gpu"
-    -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
+    -- set ns.trainer_class = 'trainers/pipeline/i1f1b_6gpu.yaml'
 -- endblock config_metadata
 
 
 -- block trainer_definition
-    -- include 'default.trainer_config'
+    -- include 'config.trainer_config'
 -- endblock trainer_definition
 
 
@@ -21,11 +21,12 @@
 -- endblock datacollator
 
 
-#-------------------- default.trainer_config --------------------
--- extends 'trainers/pipeline/i1f1b_6gpu.yaml'
+#-------------------- config.trainer_config --------------------
+-- extends 'project.trainer'
 
 -- block trainer_args
     == super()
-    # Experiment overrides
+
+    # **config**
 -- endblock trainer_args
 

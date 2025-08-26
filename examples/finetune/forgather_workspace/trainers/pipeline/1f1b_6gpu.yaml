@@ -13,13 +13,17 @@
     -- set ns.pipeline_stages_per_rank = 1
     -- set ns.pipeline_sched_class = "torch.distributed.pipelining:Schedule1F1B"
 
-    ## Batch settings
-    -- set ns.per_device_train_batch_size = 12
-    -- set ns.per_device_eval_batch_size = 24
-    -- set ns.pipeline_unified_model = False
-
     ## Model parameters
     -- set ns.pipeline_layers = 32
     -- set ns.split_layer_prefix = "causal_lm.layer_stack.layers."
+    -- set ns.pipeline_unified_model = False
 -- endblock trainer_meta_config
 
+
+-- block trainer_args
+    == super()
+    
+    # **1f1b 6gpu**
+    per_device_train_batch_size: 12
+    per_device_eval_batch_size: 24
+<< endblock trainer_args

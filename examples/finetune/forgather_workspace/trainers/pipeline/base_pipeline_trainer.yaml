@@ -1,4 +1,4 @@
--- extends 'trainers/base_finetune_trainer.yaml'
+-- extends 'trainers/pipeline_trainer.yaml'
 
 -- block trainer_meta_config
     == super()
@@ -12,23 +12,17 @@
     -- set ns.pipeline_stages_per_rank = 1
     -- set ns.pipeline_sched_class = "torch.distributed.pipelining:Schedule1F1B"
 
-    ## Batch settings
-    -- set ns.per_device_train_batch_size = 8
-    -- set ns.per_device_eval_batch_size = 16
-    -- set ns.pipeline_unified_model = False
-
     ## Model parameters
     -- set ns.pipeline_layers = 32
     -- set ns.split_layer_prefix = "causal_lm.layer_stack.layers."
+    -- set ns.pipeline_unified_model = False
 -- endblock trainer_meta_config
 
 
 -- block trainer_globals
--- if ns.pipeline_unified_model
-    -- set ns.per_device_eval_batch_size = ns.per_device_train_batch_size
--- endif
     -- set ns.pipeline_segments = ns.nproc_per_node * ns.nnodes * ns.pipeline_stages_per_rank
 << endblock trainer_globals
+
 
 -- block trainer_header
     == super()
@@ -36,8 +30,6 @@
 # nnodes: {{ ns.nnodes }}
 # nproc_per_node: {{ ns.nproc_per_node }}
 # pipeline_unified_model: {{ ns.pipeline_unified_model }}
-# per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
-# per_device_eval_batch_size: {{ ns.per_device_eval_batch_size }}
 # pipeline_is_multistage: {{ ns.pipeline_is_multistage }}
 # pipeline_stages_per_rank: {{ ns.pipeline_stages_per_rank }}
 << endblock trainer_header
@@ -62,13 +54,11 @@ split_spec: &split_spec !dict@split_spec
 
 -- block trainer_args
     == super()
-    # base pipeline overrides
+    
+    # **finetune pipeline trainer**
     pipeline_chunks: {{ ns.pipeline_microbatches }}
     is_multistage: {{ ns.pipeline_is_multistage }}
     stages_per_rank: {{ ns.pipeline_stages_per_rank }}
     unified_model: {{ ns.pipeline_unified_model }}
-
-    per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
-    per_device_eval_batch_size: {{ ns.per_device_eval_batch_size }}
 -- endblock trainer_args
 
