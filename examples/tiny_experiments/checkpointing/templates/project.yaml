@@ -21,18 +21,20 @@
     # Checkpointing Project Overrides (must come after all parent overrides)
     # Enable checkpoint features
     save_strategy: "{{ save_strategy | default('steps') }}"
-    save_steps: 100
+    eval_strategy: "{{ save_strategy | default('steps') }}"
+    save_steps: 200
+    eval_steps: 100
+    logging_steps: 50 
     save_safetensors: True
     save_total_limit: 3
     save_optimizer_state: true
     save_scheduler_state: true
     save_dataset_state: true
     save_rng_state: true
-    
+    load_best_model_at_end: true
+
     # Small training run for quick testing
     max_steps: {{ max_steps | default(500) }}
-    eval_steps: 200
-    logging_steps: 50
     
     # Smaller batch size for quick iterations
     per_device_train_batch_size: 8

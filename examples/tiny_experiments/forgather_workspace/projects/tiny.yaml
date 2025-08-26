@@ -126,12 +126,15 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 
 -- block trainer_args
     == super()
-    # Tiny Project Overrides
+    
+    # *Tiny Project*
     seed: 42
     per_device_train_batch_size: 32
     per_device_eval_batch_size: 64
     logging_steps: 100
+    eval_strategy: "steps"
     eval_steps: 500
+    save_steps: 10000
     num_train_epochs: 1
     dataloader_num_workers: 1
 -- endblock trainer_args

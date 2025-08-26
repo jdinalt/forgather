@@ -806,7 +806,7 @@ class PipelineTrainer(Trainer):
     # @override
     def _eval_loop(self) -> Dict[str, float]:
         if not self.args.unified_model:
-            super()._eval_loop()
+            return super()._eval_loop()
         else:
             # Unified model for train and eval
             # This requires that we produce gradients.

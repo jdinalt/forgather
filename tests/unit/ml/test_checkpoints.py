@@ -14,10 +14,17 @@ import time
 import torch
 import torch.nn as nn
 from unittest.mock import Mock, patch
+import transformers
 
-from forgather.ml.trainer_types import TrainingArguments, TrainerState
-from forgather.ml.base_trainer import BaseTrainer
-from forgather.ml.trainer import Trainer
+from forgather.ml.trainer.trainer_types import TrainingArguments, TrainerState
+from forgather.ml.trainer.base_trainer import BaseTrainer
+from forgather.ml.trainer.trainer import Trainer
+from forgather.ml.sharded_checkpoint import (
+    validate_checkpoint,
+    find_latest_checkpoint,
+    maybe_delete_oldest_checkpoint,
+    next_checkpoint_path,
+)
 
 
 class SimpleMockModel(nn.Module):
@@ -43,6 +50,17 @@ class MockTrainer(BaseTrainer):
         self.args.device = "cpu"
 
     def _prepare(self, train_dataset, eval_dataset):
+        # Initialize state first
+        self.state = TrainerState(
+            logging_steps=10,
+            eval_steps=10,
+            train_batch_size=8,
+            max_steps=100,
+            save_steps=20,
+            best_metric=None,
+            best_model_checkpoint=None,
+        )
+        
         if train_dataset is not None:
             # Mock optimizer and scheduler
             self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
@@ -50,18 +68,10 @@ class MockTrainer(BaseTrainer):
                 self.optimizer, step_size=10
             )
 
-            # Restore from checkpoint if specified
+            # Restore from checkpoint if specified (after state is initialized)
             checkpoint_path = self._resolve_checkpoint_path()
             if checkpoint_path:
                 self._load_training_state(checkpoint_path)
-
-        self.state = TrainerState(
-            logging_steps=10,
-            eval_steps=10,
-            train_batch_size=8,
-            max_steps=100,
-            save_steps=20,
-        )
 
     def _train_loop(self):
         return Mock()
@@ -104,8 +114,9 @@ class TestCheckpointFunctionality(unittest.TestCase):
         os.makedirs(checkpoint_path, exist_ok=True)
 
         # Create a mock model file to make it valid
-        with open(os.path.join(checkpoint_path, "pytorch_model.bin"), "w") as f:
-            f.write("mock model data")
+        # Save a proper torch tensor dict that can be loaded
+        mock_state_dict = {"linear.weight": torch.randn(1, 10), "linear.bias": torch.randn(1)}
+        torch.save(mock_state_dict, os.path.join(checkpoint_path, "pytorch_model.bin"), _use_new_zipfile_serialization=True)
 
         return checkpoint_path
 
@@ -113,13 +124,13 @@ class TestCheckpointFunctionality(unittest.TestCase):
         """Test that valid checkpoints are correctly identified."""
         checkpoint_path = self.create_mock_checkpoint(100)
 
-        self.assertTrue(self.trainer._validate_checkpoint(checkpoint_path))
+        self.assertTrue(validate_checkpoint(checkpoint_path))
 
     def test_checkpoint_validation_invalid_no_directory(self):
         """Test that non-existent directories are invalid."""
         fake_path = os.path.join(self.checkpoints_dir, "nonexistent")
 
-        self.assertFalse(self.trainer._validate_checkpoint(fake_path))
+        self.assertFalse(validate_checkpoint(fake_path))
 
     def test_checkpoint_validation_invalid_no_model_files(self):
         """Test that directories without model files are invalid."""
@@ -127,7 +138,7 @@ class TestCheckpointFunctionality(unittest.TestCase):
         os.makedirs(checkpoint_path, exist_ok=True)
         # Don't create any model files
 
-        self.assertFalse(self.trainer._validate_checkpoint(checkpoint_path))
+        self.assertFalse(validate_checkpoint(checkpoint_path))
 
     def test_find_latest_checkpoint_by_modification_time(self):
         """Test that latest checkpoint is found by modification time, not step number."""
@@ -139,7 +150,7 @@ class TestCheckpointFunctionality(unittest.TestCase):
             200, delay=0.1
         )  # Created third (latest)
 
-        latest = self.trainer._find_latest_checkpoint()
+        latest = find_latest_checkpoint(self.test_dir)
 
         # Should return checkpoint-200 as it was created last
         self.assertEqual(latest, checkpoint_200)
@@ -148,7 +159,7 @@ class TestCheckpointFunctionality(unittest.TestCase):
     def test_find_latest_checkpoint_no_checkpoints(self):
         """Test behavior when no checkpoints exist."""
         # Empty checkpoints directory
-        latest = self.trainer._find_latest_checkpoint()
+        latest = find_latest_checkpoint(self.test_dir)
         self.assertIsNone(latest)
 
     def test_find_latest_checkpoint_only_invalid_checkpoints(self):
@@ -157,7 +168,7 @@ class TestCheckpointFunctionality(unittest.TestCase):
         invalid_path = os.path.join(self.checkpoints_dir, "checkpoint-invalid")
         os.makedirs(invalid_path, exist_ok=True)
 
-        latest = self.trainer._find_latest_checkpoint()
+        latest = find_latest_checkpoint(self.test_dir)
         self.assertIsNone(latest)
 
     def test_resolve_checkpoint_path_auto_discovery(self):
@@ -236,15 +247,18 @@ class TestCheckpointFunctionality(unittest.TestCase):
         self.assertNotIn("lr_scheduler", training_state)
 
     def test_save_training_state_disabled(self):
-        """Test that no training state is saved when both options are disabled."""
+        """Test that optimizer and scheduler state are not saved when disabled."""
         self.args.save_optimizer_state = False
         self.args.save_scheduler_state = False
+        self.args.save_dataset_state = False
+        self.args.save_rng_state = False
         checkpoint_path = os.path.join(self.checkpoints_dir, "checkpoint-test")
         os.makedirs(checkpoint_path, exist_ok=True)
 
         self.trainer._save_training_state(checkpoint_path)
 
         training_state_path = os.path.join(checkpoint_path, "training_state.pt")
+        # With all state saving disabled, no file should be created
         self.assertFalse(os.path.exists(training_state_path))
 
     def test_load_training_state_optimizer_and_scheduler(self):
@@ -304,6 +318,8 @@ class TestCheckpointFunctionality(unittest.TestCase):
 
     def test_save_checkpoint_cleanup_by_modification_time(self):
         """Test that checkpoint cleanup uses modification time, not step numbers."""
+        # Set save_total_limit to 2 so we can test cleanup
+        self.args.save_total_limit = 2
         self.trainer.state = TrainerState(
             logging_steps=10,
             eval_steps=10,
@@ -311,6 +327,8 @@ class TestCheckpointFunctionality(unittest.TestCase):
             max_steps=100,
             save_steps=20,
             global_step=400,
+            best_metric=None,
+            best_model_checkpoint=None,
         )
 
         # Create several checkpoints with out-of-order step numbers
@@ -318,17 +336,18 @@ class TestCheckpointFunctionality(unittest.TestCase):
         self.create_mock_checkpoint(100, delay=0.1)  # Middle
         self.create_mock_checkpoint(200, delay=0.1)  # Newest by time
 
-        # Mock the _save method to avoid the directory creation issue
-        with patch.object(self.trainer, "_save") as mock_save:
+        # Mock the _save_model method to avoid the directory creation issue
+        with patch.object(self.trainer, "_save_model") as mock_save:
 
             def mock_save_with_model_file(path):
                 # Create a mock model file to make checkpoint valid
-                with open(os.path.join(path, "pytorch_model.bin"), "w") as f:
-                    f.write("mock model data")
+                # Save a proper torch tensor dict that can be loaded
+                mock_state_dict = {"linear.weight": torch.randn(1, 10), "linear.bias": torch.randn(1)}
+                torch.save(mock_state_dict, os.path.join(path, "pytorch_model.bin"), _use_new_zipfile_serialization=True)
 
             mock_save.side_effect = mock_save_with_model_file
             # This should trigger cleanup (limit is 3, we have 3, adding 1 more)
-            self.trainer._save_checkpoint()
+            self.trainer.save_checkpoint()
 
         # The checkpoint with earliest modification time should be deleted
         self.assertFalse(os.path.exists(old_checkpoint))
@@ -340,16 +359,17 @@ class TestCheckpointFunctionality(unittest.TestCase):
         self.trainer.optimizer.param_groups[0]["lr"] = 0.003
         self.trainer.lr_scheduler.step()
 
-        # Mock the _save method to avoid directory issues, but still save training state
-        with patch.object(self.trainer, "_save") as mock_save:
+        # Mock the _save_model method to avoid directory issues, but still save training state
+        with patch.object(self.trainer, "_save_model") as mock_save:
 
             def mock_save_with_model_file(path):
                 # Create a mock model file to make checkpoint valid
-                with open(os.path.join(path, "pytorch_model.bin"), "w") as f:
-                    f.write("mock model data")
+                # Save a proper torch tensor dict that can be loaded
+                mock_state_dict = {"linear.weight": torch.randn(1, 10), "linear.bias": torch.randn(1)}
+                torch.save(mock_state_dict, os.path.join(path, "pytorch_model.bin"), _use_new_zipfile_serialization=True)
 
             mock_save.side_effect = mock_save_with_model_file
-            self.trainer._save_checkpoint()
+            self.trainer.save_checkpoint()
 
         # Step 2: Create new trainer instance with resume enabled
         args_with_resume = TrainingArguments(
@@ -388,7 +408,7 @@ class TestTrainerIntegration(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    @patch("forgather.ml.trainer.logger")
+    @patch("forgather.ml.trainer.base_trainer.logger")
     def test_trainer_calls_checkpoint_restoration(self, mock_logger):
         """Test that Trainer._prepare() calls checkpoint restoration."""
         # Create a checkpoint first
@@ -398,13 +418,22 @@ class TestTrainerIntegration(unittest.TestCase):
         os.makedirs(checkpoint_path)
 
         # Create mock model file
-        with open(os.path.join(checkpoint_path, "pytorch_model.bin"), "w") as f:
-            f.write("mock")
+        mock_state_dict = {"linear.weight": torch.randn(1, 10), "linear.bias": torch.randn(1)}
+        torch.save(mock_state_dict, os.path.join(checkpoint_path, "pytorch_model.bin"), _use_new_zipfile_serialization=True)
 
-        # Create training state file
+        # Create training state file with proper optimizer and scheduler state dict structure
+        # Create a temporary model and optimizers to get proper state dict structure
+        temp_model = SimpleMockModel()
+        temp_optimizer = torch.optim.Adam(temp_model.parameters(), lr=0.001)
+        temp_scheduler = transformers.get_scheduler(
+            "linear", temp_optimizer, num_warmup_steps=0, num_training_steps=100
+        )
+        optimizer_state_dict = temp_optimizer.state_dict()
+        scheduler_state_dict = temp_scheduler.state_dict()
+        
         training_state = {
-            "optimizer": {"state": {}, "param_groups": [{"lr": 0.001}]},
-            "lr_scheduler": {"last_epoch": 5},
+            "optimizer": optimizer_state_dict,
+            "lr_scheduler": scheduler_state_dict,
         }
         torch.save(training_state, os.path.join(checkpoint_path, "training_state.pt"))
 

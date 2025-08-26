@@ -59,12 +59,11 @@ class TrainerState:
     is_world_process_zero: bool = True
     log_history: list[Dict[str, float]] = field(default_factory=lambda: [])
     save_steps: int = 0
-
+    best_metric: float = None
+    best_model_checkpoint: str = None
     # Unimplemented in Trainer; included for consistency with HF Trainer
     num_input_tokens_seen: int = 0
     total_flos: float = 0.0
-    best_metric: float = 0.0
-    best_model_checkpoint: str = None
     is_hyper_param_search: bool = False
     stateful_callbacks: List["TrainerCallback"] = field(default_factory=lambda: [])
 
@@ -172,6 +171,11 @@ class TrainingArguments(MinimalTrainingArguments):
     save_rng_state: bool = True
     restore_rng_state: bool = True
 
+    # Best model tracking and loading options
+    load_best_model_at_end: bool = False
+    metric_for_best_model: str = "loss"
+    greater_is_better: bool = None  # Auto-determined from metric name
+
     # Compatibility with HF Trainer -- would be better if they took a factory arg...
     lr_scheduler_type: str = "linear"
     lr_scheduler_kwargs: dict = None
@@ -235,6 +239,49 @@ class TrainingArguments(MinimalTrainingArguments):
 
         if self.gradient_checkpointing_kwargs is None:
             self.gradient_checkpointing_kwargs = {}
+
+        # Auto-determine greater_is_better from metric name if not set
+        if self.greater_is_better is None:
+            # Common metrics where higher is better
+            higher_is_better_metrics = {
+                "accuracy",
+                "f1",
+                "precision",
+                "recall",
+                "auc",
+                "roc_auc",
+                "ap",
+                "map",
+                "bleu",
+                "rouge",
+                "meteor",
+                "bertscore",
+                "exact_match",
+                "squad_f1",
+            }
+            # Check if metric name contains any higher-is-better patterns
+            metric_lower = self.metric_for_best_model.lower()
+            self.greater_is_better = any(
+                pattern in metric_lower for pattern in higher_is_better_metrics
+            )
+
+        # Validate alignment requirements for load_best_model_at_end
+        if self.load_best_model_at_end:
+            if self.save_strategy != self.eval_strategy:
+                raise ValueError(
+                    "load_best_model_at_end requires save_strategy and eval_strategy to be the same. "
+                    f"Got save_strategy={self.save_strategy}, eval_strategy={self.eval_strategy}"
+                )
+
+            if (
+                self.save_strategy == IntervalStrategy.STEPS
+                and self.eval_strategy == IntervalStrategy.STEPS
+            ):
+                if self.save_steps % self.eval_steps != 0:
+                    raise ValueError(
+                        "load_best_model_at_end requires save_steps to be a multiple of eval_steps when using step-based strategies. "
+                        f"Got save_steps={self.save_steps}, eval_steps={self.eval_steps}"
+                    )
 
     def __str__(self):
         return pformat(self)

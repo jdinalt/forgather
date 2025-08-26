@@ -6,6 +6,7 @@ from typing import (
 )
 from types import NoneType
 import os
+import json
 from abc import abstractmethod
 from contextlib import ExitStack
 
@@ -29,6 +30,8 @@ from ..sharded_checkpoint import (
     find_latest_checkpoint,
     next_checkpoint_path,
     maybe_delete_oldest_checkpoint,
+    save_checkpoint_metrics,
+    load_checkpoint_metrics,
 )
 
 WEIGHTS_NAME = "pytorch_model.bin"
@@ -353,9 +356,15 @@ class BaseTrainer(ExtensibleTrainer):
         # At most, one process per node should delete excess checkpoints
         if self._should_save_unique():
             maybe_delete_oldest_checkpoint(
-                self.args.output_dir, self.args.save_total_limit
+                self.args.output_dir,
+                self.args.save_total_limit,
+                self.state.best_model_checkpoint,
             )
 
+        self._dispatch_event(
+            "on_save",
+            checkpoint_path=checkpoint_path,
+        )
         # Make available to sub-class for saving additional state
         return checkpoint_path
 
@@ -369,6 +378,119 @@ class BaseTrainer(ExtensibleTrainer):
             self._load_training_state(checkpoint_path)
         else:
             logger.warn("No checkpoints found")
+
+    def save_metrics(
+        self, split: str, metrics: Dict[str, float], combined: bool = True
+    ) -> None:
+        """
+        Save metrics to JSON files following HuggingFace conventions.
+
+        Args:
+            split: The dataset split (e.g., "train", "eval", "test")
+            metrics: Dictionary of metrics to save
+            combined: Whether to also save to all_results.json
+        """
+        if not self._should_save_unique():
+            return
+
+        # Save split-specific results
+        results_file = os.path.join(self.args.output_dir, f"{split}_results.json")
+        with open(results_file, "w") as f:
+            json.dump(metrics, f, indent=2, ensure_ascii=False)
+
+        # Save to combined results if requested
+        if combined:
+            combined_file = os.path.join(self.args.output_dir, "all_results.json")
+
+            # Load existing combined results if they exist
+            combined_results = {}
+            if os.path.exists(combined_file):
+                try:
+                    with open(combined_file, "r") as f:
+                        combined_results = json.load(f)
+                except (json.JSONDecodeError, IOError):
+                    logger.warning(
+                        f"Could not read existing combined results from {combined_file}"
+                    )
+
+            # Add current metrics with split prefix
+            for key, value in metrics.items():
+                combined_results[f"{split}_{key}"] = value
+
+            # Save combined results
+            with open(combined_file, "w") as f:
+                json.dump(combined_results, f, indent=2, ensure_ascii=False)
+
+    def log_metrics(self, split: str, metrics: Dict[str, float]) -> None:
+        """
+        Log metrics in formatted output following HuggingFace conventions.
+
+        Args:
+            split: The dataset split (e.g., "train", "eval", "test")
+            metrics: Dictionary of metrics to log
+        """
+        if not self._should_save_unique():
+            return
+
+        logger.info(f"***** {split} metrics *****")
+        for key in sorted(metrics.keys()):
+            logger.info(f"  {key} = {metrics[key]}")
+
+    def _update_best_model(
+        self, checkpoint_path: str, metrics: Dict[str, float]
+    ) -> None:
+        """Update best model tracking based on current metrics."""
+        if not self.args.load_best_model_at_end:
+            return
+
+        # Try exact match first, then with eval_ prefix
+        metric_value = metrics.get(self.args.metric_for_best_model)
+        if metric_value is None:
+            metric_value = metrics.get(f"eval_{self.args.metric_for_best_model}")
+
+        if metric_value is None:
+            logger.warning(
+                f"Metric '{self.args.metric_for_best_model}' not found in evaluation metrics. "
+                f"Available metrics: {list(metrics.keys())}"
+            )
+            return
+
+        # Initialize best metric on first evaluation
+        if self.state.best_metric is None:
+            self.state.best_metric = metric_value
+            self.state.best_model_checkpoint = checkpoint_path
+            logger.info(
+                f"First evaluation - setting best {self.args.metric_for_best_model}: {metric_value}"
+            )
+            return
+
+        # Check if current metric is better
+        is_better = (
+            self.args.greater_is_better and metric_value > self.state.best_metric
+        ) or (not self.args.greater_is_better and metric_value < self.state.best_metric)
+
+        if is_better:
+            self.state.best_metric = metric_value
+            self.state.best_model_checkpoint = checkpoint_path
+            logger.info(
+                f"New best {self.args.metric_for_best_model}: {metric_value} (previous: {self.state.best_metric})"
+            )
+            logger.info(f"Saving new best model checkpoint to {checkpoint_path}")
+
+    def load_best_model(self) -> None:
+        """Load the best model from the best checkpoint."""
+        if not self.state.best_model_checkpoint:
+            logger.warning("No best model checkpoint available to load")
+            return
+
+        if not os.path.exists(self.state.best_model_checkpoint):
+            logger.warning(
+                f"Best model checkpoint path does not exist: {self.state.best_model_checkpoint}"
+            )
+            return
+
+        logger.info(f"Loading best model from {self.state.best_model_checkpoint}")
+        self._load_model_from_checkpoint(self.state.best_model_checkpoint)
 
     def _state_dict(self) -> Dict:
         """Save optimizer and scheduler state. Subclasses can override for custom behavior."""

@@ -716,16 +716,53 @@ def next_checkpoint_path(model_dir: str, global_step: int) -> str:
     return checkpoint_path
 
 
-def maybe_delete_oldest_checkpoint(model_dir: str, max_checkpoints) -> None:
+def save_checkpoint_metrics(checkpoint_path: str, metrics: Dict[str, float]) -> None:
+    """Save metrics to checkpoint directory in JSON format."""
+    os.makedirs(checkpoint_path, exist_ok=True)
+    metrics_path = os.path.join(checkpoint_path, "eval_metrics.json")
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+    logger.debug(f"Saved metrics to {metrics_path}")
+
+
+def load_checkpoint_metrics(checkpoint_path: str) -> Dict[str, float] | None:
+    """Load metrics from checkpoint directory."""
+    metrics_path = os.path.join(checkpoint_path, "eval_metrics.json")
+    if os.path.exists(metrics_path):
+        with open(metrics_path, "r") as f:
+            return json.load(f)
+    return None
+
+
+def maybe_delete_oldest_checkpoint(
+    model_dir: str, max_checkpoints: int, best_checkpoint: str = None
+) -> None:
+    """Delete oldest checkpoints, preserving the best checkpoint if specified."""
     checkpoints_dir = os.path.join(model_dir, "checkpoints")
     if not os.path.isdir(checkpoints_dir):
         logger.debug(
             f"No checkpoints directory found at {checkpoints_dir}, skipping deletion"
         )
         return
+
     checkpoints = glob.glob(os.path.join(checkpoints_dir, "checkpoint-*"))
-    if len(checkpoints) > max_checkpoints:
-        # Find oldest by modification time and delete it
-        oldest_path = min(checkpoints, key=lambda path: os.path.getmtime(path))
-        logger.info(f"Deleting oldest checkpoint at {oldest_path}")
-        shutil.rmtree(oldest_path)
+    if len(checkpoints) <= max_checkpoints:
+        return
+
+    # Never delete the best checkpoint if specified
+    checkpoints_to_consider = checkpoints
+    if best_checkpoint:
+        checkpoints_to_consider = [cp for cp in checkpoints if cp != best_checkpoint]
+
+    # Calculate how many to delete
+    num_to_delete = len(checkpoints) - max_checkpoints
+    # Ensure we don't delete more than available in checkpoints_to_consider
+    if best_checkpoint and best_checkpoint in checkpoints:
+        num_to_delete = min(num_to_delete, len(checkpoints_to_consider))
+
+    if num_to_delete > 0:
+        # Sort by modification time and delete the oldest
+        checkpoints_to_consider.sort(key=lambda path: os.path.getmtime(path))
+        for checkpoint_path in checkpoints_to_consider[:num_to_delete]:
+            logger.info(f"Deleting checkpoint at {checkpoint_path}")
+            shutil.rmtree(checkpoint_path)

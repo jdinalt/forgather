@@ -25,16 +25,14 @@
     save_safetensors: False          # Safe tensors don't support shared weights
     save_total_limit: 3              # Keep at most N checkpoints
     save_on_each_node: False         # Save common files on each node
-    save_optimizer_state: True       # Save optimizer state with checkpoint
-    save_scheduler_state: True       # Save LR scheduler state with checkpoint
     save_rng_state: True             # Save RNG state with checkpoint
+-- if save_strategy | default('steps') == "steps"
+    ## eval_stratgegy must equal save_strategy for this option
+    load_best_model_at_end: True
+-- endif
 
     # We load the model via the newest checkpoint
     resume_from_checkpoint: True
-    restore_optimizer_state: True    # Test optimizer state restoration per rank
-    restore_scheduler_state: True    # Test scheduler state restoration per rank
-    restore_rng_state: True          # Test RNG state restoration per rank
-    restore_dataset_state: False     # Not fully implemented yet!
     ## WARNING: If the model has any buffers with "peristent=False," construct the model
     ## on the "default" device; otherwise, there is no way to initialize these buffers from
     ## a checkpoint! OTOH, not constructing the model on "meta" is very slow...

@@ -51,6 +51,7 @@ from .periodic_function import PeriodicFunction
 from ..sharded_checkpoint import (
     create_sharing_metadata,
     retie_parameters,
+    save_checkpoint_metrics,
 )
 
 
@@ -393,12 +394,62 @@ class Trainer(BaseTrainer):
                         loss_steps = 0
                         self._log_step(mean_loss)
 
+                    # Handle evaluation
+                    eval_metrics = None
                     if periodic_eval.step():
-                        self._eval_loop()
+                        eval_metrics = self._eval_loop()
+                        # Add eval_ prefix to metrics for consistency and log them
+                        eval_logs = {f"eval_{k}": v for k, v in eval_metrics.items()}
+                        eval_logs["step"] = self.state.global_step
+                        eval_logs["epoch"] = self.state.epoch
+                        self.log(eval_logs)
 
+                        # Log and save evaluation metrics
+                        # self.log_metrics("eval", eval_metrics)
+                        self.save_metrics("eval", eval_metrics)
+
+                    # Handle checkpointing - must happen after evaluation to have current metrics
                     if periodic_save.step():
                         last_save_step = self.state.global_step
-                        self.save_checkpoint()
+                        checkpoint_path = self.save_checkpoint()
+
+                        # For load_best_model_at_end, we need metrics from the most recent evaluation
+                        # Get the most recent evaluation metrics from log history
+                        current_eval_metrics = None
+                        if self.args.load_best_model_at_end:
+                            # Use metrics from this step if available, otherwise look in log history
+                            if eval_metrics:
+                                current_eval_metrics = eval_metrics
+                            else:
+                                # Find most recent eval metrics in log history
+                                for log_entry in reversed(self.state.log_history):
+                                    if any(
+                                        key.startswith("eval_")
+                                        for key in log_entry.keys()
+                                    ):
+                                        current_eval_metrics = {
+                                            k: v
+                                            for k, v in log_entry.items()
+                                            if k.startswith("eval_")
+                                        }
+                                        # Remove 'eval_' prefix for consistency
+                                        current_eval_metrics = {
+                                            k.replace("eval_", "", 1): v
+                                            for k, v in current_eval_metrics.items()
+                                        }
+                                        break
+
+                        # Update best model tracking with current evaluation metrics
+                        if current_eval_metrics and self.args.load_best_model_at_end:
+                            self._update_best_model(
+                                checkpoint_path, current_eval_metrics
+                            )
+
+                        # Save checkpoint metrics for future reference
+                        if current_eval_metrics:
+                            save_checkpoint_metrics(
+                                checkpoint_path, current_eval_metrics
+                            )
 
                     # Stop, if requested by callback.
                     control = self._dispatch_event("on_step_end")
@@ -424,7 +475,16 @@ class Trainer(BaseTrainer):
             logger.info(f"Saving final checkpoint at step {self.state.global_step}")
             self.save_checkpoint()
 
+        # Load best model at end if requested
+        if self.args.load_best_model_at_end:
+            logger.info(f'Loading best model "{self.state.best_model_checkpoint}"')
+            self.load_best_model()
+
         metrics = self._end_train_loop(start_time)
+        # Save final training metrics
+        self.log_metrics("train", metrics)
+        self.save_metrics("train", metrics)
+
         self.log(metrics)
         self._dispatch_event("on_train_end")
         return TrainOutput(self.state.global_step, mean_loss, metrics)
@@ -573,6 +633,9 @@ class Trainer(BaseTrainer):
                 is_world_process_zero=self.is_world_process_zero,
                 num_processes=self.num_processes,
                 save_steps=self.args.save_steps,
+                # Initialize best model tracking
+                best_metric=None,
+                best_model_checkpoint=None,
             )
         else:
             return TrainerState(
@@ -586,6 +649,9 @@ class Trainer(BaseTrainer):
                 is_world_process_zero=self.is_world_process_zero,
                 num_processes=self.num_processes,
                 save_steps=0,
+                # Initialize best model tracking
+                best_metric=None,
+                best_model_checkpoint=None,
             )
 
     def _end_train_loop(self, start_time):
