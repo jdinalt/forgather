@@ -10,6 +10,22 @@
 -- endblock config_metadata
 
 
+-- block optimizer
+    == super()
+
+    # **open-orca**
+    lr: 1.0e-5
+<< endblock optimizer
+
+
+-- block lr_scheduler
+    == super()
+
+    # **open-orca**
+    constant_lr: 1.0e-5
+<< endblock lr_scheduler
+
+
 #-------------------- project.trainer --------------------
 -- extends "trainers/base_finetune_trainer.yaml"
 
@@ -18,5 +34,4 @@
     == super()
     
     # **open-orca**
-    eval_steps: 10
 << endblock trainer_args
