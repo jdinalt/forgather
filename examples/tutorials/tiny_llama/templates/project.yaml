@@ -124,10 +124,12 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 
 
     == super()
-    - !singleton:forgather.ml.trainer.callbacks:TextgenCallback
+    text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         summary_writer: *summary_writer
         prompts: *testprompts
         generation_config: *generation_config
         max_new_tokens: 40
         generation_steps: 1000
+        
+    trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback []
 << endblock callback_list

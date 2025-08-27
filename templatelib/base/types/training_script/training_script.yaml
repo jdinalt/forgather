@@ -106,7 +106,8 @@ data_collator: &data_collator null
 
     -- filter trim()
     -- block trainer_callbacks
-trainer_callbacks: &trainer_callbacks []
+trainer_callbacks: &trainer_callbacks !dlist:@trainer_callbacks
+    null: ~
     << endblock trainer_callbacks
     -- endfilter
 

@@ -14,6 +14,7 @@
 
 -- filter trim()
 -- block callback_list
-trainer_callbacks: &trainer_callbacks@trainer_callbacks []
+trainer_callbacks: &trainer_callbacks !dlist:@trainer_callbacks
+    null: ~
 << endblock callback_list
 -- endfilter

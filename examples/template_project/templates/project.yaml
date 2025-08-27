@@ -207,4 +207,8 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 
 -- block callback_list
     == super()
+    peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
+        show_details: {{ ns.debug_memory_detials }}
+        do_log: {{ log_peak_memory | default(False) }}
+    trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback []
 << endblock callback_list

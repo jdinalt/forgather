@@ -66,7 +66,7 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 
 -- block callback_list
     == super()
-    - !singleton:forgather.ml.trainer.callbacks:PeakMemory
+    peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
         show_details: True
         do_log: True
         summary_writer: *summary_writer

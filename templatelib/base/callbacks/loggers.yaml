@@ -18,12 +18,12 @@ experiment_info: &experiment_info !dict:@experiment_info
     
 
 -- block callback_list
-trainer_callbacks: &trainer_callbacks !list:@trainer_callbacks
+    == super()
     # Log all training output to JSON
-    - !singleton:forgather.ml.trainer.callbacks:JsonLogger
+    json_logger: !singleton:forgather.ml.trainer.callbacks:JsonLogger
         <<: *experiment_info
     # Log configuration and metrics to Tensorboard file
-    - !singleton:forgather.ml.trainer.callbacks:TBLogger
+    tb_logger: !singleton:forgather.ml.trainer.callbacks:TBLogger
         args: [ *summary_writer ]
         kwargs:
             <<: *experiment_info
