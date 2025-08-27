@@ -52,6 +52,49 @@ forgather -t train_tiny_llama.yaml pp               # Show pre-processed configu
 forgather -t train_tiny_llama.yaml train            # Train with selected configuration.
 ```
 
+### Workspace and Project Creation
+
+Forgather uses a two-level structure: **Workspaces** contain **Projects**. Use the `forgather ws` commands to create and manage both.
+
+#### Creating a New Workspace
+```bash
+# Basic workspace creation
+forgather ws init --name "My ML Workspace" --description "Machine learning research experiments" --forgather-dir /path/to/forgather
+
+# With additional template search paths
+forgather ws init --name "Advanced Workspace" --description "Advanced ML experiments" --forgather-dir /path/to/forgather /extra/templates/path /another/path
+
+# With no default search paths (minimal workspace)
+forgather ws init --name "Minimal Workspace" --description "Clean minimal setup" --forgather-dir /path/to/forgather --no-defaults
+```
+
+This creates a `forgather_workspace/` directory containing:
+- `README.md` - Workspace documentation
+- `base_directories.yaml` - Base directory configuration  
+- `meta_defaults.yaml` - Template search paths and workspace metadata
+
+#### Creating a New Project in a Workspace
+```bash
+# Basic project creation (directory name auto-generated from project name)
+forgather ws project --name "Sentiment Analysis" --description "BERT-based sentiment analysis experiments"
+
+# With custom settings
+forgather ws project --name "Image Classification" --description "CNN experiments" --config-prefix "experiments" --default-config "baseline.yaml" custom_directory_name
+```
+
+This creates a project directory with:
+- `README.md` - Project documentation
+- `meta.yaml` - Project metadata extending workspace defaults
+- `templates/configs/{default_config}` - Default configuration template
+
+#### Typical Workspace Setup Workflow
+1. **Create workspace**: `forgather ws init --name "My Research" --description "ML experiments" --forgather-dir /path/to/forgather`
+2. **Create project(s)**: `forgather ws project --name "Project 1" --description "First experiment"`
+3. **Navigate to project**: `cd project_1`
+4. **List configurations**: `forgather ls`
+5. **Test configuration**: `forgather pp` 
+6. **Train model**: `forgather train`
+
 ### Project Installation
 ```bash
 pip install -e .
@@ -117,6 +160,30 @@ project_dir/
 ```
 
 ### Development Workflow
+
+**Working with Created Projects**
+- After creating a project, `cd` into the project directory to work with it
+- The generated default config is minimal - extend it by inheriting from base templates:
+  ```yaml
+  -- extends "types/training_script/causal_lm/causal_lm.yaml"
+  
+  -- block construct_new_model
+      -- include 'models/llama.yaml'
+  -- endblock construct_new_model
+  
+  -- block optimizer
+  optimizer: &optimizer !partial:torch.optim:AdamW
+      lr: 1.0e-4
+  -- endblock optimizer
+  ```
+- Key template inheritance patterns:
+  - Use `-- extends "template_name.yaml"` for single inheritance
+  - Use `-- include 'template_name.yaml'` to include template content
+  - Override template blocks with `-- block name` / `-- endblock`
+  - Use `== super()` to include parent block content
+- Add additional config files in `templates/configs/` for different experiments
+- Test configurations immediately: `forgather ls` then `forgather pp` 
+- Use `forgather meta` to see workspace/project structure and template search paths
 
 **Configuration Validation**
 - ALWAYS run `forgather ls` to validate all configurations after making changes

@@ -116,6 +116,12 @@ def create_ls_parser(global_args):
         help="Search for project in all sub-directories and list them.",
     )
     parser.add_argument(
+        "--debug",
+        "-d",
+        action="store_true",
+        help="Debug meta-data parsing",
+    )
+    parser.add_argument(
         "project",
         type=str,
         nargs="*",
@@ -374,12 +380,82 @@ def create_dataset_parser(global_args):
 
 
 def create_ws_parser(global_args):
-    """Create parser for targets command."""
+    path_type = lambda x: os.path.normpath(os.path.expanduser(x))
+
+    """Create parser for workspace command."""
     parser = argparse.ArgumentParser(
         prog="forgather ws",
-        description="Forgather workspace",
+        description="Forgather workspace management",
         formatter_class=RawTextHelpFormatter,
     )
+    subparsers = parser.add_subparsers(dest='ws_subcommand', help='Workspace subcommands')
+
+    # init subcommand
+    init_parser = subparsers.add_parser(
+        'init',
+        help='Initialize a new forgather workspace',
+        formatter_class=RawTextHelpFormatter,
+    )
+    init_parser.add_argument(
+        '--name',
+        required=True,
+        help='Workspace name'
+    )
+    init_parser.add_argument(
+        '--description',
+        required=True,
+        help='Workspace description'
+    )
+    init_parser.add_argument(
+        '--forgather-dir',
+        required=True,
+        type=path_type,
+        help='Path to forgather installation directory'
+    )
+    init_parser.add_argument(
+        'search_paths',
+        nargs='*',
+        type=path_type,
+        help='Additional search paths for templates'
+    )
+    init_parser.add_argument(
+        "--no-defaults",
+        action="store_true",
+        help="Don't include default forgather search paths",
+    )
+
+    # project subcommand
+    project_parser = subparsers.add_parser(
+        'project',
+        help='Create a new forgather project in the workspace',
+        formatter_class=RawTextHelpFormatter,
+    )
+    project_parser.add_argument(
+        '--name',
+        required=True,
+        help='Project name'
+    )
+    project_parser.add_argument(
+        '--description',
+        required=True,
+        help='Project description'
+    )
+    project_parser.add_argument(
+        '--config-prefix',
+        default='configs',
+        help='Configuration prefix (default: configs)'
+    )
+    project_parser.add_argument(
+        '--default-config',
+        default='default.yaml',
+        help='Default configuration name (default: default)'
+    )
+    project_parser.add_argument(
+        'project_dir',
+        nargs='?',
+        help='Project directory name (defaults to project name with spaces replaced by underscores)'
+    )
+
     return parser
 
 

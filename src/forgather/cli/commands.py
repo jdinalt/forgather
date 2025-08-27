@@ -63,38 +63,38 @@ def ls_cmd(args):
     if args.project:
         for project_dir in args.project:
             if args.recursive:
-                list_project_recurse(project_dir)
+                list_project_recurse(project_dir, args.debug)
             else:
                 try:
                     print(f"\nProject Path: {project_dir}\n")
-                    list_project(project_dir)
+                    list_project(project_dir, args.debug)
                 except ValueError as e:
                     print(e)
     elif args.recursive:
-        list_project_recurse(args.project_dir)
+        list_project_recurse(args.project_dir, args.debug)
     else:
         try:
             # Search upward for the nearest project directory
             project_dir = MetaConfig.find_project_dir(args.project_dir)
             if os.path.realpath(project_dir) != os.path.realpath(args.project_dir):
                 print(f"\nProject Path: {project_dir}\n")
-            list_project(project_dir)
+            list_project(project_dir, args.debug)
         except Exception as e:
             print(e)
 
 
-def list_project_recurse(project_dir):
+def list_project_recurse(project_dir, debug):
     for root, dirs, files in os.walk(project_dir):
         for file_name in files:
             if file_name == "meta.yaml":
                 print(f"\nProject Path: {root}\n")
                 try:
-                    list_project(root)
+                    list_project(root, debug)
                 except Exception as e:
                     print(f"PARSE ERROR: {os.path.join(root, file_name)} '{e}'")
 
 
-def list_project(project_dir):
+def list_project(project_dir, debug=False):
     """List configurations for a single project."""
     meta = MetaConfig(project_dir)
     meta_config = meta.config_dict
@@ -111,7 +111,8 @@ def list_project(project_dir):
         except Exception as e:
             config_long_name = "PARSE ERROR"
             config_description = "An error occured while parsing the configuration."
-            # traceback.print_exc()
+            if debug:
+                traceback.print_exc()
 
         if config_name == meta.default_config():
             config_name = f"[{config_name}]"
@@ -332,5 +333,206 @@ def index_cmd(args):
 
 
 def ws_cmd(args):
-    workspace_dir = MetaConfig.find_workspace_dir(args.project_dir)
-    print(f"Workspace Directory: {workspace_dir}")
+    """Workspace management commands."""
+    if hasattr(args, 'ws_subcommand'):
+        if args.ws_subcommand == 'init':
+            ws_init_cmd(args)
+        elif args.ws_subcommand == 'project':
+            ws_project_cmd(args)
+    else:
+        # Default behavior - show workspace directory
+        workspace_dir = MetaConfig.find_workspace_dir(args.project_dir)
+        print(f"Workspace Directory: {workspace_dir}")
+
+
+def ws_init_cmd(args):
+    """Initialize a new forgather workspace."""
+    import os
+    from jinja2 import Environment, BaseLoader
+
+    # Determine target directory - create forgather_workspace subdirectory
+    target_dir = os.path.join(os.getcwd(), 'forgather_workspace')
+
+    if os.path.exists(target_dir):
+        print(f"Error: Directory '{target_dir}' already exists")
+        return 1
+
+    # Create the directory
+    os.makedirs(target_dir, exist_ok=True)
+    print(f"Creating forgather workspace in: {target_dir}")
+
+    # Template context
+    context = {
+        'workspace_name': args.name,
+        'worspace_description': args.description,  # Note: keeping typo to match template
+        'forgather_dir': os.path.abspath(args.forgather_dir),
+        'search_paths': args.search_paths or [],
+        'no_defaults': args.no_defaults,
+    }
+
+    # Template content inlined from the example files
+    readme_template = """# {{ workspace_name }}
+
+{{ worspace_description }}
+"""
+
+    base_directories_template = """-- set ns.forgather_dir = "{{ forgather_dir }}"
+"""
+
+    meta_defaults_template = """{% raw -%}
+-- set ns = namespace()
+
+## Import default paths; common to meta and regular templates.
+-- include "base_directories.yaml"
+-- set ns.forgather_templates_dir = joinpath(ns.forgather_dir, "templatelib")
+
+## Search these directories for templates
+## The list is split, which makes it easier to selectively append or prepend.
+searchdir:
+-- block searchdir_project
+    - "{{ joinpath(project_dir, 'templates') }}"
+-- endblock searchdir_project
+
+-- block searchdir_common
+{% endraw -%}
+{% for search_path in search_paths %}
+    - "{{ search_path }}"
+{%- endfor %}
+{% raw %}
+    - "{{ joinpath(workspace_root, 'forgather_workspace') }}"
+{%- endraw %}
+{% if not no_defaults %}
+{%- raw %}
+    - "{{ joinpath(ns.forgather_templates_dir, 'examples') }}"
+    - "{{ joinpath(ns.forgather_templates_dir, 'base') }}"
+{%- endraw %}
+{% endif %}
+
+-- endblock searchdir_common
+
+
+-- block configs
+-- endblock configs
+"""
+
+    # Render templates with whitespace control
+    env = Environment(
+        loader=BaseLoader(),
+        trim_blocks=True,
+        lstrip_blocks=True
+    )
+
+    # Create files
+    files_to_create = {
+        'README.md': readme_template,
+        'base_directories.yaml': base_directories_template,
+        'meta_defaults.yaml': meta_defaults_template
+    }
+
+    for filename, template_content in files_to_create.items():
+        template = env.from_string(template_content)
+        rendered_content = template.render(**context)
+
+        file_path = os.path.join(target_dir, filename)
+        with open(file_path, 'w') as f:
+            f.write(rendered_content)
+        print(f"Created: {filename}")
+
+    print(f"\nForgather workspace '{args.name}' initialized successfully!")
+    print(f"Workspace directory: {target_dir}")
+    return 0
+
+
+def ws_project_cmd(args):
+    """Create a new forgather project in the workspace."""
+    import os
+    from jinja2 import Environment, BaseLoader
+
+    # Determine project directory name
+    if args.project_dir:
+        project_dir_name = args.project_dir
+    else:
+        # Default: replace spaces with underscores
+        project_dir_name = args.name.replace(' ', '_').lower()
+
+    # Create target directory
+    target_dir = os.path.join(os.getcwd(), project_dir_name)
+
+    if os.path.exists(target_dir):
+        print(f"Error: Directory '{target_dir}' already exists")
+        return 1
+
+    # Create directory structure
+    os.makedirs(target_dir, exist_ok=True)
+    os.makedirs(os.path.join(target_dir, 'templates', 'configs'), exist_ok=True)
+    print(f"Creating forgather project in: {target_dir}")
+
+    # Template context
+    context = {
+        'project_name': args.name,
+        'project_description': args.description,
+        'config_prefix': args.config_prefix,
+        'default_config': args.default_config
+    }
+
+    # Template content inlined from the example files
+    readme_template = """# {{ project_name }}
+
+{{ project_description }}
+"""
+
+    meta_template = """-- extends "meta_defaults.yaml"
+
+-- block configs
+name: "{{ project_name }}"
+description: "{{ project_description }}"
+config_prefix: "{{ config_prefix }}"
+default_config: "{{ default_config }}"
+<< endblock configs
+"""
+
+    default_config_template = """-- set ns = namespace()
+-- include "base_directories.yaml"
+
+meta: &meta_output !dict:@meta
+    config_name: "Default"
+    config_description: "Default Config"
+    config_class: "none"
+{%- raw %}
+    project_dir: "{{ project_dir }}"
+    workspace_root: "{{ workspace_root }}"
+    forgather_dir: "{{ ns.forgather_dir }}"
+{%- endraw %}
+
+
+dynamic_args: []
+
+main: "Main Output"
+"""
+
+    # Render templates with whitespace control
+    env = Environment(
+        loader=BaseLoader(),
+        trim_blocks=True,
+        lstrip_blocks=True
+    )
+
+    # Create files
+    files_to_create = {
+        'README.md': readme_template,
+        'meta.yaml': meta_template,
+        os.path.join('templates', 'configs', f'{args.default_config}'): default_config_template
+    }
+
+    for filepath, template_content in files_to_create.items():
+        template = env.from_string(template_content)
+        rendered_content = template.render(**context)
+
+        full_path = os.path.join(target_dir, filepath)
+        with open(full_path, 'w') as f:
+            f.write(rendered_content)
+        print(f"Created: {filepath}")
+
+    print(f"\nForgather project '{args.name}' created successfully!")
+    print(f"Project directory: {target_dir}")
+    return 0
