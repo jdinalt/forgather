@@ -43,6 +43,57 @@ tail -n 10 output_models/my_custom_model/runs/my_custom_model_2025-06-25T03-16-5
 cat output_models/my_custom_model/runs/my_custom_model_2025-06-25T03-16-59/config.yaml
 ```
 
+### Training Job Control
+
+Forgather supports **external control of running training jobs** through the `forgather control` commands. This enables real-time interaction with distributed training for hyperparameter experimentation, checkpoint management, and graceful shutdown.
+
+```bash
+# List all discoverable training jobs
+forgather control list
+
+# Get detailed status of a specific job  
+forgather control status JOB_ID
+
+# Control running training jobs
+forgather control save JOB_ID           # Save checkpoint (triggers evaluation if configured)
+forgather control stop JOB_ID           # Gracefully stop training (saves final checkpoint)
+forgather control save-stop JOB_ID      # Save checkpoint then gracefully stop  
+forgather control abort JOB_ID          # Abort immediately without saving (useful for failed hyperparameter experiments)
+
+# Job management
+forgather control cleanup               # Remove dead job files
+forgather control cleanup --force      # Skip confirmation
+```
+
+**To enable control in your training jobs**, add the TrainerControlCallback:
+
+```python
+from forgather.ml.trainer.callbacks import TrainerControlCallback
+
+callbacks = [
+    TrainerControlCallback(
+        job_id="my_experiment",  # Optional: auto-generated if not provided
+    ),
+    # ... your other callbacks
+]
+
+trainer = Trainer(
+    model=model,
+    args=args,
+    train_dataset=train_dataset,
+    callbacks=callbacks
+)
+```
+
+**Typical workflow:**
+1. Start training job: `forgather -t config.yaml train`
+2. In another terminal: `forgather control list` to see running jobs
+3. Save checkpoint on-demand: `forgather control save JOB_ID`
+4. Gracefully stop when satisfied: `forgather control stop JOB_ID`
+5. Or abort failed experiments: `forgather control abort JOB_ID`
+
+The system works with **distributed training** - commands sent to any rank are automatically coordinated across all processes. See `examples/trainer_control/` for a complete working example and `docs/trainers/trainer-control.md` for full documentation.
+
 ### Examples from Real Projects
 ```bash
 # Working with tiny_llama tutorial project
