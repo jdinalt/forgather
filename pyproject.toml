@@ -29,6 +29,8 @@ dependencies = [
     "transformers >= 4.41.2",
     "tqdm >= 4.65.0",
     "aiohttp >= 3.9.3",
+    "torchao >= 0.11.0",
+    "torchdata >= 0.11.0",
 ]
 version = "2024.0.0a1"
 authors = [
