@@ -368,6 +368,7 @@ class Trainer(BaseTrainer):
         loss_steps = 0
         last_save_step = 0
         mean_loss = float("nan")
+        is_abort = False  # Track if training was aborted without save
 
         # Context manager for setting model.train()/eval()
         with set_train(self.model, True):
@@ -388,15 +389,21 @@ class Trainer(BaseTrainer):
                         self.epoch_train_steps
                     )
 
+                    # Check for control flags after logging
+                    control = None
                     if periodic_log.step():
                         mean_loss = total_loss.item() / loss_steps
                         total_loss -= total_loss  # zero total
                         loss_steps = 0
-                        self._log_step(mean_loss)
+                        control = self._log_step(mean_loss)
 
-                    # Handle evaluation
+                    # Handle evaluation (normal schedule or control-triggered)
                     eval_metrics = None
-                    if periodic_eval.step():
+                    should_eval = periodic_eval.step()
+                    if control and control.should_evaluate:
+                        should_eval = True
+
+                    if should_eval:
                         eval_metrics = self._eval_loop()
                         # Add eval_ prefix to metrics for consistency and log them
                         eval_logs = {f"eval_{k}": v for k, v in eval_metrics.items()}
@@ -408,8 +415,12 @@ class Trainer(BaseTrainer):
                         # self.log_metrics("eval", eval_metrics)
                         self.save_metrics("eval", eval_metrics)
 
-                    # Handle checkpointing - must happen after evaluation to have current metrics
-                    if periodic_save.step():
+                    # Handle checkpointing - normal schedule or control-triggered
+                    should_save = periodic_save.step()
+                    if control and control.should_save:
+                        should_save = True
+
+                    if should_save:
                         last_save_step = self.state.global_step
                         checkpoint_path = self.save_checkpoint()
 
@@ -451,9 +462,25 @@ class Trainer(BaseTrainer):
                                 checkpoint_path, current_eval_metrics
                             )
 
-                    # Stop, if requested by callback.
-                    control = self._dispatch_event("on_step_end")
+                    # Check for stop request from log callbacks
                     if control is not None and control.should_training_stop:
+                        # Check if this is an abort (no save) vs graceful stop
+                        is_abort = (
+                            hasattr(control, "should_abort_without_save")
+                            and control.should_abort_without_save
+                        )
+                        if is_abort:
+                            logger.info(
+                                "Training aborted by control command - skipping final checkpoint"
+                            )
+                        else:
+                            logger.info("Training stopped by control command")
+                        break
+
+                    # Stop, if requested by step end callback.
+                    step_control = self._dispatch_event("on_step_end")
+                    if step_control is not None and step_control.should_training_stop:
+                        logger.info("Training stopped by step end callback")
                         break
 
                     # Break both loops when we reach the target global steps
@@ -467,9 +494,10 @@ class Trainer(BaseTrainer):
                 break  # Break, if inner-loop breaks
 
         # Save final checkpoint if checkpointing is enabled
-        # Skip if we just saved a checkpoint in the final step
+        # Skip if we just saved a checkpoint in the final step, or if training was aborted
         if (
-            self.args.save_strategy != IntervalStrategy.NO
+            not is_abort
+            and self.args.save_strategy != IntervalStrategy.NO
             and self.state.global_step != last_save_step
         ):
             logger.info(f"Saving final checkpoint at step {self.state.global_step}")
@@ -702,7 +730,8 @@ class Trainer(BaseTrainer):
                     last_lr = last_lr.item()
                 logs["learning_rate"] = last_lr
 
-        self.log(logs)
+        # Capture control object from log callbacks for trainer control
+        return self.log(logs)
 
     def _prepare_batch(self, batch):
         """

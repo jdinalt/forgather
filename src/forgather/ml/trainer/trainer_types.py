@@ -82,6 +82,9 @@ class TrainerControl:
     should_evaluate: bool = False
     should_log: bool = False
 
+    # Forgather extension: abort without saving
+    should_abort_without_save: bool = False
+
 
 @dataclass(kw_only=True)
 class MinimalTrainingArguments:

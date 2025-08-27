@@ -155,3 +155,4 @@ trainer = Trainer(
 - [Distributed Training](distributed-training.md) - Multi-GPU and pipeline parallelism
 - [Callbacks](callbacks.md) - Callback system and custom callbacks
 - [Checkpointing](checkpointing.md) - Advanced checkpoint management
+- [Trainer Control](trainer-control.md) - External control of running training jobs

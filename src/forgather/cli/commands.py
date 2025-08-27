@@ -12,6 +12,7 @@ from forgather.latent import Latent
 from forgather.meta_config import preprocessor_globals, MetaConfig
 from forgather.config import ConfigEnvironment
 from forgather.preprocess import debug_pp
+from forgather.trainer_control import get_default_client, HTTPTrainerControlClient
 
 from .dynamic_args import get_dynamic_args
 
@@ -334,10 +335,10 @@ def index_cmd(args):
 
 def ws_cmd(args):
     """Workspace management commands."""
-    if hasattr(args, 'ws_subcommand'):
-        if args.ws_subcommand == 'init':
+    if hasattr(args, "ws_subcommand"):
+        if args.ws_subcommand == "init":
             ws_init_cmd(args)
-        elif args.ws_subcommand == 'project':
+        elif args.ws_subcommand == "project":
             ws_project_cmd(args)
     else:
         # Default behavior - show workspace directory
@@ -351,7 +352,7 @@ def ws_init_cmd(args):
     from jinja2 import Environment, BaseLoader
 
     # Determine target directory - create forgather_workspace subdirectory
-    target_dir = os.path.join(os.getcwd(), 'forgather_workspace')
+    target_dir = os.path.join(os.getcwd(), "forgather_workspace")
 
     if os.path.exists(target_dir):
         print(f"Error: Directory '{target_dir}' already exists")
@@ -363,11 +364,11 @@ def ws_init_cmd(args):
 
     # Template context
     context = {
-        'workspace_name': args.name,
-        'worspace_description': args.description,  # Note: keeping typo to match template
-        'forgather_dir': os.path.abspath(args.forgather_dir),
-        'search_paths': args.search_paths or [],
-        'no_defaults': args.no_defaults,
+        "workspace_name": args.name,
+        "worspace_description": args.description,  # Note: keeping typo to match template
+        "forgather_dir": os.path.abspath(args.forgather_dir),
+        "search_paths": args.search_paths or [],
+        "no_defaults": args.no_defaults,
     }
 
     # Template content inlined from the example files
@@ -416,17 +417,13 @@ searchdir:
 """
 
     # Render templates with whitespace control
-    env = Environment(
-        loader=BaseLoader(),
-        trim_blocks=True,
-        lstrip_blocks=True
-    )
+    env = Environment(loader=BaseLoader(), trim_blocks=True, lstrip_blocks=True)
 
     # Create files
     files_to_create = {
-        'README.md': readme_template,
-        'base_directories.yaml': base_directories_template,
-        'meta_defaults.yaml': meta_defaults_template
+        "README.md": readme_template,
+        "base_directories.yaml": base_directories_template,
+        "meta_defaults.yaml": meta_defaults_template,
     }
 
     for filename, template_content in files_to_create.items():
@@ -434,7 +431,7 @@ searchdir:
         rendered_content = template.render(**context)
 
         file_path = os.path.join(target_dir, filename)
-        with open(file_path, 'w') as f:
+        with open(file_path, "w") as f:
             f.write(rendered_content)
         print(f"Created: {filename}")
 
@@ -453,7 +450,7 @@ def ws_project_cmd(args):
         project_dir_name = args.project_dir
     else:
         # Default: replace spaces with underscores
-        project_dir_name = args.name.replace(' ', '_').lower()
+        project_dir_name = args.name.replace(" ", "_").lower()
 
     # Create target directory
     target_dir = os.path.join(os.getcwd(), project_dir_name)
@@ -464,15 +461,15 @@ def ws_project_cmd(args):
 
     # Create directory structure
     os.makedirs(target_dir, exist_ok=True)
-    os.makedirs(os.path.join(target_dir, 'templates', 'configs'), exist_ok=True)
+    os.makedirs(os.path.join(target_dir, "templates", "configs"), exist_ok=True)
     print(f"Creating forgather project in: {target_dir}")
 
     # Template context
     context = {
-        'project_name': args.name,
-        'project_description': args.description,
-        'config_prefix': args.config_prefix,
-        'default_config': args.default_config
+        "project_name": args.name,
+        "project_description": args.description,
+        "config_prefix": args.config_prefix,
+        "default_config": args.default_config,
     }
 
     # Template content inlined from the example files
@@ -511,17 +508,15 @@ main: "Main Output"
 """
 
     # Render templates with whitespace control
-    env = Environment(
-        loader=BaseLoader(),
-        trim_blocks=True,
-        lstrip_blocks=True
-    )
+    env = Environment(loader=BaseLoader(), trim_blocks=True, lstrip_blocks=True)
 
     # Create files
     files_to_create = {
-        'README.md': readme_template,
-        'meta.yaml': meta_template,
-        os.path.join('templates', 'configs', f'{args.default_config}'): default_config_template
+        "README.md": readme_template,
+        "meta.yaml": meta_template,
+        os.path.join(
+            "templates", "configs", f"{args.default_config}"
+        ): default_config_template,
     }
 
     for filepath, template_content in files_to_create.items():
@@ -529,10 +524,209 @@ main: "Main Output"
         rendered_content = template.render(**context)
 
         full_path = os.path.join(target_dir, filepath)
-        with open(full_path, 'w') as f:
+        with open(full_path, "w") as f:
             f.write(rendered_content)
         print(f"Created: {filepath}")
 
     print(f"\nForgather project '{args.name}' created successfully!")
     print(f"Project directory: {target_dir}")
+    return 0
+
+
+def control_cmd(args):
+    """Handle trainer control commands."""
+    try:
+        client = get_default_client()
+
+        if args.control_subcommand == "list":
+            jobs = client.list_jobs()
+
+            if hasattr(args, "remote") and args.remote:
+                # Parse remote host:port
+                try:
+                    host, port = args.remote.split(":")
+                    port = int(port)
+                    if hasattr(client, "list_jobs_remote"):
+                        remote_jobs = client.list_jobs_remote(host, port)
+                        jobs.extend(remote_jobs)
+                    else:
+                        print(
+                            f"Warning: Remote job listing not supported by current client"
+                        )
+                except ValueError:
+                    print(
+                        f"Error: Invalid remote format '{args.remote}'. Use HOST:PORT format."
+                    )
+                    return 1
+
+            if not jobs:
+                print("No discoverable training jobs found.")
+                return 0
+
+            # Check which jobs are still alive and mark dead ones
+            import psutil
+
+            alive_jobs = []
+            dead_jobs = []
+
+            for job in jobs:
+                try:
+                    # Check if process is still running
+                    if psutil.pid_exists(job.pid):
+                        proc = psutil.Process(job.pid)
+                        if proc.is_running():
+                            alive_jobs.append((job, "✓"))
+                        else:
+                            dead_jobs.append((job, "✗"))
+                    else:
+                        dead_jobs.append((job, "✗"))
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    dead_jobs.append((job, "✗"))
+
+            # Display results
+            all_jobs = alive_jobs + dead_jobs
+
+            print("Discoverable training jobs:")
+            print(
+                f"{'Status':<3} {'Job ID':<30} {'Host':<15} {'Port':<6} {'PID':<8} {'Started'}"
+            )
+            print("-" * 75)
+            for job, status in all_jobs:
+                import datetime
+
+                started = datetime.datetime.fromtimestamp(job.started_at).strftime(
+                    "%m/%d %H:%M"
+                )
+                print(
+                    f"{status:<3} {job.job_id:<30} {job.host:<15} {job.port:<6} {job.pid:<8} {started}"
+                )
+
+            if dead_jobs:
+                print(f"\n✗ = Process not running ({len(dead_jobs)} dead job(s) found)")
+                print("Tip: Use 'forgather control cleanup' to remove dead job files")
+
+        elif args.control_subcommand == "status":
+            status = client.get_status(args.job_id)
+            print("Job Status:")
+            for key, value in status.items():
+                if key == "timestamp":
+                    import datetime
+
+                    value = datetime.datetime.fromtimestamp(value).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                print(f"  {key}: {value}")
+
+        elif args.control_subcommand == "stop":
+            response = client.graceful_stop(args.job_id)
+            if response.success:
+                print(f"✓ {response.message}")
+            else:
+                print(f"✗ {response.message}")
+                return 1
+
+        elif args.control_subcommand == "save":
+            response = client.save_checkpoint(args.job_id)
+            if response.success:
+                print(f"✓ {response.message}")
+            else:
+                print(f"✗ {response.message}")
+                return 1
+
+        elif args.control_subcommand == "save-stop":
+            response = client.save_and_stop(args.job_id)
+            if response.success:
+                print(f"✓ {response.message}")
+            else:
+                print(f"✗ {response.message}")
+                return 1
+
+        elif args.control_subcommand == "cleanup":
+            jobs = client.list_jobs()
+            if not jobs:
+                print("No job files found.")
+                return 0
+
+            # Find dead jobs
+            import psutil
+            import shutil
+            from pathlib import Path
+
+            dead_jobs = []
+
+            for job in jobs:
+                try:
+                    if not psutil.pid_exists(job.pid):
+                        dead_jobs.append(job)
+                    else:
+                        proc = psutil.Process(job.pid)
+                        if not proc.is_running():
+                            dead_jobs.append(job)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    dead_jobs.append(job)
+
+            if not dead_jobs:
+                print("No dead job files found.")
+                return 0
+
+            print(f"Found {len(dead_jobs)} dead job(s):")
+            for job in dead_jobs:
+                import datetime
+
+                started = datetime.datetime.fromtimestamp(job.started_at).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                print(f"  {job.job_id} (PID {job.pid}, started {started})")
+
+            if not args.force:
+                response = input(f"\nRemove {len(dead_jobs)} dead job file(s)? [y/N]: ")
+                if response.lower() not in ["y", "yes"]:
+                    print("Cleanup cancelled.")
+                    return 0
+
+            # Remove dead job directories
+            removed_count = 0
+            jobs_dir = Path.home() / ".forgather" / "jobs"
+
+            for job in dead_jobs:
+                job_dir = jobs_dir / job.job_id
+                try:
+                    if job_dir.exists():
+                        shutil.rmtree(job_dir)
+                        removed_count += 1
+                        print(f"✓ Removed {job.job_id}")
+                except Exception as e:
+                    print(f"✗ Failed to remove {job.job_id}: {e}")
+
+            print(f"\nCleanup complete: {removed_count} job file(s) removed.")
+
+        elif args.control_subcommand == "abort":
+            # Show warning and ask for confirmation unless --force is used
+            if not hasattr(args, "force") or not args.force:
+                print(
+                    "⚠️  WARNING: Abort will stop training immediately WITHOUT saving!"
+                )
+                print(
+                    "   This action cannot be undone and will lose all unsaved progress."
+                )
+                response = input(f"\nAbort training job '{args.job_id}'? [y/N]: ")
+                if response.lower() not in ["y", "yes"]:
+                    print("Abort cancelled.")
+                    return 0
+
+            response = client.abort(args.job_id)
+            if response.success:
+                print(f"✓ {response.message}")
+            else:
+                print(f"✗ {response.message}")
+                return 1
+
+        else:
+            print(f"Unknown control subcommand: {args.control_subcommand}")
+            return 1
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
     return 0

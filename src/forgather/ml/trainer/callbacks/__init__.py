@@ -3,3 +3,4 @@ from .peak_memory import PeakMemory
 from .tb_logger import TBLogger
 from .textgen_callback import TextgenCallback
 from .json_logger import JsonLogger
+from .control_callback import TrainerControlCallback

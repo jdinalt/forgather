@@ -221,7 +221,7 @@ class BaseTrainer(ExtensibleTrainer):
     def log(self, logs: Dict[str, float]):
         self.state.log_history.append(logs)
 
-        self._dispatch_event(
+        return self._dispatch_event(
             "on_log",
             logs=logs,
         )
