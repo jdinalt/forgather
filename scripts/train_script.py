@@ -116,9 +116,7 @@ def main():
     
     if torch.distributed.is_initialized():
         torch.distributed.barrier()
-        # This can trigger a seg-fault on process exit. I get a warning without it and a crash with it... I'll take
-        # the warning, unitl I can figure out what the issue is.
-        # torch.distributed.destroy_process_group()
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":
