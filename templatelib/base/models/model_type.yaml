@@ -1,4 +1,4 @@
--- extends 'types/type.yaml'
+-- extends 'config_type.yaml'
 
 ## Optional
 -- block config_metadata

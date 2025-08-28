@@ -1,5 +1,5 @@
 ## Project level definitions and overrides go here.
--- extends "types/training_script/causal_lm/causal_lm.yaml"
+-- extends "training_script/causal_lm/causal_lm.yaml"
 
 -- block resource_directories
     == super()
@@ -127,12 +127,6 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 -- extends 'trainers/trainer.yaml'
 
 
--- block trainer_meta_config
-    == super()
-    -- set trainer_def.name = "Custom " + trainer_def.name
-<< endblock trainer_meta_config
-
-
 -- block trainer_args
     == super()
     # Project overrides
@@ -208,7 +202,6 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 -- block callback_list
     == super()
     peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
-        show_details: {{ ns.debug_memory_detials }}
         do_log: {{ log_peak_memory | default(False) }}
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback []
 << endblock callback_list

@@ -1,4 +1,4 @@
--- extends 'types/dataset/dataset_type.yaml'
+-- extends 'datasets/dataset_type.yaml'
 
 -- from 'inc/formatting.jinja' import h3
 

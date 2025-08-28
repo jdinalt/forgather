@@ -9,10 +9,6 @@
 -- endblock config_metadata
 
 
--- block construct_new_model
-    -- include 'models/control.yaml'
--- endblock construct_new_model
-
 -- block optimizer
 optimizer: &optimizer !partial:torch:optim.Adafactor
     lr: 1.0e-3

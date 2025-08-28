@@ -1,4 +1,5 @@
--- extends 'types/type.yaml'
+## Base class for tokenizer configurations
+-- extends 'config_type.yaml'
 -- from 'inc/formatting.jinja' import h2
 
 -- block config_metadata

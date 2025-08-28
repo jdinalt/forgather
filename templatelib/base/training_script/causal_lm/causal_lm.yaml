@@ -1,4 +1,4 @@
--- extends "types/training_script/training_script.yaml"
+-- extends "training_script/training_script_type.yaml"
 -- from 'inc/formatting.jinja' import h2, sep
 
 -- block config_metadata

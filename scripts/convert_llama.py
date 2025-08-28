@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 model_config_template = """
--- extends "models/dynamic_llama.yaml"
+-- extends "models/transformers/dynamic_llama.yaml"
 
 -- block model_meta_config
     == super()

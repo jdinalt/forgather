@@ -1,4 +1,3 @@
--- set default = namespace()
 -- from 'inc/formatting.jinja' import h2, h3, sep
 -- filter trim()
 

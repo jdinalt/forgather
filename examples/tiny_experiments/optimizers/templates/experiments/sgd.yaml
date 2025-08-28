@@ -8,10 +8,6 @@
 -- endblock config_metadata
 
 
--- block construct_new_model
-    -- include 'models/control.yaml'
--- endblock construct_new_model
-
 -- block optimizer
 optimizer: &optimizer !lambda:torch:optim.SGD
     lr: 1.0

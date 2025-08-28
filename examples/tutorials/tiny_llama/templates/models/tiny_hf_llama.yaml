@@ -1,4 +1,4 @@
--- extends 'models/llama.yaml'
+-- extends 'models/transformers/llama.yaml'
 
 
 -- block model_tokenizer

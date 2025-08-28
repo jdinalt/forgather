@@ -1,4 +1,4 @@
--- extends 'types/tokenizer/tokenizer.yaml'
+-- extends 'tokenizers/tokenizer_type.yaml'
 
 -- block config_metadata
     == super()

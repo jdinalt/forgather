@@ -1,1 +1,1 @@
--- extends 'models/deepone.yaml'
+-- extends 'models/transformers/deepone.yaml'

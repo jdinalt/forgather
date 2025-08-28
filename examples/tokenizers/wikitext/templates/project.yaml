@@ -1,4 +1,4 @@
--- extends 'types/tokenizer/bpe/bpe.yaml'
+-- extends 'tokenizers/bpe/bpe.yaml'
 
 -- block config_metadata
     == super()

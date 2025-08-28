@@ -1,4 +1,4 @@
--- extends 'models/deepone.yaml'
+-- extends 'models/transformers/deepone.yaml'
 
 -- block model_meta_config
     == super()

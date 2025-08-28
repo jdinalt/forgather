@@ -46,7 +46,7 @@
 -- endblock trainer_args
 
 #-------------------- experiment.model --------------------
--- extends 'models/deepone.yaml'
+-- extends 'models/transformers/deepone.yaml'
 
 -- block model_tokenizer
     ## Use a smaller tokenizer.

@@ -1,4 +1,5 @@
 -- extends 'trainers/base_trainer.yaml'
+
 -- block trainer_meta_config
     == super()
     -- set ns.trainer_name = "Forgather Trainer"

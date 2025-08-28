@@ -1,5 +1,5 @@
 ## Project level definitions and overrides go here.
--- extends "types/training_script/causal_lm/causal_lm.yaml"
+-- extends "training_script/causal_lm/causal_lm.yaml"
 
 ## Set Project level defaults
 -- block config_metadata
@@ -35,7 +35,7 @@ tokenizer_args: &tokenizer_args !dict
 -- endblock construct_new_model
 
 #-------------------- project.model_config --------------------
--- extends "models/gpt2.yaml"
+-- extends "models/transformers/gpt2.yaml"
 
 
 #-------------------- project.trainer_config --------------------

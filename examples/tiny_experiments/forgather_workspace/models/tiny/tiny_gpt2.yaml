@@ -1,4 +1,4 @@
--- extends "models/gpt2.yaml"
+-- extends "models/transformers/gpt2.yaml"
 
 -- block model_meta_config
     == super()

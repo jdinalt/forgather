@@ -3,7 +3,7 @@
 ##
 ## Specifically, this sets up training for a very small model over one epoch
 ## on the 'abridged' version of the Tiny Stories dataset.
--- extends "types/training_script/causal_lm/causal_lm.yaml"
+-- extends "training_script/causal_lm/causal_lm.yaml"
 
 
 -- block config_metadata

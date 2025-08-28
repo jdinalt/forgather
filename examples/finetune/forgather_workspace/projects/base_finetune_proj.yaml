@@ -1,4 +1,4 @@
--- extends "types/training_script/causal_lm/causal_lm.yaml"
+-- extends "training_script/causal_lm/causal_lm.yaml"
 
 -- block resource_directories
     == super()

@@ -1,5 +1,4 @@
-## This template defines a rough outline for training configurations to follow
-## The details should be filled in via a "child" template
+## Base class for configuration templates
 -- set ns = namespace()
 -- from 'inc/formatting.jinja' import h1, h2, h3
 -- filter trim()

@@ -1,4 +1,5 @@
--- extends 'types/type.yaml'
+## Base class for dataset configurations
+-- extends 'config_type.yaml'
 
 ## Optional
 -- block config_metadata
