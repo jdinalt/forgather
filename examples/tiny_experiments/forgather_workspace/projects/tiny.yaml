@@ -174,4 +174,5 @@ text_gen_callback_args: &text_gen_callback_args
     -- if ns.log_memory_to_tb
         summary_writer: *summary_writer
     -- endif
+    trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback []
 << endblock callback_list

@@ -69,4 +69,10 @@ model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_t
 
 
 #-------------------- project.callbacks --------------------
--- extends 'callbacks/loggers.yaml'
+-- extends 'tiny.callbacks'
+
+
+-- block callback_list
+    == super()
+    text_gen_callback: null # Disable text generation callback; not compatible with pipeline trainer.
+<< endblock callback_list

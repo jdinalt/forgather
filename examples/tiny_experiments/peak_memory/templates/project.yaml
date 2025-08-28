@@ -60,12 +60,16 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 
 
 #-------------------- project.callbacks --------------------
--- extends 'callbacks/loggers.yaml'
+-- extends 'tiny.callbacks'
 ## Add experiment loggers to the callbacks list.
 ## The parent creates a Tensor Board SummaryWriter, which we can use.
 
+
 -- block callback_list
     == super()
+    text_gen_callback: null # Disable text gen
+
+    # Override peak_memory
     peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
         show_details: True
         do_log: True
