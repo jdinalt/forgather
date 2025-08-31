@@ -33,6 +33,9 @@ class PeriodicFunction:
             case _:
                 raise ValueError(f"Unknown strategy: {strategy}")
 
+    def __str__(self):
+        return f"PeriodicFunction: period={self.period}, first_step={self.first_step}, rel_step={self.rel_step}, global_step={self.global_step}, enabled={self.enabled}"
+
     def reset(self):
         """
         Reset counter and return relative steps since last reset

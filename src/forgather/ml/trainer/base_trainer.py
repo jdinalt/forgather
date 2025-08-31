@@ -494,97 +494,205 @@ class BaseTrainer(ExtensibleTrainer):
         logger.info(f"Loading best model from {self.state.best_model_checkpoint}")
         self._load_model_from_checkpoint(self.state.best_model_checkpoint)
 
-    def _state_dict(self) -> Dict:
-        """Save optimizer and scheduler state. Subclasses can override for custom behavior."""
-        training_state = {}
-
+    def _optimizer_state_dict(self) -> Dict | None:
+        """Save optimizer state dict only."""
         if self.args.save_optimizer_state and self.optimizer is not None:
-            training_state["optimizer"] = self.optimizer.state_dict()
-            logger.debug("Saved optimizer state to checkpoint")
+            return self.optimizer.state_dict()
+        return None
 
+    def _scheduler_state_dict(self) -> Dict | None:
+        """Save scheduler state dict only."""
         if self.args.save_scheduler_state and self.lr_scheduler is not None:
-            training_state["lr_scheduler"] = self.lr_scheduler.state_dict()
-            logger.debug("Saved LR scheduler state to checkpoint")
+            return self.lr_scheduler.state_dict()
+        return None
 
-        # Save global step for proper resume functionality
-        if self.args.save_dataset_state:
-            training_state["global_step"] = self.state.global_step
-            logger.debug(f"Saved global step {self.state.global_step} to checkpoint")
+    def _dataset_state_dict(self) -> Dict | None:
+        """Save dataset-related state (global step and dataloader state)."""
+        if not self.args.save_dataset_state:
+            return None
 
-            # Save dataloader state if available
-            dataloader_state = self._save_dataloader_state()
+        dataset_state = {
+            "global_step": self.state.global_step,
+        }
+
+        # Save dataloader state if available
+        dataloader_state = self._save_dataloader_state()
+        if dataloader_state:
+            dataset_state["dataloader_state"] = dataloader_state
+
+        return dataset_state
+
+    def _rng_state_dict(self) -> Dict | None:
+        """Save RNG state for reproducibility."""
+        if not self.args.save_rng_state:
+            return None
+
+        rng_state = {
+            "torch_rng_state": torch.get_rng_state(),
+            "initial_seed": torch.initial_seed(),
+        }
+
+        # Save CUDA RNG state if available
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            current_device = torch.cuda.current_device()
+            rng_state["cuda_rng_state"] = torch.cuda.get_rng_state(
+                device=current_device
+            )
+            rng_state["cuda_device"] = current_device
+
+        return rng_state
+
+    def _save_optimizer_state(self, output_dir: str) -> None:
+        """Save optimizer state to separate file."""
+        optimizer_state = self._optimizer_state_dict()
+        if optimizer_state:
+            optimizer_state_path = os.path.join(output_dir, "optimizer_state.pt")
+            torch.save(optimizer_state, optimizer_state_path)
+            logger.debug(f"Saved optimizer state to {optimizer_state_path}")
+
+    def _save_scheduler_state(self, output_dir: str) -> None:
+        """Save scheduler state to separate file."""
+        scheduler_state = self._scheduler_state_dict()
+        if scheduler_state:
+            scheduler_state_path = os.path.join(output_dir, "scheduler_state.pt")
+            torch.save(scheduler_state, scheduler_state_path)
+            logger.debug(f"Saved scheduler state to {scheduler_state_path}")
+
+    def _save_dataset_state(self, output_dir: str) -> None:
+        """Save dataset state to separate file."""
+        dataset_state = self._dataset_state_dict()
+        if dataset_state:
+            dataset_state_path = os.path.join(output_dir, "dataset_state.pt")
+            torch.save(dataset_state, dataset_state_path)
+            logger.debug(f"Saved dataset state to {dataset_state_path}")
+
+            dataloader_state = dataset_state.get("dataloader_state")
             if dataloader_state:
-                training_state["dataloader_state"] = dataloader_state
                 logger.info(
                     f"Saved dataloader state to checkpoint with keys: {list(dataloader_state.keys())}"
                 )
             else:
-                logger.warning("No dataloader state to save to checkpoint")
+                logger.debug("No dataloader state to save")
 
-        # Save RNG state for reproducibility
-        if self.args.save_rng_state:
-            rng_state = {
-                "torch_rng_state": torch.get_rng_state(),
-                "initial_seed": torch.initial_seed(),
-            }
-
-            # Save CUDA RNG state if available
-            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-                current_device = torch.cuda.current_device()
-                rng_state["cuda_rng_state"] = torch.cuda.get_rng_state(
-                    device=current_device
-                )
-                rng_state["cuda_device"] = current_device
-
-            training_state["rng_state"] = rng_state
-            logger.debug("Saved RNG state to checkpoint")
-        return training_state
+    def _save_rng_state(self, output_dir: str) -> None:
+        """Save RNG state to separate file."""
+        rng_state = self._rng_state_dict()
+        if rng_state:
+            rng_state_path = os.path.join(output_dir, "rng_state.pt")
+            torch.save(rng_state, rng_state_path)
+            logger.debug(f"Saved RNG state to {rng_state_path}")
 
     def _save_training_state(self, output_dir: str) -> None:
-        training_state = self._state_dict()
-        if training_state:
-            training_state_path = os.path.join(output_dir, "training_state.pt")
-            torch.save(training_state, training_state_path)
-            logger.info(f"Saved training state to {training_state_path}")
-        else:
-            logger.warning("No training state saved!")
+        """Save all training state components to separate files."""
+        self._save_optimizer_state(output_dir)
+        self._save_scheduler_state(output_dir)
+        self._save_dataset_state(output_dir)
+        self._save_rng_state(output_dir)
 
-    def _load_state_dict(self, training_state) -> None:
-        if not training_state:
-            logger.warning("Training state was not loaded!")
+        logger.info(f"Saved training state components to {output_dir}")
+
+    def _load_optimizer_state(self, checkpoint_path: str) -> None:
+        """Load optimizer state from separate file."""
+        optimizer_state_path = os.path.join(checkpoint_path, "optimizer_state.pt")
+
+        if not os.path.exists(optimizer_state_path):
+            logger.debug(f"No optimizer state file found at: {optimizer_state_path}")
             return
 
-        if self.args.restore_optimizer_state and "optimizer" in training_state:
-            if self.optimizer is not None:
-                self.optimizer.load_state_dict(training_state["optimizer"])
-                logger.info("Restored optimizer state from checkpoint")
-            else:
-                logger.warning(
-                    "Cannot restore optimizer state: optimizer not initialized"
-                )
+        if not self.args.restore_optimizer_state:
+            logger.debug("Optimizer state restore disabled")
+            return
 
-        if self.args.restore_scheduler_state and "lr_scheduler" in training_state:
-            if self.lr_scheduler is not None:
-                self.lr_scheduler.load_state_dict(training_state["lr_scheduler"])
-                logger.info("Restored LR scheduler state from checkpoint")
-            else:
-                logger.warning(
-                    "Cannot restore LR scheduler state: scheduler not initialized"
-                )
+        if self.optimizer is None:
+            logger.warning("Cannot restore optimizer state: optimizer not initialized")
+            return
 
-        # Also restore global step if present in training state
-        if self.args.restore_dataset_state and "global_step" in training_state:
-            self.state.global_step = training_state["global_step"]
-            logger.info(f"Restored global step to {self.state.global_step}")
+        try:
+            optimizer_state = torch.load(
+                optimizer_state_path, map_location=torch.device("cpu")
+            )
+            self.optimizer.load_state_dict(optimizer_state)
+            logger.info("Restored optimizer state from checkpoint")
+        except Exception as e:
+            logger.error(
+                f"Failed to load optimizer state from {optimizer_state_path}: {e}"
+            )
+
+    def _load_scheduler_state(self, checkpoint_path: str) -> None:
+        """Load scheduler state from separate file."""
+        scheduler_state_path = os.path.join(checkpoint_path, "scheduler_state.pt")
+
+        if not os.path.exists(scheduler_state_path):
+            logger.debug(f"No scheduler state file found at: {scheduler_state_path}")
+            return
+
+        if not self.args.restore_scheduler_state:
+            logger.debug("Scheduler state restore disabled")
+            return
+
+        if self.lr_scheduler is None:
+            logger.warning("Cannot restore scheduler state: scheduler not initialized")
+            return
+
+        try:
+            scheduler_state = torch.load(
+                scheduler_state_path, map_location=torch.device("cpu")
+            )
+            self.lr_scheduler.load_state_dict(scheduler_state)
+            logger.info("Restored LR scheduler state from checkpoint")
+        except Exception as e:
+            logger.error(
+                f"Failed to load scheduler state from {scheduler_state_path}: {e}"
+            )
+
+    def _load_dataset_state(self, checkpoint_path: str) -> None:
+        """Load dataset state from separate file."""
+        dataset_state_path = os.path.join(checkpoint_path, "dataset_state.pt")
+
+        if not os.path.exists(dataset_state_path):
+            logger.debug(f"No dataset state file found at: {dataset_state_path}")
+            return
+
+        if not self.args.restore_dataset_state:
+            logger.debug("Dataset state restore disabled")
+            return
+
+        try:
+            dataset_state = torch.load(
+                dataset_state_path, map_location=torch.device("cpu")
+            )
+
+            # Restore global step
+            if "global_step" in dataset_state:
+                self.state.global_step = dataset_state["global_step"]
+                logger.info(f"Restored global step to {self.state.global_step}")
 
             # Restore dataloader state if available
-            if "dataloader_state" in training_state:
-                self._load_dataloader_state(training_state["dataloader_state"])
+            if "dataloader_state" in dataset_state:
+                self._load_dataloader_state(dataset_state["dataloader_state"])
                 logger.info("Restored dataloader state from checkpoint")
 
-        # Restore RNG state for reproducibility
-        if self.args.restore_rng_state and "rng_state" in training_state:
-            rng_state = training_state["rng_state"]
+        except Exception as e:
+            logger.error(f"Failed to load dataset state from {dataset_state_path}: {e}")
+
+    def _load_rng_state(self, checkpoint_path: str) -> None:
+        """Load RNG state from separate file."""
+        rng_state_path = os.path.join(checkpoint_path, "rng_state.pt")
+
+        if not os.path.exists(rng_state_path):
+            logger.debug(f"No RNG state file found at: {rng_state_path}")
+            if self.args.restore_rng_state:
+                logger.info(
+                    "No RNG state found in checkpoint - using current RNG state"
+                )
+            return
+
+        if not self.args.restore_rng_state:
+            logger.debug("RNG state restore disabled")
+            return
+
+        try:
+            rng_state = torch.load(rng_state_path, map_location=torch.device("cpu"))
 
             # Restore CPU RNG state
             if "torch_rng_state" in rng_state:
@@ -610,8 +718,9 @@ class BaseTrainer(ExtensibleTrainer):
                 )
 
             logger.info("Restored RNG state from checkpoint")
-        elif self.args.restore_rng_state:
-            logger.info("No RNG state found in checkpoint - using current RNG state")
+
+        except Exception as e:
+            logger.error(f"Failed to load RNG state from {rng_state_path}: {e}")
 
     def _save_dataloader_state(self):
         """
@@ -627,23 +736,13 @@ class BaseTrainer(ExtensibleTrainer):
         pass
 
     def _load_training_state(self, checkpoint_path: str) -> None:
-        """Load optimizer and scheduler state. Subclasses can override for custom behavior."""
-        training_state_path = os.path.join(checkpoint_path, "training_state.pt")
+        """Load all training state components from separate files."""
+        self._load_optimizer_state(checkpoint_path)
+        self._load_scheduler_state(checkpoint_path)
+        self._load_dataset_state(checkpoint_path)
+        self._load_rng_state(checkpoint_path)
 
-        if not os.path.exists(training_state_path):
-            logger.info(f"No training state file found at: {training_state_path}")
-            return None
-
-        try:
-            training_state = torch.load(
-                training_state_path, map_location=torch.device("cpu")
-            )
-
-        except Exception as e:
-            logger.error(
-                f"Failed to load training state from {training_state_path}: {e}"
-            )
-        self._load_state_dict(training_state)
+        logger.info(f"Loaded training state components from {checkpoint_path}")
 
     def _load_model_from_checkpoint(self, checkpoint_path: str) -> None:
         """Load model weights from checkpoint using the sharded checkpoint loader."""

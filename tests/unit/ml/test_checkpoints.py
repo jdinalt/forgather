@@ -219,17 +219,26 @@ class TestCheckpointFunctionality(unittest.TestCase):
 
         self.trainer._save_training_state(checkpoint_path)
 
-        # Check that training_state.pt was created
-        training_state_path = os.path.join(checkpoint_path, "training_state.pt")
-        self.assertTrue(os.path.exists(training_state_path))
+        # Check that separate state files were created
+        optimizer_state_path = os.path.join(checkpoint_path, "optimizer_state.pt")
+        scheduler_state_path = os.path.join(checkpoint_path, "scheduler_state.pt")
+        dataset_state_path = os.path.join(checkpoint_path, "dataset_state.pt")
+        rng_state_path = os.path.join(checkpoint_path, "rng_state.pt")
+        
+        self.assertTrue(os.path.exists(optimizer_state_path))
+        self.assertTrue(os.path.exists(scheduler_state_path))
+        self.assertTrue(os.path.exists(dataset_state_path))
+        self.assertTrue(os.path.exists(rng_state_path))
 
         # Load and verify contents
-        training_state = torch.load(training_state_path, map_location="cpu")
-        self.assertIn("optimizer", training_state)
-        self.assertIn("lr_scheduler", training_state)
+        optimizer_state = torch.load(optimizer_state_path, map_location="cpu")
+        scheduler_state = torch.load(scheduler_state_path, map_location="cpu")
 
         # Verify optimizer state contains the modified learning rate
-        self.assertEqual(training_state["optimizer"]["param_groups"][0]["lr"], 0.005)
+        self.assertEqual(optimizer_state["param_groups"][0]["lr"], 0.005)
+        
+        # Verify scheduler state was saved
+        self.assertIn("last_epoch", scheduler_state)
 
     def test_save_training_state_optimizer_only(self):
         """Test saving only optimizer state when scheduler saving is disabled."""
@@ -239,12 +248,14 @@ class TestCheckpointFunctionality(unittest.TestCase):
 
         self.trainer._save_training_state(checkpoint_path)
 
-        training_state_path = os.path.join(checkpoint_path, "training_state.pt")
-        self.assertTrue(os.path.exists(training_state_path))
-
-        training_state = torch.load(training_state_path, map_location="cpu")
-        self.assertIn("optimizer", training_state)
-        self.assertNotIn("lr_scheduler", training_state)
+        optimizer_state_path = os.path.join(checkpoint_path, "optimizer_state.pt")
+        scheduler_state_path = os.path.join(checkpoint_path, "scheduler_state.pt")
+        
+        # Optimizer state should exist
+        self.assertTrue(os.path.exists(optimizer_state_path))
+        
+        # Scheduler state should not exist when disabled
+        self.assertFalse(os.path.exists(scheduler_state_path))
 
     def test_save_training_state_disabled(self):
         """Test that optimizer and scheduler state are not saved when disabled."""
@@ -364,7 +375,6 @@ class TestCheckpointFunctionality(unittest.TestCase):
 
             def mock_save_with_model_file(path):
                 # Create a mock model file to make checkpoint valid
-                # Save a proper torch tensor dict that can be loaded
                 mock_state_dict = {"linear.weight": torch.randn(1, 10), "linear.bias": torch.randn(1)}
                 torch.save(mock_state_dict, os.path.join(path, "pytorch_model.bin"), _use_new_zipfile_serialization=True)
 
@@ -428,14 +438,12 @@ class TestTrainerIntegration(unittest.TestCase):
         temp_scheduler = transformers.get_scheduler(
             "linear", temp_optimizer, num_warmup_steps=0, num_training_steps=100
         )
-        optimizer_state_dict = temp_optimizer.state_dict()
-        scheduler_state_dict = temp_scheduler.state_dict()
         
-        training_state = {
-            "optimizer": optimizer_state_dict,
-            "lr_scheduler": scheduler_state_dict,
-        }
-        torch.save(training_state, os.path.join(checkpoint_path, "training_state.pt"))
+        # Save separate state files
+        torch.save(temp_optimizer.state_dict(), os.path.join(checkpoint_path, "optimizer_state.pt"))
+        torch.save(temp_scheduler.state_dict(), os.path.join(checkpoint_path, "scheduler_state.pt"))
+        torch.save({"global_step": 50}, os.path.join(checkpoint_path, "dataset_state.pt"))
+        torch.save({"torch_rng_state": torch.get_rng_state()}, os.path.join(checkpoint_path, "rng_state.pt"))
 
         # Create trainer
         model = SimpleMockModel()
@@ -452,7 +460,7 @@ class TestTrainerIntegration(unittest.TestCase):
         # This should trigger checkpoint restoration
         trainer._prepare(train_dataset=mock_dataset, eval_dataset=None)
 
-        # Verify that restoration was attempted (check log calls)
+        # Verify that restoration was attempted (check log calls)  
         mock_logger.info.assert_any_call(
             "Resuming training from checkpoint: " + checkpoint_path
         )

@@ -368,14 +368,16 @@ class Trainer(BaseTrainer):
 
         # Handle checkpointing - normal schedule or control-triggered
         if periodic_save.step() or self.control.should_save:
-            checkpoint_path = self.save_checkpoint()
+            periodic_save.reset()
             self.control.should_save = False
+            checkpoint_path = self.save_checkpoint()
 
             # For load_best_model_at_end, we need metrics from the most recent evaluation
             if self.args.load_best_model_at_end:
-                assert (
-                    eval_metrics
-                ), "BUG: load_best_model_at_end requires that save and eval occur on the same step"
+                assert eval_metrics, (
+                    "BUG: load_best_model_at_end requires that save and eval occur on the same step\m"
+                    f"periodic_eval_step={str(periodic_eval)}\nperiodic_save_step={periodic_save}"
+                )
 
                 # Update best model tracking with current evaluation metrics
                 self._update_best_model(checkpoint_path, eval_metrics)

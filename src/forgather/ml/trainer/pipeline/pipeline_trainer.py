@@ -957,19 +957,72 @@ class PipelineTrainer(Trainer):
             )
 
     # @override
+    def _save_optimizer_state(self, output_dir: str) -> None:
+        """Save optimizer state to rank-specific file."""
+        optimizer_state = self._optimizer_state_dict()
+        if optimizer_state:
+            optimizer_state_path = os.path.join(
+                output_dir, f"optimizer_state_rank_{self.denv.rank}.pt"
+            )
+            torch.save(optimizer_state, optimizer_state_path)
+            logger.debug(
+                f"Rank {self.denv.rank}: Saved optimizer state to {optimizer_state_path}"
+            )
+
+    # @override
+    def _save_scheduler_state(self, output_dir: str) -> None:
+        """Save scheduler state to rank-specific file."""
+        scheduler_state = self._scheduler_state_dict()
+        if scheduler_state:
+            scheduler_state_path = os.path.join(
+                output_dir, f"scheduler_state_rank_{self.denv.rank}.pt"
+            )
+            torch.save(scheduler_state, scheduler_state_path)
+            logger.debug(
+                f"Rank {self.denv.rank}: Saved scheduler state to {scheduler_state_path}"
+            )
+
+    # @override
+    def _save_dataset_state(self, output_dir: str) -> None:
+        """Save dataset state to rank-specific file."""
+        dataset_state = self._dataset_state_dict()
+        if dataset_state:
+            dataset_state_path = os.path.join(
+                output_dir, f"dataset_state_rank_{self.denv.rank}.pt"
+            )
+            torch.save(dataset_state, dataset_state_path)
+            logger.debug(
+                f"Rank {self.denv.rank}: Saved dataset state to {dataset_state_path}"
+            )
+
+            dataloader_state = dataset_state.get("dataloader_state")
+            if dataloader_state:
+                logger.info(
+                    f"Rank {self.denv.rank}: Saved dataloader state with keys: {list(dataloader_state.keys())}"
+                )
+
+    # @override
+    def _save_rng_state(self, output_dir: str) -> None:
+        """Save RNG state to rank-specific file."""
+        rng_state = self._rng_state_dict()
+        if rng_state:
+            rng_state_path = os.path.join(
+                output_dir, f"rng_state_rank_{self.denv.rank}.pt"
+            )
+            torch.save(rng_state, rng_state_path)
+            logger.debug(f"Rank {self.denv.rank}: Saved RNG state to {rng_state_path}")
+
+    # @override
     def _save_training_state(self, output_dir: str) -> None:
-        training_state = self._state_dict()
-        if training_state:
-            # Use rank-specific filename to avoid conflicts
-            training_state_path = os.path.join(
-                output_dir, f"training_state_rank_{self.denv.rank}.pt"
-            )
-            torch.save(training_state, training_state_path)
-            logger.info(
-                f"Rank {self.denv.rank}: Saved training state to {training_state_path}"
-            )
-        else:
-            logger.warning("No training state saved!")
+        """Save all training state components to rank-specific files."""
+        self._save_optimizer_state(output_dir)
+        self._save_scheduler_state(output_dir)
+        self._save_dataset_state(output_dir)
+        self._save_rng_state(output_dir)
+
+        logger.info(
+            f"Rank {self.denv.rank}: Saved training state components to {output_dir}"
+        )
 
     # @override
     def _load_model_from_checkpoint(self, checkpoint_path: str) -> None:
@@ -984,28 +1037,185 @@ class PipelineTrainer(Trainer):
         self._barrier()
 
     # @override
-    def _load_training_state(self, checkpoint_path: str) -> None:
-        """Override to handle distributed optimizer/scheduler state loading."""
-        # Each rank loads its own training state from rank-specific file
-        training_state_path = os.path.join(
-            checkpoint_path, f"training_state_rank_{self.denv.rank}.pt"
+    def _load_optimizer_state(self, checkpoint_path: str) -> None:
+        """Load optimizer state from rank-specific file."""
+        optimizer_state_path = os.path.join(
+            checkpoint_path, f"optimizer_state_rank_{self.denv.rank}.pt"
         )
 
-        if not os.path.exists(training_state_path):
-            logger.info(
-                f"Rank {self.denv.rank}: No training state file found at: {training_state_path}"
+        if not os.path.exists(optimizer_state_path):
+            logger.debug(
+                f"Rank {self.denv.rank}: No optimizer state file found at: {optimizer_state_path}"
             )
-            return None
+            return
+
+        if not self.args.restore_optimizer_state:
+            logger.debug(f"Rank {self.denv.rank}: Optimizer state restore disabled")
+            return
+
+        if self.optimizer is None:
+            logger.warning(
+                f"Rank {self.denv.rank}: Cannot restore optimizer state: optimizer not initialized"
+            )
+            return
+
         try:
-            training_state = torch.load(
-                training_state_path, map_location=torch.device("cpu")
+            optimizer_state = torch.load(
+                optimizer_state_path, map_location=torch.device("cpu")
             )
+            self.optimizer.load_state_dict(optimizer_state)
+            logger.info(
+                f"Rank {self.denv.rank}: Restored optimizer state from checkpoint"
+            )
+        except Exception as e:
+            logger.error(
+                f"Rank {self.denv.rank}: Failed to load optimizer state from {optimizer_state_path}: {e}"
+            )
+
+    # @override
+    def _load_scheduler_state(self, checkpoint_path: str) -> None:
+        """Load scheduler state from rank-specific file."""
+        scheduler_state_path = os.path.join(
+            checkpoint_path, f"scheduler_state_rank_{self.denv.rank}.pt"
+        )
+
+        if not os.path.exists(scheduler_state_path):
+            logger.debug(
+                f"Rank {self.denv.rank}: No scheduler state file found at: {scheduler_state_path}"
+            )
+            return
+
+        if not self.args.restore_scheduler_state:
+            logger.debug(f"Rank {self.denv.rank}: Scheduler state restore disabled")
+            return
+
+        if self.lr_scheduler is None:
+            logger.warning(
+                f"Rank {self.denv.rank}: Cannot restore scheduler state: scheduler not initialized"
+            )
+            return
+
+        try:
+            scheduler_state = torch.load(
+                scheduler_state_path, map_location=torch.device("cpu")
+            )
+            self.lr_scheduler.load_state_dict(scheduler_state)
+            logger.info(
+                f"Rank {self.denv.rank}: Restored LR scheduler state from checkpoint"
+            )
+        except Exception as e:
+            logger.error(
+                f"Rank {self.denv.rank}: Failed to load scheduler state from {scheduler_state_path}: {e}"
+            )
+
+    # @override
+    def _load_dataset_state(self, checkpoint_path: str) -> None:
+        """Load dataset state from rank-specific file."""
+        dataset_state_path = os.path.join(
+            checkpoint_path, f"dataset_state_rank_{self.denv.rank}.pt"
+        )
+
+        if not os.path.exists(dataset_state_path):
+            logger.debug(
+                f"Rank {self.denv.rank}: No dataset state file found at: {dataset_state_path}"
+            )
+            return
+
+        if not self.args.restore_dataset_state:
+            logger.debug(f"Rank {self.denv.rank}: Dataset state restore disabled")
+            return
+
+        try:
+            dataset_state = torch.load(
+                dataset_state_path, map_location=torch.device("cpu")
+            )
+
+            # Restore global step
+            if "global_step" in dataset_state:
+                self.state.global_step = dataset_state["global_step"]
+                logger.info(
+                    f"Rank {self.denv.rank}: Restored global step to {self.state.global_step}"
+                )
+
+            # Restore dataloader state if available
+            if "dataloader_state" in dataset_state:
+                self._load_dataloader_state(dataset_state["dataloader_state"])
+                logger.info(
+                    f"Rank {self.denv.rank}: Restored dataloader state from checkpoint"
+                )
 
         except Exception as e:
             logger.error(
-                f"Rank {self.denv.rank}: Failed to load training state from {training_state_path}: {e}"
+                f"Rank {self.denv.rank}: Failed to load dataset state from {dataset_state_path}: {e}"
             )
-        self._load_state_dict(training_state)
+
+    # @override
+    def _load_rng_state(self, checkpoint_path: str) -> None:
+        """Load RNG state from rank-specific file."""
+        rng_state_path = os.path.join(
+            checkpoint_path, f"rng_state_rank_{self.denv.rank}.pt"
+        )
+
+        if not os.path.exists(rng_state_path):
+            logger.debug(
+                f"Rank {self.denv.rank}: No RNG state file found at: {rng_state_path}"
+            )
+            if self.args.restore_rng_state:
+                logger.info(
+                    f"Rank {self.denv.rank}: No RNG state found in checkpoint - using current RNG state"
+                )
+            return
+
+        if not self.args.restore_rng_state:
+            logger.debug(f"Rank {self.denv.rank}: RNG state restore disabled")
+            return
+
+        try:
+            rng_state = torch.load(rng_state_path, map_location=torch.device("cpu"))
+
+            # Restore CPU RNG state
+            if "torch_rng_state" in rng_state:
+                torch.set_rng_state(rng_state["torch_rng_state"])
+                logger.debug(
+                    f"Rank {self.denv.rank}: Restored CPU RNG state from checkpoint"
+                )
+
+            # Restore CUDA RNG state if available
+            if "cuda_rng_state" in rng_state and torch.cuda.is_available():
+                current_device = torch.cuda.current_device()
+                saved_device = rng_state.get("cuda_device", current_device)
+
+                if current_device != saved_device:
+                    logger.warning(
+                        f"Rank {self.denv.rank}: CUDA device mismatch: current={current_device}, saved={saved_device}. "
+                        "Restoring RNG state anyway (should be fine with identical GPU models)."
+                    )
+
+                torch.cuda.set_rng_state(
+                    rng_state["cuda_rng_state"], device=current_device
+                )
+                logger.debug(
+                    f"Rank {self.denv.rank}: Restored CUDA RNG state for device {current_device} from checkpoint"
+                )
+
+            logger.info(f"Rank {self.denv.rank}: Restored RNG state from checkpoint")
+
+        except Exception as e:
+            logger.error(
+                f"Rank {self.denv.rank}: Failed to load RNG state from {rng_state_path}: {e}"
+            )
+
+    # @override
+    def _load_training_state(self, checkpoint_path: str) -> None:
+        """Load all training state components from rank-specific files."""
+        self._load_optimizer_state(checkpoint_path)
+        self._load_scheduler_state(checkpoint_path)
+        self._load_dataset_state(checkpoint_path)
+        self._load_rng_state(checkpoint_path)
+
+        logger.info(
+            f"Rank {self.denv.rank}: Loaded training state components from {checkpoint_path}"
+        )
 
     def _remove_vestigial_modules(self, all_pipeline_modules):
         """
