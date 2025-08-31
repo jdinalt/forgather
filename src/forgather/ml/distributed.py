@@ -165,6 +165,7 @@ class DistributedEnvironment:
             torch.cuda.set_device(self.device)
 
     def _init_process_group(self):
+        logger.info(f"RANK{self.rank}: init_process_group({self.backend, self.device})")
         distributed.init_process_group(
             backend=self.backend, device_id=torch.device(self.device)
         )
