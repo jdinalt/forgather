@@ -99,6 +99,7 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 -- block trainer_args
     == super()
     # Tiny Llama Project Overrides
+    eval_strategy: "steps"
     save_strategy: "{{ save_strategy | default('steps') }}"
     save_steps: 10000
     # Safetensors can't handle tied parameters/buffers, so fallback to PyTorch format.
