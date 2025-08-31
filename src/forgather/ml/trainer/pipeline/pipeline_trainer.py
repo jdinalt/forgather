@@ -792,7 +792,10 @@ class PipelineTrainer(Trainer):
             )
 
             if self.args.fuse_optim_with_backward:
-                hook = partial(optimzer_hook, self.optimizer)
+                self._total_grad_squared = torch.zeros(
+                    1, device=self.args.device, dtype=torch.float32
+                )
+                hook = partial(optimzer_hook, self.optimizer, self._total_grad_squared)
                 for name, p in named_parameters(self.pipeline_modules):
                     if p.requires_grad:
                         p.register_post_accumulate_grad_hook(hook)
@@ -814,8 +817,7 @@ class PipelineTrainer(Trainer):
             step = 0
             for step, batch in enumerate(self.eval_dataloader):
                 outputs = self._unified_prediction_step(batch)
-                loss = self._gather_reduce_loss(outputs["loss"])
-                total_loss += loss
+                total_loss += outputs["loss"]
                 self._dispatch_event("on_prediction_step")
             metrics = {"eval_loss": (total_loss / step).item()}
             self._dispatch_event("on_evaluate", metrics=metrics)
@@ -824,7 +826,7 @@ class PipelineTrainer(Trainer):
     # @override
     def _train_step(self, batch: dict | tuple) -> Tensor:
         mean_loss = self._train_pipeline_step(batch)
-        self._clip_grad_norm(self.args.max_grad_norm)
+        total_norm = self._clip_grad_norm(self.args.max_grad_norm)
         if not self.args.fuse_optim_with_backward:
             self.optimizer.step()
             self.optimizer.zero_grad()
@@ -832,11 +834,13 @@ class PipelineTrainer(Trainer):
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
 
-        return mean_loss
+        mean_loss = self._distributed_loss(mean_loss)
+        return mean_loss, total_norm
 
     # @override
     def _prediction_step(self, batch: dict | tuple) -> Tensor:
         mean_loss = self._eval_pipeline_step(batch)
+        mean_loss = self._distributed_loss(mean_loss)
         return {
             "loss": mean_loss,
             "logits": None,
@@ -848,6 +852,7 @@ class PipelineTrainer(Trainer):
         Using the same traced model for both train and eval.
         """
         mean_loss = self._train_pipeline_step(batch)
+        mean_loss = self._distributed_loss(mean_loss)
         self.optimizer.zero_grad()
         return {
             "loss": mean_loss,
@@ -855,11 +860,31 @@ class PipelineTrainer(Trainer):
             "labels": None,
         }
 
+    @staticmethod
+    def _all_reduce_norm(total_norm, norm_type):
+        """
+        All-Reduce grad-norm from all ranks
+        """
+        if math.isinf(norm_type):
+            dist.all_reduce(total_norm, op=dist.ReduceOp.MAX)
+        else:
+            total_norm **= norm_type
+            dist.all_reduce(total_norm, op=dist.ReduceOp.SUM)
+            total_norm **= 1.0 / norm_type
+        return total_norm
+
     # @override
     def _clip_grad_norm(self, max_grad_norm, norm_type=2.0) -> Optional[Tensor]:
-        if max_grad_norm is None or max_grad_norm == 0:
-            return None
+        # If fused optimizer, we can't clip, but we can compute the value,
+        # which we do from the tensor callacks
+        if self.args.fuse_optim_with_backward:
+            # Apply sqrt, as we accumulate the sum of the squares
+            total_norm = self._total_grad_squared.sqrt()
+            self._total_grad_squared -= self._total_grad_squared
+            # Collective all-reduce with other ranks
+            return self._all_reduce_norm(total_norm, norm_type)
 
+        # Compute norm over all local trainable parameters
         parameters = [
             p
             for mod in self.pipeline_modules
@@ -871,16 +896,12 @@ class PipelineTrainer(Trainer):
         total_norm = torch.nn.utils.get_total_norm(
             grads, norm_type=norm_type, foreach=True
         )
-        # logger.debug(f"RANK{self.denv.rank}: {total_norm=}, {norm_type=}, {max_grad_norm=}")
-        if math.isinf(norm_type):
-            dist.all_reduce(total_norm, op=dist.ReduceOp.MAX)
-        else:
-            total_norm **= norm_type
-            dist.all_reduce(total_norm, op=dist.ReduceOp.SUM)
-            total_norm **= 1.0 / norm_type
 
-        # if self.denv.rank == 0:
-        #    logger.info(f"RANK{self.denv.rank}: Clipping gradients with total norm {total_norm:.4f} and max norm {max_grad_norm:.4f}")
+        # All-reduce over all ranks
+        total_norm = self._all_reduce_norm(total_norm, norm_type)
+
+        if max_grad_norm is None or max_grad_norm == 0:
+            return total_norm
 
         torch.nn.utils.clip_grads_with_norm_(
             parameters,
@@ -892,7 +913,7 @@ class PipelineTrainer(Trainer):
         return total_norm
 
     # @override
-    def _gather_reduce_loss(self, loss: Tensor):
+    def _distributed_loss(self, loss: Tensor):
         distributed.broadcast(loss, src=self.pp_last_stage_rank)
         return loss
 

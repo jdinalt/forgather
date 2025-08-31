@@ -83,7 +83,9 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-def optimzer_hook(optimizer, parameter):
+def optimzer_hook(optimizer, total_grad_squared, parameter):
+    if total_grad_squared is not None:
+        total_grad_squared += parameter.grad.square().sum().to(dtype=torch.float32)
     optimizer.step()
     optimizer.zero_grad()
 
@@ -307,7 +309,10 @@ class Trainer(BaseTrainer):
 
             # Combine backward with optimizer step?
             if self.args.fuse_optim_with_backward:
-                hook = partial(optimzer_hook, self.optimizer)
+                self._total_grad_squared = torch.zeros(
+                    1, device=self.args.device, dtype=torch.float32
+                )
+                hook = partial(optimzer_hook, self.optimizer, self._total_grad_squared)
                 for p in self.model.parameters():
                     if p.requires_grad:
                         p.register_post_accumulate_grad_hook(hook)
@@ -334,41 +339,89 @@ class Trainer(BaseTrainer):
         for batch in dataloader:
             yield batch
 
+    def _maybe_log_save_evaluate(
+        self,
+        loss_log,
+        total_norm_log,
+        periodic_log,
+        periodic_eval,
+        periodic_save,
+    ):
+        # The logic diverges slighlty from HF, in that this in an 'and'
+        # It's not clear if this a bug? It's also not clear if any callbacks depend on this?
+        # Until proven otherwise, try to do the right thing here.
+        if periodic_log.step() or self.control.should_log:
+            log_steps = periodic_log.reset()
+            self.control.should_log = False
+
+            self._log_step(loss_log, total_norm_log)
+
+        # Handle evaluation (normal schedule or control-triggered)
+        eval_metrics = None
+
+        if periodic_eval.step() or self.control.should_evaluate:
+            periodic_eval.reset()
+            self.control.should_evaluate = False
+
+            # Do eval
+            eval_metrics = self._eval_loop()
+
+        # Handle checkpointing - normal schedule or control-triggered
+        if periodic_save.step() or self.control.should_save:
+            checkpoint_path = self.save_checkpoint()
+            self.control.should_save = False
+
+            # For load_best_model_at_end, we need metrics from the most recent evaluation
+            if self.args.load_best_model_at_end:
+                assert (
+                    eval_metrics
+                ), "BUG: load_best_model_at_end requires that save and eval occur on the same step"
+
+                # Update best model tracking with current evaluation metrics
+                self._update_best_model(checkpoint_path, eval_metrics)
+
+                save_checkpoint_metrics(checkpoint_path, eval_metrics)
+
     # @override
     def _train_loop(self) -> TrainOutput:
-        self._dispatch_event("on_train_begin")
-
-        start_time = time.time()
-
         periodic_log = PeriodicFunction(
+            global_step=self.state.global_step,
             strategy=self.args.logging_strategy,
             period=self.args.logging_steps,
             epoch_period=self.epoch_train_steps,
-            phase=0 if not self.args.logging_first_step else -1,
+            first_step=self.args.logging_first_step,
         )
         periodic_eval = PeriodicFunction(
+            global_step=self.state.global_step,
             strategy=self.args.eval_strategy,
             period=self.args.eval_steps,
             epoch_period=self.epoch_train_steps,
-            phase=self.args.eval_delay,
+            first_step=self.args.eval_delay,
         )
-
         periodic_save = PeriodicFunction(
+            global_step=self.state.global_step,
             strategy=self.args.save_strategy,
             period=self.args.save_steps,
             epoch_period=self.epoch_train_steps,
-            phase=0,
+            first_step=0,
         )
 
         # Just to be sure...
         self.optimizer.zero_grad()
 
-        # Tracks mean loss for each log-step
-        total_loss = torch.zeros(1, device=self.args.device)
-        loss_steps = 0
-        last_save_step = 0
-        mean_loss = float("nan")
+        # This keeps track of the sum of all log losses and the number of log steps
+        # We need this to compute the mean loss at the end.
+        self._total_loss = 0.0
+        self._total_log_steps = 0
+
         is_abort = False  # Track if training was aborted without save
+
+        start_time = time.time()
+        self._dispatch_event("on_train_begin")
+
+        # Holds loss and grad-norm samples between logs steps
+        total_norm_log = []
+        loss_log = []
 
         # Context manager for setting model.train()/eval()
         with set_train(self.model, True):
@@ -378,96 +431,33 @@ class Trainer(BaseTrainer):
                 # Batch within epoch loop
                 for batch in self._dataloader_iter(self.train_dataloader):
                     self._dispatch_event("on_step_begin")
-                    loss = self._train_step(batch)
-                    loss = self._gather_reduce_loss(loss)
-                    total_loss += loss
-                    self.state.global_step += 1
-                    loss_steps += 1
+                    loss, total_norm = self._train_step(batch)
 
+                    # Update counters and stats
+                    if total_norm is not None:
+                        total_norm_log.append(total_norm)
+                    loss_log.append(loss)
+                    self.state.global_step += 1
                     # Compute epoch as continous value from steps
                     self.state.epoch = float(self.state.global_step) / float(
                         self.epoch_train_steps
                     )
 
-                    # Check for control flags after logging
-                    control = None
-                    if periodic_log.step():
-                        mean_loss = total_loss.item() / loss_steps
-                        total_loss -= total_loss  # zero total
-                        loss_steps = 0
-                        control = self._log_step(mean_loss)
-
-                    # Handle evaluation (normal schedule or control-triggered)
-                    eval_metrics = None
-                    should_eval = periodic_eval.step()
-                    if control and control.should_evaluate:
-                        should_eval = True
-
-                    if should_eval:
-                        eval_metrics = self._eval_loop()
-                        # Add eval_ prefix to metrics for consistency and log them
-                        eval_logs = {f"eval_{k}": v for k, v in eval_metrics.items()}
-                        eval_logs["step"] = self.state.global_step
-                        eval_logs["epoch"] = self.state.epoch
-                        self.log(eval_logs)
-
-                        # Log and save evaluation metrics
-                        # self.log_metrics("eval", eval_metrics)
-                        self.save_metrics("eval", eval_metrics)
-
-                    # Handle checkpointing - normal schedule or control-triggered
-                    should_save = periodic_save.step()
-                    if control and control.should_save:
-                        should_save = True
-
-                    if should_save:
-                        last_save_step = self.state.global_step
-                        checkpoint_path = self.save_checkpoint()
-
-                        # For load_best_model_at_end, we need metrics from the most recent evaluation
-                        # Get the most recent evaluation metrics from log history
-                        current_eval_metrics = None
-                        if self.args.load_best_model_at_end:
-                            # Use metrics from this step if available, otherwise look in log history
-                            if eval_metrics:
-                                current_eval_metrics = eval_metrics
-                            else:
-                                # Find most recent eval metrics in log history
-                                for log_entry in reversed(self.state.log_history):
-                                    if any(
-                                        key.startswith("eval_")
-                                        for key in log_entry.keys()
-                                    ):
-                                        current_eval_metrics = {
-                                            k: v
-                                            for k, v in log_entry.items()
-                                            if k.startswith("eval_")
-                                        }
-                                        # Remove 'eval_' prefix for consistency
-                                        current_eval_metrics = {
-                                            k.replace("eval_", "", 1): v
-                                            for k, v in current_eval_metrics.items()
-                                        }
-                                        break
-
-                        # Update best model tracking with current evaluation metrics
-                        if current_eval_metrics and self.args.load_best_model_at_end:
-                            self._update_best_model(
-                                checkpoint_path, current_eval_metrics
-                            )
-
-                        # Save checkpoint metrics for future reference
-                        if current_eval_metrics:
-                            save_checkpoint_metrics(
-                                checkpoint_path, current_eval_metrics
-                            )
+                    self._dispatch_event("on_step_end")
+                    self._maybe_log_save_evaluate(
+                        loss_log,
+                        total_norm_log,
+                        periodic_log,
+                        periodic_eval,
+                        periodic_save,
+                    )
 
                     # Check for stop request from log callbacks
-                    if control is not None and control.should_training_stop:
+                    if self.control.should_training_stop:
                         # Check if this is an abort (no save) vs graceful stop
                         is_abort = (
-                            hasattr(control, "should_abort_without_save")
-                            and control.should_abort_without_save
+                            hasattr(self.control, "should_abort_without_save")
+                            and self.control.should_abort_without_save
                         )
                         if is_abort:
                             logger.info(
@@ -477,18 +467,12 @@ class Trainer(BaseTrainer):
                             logger.info("Training stopped by control command")
                         break
 
-                    # Stop, if requested by step end callback.
-                    step_control = self._dispatch_event("on_step_end")
-                    if step_control is not None and step_control.should_training_stop:
-                        logger.info("Training stopped by step end callback")
-                        break
-
                     # Break both loops when we reach the target global steps
                     if self.state.global_step >= self.max_steps:
                         break
                 else:  # Continue, if loop exits normally
-                    control = self._dispatch_event("on_epoch_end")
-                    if control is not None and control.should_epoch_stop:
+                    self._dispatch_event("on_epoch_end")
+                    if self.control.should_epoch_stop:
                         break
                     continue
                 break  # Break, if inner-loop breaks
@@ -498,7 +482,7 @@ class Trainer(BaseTrainer):
         if (
             not is_abort
             and self.args.save_strategy != IntervalStrategy.NO
-            and self.state.global_step != last_save_step
+            and periodic_save.rel_step != 0  # Step resets to zero on save
         ):
             logger.info(f"Saving final checkpoint at step {self.state.global_step}")
             self.save_checkpoint()
@@ -515,6 +499,7 @@ class Trainer(BaseTrainer):
 
         self.log(metrics)
         self._dispatch_event("on_train_end")
+        mean_loss = self._total_loss / self._total_log_steps
         return TrainOutput(self.state.global_step, mean_loss, metrics)
 
     # @override
@@ -527,8 +512,7 @@ class Trainer(BaseTrainer):
             total_loss = torch.zeros(1, device=self.args.device)
             for step, batch in enumerate(self._dataloader_iter(self.eval_dataloader)):
                 outputs = self._prediction_step(batch)
-                loss = self._gather_reduce_loss(outputs["loss"])
-                total_loss += loss
+                total_loss += outputs["loss"]
                 self._dispatch_event("on_prediction_step")
             metrics = {"eval_loss": (total_loss / (step + 1)).item()}
             self._dispatch_event("on_evaluate", metrics=metrics)
@@ -539,22 +523,37 @@ class Trainer(BaseTrainer):
         Clip gradients by norm.
 
         Returns:
-            The total norm of the parameters (as per PyTorch's API), or None if no clipping is performed.
+            The total norm of the parameters (as per PyTorch's API).
 
         Raises:
             RuntimeError: If parameters are not of supported types for foreach=True.
         """
-        if max_grad_norm is None or max_grad_norm == 0:
-            return None
 
-        grad_norm = torch.nn.utils.clip_grad_norm_(
+        # In the case of fused backward / optimizer step, we accumulate squared norm
+        # in the optimizer hook. Compute norm via sqrt() and reset accumulator
+        if self.args.fuse_optim_with_backward:
+            total_norm = self._total_grad_squared.sqrt()
+            self._total_grad_squared -= self._total_grad_squared
+            return total_norm
+
+        # If not clipping, just compute and return it
+        if max_grad_norm is None or max_grad_norm == 0:
+            grads = [p.grad for p in self.model.parameters() if p.grad is not None]
+
+            total_norm = torch.nn.utils.get_total_norm(
+                grads, norm_type=norm_type, foreach=True
+            )
+            return total_norm
+
+        # Otherwise, use fused clip_grad_norm_
+        total_norm = torch.nn.utils.clip_grad_norm_(
             self.model.parameters(),
             max_grad_norm,
             norm_type=norm_type,
             foreach=False if self.args.device == "cpu" else True,
         )
 
-        return grad_norm
+        return total_norm
 
     def _train_step(self, batch: dict | tuple) -> Tensor:
         """
@@ -581,7 +580,7 @@ class Trainer(BaseTrainer):
                 loss = self.model(*args, **kwargs)[0]
 
         self._backward(loss)
-        self._clip_grad_norm(self.args.max_grad_norm)
+        total_norm = self._clip_grad_norm(self.args.max_grad_norm)
         if not self.args.fuse_optim_with_backward:
             self.optimizer.step()
             self.optimizer.zero_grad()
@@ -589,7 +588,8 @@ class Trainer(BaseTrainer):
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
 
-        return loss.detach().mean()
+        loss = self._distributed_loss(loss.detach().mean())
+        return loss, total_norm
 
     def _backward(self, loss):
         loss.backward()
@@ -701,8 +701,9 @@ class Trainer(BaseTrainer):
         outputs = self.model(*args, **kwargs)
         loss, logits = outputs[0], outputs[1]
         labels = kwargs.get("labels", None)
+        loss = self._distributed_loss(loss.detach().mean())
         return {
-            "loss": loss.mean().detach(),
+            "loss": loss,
             "logits": logits.detach(),
             "labels": labels,
         }
@@ -717,11 +718,25 @@ class Trainer(BaseTrainer):
         }
         return metrics
 
-    def _log_step(self, mean_loss):
+    def _log_step(self, loss_log, total_norm_log):
         logs = {
             "epoch": self.state.epoch,
-            "loss": mean_loss,
         }
+
+        assert len(loss_log)
+
+        # Reduce loss and total_norm
+        mean_loss = torch.stack(loss_log).mean().item()
+        self._total_loss += mean_loss
+        self._total_log_steps += 1
+        logs["loss"] = mean_loss
+        loss_log.clear()
+
+        if len(total_norm_log):
+            total_norm = torch.stack(total_norm_log)
+            logs["grad_norm"] = total_norm.square().mean().sqrt().item()
+            logs["max_grad_norm"] = total_norm.max().item()
+            total_norm_log.clear()
 
         if self.lr_scheduler is not None:
             last_lr = self.lr_scheduler.get_last_lr()[0]
@@ -742,7 +757,7 @@ class Trainer(BaseTrainer):
         else:
             return (tuple(), {k: v.to(self.args.device) for k, v in batch.items()})
 
-    def _gather_reduce_loss(self, loss: Tensor) -> Tensor:
+    def _distributed_loss(self, loss: Tensor) -> Tensor:
         """
         Gather / reduce loss across all processes
         This implementaiton only supports a single process, so we just return the input.

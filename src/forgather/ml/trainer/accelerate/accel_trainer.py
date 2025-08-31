@@ -72,7 +72,7 @@ class AccelTrainer(Trainer):
         self.accelerator.backward(loss)
 
     # @override
-    def _gather_reduce_loss(self, loss: Tensor):
+    def _distributed_loss(self, loss: Tensor):
         """
         Reduces loss accross processes
         """

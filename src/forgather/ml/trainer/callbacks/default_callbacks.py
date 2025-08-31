@@ -95,8 +95,9 @@ class ProgressCallback:
     @staticmethod
     def _format_train(state, record):
         header = ProgressCallback._record_header(state)
-        if "loss" in record and "learning_rate" in record:
-            return f"{header} train-loss: {round(record['loss'], 5):<10}learning-rate: {record['learning_rate']:1.2e}"
+        if "loss" in record and "learning_rate" in record and "grad_norm" in record:
+            return f"{header} train-loss: {round(record['loss'], 5):<10}grad-norm: {round(record['grad_norm'], 5):<10}learning-rate: {record['learning_rate']:1.2e}"
+        # Fallback to generic formatting
         else:
             return ProgressCallback.format_mapping(header, record)
 

@@ -110,6 +110,8 @@ class BaseTrainer(ExtensibleTrainer):
         self.is_world_process_zero = True
         self.num_processes = 1
 
+        self.control = TrainerControl()
+
         # Silence annoying Huggingface FastTokenizer warnings
         # If knows if it is safe or not, and does the right thing, why
         # do I need to hear about it and create a janky workaround for
@@ -689,7 +691,6 @@ class BaseTrainer(ExtensibleTrainer):
         """
         Dispatch event to all callbacks
         """
-        control = TrainerControl()
         # Dispatch to call backkbacks in list
         for callback in self.callbacks:
             event_handler = getattr(callback, event, None)
@@ -700,7 +701,7 @@ class BaseTrainer(ExtensibleTrainer):
             new_control = event_handler(
                 self.args,
                 self.state,
-                control,
+                self.control,
                 model=self.unwrapped_model(),
                 processing_class=self.processing_class,
                 optimizer=self.optimizer,
@@ -711,8 +712,8 @@ class BaseTrainer(ExtensibleTrainer):
             )
 
             if new_control is not None:
-                control = new_control
-        return control
+                self.control = new_control
+        return self.control
 
     @abstractmethod
     def _post_init(self) -> None:
