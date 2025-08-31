@@ -28,6 +28,7 @@ from .dynamic_args import (
     partition_args,
     get_dynamic_args,
 )
+from .utils import add_output_arg
 
 
 def parse_global_args(args=None):
@@ -101,6 +102,7 @@ def create_index_parser(global_args):
         description="Show project index",
         formatter_class=RawTextHelpFormatter,
     )
+    add_output_arg(parser)
     return parser
 
 
@@ -139,6 +141,7 @@ def create_meta_parser(global_args):
         description="Show meta configuration",
         formatter_class=RawTextHelpFormatter,
     )
+    add_output_arg(parser)
     return parser
 
 
@@ -149,6 +152,7 @@ def create_targets_parser(global_args):
         description="Show output targets",
         formatter_class=RawTextHelpFormatter,
     )
+    add_output_arg(parser)
     return parser
 
 
@@ -166,6 +170,7 @@ def create_tlist_parser(global_args):
         default="files",
         help="Output format.",
     )
+    add_output_arg(parser)
     return parser
 
 
@@ -189,6 +194,7 @@ def create_graph_parser(global_args):
         action="store_true",
         help="Shows details of template preprocessing to assist with debugging",
     )
+    add_output_arg(parser)
     parse_dynamic_args(parser, global_args)
     return parser
 
@@ -207,6 +213,7 @@ def create_trefs_parser(global_args):
         default="files",
         help="Output format.",
     )
+    add_output_arg(parser)
     return parser
 
 
@@ -223,7 +230,7 @@ def create_pp_parser(global_args):
         action="store_true",
         help="Shows details of template preprocessing to assist with debugging",
     )
-
+    add_output_arg(parser)
     parse_dynamic_args(parser, global_args)
     return parser
 
@@ -267,6 +274,7 @@ def create_code_parser(global_args):
         default="main",
         help="Output target name",
     )
+    add_output_arg(parser)
     parse_dynamic_args(parser, global_args)
     return parser
 
@@ -289,6 +297,7 @@ def create_construct_parser(global_args):
         action="store_true",
         help="Call the materialized object",
     )
+    add_output_arg(parser)
     parse_dynamic_args(parser, global_args)
     return parser
 
@@ -377,6 +386,7 @@ def create_dataset_parser(global_args):
         action="store_true",
         help="The split is already tokenized",
     )
+    add_output_arg(parser)
     parse_dynamic_args(parser, global_args)
     return parser
 

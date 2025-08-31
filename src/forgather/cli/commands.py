@@ -15,6 +15,7 @@ from forgather.preprocess import debug_pp
 from forgather.trainer_control import get_default_client, HTTPTrainerControlClient
 
 from .dynamic_args import get_dynamic_args
+from .utils import write_output
 
 """shared command utils"""
 
@@ -127,7 +128,7 @@ def targets_cmd(args):
     s = ""
     for target in config.keys():
         s += f"{target}\n"
-    print(s)
+    write_output(args, s)
 
 
 def pp_cmd(args):
@@ -143,7 +144,7 @@ def pp_cmd(args):
         pp_config = cmd.env.preprocess(
             cmd.meta.config_path(args.config_template), **dynamic_args
         )
-        print(pp_config)
+        write_output(args, pp_config)
 
 
 def code_cmd(args):
@@ -152,7 +153,7 @@ def code_cmd(args):
     dynamic_args = get_dynamic_args(args)
     config, pp_config = cmd.get_config(**dynamic_args)
     code = generate_code(config[args.target])
-    print(code)
+    write_output(args, code)
 
 
 def construct_cmd(args):
@@ -164,14 +165,14 @@ def construct_cmd(args):
     target = proj(args.target)
     if args.call:
         target = target()
-    pp(target)
+    write_output(args, pformat(target))
 
 
 def meta_cmd(args):
     """Show meta configuration."""
     cmd = BaseCommand(args)
     md = nb.render_meta(cmd.meta, "# Meta Config\n")
-    print(md)
+    write_output(args, md)
 
 
 def trefs_cmd(args):
@@ -180,17 +181,20 @@ def trefs_cmd(args):
 
     match args.format:
         case "md":
-            print(
+            write_output(
+                args,
                 nb.render_referenced_templates_tree(
                     cmd.env, cmd.meta.config_path(args.config_template)
-                )
+                ),
             )
         case "files":
+            data = ""
             # Yields # tuple(level: int, name: str, path: str)
             for level, name, path in cmd.env.find_referenced_templates(
                 cmd.meta.config_path(args.config_template)
             ):
-                print(os.path.relpath(path))
+                data += os.path.relpath(path) + "\n"
+            write_output(args, data)
         case _:
             raise Exception(f"Unrecognized format {args.format}")
 
@@ -205,13 +209,13 @@ def graph_cmd(args):
             case "none":
                 pass
             case "fconfig":
-                print(fconfig(config))
+                write_output(args, fconfig(config))
             case "repr":
-                print(repr(config))
+                write_output(args, repr(config))
             case "yaml":
-                print(to_yaml(config))
+                write_output(args, to_yaml(config))
             case "python":
-                print(generate_code(config["main"]))
+                write_output(args, generate_code(config["main"]))
             case _:
                 raise Exception(f"Unrecognized format {args.format}")
 
@@ -319,10 +323,12 @@ def template_list(args):
     cmd = BaseCommand(args)
     match args.format:
         case "md":
-            print(nb.render_extends_graph(cmd.meta))
+            write_output(args, nb.render_extends_graph(cmd.meta))
         case "files":
+            data = ""
             for template_name, template_path in cmd.meta.find_templates():
-                print(template_path)
+                data += template_path + "\n"
+            write_output(args, data)
         case _:
             raise Exception(f"Unrecognized format {args.format}")
 
@@ -330,7 +336,7 @@ def template_list(args):
 def index_cmd(args):
     """Show project index."""
     md = nb.render_project_index(args.project_dir)
-    print(md)
+    write_output(args, md)
 
 
 def ws_cmd(args):

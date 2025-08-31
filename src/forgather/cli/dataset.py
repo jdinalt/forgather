@@ -9,6 +9,7 @@ from forgather.ml.datasets import plot_token_length_histogram
 from forgather import Project
 
 from .dynamic_args import get_dynamic_args
+from .utils import write_output
 
 
 def dataset_cmd(args):
@@ -36,9 +37,9 @@ def dataset_cmd(args):
         config_class == "type.dataset"
     ), f"Expected class type.dataset, found {config_class}"
 
+    data = ""
     if args.pp:
-        print("Preprocessed configuration:")
-        print(proj.pp_config)
+        data += "Preprocessed configuration:\n" + proj.pp_config + "\n"
 
     template_args = dict(
         tokenizer=None,
@@ -47,8 +48,7 @@ def dataset_cmd(args):
 
     if args.tokenizer_path:
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
-        print("Tokenizer:")
-        print(tokenizer)
+        data += "Tokenizer:\n" + repr(tokenizer) + "\n"
         template_args["tokenizer"] = tokenizer
 
     split = proj(args.target, **template_args)
@@ -86,14 +86,12 @@ def dataset_cmd(args):
         print(f"Printing {args.examples} examples from the train dataset:")
         if args.tokenizer_path:
             for i, example in zip(range(args.examples), split):
-                print("-" * 40)
-                print(tokenizer.decode(example["input_ids"]))
+                data += "-" * 40 + "\n" + tokenizer.decode(example["input_ids"]) + "\n"
 
         else:
             print("Tokenizer path not provided, skipping tokenization.")
             for i, example in zip(range(args.examples), split):
-                print(f"{i:-^80}")
+                data += f"{i:-^80}\n"
                 for feature in features:
-                    print(f"{feature:*^16}")
-                    print("")
-                    print(example[feature])
+                    data += f"{feature:*^16}\n\n" + example[feature] + "\n"
+    write_output(args, data)
