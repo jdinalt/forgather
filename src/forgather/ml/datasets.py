@@ -33,6 +33,9 @@ class IterableDatasetWithLength(IterableDataset):
 
     def __iter__(self):
         return iter(self._dataset)
+    
+    def __repr__(self):
+        return f"IterableDatasetWithLength({repr(self._dataset)}, length={repr(self._length)})"
 
     def map(self, *args, **kwargs):
         """Override map to preserve length information without double-wrapping."""
