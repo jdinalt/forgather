@@ -495,7 +495,10 @@ class Trainer(BaseTrainer):
 
         self.log(metrics)
         self._dispatch_event("on_train_end")
-        mean_loss = self._total_loss / self._total_log_steps
+        if self._total_log_steps:
+            mean_loss = self._total_loss / self._total_log_steps
+        else:
+            mean_loss = float('nan')
         return TrainOutput(self.state.global_step, mean_loss, metrics)
 
     # @override
