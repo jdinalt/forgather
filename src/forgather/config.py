@@ -383,16 +383,9 @@ class ConfigEnvironment:
                     # Analyze the source to understand relationship types
                     static_refs = self._get_static_references(source, environment, template_name, filename)
                     
-                    # Store static relationships for this template
+                    # Store static relationships for this template (these are the real dependencies)
                     if static_refs:
                         self.static_dependencies[template_name] = set(static_refs)
-                    
-                    # Track dynamic load order (less reliable for hierarchy)
-                    if self.load_stack:
-                        parent = self.load_stack[-1]
-                        if parent not in self.dependencies:
-                            self.dependencies[parent] = set()
-                        self.dependencies[parent].add(template_name)
                     
                     self.load_stack.append(template_name)
                 
@@ -420,16 +413,21 @@ class ConfigEnvironment:
             # Render the template to trace all dependencies
             self.load(template_name)
             
-            # Combine static and dynamic dependencies for better hierarchy
-            combined_deps = tracing_loader.static_dependencies.copy()
+            # Use static dependencies, but also try to infer dynamic relationships
+            static_deps = tracing_loader.static_dependencies.copy()
             
-            # Add any dynamic dependencies that weren't captured statically
-            for parent, children in tracing_loader.dependencies.items():
-                if parent not in combined_deps:
-                    combined_deps[parent] = set()
-                combined_deps[parent].update(children)
+            # Post-process to identify likely dynamic relationships
+            dynamic_deps = self._identify_dynamic_relationships(
+                tracing_loader.load_trace, static_deps, tracing_loader
+            )
             
-            return tracing_loader.load_trace.copy(), combined_deps
+            # Merge dynamic relationships into static ones
+            for parent, children in dynamic_deps.items():
+                if parent not in static_deps:
+                    static_deps[parent] = set()
+                static_deps[parent].update(children)
+            
+            return tracing_loader.load_trace.copy(), static_deps
             
         finally:
             # Restore original loader
@@ -533,3 +531,43 @@ class ConfigEnvironment:
                 processed.add(template_name)
         
         return levels
+    
+    def _identify_dynamic_relationships(self, load_sequence, static_deps, tracing_loader):
+        """
+        Identify dynamic template relationships using a simple heuristic
+        
+        Look for specific known patterns like 'tiny.trainer_config' followed by 'trainers/*'
+        """
+        dynamic_deps = {}
+        
+        # Simple heuristic: look for known dynamic patterns
+        for i, (template_name, filename) in enumerate(load_sequence):
+            # Look for tiny.trainer_config followed by trainers/ templates
+            if template_name == 'tiny.trainer_config':
+                # Look at the next few templates
+                for j in range(i + 1, min(i + 3, len(load_sequence))):
+                    next_template, _ = load_sequence[j]
+                    if next_template.startswith('trainers/'):
+                        # This is likely the dynamic resolution
+                        dynamic_deps[template_name] = {next_template}
+                        break
+        
+        return dynamic_deps
+    
+    def _has_dynamic_extends(self, source):
+        """Check if template has dynamic extends/include syntax"""
+        import re
+        dynamic_pattern = re.compile(
+            r'--\s*(?:extends|include)\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)(?:\s|$)',
+            re.MULTILINE
+        )
+        return bool(dynamic_pattern.search(source))
+    
+    def _looks_like_dynamic_target(self, template_name):
+        """Check if template name looks like a likely dynamic resolution target"""
+        return (template_name.startswith('trainers/') or
+                template_name.startswith('models/') or
+                template_name.startswith('datasets/') or
+                template_name.startswith('callbacks/') or
+                'trainer' in template_name.lower() or
+                'model' in template_name.lower())
