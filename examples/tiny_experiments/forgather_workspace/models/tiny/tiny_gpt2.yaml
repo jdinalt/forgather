@@ -2,9 +2,9 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "OpenAI Tiny GPT2"
-    -- set model_def.description = "A tiny GPT2 with the TinyStories 2K tokenizer"
-    -- set model_def.source = "https://github.com/huggingface/transformers/tree/main/src/transformers/models/gpt2"
+    -- set ns.model_name = "OpenAI Tiny GPT2"
+    -- set ns.model_description = "A tiny GPT2 with the TinyStories 2K tokenizer"
+    -- set ns.model_source = "https://github.com/huggingface/transformers/tree/main/src/transformers/models/gpt2"
 << endblock model_meta_config
 
 

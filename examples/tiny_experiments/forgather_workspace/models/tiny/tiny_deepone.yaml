@@ -2,9 +2,9 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "Tiny Deep One"
-    -- set model_def.description = "A scaled-down version of the full sized Deep One"
-    -- set model_def.short_name = "tiny_deepone"
+    -- set ns.model_name = "Tiny Deep One"
+    -- set ns.model_description = "A scaled-down version of the full sized Deep One"
+    -- set ns.model_short_name = "tiny_deepone"
 << endblock model_meta_config
 
 

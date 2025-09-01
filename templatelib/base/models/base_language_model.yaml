@@ -1,11 +1,10 @@
--- set model_def = namespace()
 -- from 'inc/formatting.jinja' import h2, h3, sep
 
 
 -- filter trim()
 -- block model_meta_config
-    -- set model_def.name = "Base Language Model"
-    -- set model_def.description = ""
+    -- set ns.model_name = "Base Language Model"
+    -- set ns.model_description = ""
 << endblock model_meta_config
 
 
@@ -15,8 +14,8 @@
 
 
 -- block model_header
-# Name: {{ model_def.name }}
-# Description: {{ model_def.description }}
+# Name: {{ ns.model_name }}
+# Description: {{ ns.model_description }}
 << endblock model_header
 -- endfilter ## trim()
 

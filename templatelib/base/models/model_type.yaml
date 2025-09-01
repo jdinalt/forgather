@@ -41,6 +41,29 @@ model_constructor_args: &model_constructor_args {}
 ## model: &model
     -- endblock model_definition
     -- endfilter
+
+# Construct and save pretrained config to output_dir
+pretrained_config: &pretrained_config !singleton:forgather.ml.construct:build_rule
+    target: "{{ joinpath(ns.output_dir, 'config.json') }}"
+    recipe: !partial:forgather.ml.construct:dependency_list
+        - !singleton:call [ !singleton:getattr [ *model_config, "save_pretrained"], "{{ ns.output_dir }}" ]
+        - !singleton:forgather.ml.construct:copy_package_files
+            - "{{ ns.output_dir }}"
+            - *model_config
+    loader: !partial:transformers:AutoConfig.from_pretrained [ "{{ ns.output_dir }}" ]
+
+# Construct and save pretrained tokenizer to output_dir
+pretrained_tokenizer: &pretrained_tokenizer !singleton:forgather.ml.construct:build_rule
+    target: "{{ joinpath(ns.output_dir, 'tokenizer.json') }}"
+    recipe: !partial:call [ !singleton:getattr [ *tokenizer, "save_pretrained"], "{{ ns.output_dir }}" ]
+    loader: !partial:transformers:AutoTokenizer.from_pretrained [ "{{ ns.output_dir }}" ]
+
+# Callable, which constructs model instance from config in output_dir
+pretrained_model_ctor: &pretrained_model !partial:transformers:AutoModelForCausalLM.from_config
+    args:
+        - *pretrained_config
+    kwargs:
+        <<: *model_constructor_args
 << endblock main_body
 
 
@@ -53,6 +76,7 @@ model_constructor_args: &model_constructor_args {}
 
 -- block main_output
 main:
-    model: *model
-    tokenizer: *tokenizer
+    pretrained_config: *pretrained_config
+    pretrained_tokenizer: *pretrained_tokenizer
+    pretrained_model_ctor: *pretrained_model
 << endblock main_output

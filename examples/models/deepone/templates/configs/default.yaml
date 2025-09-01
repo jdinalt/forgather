@@ -1,0 +1,16 @@
+-- extends "models/model_type.yaml"
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Base Deepone"
+    -- set ns.config_description = "Default Deepone configuration"
+    -- set ns.model_name = "deepone"
+-- endblock config_metadata
+
+-- block model_definition
+    -- include "config.model"
+-- endblock model_definition
+
+
+#------------- config.model --------------
+-- extends "models/transformers/deepone.yaml"

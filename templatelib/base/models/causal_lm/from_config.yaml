@@ -3,18 +3,18 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "HF Language Model"
-    -- set model_def.description = "A newly initialized HF language model"
-    -- set model_def.source = ""
-##  -- set model_def.model_config_cls = '<model configuration cls>'
+    -- set ns.model_name = "HF Language Model"
+    -- set ns.model_description = "A newly initialized HF language model"
+    -- set ns.model_source = ""
+##  -- set ns.model_config_cls = '<model configuration cls>'
 << endblock model_meta_config
 
 
 -- block model_header
     == super()
 
-# model_def.source = "{{ model_def.source }}"
-# model_def.model_config_cls = "{{ model_def.model_config_cls }}"
+# ns.model_source = "{{ ns.model_source  }}"
+# ns.model_config_cls = "{{ ns.model_config_cls }}"
 << endblock model_header
 
 
@@ -25,7 +25,7 @@
 
 
 -- block model_config
-model_config: &model_config !singleton:{{ model_def.model_config_cls }}
+model_config: &model_config !singleton:{{ ns.model_config_cls }}
     vocab_size: !singleton:len [ *tokenizer ]
 << endblock model_config
 

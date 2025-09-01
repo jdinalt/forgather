@@ -2,9 +2,9 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "Tiny Dynamic Llama"
-    -- set model_def.description = "A scaled-down version of the base Dynamic Llama Transformer"
-    -- set model_def.short_name = "tiny_dllama"
+    -- set ns.model_name = "Tiny Dynamic Llama"
+    -- set ns.model_description = "A scaled-down version of the base Dynamic Llama Transformer"
+    -- set ns.model_short_name = "tiny_dllama"
 << endblock model_meta_config
 
 

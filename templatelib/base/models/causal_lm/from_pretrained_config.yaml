@@ -7,29 +7,28 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "Causal Language Model from Pretrained Config"
-    -- set model_def.description = "A newly initialized model from a pretrained config model id-or-path."
-    -- set model_def.source = ""
-    -- set model_def.model_id_or_path = ns.model_id_or_path
+    -- set ns.model_name = "Causal Language Model from Pretrained Config"
+    -- set ns.model_description = "A newly initialized model from a pretrained config model id-or-path."
+    -- set ns.model_source = ""
 << endblock model_meta_config
 
 
 -- block model_header
     == super()
 
-# model_def.model_id_or_path = "{{ model_def.model_id_or_path }}"
+# ns.model_id_or_path = "{{ ns.model_id_or_path }}"
 << endblock model_header
 
 
 -- block model_tokenizer
 tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
-    - "{{ model_def.model_id_or_path }}"
+    - "{{ ns.model_id_or_path }}"
 << endblock model_tokenizer
 
 
 -- block model_config
 model_config: &model_config !singleton:transformers:AutoConfig.from_pretrained@model_config
-    args: [ "{{ model_def.model_id_or_path }}" ]
+    args: [ "{{ ns.model_id_or_path }}" ]
     kwargs:
     -- if ns.trust_remote_code
         trust_remote_code: True

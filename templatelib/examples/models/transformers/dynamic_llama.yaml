@@ -2,9 +2,9 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "Dynamic Llama"
-    -- set model_def.description = "A Llama compatible dynamic model."
-    -- set model_def.short_name = "dynllama"
+    -- set ns.model_name = "Dynamic Llama"
+    -- set ns.model_description = "A Llama compatible dynamic model."
+    -- set ns.model_short_name = "dynllama"
 -- endblock model_meta_config
 
 

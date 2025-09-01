@@ -2,9 +2,9 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "Deep One"
-    -- set model_def.description = "A big Deepnet model with ALiBi attention."
-    -- set model_def.short_name = "deepone"
+    -- set ns.model_name = "Deep One"
+    -- set ns.model_description = "A big Deepnet model with ALiBi attention."
+    -- set ns.model_short_name = "deepone"
 -- endblock model_meta_config
 
 

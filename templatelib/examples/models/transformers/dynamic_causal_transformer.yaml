@@ -2,9 +2,9 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "Dynamic Causal Transformer"
-    -- set model_def.description = "A vanilla causal transformer model."
-    -- set model_def.short_name = "dynamic_causal_transformer"
+    -- set ns.model_name = "Dynamic Causal Transformer"
+    -- set ns.model_description = "A vanilla causal transformer model."
+    -- set ns.model_short_name = "dynamic_causal_transformer"
 -- endblock model_meta_config
 
 

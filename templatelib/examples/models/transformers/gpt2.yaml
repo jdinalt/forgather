@@ -2,10 +2,10 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "OpenAI GPT2"
-    -- set model_def.description = "A newly initialized HF GPT-2 Model"
-    -- set model_def.source = "https://huggingface.co/docs/transformers/v4.42.0/en/model_doc/gpt2"
-    -- set model_def.model_config_cls = 'transformers:GPT2Config'
+    -- set ns.model_name = "OpenAI GPT2"
+    -- set ns.model_description = "A newly initialized HF GPT-2 Model"
+    -- set ns.model_source = "https://huggingface.co/docs/transformers/v4.42.0/en/model_doc/gpt2"
+    -- set ns.model_config_cls = 'transformers:GPT2Config'
 << endblock model_meta_config
 
 

@@ -2,10 +2,10 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "Tiny Llama"
-    -- set model_def.description = "A very small llama with a TinyStories 2K vocabulary."
-    -- set model_def.model_config_cls = 'transformers:LlamaConfig'
-    -- set model_def.source = "https://github.com/huggingface/transformers/tree/main/src/transformers/models/llama"
+    -- set ns.model_name = "Tiny Llama"
+    -- set ns.model_description = "A very small llama with a TinyStories 2K vocabulary."
+    -- set ns.model_config_cls = 'transformers:LlamaConfig'
+    -- set ns.model_source = "https://github.com/huggingface/transformers/tree/main/src/transformers/models/llama"
 << endblock model_meta_config
 
 

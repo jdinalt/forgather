@@ -3,9 +3,9 @@
 
 -- block model_meta_config
     == super()
-    -- set model_def.name = "Example Model"
-    -- set model_def.description = "An example of a model config template."
-    -- set model_def.short_name = "example_model"
+    -- set ns.model_name = "Example Model"
+    -- set ns.model_description = "An example of a model config template."
+    -- set ns.model_short_name = "example_model"
 << endblock model_meta_config
 
 
