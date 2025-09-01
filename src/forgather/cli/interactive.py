@@ -294,11 +294,11 @@ class ForgatherShell(cmd.Cmd):
             # Print normally for short output
             print(text)
 
-    def _interactive_template_selector(self) -> Optional[str]:
+    def _interactive_template_selector(self) -> Optional[List[str]]:
         """Interactive template selector with arrow key navigation.
 
         Returns:
-            Path to selected template file, or None if cancelled
+            List of paths to selected template files, or None if cancelled
         """
         templates = self._get_all_template_files()
         if not templates:
@@ -342,25 +342,81 @@ class ForgatherShell(cmd.Cmd):
 
         print(f"\n   0. Cancel")
         print("=" * 50)
+        print("You can select multiple files:")
+        print("  - Single file: 5")
+        print("  - Multiple files: 1,3,7")
+        print("  - Ranges: 1-5,8,10-12")
 
         # Get user selection
         while True:
             try:
-                choice = input(f"Select template (0-{len(template_list)}): ").strip()
+                choice = input(f"Select template(s) (0-{len(template_list)}): ").strip()
                 if choice == "0" or choice.lower() in ["cancel", "quit", "exit"]:
                     return None
 
-                choice_num = int(choice)
-                if 1 <= choice_num <= len(template_list):
-                    selected = template_list[choice_num - 1]
-                    return selected[1]  # Return full path
-                else:
-                    print(f"Please enter a number between 0 and {len(template_list)}")
-            except ValueError:
-                print("Please enter a valid number")
+                # Parse selection string (supports single numbers, comma-separated, and ranges)
+                selected_indices = self._parse_selection_string(choice, len(template_list))
+                if selected_indices is None:
+                    continue  # Error message already printed by _parse_selection_string
+                
+                # Convert indices to file paths
+                selected_paths = []
+                for idx in selected_indices:
+                    selected = template_list[idx - 1]  # Convert to 0-based index
+                    selected_paths.append(selected[1])  # Add full path
+                
+                return selected_paths
+                
             except KeyboardInterrupt:
                 print("\nCancelled")
                 return None
+
+    def _parse_selection_string(self, selection: str, max_number: int) -> Optional[List[int]]:
+        """Parse a selection string like '1,3,5-8' into a list of integers.
+        
+        Args:
+            selection: Selection string (e.g., '1,3,5-8')
+            max_number: Maximum valid number
+            
+        Returns:
+            List of selected indices (1-based), or None if invalid
+        """
+        try:
+            indices = []
+            parts = selection.split(',')
+            
+            for part in parts:
+                part = part.strip()
+                if '-' in part and part.count('-') == 1:
+                    # Range like "5-8"
+                    start_str, end_str = part.split('-')
+                    start_num = int(start_str.strip())
+                    end_num = int(end_str.strip())
+                    
+                    if start_num > end_num:
+                        print(f"Invalid range: {part} (start > end)")
+                        return None
+                    if start_num < 1 or end_num > max_number:
+                        print(f"Range {part} is outside valid range (1-{max_number})")
+                        return None
+                    
+                    indices.extend(range(start_num, end_num + 1))
+                else:
+                    # Single number
+                    num = int(part)
+                    if num < 1 or num > max_number:
+                        print(f"Number {num} is outside valid range (1-{max_number})")
+                        return None
+                    indices.append(num)
+            
+            # Remove duplicates and sort
+            indices = sorted(set(indices))
+            return indices
+            
+        except ValueError:
+            print(f"Invalid selection format: {selection}")
+            print("Use format like: 1,3,5 or 1-5,8,10-12")
+            return None
 
     def _complete_path(self, text: str, only_dirs: bool = False) -> List[str]:
         """Complete file/directory paths like bash does.
@@ -601,63 +657,87 @@ class ForgatherShell(cmd.Cmd):
             print(f"  {command}")
 
     def do_edit(self, arg):
-        """Interactively select and edit a template file
+        """Interactively select and edit template files
 
         Usage:
-          edit                    # Interactive template selector
+          edit                    # Interactive template selector (supports multiple files)
           edit <template_path>    # Edit specific template file
         """
         if arg:
             # Direct edit of specified file
+            template_paths = [arg]
             template_path = arg
             if not os.path.isabs(template_path):
                 # Try to resolve relative to project directory
                 full_path = os.path.join(self.project_dir, template_path)
                 if os.path.exists(full_path):
-                    template_path = full_path
+                    template_paths = [full_path]
                 elif not os.path.exists(template_path):
                     print(f"Template file not found: {template_path}")
                     return
         else:
-            # Interactive template selection
-            template_path = self._interactive_template_selector()
-            if not template_path:
+            # Interactive template selection (can return multiple files)
+            template_paths = self._interactive_template_selector()
+            if not template_paths:
                 return
 
         # Determine editor to use
         editor = os.environ.get("EDITOR", "vim")
 
-        # Ensure the file exists (create if it's a new template)
-        if not os.path.exists(template_path):
-            # Ask if user wants to create a new file
-            try:
-                create = (
-                    input(
-                        f"Template file doesn't exist. Create {template_path}? (y/N): "
+        # Process each file - ensure they exist or create them if needed
+        files_to_edit = []
+        for template_path in template_paths:
+            if not os.path.exists(template_path):
+                # Ask if user wants to create a new file
+                try:
+                    create = (
+                        input(
+                            f"Template file doesn't exist. Create {template_path}? (y/N): "
+                        )
+                        .strip()
+                        .lower()
                     )
-                    .strip()
-                    .lower()
-                )
-                if create not in ["y", "yes"]:
+                    if create not in ["y", "yes"]:
+                        print(f"Skipping {template_path}")
+                        continue
+
+                    # Create directory if needed
+                    os.makedirs(os.path.dirname(template_path), exist_ok=True)
+
+                    # Create empty file
+                    with open(template_path, "w") as f:
+                        f.write("# New template file\n")
+                except KeyboardInterrupt:
+                    print("\nCancelled")
                     return
+            
+            files_to_edit.append(template_path)
 
-                # Create directory if needed
-                os.makedirs(os.path.dirname(template_path), exist_ok=True)
+        if not files_to_edit:
+            print("No files to edit.")
+            return
 
-                # Create empty file
-                with open(template_path, "w") as f:
-                    f.write("# New template file\n")
-            except KeyboardInterrupt:
-                print("\nCancelled")
-                return
+        # Launch editor with all files
+        if len(files_to_edit) == 1:
+            print(f"Opening {files_to_edit[0]} in {editor}...")
+            cmd_args = [editor, files_to_edit[0]]
+        else:
+            print(f"Opening {len(files_to_edit)} files in {editor} tabs...")
+            for f in files_to_edit:
+                rel_path = os.path.relpath(f, self.project_dir)
+                print(f"  - {rel_path}")
+            # Use -p flag for vim to open files in tabs
+            if editor in ['vim', 'nvim']:
+                cmd_args = [editor, '-p'] + files_to_edit
+            else:
+                # For other editors, just pass all files and hope for the best
+                cmd_args = [editor] + files_to_edit
 
-        # Launch editor
-        print(f"Opening {template_path} in {editor}...")
         try:
-            subprocess.run([editor, template_path])
+            subprocess.run(cmd_args)
             print("Editor closed.")
 
-            # Invalidate template cache since file might have changed
+            # Invalidate template cache since files might have changed
             self._invalidate_cache()
 
         except FileNotFoundError:
