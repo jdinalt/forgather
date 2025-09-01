@@ -21,8 +21,6 @@ import logging
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
-import transformers
-from transformers import set_seed
 
 import torchdata.nodes as tn
 from torchdata.stateful_dataloader import StatefulDataLoader
@@ -172,7 +170,9 @@ class Trainer(BaseTrainer):
         """
         # Set the random seed
         if self.args.seed != -1:
-            set_seed(self.args.seed)
+            import random
+            torch.manual_seed(self.args.seed)
+            random.seed(self.args.seed)
 
         if self.args.activation_memory_budget:
             logger.info(
@@ -316,7 +316,8 @@ class Trainer(BaseTrainer):
                     optimizer=self.optimizer,
                 )
             elif self.args.lr_scheduler_type:
-                self.lr_scheduler = transformers.get_scheduler(
+                from transformers import get_scheduler
+                self.lr_scheduler = get_scheduler(
                     name=self.args.lr_scheduler_type,
                     optimizer=self.optimizer,
                     num_warmup_steps=self.args.warmup_steps,
