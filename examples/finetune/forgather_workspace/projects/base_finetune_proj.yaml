@@ -85,7 +85,7 @@ eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 ## Override 'ns.trainer_class' to change the trainer class.
 -- block trainer_definition
     ## See definition below
-    -- include 'trainers/base_finetune.yaml'
+    -- include 'trainers/base_finetune_trainer.yaml'
 -- endblock trainer_definition
 
 
