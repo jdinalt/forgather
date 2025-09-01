@@ -209,9 +209,9 @@ def create_trefs_parser(global_args):
     parser.add_argument(
         "--format",
         type=str,
-        choices=["md", "files"],
+        choices=["md", "files", "tree", "dot", "svg"],
         default="files",
-        help="Output format.",
+        help="Output format: md (markdown), files (file list), tree (hierarchical), dot (graphviz), svg (render SVG).",
     )
     add_output_arg(parser)
     return parser
