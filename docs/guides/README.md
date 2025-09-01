@@ -4,6 +4,7 @@ Practical guides for common tasks, best practices, and advanced topics.
 
 ## Essential Guides
 
+- **[Interactive CLI](interactive-cli.md)** - Advanced editor integration and multi-file editing
 - **[Migration from HuggingFace](migration-from-hf.md)** - Moving from transformers.Trainer
 - **[Performance Optimization](performance-optimization.md)** - Getting the best performance
 - **[Debugging](debugging.md)** - Troubleshooting common issues
@@ -26,6 +27,20 @@ from transformers import Trainer, TrainingArguments
 
 # New Forgather code (minimal changes)
 from forgather.ml import Trainer, TrainingArguments
+```
+
+#### Interactive CLI Usage
+```bash
+# Start interactive shell with editor integration
+forgather interactive
+
+# Multi-file editing with ranges
+forgather> edit
+Select template(s): 1-5,8,10-12
+
+# Set up vim clientserver for persistent editing
+export VIM_SERVERNAME=myviminstance
+vim --servername myviminstance &
 ```
 
 #### Debugging Configuration

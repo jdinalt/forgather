@@ -418,6 +418,96 @@ class ForgatherShell(cmd.Cmd):
             print("Use format like: 1,3,5 or 1-5,8,10-12")
             return None
 
+    def _get_best_editor(self) -> str:
+        """Determine the best editor to use, checking for VS Code remote CLI first.
+        
+        Returns:
+            Path to the best available editor
+        """
+        # Check if we're in a VS Code terminal with remote CLI available
+        vscode_ipc = os.environ.get("VSCODE_IPC_HOOK_CLI")
+        if vscode_ipc:
+            # Look for VS Code remote CLI in common locations
+            vscode_server_dirs = []
+            vscode_server_base = os.path.expanduser("~/.vscode-server/bin")
+            
+            if os.path.exists(vscode_server_base):
+                # Find all version directories
+                try:
+                    for version_dir in os.listdir(vscode_server_base):
+                        version_path = os.path.join(vscode_server_base, version_dir)
+                        if os.path.isdir(version_path):
+                            vscode_server_dirs.append(version_path)
+                except OSError:
+                    pass
+            
+            # Check each version directory for the remote CLI
+            for server_dir in vscode_server_dirs:
+                remote_cli_path = os.path.join(server_dir, "bin/remote-cli/code")
+                if os.path.exists(remote_cli_path) and os.access(remote_cli_path, os.X_OK):
+                    return remote_cli_path
+        
+        # Fall back to user's EDITOR or vim
+        return os.environ.get("EDITOR", "vim")
+
+    def _get_vim_server_info(self, editor: str) -> tuple[str, Optional[str]]:
+        """Get vim executable and server name if clientserver mode is requested.
+        
+        Args:
+            editor: The editor path/command
+            
+        Returns:
+            Tuple of (editor_command, server_name) where server_name is None if not using clientserver
+        """
+        # Check if this is vim or nvim
+        editor_name = os.path.basename(editor)
+        if editor_name not in ['vim', 'nvim']:
+            return editor, None
+        
+        # Check for server name in environment
+        server_name = os.environ.get("VIM_SERVERNAME")
+        if not server_name:
+            return editor, None
+            
+        # Check if vim was compiled with clientserver support
+        try:
+            result = subprocess.run([editor, '--version'], capture_output=True, text=True, timeout=5)
+            if '+clientserver' not in result.stdout:
+                print(f"Warning: {editor_name} was not compiled with +clientserver support")
+                print("Falling back to normal vim mode")
+                return editor, None
+        except (subprocess.SubprocessError, subprocess.TimeoutExpired):
+            # If we can't check, assume it works
+            pass
+            
+        return editor, server_name
+
+    def _open_vim_server_tabs(self, vim_editor: str, server_name: str, files: List[str]) -> None:
+        """Open multiple files as tabs in a vim server instance.
+        
+        Args:
+            vim_editor: Path to vim executable
+            server_name: Name of the vim server
+            files: List of file paths to open
+        """
+        try:
+            for file_path in files:
+                result = subprocess.run([
+                    vim_editor, '--servername', server_name, '--remote-tab', file_path
+                ], capture_output=True, text=True, timeout=10)
+                
+                if result.returncode != 0:
+                    print(f"Warning: Failed to open {file_path} in vim server")
+                    if result.stderr:
+                        print(f"  Error: {result.stderr.strip()}")
+                        
+            print("Files opened in vim server.")
+            
+        except subprocess.TimeoutExpired:
+            print("Timeout: Vim server took too long to respond")
+        except Exception as e:
+            print(f"Error opening files in vim server: {e}")
+
     def _complete_path(self, text: str, only_dirs: bool = False) -> List[str]:
         """Complete file/directory paths like bash does.
 
@@ -513,9 +603,18 @@ class ForgatherShell(cmd.Cmd):
     def do_cd(self, arg):
         """Change project directory: cd <directory>
 
+        Usage:
+          cd <directory>        # Change to directory
+          cd --help            # Show this help message
+        
         Supports tab completion for directory paths.
         Examples: cd <TAB>, cd tu<TAB>, cd ~/pr<TAB>
         """
+        # Handle help flags
+        if arg and arg.strip() in ['--help', '-h', 'help']:
+            print(self.do_cd.__doc__)
+            return
+            
         if not arg:
             print("Usage: cd <directory>")
             return
@@ -588,7 +687,17 @@ class ForgatherShell(cmd.Cmd):
         print(os.path.abspath(self.project_dir))
 
     def do_configs(self, arg):
-        """List available templates"""
+        """List available templates
+        
+        Usage:
+          configs               # List all available templates
+          configs --help        # Show this help message
+        """
+        # Handle help flags
+        if arg and arg.strip() in ['--help', '-h', 'help']:
+            print(self.do_configs.__doc__)
+            return
+            
         templates = self._get_available_templates()
         if templates:
             print("Available templates:")
@@ -599,7 +708,18 @@ class ForgatherShell(cmd.Cmd):
             print("No templates found in current project directory")
 
     def do_config(self, arg):
-        """Set current template: template <template_name>"""
+        """Set current template: config <template_name>
+        
+        Usage:
+          config                # Show current template
+          config <template>     # Set current template 
+          config --help         # Show this help message
+        """
+        # Handle help flags
+        if arg and arg.strip() in ['--help', '-h', 'help']:
+            print(self.do_config.__doc__)
+            return
+            
         if not arg:
             if self.current_template:
                 print(f"Current template: {self.current_template}")
@@ -650,7 +770,17 @@ class ForgatherShell(cmd.Cmd):
             return results
 
     def do_commands(self, arg):
-        """List available commands"""
+        """List available commands
+        
+        Usage:
+          commands              # List all available forgather commands
+          commands --help       # Show this help message
+        """
+        # Handle help flags
+        if arg and arg.strip() in ['--help', '-h', 'help']:
+            print(self.do_commands.__doc__)
+            return
+            
         commands = self._get_available_commands()
         print("Available commands:")
         for command in sorted(commands):
@@ -662,7 +792,31 @@ class ForgatherShell(cmd.Cmd):
         Usage:
           edit                    # Interactive template selector (supports multiple files)
           edit <template_path>    # Edit specific template file
+          edit --help             # Show this help message
+        
+        Environment Variables:
+          VSCODE_IPC_HOOK_CLI    # VS Code IPC socket (auto-detected in VS Code terminals)
+                                 # Copy from VS Code session to use elsewhere:
+                                 # export VSCODE_IPC_HOOK_CLI=/tmp/vscode-ipc-*.sock
+          VIM_SERVERNAME         # Vim server instance name for clientserver mode
+          EDITOR                 # Preferred editor (default: vim, auto-detects VS Code)
+        
+        Editor Priority (highest first):
+          1. VS Code Remote CLI (when VSCODE_IPC_HOOK_CLI is set)
+          2. Vim Clientserver (when VIM_SERVERNAME is set)
+          3. User's EDITOR environment variable
+          4. Default vim
+        
+        Multiple File Selection:
+          - Single file: 5
+          - Multiple files: 1,3,7  
+          - Ranges: 1-5,8,10-12
         """
+        # Handle help flags
+        if arg and arg.strip() in ['--help', '-h', 'help']:
+            print(self.do_edit.__doc__)
+            return
+            
         if arg:
             # Direct edit of specified file
             template_paths = [arg]
@@ -681,8 +835,8 @@ class ForgatherShell(cmd.Cmd):
             if not template_paths:
                 return
 
-        # Determine editor to use
-        editor = os.environ.get("EDITOR", "vim")
+        # Determine editor to use - check for VS Code remote CLI first
+        editor = self._get_best_editor()
 
         # Process each file - ensure they exist or create them if needed
         files_to_edit = []
@@ -718,20 +872,46 @@ class ForgatherShell(cmd.Cmd):
             return
 
         # Launch editor with all files
+        editor_name = os.path.basename(editor)
+        
+        # Check for vim clientserver mode
+        vim_editor, vim_server = self._get_vim_server_info(editor)
+        
         if len(files_to_edit) == 1:
-            print(f"Opening {files_to_edit[0]} in {editor}...")
-            cmd_args = [editor, files_to_edit[0]]
-        else:
-            print(f"Opening {len(files_to_edit)} files in {editor} tabs...")
-            for f in files_to_edit:
-                rel_path = os.path.relpath(f, self.project_dir)
-                print(f"  - {rel_path}")
-            # Use -p flag for vim to open files in tabs
-            if editor in ['vim', 'nvim']:
-                cmd_args = [editor, '-p'] + files_to_edit
+            if vim_server:
+                print(f"Opening {files_to_edit[0]} in vim server '{vim_server}'...")
+                cmd_args = [vim_editor, '--servername', vim_server, '--remote-tab', files_to_edit[0]]
             else:
-                # For other editors, just pass all files and hope for the best
-                cmd_args = [editor] + files_to_edit
+                print(f"Opening {files_to_edit[0]} in {editor_name}...")
+                cmd_args = [editor, files_to_edit[0]]
+        else:
+            if vim_server:
+                print(f"Opening {len(files_to_edit)} files in vim server '{vim_server}' tabs...")
+                for f in files_to_edit:
+                    rel_path = os.path.relpath(f, self.project_dir)
+                    print(f"  - {rel_path}")
+                # For vim clientserver, we need to open files one by one as tabs
+                self._open_vim_server_tabs(vim_editor, vim_server, files_to_edit)
+                return  # Skip the subprocess.run below since we handled it already
+            else:
+                print(f"Opening {len(files_to_edit)} files in {editor_name}...")
+                for f in files_to_edit:
+                    rel_path = os.path.relpath(f, self.project_dir)
+                    print(f"  - {rel_path}")
+                
+                # Choose command args based on editor type
+                if 'remote-cli/code' in editor:
+                    # VS Code remote CLI - just pass all files
+                    cmd_args = [editor] + files_to_edit
+                elif editor_name in ['vim', 'nvim']:
+                    # Vim/Neovim - use -p flag for tabs
+                    cmd_args = [editor, '-p'] + files_to_edit
+                elif editor_name in ['code', 'code.exe']:
+                    # VS Code standard - use -r flag to reuse window
+                    cmd_args = [editor, '-r'] + files_to_edit
+                else:
+                    # For other editors, just pass all files
+                    cmd_args = [editor] + files_to_edit
 
         try:
             subprocess.run(cmd_args)
