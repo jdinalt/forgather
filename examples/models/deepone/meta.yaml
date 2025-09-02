@@ -4,5 +4,5 @@
 name: "Deepone"
 description: "A big Deepnet model with ALiBi attention"
 config_prefix: "configs"
-default_config: "default.yaml"
+default_config: "1_7B.yaml"
 << endblock configs

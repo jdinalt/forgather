@@ -4,7 +4,7 @@
     == super()
     -- set ns.config_name = "Base Deepone"
     -- set ns.config_description = "Default Deepone configuration"
-    -- set ns.model_name = "deepone"
+    -- set ns.model_name = "1_7b"
 -- endblock config_metadata
 
 -- block model_definition

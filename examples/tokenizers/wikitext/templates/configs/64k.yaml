@@ -1,0 +1,10 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.tokenizer_name = "wikitext_64k"
+    -- set ns.config_name = "Wikitext 64K"
+    -- set ns.config_description = "64K BPE tokenizer, trained on Wikitext"
+    -- set ns.vocab_size = 64000
+    -- set ns.model_max_length = 8192
+-- endblock config_metadata

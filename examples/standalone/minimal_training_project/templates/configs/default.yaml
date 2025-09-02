@@ -12,7 +12,7 @@
 
     ## Import a model project -- use a tiny vanilla transformer
     -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'causal_lm')
-    -- set ns.model_project_config = "tiny.yaml"
+    -- set ns.model_project_config = "4M.yaml"
 << endblock config_metadata
 
 

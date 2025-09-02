@@ -2,9 +2,9 @@
 
 -- block config_metadata
     == super()
-    -- set ns.config_name = "Tiny Deepone"
-    -- set ns.config_description = "A tiny Deepone"
-    -- set ns.model_name = "tiny"
+    -- set ns.config_name = "Tiny Causal LM 4M"
+    -- set ns.config_description = "A very tiny vanilla transformer model with 4M parameters"
+    -- set ns.model_name = "4m"
 -- endblock config_metadata
 
 -- block model_definition
@@ -13,8 +13,7 @@
 
 
 #------------- config.model --------------
--- extends "models/transformers/deepone.yaml"
-
+-- extends "models/transformers/dynamic_causal_transformer.yaml"
 
 -- block model_tokenizer
 tokenizer: &tokenizer !call:forgather:from_project
@@ -27,7 +26,7 @@ tokenizer: &tokenizer !call:forgather:from_project
 -- block model_config
     == super()
     
-    # **Tiny Overrides**
+    # **Tiny Causal LM Overrides**
     hidden_size: 256
     dim_feedforward: 1024
     num_attention_heads: 2
