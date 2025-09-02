@@ -227,6 +227,10 @@ class TrainingArguments(MinimalTrainingArguments):
     #   is uninitialized and will need to be loaded with a checkpoint.
     construct_model_on: str = "default"  # "default" | "meta" | "device"
 
+    # Ratio of reserved to total GPU memory to trigger GC
+    # If OOM from fragmentation, lower ratio
+    gc_threshold: float = 0.5
+
     def __post_init__(self):
         super().__post_init__()
         # As per https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader

@@ -17,6 +17,8 @@ import time
 from contextlib import contextmanager, ExitStack
 import os
 import logging
+import gc
+
 
 import torch
 from torch import Tensor
@@ -74,6 +76,16 @@ def set_train(model: torch.nn.Module, mode: bool):
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+def maybe_cleanup_memory(alloc_threshold):
+    """Check if memory usage exceeds threshold"""
+    if torch.cuda.is_available():
+        reserved = torch.cuda.memory_reserved()
+        max_memory = torch.cuda.get_device_properties(0).total_memory
+        usage_ratio = reserved / max_memory
+
+        if usage_ratio > alloc_threshold:
+            gc.collect()
+            torch.cuda.empty_cache()
 
 def optimzer_hook(optimizer, total_grad_squared, parameter):
     if total_grad_squared is not None:
@@ -360,6 +372,7 @@ class Trainer(BaseTrainer):
             self.control.should_evaluate = False
 
             # Do eval
+            maybe_cleanup_memory(self.args.gc_threshold)
             eval_metrics = self._eval_loop()
 
         # Handle checkpointing - normal schedule or control-triggered
@@ -468,6 +481,9 @@ class Trainer(BaseTrainer):
                     # Break both loops when we reach the target global steps
                     if self.state.global_step >= self.max_steps:
                         break
+
+                    # Periodic GC
+                    maybe_cleanup_memory(self.args.gc_threshold)
                 else:  # Continue, if loop exits normally
                     self._dispatch_event("on_epoch_end")
                     if self.control.should_epoch_stop:
