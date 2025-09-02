@@ -134,13 +134,13 @@ class TrainingArguments(MinimalTrainingArguments):
     eval_strategy: ConversionDescriptor = ConversionDescriptor(
         IntervalStrategy, default=IntervalStrategy.NO
     )
-    eval_steps: int = 500
+    eval_steps: int = 100
     eval_delay: int = 0
 
     logging_strategy: ConversionDescriptor = ConversionDescriptor(
         IntervalStrategy, default=IntervalStrategy.STEPS
     )
-    logging_steps: int = 500
+    logging_steps: int = 50
     logging_first_step: bool = False
 
     torch_compile: bool = False
@@ -156,7 +156,7 @@ class TrainingArguments(MinimalTrainingArguments):
     save_strategy: ConversionDescriptor = ConversionDescriptor(
         IntervalStrategy, default=IntervalStrategy.STEPS
     )
-    save_steps: int = 500
+    save_steps: int = 1000
     save_total_limit: int = 2
     save_safetensors: bool = True
     save_on_each_node: bool = False

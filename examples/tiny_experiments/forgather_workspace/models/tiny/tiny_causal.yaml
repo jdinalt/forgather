@@ -4,13 +4,15 @@
     == super()
     -- set ns.model_name = "Tiny Causal"
     -- set ns.model_description = "A scaled-down version of the base Causal Transformer"
-    -- set ns.model_short_name = "tiny_causal_transformer"
+    -- set ns.model_short_name = "default"
 << endblock model_meta_config
 
 
 -- block model_tokenizer
-    ## Use a smaller tokenizer.
-    -- include 'tokenizers/tiny_2k.yaml'
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'tiny_stories_bpe') }}"
+    config_template: "2k.yaml"
+    pp_debug: False
 << endblock model_tokenizer
 
 
@@ -18,7 +20,7 @@
 -- block model_config
     == super()
     
-    # Tiny Causal overrides
+    # **Tiny Causal LM Overrides**
     hidden_size: 256
     dim_feedforward: 1024
     num_attention_heads: 2

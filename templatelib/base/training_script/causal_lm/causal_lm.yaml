@@ -16,6 +16,12 @@
 << endblock variable_listing
 
 
+-- block datasets_preprocessor_args
+tokenizer_args: &tokenizer_args !dict
+    truncation: True
+<< endblock datasets_preprocessor_args
+
+
 -- block model_constructor_args
 -- filter trim()
 ## These are-runtime model construction arguments which

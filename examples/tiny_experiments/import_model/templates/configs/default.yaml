@@ -1,8 +1,0 @@
--- extends "projects/tiny.yaml"
-
--- block construct_new_model
-  -- set ns.model_project_dir = joinpath(workspace_root, 'models')
-  -- set ns.model_project_config = "tiny.yaml"
-  -- set ns.debug_model_project = True
-  -- include "models/causal_lm/import_model_project.yaml"
--- endblock construct_new_model

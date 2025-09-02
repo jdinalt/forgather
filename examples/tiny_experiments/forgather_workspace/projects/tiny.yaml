@@ -64,7 +64,7 @@ tokenizer_args: &tokenizer_args !dict
 
 
 -- block construct_new_model
-  -- include "models/causal_lm/import_model_project.yaml"
+    -- include "models/causal_lm/import_model_project.yaml"
 -- endblock construct_new_model
 
 
