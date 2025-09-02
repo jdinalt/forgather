@@ -140,7 +140,19 @@ def from_project(
     project_dir: str,
     config_template: str | None = None,
     targets: str | List[str] = "",
+    pp_debug=False,
+    pp_kwargs: dict | None = None,
     **config_kwargs,
 ):
-    proj = Project(config_template, project_dir)
+    if pp_kwargs is None:
+        pp_kwargs = {}
+
+    proj = Project(config_template, project_dir, **pp_kwargs)
+    if pp_debug:
+        print(f"Loading sub-project: {project_dir}:{config_template}")
+        print(f"{targets=}")
+        print(f"{config_kwargs=}")
+        print(f"{pp_kwargs=}")
+        print(proj.pp_config)
+
     return proj(targets, **config_kwargs)
