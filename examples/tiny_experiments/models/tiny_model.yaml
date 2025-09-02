@@ -1,0 +1,218 @@
+#---------------------------------------
+#                  Tiny                  
+#---------------------------------------
+# 2025-09-01T23:15:47
+# Description: Default Tiny Model
+# Project Dir: /home/dinalt/ai_assets/forgather/examples/tiny_experiments/models
+# Current Working Dir: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models"
+# Forgather Config Dir: "/home/dinalt/.config/forgather"
+# Model: tiny
+
+############# Config Vars ##############
+
+# ns.forgather_dir: "/home/dinalt/ai_assets/forgather"
+# ns.models_dir: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models"
+# ns.project_model_src_dir: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/model_src"
+# ns.tokenizers_dir: "/home/dinalt/ai_assets/forgather/tokenizers"
+# ns.datasets_dir: "/home/dinalt/ai_assets/forgather/datasets"
+# ns.model_src_dir: "/home/dinalt/ai_assets/forgather/model_src"
+# ns.output_dir: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny"
+
+################ Model #################
+
+model_constructor_args: &model_constructor_args {}
+
+# Name: Tiny Causal
+# Description: A scaled-down version of the base Causal Transformer
+# ns.model_cls = "DynamicCasualLM"
+# ns.model_cfg_cls = "DynamicCausalLMConfig"
+# ns.model_config_path = "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny/tiny_causal_transformer.py"
+# ns.model_path = "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny/tiny_causal_transformer.py"
+# ns.model_short_name = "tiny_causal_transformer"
+# ns.model_type = "forgather-dynamic-causal-tiny_causal_transformer"
+# ns.model_config_path = "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny/tiny_causal_transformer.py"
+# ns.model_template_searchpath = "/home/dinalt/ai_assets/forgather/modelsrc/templates"
+# ns.model_template_name = "hf_causal.py"
+# ns.model_name_policy = "named"
+
+# **Tokenizer**
+
+# Load custom tokenizer from sub-project definition
+tokenizer: &tokenizer !singleton:forgather.ml.construct:load_from_config@tokenizer
+    project_dir: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/../../examples/tokenizers/tiny_stories_bpe"
+    config_template: "2k.yaml"
+
+# **Model Config**
+
+# Model config dependencies
+model_submodule_searchpath: &model_submodule_searchpath
+    - "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/../../modelsrc/transformer"
+    - "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny"
+
+loss_fn: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn []
+
+layer_norm_factory: &layer_norm_factory !partial:torch.nn:LayerNorm@layer_norm_factory
+    normalized_shape: !var "hidden_size"
+
+feedforward_factory: &feedforward_factory !partial:.feedforward_layer:FeedforwardLayer@feedforward_factory
+    d_model: !var "hidden_size"
+    d_feedforward: !var "dim_feedforward"
+    dropout: !var "activation_dropout"
+
+
+
+attention_factory: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    dropout: !var "attention_dropout"
+
+layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+    dropout: !var "layer_dropout"
+    residual_dropout: !var "residual_dropout"
+
+layer_stack: &layer_stack !factory:.checkpoint_layer_stack:LayerStack@layer_stack
+    layer_factory: *layer_factory
+    num_hidden_layers: !var "num_hidden_layers"
+    enable_checkpoint: !var "enable_activation_checkpoint"
+    checkpoint_stride: !var "checkpoint_stride"
+
+output_decoder: &output_decoder !factory:torch.nn:Linear@output_decoder
+    - !var "hidden_size"
+    - !var "vocab_size"
+
+positional_encoder: &positional_encoder !factory:.sinusoidal_pe:SinusoidalPE@positional_encoder
+    d_model: !var "hidden_size"
+    max_sequence_length: !var "max_sequence_length"
+
+input_encoder: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
+    d_model: !var "hidden_size"
+    vocab_size: !var "vocab_size"
+    dropout: !var "embedding_dropout"
+    positional_encoder: *positional_encoder
+    scale_sqrt_d_model: True
+
+init_weights: &init_weights !partial:.init_weights:simple_weight_init@init_weights
+    scale_rsqrt_d_model: True
+
+model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
+    loss_fn: *loss_fn
+    input_encoder: *input_encoder
+    output_decoder: *output_decoder
+    layer_stack: *layer_stack
+    init_weights: *init_weights
+
+model_code_generator: &model_code_generator !meta:forgather.codegen:generate_code@model_code_generator
+    searchpath: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/../../modelsrc/templates"
+    template_name: "hf_causal.py"
+    name_policy: "named"
+    obj: *model_factory
+    # Template args
+    model_type: "forgather-dynamic-causal-tiny_causal_transformer"
+    supports_gradient_checkpointing: True
+    supports_sdpa: True
+
+model_code_writer: &model_code_writer !singleton:forgather.ml.construct:write_file@model_code_writer
+    data: *model_code_generator
+    output_file: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny/tiny_causal_transformer.py"
+    return_value: "Model constructor generated by Forgather 1.0"    
+
+model_config: &model_config !singleton:/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny/tiny_causal_transformer.py:DynamicCausalLMConfig@model_config
+    submodule_searchpath: *model_submodule_searchpath
+    # Set auto-map for custom model; this ensures that the source code stays with the model.
+    auto_map:
+        AutoConfig: "tiny_causal_transformer.DynamicCausalLMConfig"
+        AutoModel: "tiny_causal_transformer.DynamicCasualLM"
+    # Get the vocab-size from the tokenizer definition.
+    vocab_size: !singleton:len [ *tokenizer ]
+    pad_token_id: !singleton:getattr [ *tokenizer, 'pad_token_id' ]
+    bos_token_id: !singleton:getattr [ *tokenizer, 'bos_token_id' ]
+    eos_token_id: !singleton:getattr [ *tokenizer, 'eos_token_id' ]
+    # Add dependency on code generator
+    code_generator: *model_code_writer
+    hidden_size: 512
+    num_attention_heads: 8
+    num_hidden_layers: 6
+    max_sequence_length: !singleton:getattr
+        - *tokenizer
+        - "model_max_length"
+    dim_feedforward: 2048
+    embedding_dropout: 0.10
+    layer_dropout: 0.10
+    residual_dropout: 0.0
+    attention_dropout: 0.0
+    activation_dropout: 0.0
+    enable_activation_checkpoint: False
+    checkpoint_stride: 1
+    
+    # Tiny Causal overrides
+    hidden_size: 256
+    dim_feedforward: 1024
+    num_attention_heads: 2
+    num_hidden_layers: 4
+    embedding_dropout: 0.0
+    layer_dropout: 0.0
+
+# **Model Factory**
+
+model_constructor: &model_constructor !partial:/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny/tiny_causal_transformer.py:DynamicCasualLM@model_constructor
+    args:
+        - *model_config
+    kwargs:
+        submodule_searchpath: *model_submodule_searchpath
+        <<: *model_constructor_args
+
+model: &model !partial:forgather.ml.construct:dependency_list@model
+    - !factory:call [ *model_constructor ]
+    - !singleton:forgather.ml.construct:copy_package_files
+        - "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny"
+        - *model_config
+# Construct and save pretrained config to output_dir
+pretrained_config: &pretrained_config !singleton:forgather.ml.construct:build_rule
+    target: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny/config.json"
+    recipe: !partial:forgather.ml.construct:dependency_list
+        - !singleton:call [ !singleton:getattr [ *model_config, "save_pretrained"], "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny" ]
+        - !singleton:forgather.ml.construct:copy_package_files
+            - "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny"
+            - *model_config
+    loader: !partial:transformers:AutoConfig.from_pretrained [ "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny" ]
+
+# Construct and save pretrained tokenizer to output_dir
+pretrained_tokenizer: &pretrained_tokenizer !singleton:forgather.ml.construct:build_rule
+    target: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny/tokenizer.json"
+    recipe: !partial:call [ !singleton:getattr [ *tokenizer, "save_pretrained"], "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny" ]
+    loader: !partial:transformers:AutoTokenizer.from_pretrained [ "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny" ]
+
+# Callable, which constructs model instance from config in output_dir
+pretrained_model_ctor: &pretrained_model !partial:transformers:AutoModelForCausalLM.from_config
+    args:
+        - *pretrained_config
+    kwargs:
+        <<: *model_constructor_args
+
+# **Dynamic Args**
+dynamic_args: !dlist
+    null: ~
+
+#---------------------------------------
+#          Configuration Output          
+#---------------------------------------
+meta: &meta_output !dict:@meta
+    config_name: "Tiny"
+    config_description: "Default Tiny Model"
+    config_class: "type.model"
+    project_dir: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models"
+    workspace_root: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments"
+    forgather_dir: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/../.."
+    models_dir: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models"
+    tokenizers_dir: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/../../tokenizers"
+    datasets_dir: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/../../datasets"
+    output_dir: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/models/output_models/tiny"
+    model_src_dir: "/home/dinalt/ai_assets/forgather/examples/tiny_experiments/../../model_src"
+
+main:
+    pretrained_config: *pretrained_config
+    pretrained_tokenizer: *pretrained_tokenizer
+    pretrained_model_ctor: *pretrained_model

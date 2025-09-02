@@ -27,6 +27,11 @@
     ## The configuration in the dataset sub-project
     ## Note: Switch to 'tinystories.yaml' for the full dataset.
     -- set ns.dataset_config = dataset_config | default("tinystories-abridged.yaml")
+  
+    ## The model project to import
+    -- set ns.model_project_dir = joinpath(workspace_root, 'models')
+    -- set ns.model_project_config = "tiny.yaml"
+    -- set ns.debug_model_project = False
 -- endblock config_metadata
 
 
@@ -59,8 +64,7 @@ tokenizer_args: &tokenizer_args !dict
 
 
 -- block construct_new_model
-    ## See definition below
-    -- include 'tiny.model_config'
+  -- include "models/causal_lm/import_model_project.yaml"
 -- endblock construct_new_model
 
 
@@ -138,10 +142,6 @@ optimizer: &optimizer !partial:torch:optim.AdamW
     num_train_epochs: 1
     dataloader_num_workers: 1
 -- endblock trainer_args
-
-#-------------------- tiny.model_config --------------------
--- extends 'models/tiny/tiny_causal.yaml'
-## Default to tiny-causal model definition.
 
 #-------------------- tiny.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'

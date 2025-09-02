@@ -13,11 +13,6 @@
     -- include 'experiment.trainer_config'
 -- endblock trainer_definition
 
-
--- block construct_new_model
-    -- include 'experiment.model_config'
--- endblock construct_new_model
-
 #-------------------- experiment.trainer_config --------------------
 -- extends 'tiny.trainer_config'
 
@@ -25,11 +20,3 @@
     == super()
     # Experiment overrides
 -- endblock trainer_args
-
-#-------------------- experiment.model_config --------------------
--- extends 'project.model_config'
-
--- block model_config
-    == super()
-    # Experiment overrides
-<< endblock model_config

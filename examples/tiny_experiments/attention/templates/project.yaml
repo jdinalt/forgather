@@ -26,7 +26,7 @@
 
 
 #-------------------- project.model_config --------------------
--- extends 'tiny.model_config'
+-- extends 'models/tiny/tiny_causal.yaml'
 
 # Base model configuration for all attention experiments
 # Individual experiments can override specific components while inheriting shared settings

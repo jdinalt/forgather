@@ -1,0 +1,8 @@
+-- extends "meta_defaults.yaml"
+
+-- block configs
+name: "import_model"
+description: "Test importation of model project"
+config_prefix: "configs"
+default_config: "default.yaml"
+<< endblock configs

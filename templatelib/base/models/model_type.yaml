@@ -8,7 +8,7 @@
 
 
 -- block globals
-    -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
+    -- set ns.output_dir = output_dir | default(joinpath(ns.models_dir, ns.model_name))
 -- endblock globals
 
 
@@ -60,10 +60,8 @@ pretrained_tokenizer: &pretrained_tokenizer !singleton:forgather.ml.construct:bu
 
 # Callable, which constructs model instance from config in output_dir
 pretrained_model_ctor: &pretrained_model !partial:transformers:AutoModelForCausalLM.from_config
-    args:
-        - *pretrained_config
-    kwargs:
-        <<: *model_constructor_args
+    args: [ *pretrained_config ]
+    kwargs: *model_constructor_args
 << endblock main_body
 
 

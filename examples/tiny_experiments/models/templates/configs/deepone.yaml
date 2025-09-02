@@ -1,0 +1,12 @@
+-- extends "models/model_type.yaml"
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Tiny Deepone"
+    -- set ns.config_description = "Tiny version of Deepone model"
+    -- set ns.model_name = "deepone"
+-- endblock config_metadata
+
+-- block model_definition
+  -- include "models/tiny/tiny_deepone.yaml"
+-- endblock model_definition

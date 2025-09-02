@@ -5,12 +5,6 @@
     ##-- set ns.trainer_class = 'trainers/trainer.yaml'
 -- endblock config_metadata
 
-
--- block construct_new_model
-    -- include 'project.model_config'
--- endblock construct_new_model
-
-
 -- block trainer_definition
     -- include 'project.trainer_config'
 -- endblock trainer_definition
@@ -22,12 +16,3 @@
     == super()
     # project overrides
 -- endblock trainer_args
-
-#-------------------- project.model_config --------------------
--- extends 'tiny.model_config'
-
--- block model_config
-    == super()
-    # Project overrides
-<< endblock model_config
-
