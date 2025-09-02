@@ -355,51 +355,55 @@ class ForgatherShell(cmd.Cmd):
                     return None
 
                 # Parse selection string (supports single numbers, comma-separated, and ranges)
-                selected_indices = self._parse_selection_string(choice, len(template_list))
+                selected_indices = self._parse_selection_string(
+                    choice, len(template_list)
+                )
                 if selected_indices is None:
                     continue  # Error message already printed by _parse_selection_string
-                
+
                 # Convert indices to file paths
                 selected_paths = []
                 for idx in selected_indices:
                     selected = template_list[idx - 1]  # Convert to 0-based index
                     selected_paths.append(selected[1])  # Add full path
-                
+
                 return selected_paths
-                
+
             except KeyboardInterrupt:
                 print("\nCancelled")
                 return None
 
-    def _parse_selection_string(self, selection: str, max_number: int) -> Optional[List[int]]:
+    def _parse_selection_string(
+        self, selection: str, max_number: int
+    ) -> Optional[List[int]]:
         """Parse a selection string like '1,3,5-8' into a list of integers.
-        
+
         Args:
             selection: Selection string (e.g., '1,3,5-8')
             max_number: Maximum valid number
-            
+
         Returns:
             List of selected indices (1-based), or None if invalid
         """
         try:
             indices = []
-            parts = selection.split(',')
-            
+            parts = selection.split(",")
+
             for part in parts:
                 part = part.strip()
-                if '-' in part and part.count('-') == 1:
+                if "-" in part and part.count("-") == 1:
                     # Range like "5-8"
-                    start_str, end_str = part.split('-')
+                    start_str, end_str = part.split("-")
                     start_num = int(start_str.strip())
                     end_num = int(end_str.strip())
-                    
+
                     if start_num > end_num:
                         print(f"Invalid range: {part} (start > end)")
                         return None
                     if start_num < 1 or end_num > max_number:
                         print(f"Range {part} is outside valid range (1-{max_number})")
                         return None
-                    
+
                     indices.extend(range(start_num, end_num + 1))
                 else:
                     # Single number
@@ -408,11 +412,11 @@ class ForgatherShell(cmd.Cmd):
                         print(f"Number {num} is outside valid range (1-{max_number})")
                         return None
                     indices.append(num)
-            
+
             # Remove duplicates and sort
             indices = sorted(set(indices))
             return indices
-            
+
         except ValueError:
             print(f"Invalid selection format: {selection}")
             print("Use format like: 1,3,5 or 1-5,8,10-12")
@@ -420,7 +424,7 @@ class ForgatherShell(cmd.Cmd):
 
     def _get_best_editor(self) -> str:
         """Determine the best editor to use, checking for VS Code remote CLI first.
-        
+
         Returns:
             Path to the best available editor
         """
@@ -430,7 +434,7 @@ class ForgatherShell(cmd.Cmd):
             # Look for VS Code remote CLI in common locations
             vscode_server_dirs = []
             vscode_server_base = os.path.expanduser("~/.vscode-server/bin")
-            
+
             if os.path.exists(vscode_server_base):
                 # Find all version directories
                 try:
@@ -440,51 +444,59 @@ class ForgatherShell(cmd.Cmd):
                             vscode_server_dirs.append(version_path)
                 except OSError:
                     pass
-            
+
             # Check each version directory for the remote CLI
             for server_dir in vscode_server_dirs:
                 remote_cli_path = os.path.join(server_dir, "bin/remote-cli/code")
-                if os.path.exists(remote_cli_path) and os.access(remote_cli_path, os.X_OK):
+                if os.path.exists(remote_cli_path) and os.access(
+                    remote_cli_path, os.X_OK
+                ):
                     return remote_cli_path
-        
+
         # Fall back to user's EDITOR or vim
         return os.environ.get("EDITOR", "vim")
 
     def _get_vim_server_info(self, editor: str) -> tuple[str, Optional[str]]:
         """Get vim executable and server name if clientserver mode is requested.
-        
+
         Args:
             editor: The editor path/command
-            
+
         Returns:
             Tuple of (editor_command, server_name) where server_name is None if not using clientserver
         """
         # Check if this is vim or nvim
         editor_name = os.path.basename(editor)
-        if editor_name not in ['vim', 'nvim']:
+        if editor_name not in ["vim", "nvim"]:
             return editor, None
-        
+
         # Check for server name in environment
         server_name = os.environ.get("VIM_SERVERNAME")
         if not server_name:
             return editor, None
-            
+
         # Check if vim was compiled with clientserver support
         try:
-            result = subprocess.run([editor, '--version'], capture_output=True, text=True, timeout=5)
-            if '+clientserver' not in result.stdout:
-                print(f"Warning: {editor_name} was not compiled with +clientserver support")
+            result = subprocess.run(
+                [editor, "--version"], capture_output=True, text=True, timeout=5
+            )
+            if "+clientserver" not in result.stdout:
+                print(
+                    f"Warning: {editor_name} was not compiled with +clientserver support"
+                )
                 print("Falling back to normal vim mode")
                 return editor, None
         except (subprocess.SubprocessError, subprocess.TimeoutExpired):
             # If we can't check, assume it works
             pass
-            
+
         return editor, server_name
 
-    def _open_vim_server_tabs(self, vim_editor: str, server_name: str, files: List[str]) -> None:
+    def _open_vim_server_tabs(
+        self, vim_editor: str, server_name: str, files: List[str]
+    ) -> None:
         """Open multiple files as tabs in a vim server instance.
-        
+
         Args:
             vim_editor: Path to vim executable
             server_name: Name of the vim server
@@ -492,17 +504,26 @@ class ForgatherShell(cmd.Cmd):
         """
         try:
             for file_path in files:
-                result = subprocess.run([
-                    vim_editor, '--servername', server_name, '--remote-tab', file_path
-                ], capture_output=True, text=True, timeout=10)
-                
+                result = subprocess.run(
+                    [
+                        vim_editor,
+                        "--servername",
+                        server_name,
+                        "--remote-tab",
+                        file_path,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+
                 if result.returncode != 0:
                     print(f"Warning: Failed to open {file_path} in vim server")
                     if result.stderr:
                         print(f"  Error: {result.stderr.strip()}")
-                        
+
             print("Files opened in vim server.")
-            
+
         except subprocess.TimeoutExpired:
             print("Timeout: Vim server took too long to respond")
         except Exception as e:
@@ -606,15 +627,15 @@ class ForgatherShell(cmd.Cmd):
         Usage:
           cd <directory>        # Change to directory
           cd --help            # Show this help message
-        
+
         Supports tab completion for directory paths.
         Examples: cd <TAB>, cd tu<TAB>, cd ~/pr<TAB>
         """
         # Handle help flags
-        if arg and arg.strip() in ['--help', '-h', 'help']:
+        if arg and arg.strip() in ["--help", "-h", "help"]:
             print(self.do_cd.__doc__)
             return
-            
+
         if not arg:
             print("Usage: cd <directory>")
             return
@@ -688,16 +709,16 @@ class ForgatherShell(cmd.Cmd):
 
     def do_configs(self, arg):
         """List available templates
-        
+
         Usage:
           configs               # List all available templates
           configs --help        # Show this help message
         """
         # Handle help flags
-        if arg and arg.strip() in ['--help', '-h', 'help']:
+        if arg and arg.strip() in ["--help", "-h", "help"]:
             print(self.do_configs.__doc__)
             return
-            
+
         templates = self._get_available_templates()
         if templates:
             print("Available templates:")
@@ -709,17 +730,17 @@ class ForgatherShell(cmd.Cmd):
 
     def do_config(self, arg):
         """Set current template: config <template_name>
-        
+
         Usage:
           config                # Show current template
-          config <template>     # Set current template 
+          config <template>     # Set current template
           config --help         # Show this help message
         """
         # Handle help flags
-        if arg and arg.strip() in ['--help', '-h', 'help']:
+        if arg and arg.strip() in ["--help", "-h", "help"]:
             print(self.do_config.__doc__)
             return
-            
+
         if not arg:
             if self.current_template:
                 print(f"Current template: {self.current_template}")
@@ -771,16 +792,16 @@ class ForgatherShell(cmd.Cmd):
 
     def do_commands(self, arg):
         """List available commands
-        
+
         Usage:
           commands              # List all available forgather commands
           commands --help       # Show this help message
         """
         # Handle help flags
-        if arg and arg.strip() in ['--help', '-h', 'help']:
+        if arg and arg.strip() in ["--help", "-h", "help"]:
             print(self.do_commands.__doc__)
             return
-            
+
         commands = self._get_available_commands()
         print("Available commands:")
         for command in sorted(commands):
@@ -793,30 +814,30 @@ class ForgatherShell(cmd.Cmd):
           edit                    # Interactive template selector (supports multiple files)
           edit <template_path>    # Edit specific template file
           edit --help             # Show this help message
-        
+
         Environment Variables:
           VSCODE_IPC_HOOK_CLI    # VS Code IPC socket (auto-detected in VS Code terminals)
                                  # Copy from VS Code session to use elsewhere:
                                  # export VSCODE_IPC_HOOK_CLI=/tmp/vscode-ipc-*.sock
           VIM_SERVERNAME         # Vim server instance name for clientserver mode
           EDITOR                 # Preferred editor (default: vim, auto-detects VS Code)
-        
+
         Editor Priority (highest first):
           1. VS Code Remote CLI (when VSCODE_IPC_HOOK_CLI is set)
           2. Vim Clientserver (when VIM_SERVERNAME is set)
           3. User's EDITOR environment variable
           4. Default vim
-        
+
         Multiple File Selection:
           - Single file: 5
-          - Multiple files: 1,3,7  
+          - Multiple files: 1,3,7
           - Ranges: 1-5,8,10-12
         """
         # Handle help flags
-        if arg and arg.strip() in ['--help', '-h', 'help']:
+        if arg and arg.strip() in ["--help", "-h", "help"]:
             print(self.do_edit.__doc__)
             return
-            
+
         if arg:
             # Direct edit of specified file
             template_paths = [arg]
@@ -864,7 +885,7 @@ class ForgatherShell(cmd.Cmd):
                 except KeyboardInterrupt:
                     print("\nCancelled")
                     return
-            
+
             files_to_edit.append(template_path)
 
         if not files_to_edit:
@@ -873,20 +894,28 @@ class ForgatherShell(cmd.Cmd):
 
         # Launch editor with all files
         editor_name = os.path.basename(editor)
-        
+
         # Check for vim clientserver mode
         vim_editor, vim_server = self._get_vim_server_info(editor)
-        
+
         if len(files_to_edit) == 1:
             if vim_server:
                 print(f"Opening {files_to_edit[0]} in vim server '{vim_server}'...")
-                cmd_args = [vim_editor, '--servername', vim_server, '--remote-tab', files_to_edit[0]]
+                cmd_args = [
+                    vim_editor,
+                    "--servername",
+                    vim_server,
+                    "--remote-tab",
+                    files_to_edit[0],
+                ]
             else:
                 print(f"Opening {files_to_edit[0]} in {editor_name}...")
                 cmd_args = [editor, files_to_edit[0]]
         else:
             if vim_server:
-                print(f"Opening {len(files_to_edit)} files in vim server '{vim_server}' tabs...")
+                print(
+                    f"Opening {len(files_to_edit)} files in vim server '{vim_server}' tabs..."
+                )
                 for f in files_to_edit:
                     rel_path = os.path.relpath(f, self.project_dir)
                     print(f"  - {rel_path}")
@@ -898,17 +927,17 @@ class ForgatherShell(cmd.Cmd):
                 for f in files_to_edit:
                     rel_path = os.path.relpath(f, self.project_dir)
                     print(f"  - {rel_path}")
-                
+
                 # Choose command args based on editor type
-                if 'remote-cli/code' in editor:
+                if "remote-cli/code" in editor:
                     # VS Code remote CLI - just pass all files
                     cmd_args = [editor] + files_to_edit
-                elif editor_name in ['vim', 'nvim']:
+                elif editor_name in ["vim", "nvim"]:
                     # Vim/Neovim - use -p flag for tabs
-                    cmd_args = [editor, '-p'] + files_to_edit
-                elif editor_name in ['code', 'code.exe']:
+                    cmd_args = [editor, "-p"] + files_to_edit
+                elif editor_name in ["code", "code.exe"]:
                     # VS Code standard - use -r flag to reuse window
-                    cmd_args = [editor, '-r'] + files_to_edit
+                    cmd_args = [editor, "-r"] + files_to_edit
                 else:
                     # For other editors, just pass all files
                     cmd_args = [editor] + files_to_edit

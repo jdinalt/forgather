@@ -171,6 +171,7 @@ class Trainer(BaseTrainer):
         # Set the random seed
         if self.args.seed != -1:
             import random
+
             torch.manual_seed(self.args.seed)
             random.seed(self.args.seed)
 
@@ -317,6 +318,7 @@ class Trainer(BaseTrainer):
                 )
             elif self.args.lr_scheduler_type:
                 from transformers import get_scheduler
+
                 self.lr_scheduler = get_scheduler(
                     name=self.args.lr_scheduler_type,
                     optimizer=self.optimizer,
@@ -498,7 +500,7 @@ class Trainer(BaseTrainer):
         if self._total_log_steps:
             mean_loss = self._total_loss / self._total_log_steps
         else:
-            mean_loss = float('nan')
+            mean_loss = float("nan")
         return TrainOutput(self.state.global_step, mean_loss, metrics)
 
     # @override
@@ -619,15 +621,23 @@ class Trainer(BaseTrainer):
         if hasattr(self, "train_dataloader"):
             # Depending upon the class of the dataloader, it may have a method named either load_state_dict() or reset()
             # which can load a state dictionary, with the latter being part of the torchdata.nodes API
-            load_method = getattr(self.train_dataloader, "load_state_dict", getattr(self.train_dataloader, "reset", None))
+            load_method = getattr(
+                self.train_dataloader,
+                "load_state_dict",
+                getattr(self.train_dataloader, "reset", None),
+            )
             if load_method:
                 try:
-                    logger.info(f"Loading dataloader state: {dataloader_state.keys()} via {load_method.__name__}()")
+                    logger.info(
+                        f"Loading dataloader state: {dataloader_state.keys()} via {load_method.__name__}()"
+                    )
                     load_method(dataloader_state)
                 except Exception as e:
                     logger.warning(f"Failed to load dataloader state: {e}")
             else:
-                logger.warning("Could not restored Dataloader state, as it does not have a load method")
+                logger.warning(
+                    "Could not restored Dataloader state, as it does not have a load method"
+                )
 
     def _update_training_steps(self) -> None:
         """

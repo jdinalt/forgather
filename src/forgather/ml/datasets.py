@@ -33,7 +33,7 @@ class IterableDatasetWithLength(IterableDataset):
 
     def __iter__(self):
         return iter(self._dataset)
-    
+
     def __repr__(self):
         return f"IterableDatasetWithLength({repr(self._dataset)}, length={repr(self._length)})"
 

@@ -289,15 +289,15 @@ def _render_hierarchy_tree(hierarchy_data):
                     prefix += "│   " if has_sibling_below else "    "
 
         # Add file type emoji and path info
-        if 'trainer' in name.lower():
+        if "trainer" in name.lower():
             emoji = "🏃 "
-        elif 'model' in name.lower():
+        elif "model" in name.lower():
             emoji = "🧠 "
-        elif 'dataset' in name.lower():
+        elif "dataset" in name.lower():
             emoji = "📊 "
-        elif 'callback' in name.lower():
+        elif "callback" in name.lower():
             emoji = "🔄 "
-        elif name.endswith('.yaml'):
+        elif name.endswith(".yaml"):
             emoji = "📄 "
         else:
             emoji = "📋 "
@@ -329,12 +329,12 @@ def render_template_hierarchy_dot(environment, template_path):
 
     # Define node styles for different template types
     styles = {
-        'config': 'fillcolor=lightblue, style="rounded,filled"',
-        'trainer': 'fillcolor=lightgreen, style="rounded,filled"',
-        'model': 'fillcolor=lightyellow, style="rounded,filled"',
-        'dataset': 'fillcolor=lightcoral, style="rounded,filled"',
-        'callback': 'fillcolor=lightgray, style="rounded,filled"',
-        'default': 'fillcolor=white, style="rounded,filled"'
+        "config": 'fillcolor=lightblue, style="rounded,filled"',
+        "trainer": 'fillcolor=lightgreen, style="rounded,filled"',
+        "model": 'fillcolor=lightyellow, style="rounded,filled"',
+        "dataset": 'fillcolor=lightcoral, style="rounded,filled"',
+        "callback": 'fillcolor=lightgray, style="rounded,filled"',
+        "default": 'fillcolor=white, style="rounded,filled"',
     }
 
     # Add nodes with styles
@@ -344,20 +344,20 @@ def render_template_hierarchy_dot(environment, template_path):
 
     for name in sorted(all_templates):
         # Determine node style based on name
-        style = styles['default']
-        if 'trainer' in name.lower():
-            style = styles['trainer']
-        elif 'model' in name.lower():
-            style = styles['model']
-        elif 'dataset' in name.lower():
-            style = styles['dataset']
-        elif 'callback' in name.lower():
-            style = styles['callback']
-        elif 'config' in name.lower() or name.endswith('.yaml'):
-            style = styles['config']
+        style = styles["default"]
+        if "trainer" in name.lower():
+            style = styles["trainer"]
+        elif "model" in name.lower():
+            style = styles["model"]
+        elif "dataset" in name.lower():
+            style = styles["dataset"]
+        elif "callback" in name.lower():
+            style = styles["callback"]
+        elif "config" in name.lower() or name.endswith(".yaml"):
+            style = styles["config"]
 
         # Clean node name for DOT format
-        clean_name = name.replace('.', '_').replace('/', '_').replace('-', '_')
+        clean_name = name.replace(".", "_").replace("/", "_").replace("-", "_")
         display_name = name.replace('"', '\\"')
 
         output.append(f'    {clean_name} [label="{display_name}", {style}];')
@@ -368,9 +368,9 @@ def render_template_hierarchy_dot(environment, template_path):
     # The dependencies dict shows: parent -> [children] relationships
     # In DOT format, we want: parent -> child (parent depends on/includes child)
     for parent, children in dependencies.items():
-        parent_clean = parent.replace('.', '_').replace('/', '_').replace('-', '_')
+        parent_clean = parent.replace(".", "_").replace("/", "_").replace("-", "_")
         for child in sorted(children):
-            child_clean = child.replace('.', '_').replace('/', '_').replace('-', '_')
+            child_clean = child.replace(".", "_").replace("/", "_").replace("-", "_")
             output.append(f"    {parent_clean} -> {child_clean};")
 
     output.append("}")
@@ -385,19 +385,21 @@ def render_template_hierarchy_svg(environment, template_path):
     import shutil
 
     # Check if dot command is available
-    if not shutil.which('dot'):
-        raise Exception("Graphviz 'dot' command not found. Please install Graphviz to use SVG output.")
+    if not shutil.which("dot"):
+        raise Exception(
+            "Graphviz 'dot' command not found. Please install Graphviz to use SVG output."
+        )
 
     dot_content = render_template_hierarchy_dot(environment, template_path)
 
     try:
         # Use dot command to generate SVG
         result = subprocess.run(
-            ['dot', '-Tsvg'],
+            ["dot", "-Tsvg"],
             input=dot_content,
             text=True,
             capture_output=True,
-            check=True
+            check=True,
         )
         return result.stdout
     except subprocess.CalledProcessError as e:
