@@ -78,9 +78,8 @@ def build_rule(
         build_target = True
 
     if build_target:
-        output = recipe()
-        if output is not None:
-            return output
+        recipe()
+
     return loader()
 
 
