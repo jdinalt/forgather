@@ -33,9 +33,8 @@ def dataset_cmd(args):
     if not features:
         features = [main_feature]
 
-    assert (
-        config_class == "type.dataset"
-    ), f"Expected class type.dataset, found {config_class}"
+    if config_class != "type.dataset":
+        raise TypeError(f"Expected class type.dataset, found {config_class}")
 
     data = ""
     if args.pp:

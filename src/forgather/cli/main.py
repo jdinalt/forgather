@@ -28,6 +28,7 @@ from .dynamic_args import (
     partition_args,
     get_dynamic_args,
 )
+
 from .utils import add_output_arg
 
 
@@ -92,6 +93,7 @@ def get_subcommand_registry():
         "dataset": create_dataset_parser,
         "ws": create_ws_parser,
         "control": create_control_parser,
+        "model": create_model_parser,
     }
 
 
@@ -541,6 +543,45 @@ def create_control_parser(global_args):
     return parser
 
 
+def create_model_parser(global_args):
+    """Create parser for train command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather model",
+        description="Test a model definition",
+        formatter_class=RawTextHelpFormatter,
+    )
+
+    parser.add_argument(
+        "--device", type=str, default="meta", help="Device to construct model on"
+    )
+
+    subparsers = parser.add_subparsers(
+        dest="model_subcommand", help="Model subcommands"
+    )
+
+    # construct subcommand
+    construct_parser = subparsers.add_parser(
+        "construct",
+        help="Construct a model",
+        formatter_class=RawTextHelpFormatter,
+    )
+
+    # test subcommand
+    test_parser = subparsers.add_parser(
+        "test",
+        help="Test model forward and backward",
+        formatter_class=RawTextHelpFormatter,
+    )
+    test_parser.add_argument("--batch-size", type=int, default="2", help="Batch size")
+    test_parser.add_argument(
+        "--sequence-length", type=int, default="512", help="Sequence length"
+    )
+
+    add_output_arg(parser)
+    parse_dynamic_args(parser, global_args)
+    return parser
+
+
 def show_main_help():
     """Show the main help message with available subcommands."""
     print("Forgather CLI")
@@ -680,6 +721,10 @@ def main():
                 ws_cmd(args)
             case "control":
                 control_cmd(args)
+            case "model":
+                from .model import model_cmd
+
+                model_cmd(args)
             case _:
                 index_cmd(args)
     except SystemExit:
