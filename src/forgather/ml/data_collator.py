@@ -73,6 +73,12 @@ class DataCollatorForCausalLM:
         self.ignore_index = ignore_index
         self.pad_kwargs = pad_kwargs
 
+    def __repr__(self):
+        return (
+            f"{type(self).__name__}(tokenizer={self.tokenizer}, truncation={self.truncation}, "
+            f"ignore_index={self.ignore_index }), pad_kwargs={self.pad_kwargs}"
+        )
+
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
         if self.truncation:
             features = self._truncate(features)
