@@ -1,0 +1,37 @@
+-- extends "models/model_type.yaml"
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Tiny Deepone"
+    -- set ns.config_description = "A tiny Deepone"
+    -- set ns.model_name = "tiny"
+-- endblock config_metadata
+
+-- block model_definition
+    -- include "config.model"
+-- endblock model_definition
+
+
+#------------- config.model --------------
+-- extends "models/transformers/deepone.yaml"
+
+
+-- block model_tokenizer
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "2k.yaml"
+    pp_debug: False
+<< endblock model_tokenizer
+
+
+-- block model_config
+    == super()
+    
+    # **Tiny Overrides**
+    hidden_size: 256
+    dim_feedforward: 1024
+    num_attention_heads: 2
+    num_hidden_layers: 4
+    embedding_dropout: 0.0
+    layer_dropout: 0.0
+<< endblock model_config
