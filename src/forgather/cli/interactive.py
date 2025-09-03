@@ -503,24 +503,23 @@ class ForgatherShell(cmd.Cmd):
             files: List of file paths to open
         """
         try:
-            for file_path in files:
-                result = subprocess.run(
-                    [
-                        vim_editor,
-                        "--servername",
-                        server_name,
-                        "--remote-tab",
-                        file_path,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
+            result = subprocess.run(
+                [
+                    vim_editor,
+                    "--servername",
+                    server_name,
+                    "--remote-tab",
+                    *files
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
 
-                if result.returncode != 0:
-                    print(f"Warning: Failed to open {file_path} in vim server")
-                    if result.stderr:
-                        print(f"  Error: {result.stderr.strip()}")
+            if result.returncode != 0:
+                print(f"Warning: Failed to open {file_path} in vim server")
+                if result.stderr:
+                    print(f"  Error: {result.stderr.strip()}")
 
             print("Files opened in vim server.")
 
