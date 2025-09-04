@@ -30,8 +30,8 @@ class ProgressCallback:
     def on_train_begin(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
             return
-        self.step = 0
-        self.train_progress_bar = tqdm(total=state.max_steps, dynamic_ncols=True)
+        self.last_step = state.global_step
+        self.train_progress_bar = tqdm(initial=state.global_step, total=state.max_steps, dynamic_ncols=True)
 
     def on_train_end(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
@@ -42,8 +42,9 @@ class ProgressCallback:
     def on_step_end(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
             return
-        self.train_progress_bar.update(state.global_step - self.step)
-        self.step = state.global_step
+        
+        self.train_progress_bar.update(state.global_step - self.last_step)
+        self.last_step = state.global_step
 
     def on_prediction_step(self, args, state, control, eval_dataloader, **kwargs):
         if not state.is_world_process_zero:
