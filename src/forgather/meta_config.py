@@ -122,7 +122,10 @@ class MetaConfig:
         if os.path.isdir(user_templates_dir):
             searchpath.append(user_templates_dir)
 
-        self.environment = ConfigEnvironment(searchpath=searchpath)
+        self.environment = ConfigEnvironment(
+            searchpath=searchpath,
+            global_vars=preprocessor_globals(project_directory, self.workspace_root),
+        )
         config = self.environment.load(template_name, **kwargs)
         return config.config
 
