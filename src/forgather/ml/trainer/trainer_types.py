@@ -150,7 +150,7 @@ class TrainingArguments(MinimalTrainingArguments):
     torch_compile_full_graph: bool = False
 
     max_grad_norm: float = None
-    gradient_accumulation_steps: int = 1  # Unimplemented in Trainer
+    gradient_accumulation_steps: int = 1
 
     # Checkpointing options
     save_strategy: ConversionDescriptor = ConversionDescriptor(

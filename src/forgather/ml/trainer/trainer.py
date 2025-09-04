@@ -146,6 +146,10 @@ class Trainer(BaseTrainer):
             self.args.max_grad_norm is None or not self.args.fuse_optim_with_backward
         ), "max_grad_norm is incompatible with fuse_optim_with_backward"
 
+        assert (
+            self.args.gradient_accumulation_steps == 1 or not self.args.fuse_optim_with_backward
+        ), "gradient_accumulation_steps={self.args.gradient_accumulation_steps} is incompatible with fuse_optim_with_backward"
+
         if self.data_collator is None:
             self.data_collator = torch.utils.data.default_collate
 
