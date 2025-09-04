@@ -1,0 +1,284 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Forgather",
+  "scopeName": "source.forgather",
+  "patterns": [
+    {
+      "include": "#forgather-line-comments"
+    },
+    {
+      "include": "#forgather-inline-comments"
+    },
+    {
+      "include": "#jinja2-comments"
+    },
+    {
+      "include": "#jinja2-print-statements"
+    },
+    {
+      "include": "#jinja2-block-statements"
+    },
+    {
+      "include": "#forgather-line-statements"
+    },
+    {
+      "include": "#forgather-print-statements"
+    },
+    {
+      "include": "#template-split-markers"
+    },
+    {
+      "include": "#forgather-yaml-tags"
+    },
+    {
+      "include": "#yaml-anchors-aliases"
+    },
+    {
+      "include": "#dot-name-elision"
+    },
+    {
+      "include": "source.yaml"
+    }
+  ],
+  "repository": {
+    "forgather-line-comments": {
+      "name": "comment.line.number-sign.forgather",
+      "match": "^\\s*##.*$"
+    },
+    "forgather-inline-comments": {
+      "name": "comment.line.number-sign.forgather",
+      "match": "\\s+##.*$"
+    },
+    "jinja2-comments": {
+      "name": "comment.block.jinja2.forgather",
+      "begin": "\\{#",
+      "end": "#\\}",
+      "patterns": [
+        {
+          "name": "comment.block.content.jinja2.forgather",
+          "match": ".*"
+        }
+      ]
+    },
+    "jinja2-print-statements": {
+      "name": "meta.embedded.jinja2.print.forgather",
+      "begin": "\\{\\{",
+      "end": "\\}\\}",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.template.begin.jinja2.forgather"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.template.end.jinja2.forgather"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#jinja2-expressions"
+        }
+      ]
+    },
+    "jinja2-block-statements": {
+      "name": "meta.embedded.jinja2.block.forgather",
+      "begin": "\\{%",
+      "end": "%\\}",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.template.begin.jinja2.forgather"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.template.end.jinja2.forgather"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#jinja2-keywords"
+        },
+        {
+          "include": "#jinja2-expressions"
+        }
+      ]
+    },
+    "forgather-line-statements": {
+      "name": "meta.forgather.line-statement",
+      "begin": "^\\s*(--|<<|>>)\\s",
+      "end": "$",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.template.line.forgather"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#jinja2-keywords"
+        },
+        {
+          "include": "#jinja2-expressions"
+        }
+      ]
+    },
+    "forgather-print-statements": {
+      "name": "meta.forgather.print-statement",
+      "begin": "^\\s*(==|=>)\\s",
+      "end": "$",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.template.print.forgather"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#jinja2-expressions"
+        }
+      ]
+    },
+    "template-split-markers": {
+      "name": "comment.block.template-split.forgather",
+      "match": "^#\\s*-{3,}\\s*[\\w./]+\\s*-{3,}$"
+    },
+    "forgather-yaml-tags": {
+      "patterns": [
+        {
+          "name": "meta.tag.yaml.forgather",
+          "match": "!(call|singleton|factory|partial|lambda):[^@\\s]+(@\\w+)?",
+          "captures": {
+            "0": {
+              "patterns": [
+                {
+                  "name": "storage.type.tag.yaml.forgather",
+                  "match": "!(call|singleton|factory|partial|lambda)"
+                },
+                {
+                  "name": "string.unquoted.import-spec.forgather",
+                  "match": ":[^@\\s]+"
+                },
+                {
+                  "name": "entity.name.tag.yaml.forgather",
+                  "match": "@\\w+"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "storage.type.tag.yaml.forgather",
+          "match": "!(var|tuple|list|dict|dlist)\\b"
+        }
+      ]
+    },
+    "yaml-anchors-aliases": {
+      "patterns": [
+        {
+          "name": "entity.name.type.anchor.yaml.forgather",
+          "match": "&\\w+"
+        },
+        {
+          "name": "variable.other.alias.yaml.forgather",
+          "match": "\\*\\w+"
+        }
+      ]
+    },
+    "dot-name-elision": {
+      "name": "meta.dot-name-elision.forgather",
+      "match": "^\\s*(\\.\\w+)\\s*:",
+      "captures": {
+        "1": {
+          "name": "entity.other.attribute-name.forgather"
+        }
+      }
+    },
+    "jinja2-keywords": {
+      "name": "keyword.control.jinja2.forgather",
+      "match": "\\b(if|endif|else|elif|for|endfor|block|endblock|extends|include|set|macro|endmacro|with|endwith|super|loop|caller|varargs|kwargs|in)\\b"
+    },
+    "jinja2-expressions": {
+      "patterns": [
+        {
+          "include": "#jinja2-strings"
+        },
+        {
+          "include": "#jinja2-variables"
+        },
+        {
+          "include": "#jinja2-filters"
+        },
+        {
+          "include": "#jinja2-functions"
+        },
+        {
+          "include": "#jinja2-brackets"
+        }
+      ]
+    },
+    "jinja2-strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.jinja2.forgather",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.jinja2.forgather",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.jinja2.forgather",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.jinja2.forgather",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "jinja2-variables": {
+      "patterns": [
+        {
+          "name": "variable.other.jinja2.forgather",
+          "match": "\\bns\\.\\w+\\b"
+        },
+        {
+          "name": "variable.other.jinja2.forgather",
+          "match": "\\b\\w+\\b"
+        }
+      ]
+    },
+    "jinja2-filters": {
+      "name": "support.function.filter.jinja2.forgather",
+      "match": "\\|\\w+"
+    },
+    "jinja2-functions": {
+      "name": "support.function.jinja2.forgather",
+      "match": "\\w+\\s*\\("
+    },
+    "jinja2-brackets": {
+      "patterns": [
+        {
+          "name": "punctuation.section.brackets.begin.jinja2.forgather",
+          "match": "\\["
+        },
+        {
+          "name": "punctuation.section.brackets.end.jinja2.forgather",
+          "match": "\\]"
+        },
+        {
+          "name": "punctuation.section.parens.begin.jinja2.forgather",
+          "match": "\\("
+        },
+        {
+          "name": "punctuation.section.parens.end.jinja2.forgather",
+          "match": "\\)"
+        }
+      ]
+    }
+  }
+}

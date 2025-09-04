@@ -5,6 +5,7 @@
 /tokenizers
 *.sh
 .forgather_history
+forgather.code-workspace
 
 output_models
 data

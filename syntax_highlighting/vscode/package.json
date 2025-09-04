@@ -1,0 +1,44 @@
+{
+  "name": "forgather-syntax",
+  "displayName": "Forgather Configuration Syntax",
+  "description": "Syntax highlighting for Forgather configuration files (YAML + Jinja2 + Custom Extensions)",
+  "version": "1.0.0",
+  "publisher": "forgather",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/forgather"
+  },
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "forgather",
+    "yaml",
+    "jinja2",
+    "configuration",
+    "syntax"
+  ],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "forgather-config",
+        "aliases": ["Forgather Configuration", "forgather"],
+        "extensions": [],
+        "filenames": [],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "forgather-config",
+        "scopeName": "source.forgather",
+        "path": "./syntaxes/forgather.tmLanguage.json"
+      }
+    ]
+  }
+}

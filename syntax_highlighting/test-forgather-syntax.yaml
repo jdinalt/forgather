@@ -1,0 +1,26 @@
+-- extends 'base.yaml'
+
+## This is a Forgather line comment
+-- block test_block
+    == "This is a print statement: " + variable_name
+    
+    custom_tag: !singleton:torch.nn:Linear@my_linear
+        in_features: 128
+        out_features: 64
+        
+    jinja_example: {{ variable_name['key'] }}
+    
+    {% for item in items %}
+        - name: {{ item.name }}
+          value: {{ item.value }}
+    {% endfor %}
+    
+-- endblock test_block
+
+{# This is a standard Jinja comment #}
+
+#----- inline.template -----
+-- extends 'parent.yaml'
+-- block nested
+    nested_content: true
+-- endblock nested
