@@ -76,6 +76,7 @@ def set_train(model: torch.nn.Module, mode: bool):
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 def maybe_cleanup_memory(alloc_threshold):
     """Check if memory usage exceeds threshold"""
     if torch.cuda.is_available():
@@ -86,6 +87,7 @@ def maybe_cleanup_memory(alloc_threshold):
         if usage_ratio > alloc_threshold:
             gc.collect()
             torch.cuda.empty_cache()
+
 
 def optimzer_hook(optimizer, total_grad_squared, parameter):
     if total_grad_squared is not None:
@@ -147,7 +149,8 @@ class Trainer(BaseTrainer):
         ), "max_grad_norm is incompatible with fuse_optim_with_backward"
 
         assert (
-            self.args.gradient_accumulation_steps == 1 or not self.args.fuse_optim_with_backward
+            self.args.gradient_accumulation_steps == 1
+            or not self.args.fuse_optim_with_backward
         ), "gradient_accumulation_steps={self.args.gradient_accumulation_steps} is incompatible with fuse_optim_with_backward"
 
         if self.data_collator is None:
