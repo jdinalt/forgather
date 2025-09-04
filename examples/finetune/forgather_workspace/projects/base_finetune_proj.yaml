@@ -35,7 +35,7 @@
 
 
 -- block globals
-	# If not specified, default to model-dir and model-name
+	## If not specified, default to model-dir and model-name
 	-- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
 
     ## If explicity specified, use 'output_dir,' otherwise assume that 'ns.model_id_or_path'
@@ -172,7 +172,7 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
         type: "path"
         help: "HF model ID or local path to model"
     output_dir:
-        names: [ "--output-dir", "-o" ]
+        names: [ "--output-dir" ]
         type: "path"
         help: "Training output director. Defaults to model_id_or_path"
     safe_load:
