@@ -9,7 +9,7 @@ from forgather.ml.datasets import plot_token_length_histogram
 from forgather import Project
 
 from .dynamic_args import get_dynamic_args
-from .utils import write_output
+from .utils import write_output, write_output_or_edit
 
 
 def load_model(args):
@@ -52,7 +52,7 @@ def model_construct_cmd(args):
     model_header = f"Model on '{args.device}' device"
     data += f"{model_header:-^80}\n" + pformat(model) + "\n\n"
     data += f"parameters={count_parameters(model)}\n"
-    write_output(args, data)
+    write_output_or_edit(args, data, ".txt")
 
 
 def model_test_cmd(args):

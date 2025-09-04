@@ -9,7 +9,7 @@ from forgather.ml.datasets import plot_token_length_histogram
 from forgather import Project
 
 from .dynamic_args import get_dynamic_args
-from .utils import write_output
+from .utils import write_output, write_output_or_edit
 
 
 def dataset_cmd(args):
@@ -93,4 +93,4 @@ def dataset_cmd(args):
                 data += f"{i:-^80}\n"
                 for feature in features:
                     data += f"{feature:*^16}\n\n" + example[feature] + "\n"
-    write_output(args, data)
+    write_output_or_edit(args, data, ".txt")

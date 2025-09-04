@@ -100,26 +100,48 @@ def list_templates(templates: Iterator[Tuple[str, str]], title: str = ""):
     display(ds.Markdown(render_template_list(templates, title)))
 
 
-def render_referenced_templates_tree(environment, path, title=""):
+def render_referenced_templates_tree(
+    environment, path, title="", use_absolute_paths=False
+):
     md = f"{title}"
     # Yields # tuple(level: int, name: str, path: str)
     for level, name, path in environment.find_referenced_templates(path):
-        md += f"{' ' * 4 * level}- [{name}]({os.path.relpath(path)})\n"
+        if use_absolute_paths:
+            # When using -e flag, adjust paths to be relative to ./tmp/ directory
+            from forgather.cli.utils import adjust_path_for_tmp_dir
+
+            link_path = adjust_path_for_tmp_dir(os.path.relpath(path))
+        else:
+            # Use relative path (original behavior)
+            link_path = os.path.relpath(path)
+
+        md += f"{' ' * 4 * level}- [{name}]({link_path})\n"
     return md
 
 
-def render_extends_graph(meta):
+def render_extends_graph(meta, use_absolute_paths=False):
     """
     Given project meta, render the inheritance graph of all templates.
+
+    Args:
+        meta: Project metadata
+        use_absolute_paths: If True, adjust paths for ./tmp/ directory context
     """
     extends_graph = get_extends_graph(
         template_extends_iter(template_data_iter(meta.find_templates()))
     )
     md = ""
     for level, template_name, template_path in extends_graph_iter(extends_graph):
-        md += (
-            f"{' ' * 4 * level}- [{template_name}]({os.path.relpath(template_path)})\n"
-        )
+        if use_absolute_paths:
+            # When using -e flag, adjust paths to be relative to ./tmp/ directory
+            from forgather.cli.utils import adjust_path_for_tmp_dir
+
+            link_path = adjust_path_for_tmp_dir(os.path.relpath(template_path))
+        else:
+            # Use relative path (original behavior)
+            link_path = os.path.relpath(template_path)
+
+        md += f"{' ' * 4 * level}- [{template_name}]({link_path})\n"
     return md
 
 

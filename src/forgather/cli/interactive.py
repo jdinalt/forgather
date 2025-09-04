@@ -504,13 +504,7 @@ class ForgatherShell(cmd.Cmd):
         """
         try:
             result = subprocess.run(
-                [
-                    vim_editor,
-                    "--servername",
-                    server_name,
-                    "--remote-tab",
-                    *files
-                ],
+                [vim_editor, "--servername", server_name, "--remote-tab", *files],
                 capture_output=True,
                 text=True,
                 timeout=10,

@@ -29,7 +29,7 @@ from .dynamic_args import (
     get_dynamic_args,
 )
 
-from .utils import add_output_arg
+from .utils import add_output_arg, add_editor_arg
 
 
 def parse_global_args(args=None):
@@ -105,6 +105,7 @@ def create_index_parser(global_args):
         formatter_class=RawTextHelpFormatter,
     )
     add_output_arg(parser)
+    add_editor_arg(parser)
     return parser
 
 
@@ -144,6 +145,7 @@ def create_meta_parser(global_args):
         formatter_class=RawTextHelpFormatter,
     )
     add_output_arg(parser)
+    add_editor_arg(parser)
     return parser
 
 
@@ -155,6 +157,7 @@ def create_targets_parser(global_args):
         formatter_class=RawTextHelpFormatter,
     )
     add_output_arg(parser)
+    add_editor_arg(parser)
     return parser
 
 
@@ -173,6 +176,7 @@ def create_tlist_parser(global_args):
         help="Output format.",
     )
     add_output_arg(parser)
+    add_editor_arg(parser)
     return parser
 
 
@@ -197,6 +201,7 @@ def create_graph_parser(global_args):
         help="Shows details of template preprocessing to assist with debugging",
     )
     add_output_arg(parser)
+    add_editor_arg(parser)
     parse_dynamic_args(parser, global_args)
     return parser
 
@@ -216,6 +221,7 @@ def create_trefs_parser(global_args):
         help="Output format: md (markdown), files (file list), tree (hierarchical), dot (graphviz), svg (render SVG).",
     )
     add_output_arg(parser)
+    add_editor_arg(parser)
     return parser
 
 
@@ -233,6 +239,7 @@ def create_pp_parser(global_args):
         help="Shows details of template preprocessing to assist with debugging",
     )
     add_output_arg(parser)
+    add_editor_arg(parser)
     parse_dynamic_args(parser, global_args)
     return parser
 
@@ -277,6 +284,7 @@ def create_code_parser(global_args):
         help="Output target name",
     )
     add_output_arg(parser)
+    add_editor_arg(parser)
     parse_dynamic_args(parser, global_args)
     return parser
 
@@ -300,6 +308,7 @@ def create_construct_parser(global_args):
         help="Call the materialized object",
     )
     add_output_arg(parser)
+    add_editor_arg(parser)
     parse_dynamic_args(parser, global_args)
     return parser
 
@@ -389,6 +398,7 @@ def create_dataset_parser(global_args):
         help="The split is already tokenized",
     )
     add_output_arg(parser)
+    add_editor_arg(parser)
     parse_dynamic_args(parser, global_args)
     return parser
 
@@ -578,6 +588,7 @@ def create_model_parser(global_args):
     )
 
     add_output_arg(parser)
+    add_editor_arg(parser)
     parse_dynamic_args(parser, global_args)
     return parser
 
