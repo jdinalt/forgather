@@ -522,11 +522,7 @@ def convert_hf_to_forgather(args):
         hidden_size=src_model_config.hidden_size,
         num_attention_heads=src_model_config.num_attention_heads,
         num_kv_heads=src_model_config.num_key_value_heads,
-        d_head=getattr(
-            src_model_config,
-            "head_dim",
-            src_model_config.hidden_size // src_model_config.num_attention_heads,
-        ),
+        d_head=src_model_config.hidden_size // src_model_config.num_attention_heads,
         num_hidden_layers=src_model_config.num_hidden_layers,
         dim_feedforward=src_model_config.intermediate_size,
         rope_theta=src_model_config.rope_theta,
@@ -551,7 +547,7 @@ def convert_hf_to_forgather(args):
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
         tokenizer.padding_side = 'right'
-    
+
     model_config = Latent.materialize(config, mtargets="model_config")
     logger.info(model_config)
 
