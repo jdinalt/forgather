@@ -15,7 +15,7 @@
     eval_strategy: "steps"
     num_train_epochs: {{ train_epochs | default(1) }}
     dataloader_num_workers: 1
-    max_grad_norm: 1.0
+    #max_grad_norm: 1.0
     float32_matmul_precision: "high"
     gradient_checkpointing: {{ gradient_checkpointing | default(False) }}
 

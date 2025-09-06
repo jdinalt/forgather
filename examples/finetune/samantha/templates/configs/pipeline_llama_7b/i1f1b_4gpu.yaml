@@ -17,7 +17,7 @@
 -- block datacollator
     == super()
     padding: "max_length" # Required for pipeline
-    max_length: 1300
+    max_length: 1500
 -- endblock datacollator
 
 
@@ -28,4 +28,5 @@
     == super()
 
     # **config**
+    max_grad_norm: null
 -- endblock trainer_args

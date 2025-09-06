@@ -3,7 +3,7 @@
 
 # Model configuration
 # Adjust path to match your output model.
-model: "/home/dinalt/ai_assets/models/llama-2-7b-hf"
+model: "/home/dinalt/ai_assets/models/samantha"
 device: "cuda:0"
 dtype: "bfloat16"
 
