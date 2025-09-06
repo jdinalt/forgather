@@ -1,6 +1,10 @@
 import jinja2
 import logging
 import os
+import json
+from pathlib import Path
+from datasets import Dataset, DatasetDict
+from huggingface_hub import hf_hub_download
 from forgather.ml.distributed import main_process_first
 
 logging.basicConfig(level=logging.DEBUG)
@@ -89,3 +93,95 @@ def preprocess_samantha(
         **map_args,
     )
     return output_dataset
+
+
+@main_process_first()
+def load_samantha_dataset_manual(
+    cache_dir=None,
+    language="en",
+    repo_id="QuixiAI/samantha-data"
+):
+    """
+    Manually download and load the Samantha dataset from Huggingface Hub.
+    This replicates the original dataset loading script that used percentage-based splits.
+
+    Args:
+        cache_dir: Directory to cache downloaded files
+        language: Language code ('en', 'it', 'km', 'zh')
+        repo_id: Huggingface repository ID
+
+    Returns:
+        DatasetDict with train/validation/test splits matching original script
+    """
+    # Determine filename based on language
+    if language == 'en':
+        filename = "samantha-1.1.json"
+    else:
+        filename = f"samantha-1.1-{language}.json"
+
+    logger.info(f"Downloading Samantha dataset file: {filename}")
+
+    try:
+        file_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            cache_dir=cache_dir,
+            repo_type="dataset"
+        )
+        logger.info(f"Downloaded {filename} to {file_path}")
+
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data_list = json.load(f)
+
+        logger.info(f"Loaded {len(data_list)} conversations from {filename}")
+
+        # Convert to the expected format with human/gpt sequences
+        processed_data = []
+        for data in data_list:
+            conversations = data["conversations"]
+            human = []
+            gpt = []
+            for conv_id, conversation in enumerate(conversations):
+                value_str = conversation["value"].strip()
+                if conv_id % 2 == 0:  # Even index = human
+                    human.append(value_str)
+                else:  # Odd index = gpt
+                    gpt.append(value_str)
+
+            processed_data.append({
+                "id": data["id"],
+                "conversations": {
+                    "human": human,
+                    "gpt": gpt
+                }
+            })
+
+        # Create splits using exact percentages from original script
+        # Train: 0-80%, Validation: 80-95%, Test: 95-100%
+        total_len = len(processed_data)
+        train_end = int(total_len * 0.80)
+        val_end = int(total_len * 0.95)
+
+        train_data = processed_data[0:train_end]
+        val_data = processed_data[train_end:val_end]
+        test_data = processed_data[val_end:]
+
+        dataset_dict = DatasetDict({
+            'train': Dataset.from_list(train_data),
+            'validation': Dataset.from_list(val_data),
+            'test': Dataset.from_list(test_data)
+        })
+
+        logger.info(f"Created splits: train={len(train_data)}, validation={len(val_data)}, test={len(test_data)}")
+
+        return dataset_dict
+
+    except Exception as e:
+        logger.error(f"Failed to download or process {filename}: {e}")
+        raise
+
+
+def load_samantha_split(split="train", **kwargs):
+    """Load a specific split of the Samantha dataset."""
+    dataset_dict = load_samantha_dataset_manual(**kwargs)
+    return dataset_dict[split]
