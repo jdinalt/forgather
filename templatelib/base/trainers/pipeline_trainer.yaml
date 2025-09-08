@@ -40,7 +40,7 @@ split_spec: &split_spec !dict@split_spec
 -- block trainer_args
     == super()
 
-    # **pipeline trainer**
+    # **PipelineTrainer**
     split_spec: *split_spec
 
     # Split batches into N micro-batches; batch-sizes must be divisble by this value.
@@ -84,6 +84,8 @@ split_spec: &split_spec !dict@split_spec
 
 -- block trainer_constructor
     == super()
+
+    # **PipelineTrainer**
     # Pipeline requires explicit loss function
     compute_loss_func: !singleton:forgather.ml.loss:CausalLoss
     distributed_env: *distributed_env

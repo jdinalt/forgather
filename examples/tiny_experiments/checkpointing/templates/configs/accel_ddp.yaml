@@ -1,0 +1,37 @@
+-- extends "project.yaml"
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Accel DDP Checkpoint"
+    -- set ns.config_description = "Test AccelTrainer DDP checkpointing"
+    -- set ns.create_new_model = True
+    -- set ns.log_name = "accel_trainer"
+    -- set ns.trainer_class = 'trainers/accel_trainer.yaml'
+<< endblock config_metadata
+
+
+-- block distributed_environment
+distributed_env: &distributed_env !singleton:forgather.ml.trainer.accelerate:AccelDistEnv@distributed_env
+    - !singleton:accelerate:Accelerator []
+<< endblock distributed_environment
+
+
+-- block trainer_definition
+    -- include 'accel_trainer_ddp.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- accel_trainer_ddp.trainer_config --------------------
+-- extends 'checkpointing.trainer_config'
+
+-- block trainer_meta_config
+    == super()
+    ## Train with two device
+    -- set ns.nproc_per_node = 2
+<< endblock trainer_meta_config
+
+
+-- block trainer_args
+    == super()
+
+    # **accel_trainer_ddp.trainer_config**
+-- endblock trainer_args

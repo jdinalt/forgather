@@ -12,13 +12,12 @@
 -- endblock trainer_definition
 
 #-------------------- checkpointing.trainer_config --------------------
--- extends 'trainers/trainer.yaml'
-## Override the trainer config for checkpointing
+-- extends ns.trainer_class
 
 -- block trainer_args
     == super()
     
-    # Checkpointing Project Overrides (must come after all parent overrides)
+    # **checkpointing.trainer_config** 
     # Enable checkpoint features
     save_strategy: "{{ save_strategy | default('steps') }}"
     eval_strategy: "{{ save_strategy | default('steps') }}"

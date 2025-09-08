@@ -1,27 +1,16 @@
 import os
-from typing import Any, List, Dict, NamedTuple, Tuple, Optional
+from typing import Any, List, Dict, NamedTuple, Optional
 from abc import ABC, abstractmethod
+from typing import Protocol
 from dataclasses import dataclass, field
-from collections import namedtuple
 import platform
 import time
 from pprint import pformat
 
-import torch
-from torch.utils.data import DataLoader, Dataset
-import numpy as np
+from torch.utils.data import Dataset
+from torch.distributed.checkpoint.stateful import Stateful
 
 from ..utils import ConversionDescriptor, DiagnosticEnum
-
-
-def sequential_lr_factory(optimizer, schedulers, milestones, last_epoch=-1):
-    return torch.optim.lr_scheduler.SequentialLR(
-        optimizer=optimizer,
-        schedulers=[f(optimizer) for f in scheduler_factories],
-        milestones=milestones,
-        last_epoch=last_epoch,
-    )
-
 
 OUTPUTDIR_NAME = "tmp_trainer"
 
@@ -54,13 +43,13 @@ class TrainerState:
     max_steps: int
     epoch: float = 0.0
     global_step: int = 0
-    num_train_epochs: int = 0
+    num_train_epochs: int
     is_local_process_zero: bool = True
     is_world_process_zero: bool = True
     log_history: list[Dict[str, float]] = field(default_factory=lambda: [])
     save_steps: int = 0
-    best_metric: float = None
-    best_model_checkpoint: str = None
+    best_metric: float | None = None
+    best_model_checkpoint: str | None = None
     # Unimplemented in Trainer; included for consistency with HF Trainer
     num_input_tokens_seen: int = 0
     total_flos: float = 0.0
@@ -93,7 +82,7 @@ class MinimalTrainingArguments:
     """
 
     output_dir: str = OUTPUTDIR_NAME
-    logging_dir: str = None
+    logging_dir: str | None = None
     per_device_eval_batch_size: int = 16
     per_device_train_batch_size: int = 16
     num_train_epochs: int = 1
@@ -127,7 +116,7 @@ class TrainingArguments(MinimalTrainingArguments):
     dataloader_num_workers: int = 0
     dataloader_pin_memory: int = True
     dataloader_persistent_workers: bool = False
-    dataloader_prefetch_factor: int = None
+    dataloader_prefetch_factor: int | None = None
     dataloader_drop_last: bool = False
 
     # Strategy may also be: "no" | "steps" | "epoch"
@@ -149,7 +138,7 @@ class TrainingArguments(MinimalTrainingArguments):
     torch_compile_dynamic: bool = True
     torch_compile_full_graph: bool = False
 
-    max_grad_norm: float = None
+    max_grad_norm: float | None = None
     gradient_accumulation_steps: int = 1
 
     # Checkpointing options
@@ -177,11 +166,11 @@ class TrainingArguments(MinimalTrainingArguments):
     # Best model tracking and loading options
     load_best_model_at_end: bool = False
     metric_for_best_model: str = "loss"
-    greater_is_better: bool = None  # Auto-determined from metric name
+    greater_is_better: bool | None = None  # Auto-determined from metric name
 
     # Compatibility with HF Trainer -- would be better if they took a factory arg...
     lr_scheduler_type: str = "linear"
-    lr_scheduler_kwargs: dict = None
+    lr_scheduler_kwargs: dict | None = None
     warmup_steps: int = 0
     learning_rate: float = 5e-5
     weight_decay: float = 0.0
@@ -209,16 +198,18 @@ class TrainingArguments(MinimalTrainingArguments):
 
     # https://pytorch.org/blog/activation-checkpointing-techniques/
     # Requires "torch_compile = True" option
-    activation_memory_budget: float = None
+    activation_memory_budget: float | None = None
 
     # Set SDPA Kernel backend(s)
     # https://docs.pytorch.org/docs/stable/generated/torch.nn.attention.sdpa_kernel.html#torch.nn.attention.sdpa_kernel
-    sdpa_backend: List[str] | str = None  # "math" | "flash" | "efficient" | "cudnn"
+    sdpa_backend: List[str] | str | None = (
+        None  # "math" | "flash" | "efficient" | "cudnn"
+    )
     sdpa_set_priority: bool = False  # If list, interpret as priority order
 
     # Set on NVIDIA Ampere or later GPUs to "high" when training in 32-bit precision for a significant speedup
     # https://docs.pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html
-    float32_matmul_precision: str = None  # "highest" | "high" | "medium"
+    float32_matmul_precision: str | None = None  # "highest" | "high" | "medium"
 
     # Construct model on meta-device and materialize directly on device
     # default: Construct model on CPU on move to device; slow, but reliable.
@@ -294,7 +285,7 @@ class TrainingArguments(MinimalTrainingArguments):
         return pformat(self)
 
 
-class AbstractBaseTrainer(ABC):
+class AbstractBaseTrainer(Protocol):
     """
     A minimal subset of core "Trainer" methods, based upon the HF Trainer API
 
@@ -307,6 +298,7 @@ class AbstractBaseTrainer(ABC):
 
     @abstractmethod
     def train(self, **kwargs) -> TrainOutput: ...
+
     @abstractmethod
     def evaluate(
         self, eval_dataset: Optional[Dataset] = None, **kwargs
@@ -361,15 +353,15 @@ class ExtensibleTrainer(AbstractBaseTrainer):
         """
         ...
 
+    @abstractmethod
     def remove_callback(self, callback):
         """
         Like pop, but don't return it.
         This seems redundant, but API consistency...
         """
-        self.pop_callback(self, callback)
 
 
-class TrainerCallback(ABC):
+class TrainerCallback(Protocol):
     """
     Abstract trainer callback for handling various events.
     This interface is intended to be compatible with the HF Trainer, as to ease porting.
@@ -512,3 +504,36 @@ class TrainerCallback(ABC):
         **kwargs,
     ):
         pass
+
+
+class CheckpointInterface(Protocol):
+    @abstractmethod
+    def save_checkpoint(
+        self,
+        checkpoint_path: str | None = None,
+        checkpoint_id: str | None = None,
+    ) -> str: ...
+
+    @abstractmethod
+    def load_checkpoint(self, checkpoint_path: str | None = None) -> None: ...
+
+    @abstractmethod
+    def save_model(
+        self,
+        output_dir: str | os.PathLike | None = None,
+        overwrite_output_dir: bool = False,
+    ) -> None: ...
+
+    @abstractmethod
+    def set_best_checkpoint(self, best_checkpoint: str) -> None: ...
+
+    @abstractmethod
+    def resolve_checkpoint_path(self, checkpoint_path: str | None) -> str | None: ...
+
+
+class StatefulProvider(Protocol):
+    @abstractmethod
+    def get_statefuls_for_save(self) -> Dict[str, Stateful]: ...
+
+    @abstractmethod
+    def get_statefuls_for_load(self) -> Dict[str, Stateful]: ...

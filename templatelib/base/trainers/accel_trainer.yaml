@@ -8,33 +8,20 @@
     -- set ns.trainer_class = "forgather.ml.trainer.accelerate:AccelTrainer"
 -- endblock trainer_meta_config
 
-
--- block trainer_dependencies
-    == super()
-    -- block dataloader_config
-dataloader_config: &dataloader_config !singleton:accelerate:DataLoaderConfiguration
-    dispatch_batches: False
-    split_batches: False
-    -- endblock dataloader_config
-
-
-    -- block accelerator_config
-accelerator_args: &accelerator_args !dict
-    device_placement: True
-    dataloader_config: *dataloader_config
-    -- endblock accelerator_config
--- endblock trainer_dependencies
+## Note: The distributed_env class must be an AcceDistEnv. e.g.
+## distributed_env: &distributed_env !singleton:forgather.ml.trainer.accelerate:AccelDistEnv@distributed_env
+##    - !singleton:accelerate:Accelerator []
 
 
 -- block trainer_args
     == super()
-    # Accel Trainer Defaults
-    accelerator_args: *accelerator_args
+
+    # **AccelTrainer**
 << endblock trainer_args
 
 
 -- block trainer_constructor
     == super()
-    optimizer_factory: *optimizer
-    lr_scheduler_factory: *lr_scheduler
+
+    # **Accel Trainer**
 << endblock trainer_constructor

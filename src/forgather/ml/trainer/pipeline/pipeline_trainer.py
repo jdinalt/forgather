@@ -6,7 +6,6 @@ from types import NoneType
 import logging
 import math
 import copy
-import os
 from functools import partial
 from contextlib import ExitStack
 import re
@@ -18,7 +17,7 @@ from torch.fx import GraphModule
 from torch import Tensor
 from torch import distributed
 import torch.distributed as dist
-from torch.distributed.pipelining import SplitPoint, ScheduleGPipe, PipelineStage
+from torch.distributed.pipelining import SplitPoint, ScheduleGPipe
 from torch.distributed.pipelining.schedules import (
     PipelineScheduleMulti,
     _Action,
@@ -30,28 +29,15 @@ from torch.distributed.pipelining.stage import _PipelineStageBase
 from torch.distributed.pipelining import pipeline as build_pipeline
 from torch.distributed.pipelining.microbatch import split_args_kwargs_into_chunks
 
-from transformers import (
-    PreTrainedModel,
-    PreTrainedTokenizer,
-    PretrainedConfig,
-)
-
-from ..trainer_types import TrainingArguments, TrainerState
+from ..trainer_types import TrainingArguments, CheckpointInterface
 from ..trainer import Trainer, optimzer_hook
 from ...distributed import DistributedEnvironment, main_process_first
 from ...sharded_checkpoint import (
-    validate_output_dir,
     make_shard_index,
-    save_shard_index,
-    load_shard_index,
-    load_sharded_checkpoint,
-    save_sharded_checkpoint,
-    load_checkpoint,
-    index_file_name,
     create_sharing_metadata,
     retie_parameters,
-    get_all_fqns,
 )
+from ..checkpoint_manager import CheckpointManager, CheckpointConfig
 from .pipeline_buffer_fix import apply_pipeline_buffer_fix, validate_pipeline_buffers
 
 logger = logging.getLogger(__name__)
@@ -119,7 +105,6 @@ def insert_activation_checkpoints(module, targets):
                 continue
 
             if isinstance(submod, GraphModule):
-                graph_module = submodule
                 submod.graph.lint()
                 submod.recompile()
             else:
@@ -277,12 +262,11 @@ class PipelineTrainer(Trainer):
         self,
         *,
         args: PipelineTrainingArguments,
-        distributed_env: DistributedEnvironment,
         pipe_schedule_factory: Callable = ScheduleGPipe,
         **kwargs,
     ):
         assert isinstance(args, PipelineTrainingArguments)
-        self.denv = distributed_env
+        self.args = args  # For type checking hint
         self.pipe_schedule_factory = pipe_schedule_factory
         super().__init__(args=args, **kwargs)
 
@@ -305,19 +289,19 @@ class PipelineTrainer(Trainer):
             self.args.is_multistage or self.args.stages_per_rank == 1
         ), "Only multistage schedulers may have more than one stages_per_rank"
         # TODO: Relax requirements to be at least as large as required.
-        self.n_pipeline_stages = self.args.stages_per_rank * self.denv.world_size
+        self.n_pipeline_stages = self.args.stages_per_rank * self.dist.world_size
         n_pipeline_stages = len(self.args.split_spec) + 1
         assert self.n_pipeline_stages == n_pipeline_stages, (
             f"stages_per_rank ({self.args.stages_per_rank}) * world_size "
-            f"({self.denv.world_size}) != splits {n_pipeline_stages}"
+            f"({self.dist.world_size}) != splits {n_pipeline_stages}"
         )
 
         # The pipeline requires a fixed shape for the inputs
         self.args.dataloader_drop_last = True
 
-        self.is_local_process_zero = self.denv.local_rank == 0
-        self.is_world_process_zero = self.denv.rank == 0
-        self.num_processes = self.denv.world_size
+        self.is_local_process_zero = self.dist.local_rank == 0
+        self.is_world_process_zero = self.dist.rank == 0
+        self.num_processes = self.dist.world_size
 
         # Convert strings to enums in split-spec
         for key, value in self.args.split_spec.items():
@@ -334,11 +318,11 @@ class PipelineTrainer(Trainer):
             for mod in modules:
                 for name, p in mod.named_parameters(remove_duplicate=False):
                     logger.debug(
-                        f"P {self.denv.rank} {name} : device {p.device}, dtype {p.dtype}"
+                        f"P {self.dist.rank} {name} : device {p.device}, dtype {p.dtype}"
                     )
                 for name, p in mod.named_buffers(remove_duplicate=False):
                     logger.debug(
-                        f"B {self.denv.rank} {name} : device {p.device}, dtype {p.dtype}"
+                        f"B {self.dist.rank} {name} : device {p.device}, dtype {p.dtype}"
                     )
 
     # @override
@@ -356,7 +340,7 @@ class PipelineTrainer(Trainer):
         # Construct model instance on the "meta" device; parameters have meta-data, but no actual data.
         # This allows us to construct a "huge" model, without having to have the memory for it.
         model = self._construct_model(device="meta")
-        if self.denv.rank == 0:
+        if self.dist.rank == 0:
             self._print_modules([model])
 
         # Get parameter sharing metadata
@@ -368,11 +352,11 @@ class PipelineTrainer(Trainer):
         # stage_indices : A List[Tuple[int]] with the assigned stage indices for each rank
         #   e.g. stage_indices[rank] would have the stage indices for "rank"
         stage_indices = pipeline_stage_indices(
-            self.denv.world_size, self.n_pipeline_stages, style=self.args.pp_stage_type
+            self.dist.world_size, self.n_pipeline_stages, style=self.args.pp_stage_type
         )
 
         # Split model into pipeline segments.
-        if self.denv.rank == 0:
+        if self.dist.rank == 0:
             logger.debug(f"All assigned pipeline indices {stage_indices}")
             logger.info("Splitting model...")
         all_pipeline_modules, pipeline_modules, pipeline_stages = self._split_model(
@@ -384,14 +368,14 @@ class PipelineTrainer(Trainer):
 
         # Convert meta tensors to real tensor on assigned devices.
         for mod in pipeline_modules:
-            mod.to_empty(device=self.denv.device)
+            mod.to_empty(device=self.dist.device)
             retie_parameters(mod, self.sharing_metadata)
 
         # Load from checkpoint?
         if self.args.resume_from_checkpoint:
             missing_buffer_set = missing_buffers(model)
             if len(missing_buffer_set):
-                if self.denv.rank == 0:
+                if self.dist.rank == 0:
                     logger.warning(
                         f"The following buffers were not found in the model's state_dict: {missing_buffer_set}. "
                         "Forcing initialization of full model on CPU to construct missing buffers. "
@@ -401,7 +385,7 @@ class PipelineTrainer(Trainer):
                     all_pipeline_modules, pipeline_modules, stage_indices, True
                 )
         else:
-            if self.denv.rank == 0:
+            if self.dist.rank == 0:
                 # If this results in OOM (really large model), you will have to initialize the model from a checkpoint
                 # which will likely entail some amount of work.
                 logger.info(
@@ -437,14 +421,14 @@ class PipelineTrainer(Trainer):
         )
 
         if self.args.enable_activation_checkpoints or self.args.gradient_checkpointing:
-            if self.denv.rank == 0:
+            if self.dist.rank == 0:
                 logger.info("Applying activation checkpointing via FX graph")
             # Enable activation checkpointing for all modules in the pipeline.
             for mod in pipeline_modules:
                 insert_activation_checkpoints(mod, r"^layers\.(\d+)$")
 
         self.pipeline_modules = pipeline_modules
-        self.stage_indices = stage_indices[self.denv.rank]
+        self.stage_indices = stage_indices[self.dist.rank]
 
         # Identify the rank of the last stage, as they need to broadcast the loss.
         last_stage_index = self.n_pipeline_stages - 1
@@ -466,12 +450,13 @@ class PipelineTrainer(Trainer):
         if self.args.unified_model:
             self.eval_scheduler = None
         else:
-            if self.denv.rank == 0:
+            if self.dist.rank == 0:
                 logger.info("Constructing and splitting eval model.")
             self._construct_eval_pipeline()
 
     def _construct_model(self, device):
         # Construct model on device
+        assert self.model_init
         with torch.device(device):
             model = self.model_init()
 
@@ -511,7 +496,7 @@ class PipelineTrainer(Trainer):
         return split_args[0], split_kwargs[0]
 
     def _split_model(self, model, example_args, example_kwargs, stage_indices, train):
-        rank = self.denv.rank
+        rank = self.dist.rank
         # Trace model
         # The trace will use fake-tensors, so this does not perform any
         # actual computation. It just traces the path through the model
@@ -536,12 +521,12 @@ class PipelineTrainer(Trainer):
         ]
 
         pipeline_modules = [
-            all_pipeline_modules[i] for i in stage_indices[self.denv.rank]
+            all_pipeline_modules[i] for i in stage_indices[self.dist.rank]
         ]
 
         pipeline_stages = [
-            pipe.build_stage(stage_index=i, device=self.denv.device)
-            for i in stage_indices[self.denv.rank]
+            pipe.build_stage(stage_index=i, device=self.dist.device)
+            for i in stage_indices[self.dist.rank]
         ]
 
         # Apply buffer fix after pipeline split but before to_empty()
@@ -594,7 +579,7 @@ class PipelineTrainer(Trainer):
                     output_state_dict[name] = p.data
             return output_state_dict
 
-        if self.denv.rank == 0:
+        if self.dist.rank == 0:
             # Construct a fully initialized model on the CPU, which we will use to distribute
             # initialized parameters.
             logger.debug("Constructing model on CPU")
@@ -608,7 +593,7 @@ class PipelineTrainer(Trainer):
             logger.debug("Distributing params")
             # Send the initialized paramters for the other stages to their
             # respective processes.
-            for dst_rank in range(1, self.denv.world_size):
+            for dst_rank in range(1, self.dist.world_size):
                 # Modules owned by dst_rank
                 rank_indices = stage_indices[dst_rank]
                 logger.debug(
@@ -625,22 +610,22 @@ class PipelineTrainer(Trainer):
                         # See: https://docs.pytorch.org/docs/stable/distributed.html
                         # I believe this will work for CPU to CPU, with gloo, but
                         # have yet to try it.
-                        p = init_state_dict[name].to(self.denv.device)
+                        p = init_state_dict[name].to(self.dist.device)
                         if self.args.debug_model_init:
                             logger.debug(f"rank0: Sending {name} to rank{dst_rank}")
                         distributed.send(p, dst=dst_rank)
                         p = None
         else:
             # Load the parameters from rank 0
-            rank_indices = stage_indices[self.denv.rank]
+            rank_indices = stage_indices[self.dist.rank]
 
             logger.debug(
-                f"rank{self.denv.rank}: Receiving initialized params for stages {rank_indices} from rank0"
+                f"rank{self.dist.rank}: Receiving initialized params for stages {rank_indices} from rank0"
             )
             for mod in pipeline_modules:
                 for name, p in make_state_dict(mod, missing_buf_only).items():
                     if self.args.debug_model_init:
-                        logger.debug(f"rank{self.denv.rank}: Receiving {name}")
+                        logger.debug(f"rank{self.dist.rank}: Receiving {name}")
                     distributed.recv(p, src=0)
 
         distributed.barrier()
@@ -653,10 +638,10 @@ class PipelineTrainer(Trainer):
         Other ranks: receive batches asynchronously using non-blocking communication,
         but only yield the batch after all tensors are fully received.
         """
-        if self.denv.rank == 0:
+        if self.dist.rank == 0:
             for batch in dataloader:
                 # Signal start of new batch
-                distributed.broadcast(torch.tensor(1, device=self.denv.device), src=0)
+                distributed.broadcast(torch.tensor(1, device=self.dist.device), src=0)
                 # Send each tensor in the batch
                 for key, value in batch.items():
                     assert isinstance(value, Tensor), (
@@ -664,13 +649,13 @@ class PipelineTrainer(Trainer):
                         "Pipeline parallel requires all batch items to be Tensors."
                     )
                     distributed.broadcast(
-                        value.to(device=self.denv.device), src=0, async_op=False
+                        value.to(device=self.dist.device), src=0, async_op=False
                     )
                 yield batch
             # Signal end of dataloader
-            distributed.broadcast(torch.tensor(0, device=self.denv.device), src=0)
+            distributed.broadcast(torch.tensor(0, device=self.dist.device), src=0)
         else:
-            flag = torch.tensor(0, device=self.denv.device)
+            flag = torch.tensor(0, device=self.dist.device)
             reference_batch = next(iter(dataloader))
             batch = {}
             for key, value in reference_batch.items():
@@ -678,7 +663,7 @@ class PipelineTrainer(Trainer):
                     f"Batch item {key} is not a Tensor, got {type(value)}. "
                     "Pipeline parallel requires all batch items to be Tensors."
                 )
-                batch[key] = torch.empty_like(value, device=self.denv.device)
+                batch[key] = torch.empty_like(value, device=self.dist.device)
             reference_batch = None
 
             while True:
@@ -701,13 +686,13 @@ class PipelineTrainer(Trainer):
 
     def _construct_eval_pipeline(self):
         # Construct an "eval" version of the pipelined model, which shares weights with the "train" version.
-        if self.denv.rank:
+        if self.dist.rank:
             logger.debug("Constructing evaluation model")
 
         eval_model = self._construct_model(device="meta")
         example_args, example_kwargs = self._get_example(self.eval_dataloader)
         stage_indices = stage_indices = pipeline_stage_indices(
-            self.denv.world_size, self.n_pipeline_stages, style=self.args.pp_stage_type
+            self.dist.world_size, self.n_pipeline_stages, style=self.args.pp_stage_type
         )
         _, eval_pipeline_modules, eval_pipeline_stages = self._split_model(
             eval_model, example_args, example_kwargs, stage_indices, train=False
@@ -756,7 +741,7 @@ class PipelineTrainer(Trainer):
                 mean_loss = torch.stack([x.detach() for x in losses]).mean()
                 mean_loss = mean_loss.float()
             else:
-                mean_loss = torch.tensor(0.0, device=self.denv.device)
+                mean_loss = torch.tensor(0.0, device=self.dist.device)
 
         return mean_loss
 
@@ -774,7 +759,7 @@ class PipelineTrainer(Trainer):
             loss = self.loss_fn(outputs, labels).detach()
             mean_loss = loss.float()
         else:
-            mean_loss = torch.tensor(0.0, device=self.denv.device)
+            mean_loss = torch.tensor(0.0, device=self.dist.device)
 
         return mean_loss
 
@@ -838,7 +823,7 @@ class PipelineTrainer(Trainer):
         return mean_loss, total_norm
 
     # @override
-    def _prediction_step(self, batch: dict | tuple) -> Tensor:
+    def _prediction_step(self, batch: dict | tuple):
         mean_loss = self._eval_pipeline_step(batch)
         mean_loss = self._distributed_loss(mean_loss)
         return {
@@ -847,7 +832,7 @@ class PipelineTrainer(Trainer):
             "labels": None,
         }
 
-    def _unified_prediction_step(self, batch: dict | tuple) -> Tensor:
+    def _unified_prediction_step(self, batch: dict | tuple):
         """
         Using the same traced model for both train and eval.
         """
@@ -859,6 +844,29 @@ class PipelineTrainer(Trainer):
             "logits": None,
             "labels": None,
         }
+
+    # @override
+    def _init_checkpoint_manager(self) -> CheckpointInterface:
+        cp_config = CheckpointConfig(
+            output_dir=self.args.output_dir,
+            save_total_limit=self.args.save_total_limit,
+            save_on_each_node=self.args.save_on_each_node,
+            save_safetensors=self.args.save_safetensors,
+            save_on_all_ranks=True,
+        )
+
+        assert self.model
+        assert self.shard_index
+        checkpoint_manager = CheckpointManager(
+            config=cp_config,
+            dist=self.dist,
+            model=self.model,
+            model_parts=self.pipeline_modules,
+            model_preprocessor=self.processing_class,
+            stateful_provider=self,
+            shard_index=self.shard_index,
+        )
+        return checkpoint_manager
 
     @staticmethod
     def _all_reduce_norm(total_norm, norm_type):
@@ -916,306 +924,6 @@ class PipelineTrainer(Trainer):
     def _distributed_loss(self, loss: Tensor):
         distributed.broadcast(loss, src=self.pp_last_stage_rank)
         return loss
-
-    # @override
-    def _validate_dirs(self):
-        validate_output_dir(
-            self.args.output_dir, overwrite=self.args.overwrite_output_dir
-        )
-
-    # @override
-    def _should_save_unique(self):
-        """
-        Should this process save a unique file?
-        """
-        return self.denv.rank == 0 or (
-            self.args.save_on_each_node and self.denv.local_rank == 0
-        )
-
-    # @override
-    def _barrier(self):
-        distributed.barrier()
-
-    # @override
-    def _save_model(self, output_dir):
-        shard_index = self.shard_index
-        save_safetensors = self.args.save_safetensors
-
-        # The primary process on each saves the common state
-        if self._should_save_unique():
-            # Save the shard index
-            save_shard_index(shard_index, output_dir, index_file_name(save_safetensors))
-
-        # All processes save their own pipeline stages
-        for mod in self.pipeline_modules:
-            save_sharded_checkpoint(
-                output_dir,
-                shard_index,
-                mod,
-                safetensors=save_safetensors,
-                debug=self.args.debug_pipeline,
-            )
-
-    # @override
-    def _save_optimizer_state(self, output_dir: str) -> None:
-        """Save optimizer state to rank-specific file."""
-        optimizer_state = self._optimizer_state_dict()
-        if optimizer_state:
-            optimizer_state_path = os.path.join(
-                output_dir, f"optimizer_state_rank_{self.denv.rank}.pt"
-            )
-            torch.save(optimizer_state, optimizer_state_path)
-            logger.debug(
-                f"Rank {self.denv.rank}: Saved optimizer state to {optimizer_state_path}"
-            )
-
-    # @override
-    def _save_scheduler_state(self, output_dir: str) -> None:
-        """Save scheduler state to rank-specific file."""
-        scheduler_state = self._scheduler_state_dict()
-        if scheduler_state:
-            scheduler_state_path = os.path.join(
-                output_dir, f"scheduler_state_rank_{self.denv.rank}.pt"
-            )
-            torch.save(scheduler_state, scheduler_state_path)
-            logger.debug(
-                f"Rank {self.denv.rank}: Saved scheduler state to {scheduler_state_path}"
-            )
-
-    # @override
-    def _save_dataset_state(self, output_dir: str) -> None:
-        """Save dataset state to rank-specific file."""
-        dataset_state = self._dataset_state_dict()
-        if dataset_state:
-            dataset_state_path = os.path.join(
-                output_dir, f"dataset_state_rank_{self.denv.rank}.pt"
-            )
-            torch.save(dataset_state, dataset_state_path)
-            logger.debug(
-                f"Rank {self.denv.rank}: Saved dataset state to {dataset_state_path}"
-            )
-
-            dataloader_state = dataset_state.get("dataloader_state")
-            if dataloader_state:
-                logger.info(
-                    f"Rank {self.denv.rank}: Saved dataloader state with keys: {list(dataloader_state.keys())}"
-                )
-
-    # @override
-    def _save_rng_state(self, output_dir: str) -> None:
-        """Save RNG state to rank-specific file."""
-        rng_state = self._rng_state_dict()
-        if rng_state:
-            rng_state_path = os.path.join(
-                output_dir, f"rng_state_rank_{self.denv.rank}.pt"
-            )
-            torch.save(rng_state, rng_state_path)
-            logger.debug(f"Rank {self.denv.rank}: Saved RNG state to {rng_state_path}")
-
-    # @override
-    def _save_training_state(self, output_dir: str) -> None:
-        """Save all training state components to rank-specific files."""
-        self._save_optimizer_state(output_dir)
-        self._save_scheduler_state(output_dir)
-        self._save_dataset_state(output_dir)
-        self._save_rng_state(output_dir)
-
-        logger.info(
-            f"Rank {self.denv.rank}: Saved training state components to {output_dir}"
-        )
-
-    # @override
-    def _load_model_from_checkpoint(self, checkpoint_path: str) -> None:
-        for mod in self.pipeline_modules:
-            load_checkpoint(
-                checkpoint_path,
-                mod,
-                device=self.denv.device,
-                strict=False,
-            )
-
-        self._barrier()
-
-    # @override
-    def _load_optimizer_state(self, checkpoint_path: str) -> None:
-        """Load optimizer state from rank-specific file."""
-        optimizer_state_path = os.path.join(
-            checkpoint_path, f"optimizer_state_rank_{self.denv.rank}.pt"
-        )
-
-        if not os.path.exists(optimizer_state_path):
-            logger.debug(
-                f"Rank {self.denv.rank}: No optimizer state file found at: {optimizer_state_path}"
-            )
-            return
-
-        if not self.args.restore_optimizer_state:
-            logger.debug(f"Rank {self.denv.rank}: Optimizer state restore disabled")
-            return
-
-        if self.optimizer is None:
-            logger.warning(
-                f"Rank {self.denv.rank}: Cannot restore optimizer state: optimizer not initialized"
-            )
-            return
-
-        try:
-            optimizer_state = torch.load(
-                optimizer_state_path, map_location=torch.device("cpu")
-            )
-            self.optimizer.load_state_dict(optimizer_state)
-            logger.info(
-                f"Rank {self.denv.rank}: Restored optimizer state from checkpoint"
-            )
-        except Exception as e:
-            logger.error(
-                f"Rank {self.denv.rank}: Failed to load optimizer state from {optimizer_state_path}: {e}"
-            )
-
-    # @override
-    def _load_scheduler_state(self, checkpoint_path: str) -> None:
-        """Load scheduler state from rank-specific file."""
-        scheduler_state_path = os.path.join(
-            checkpoint_path, f"scheduler_state_rank_{self.denv.rank}.pt"
-        )
-
-        if not os.path.exists(scheduler_state_path):
-            logger.debug(
-                f"Rank {self.denv.rank}: No scheduler state file found at: {scheduler_state_path}"
-            )
-            return
-
-        if not self.args.restore_scheduler_state:
-            logger.debug(f"Rank {self.denv.rank}: Scheduler state restore disabled")
-            return
-
-        if self.lr_scheduler is None:
-            logger.warning(
-                f"Rank {self.denv.rank}: Cannot restore scheduler state: scheduler not initialized"
-            )
-            return
-
-        try:
-            scheduler_state = torch.load(
-                scheduler_state_path, map_location=torch.device("cpu")
-            )
-            self.lr_scheduler.load_state_dict(scheduler_state)
-            logger.info(
-                f"Rank {self.denv.rank}: Restored LR scheduler state from checkpoint"
-            )
-        except Exception as e:
-            logger.error(
-                f"Rank {self.denv.rank}: Failed to load scheduler state from {scheduler_state_path}: {e}"
-            )
-
-    # @override
-    def _load_dataset_state(self, checkpoint_path: str) -> None:
-        """Load dataset state from rank-specific file."""
-        dataset_state_path = os.path.join(
-            checkpoint_path, f"dataset_state_rank_{self.denv.rank}.pt"
-        )
-
-        if not os.path.exists(dataset_state_path):
-            logger.debug(
-                f"Rank {self.denv.rank}: No dataset state file found at: {dataset_state_path}"
-            )
-            return
-
-        if not self.args.restore_dataset_state:
-            logger.debug(f"Rank {self.denv.rank}: Dataset state restore disabled")
-            return
-
-        try:
-            dataset_state = torch.load(
-                dataset_state_path, map_location=torch.device("cpu")
-            )
-
-            # Restore global step
-            if "global_step" in dataset_state:
-                self.state.global_step = dataset_state["global_step"]
-                logger.info(
-                    f"Rank {self.denv.rank}: Restored global step to {self.state.global_step}"
-                )
-
-            # Restore dataloader state if available
-            if "dataloader_state" in dataset_state:
-                self._load_dataloader_state(dataset_state["dataloader_state"])
-                logger.info(
-                    f"Rank {self.denv.rank}: Restored dataloader state from checkpoint"
-                )
-
-        except Exception as e:
-            logger.error(
-                f"Rank {self.denv.rank}: Failed to load dataset state from {dataset_state_path}: {e}"
-            )
-
-    # @override
-    def _load_rng_state(self, checkpoint_path: str) -> None:
-        """Load RNG state from rank-specific file."""
-        rng_state_path = os.path.join(
-            checkpoint_path, f"rng_state_rank_{self.denv.rank}.pt"
-        )
-
-        if not os.path.exists(rng_state_path):
-            logger.debug(
-                f"Rank {self.denv.rank}: No RNG state file found at: {rng_state_path}"
-            )
-            if self.args.restore_rng_state:
-                logger.info(
-                    f"Rank {self.denv.rank}: No RNG state found in checkpoint - using current RNG state"
-                )
-            return
-
-        if not self.args.restore_rng_state:
-            logger.debug(f"Rank {self.denv.rank}: RNG state restore disabled")
-            return
-
-        try:
-            rng_state = torch.load(rng_state_path, map_location=torch.device("cpu"))
-
-            # Restore CPU RNG state
-            if "torch_rng_state" in rng_state:
-                torch.set_rng_state(rng_state["torch_rng_state"])
-                logger.debug(
-                    f"Rank {self.denv.rank}: Restored CPU RNG state from checkpoint"
-                )
-
-            # Restore CUDA RNG state if available
-            if "cuda_rng_state" in rng_state and torch.cuda.is_available():
-                current_device = torch.cuda.current_device()
-                saved_device = rng_state.get("cuda_device", current_device)
-
-                if current_device != saved_device:
-                    logger.warning(
-                        f"Rank {self.denv.rank}: CUDA device mismatch: current={current_device}, saved={saved_device}. "
-                        "Restoring RNG state anyway (should be fine with identical GPU models)."
-                    )
-
-                torch.cuda.set_rng_state(
-                    rng_state["cuda_rng_state"], device=current_device
-                )
-                logger.debug(
-                    f"Rank {self.denv.rank}: Restored CUDA RNG state for device {current_device} from checkpoint"
-                )
-
-            logger.info(f"Rank {self.denv.rank}: Restored RNG state from checkpoint")
-
-        except Exception as e:
-            logger.error(
-                f"Rank {self.denv.rank}: Failed to load RNG state from {rng_state_path}: {e}"
-            )
-
-    # @override
-    def _load_training_state(self, checkpoint_path: str) -> None:
-        """Load all training state components from rank-specific files."""
-        self._load_optimizer_state(checkpoint_path)
-        self._load_scheduler_state(checkpoint_path)
-        self._load_dataset_state(checkpoint_path)
-        self._load_rng_state(checkpoint_path)
-
-        logger.info(
-            f"Rank {self.denv.rank}: Loaded training state components from {checkpoint_path}"
-        )
 
     def _remove_vestigial_modules(self, all_pipeline_modules):
         """

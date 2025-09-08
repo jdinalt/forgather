@@ -1,6 +1,7 @@
 import os
 import argparse
 from argparse import RawTextHelpFormatter
+from torch import accelerator
 import sys
 
 from torch.distributed.elastic.multiprocessing.errors import record
@@ -94,11 +95,11 @@ def parse_args(args=None):
 def main():
     import json
     from forgather.project import Project
-    
+
     logging.basicConfig(level=logging.INFO)
     args = parse_args()
     init_logging(args)
-    
+
     # Parse dynamic args from JSON if provided
     dynamic_args = {}
     if args.dynamic_args:
@@ -108,14 +109,15 @@ def main():
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse dynamic args JSON: {e}")
             sys.exit(1)
-    
+
     # Create Project with dynamic args and run training
     proj = Project(args.config_template, args.project_dir, **dynamic_args)
     training_script = proj()
     training_script.run()
-    
+
     if torch.distributed.is_initialized():
-        torch.distributed.barrier()
+        if accelerator.is_available():
+            torch.distributed.barrier(device_ids=[torch.accelerator.current_device_index()])
         torch.distributed.destroy_process_group()
 
 

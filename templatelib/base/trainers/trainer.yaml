@@ -11,7 +11,9 @@
 
 -- block trainer_constructor
     == super()
-    # Trainer Args
+
+    # **Trainer**
+    distributed_env: *distributed_env
     optimizer_factory: *optimizer
     lr_scheduler_factory: *lr_scheduler
 << endblock trainer_constructor

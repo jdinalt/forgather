@@ -12,7 +12,7 @@ from typing import (
 )
 from collections.abc import Sequence
 from functools import partial
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import time
 from contextlib import contextmanager, ExitStack
 import os
@@ -26,16 +26,15 @@ from torch.utils.data import DataLoader, Dataset
 
 import torchdata.nodes as tn
 from torchdata.stateful_dataloader import StatefulDataLoader
+from torch.distributed.checkpoint.stateful import Stateful
 
 from .base_trainer import BaseTrainer
 from .trainer_types import TrainerState as BaseTrainerState
 from .trainer_types import (
-    ExtensibleTrainer,
     TrainingArguments,
     TrainOutput,
-    TrainerControl,
-    TrainerCallback,
     IntervalStrategy,
+    CheckpointInterface,
 )
 from .callbacks.default_callbacks import (
     ProgressCallback,
@@ -47,6 +46,9 @@ from ..sharded_checkpoint import (
     retie_parameters,
     save_checkpoint_metrics,
 )
+
+from .checkpoint_manager import CheckpointManager, CheckpointConfig
+from ..distributed import DistributedEnvInterface
 
 
 @dataclass(kw_only=True)
@@ -96,7 +98,7 @@ def optimzer_hook(optimizer, total_grad_squared, parameter):
     optimizer.zero_grad()
 
 
-class Trainer(BaseTrainer):
+class Trainer(BaseTrainer, Stateful):
     """
     This transformer trainer is a simplified version of the HF Trainer class
     The intent is to hopefully make the workings of such a class more comprehensible and
@@ -111,6 +113,7 @@ class Trainer(BaseTrainer):
         self,
         *,
         args: TrainingArguments,
+        distributed_env: DistributedEnvInterface,
         optimizer_factory: Optional[Callable] = None,
         # Alernative, for compatibility with transformers.Trainer
         optimizer_cls_and_kwargs: Optional[
@@ -134,6 +137,7 @@ class Trainer(BaseTrainer):
                 optimizer_factory = partial(
                     optimizer_cls_and_kwargs[0], **optimizer_cls_and_kwargs[1]
                 )
+        self.dist = distributed_env
         self.optimizer_factory = optimizer_factory
         self.lr_scheduler_factory = lr_scheduler_factory
         super().__init__(args=args, **kwargs)
@@ -220,14 +224,22 @@ class Trainer(BaseTrainer):
         if self.do_train:
             self._init_optimizer()
 
+        self._wrap()
         self.state = self._init_state()
+        self.checkpoint_manager = self._init_checkpoint_manager()
 
-        if self.do_train:
-            # Restore from checkpoint if specified (after state is initialized)
-            if self.args.resume_from_checkpoint:
-                self.load_checkpoint()
+        # Restore from checkpoint if specified (after state is initialized)
+        if self.args.resume_from_checkpoint:
+            checkpoint_path = self.args.resume_from_checkpoint
+            if isinstance(checkpoint_path, bool):
+                checkpoint_path = None
+            self.load_checkpoint(checkpoint_path)
 
         self._dispatch_event("on_init_end")
+
+    def _wrap(self) -> None:
+        # Hook for wrapping object, after they have all be constructed in _prepare()
+        pass
 
     def _compile_model(self):
         self.model.compile(
@@ -236,6 +248,23 @@ class Trainer(BaseTrainer):
             dynamic=self.args.torch_compile_dynamic,
             fullgraph=self.args.torch_compile_full_graph,
         )
+
+    def _init_checkpoint_manager(self) -> CheckpointInterface:
+        cp_config = CheckpointConfig(
+            output_dir=self.args.output_dir,
+            save_total_limit=self.args.save_total_limit,
+            save_on_each_node=self.args.save_on_each_node,
+            save_safetensors=self.args.save_safetensors,
+        )
+
+        checkpoint_manager = CheckpointManager(
+            config=cp_config,
+            dist=self.dist,
+            model=self.unwrapped_model(),
+            model_preprocessor=self.processing_class,
+            stateful_provider=self,
+        )
+        return checkpoint_manager
 
     def _init_dataloaders(self, train_dataset, eval_dataset) -> None:
         # _prepare() sub-step 1
@@ -346,7 +375,7 @@ class Trainer(BaseTrainer):
                     **self.args.lr_scheduler_kwargs,
                 )
 
-    def _dataloader_iter(self, dataloader: DataLoader) -> Iterable:
+    def _dataloader_iter(self, dataloader: Iterable) -> Iterable:
         """
         Get the next batch from the dataloader.
         This is a generator that yields batches from the dataloader.
@@ -386,19 +415,86 @@ class Trainer(BaseTrainer):
         if periodic_save.step() or self.control.should_save:
             periodic_save.reset()
             self.control.should_save = False
-            checkpoint_path = self.save_checkpoint()
+            assert self.checkpoint_manager
+            checkpoint_path = self.checkpoint_manager.save_checkpoint(
+                checkpoint_id=str(self.state.global_step)
+            )
+            self._dispatch_event("on_save")
 
             # For load_best_model_at_end, we need metrics from the most recent evaluation
             if self.args.load_best_model_at_end:
-                assert eval_metrics, (
-                    "BUG: load_best_model_at_end requires that save and eval occur on the same step\m"
-                    f"periodic_eval_step={str(periodic_eval)}\nperiodic_save_step={periodic_save}"
-                )
+                if not eval_metrics:
+                    logger.error(
+                        "load_best_model_at_end requires that save and eval occur on the same step\n"
+                        f"periodic_eval_step={str(periodic_eval)}\nperiodic_save_step={periodic_save}\n"
+                        "Skipping update of best model and continuing..."
+                    )
+                else:
+                    # Update best model tracking with current evaluation metrics
+                    logger.info(
+                        f"Updating best model to {checkpoint_path} with metrics {eval_metrics}"
+                    )
+                    self._update_best_model(checkpoint_path, eval_metrics)
+                    save_checkpoint_metrics(checkpoint_path, eval_metrics)
 
-                # Update best model tracking with current evaluation metrics
-                self._update_best_model(checkpoint_path, eval_metrics)
+    def _update_best_model(
+        self, checkpoint_path: str, metrics: Dict[str, float]
+    ) -> None:
+        """Update best model tracking based on current metrics."""
+        if not self.args.load_best_model_at_end:
+            return
 
-                save_checkpoint_metrics(checkpoint_path, eval_metrics)
+        # Try exact match first, then with eval_ prefix
+        metric_value = metrics.get(self.args.metric_for_best_model)
+        if metric_value is None:
+            metric_value = metrics.get(f"eval_{self.args.metric_for_best_model}")
+
+        if metric_value is None:
+            logger.warning(
+                f"Metric '{self.args.metric_for_best_model}' not found in evaluation metrics. "
+                f"Available metrics: {list(metrics.keys())}"
+            )
+            return
+
+        # Initialize best metric on first evaluation
+        if self.state.best_metric is None:
+            self.state.best_metric = metric_value
+            self.state.best_model_checkpoint = checkpoint_path
+            logger.info(
+                f"First evaluation - setting best {self.args.metric_for_best_model}: {metric_value}"
+            )
+            return
+
+        # Check if current metric is better
+        is_better = (
+            self.args.greater_is_better and metric_value > self.state.best_metric
+        ) or (not self.args.greater_is_better and metric_value < self.state.best_metric)
+
+        if is_better:
+            previous_best = self.state.best_metric
+            self.state.best_metric = metric_value
+            self.state.best_model_checkpoint = checkpoint_path
+            assert self.checkpoint_manager
+            self.checkpoint_manager.set_best_checkpoint(checkpoint_path)
+            logger.info(
+                f"New best {self.args.metric_for_best_model}: {metric_value} (previous: {previous_best})"
+            )
+            logger.info(f"Saving new best model checkpoint to {checkpoint_path}")
+
+    def load_best_model(self) -> None:
+        """Load the best model from the best checkpoint."""
+        if not self.state.best_model_checkpoint:
+            logger.warning("No best model checkpoint available to load")
+            return
+
+        if not os.path.exists(self.state.best_model_checkpoint):
+            logger.warning(
+                f"Best model checkpoint path does not exist: {self.state.best_model_checkpoint}"
+            )
+            return
+
+        logger.info(f"Loading best model from {self.state.best_model_checkpoint}")
+        self.load_checkpoint(self.state.best_model_checkpoint)
 
     # @override
     def _train_loop(self) -> TrainOutput:
@@ -498,15 +594,25 @@ class Trainer(BaseTrainer):
                     continue
                 break  # Break, if inner-loop breaks
 
-        # Save final checkpoint if checkpointing is enabled
-        # Skip if we just saved a checkpoint in the final step, or if training was aborted
-        if (
-            not is_abort
-            and self.args.save_strategy != IntervalStrategy.NO
-            and periodic_save.rel_step != 0  # Step resets to zero on save
-        ):
-            logger.info(f"Saving final checkpoint at step {self.state.global_step}")
-            self.save_checkpoint()
+        # Final log-eval-save step; skip on abort condition
+        if not is_abort:
+            # Force save, if we have not already saved on this step and save enabled.
+            if (
+                periodic_save.rel_step != 0
+                and self.args.save_strategy != IntervalStrategy.NO
+            ):
+                logger.info(f"Saving final checkpoint at step {self.state.global_step}")
+                # If load best model, we need to evaluate it too.
+                if self.args.load_best_model_at_end:
+                    self.control.should_evaluate = True
+                self.control.should_save = True
+            self._maybe_log_save_evaluate(
+                loss_log,
+                total_norm_log,
+                periodic_log,
+                periodic_eval,
+                periodic_save,
+            )
 
         # Load best model at end if requested
         if self.args.load_best_model_at_end:
@@ -514,10 +620,6 @@ class Trainer(BaseTrainer):
             self.load_best_model()
 
         metrics = self._end_train_loop(start_time)
-        # Save final training metrics
-        self.log_metrics("train", metrics)
-        self.save_metrics("train", metrics)
-
         self.log(metrics)
         self._dispatch_event("on_train_end")
         if self._total_log_steps:
@@ -536,7 +638,9 @@ class Trainer(BaseTrainer):
             total_loss = torch.zeros(1, device=self.args.device)
             for step, batch in enumerate(self._dataloader_iter(self.eval_dataloader)):
                 outputs = self._prediction_step(batch)
-                total_loss += outputs["loss"]
+                loss = outputs["loss"]
+                assert loss is not None
+                total_loss += loss
                 self._dispatch_event("on_prediction_step")
             metrics = {"eval_loss": (total_loss / (step + 1)).item()}
             self._dispatch_event("on_evaluate", metrics=metrics)
@@ -579,7 +683,7 @@ class Trainer(BaseTrainer):
 
         return total_norm
 
-    def _train_step(self, batch: dict | tuple) -> Tensor:
+    def _train_step(self, batch: dict | tuple) -> Tuple[Tensor, Tensor | None]:
         """
         Perform a single training step
 
@@ -617,50 +721,6 @@ class Trainer(BaseTrainer):
 
     def _backward(self, loss):
         loss.backward()
-
-    def _save_dataloader_state(self):
-        """Save StatefulDataLoader state if available."""
-        logger.debug(
-            f"_save_dataloader_state called, train_dataloader type: {type(getattr(self, 'train_dataloader', None))}"
-        )
-
-        if hasattr(self, "train_dataloader") and hasattr(
-            self.train_dataloader, "state_dict"
-        ):
-            try:
-                state = self.train_dataloader.state_dict()
-                logger.debug(
-                    f"Successfully saved dataloader state with keys: {list(state.keys())}"
-                )
-                return state
-            except Exception as e:
-                logger.warning(f"Failed to save dataloader state: {e}")
-        else:
-            logger.debug("train_dataloader doesn't have state_dict method")
-        return None
-
-    def _load_dataloader_state(self, dataloader_state):
-        """Load StatefulDataLoader state if available."""
-        if hasattr(self, "train_dataloader"):
-            # Depending upon the class of the dataloader, it may have a method named either load_state_dict() or reset()
-            # which can load a state dictionary, with the latter being part of the torchdata.nodes API
-            load_method = getattr(
-                self.train_dataloader,
-                "load_state_dict",
-                getattr(self.train_dataloader, "reset", None),
-            )
-            if load_method:
-                try:
-                    logger.info(
-                        f"Loading dataloader state: {dataloader_state.keys()} via {load_method.__name__}()"
-                    )
-                    load_method(dataloader_state)
-                except Exception as e:
-                    logger.warning(f"Failed to load dataloader state: {e}")
-            else:
-                logger.warning(
-                    "Could not restored Dataloader state, as it does not have a load method"
-                )
 
     def _update_training_steps(self) -> None:
         """
@@ -728,7 +788,7 @@ class Trainer(BaseTrainer):
         metrics["epoch"] = self.state.epoch
         return metrics
 
-    def _prediction_step(self, batch: dict | tuple) -> Tensor:
+    def _prediction_step(self, batch: dict | tuple) -> Dict[str, Tensor | None]:
         """
         Perform a single batch of predictions
         """

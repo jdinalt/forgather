@@ -437,7 +437,7 @@ def save_sharded_checkpoint(
             safetensors_save(state_dict, shard_file_path)
         else:
             torch.save(state_dict, shard_file_path, _use_new_zipfile_serialization=True)
-        logger.info(f"Wrote: {total_size} bytes")
+        logger.info(f"Wrote: {total_size // (1024 * 1024)} MiB")
 
 
 def validate_output_dir(output_dir: str, overwrite: bool = False) -> None:
@@ -646,10 +646,10 @@ def validate_checkpoint(checkpoint_path: str) -> bool:
 
     # Check for at least one of the expected model files
     expected_model_files = [
-        "pytorch_model.bin",
-        "model.safetensors",
-        "model.safetensors.index.json",
-        "pytorch_model.bin.index.json",
+        WEIGHTS_NAME,
+        SAFE_WEIGHTS_NAME,
+        SAFE_WEIGHTS_INDEX_NAME,
+        WEIGHTS_INDEX_NAME,
     ]
 
     has_checkpoint = any(
@@ -658,9 +658,6 @@ def validate_checkpoint(checkpoint_path: str) -> bool:
     )
 
     if not has_checkpoint:
-        logger.warning(
-            f"Checkpoint {checkpoint_path} appears to be incomplete (no model files found)"
-        )
         return False
 
     return True
@@ -700,7 +697,7 @@ def find_latest_checkpoint(model_dir: str) -> str | None:
         )
         mtime = os.path.getmtime(latest)
         mtime_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
-        logger.info(
+        logger.debug(
             f"Found latest valid checkpoint: {latest} (step {step_num}, modified {mtime_str})"
         )
         return latest
@@ -709,10 +706,10 @@ def find_latest_checkpoint(model_dir: str) -> str | None:
         return None
 
 
-def next_checkpoint_path(model_dir: str, global_step: int) -> str:
+def next_checkpoint_path(model_dir: str, checkpoint_id: int | str) -> str:
     """Get path to save next checkpoint, given model directory and global_step"""
     checkpoints_dir = os.path.join(model_dir, "checkpoints")
-    checkpoint_path = os.path.join(checkpoints_dir, f"checkpoint-{global_step}")
+    checkpoint_path = os.path.join(checkpoints_dir, f"checkpoint-{str(checkpoint_id)}")
     return checkpoint_path
 
 
@@ -735,7 +732,7 @@ def load_checkpoint_metrics(checkpoint_path: str) -> Dict[str, float] | None:
 
 
 def maybe_delete_oldest_checkpoint(
-    model_dir: str, max_checkpoints: int, best_checkpoint: str = None
+    model_dir: str, max_checkpoints: int, best_checkpoint: str | None = None
 ) -> None:
     """Delete oldest checkpoints, preserving the best checkpoint if specified."""
     checkpoints_dir = os.path.join(model_dir, "checkpoints")

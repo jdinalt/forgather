@@ -1,9 +1,11 @@
 from contextlib import contextmanager
 import os
-import sys
+from typing import Protocol
+from abc import abstractmethod
 import torch
-from torch import distributed
+from torch import distributed, accelerator
 import logging
+from functools import partial
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -15,7 +17,7 @@ mpf_recursion_level = 0
 
 
 @contextmanager
-def main_process_first():
+def main_process_first(dist=None):
     """
     Context manager for ensuring that the main process runs first
 
@@ -35,6 +37,18 @@ def main_process_first():
         ...
     ```
     """
+    if dist is None:
+        # Setup barrier function, if no distributed env provided
+        if distributed.is_available() and accelerator.is_available():
+            barrier = partial(
+                distributed.barrier,
+                device_ids=[torch.accelerator.current_device_index()],
+            )
+        else:
+            barrier = lambda: None
+    else:
+        barrier = dist.barrier
+
     global mpf_recursion_level
     if mpf_recursion_level or int(os.environ.get("WORLD_SIZE", "1")) == 1:
         yield
@@ -44,16 +58,29 @@ def main_process_first():
     mpf_recursion_level += 1
     try:
         if local_rank != 0:
-            distributed.barrier()
+            barrier()
         yield
     finally:
-        distributed.barrier()
+        barrier()
         if local_rank == 0:
-            distributed.barrier()
+            barrier()
         mpf_recursion_level -= 1
 
 
-class DistributedEnvironment:
+class DistributedEnvInterface(Protocol):
+    rank: int
+    local_rank: int
+    world_size: int
+    local_world_size: int
+    master_addr: str
+    master_port: int
+    device: str
+
+    @abstractmethod
+    def barrier(self): ...
+
+
+class DistributedEnvironment(DistributedEnvInterface):
     """
     This class initializes the distributed envrionment, if not already initialized
 
@@ -95,7 +122,7 @@ class DistributedEnvironment:
         local_world_size: int = 1,
         master_addr: str = "localhost",
         master_port: int = 29501,
-        backend: str = None,
+        backend: str | None = None,
         log_level="INFO",
         device_map=None,
         always: bool = False,
@@ -141,6 +168,9 @@ class DistributedEnvironment:
 
         logger.info(str(self))
 
+        # Default, no-op
+        self.barrier_fn = lambda: None
+
         if torch.cuda.is_available():
             if self.device_map:
                 self.device = self.device_map[self.rank]
@@ -159,6 +189,11 @@ class DistributedEnvironment:
                 self.world_size == 1
             ), "World size is larger than 1 and torch distributed is not available."
         self._init_cuda()
+        if distributed.is_available() and accelerator.is_available():
+            self.barrier_fn = partial(
+                distributed.barrier,
+                device_ids=[torch.accelerator.current_device_index()],
+            )
 
     def _init_cuda(self):
         if "cuda" in self.device:
@@ -169,3 +204,6 @@ class DistributedEnvironment:
         distributed.init_process_group(
             backend=self.backend, device_id=torch.device(self.device)
         )
+
+    def barrier(self):
+        self.barrier_fn()

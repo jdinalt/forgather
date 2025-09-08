@@ -1,0 +1,28 @@
+## Resume training configuration that loads from the latest checkpoint
+-- extends "configs/accel_ddp.yaml"
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Resume Training from Checkpoint"
+    -- set ns.config_description = "Continue training from the latest checkpoint, restoring optimizer and scheduler state"
+    -- set ns.create_new_model = False
+<< endblock config_metadata
+
+-- block trainer_definition
+    -- include 'accel_trainer_ddp_resume.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- accel_trainer_ddp_resume.trainer_config --------------------
+-- extends 'accel_trainer_ddp.trainer_config'
+
+-- block trainer_args
+    == super()
+    resume_from_checkpoint: True
+    restore_optimizer_state: True
+    restore_scheduler_state: True
+    restore_rng_state: True
+    restore_dataset_state: true
+
+    # Continue for another 500 steps
+    max_steps: 1000
+<< endblock trainer_args

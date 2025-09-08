@@ -1,31 +1,74 @@
 # A subclass of Trainer, which adds support for the Acclerate library.
+from typing import Any, Optional
 from dataclasses import dataclass, field
 from collections.abc import Sequence
 import os
 import logging
+from functools import partial
 
 import torch
+from torch import distributed
 from torch import Tensor
+import accelerate
 from accelerate import Accelerator
 
 from ..trainer_types import TrainingArguments, TrainerState
 from ..trainer import Trainer
 
-# Import StatefulDataLoader if available
-try:
-    from torchdata.stateful_dataloader import StatefulDataLoader
-
-    STATEFUL_DATALOADER_AVAILABLE = True
-except ImportError:
-    StatefulDataLoader = None
-    STATEFUL_DATALOADER_AVAILABLE = False
+from ...distributed import DistributedEnvInterface
+from ..checkpoint_manager import CheckpointManager, CheckpointConfig
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(kw_only=True)
 class AccelTrainingArguments(TrainingArguments):
-    accelerator_args: dict = None
+    pass
+
+
+class AccelDistEnv(DistributedEnvInterface):
+    def __init__(self, accelerator: Accelerator):
+        self.accel = accelerator
+        if torch.cuda.is_available():
+            torch.cuda.set_device(accelerator.local_process_index)
+
+        # It seems that accelerate does not call distributed.barrier with the device
+        # argument, which causes torch to complain loundly that the device was not passed
+        # to init_process_group(), suggesting that I do so. I can't, as Accelerate calls this
+        # internally. So, to silence the warnings, bypass accelerate for barriers, when possible.
+        # If they ever fix this, we can remove this code...
+        if distributed.is_available() and torch.accelerator.is_available():
+            self.barrier_fn = partial(
+                distributed.barrier,
+                device_ids=[torch.accelerator.current_device_index()],
+            )
+        else:
+            self.barrier_fn = self.accel.wait_for_everyone
+
+    def __getattr__(self, name: str) -> Any:
+        match name:
+            case "rank":
+                return self.accel.process_index
+            case "local_rank":
+                return self.accel.local_process_index
+            case "world_size":
+                return self.accel.num_processes
+            # Note: Accelerator does not
+            case "local_world_size":
+                return os.getenv("LOCAL_WORLD_SIZE")
+            case "master_addr":
+                return os.getenv("MASTER_ADDR")
+            case "master_port":
+                return os.getenv("MASTER_PORT")
+            case "device":
+                dev = self.accel.device
+                name = dev.type
+                if dev.index:
+                    name += ":" + str(dev.index)
+                return name
+
+    def barrier(self):
+        self.barrier_fn()
 
 
 class AccelTrainer(Trainer):
@@ -35,7 +78,15 @@ class AccelTrainer(Trainer):
 
     def _post_init(self) -> None:
         super()._post_init()
-        self.accelerator = Accelerator(**self.args.accelerator_args)
+
+        assert hasattr(self.dist, "accel")
+        accel = self.dist.accel
+        assert isinstance(accel, Accelerator)
+        self.accelerator: Accelerator = accel
+
+        assert (
+            not self.args.fuse_optim_with_backward
+        ), "AccelTrainer does not support option fuse_optim_with_backward"
 
         # Accel uses a special device target
         self.args.device = self.accelerator.device
@@ -45,8 +96,10 @@ class AccelTrainer(Trainer):
         self.num_processes = self.accelerator.num_processes
 
     # @override
-    def _prepare(self, train_dataset, eval_dataset) -> None:
-        super()._prepare(train_dataset, eval_dataset)
+    def _wrap(
+        self,
+    ) -> None:
+        super()._wrap()
 
         # Wrap relevant componens with accelerator
         (
@@ -62,10 +115,15 @@ class AccelTrainer(Trainer):
             self.optimizer,
             self.lr_scheduler,
         )
+        # TODO: Need to enable stateful dataloader correctly
+        # Using the following seems to cause issues, but only some of the time.
+        # self.train_dataloader = accelerate.data_loader.prepare_data_loader(
+        #    self.train_dataloader,
+        #    use_stateful_dataloader=True
+        # )
         # Accelerate modifies the dataloaders, which can change both the length and the batch size.
-        if train_dataset is not None:
+        if self.train_dataloader is not None:
             self._update_training_steps()
-        self._barrier()
 
     # @override
     def _backward(self, loss):
@@ -77,38 +135,6 @@ class AccelTrainer(Trainer):
         Reduces loss accross processes
         """
         return self.accelerator.reduce(loss, "mean")
-
-    def _save_dataloader_state(self):
-        """Save StatefulDataLoader state if available, accounting for Accelerate wrapping."""
-        # After accelerate.prepare(), the dataloader may be wrapped
-        dataloader = getattr(self, "train_dataloader", None)
-        if dataloader is None:
-            return None
-
-        # Try to get state from wrapped dataloader
-        if hasattr(dataloader, "state_dict"):
-            try:
-                return dataloader.state_dict()
-            except Exception as e:
-                logger.warning(f"Failed to save dataloader state: {e}")
-
-        return super()._save_dataloader_state()
-
-    def _load_dataloader_state(self, dataloader_state):
-        """Load StatefulDataLoader state if available, accounting for Accelerate wrapping."""
-        dataloader = getattr(self, "train_dataloader", None)
-        if dataloader is None:
-            return
-
-        # Try to load state into wrapped dataloader
-        if hasattr(dataloader, "load_state_dict"):
-            try:
-                dataloader.load_state_dict(dataloader_state)
-                return
-            except Exception as e:
-                logger.warning(f"Failed to load dataloader state: {e}")
-
-        super()._load_dataloader_state(dataloader_state)
 
     # @override
     def _prepare_batch(self, batch):
@@ -126,7 +152,7 @@ class AccelTrainer(Trainer):
         """
         state = super()._init_state()
         # Split-batches option divides the requested batch size by the number of GPUs
-        if self.args.accelerator_args["dataloader_config"].split_batches:
+        if self.accelerator.dataloader_config.split_batches:
             state.train_batch_size = (
                 self.args.per_device_train_batch_size // state.num_processes
             )
@@ -134,59 +160,37 @@ class AccelTrainer(Trainer):
             state.train_batch_size = self.args.per_device_train_batch_size
         return state
 
-    def unwrapped_model(self):
+    # @override
+    def unwrapped_model(self) -> torch.nn.Module:
+        assert self.model
         return self.accelerator.unwrap_model(self.model)
 
-    def _should_use_accelerate_checkpoint(self) -> bool:
-        """Determine if we should use Accelerate's native checkpointing."""
-        return (
-            self.args.save_optimizer_state
-            and self.args.save_scheduler_state
-            and hasattr(self.accelerator, "save_state")
-        )
+    # @override
+    def _dispatch_event(self, event: str, **kwargs):
+        match event:
+            case "on_train_end":
+                self.accelerator.end_training()
+        super()._dispatch_event(event, **kwargs)
 
     # @override
-    def _save_training_state(self, output_dir: str) -> None:
-        """Override to use Accelerate's checkpoint saving when possible."""
-        if self._should_save_unique():
-            if (
-                hasattr(self.accelerator, "save_state")
-                and self._should_use_accelerate_checkpoint()
-            ):
-                accelerate_checkpoint_path = os.path.join(
-                    output_dir, "accelerate_state"
+    def _clip_grad_norm(self, max_grad_norm, norm_type=2.0) -> Optional[Tensor]:
+        # If not clipping, just compute and return it
+        # It's unclear if this will work right with Accelerate?
+        total_norm = None
+        if self.accelerator.sync_gradients:
+            if max_grad_norm is None or max_grad_norm == 0:
+                grads = [p.grad for p in self.model.parameters() if p.grad is not None]
+
+                total_norm = torch.nn.utils.get_total_norm(
+                    grads, norm_type=norm_type, foreach=True
                 )
-                self.accelerator.save_state(accelerate_checkpoint_path)
-                logger.info(f"Saved accelerate state to {accelerate_checkpoint_path}")
-            else:
-                super()._save_training_state(output_dir)
+                return total_norm
 
-    # @override
-    def _save_model(self, output_dir):
-        if self._should_save_unique():
-            super()._save_model()
+            # Otherwise, use fused clip_grad_norm_
+            total_norm = self.accelerator.clip_grad_norm_(
+                self.model.parameters(),
+                max_grad_norm,
+                norm_type=int(norm_type),
+            )
 
-    # @override
-    def _load_training_state(self, checkpoint_path: str) -> None:
-        """Override to use Accelerate's checkpoint loading when possible."""
-        accelerate_checkpoint_path = os.path.join(checkpoint_path, "accelerate_state")
-
-        if os.path.exists(accelerate_checkpoint_path) and hasattr(
-            self.accelerator, "load_state"
-        ):
-            self.accelerator.load_state(accelerate_checkpoint_path)
-            logger.info(f"Loaded accelerate state from {accelerate_checkpoint_path}")
-        else:
-            super()._load_training_state(checkpoint_path)
-        self._barrier()
-
-    # @override
-    def _barrier(self):
-        self.accelerator.wait_for_everyone()
-
-    # @override
-    def _should_save_unique(self):
-        """
-        Should this process save a unique file?
-        """
-        return self.accelerator.is_main_process
+        return total_norm

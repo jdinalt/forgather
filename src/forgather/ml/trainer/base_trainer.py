@@ -4,9 +4,8 @@ from typing import (
     List,
     Dict,
 )
-from types import NoneType
+
 import os
-import json
 from abc import abstractmethod
 from contextlib import ExitStack
 
@@ -14,37 +13,30 @@ import logging
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.utils.data import Dataset
-from transformers import (
-    PreTrainedModel,
-)
+from torch.distributed.checkpoint.stateful import Stateful
 
 from .trainer_types import (
     ExtensibleTrainer,
     TrainingArguments,
+    TrainerState,
     TrainOutput,
     TrainerControl,
+    CheckpointInterface,
+    StatefulProvider,
 )
-from ..sharded_checkpoint import (
-    load_checkpoint,
-    validate_checkpoint,
-    find_latest_checkpoint,
-    next_checkpoint_path,
-    maybe_delete_oldest_checkpoint,
-    save_checkpoint_metrics,
-    load_checkpoint_metrics,
-)
+
+from .checkpoint_manager import RNGState
 
 WEIGHTS_NAME = "pytorch_model.bin"
 WEIGHTS_INDEX_NAME = "pytorch_model.bin.index.json"
 SAFE_WEIGHTS_INDEX_NAME = "model.safetensors.index.json"
 SAFE_WEIGHTS_NAME = "model.safetensors"
 
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-class BaseTrainer(ExtensibleTrainer):
+class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
     """
     Implements the common aspects of the ExtensibleTrainer class,
         but is also an abstract-base-class, with the meat of the "trainer"
@@ -60,17 +52,17 @@ class BaseTrainer(ExtensibleTrainer):
 
     def __init__(
         self,
-        model: PreTrainedModel | torch.nn.Module = None,
+        model: torch.nn.Module | None = None,
         args: Optional[dict | TrainingArguments] = None,
         data_collator=None,
         train_dataset=None,
         eval_dataset=None,
         processing_class=None,
-        model_init: Optional[Callable[[], PreTrainedModel]] = None,
-        callbacks: List = None,
+        model_init: Optional[Callable[[], torch.nn.Module]] = None,
+        callbacks: List | None = None,
         # Depreicated; use processing_class
         tokenizer=None,
-        compute_loss_func: Callable = None,
+        compute_loss_func: Callable | None = None,
     ):
         if callbacks is None:
             callbacks = []
@@ -105,11 +97,18 @@ class BaseTrainer(ExtensibleTrainer):
         self.eval_dataloader = None
         self.optimizer = None
         self.lr_scheduler = None
-        self.state = None
         self.is_local_process_zero = True
         self.is_world_process_zero = True
         self.num_processes = 1
+        self.checkpoint_manager: CheckpointInterface | None = None
 
+        self.state = TrainerState(
+            logging_steps=args.logging_steps,
+            eval_steps=args.eval_steps,
+            train_batch_size=args.per_device_train_batch_size,
+            max_steps=args.max_steps,
+            num_train_epochs=args.num_train_epochs,
+        )
         self.control = TrainerControl()
 
         # Silence annoying Huggingface FastTokenizer warnings
@@ -148,6 +147,8 @@ class BaseTrainer(ExtensibleTrainer):
             ")"
         )
 
+    # AbstractBaseTrainer
+    # @override
     def train(self, **kwargs) -> TrainOutput:
         """
         The main entry point to start training the model.
@@ -167,6 +168,8 @@ class BaseTrainer(ExtensibleTrainer):
             )
             return self._train_loop()
 
+    # AbstractBaseTrainer
+    # @override
     def evaluate(
         self, eval_dataset: Optional[Dataset] = None, **kwargs
     ) -> dict[str, float]:
@@ -185,32 +188,15 @@ class BaseTrainer(ExtensibleTrainer):
             self._prepare(train_dataset=None, eval_dataset=eval_dataset)
             return self._eval_loop()
 
-    def save_model(self, output_dir: os.PathLike | str = None) -> None:
-        """
-        Save model and tokenizer to output_dir
-        """
-        if self.model is None:
-            return
-        if output_dir is None:
-            output_dir = self.args.output_dir
-        if self._should_save_unique():
-            if not self.args.overwrite_output_dir and self.model_exists(output_dir):
-                raise Exception(
-                    "Would overwrite output model in output directory. "
-                    f"Set 'args.overwrite_output_dir' to override: {output_dir}"
-                )
-            os.makedirs(output_dir, exist_ok=True)
-            self._save_model_config(output_dir)
-            self._save_model_preprocessor(output_dir)
-        self._barrier()
-        self._save_model(output_dir)
-        self._barrier()
-
+    # AbstractBaseTrainer
+    # @override
     def add_callback(self, callback):
         if isinstance(callback, type):
             callback = callback()
         self.callbacks.append(callback)
 
+    # AbstractBaseTrainer
+    # @override
     def pop_callback(self, callback):
         if isinstance(callback, type):
             compare = lambda a, b: type(a) == b
@@ -220,541 +206,17 @@ class BaseTrainer(ExtensibleTrainer):
             if compare(cb, callback):
                 return self.callbacks.pop(i)
 
+    # AbstractBaseTrainer
+    # @override
+    def remove_callback(self, callback):
+        self.pop_callback(callback)
+
     def log(self, logs: Dict[str, float]):
         self.state.log_history.append(logs)
 
         return self._dispatch_event(
             "on_log",
             logs=logs,
-        )
-
-    def unwrapped_model(self):
-        """
-        Unwrap model for saving
-        Some sub-classes may 'wrap' the model in another object.
-        This method should return the base model, given the wrapped model.
-        """
-        return self.model
-
-    def model_exists(self, output_dir):
-        """
-        Return True, if a saved model exists in the output_dir
-        """
-        output_artifacts = (
-            WEIGHTS_NAME,
-            "model.safetensors",
-            "model.safetensors.index.json",
-            "pytorch_model.bin.index.json",
-        )
-        for artifact_name in output_artifacts:
-            if os.path.exists(os.path.join(output_dir, artifact_name)):
-                return True
-        return False
-
-    def _validate_dirs(self):
-        """
-        TODO: Review logic
-        """
-        output_dir = self.args.output_dir
-        if os.path.isdir(output_dir):
-            if self.model_exists(output_dir):
-                if not self.args.overwrite_output_dir:
-                    logger.warning(
-                        f"Model exists in output dir '{output_dir}' and 'args.overwrite_output_dir' "
-                        "is not 'True.' Model can not be saved! Set args.overwrite_output_dir=True "
-                        "to override."
-                    )
-                else:
-                    logger.warning(
-                        f"Model exists in output dir '{output_dir}' and model may be overwritten!"
-                    )
-        elif os.path.exists(output_dir):
-            raise Exception(
-                f"Something other than a directory already exists at the output path! {output_dir}"
-            )
-        else:
-            logger.info(f"Creating output directory: {output_dir}")
-            os.makedirs(output_dir, exist_ok=True)
-        logging_dir = self.args.logging_dir
-        if not os.path.isdir(logging_dir):
-            os.makedirs(logging_dir, exist_ok=True)
-
-    def _barrier(self):
-        """
-        Wait for all processes before continuing
-        """
-        pass
-
-    def _should_save_unique(self):
-        """
-        Should this process save a unique file?
-        """
-        return True
-
-    def _save_model(self, output_dir):
-        model = self.unwrapped_model()
-        if isinstance(model, PreTrainedModel):
-            model.save_pretrained(
-                save_directory=output_dir,
-                is_main_process=True,
-                safe_serialization=self.args.save_safetensors,
-            )
-        else:
-            logger.info("Saving model as state-dictionary")
-            torch.save(model.state_dict(), os.path.join(output_dir, WEIGHTS_NAME))
-
-    def _save_model_config(self, output_dir):
-        if isinstance(self.model, PreTrainedModel):
-            self.model.config.save_pretrained(output_dir)
-
-    def _save_model_preprocessor(self, output_dir):
-        if self.processing_class and hasattr(self.processing_class, "save_pretrained"):
-            self.processing_class.save_pretrained(output_dir)
-
-    def _resolve_checkpoint_path(self) -> str | None:
-        """Resolve the checkpoint path based on resume_from_checkpoint setting."""
-        if not self.args.resume_from_checkpoint:
-            return None
-
-        if isinstance(self.args.resume_from_checkpoint, str):
-            # Explicit path provided
-            if os.path.exists(self.args.resume_from_checkpoint):
-                if validate_checkpoint(self.args.resume_from_checkpoint):
-                    return self.args.resume_from_checkpoint
-                else:
-                    logger.warning(
-                        f"Invalid checkpoint at: {self.args.resume_from_checkpoint}"
-                    )
-                    return None
-            else:
-                logger.warning(
-                    f"Checkpoint path does not exist: {self.args.resume_from_checkpoint}"
-                )
-                return None
-        elif self.args.resume_from_checkpoint is True:
-            # Auto-discover latest checkpoint
-            return find_latest_checkpoint(self.args.output_dir)
-
-        return None
-
-    def save_checkpoint(self, checkpoint_path=None) -> None:
-        if not checkpoint_path:
-            checkpoint_path = next_checkpoint_path(
-                self.args.output_dir, self.state.global_step
-            )
-
-        logger.info(f"Saving checkpoint at {checkpoint_path}")
-
-        if self._should_save_unique():
-            # Ensure the checkpoint directory exists
-            os.makedirs(checkpoint_path, exist_ok=True)
-            self._save_model_config(self.args.output_dir)
-            self._save_model_preprocessor(self.args.output_dir)
-
-        self._barrier()
-        self._save_model(checkpoint_path)
-        self._save_training_state(checkpoint_path)
-
-        # At most, one process per node should delete excess checkpoints
-        if self._should_save_unique():
-            maybe_delete_oldest_checkpoint(
-                self.args.output_dir,
-                self.args.save_total_limit,
-                self.state.best_model_checkpoint,
-            )
-
-        self._dispatch_event(
-            "on_save",
-            checkpoint_path=checkpoint_path,
-        )
-        # Make available to sub-class for saving additional state
-        return checkpoint_path
-
-    def load_checkpoint(self, checkpoint_path=None) -> None:
-        if not checkpoint_path:
-            checkpoint_path = self._resolve_checkpoint_path()
-
-        if checkpoint_path:
-            logger.info(f"Resuming training from checkpoint: {checkpoint_path}")
-            self._load_model_from_checkpoint(checkpoint_path)
-            self._load_training_state(checkpoint_path)
-        else:
-            logger.warn("No checkpoints found")
-
-    def save_metrics(
-        self, split: str, metrics: Dict[str, float], combined: bool = True
-    ) -> None:
-        """
-        Save metrics to JSON files following HuggingFace conventions.
-
-        Args:
-            split: The dataset split (e.g., "train", "eval", "test")
-            metrics: Dictionary of metrics to save
-            combined: Whether to also save to all_results.json
-        """
-        if not self._should_save_unique():
-            return
-
-        # Save split-specific results
-        results_file = os.path.join(self.args.output_dir, f"{split}_results.json")
-        with open(results_file, "w") as f:
-            json.dump(metrics, f, indent=2, ensure_ascii=False)
-
-        # Save to combined results if requested
-        if combined:
-            combined_file = os.path.join(self.args.output_dir, "all_results.json")
-
-            # Load existing combined results if they exist
-            combined_results = {}
-            if os.path.exists(combined_file):
-                try:
-                    with open(combined_file, "r") as f:
-                        combined_results = json.load(f)
-                except (json.JSONDecodeError, IOError):
-                    logger.warning(
-                        f"Could not read existing combined results from {combined_file}"
-                    )
-
-            # Add current metrics with split prefix
-            for key, value in metrics.items():
-                combined_results[f"{split}_{key}"] = value
-
-            # Save combined results
-            with open(combined_file, "w") as f:
-                json.dump(combined_results, f, indent=2, ensure_ascii=False)
-
-    def log_metrics(self, split: str, metrics: Dict[str, float]) -> None:
-        """
-        Log metrics in formatted output following HuggingFace conventions.
-
-        Args:
-            split: The dataset split (e.g., "train", "eval", "test")
-            metrics: Dictionary of metrics to log
-        """
-        if not self._should_save_unique():
-            return
-
-        logger.info(f"***** {split} metrics *****")
-        for key in sorted(metrics.keys()):
-            logger.info(f"  {key} = {metrics[key]}")
-
-    def _update_best_model(
-        self, checkpoint_path: str, metrics: Dict[str, float]
-    ) -> None:
-        """Update best model tracking based on current metrics."""
-        if not self.args.load_best_model_at_end:
-            return
-
-        # Try exact match first, then with eval_ prefix
-        metric_value = metrics.get(self.args.metric_for_best_model)
-        if metric_value is None:
-            metric_value = metrics.get(f"eval_{self.args.metric_for_best_model}")
-
-        if metric_value is None:
-            logger.warning(
-                f"Metric '{self.args.metric_for_best_model}' not found in evaluation metrics. "
-                f"Available metrics: {list(metrics.keys())}"
-            )
-            return
-
-        # Initialize best metric on first evaluation
-        if self.state.best_metric is None:
-            self.state.best_metric = metric_value
-            self.state.best_model_checkpoint = checkpoint_path
-            logger.info(
-                f"First evaluation - setting best {self.args.metric_for_best_model}: {metric_value}"
-            )
-            return
-
-        # Check if current metric is better
-        is_better = (
-            self.args.greater_is_better and metric_value > self.state.best_metric
-        ) or (not self.args.greater_is_better and metric_value < self.state.best_metric)
-
-        if is_better:
-            self.state.best_metric = metric_value
-            self.state.best_model_checkpoint = checkpoint_path
-            logger.info(
-                f"New best {self.args.metric_for_best_model}: {metric_value} (previous: {self.state.best_metric})"
-            )
-            logger.info(f"Saving new best model checkpoint to {checkpoint_path}")
-
-    def load_best_model(self) -> None:
-        """Load the best model from the best checkpoint."""
-        if not self.state.best_model_checkpoint:
-            logger.warning("No best model checkpoint available to load")
-            return
-
-        if not os.path.exists(self.state.best_model_checkpoint):
-            logger.warning(
-                f"Best model checkpoint path does not exist: {self.state.best_model_checkpoint}"
-            )
-            return
-
-        logger.info(f"Loading best model from {self.state.best_model_checkpoint}")
-        self._load_model_from_checkpoint(self.state.best_model_checkpoint)
-
-    def _optimizer_state_dict(self) -> Dict | None:
-        """Save optimizer state dict only."""
-        if self.args.save_optimizer_state and self.optimizer is not None:
-            return self.optimizer.state_dict()
-        return None
-
-    def _scheduler_state_dict(self) -> Dict | None:
-        """Save scheduler state dict only."""
-        if self.args.save_scheduler_state and self.lr_scheduler is not None:
-            return self.lr_scheduler.state_dict()
-        return None
-
-    def _dataset_state_dict(self) -> Dict | None:
-        """Save dataset-related state (global step and dataloader state)."""
-        if not self.args.save_dataset_state:
-            return None
-
-        dataset_state = {
-            "global_step": self.state.global_step,
-        }
-
-        # Save dataloader state if available
-        dataloader_state = self._save_dataloader_state()
-        if dataloader_state:
-            dataset_state["dataloader_state"] = dataloader_state
-
-        return dataset_state
-
-    def _rng_state_dict(self) -> Dict | None:
-        """Save RNG state for reproducibility."""
-        if not self.args.save_rng_state:
-            return None
-
-        rng_state = {
-            "torch_rng_state": torch.get_rng_state(),
-            "initial_seed": torch.initial_seed(),
-        }
-
-        # Save CUDA RNG state if available
-        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
-            current_device = torch.cuda.current_device()
-            rng_state["cuda_rng_state"] = torch.cuda.get_rng_state(
-                device=current_device
-            )
-            rng_state["cuda_device"] = current_device
-
-        return rng_state
-
-    def _save_optimizer_state(self, output_dir: str) -> None:
-        """Save optimizer state to separate file."""
-        optimizer_state = self._optimizer_state_dict()
-        if optimizer_state:
-            optimizer_state_path = os.path.join(output_dir, "optimizer_state.pt")
-            torch.save(optimizer_state, optimizer_state_path)
-            logger.debug(f"Saved optimizer state to {optimizer_state_path}")
-
-    def _save_scheduler_state(self, output_dir: str) -> None:
-        """Save scheduler state to separate file."""
-        scheduler_state = self._scheduler_state_dict()
-        if scheduler_state:
-            scheduler_state_path = os.path.join(output_dir, "scheduler_state.pt")
-            torch.save(scheduler_state, scheduler_state_path)
-            logger.debug(f"Saved scheduler state to {scheduler_state_path}")
-
-    def _save_dataset_state(self, output_dir: str) -> None:
-        """Save dataset state to separate file."""
-        dataset_state = self._dataset_state_dict()
-        if dataset_state:
-            dataset_state_path = os.path.join(output_dir, "dataset_state.pt")
-            torch.save(dataset_state, dataset_state_path)
-            logger.debug(f"Saved dataset state to {dataset_state_path}")
-
-            dataloader_state = dataset_state.get("dataloader_state")
-            if dataloader_state:
-                logger.info(
-                    f"Saved dataloader state to checkpoint with keys: {list(dataloader_state.keys())}"
-                )
-            else:
-                logger.debug("No dataloader state to save")
-
-    def _save_rng_state(self, output_dir: str) -> None:
-        """Save RNG state to separate file."""
-        rng_state = self._rng_state_dict()
-        if rng_state:
-            rng_state_path = os.path.join(output_dir, "rng_state.pt")
-            torch.save(rng_state, rng_state_path)
-            logger.debug(f"Saved RNG state to {rng_state_path}")
-
-    def _save_training_state(self, output_dir: str) -> None:
-        """Save all training state components to separate files."""
-        self._save_optimizer_state(output_dir)
-        self._save_scheduler_state(output_dir)
-        self._save_dataset_state(output_dir)
-        self._save_rng_state(output_dir)
-
-        logger.info(f"Saved training state components to {output_dir}")
-
-    def _load_optimizer_state(self, checkpoint_path: str) -> None:
-        """Load optimizer state from separate file."""
-        optimizer_state_path = os.path.join(checkpoint_path, "optimizer_state.pt")
-
-        if not os.path.exists(optimizer_state_path):
-            logger.debug(f"No optimizer state file found at: {optimizer_state_path}")
-            return
-
-        if not self.args.restore_optimizer_state:
-            logger.debug("Optimizer state restore disabled")
-            return
-
-        if self.optimizer is None:
-            logger.warning("Cannot restore optimizer state: optimizer not initialized")
-            return
-
-        try:
-            optimizer_state = torch.load(
-                optimizer_state_path, map_location=torch.device("cpu")
-            )
-            self.optimizer.load_state_dict(optimizer_state)
-            logger.info("Restored optimizer state from checkpoint")
-        except Exception as e:
-            logger.error(
-                f"Failed to load optimizer state from {optimizer_state_path}: {e}"
-            )
-
-    def _load_scheduler_state(self, checkpoint_path: str) -> None:
-        """Load scheduler state from separate file."""
-        scheduler_state_path = os.path.join(checkpoint_path, "scheduler_state.pt")
-
-        if not os.path.exists(scheduler_state_path):
-            logger.debug(f"No scheduler state file found at: {scheduler_state_path}")
-            return
-
-        if not self.args.restore_scheduler_state:
-            logger.debug("Scheduler state restore disabled")
-            return
-
-        if self.lr_scheduler is None:
-            logger.warning("Cannot restore scheduler state: scheduler not initialized")
-            return
-
-        try:
-            scheduler_state = torch.load(
-                scheduler_state_path, map_location=torch.device("cpu")
-            )
-            self.lr_scheduler.load_state_dict(scheduler_state)
-            logger.info("Restored LR scheduler state from checkpoint")
-        except Exception as e:
-            logger.error(
-                f"Failed to load scheduler state from {scheduler_state_path}: {e}"
-            )
-
-    def _load_dataset_state(self, checkpoint_path: str) -> None:
-        """Load dataset state from separate file."""
-        dataset_state_path = os.path.join(checkpoint_path, "dataset_state.pt")
-
-        if not os.path.exists(dataset_state_path):
-            logger.debug(f"No dataset state file found at: {dataset_state_path}")
-            return
-
-        if not self.args.restore_dataset_state:
-            logger.debug("Dataset state restore disabled")
-            return
-
-        try:
-            dataset_state = torch.load(
-                dataset_state_path, map_location=torch.device("cpu")
-            )
-
-            # Restore global step
-            if "global_step" in dataset_state:
-                self.state.global_step = dataset_state["global_step"]
-                logger.info(f"Restored global step to {self.state.global_step}")
-
-            # Restore dataloader state if available
-            if "dataloader_state" in dataset_state:
-                self._load_dataloader_state(dataset_state["dataloader_state"])
-                logger.info("Restored dataloader state from checkpoint")
-
-        except Exception as e:
-            logger.error(f"Failed to load dataset state from {dataset_state_path}: {e}")
-
-    def _load_rng_state(self, checkpoint_path: str) -> None:
-        """Load RNG state from separate file."""
-        rng_state_path = os.path.join(checkpoint_path, "rng_state.pt")
-
-        if not os.path.exists(rng_state_path):
-            logger.debug(f"No RNG state file found at: {rng_state_path}")
-            if self.args.restore_rng_state:
-                logger.info(
-                    "No RNG state found in checkpoint - using current RNG state"
-                )
-            return
-
-        if not self.args.restore_rng_state:
-            logger.debug("RNG state restore disabled")
-            return
-
-        try:
-            rng_state = torch.load(rng_state_path, map_location=torch.device("cpu"))
-
-            # Restore CPU RNG state
-            if "torch_rng_state" in rng_state:
-                torch.set_rng_state(rng_state["torch_rng_state"])
-                logger.debug("Restored CPU RNG state from checkpoint")
-
-            # Restore CUDA RNG state if available
-            if "cuda_rng_state" in rng_state and torch.cuda.is_available():
-                current_device = torch.cuda.current_device()
-                saved_device = rng_state.get("cuda_device", current_device)
-
-                if current_device != saved_device:
-                    logger.warning(
-                        f"CUDA device mismatch: current={current_device}, saved={saved_device}. "
-                        "Restoring RNG state anyway (should be fine with identical GPU models)."
-                    )
-
-                torch.cuda.set_rng_state(
-                    rng_state["cuda_rng_state"], device=current_device
-                )
-                logger.debug(
-                    f"Restored CUDA RNG state for device {current_device} from checkpoint"
-                )
-
-            logger.info("Restored RNG state from checkpoint")
-
-        except Exception as e:
-            logger.error(f"Failed to load RNG state from {rng_state_path}: {e}")
-
-    def _save_dataloader_state(self):
-        """
-        Save dataloader state for checkpointing. Subclasses should override.
-        Returns dict or None if no state to save.
-        """
-        return None
-
-    def _load_dataloader_state(self, dataloader_state):
-        """
-        Load dataloader state from checkpoint. Subclasses should override.
-        """
-        pass
-
-    def _load_training_state(self, checkpoint_path: str) -> None:
-        """Load all training state components from separate files."""
-        self._load_optimizer_state(checkpoint_path)
-        self._load_scheduler_state(checkpoint_path)
-        self._load_dataset_state(checkpoint_path)
-        self._load_rng_state(checkpoint_path)
-
-        logger.info(f"Loaded training state components from {checkpoint_path}")
-
-    def _load_model_from_checkpoint(self, checkpoint_path: str) -> None:
-        """Load model weights from checkpoint using the sharded checkpoint loader."""
-        assert self.model is not None
-
-        # Handle case where device might be None
-        device = self.args.device if self.args.device is not None else "cpu"
-
-        # Use the sharded checkpoint loader to handle all checkpoint formats
-        logger.info(f"Loading model weights from checkpoint: {checkpoint_path}")
-        load_checkpoint(
-            checkpoint_path, self.model, device=torch.device(device), strict=True
         )
 
     @staticmethod
@@ -791,6 +253,7 @@ class BaseTrainer(ExtensibleTrainer):
         Dispatch event to all callbacks
         """
         # Dispatch to call backkbacks in list
+        unwrapped_model = self.unwrapped_model()
         for callback in self.callbacks:
             event_handler = getattr(callback, event, None)
             # If handler is undefined, skip to next.
@@ -801,7 +264,7 @@ class BaseTrainer(ExtensibleTrainer):
                 self.args,
                 self.state,
                 self.control,
-                model=self.unwrapped_model(),
+                model=unwrapped_model,
                 processing_class=self.processing_class,
                 optimizer=self.optimizer,
                 lr_scheduler=self.lr_scheduler,
@@ -813,6 +276,96 @@ class BaseTrainer(ExtensibleTrainer):
             if new_control is not None:
                 self.control = new_control
         return self.control
+
+    def unwrapped_model(self) -> torch.nn.Module:
+        # Gen unwrapped model. e.g., if wrapped with DDP, return the base model
+        assert self.model
+        return self.model
+
+    # AbstractBaseTrainer
+    # @override
+    def save_model(self, output_dir: Optional[os.PathLike | str] = None) -> None:
+        assert self.checkpoint_manager
+        self.checkpoint_manager.save_model(
+            output_dir=output_dir, overwrite_output_dir=self.args.overwrite_output_dir
+        )
+
+    # AbstractBaseTrainer
+    # @override
+    def save_checkpoint(self, checkpoint_path=None) -> None:
+        assert self.checkpoint_manager
+        self.checkpoint_manager.save_checkpoint(checkpoint_path)
+
+    # AbstractBaseTrainer
+    # @override
+    def load_checkpoint(self, checkpoint_path=None) -> None:
+        assert self.checkpoint_manager
+        self.checkpoint_manager.load_checkpoint(checkpoint_path)
+
+    # StatefulProvider
+    # @override
+    def get_statefuls_for_save(self):
+        statefuls = {}
+        save_dataset_state = False
+
+        # Not all dataloaders are stateful and not all dataloader with
+        # a state_dict() method are an instance of Stateful.
+        if self.args.save_dataset_state:
+            if hasattr(self.train_dataloader, "state_dict"):
+                save_dataset_state = True
+            else:
+                logger.warning("train_dataloader doesn't have state_dict method")
+
+        for key, obj, save in (
+            ("optimizer", self.optimizer, self.args.save_optimizer_state),
+            ("scheduler", self.lr_scheduler, self.args.save_scheduler_state),
+            ("trainer", self, self.args.save_dataset_state),
+            ("dataset", self.train_dataloader, save_dataset_state),
+            ("rng", RNGState(), self.args.save_rng_state),
+        ):
+            if not save:
+                continue
+            assert obj, f"{key} is not initialized"
+            statefuls[key] = obj
+
+        return statefuls
+
+    # StatefulProvider
+    # @override
+    def get_statefuls_for_load(self):
+        statefuls = {}
+        restore_dataset_state = False
+        if self.args.restore_dataset_state:
+            if hasattr(self.train_dataloader, "load_state_dict"):
+                restore_dataset_state = True
+            else:
+                logger.warning(
+                    "Could not restored Dataloader state, as it does not have a load method"
+                )
+
+        for key, obj, load in (
+            ("optimizer", self.optimizer, self.args.restore_optimizer_state),
+            ("scheduler", self.lr_scheduler, self.args.restore_scheduler_state),
+            ("trainer", self, self.args.restore_dataset_state),
+            ("dataset", self.train_dataloader, restore_dataset_state),
+            ("rng", RNGState(), self.args.restore_rng_state),
+        ):
+            if not load:
+                continue
+            assert obj, f"{key} is not initialized"
+            statefuls[key] = obj
+
+        return statefuls
+
+    # Stateful
+    # @override
+    def load_state_dict(self, state_dict):
+        self.state.global_step = state_dict["global_step"]
+
+    # Stateful
+    # @override
+    def state_dict(self):
+        return {"global_step": self.state.global_step}
 
     @abstractmethod
     def _post_init(self) -> None:
@@ -826,7 +379,7 @@ class BaseTrainer(ExtensibleTrainer):
 
     @abstractmethod
     def _prepare(
-        self, train_dataset: Dataset | NoneType, eval_dataset: Dataset | NoneType
+        self, train_dataset: Dataset | None, eval_dataset: Dataset | None
     ) -> None:
         """
         Prepare for training and/or evaluation

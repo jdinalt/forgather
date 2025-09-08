@@ -48,8 +48,6 @@ class TrainingScript:
         if self.do_train:
             # This is where the actual 'loop' is.
             metrics = self.trainer.train().metrics
-            if self.distributed_env.world_size > 1:
-                distributed.barrier()
 
             if is_main_process:
                 logger.info("**** Training Completed *****")

@@ -11,6 +11,14 @@
 -- endblock config_metadata
 
 
+-- block distributed_environment
+# We wrap an Accelerate Accelerator in a DistributedEnv wrapper
+distributed_env: &distributed_env !singleton:forgather.ml.trainer.accelerate:AccelDistEnv@distributed_env
+    # Accelerator args can be specified here
+    - !singleton:accelerate:Accelerator []
+<< endblock distributed_environment
+
+
 -- block trainer_definition
     -- include 'accel_trainer.trainer_config'
 -- endblock trainer_definition
