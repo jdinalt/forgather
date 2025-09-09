@@ -295,12 +295,6 @@ class RNGState(Stateful):
             current_device = torch.cuda.current_device()
             saved_device = rng_state.get("cuda_device", current_device)
 
-            if current_device != saved_device:
-                logger.warning(
-                    f"CUDA device mismatch: current={current_device}, saved={saved_device}. "
-                    "Restoring RNG state anyway (should be fine with identical GPU models)."
-                )
-
             torch.cuda.set_rng_state(rng_state["cuda_rng_state"], device=current_device)
             logger.debug(
                 f"Restored CUDA RNG state for device {current_device} from checkpoint"

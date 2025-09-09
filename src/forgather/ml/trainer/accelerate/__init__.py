@@ -1,1 +1,1 @@
-from .accel_trainer import AccelTrainer, AccelTrainingArguments, AccelDistEnv
+from .accel_trainer import AccelTrainer, AccelTrainingArguments

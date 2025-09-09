@@ -10,12 +10,6 @@
 << endblock config_metadata
 
 
--- block distributed_environment
-distributed_env: &distributed_env !singleton:forgather.ml.trainer.accelerate:AccelDistEnv@distributed_env
-    - !singleton:accelerate:Accelerator []
-<< endblock distributed_environment
-
-
 -- block trainer_definition
     -- include 'accel_trainer_ddp.trainer_config'
 -- endblock trainer_definition

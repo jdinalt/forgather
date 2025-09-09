@@ -7,16 +7,11 @@ import logging
 from functools import partial
 
 import torch
-from torch import distributed
 from torch import Tensor
-import accelerate
 from accelerate import Accelerator
 
 from ..trainer_types import TrainingArguments, TrainerState
 from ..trainer import Trainer
-
-from ...distributed import DistributedEnvInterface
-from ..checkpoint_manager import CheckpointManager, CheckpointConfig
 
 logger = logging.getLogger(__name__)
 
@@ -26,64 +21,25 @@ class AccelTrainingArguments(TrainingArguments):
     pass
 
 
-class AccelDistEnv(DistributedEnvInterface):
-    def __init__(self, accelerator: Accelerator):
-        self.accel = accelerator
-        if torch.cuda.is_available():
-            torch.cuda.set_device(accelerator.local_process_index)
-
-        # It seems that accelerate does not call distributed.barrier with the device
-        # argument, which causes torch to complain loundly that the device was not passed
-        # to init_process_group(), suggesting that I do so. I can't, as Accelerate calls this
-        # internally. So, to silence the warnings, bypass accelerate for barriers, when possible.
-        # If they ever fix this, we can remove this code...
-        if distributed.is_available() and torch.accelerator.is_available():
-            self.barrier_fn = partial(
-                distributed.barrier,
-                device_ids=[torch.accelerator.current_device_index()],
-            )
-        else:
-            self.barrier_fn = self.accel.wait_for_everyone
-
-    def __getattr__(self, name: str) -> Any:
-        match name:
-            case "rank":
-                return self.accel.process_index
-            case "local_rank":
-                return self.accel.local_process_index
-            case "world_size":
-                return self.accel.num_processes
-            # Note: Accelerator does not
-            case "local_world_size":
-                return os.getenv("LOCAL_WORLD_SIZE")
-            case "master_addr":
-                return os.getenv("MASTER_ADDR")
-            case "master_port":
-                return os.getenv("MASTER_PORT")
-            case "device":
-                dev = self.accel.device
-                name = dev.type
-                if dev.index:
-                    name += ":" + str(dev.index)
-                return name
-
-    def barrier(self):
-        self.barrier_fn()
-
-
 class AccelTrainer(Trainer):
     """
     Modify the base Trainer to use the Accelerate library.
     """
 
+    def __init__(
+        self,
+        *,
+        args,
+        accelerator: Accelerator,
+        **kwargs,
+    ):
+        assert isinstance(args, AccelTrainingArguments)
+        assert isinstance(accelerator, Accelerator)
+        self.accelerator = accelerator
+        super().__init__(args=args, **kwargs)
+
     def _post_init(self) -> None:
         super()._post_init()
-
-        assert hasattr(self.dist, "accel")
-        accel = self.dist.accel
-        assert isinstance(accel, Accelerator)
-        self.accelerator: Accelerator = accel
-
         assert (
             not self.args.fuse_optim_with_backward
         ), "AccelTrainer does not support option fuse_optim_with_backward"

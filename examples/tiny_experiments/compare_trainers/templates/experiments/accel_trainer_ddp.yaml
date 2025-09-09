@@ -17,6 +17,8 @@
 
 -- block trainer_meta_config
     == super()
-    ## Enable DDP training, when supported
+
+    # **accel_trainer_ddp.trainer_config**
+    # Enable DDP training, when supported
     -- set ns.nproc_per_node = "gpu"
 << endblock trainer_meta_config

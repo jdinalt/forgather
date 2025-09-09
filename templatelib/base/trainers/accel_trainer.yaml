@@ -11,7 +11,23 @@
 ## Note: The distributed_env class must be an AcceDistEnv. e.g.
 ## distributed_env: &distributed_env !singleton:forgather.ml.trainer.accelerate:AccelDistEnv@distributed_env
 ##    - !singleton:accelerate:Accelerator []
+-- block trainer_dependencies
+    == super()
+    -- filter trim()
+    -- block accel_dataloader_config
+.define: &accel_dataloader_config !singleton:accelerate:DataLoaderConfiguration
+    use_stateful_dataloader: True
+    << endblock accel_dataloader_config
+    -- endfilter
 
+
+    -- filter trim()
+    -- block accelerator
+accelerator: &accelerator !singleton:accelerate:Accelerator
+        dataloader_config: *accel_dataloader_config
+    << endblock accelerator
+    -- endfilter
+<< endblock trainer_dependencies
 
 -- block trainer_args
     == super()
@@ -24,4 +40,5 @@
     == super()
 
     # **Accel Trainer**
+    accelerator: *accelerator
 << endblock trainer_constructor
