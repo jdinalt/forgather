@@ -1,0 +1,62 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Accumulate"
+    -- set ns.config_description = "Test with 10 gradient accumulation steps"
+    -- set ns.model_name = "control"
+    -- set ns.log_name = "accumulate_10"
+-- endblock config_metadata
+
+-- block lr_scheduler
+    == super()
+    
+    # **experiment**
+    # Scale by same factor as accumulation steps
+    warmup_steps: 50
+    cooldown_steps: 5000
+<< endblock lr_scheduler
+
+
+-- block optimizer
+    == super()
+
+    # **experiment**
+    # Scale LR by sqrt(10)
+    lr: 3.16e-3
+<< endblock optimizer
+
+
+-- block trainer_definition
+    -- include 'experiment.trainer_config'
+-- endblock trainer_definition
+
+
+-- block trainer_callbacks
+    -- include 'experiment.callbacks'
+<< endblock trainer_callbacks
+
+#-------------------- experiment.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+-- block trainer_args
+    == super()
+
+    # **Experiment overrides**
+    gradient_accumulation_steps: 10
+
+    # Scale steps by factor of gradient_accumulation_steps, relative to baseline
+    logging_steps: 10
+    eval_steps: 50
+    save_steps: 1000
+-- endblock trainer_args
+
+#-------------------- experiment.callbacks --------------------
+-- extends 'tiny.callbacks'
+
+-- block text_gen_callback_args
+    == super()
+
+    # **experiment**
+    generation_steps: 200
+<< endblock text_gen_callback_args

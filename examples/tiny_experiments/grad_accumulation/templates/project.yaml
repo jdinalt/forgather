@@ -1,0 +1,18 @@
+-- extends 'projects/tiny.yaml'
+
+-- block config_metadata
+    == super()
+    ##-- set ns.trainer_class = 'trainers/trainer.yaml'
+-- endblock config_metadata
+
+-- block trainer_definition
+    -- include 'project.trainer_config'
+-- endblock trainer_definition
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+-- block trainer_args
+    == super()
+    # project overrides
+-- endblock trainer_args

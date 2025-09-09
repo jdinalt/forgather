@@ -1,0 +1,64 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Batch x10"
+    -- set ns.config_description = "Test with batch size x10"
+    -- set ns.model_name = "control"
+    -- set ns.log_name = "batch_10"
+-- endblock config_metadata
+
+
+-- block lr_scheduler
+    == super()
+    
+    # **experiment**
+    # Scale by same factor as batch size
+    warmup_steps: 50
+    cooldown_steps: 5000
+<< endblock lr_scheduler
+
+
+-- block optimizer
+    == super()
+
+    # **experiment**
+    # Scale LR by sqrt(10)
+    lr: 3.16e-3
+<< endblock optimizer
+
+
+-- block trainer_definition
+    -- include 'experiment.trainer_config'
+-- endblock trainer_definition
+
+
+-- block trainer_callbacks
+    -- include 'experiment.callbacks'
+<< endblock trainer_callbacks
+
+#-------------------- experiment.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+-- block trainer_args
+    == super()
+
+    # **Experiment overrides**
+    # Multiply batch size by 10
+    per_device_train_batch_size: 320
+
+    # Scale steps by factor of 10, relative to baseline
+    logging_steps: 10
+    eval_steps: 50
+    save_steps: 1000
+-- endblock trainer_args
+
+#-------------------- experiment.callbacks --------------------
+-- extends 'tiny.callbacks'
+
+-- block text_gen_callback_args
+    == super()
+
+    # **experiment**
+    generation_steps: 200
+<< endblock text_gen_callback_args
