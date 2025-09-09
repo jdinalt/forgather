@@ -297,7 +297,8 @@ class AbstractBaseTrainer(Protocol):
     """
 
     @abstractmethod
-    def train(self, **kwargs) -> TrainOutput: ...
+    def train(self, **kwargs) -> TrainOutput:
+        pass
 
     @abstractmethod
     def evaluate(
@@ -308,28 +309,28 @@ class AbstractBaseTrainer(Protocol):
 
         Returns: A dictionary of metrics.
         """
-        ...
+        pass
 
     @abstractmethod
     def save_model(self, output_dir: Optional[os.PathLike | str] = None) -> None:
         """
         Save the model, either to the default location or to the specified location.
         """
-        ...
+        pass
 
     @abstractmethod
     def save_checkpoint(self, checkpoint_path=None) -> None:
         """
         Save model / trainer checkpoint
         """
-        ...
+        pass
 
     @abstractmethod
     def load_checkpoint(self, checkpoint_path=None) -> None:
         """
         Load model / trainer checkpoint
         """
-        ...
+        pass
 
 
 class ExtensibleTrainer(AbstractBaseTrainer):
@@ -343,7 +344,7 @@ class ExtensibleTrainer(AbstractBaseTrainer):
         Add callback to the list of callbacks
         Either a type (instantiate it) or an instance
         """
-        ...
+        pass
 
     @abstractmethod
     def pop_callback(self, callback):
@@ -351,7 +352,7 @@ class ExtensibleTrainer(AbstractBaseTrainer):
         Callback may either be and instance or a type
         Remove the first match and return it
         """
-        ...
+        pass
 
     @abstractmethod
     def remove_callback(self, callback):
@@ -359,6 +360,7 @@ class ExtensibleTrainer(AbstractBaseTrainer):
         Like pop, but don't return it.
         This seems redundant, but API consistency...
         """
+        pass
 
 
 class TrainerCallback(Protocol):
@@ -512,28 +514,35 @@ class CheckpointInterface(Protocol):
         self,
         checkpoint_path: str | None = None,
         checkpoint_id: str | None = None,
-    ) -> str: ...
+    ) -> str:
+        pass
 
     @abstractmethod
-    def load_checkpoint(self, checkpoint_path: str | None = None) -> None: ...
+    def load_checkpoint(self, checkpoint_path: str | None = None) -> None:
+        pass
 
     @abstractmethod
     def save_model(
         self,
         output_dir: str | os.PathLike | None = None,
         overwrite_output_dir: bool = False,
-    ) -> None: ...
+    ) -> None:
+        pass
 
     @abstractmethod
-    def set_best_checkpoint(self, best_checkpoint: str) -> None: ...
+    def set_best_checkpoint(self, best_checkpoint: str) -> None:
+        pass
 
     @abstractmethod
-    def resolve_checkpoint_path(self, checkpoint_path: str | None) -> str | None: ...
+    def resolve_checkpoint_path(self, checkpoint_path: str | None) -> str | None:
+        pass
 
 
 class StatefulProvider(Protocol):
     @abstractmethod
-    def get_statefuls_for_save(self) -> Dict[str, Stateful]: ...
+    def get_statefuls_for_save(self) -> Dict[str, Stateful]:
+        pass
 
     @abstractmethod
-    def get_statefuls_for_load(self) -> Dict[str, Stateful]: ...
+    def get_statefuls_for_load(self) -> Dict[str, Stateful]:
+        pass

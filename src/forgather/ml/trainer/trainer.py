@@ -1,6 +1,8 @@
 # A light-weight Trainer with an API close enough to "transformers.Trainer"
 # to act as a stand-in for basic use-cases.
 from typing import (
+    TYPE_CHECKING,
+    TypeGuard,
     Any,
     Dict,
     Callable,
@@ -8,9 +10,12 @@ from typing import (
     Tuple,
     Optional,
     Type,
+    Protocol,
+    Union,
     # override, # PEP-698, introduced in Python 3.12
 )
 from collections.abc import Sequence
+from collections.abc import Sized
 from functools import partial
 from dataclasses import dataclass
 import time
@@ -22,6 +27,7 @@ import gc
 
 import torch
 from torch import Tensor
+from torch.optim.optimizer import ParamsT
 from torch.utils.data import DataLoader, Dataset
 
 import torchdata.nodes as tn
@@ -49,6 +55,24 @@ from ..sharded_checkpoint import (
 
 from .checkpoint_manager import CheckpointManager, CheckpointConfig
 from ..distributed import DistributedEnvInterface
+
+
+# Type checking protocols
+class ModelWithCheckpointing(Protocol):
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs: Any):
+        pass
+
+
+class HasBatchSize(Protocol):
+    batch_size: int
+
+
+def has_gradient_checkpointing_enable(obj: object) -> TypeGuard[ModelWithCheckpointing]:
+    return hasattr(obj, "gradient_checkpointing_enable")
+
+
+def has_batch_size(obj: object) -> TypeGuard[HasBatchSize]:
+    return hasattr(obj, "batch_size")
 
 
 @dataclass(kw_only=True)
@@ -114,19 +138,19 @@ class Trainer(BaseTrainer, Stateful):
         *,
         args: TrainingArguments,
         distributed_env: DistributedEnvInterface,
-        optimizer_factory: Optional[Callable] = None,
+        optimizer_factory: Optional[Callable[[ParamsT], torch.optim.Optimizer]] = None,
         # Alernative, for compatibility with transformers.Trainer
         optimizer_cls_and_kwargs: Optional[
             Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]
         ] = None,
-        lr_scheduler_factory: Optional[Callable] = None,
+        lr_scheduler_factory: Optional[Callable] | None = None,
         **kwargs,
     ):
         assert isinstance(args, TrainingArguments)
         # HF Trainer compatibility.
         if not optimizer_factory:
             if not optimizer_cls_and_kwargs:
-                optimizer_factory = partial(
+                optimizer_factory = partial(  # type: ignore[assignment]
                     torch.optim.AdamW,
                     lr=args.learning_rate,
                     betas=(args.adam_beta1, args.adam_beta2),
@@ -202,9 +226,14 @@ class Trainer(BaseTrainer, Stateful):
             logger.info(
                 f"Setting memory budget to {self.args.activation_memory_budget}"
             )
-            torch._functorch.config.activation_memory_budget = (
-                self.args.activation_memory_budget
-            )
+            try:
+                torch._functorch.config.activation_memory_budget = (  # type: ignore[attr-defined]
+                    self.args.activation_memory_budget
+                )
+            except AttributeError:
+                logger.warning(
+                    "PyTorch does not appear to support the experimental activation_memory_budget API"
+                )
 
         self._init_dataloaders(train_dataset, eval_dataset)
         self._prepare_model()
@@ -270,7 +299,6 @@ class Trainer(BaseTrainer, Stateful):
         # _prepare() sub-step 1
         self.max_steps = 0
         self.epoch_train_steps = self.args.epoch_train_steps
-        self.train_ds_has_length = False
 
         self.do_train = train_dataset is not None
         self.do_eval = eval_dataset is not None
@@ -280,7 +308,6 @@ class Trainer(BaseTrainer, Stateful):
                 train_dataset, self.args.per_device_train_batch_size
             )
 
-            self.train_ds_has_length = hasattr(train_dataset, "__len__")
             self._update_training_steps()
 
         if self.do_eval:
@@ -334,10 +361,10 @@ class Trainer(BaseTrainer, Stateful):
             case _:
                 raise ValueError("Requires one of: default|meta|device")
         if self.args.gradient_checkpointing:
-            if hasattr(self.model, "gradient_checkpointing_enable"):
+            if has_gradient_checkpointing_enable(self.model):
                 logger.info("Enabling gradient checkpointing")
                 self.model.gradient_checkpointing_enable(
-                    **self.args.gradient_checkpointing_kwargs
+                    self.args.gradient_checkpointing_kwargs
                 )
             else:
                 logger.warning(
@@ -347,6 +374,7 @@ class Trainer(BaseTrainer, Stateful):
     def _init_optimizer(self) -> None:
         # _prepare() sub-step 3
         if self.optimizer is None:
+            assert self.optimizer_factory is not None
             self.optimizer = self.optimizer_factory(self.model.named_parameters())
 
             # Combine backward with optimizer step?
@@ -369,10 +397,10 @@ class Trainer(BaseTrainer, Stateful):
 
                 self.lr_scheduler = get_scheduler(
                     name=self.args.lr_scheduler_type,
-                    optimizer=self.optimizer,
+                    optimizer=cast(Any, self.optimizer),  # type: ignore[arg-type]
                     num_warmup_steps=self.args.warmup_steps,
                     num_training_steps=self.max_steps,
-                    **self.args.lr_scheduler_kwargs,
+                    scheduler_specific_kwargs=self.args.lr_scheduler_kwargs,
                 )
 
     def _dataloader_iter(self, dataloader: Iterable) -> Iterable:
@@ -498,6 +526,9 @@ class Trainer(BaseTrainer, Stateful):
 
     # @override
     def _train_loop(self) -> TrainOutput:
+        assert isinstance(self.args.logging_strategy, IntervalStrategy)
+        assert isinstance(self.args.eval_strategy, IntervalStrategy)
+        assert isinstance(self.args.save_strategy, IntervalStrategy)
         periodic_log = PeriodicFunction(
             global_step=self.state.global_step,
             strategy=self.args.logging_strategy,
@@ -729,8 +760,7 @@ class Trainer(BaseTrainer, Stateful):
         Should this occur, update the value be calling this again.
         """
         # The number of training steps in a single epoch
-
-        if self.train_ds_has_length:
+        if isinstance(self.train_dataloader, Sized):
             self.epoch_train_steps = len(self.train_dataloader)
 
         # The total number of training steps in all epochs
@@ -745,6 +775,7 @@ class Trainer(BaseTrainer, Stateful):
         Init public training state
         This should be retained when saving a checkpoint
         """
+        assert has_batch_size(self.train_dataloader)
         if self.do_train:
             return TrainerState(
                 max_steps=self.max_steps,

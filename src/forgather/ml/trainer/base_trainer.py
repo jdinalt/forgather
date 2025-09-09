@@ -1,4 +1,5 @@
 from typing import (
+    TYPE_CHECKING,
     Callable,
     Optional,
     List,
@@ -221,8 +222,8 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
 
     @staticmethod
     def _get_sdpa_backends(
-        backend: List[str | SDPBackend] | str | SDPBackend | None,
-    ) -> List[SDPBackend] | SDPBackend | None:
+        backend: List[str | SDPBackend] | str | SDPBackend | None,  # type: ignore[valid-type]
+    ) -> List[SDPBackend] | SDPBackend | None:  # type: ignore[valid-type]
         """
         Normalize various SDPA backend specification types
         """
@@ -375,7 +376,7 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
 
         For example, Torch DDP and Accelerate.
         """
-        ...
+        pass
 
     @abstractmethod
     def _prepare(
@@ -391,18 +392,18 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         Subclasses of a concrete implementation may use this to 'wrap' objects.
         e.g. Accelerate or DDP.
         """
-        ...
+        pass
 
     @abstractmethod
     def _train_loop(self) -> TrainOutput:
         """
         The inner training loop
         """
-        ...
+        pass
 
     @abstractmethod
     def _eval_loop(self) -> dict[str, float]:
         """
         The inner evaluation loop
         """
-        ...
+        pass
