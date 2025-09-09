@@ -24,7 +24,8 @@
     -- filter trim()
     -- block accelerator
 accelerator: &accelerator !singleton:accelerate:Accelerator
-        dataloader_config: *accel_dataloader_config
+    dataloader_config: *accel_dataloader_config
+    project_dir: "{{ ns.output_dir }}"
     << endblock accelerator
     -- endfilter
 << endblock trainer_dependencies

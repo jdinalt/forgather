@@ -1,5 +1,5 @@
 # A subclass of Trainer, which adds support for the Acclerate library.
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 from dataclasses import dataclass, field
 from collections.abc import Sequence
 import os
@@ -36,6 +36,22 @@ class AccelTrainer(Trainer):
         assert isinstance(args, AccelTrainingArguments)
         assert isinstance(accelerator, Accelerator)
         self.accelerator = accelerator
+
+        # Ensure Accelerator and TrainingArguments gradient accumulation settings are consistent
+        if hasattr(accelerator, "gradient_accumulation_steps"):
+            if (
+                accelerator.gradient_accumulation_steps
+                != args.gradient_accumulation_steps
+            ):
+                logger.warning(
+                    f"Accelerator gradient_accumulation_steps ({accelerator.gradient_accumulation_steps}) "
+                    f"differs from TrainingArguments ({args.gradient_accumulation_steps}). "
+                    f"Using Accelerator's setting: {accelerator.gradient_accumulation_steps}"
+                )
+                args.gradient_accumulation_steps = (
+                    accelerator.gradient_accumulation_steps
+                )
+
         super().__init__(args=args, **kwargs)
 
     def _post_init(self) -> None:
@@ -150,3 +166,130 @@ class AccelTrainer(Trainer):
             )
 
         return total_norm
+
+    # @override
+    def _train_step_with_accumulation(
+        self, batch: dict | tuple, accumulation_step: int
+    ) -> Tuple[Tensor, Tensor | None]:
+        """
+        Override base trainer's gradient accumulation to use Accelerate's native API.
+
+        Accelerate handles gradient accumulation automatically via the accumulate() context manager,
+        so we can simplify the implementation significantly.
+        """
+        args, kwargs = self._prepare_batch(batch)
+
+        # Use Accelerate's accumulate context manager for automatic gradient accumulation
+        with self.accelerator.accumulate(self.model):
+            if self.loss_fn:
+                # TODO: We are making a guess as to how to interpret the args. Can we do better?
+                if len(args):
+                    main_input = args[0]
+                    labels = args[1]
+                else:
+                    main_input = kwargs[self.model.main_input_name]
+                    labels = kwargs["labels"]
+                outputs = self.model(main_input)
+                loss = self.loss_fn(outputs, labels)
+            else:
+                loss = self.model(*args, **kwargs)[0]
+
+            # Accelerate handles loss scaling internally
+            self.accelerator.backward(loss)
+
+            # Compute grad norm only when gradients should sync (similar to base implementation)
+            total_norm = None
+            if self.accelerator.sync_gradients:
+                total_norm = self._clip_grad_norm(self.args.max_grad_norm)
+
+        # Return unscaled loss for logging consistency
+        loss = self._distributed_loss(loss.detach().mean())
+        return loss, total_norm
+
+    # @override
+    def _complete_optimizer_step(self) -> None:
+        """
+        Override base trainer's optimizer step completion for Accelerate.
+
+        With Accelerate's accumulate() context, the optimizer step and zero_grad
+        are handled automatically within the context manager, but we still need
+        to step the scheduler and dispatch events.
+        """
+        # Note: optimizer.step() and optimizer.zero_grad() are handled by accelerate context
+        # We only need to handle scheduler and events here
+
+        self._dispatch_event("on_optimizer_step")
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step()
+
+    # @override
+    def _should_complete_optimizer_step(self, accumulation_step: int) -> bool:
+        """
+        Use Accelerate's sync_gradients instead of manual step counting.
+
+        Accelerate automatically handles gradient synchronization and tells us
+        when a "real" optimizer step should occur via sync_gradients.
+        """
+        return self.accelerator.sync_gradients
+
+    # @override
+    def _train_step_with_accumulation(
+        self, batch: dict | tuple, accumulation_step: int
+    ) -> Tuple[Tensor, Tensor | None]:
+        """
+        Override to use Accelerate's native gradient accumulation.
+
+        Uses Accelerate's accumulate() context manager which handles
+        gradient scaling and synchronization automatically.
+        """
+        args, kwargs = self._prepare_batch(batch)
+
+        # Use Accelerate's accumulate context manager
+        with self.accelerator.accumulate(self.model):
+            if self.loss_fn:
+                if len(args):
+                    main_input = args[0]
+                    labels = args[1]
+                else:
+                    main_input = kwargs[self.model.main_input_name]
+                    labels = kwargs["labels"]
+                outputs = self.model(main_input)
+                loss = self.loss_fn(outputs, labels)
+            else:
+                loss = self.model(*args, **kwargs)[0]
+
+            # Accelerate handles loss scaling internally
+            self.accelerator.backward(loss)
+
+            # Only compute grad norm when gradients sync
+            total_norm = None
+            if self.accelerator.sync_gradients:
+                total_norm = self._clip_grad_norm(self.args.max_grad_norm)
+
+        # Return unscaled loss for logging consistency
+        loss = self._distributed_loss(loss.detach().mean())
+        return loss, total_norm
+
+    # @override
+    def _complete_optimizer_step(self) -> None:
+        """
+        Complete optimizer step for AccelTrainer.
+
+        NOTE: Accelerate's accumulate() context only handles gradient synchronization.
+        We still need to manually call optimizer.step() and zero_grad().
+        """
+        if not self.args.fuse_optim_with_backward:
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+        self._dispatch_event("on_optimizer_step")
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step()
+
+    # @override
+    def _backward(self, loss):
+        """
+        Use Accelerate's backward method which handles gradient scaling and accumulation.
+        """
+        # Note: This method is kept for compatibility with the base trainer's _train_step
+        # The _train_step_with_accumulation method uses accelerator.backward directly
+        self.accelerator.backward(loss)

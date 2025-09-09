@@ -1,0 +1,79 @@
+-- extends 'project.yaml'
+
+-- block config_metadata
+    == super()
+    -- set ns.config_name = "Accumulate Accel DDP 2x5"
+    -- set ns.config_description = "Test Accelerate DDP, 2 processes x 5 accumulation steps"
+    -- set ns.model_name = "control"
+    -- set ns.log_name = "aaccel_2x5"
+    -- set ns.trainer_class = 'trainers/accel_trainer.yaml'
+-- endblock config_metadata
+
+-- block lr_scheduler
+    == super()
+    
+    # **experiment**
+    # Scale by same factor as accumulation steps
+    warmup_steps: 50
+    cooldown_steps: 5000
+<< endblock lr_scheduler
+
+
+-- block optimizer
+    == super()
+
+    # **experiment**
+   # Scale LR by sqrt(10)
+    lr: 3.16e-3
+<< endblock optimizer
+
+
+-- block trainer_definition
+    -- include 'experiment.trainer_config'
+-- endblock trainer_definition
+
+
+-- block trainer_callbacks
+    -- include 'experiment.callbacks'
+<< endblock trainer_callbacks
+
+#-------------------- experiment.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+-- block trainer_meta_config
+    == super()
+    ## Train with two device
+    -- set ns.nproc_per_node = 2
+<< endblock trainer_meta_config
+
+
+-- block trainer_args
+    == super()
+
+    # **Experiment overrides**
+    #gradient_accumulation_steps: 5
+
+    # Scale steps by factor of gradient_accumulation_steps, relative to baseline
+    logging_steps: 10
+    eval_steps: 50
+    save_steps: 1000
+
+    # https://github.com/huggingface/accelerate/issues/3110
+    dataloader_num_workers: 0
+-- endblock trainer_args
+
+
+-- block accelerator
+== super()
+    gradient_accumulation_steps: 5
+<< endblock accelerator
+
+#-------------------- experiment.callbacks --------------------
+-- extends 'tiny.callbacks'
+
+-- block text_gen_callback_args
+    == super()
+
+    # **experiment**
+    generation_steps: 200
+<< endblock text_gen_callback_args
