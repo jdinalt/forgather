@@ -11,7 +11,7 @@ from typing import (
     Optional,
     Type,
     Protocol,
-    Union,
+    Sequence,
     cast,
     # override, # PEP-698, introduced in Python 3.12
 )
@@ -68,12 +68,20 @@ class HasBatchSize(Protocol):
     batch_size: int
 
 
+class HasMainInputName(Protocol):
+    main_input_name: str
+
+
 def has_gradient_checkpointing_enable(obj: object) -> TypeGuard[ModelWithCheckpointing]:
     return hasattr(obj, "gradient_checkpointing_enable")
 
 
 def has_batch_size(obj: object) -> TypeGuard[HasBatchSize]:
     return hasattr(obj, "batch_size")
+
+
+def has_main_input_name(obj: object) -> TypeGuard[HasMainInputName]:
+    return hasattr(obj, "main_input_name")
 
 
 @dataclass(kw_only=True)
@@ -774,7 +782,9 @@ class Trainer(BaseTrainer, Stateful):
             self._dispatch_event("on_evaluate", metrics=metrics)
             return metrics
 
-    def _clip_grad_norm(self, max_grad_norm, norm_type=2.0) -> Optional[Tensor]:
+    def _clip_grad_norm(
+        self, max_grad_norm: float | None, norm_type: float = 2.0
+    ) -> Optional[Tensor]:
         """
         Clip gradients by norm.
 
@@ -828,9 +838,13 @@ class Trainer(BaseTrainer, Stateful):
                     main_input = args[0]
                     labels = args[1]
                 else:
-                    main_input = kwargs[self.model.main_input_name]
+                    if has_main_input_name(self.model):
+                        main_input_name = self.model.main_input_name
+                    else:
+                        main_input_name = "input_ids"
+                    main_input = kwargs[main_input_name]
                     labels = kwargs["labels"]
-                outputs = self.model(main_input)
+                outputs = self.model(main_input)  # type: ignore[attr-defined]
                 loss = self.loss_fn(outputs, labels)
             else:
                 loss = self.model(*args, **kwargs)[0]
@@ -866,9 +880,13 @@ class Trainer(BaseTrainer, Stateful):
                     main_input = args[0]
                     labels = args[1]
                 else:
-                    main_input = kwargs[self.model.main_input_name]
+                    if has_main_input_name(self.model):
+                        main_input_name = self.model.main_input_name
+                    else:
+                        main_input_name = "input_ids"
+                    main_input = kwargs[main_input_name]
                     labels = kwargs["labels"]
-                outputs = self.model(main_input)
+                outputs = self.model(main_input)  # type: ignore[attr-defined]
                 loss = self.loss_fn(outputs, labels)
             else:
                 loss = self.model(*args, **kwargs)[0]
@@ -911,14 +929,14 @@ class Trainer(BaseTrainer, Stateful):
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
 
-    def _backward(self, loss):
+    def _backward(self, loss: Tensor) -> None:
         loss.backward()
 
     def _update_training_steps(self) -> None:
         """
         Estimate the training steps from the train data-loader
-        This value can potentially change when using parallel training.
-        Should this occur, update the value be calling this again.
+        This value can potentially change when wrapping the dataloder, e.g., with Accelerate
+        Should this occur, call this to updatte the step-count and epoch info.
 
         With gradient accumulation, global steps = batch_count // gradient_accumulation_steps
         """
@@ -977,7 +995,7 @@ class Trainer(BaseTrainer, Stateful):
                 best_model_checkpoint=None,
             )
 
-    def _end_train_loop(self, start_time):
+    def _end_train_loop(self, start_time: float) -> dict[str, int | float]:
         runtime = time.time() - start_time
         # Calculate effective batch size including gradient accumulation
         effective_batch_size = (
@@ -1009,7 +1027,9 @@ class Trainer(BaseTrainer, Stateful):
             "labels": labels,
         }
 
-    def _speed_metrics(self, prefix, runtime, samples, steps):
+    def _speed_metrics(
+        self, prefix: str, runtime: float, samples: int, steps: int
+    ) -> dict[str, int | float]:
         metrics = {
             f"{prefix}_runtime": runtime,
             f"{prefix}_samples": samples,
@@ -1019,7 +1039,7 @@ class Trainer(BaseTrainer, Stateful):
         }
         return metrics
 
-    def _log_step(self, loss_log, total_norm_log):
+    def _log_step(self, loss_log: list[Tensor], total_norm_log: list[Tensor]):
         logs = {
             "epoch": self.state.epoch,
         }
@@ -1052,7 +1072,9 @@ class Trainer(BaseTrainer, Stateful):
         # Capture control object from log callbacks for trainer control
         return self.log(logs)
 
-    def _prepare_batch(self, batch):
+    def _prepare_batch(
+        self, batch: Sequence[Tensor] | Dict[str, Tensor]
+    ) -> tuple[Sequence[Tensor], Dict[str, Tensor]]:
         """
         Move the batch to the device and returns (args, kwargs) in batch
         """
