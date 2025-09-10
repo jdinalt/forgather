@@ -377,7 +377,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_train_begin(
@@ -386,7 +386,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_train_end(
@@ -395,7 +395,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_epoch_begin(
@@ -404,7 +404,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_epoch_end(
@@ -413,7 +413,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_step_begin(
@@ -422,7 +422,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_optimizer_step(
@@ -431,7 +431,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_substep_end(
@@ -440,7 +440,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_step_end(
@@ -449,7 +449,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_evaluate(
@@ -458,7 +458,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_predict(
@@ -468,7 +468,7 @@ class TrainerCallback(Protocol):
         control: TrainerControl,
         metrics,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_save(
@@ -477,7 +477,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_log(
@@ -486,7 +486,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_prediction_step(
@@ -495,7 +495,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
     def on_pre_optimizer_step(
@@ -504,7 +504,7 @@ class TrainerCallback(Protocol):
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
-    ):
+    ) -> Optional[TrainerControl]:
         pass
 
 
