@@ -176,8 +176,8 @@ class AccelTrainer(Trainer):
         return self.accelerator.sync_gradients
 
     # @override
-    def _train_step_with_accumulation(
-        self, batch: dict | tuple, accumulation_step: int
+    def _train_step(
+        self, batch: dict | tuple, accumulation_step: int = 0
     ) -> Tuple[Tensor, Tensor | None]:
         """
         Override to use Accelerate's native gradient accumulation.
@@ -207,6 +207,7 @@ class AccelTrainer(Trainer):
             # Only compute grad norm when gradients sync
             total_norm = None
             if self.accelerator.sync_gradients:
+                assert self.args.max_grad_norm
                 total_norm = self._clip_grad_norm(self.args.max_grad_norm)
 
         # Return unscaled loss for logging consistency

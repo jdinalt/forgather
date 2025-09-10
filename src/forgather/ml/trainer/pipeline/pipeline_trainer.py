@@ -271,6 +271,11 @@ class PipelineTrainer(Trainer):
         super().__init__(args=args, **kwargs)
 
     # @override
+    def _is_pipeline_parallel(self) -> bool:
+        """Pipeline parallelism doesn't increase effective batch size"""
+        return True
+
+    # @override
     def _post_init(self) -> None:
         if self.args.debug_pipeline:
             logger.setLevel(logging.DEBUG)

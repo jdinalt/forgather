@@ -577,7 +577,7 @@ class Trainer(BaseTrainer, Stateful):
                 f"Gradient accumulation enabled: {self.args.gradient_accumulation_steps} steps per optimizer update"
             )
             logger.info(
-                f"Effective batch size: {self.state.train_batch_size * self.args.gradient_accumulation_steps}"
+                f"Effective batch size: {self._calculate_effective_batch_size()}"
             )
 
         is_abort = False  # Track if training was aborted without save
@@ -598,19 +598,47 @@ class Trainer(BaseTrainer, Stateful):
                 for batch in self._dataloader_iter(self.train_dataloader):
                     self._dispatch_event("on_step_begin")
 
-                    if self.args.gradient_accumulation_steps == 1:
-                        # No gradient accumulation - use original logic
-                        loss, total_norm = self._train_step(batch)
+                    # Execute training step with unified method
+                    loss, total_norm = self._train_step(batch, accumulation_step)
 
-                        # Update counters and stats
-                        if total_norm is not None:
-                            total_norm_log.append(total_norm)
-                        loss_log.append(loss)
+                    # Update accumulation counter
+                    if self.args.gradient_accumulation_steps > 1:
+                        accumulation_step += 1
+
+                    # Always store loss and grad norm for potential logging
+                    if total_norm is not None:
+                        total_norm_log.append(total_norm)
+                    loss_log.append(loss)
+
+                    # Check if we should complete optimizer step and increment global step
+                    should_step = (
+                        self.args.gradient_accumulation_steps == 1
+                        or self._should_complete_optimizer_step(accumulation_step)
+                    )
+
+                    if should_step:
+                        # Complete optimizer step if using gradient accumulation
+                        if self.args.gradient_accumulation_steps > 1:
+                            self._complete_optimizer_step()
+
+                        # Increment global step
                         self.state.global_step += 1
-                        # Compute epoch as continuous value from steps
-                        self.state.epoch = float(self.state.global_step) / float(
-                            self.epoch_train_steps
-                        )
+
+                        # Compute epoch as continuous value from global steps
+                        if self.args.gradient_accumulation_steps > 1:
+                            # Adjust epoch calculation for gradient accumulation
+                            effective_epoch_steps = (
+                                self.epoch_train_steps
+                                // self.args.gradient_accumulation_steps
+                            )
+                            self.state.epoch = float(self.state.global_step) / float(
+                                effective_epoch_steps
+                            )
+                        else:
+                            # Standard epoch calculation
+                            self.state.epoch = float(self.state.global_step) / float(
+                                self.epoch_train_steps
+                            )
 
                         self._dispatch_event("on_step_end")
                         self._maybe_log_save_evaluate(
@@ -642,64 +670,6 @@ class Trainer(BaseTrainer, Stateful):
 
                         # Periodic GC
                         maybe_cleanup_memory(self.args.gc_threshold)
-                    else:
-                        # Gradient accumulation enabled
-                        loss, total_norm = self._train_step_with_accumulation(
-                            batch, accumulation_step
-                        )
-                        accumulation_step += 1
-
-                        # Always store loss and grad norm for potential logging
-                        if total_norm is not None:
-                            total_norm_log.append(total_norm)
-                        loss_log.append(loss)
-
-                        # Check if we should step the optimizer (complete gradient accumulation cycle)
-                        if self._should_complete_optimizer_step(accumulation_step):
-                            # Complete optimizer step and increment global step
-                            self._complete_optimizer_step()
-                            self.state.global_step += 1
-
-                            # Compute epoch as continuous value from global steps
-                            # Adjust epoch calculation for gradient accumulation
-                            effective_epoch_steps = (
-                                self.epoch_train_steps
-                                // self.args.gradient_accumulation_steps
-                            )
-                            self.state.epoch = float(self.state.global_step) / float(
-                                effective_epoch_steps
-                            )
-
-                            self._dispatch_event("on_step_end")
-                            self._maybe_log_save_evaluate(
-                                loss_log,
-                                total_norm_log,
-                                periodic_log,
-                                periodic_eval,
-                                periodic_save,
-                            )
-
-                            # Check for stop request from log callbacks
-                            if self.control.should_training_stop:
-                                # Check if this is an abort (no save) vs graceful stop
-                                is_abort = (
-                                    hasattr(self.control, "should_abort_without_save")
-                                    and self.control.should_abort_without_save
-                                )
-                                if is_abort:
-                                    logger.info(
-                                        "Training aborted by control command - skipping final checkpoint"
-                                    )
-                                else:
-                                    logger.info("Training stopped by control command")
-                                break
-
-                            # Break both loops when we reach the target global steps
-                            if self.state.global_step >= self.max_steps:
-                                break
-
-                            # Periodic GC
-                            maybe_cleanup_memory(self.args.gc_threshold)
 
                 else:  # Continue, if loop exits normally
                     # Handle incomplete gradient accumulation at end of epoch
@@ -821,53 +791,19 @@ class Trainer(BaseTrainer, Stateful):
 
         return total_norm
 
-    def _train_step(self, batch: dict | tuple) -> Tuple[Tensor, Tensor | None]:
-        """
-        Perform a single training step (legacy - without accumulation)
-
-        Returns: mean loss (detached from graph)
-        """
-        args, kwargs = self._prepare_batch(batch)
-
-        with ExitStack() as stack:
-            if self.args.enable_activation_offloading:
-                stack.enter_context(torch.autograd.graph.save_on_cpu(pin_memory=True))
-            if self.loss_fn:
-                # TODO: We are making a guess as to how to interpret the args. Can we do better?
-                if len(args):
-                    main_input = args[0]
-                    labels = args[1]
-                else:
-                    if has_main_input_name(self.model):
-                        main_input_name = self.model.main_input_name
-                    else:
-                        main_input_name = "input_ids"
-                    main_input = kwargs[main_input_name]
-                    labels = kwargs["labels"]
-                outputs = self.model(main_input)  # type: ignore[attr-defined]
-                loss = self.loss_fn(outputs, labels)
-            else:
-                loss = self.model(*args, **kwargs)[0]
-
-        self._backward(loss)
-        total_norm = self._clip_grad_norm(self.args.max_grad_norm)
-        if not self.args.fuse_optim_with_backward:
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-        self._dispatch_event("on_optimizer_step")
-        if self.lr_scheduler is not None:
-            self.lr_scheduler.step()
-
-        loss = self._distributed_loss(loss.detach().mean())
-        return loss, total_norm
-
-    def _train_step_with_accumulation(
-        self, batch: dict | tuple, accumulation_step: int
+    def _train_step(
+        self, batch: dict | tuple, accumulation_step: int = 0
     ) -> Tuple[Tensor, Tensor | None]:
         """
-        Perform a single training step with gradient accumulation
+        Perform a single training step, with optional gradient accumulation.
 
-        Returns: scaled loss (detached from graph) and grad norm if computed
+        Args:
+            batch: Input batch
+            accumulation_step: Current step in accumulation cycle (0-based)
+
+        Returns:
+            Tuple of (loss, grad_norm). Loss is unscaled for logging consistency.
+            grad_norm is None if not computed on this step.
         """
         args, kwargs = self._prepare_batch(batch)
 
@@ -891,21 +827,31 @@ class Trainer(BaseTrainer, Stateful):
             else:
                 loss = self.model(*args, **kwargs)[0]
 
-        # Scale loss by gradient accumulation steps for proper averaging
-        scaled_loss = loss / self.args.gradient_accumulation_steps
-        self._backward(scaled_loss)
+        # Handle gradient accumulation
+        use_accumulation = self.args.gradient_accumulation_steps > 1
+        if use_accumulation:
+            # Scale loss by gradient accumulation steps for proper averaging
+            scaled_loss = loss / self.args.gradient_accumulation_steps
+            self._backward(scaled_loss)
 
-        # Only compute grad norm on the final accumulation step
-        total_norm = None
-        is_final_accumulation_step = (
-            accumulation_step + 1
-        ) % self.args.gradient_accumulation_steps == 0
-
-        if is_final_accumulation_step:
+            # Only compute grad norm and step optimizer on final accumulation step
+            is_final_step = self._should_complete_optimizer_step(accumulation_step + 1)
+            total_norm = None
+            if is_final_step:
+                total_norm = self._clip_grad_norm(self.args.max_grad_norm)
+                # Don't step optimizer here - will be done by caller via _complete_optimizer_step
+        else:
+            # No accumulation - standard single-step training
+            self._backward(loss)
             total_norm = self._clip_grad_norm(self.args.max_grad_norm)
-            # Don't step optimizer here - will be done in _complete_optimizer_step
+            if not self.args.fuse_optim_with_backward:
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+            self._dispatch_event("on_optimizer_step")
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
 
-        # Return unscaled loss for logging consistency with single-step training
+        # Return unscaled loss for logging consistency
         loss = self._distributed_loss(loss.detach().mean())
         return loss, total_norm
 
@@ -998,11 +944,7 @@ class Trainer(BaseTrainer, Stateful):
     def _end_train_loop(self, start_time: float) -> dict[str, int | float]:
         runtime = time.time() - start_time
         # Calculate effective batch size including gradient accumulation
-        effective_batch_size = (
-            self.state.num_processes
-            * self.state.train_batch_size
-            * self.args.gradient_accumulation_steps
-        )
+        effective_batch_size = self._calculate_effective_batch_size()
         total_train_samples = effective_batch_size * self.max_steps
         metrics = self._speed_metrics(
             "train", runtime, total_train_samples, self.max_steps
@@ -1010,6 +952,45 @@ class Trainer(BaseTrainer, Stateful):
         metrics["epoch"] = self.state.epoch
         metrics["effective_batch_size"] = effective_batch_size
         return metrics
+
+    def _calculate_effective_batch_size(self) -> int:
+        """
+        Calculate the effective batch size accounting for gradient accumulation and parallelism.
+
+        For different parallelism strategies:
+        - Data parallelism (DDP): Multiply by num_processes (different batches per process)
+        - Pipeline parallelism: Don't multiply by num_processes (same batch across stages)
+        - Model parallelism: Don't multiply by num_processes (same batch across shards)
+        - Combined (pipeline + model): Don't multiply by num_processes (same batch)
+        """
+        base_batch_size = (
+            self.state.train_batch_size * self.args.gradient_accumulation_steps
+        )
+
+        # Check if any form of model parallelism is being used
+        # If so, don't multiply by num_processes since the same batch is processed
+        # across different parts of the model (stages and/or shards)
+        is_pipeline_parallel = (
+            hasattr(self, "_is_pipeline_parallel") and self._is_pipeline_parallel()
+        )
+        is_model_parallel = (
+            hasattr(self, "_is_model_parallel") and self._is_model_parallel()
+        )
+
+        if is_pipeline_parallel or is_model_parallel:
+            # Any form of model parallelism: don't multiply by num_processes
+            return base_batch_size
+        else:
+            # Data parallel (DDP) or single process: multiply by num_processes
+            return self.state.num_processes * base_batch_size
+
+    def _is_pipeline_parallel(self) -> bool:
+        """Override in PipelineTrainer to return True"""
+        return False
+
+    def _is_model_parallel(self) -> bool:
+        """Override in model parallel trainers to return True"""
+        return False
 
     def _prediction_step(self, batch: dict | tuple) -> Dict[str, Tensor | None]:
         """
