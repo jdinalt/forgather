@@ -13,6 +13,7 @@
     == super()
 
     # **Trainer**
+    compute_loss_func: !singleton:forgather.ml.loss:CausalLoss
     distributed_env: *distributed_env
     optimizer_factory: *optimizer
     lr_scheduler_factory: *lr_scheduler

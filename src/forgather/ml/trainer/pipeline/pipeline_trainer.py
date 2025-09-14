@@ -31,7 +31,7 @@ from torch.distributed.pipelining import pipeline as build_pipeline
 from torch.distributed.pipelining.microbatch import split_args_kwargs_into_chunks
 
 from ..trainer_types import TrainingArguments, CheckpointInterface
-from ..trainer import Trainer, optimzer_hook
+from ..trainer import Trainer, optimzer_hook, rescale_accumulated_loss
 from ...distributed import DistributedEnvironment, main_process_first
 from ...sharded_checkpoint import (
     make_shard_index,
@@ -43,23 +43,6 @@ from .pipeline_buffer_fix import apply_pipeline_buffer_fix, validate_pipeline_bu
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-
-def rescale_accumulated_loss(loss_fn, accumulation_steps):
-    """
-    Scale loss by gradient accumulation steps for proper averaging.
-    Based on TorchTitan's implementation.
-    """
-    import functools
-    
-    @functools.wraps(loss_fn)
-    def scaled_loss_fn(*args, **kwargs):
-        loss = loss_fn(*args, **kwargs)
-        post_scaled_loss = loss / accumulation_steps
-        return post_scaled_loss
-    
-    return scaled_loss_fn
-
 
 
 def log_level_for(level, prefix, modules: List[str]):
@@ -439,16 +422,16 @@ class PipelineTrainer(Trainer):
             safetensors=self.args.save_safetensors,
             param_sharing_metadata=self.sharing_metadata,
         )
-        
-        # Rescale by product of accumulation-steps and mirco-batches (pipeline_chunks)
-        scaled_loss_fn = rescale_accumulated_loss(self.loss_fn, self.args.gradient_accumulation_steps * self.args.pipeline_chunks)
-        
+
         # Note: scale_grads=True, the default, causes the pipeline to rescale the gradients by the number of microbatches
         # We handle this by applying this factor directly to the loss function, above. Without doing so,
         # gradient accumulation does not work properly, as the complete acculumlated gradient is rescaled
         # at each pipeline step.
         self.train_scheduler = self.pipe_schedule_factory(
-            stages_arg, self.args.pipeline_chunks, loss_fn=scaled_loss_fn, scale_grads=False
+            stages_arg,
+            self.args.pipeline_chunks,
+            loss_fn=self.train_loss_fn,
+            scale_grads=False,
         )
 
         if self.args.enable_activation_checkpoints or self.args.gradient_checkpointing:
@@ -485,12 +468,20 @@ class PipelineTrainer(Trainer):
                 logger.info("Constructing and splitting eval model.")
             self._construct_eval_pipeline()
 
+    def _wrap_loss_fn(self):
+        assert self.loss_fn
+        self.eval_loss_fn = self.loss_fn
+        # Rescale by product of accumulation-steps and mirco-batches (pipeline_chunks)
+        self.train_loss_fn = rescale_accumulated_loss(
+            self.loss_fn,
+            self.args.gradient_accumulation_steps * self.args.pipeline_chunks,
+        )
+
     def _construct_model(self, device):
         # Construct model on device
         assert self.model_init
         with torch.device(device):
             model = self.model_init()
-
         return model
 
     def _compile_model(self):
@@ -661,7 +652,9 @@ class PipelineTrainer(Trainer):
 
         distributed.barrier()
 
-    def _dataloader_iter(self, dataloader: DataLoader) -> Iterable:
+    def _dataloader_iter(
+        self, dataloader: Iterable[Dict[str, Tensor]]
+    ) -> Iterable[Dict[str, Tensor]]:
         """
         Asynchronous pipeline-parallel dataloader iterator.
 
@@ -748,38 +741,29 @@ class PipelineTrainer(Trainer):
             )
         self.eval_pipeline_modules = eval_pipeline_modules
 
-    def _train_pipeline_step(self, batch: dict | tuple) -> Tensor:
-        args, kwargs = self._prepare_batch(batch)
-        # For now, we are hard-coding a specific input format.
-        # There seems to be an issue with the scheduler implementation when passing kwargs,
-        # so we convert to args for now.
-        # TODO: Make this more flexible.
-        inputs = (kwargs["input_ids"],)
-        labels = kwargs["labels"]
+    def _forward_backward_step(
+        self, input_dict: dict[str, Tensor], labels: Tensor
+    ) -> Tensor:
+        inputs = (input_dict["input_ids"],)
 
         # See: https://github.com/pytorch/torchtitan/blob/main/torchtitan/train.py#L377
         targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)
+        if self.pp_has_first_stage:
+            self.train_scheduler.step(*inputs, target=targets, losses=losses)
+        else:
+            self.train_scheduler.step(target=targets, losses=losses)
 
-        with ExitStack() as stack:
-            if self.args.enable_activation_offloading:
-                stack.enter_context(torch.autograd.graph.save_on_cpu(pin_memory=True))
-            if self.pp_has_first_stage:
-                self.train_scheduler.step(*inputs, target=targets, losses=losses)
-            else:
-                self.train_scheduler.step(target=targets, losses=losses)
-
-            if self.pp_has_last_stage:
-                mean_loss = torch.stack([x.detach() for x in losses]).mean()
-                mean_loss = mean_loss.float()
-            else:
-                mean_loss = torch.tensor(0.0, device=self.dist.device)
-
+        if self.pp_has_last_stage:
+            mean_loss = torch.stack([x.detach() for x in losses]).mean()
+            mean_loss = mean_loss.float()
+        else:
+            mean_loss = torch.tensor(0.0, device=self.dist.device)
         return mean_loss
 
-    def _eval_pipeline_step(self, batch: dict | tuple) -> Tensor:
-        args, kwargs = self._prepare_batch(batch)
-        inputs = (kwargs["input_ids"],)
-        labels = kwargs["labels"]
+    def _eval_pipeline_step(
+        self, input_dict: dict[str, Tensor], labels: Tensor
+    ) -> Tensor:
+        inputs = (input_dict["input_ids"],)
 
         if self.pp_has_first_stage:
             outputs = self.eval_scheduler.step(*inputs)
@@ -787,11 +771,10 @@ class PipelineTrainer(Trainer):
             outputs = self.eval_scheduler.step()
 
         if self.pp_has_last_stage:
-            loss = self.loss_fn(outputs, labels).detach()
+            loss = self.eval_loss_fn(outputs, labels).detach()
             mean_loss = loss.float()
         else:
             mean_loss = torch.tensor(0.0, device=self.dist.device)
-
         return mean_loss
 
     # @override
@@ -831,8 +814,9 @@ class PipelineTrainer(Trainer):
             # This requires that we produce gradients.
             total_loss = torch.zeros(1, device=self.args.device)
             step = 0
-            for step, batch in enumerate(self.eval_dataloader):
-                outputs = self._unified_prediction_step(batch)
+            for step, batch in enumerate(self._dataloader_iter(self.eval_dataloader)):
+                input_dict, labels = self._prepare_batch(batch)
+                outputs = self._unified_prediction_step(input_dict, labels)
                 total_loss += outputs["loss"]
                 self._dispatch_event("on_prediction_step")
             metrics = {"eval_loss": (total_loss / step).item()}
@@ -840,69 +824,10 @@ class PipelineTrainer(Trainer):
             return metrics
 
     # @override
-    def _train_step(self, batch: dict | tuple, accumulation_step: int = 0) -> Tuple[Tensor, Tensor | None]:
-        """
-        Pipeline parallel training step with gradient accumulation support.
-        
-        Uses TorchTitan's loss pre-scaling approach combined with base trainer's 
-        accumulation loop. Loss is pre-scaled by rescale_accumulated_loss wrapper.
-        
-        Args:
-            batch: Input batch
-            accumulation_step: Current step in accumulation cycle (0-based)
-            
-        Returns:
-            Tuple of (loss, grad_norm). Loss is unscaled for logging consistency.
-            grad_norm is None except on final accumulation step.
-        """
-        # Enable gradient tracing for first few accumulation steps
-        use_accumulation = self.args.gradient_accumulation_steps > 1
-
-        # Execute pipeline step (loss is pre-scaled by rescale_accumulated_loss wrapper)
-        mean_loss = self._train_pipeline_step(batch)
-        
-        # Handle gradient accumulation
-        use_accumulation = self.args.gradient_accumulation_steps > 1
-        if use_accumulation:
-            # Only clip gradients and step optimizer on final accumulation step
-            is_final_step = self._should_complete_optimizer_step(accumulation_step + 1)
-            total_norm = None
-            if is_final_step:
-                total_norm = self._clip_grad_norm(self.args.max_grad_norm)
-            
-            # Note: optimizer.step() is handled by base trainer via _complete_optimizer_step()
-        else:
-            # No accumulation - standard single-step training
-            total_norm = self._clip_grad_norm(self.args.max_grad_norm)
-            if not self.args.fuse_optim_with_backward:
-                self.optimizer.step()
-                self.optimizer.zero_grad()
-            self._dispatch_event("on_optimizer_step")
-            if self.lr_scheduler is not None:
-                self.lr_scheduler.step()
-
-        # Scale loss back up for logging consistency (was scaled down by rescale_accumulated_loss * pipeline_chunks)
-        mean_loss = mean_loss * self.args.gradient_accumulation_steps * self.args.pipeline_chunks
-        
-        # Return unscaled loss for logging consistency
-        mean_loss = self._distributed_loss(mean_loss)
-        return mean_loss, total_norm
-
-    # @override
-    def _complete_optimizer_step(self) -> None:
-        """
-        Complete optimizer step for PipelineTrainer with gradient accumulation.
-        """
-        if not self.args.fuse_optim_with_backward:
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-        self._dispatch_event("on_optimizer_step")
-        if self.lr_scheduler is not None:
-            self.lr_scheduler.step()
-
-    # @override
-    def _prediction_step(self, batch: dict | tuple):
-        mean_loss = self._eval_pipeline_step(batch)
+    def _prediction_step(
+        self, input_dict: dict[str, Tensor], labels: Tensor
+    ) -> Dict[str, Tensor | None]:
+        mean_loss = self._eval_pipeline_step(input_dict, labels)
         mean_loss = self._distributed_loss(mean_loss)
         return {
             "loss": mean_loss,
@@ -910,11 +835,13 @@ class PipelineTrainer(Trainer):
             "labels": None,
         }
 
-    def _unified_prediction_step(self, batch: dict | tuple):
+    def _unified_prediction_step(
+        self, input_dict: dict[str, Tensor], labels: Tensor
+    ) -> Dict[str, Tensor | None]:
         """
         Using the same traced model for both train and eval.
         """
-        mean_loss = self._train_pipeline_step(batch)
+        mean_loss = self._forward_backward_step(input_dict, labels)
         mean_loss = self._distributed_loss(mean_loss)
         self.optimizer.zero_grad()
         return {
@@ -922,6 +849,10 @@ class PipelineTrainer(Trainer):
             "logits": None,
             "labels": None,
         }
+
+    # @override
+    def _loss_post_scaler(self):
+        return float(self.args.pipeline_chunks)
 
     # @override
     def _init_checkpoint_manager(self) -> CheckpointInterface:

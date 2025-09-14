@@ -53,8 +53,8 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
 
     def __init__(
         self,
+        args: TrainingArguments,
         model: torch.nn.Module | None = None,
-        args: Optional[dict | TrainingArguments] = None,
         data_collator=None,
         train_dataset=None,
         eval_dataset=None,
@@ -72,17 +72,15 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
             model or model_init
         ), "Either a model or a model constructor must be specified"
 
+        assert (
+            args.gradient_accumulation_steps > 0
+        ), "gradient_accumulation_steps must be > 0"
+
         # Try to maintain backward compatability for now.
         if processing_class is None and tokenizer is not None:
             processing_class = tokenizer
 
-        # Init args
         self.model = model
-        if args is None:
-            args = TrainingArguments()
-        elif isinstance(args, dict):
-            args = TrainingArguments(**args)
-
         self.args = args
         self.data_collator = data_collator
         self.train_dataset = train_dataset
@@ -163,6 +161,8 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
                 stack.enter_context(
                     sdpa_kernel(backends, set_priority=self.args.sdpa_set_priority)
                 )
+            if self.args.enable_activation_offloading:
+                stack.enter_context(torch.autograd.graph.save_on_cpu(pin_memory=True))
 
             self._prepare(
                 train_dataset=self.train_dataset, eval_dataset=self.eval_dataset

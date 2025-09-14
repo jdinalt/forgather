@@ -17,7 +17,6 @@ OUTPUTDIR_NAME = "tmp_trainer"
 
 class TrainOutput(NamedTuple):
     global_step: int
-    training_loss: float
     metrics: Dict[str, float]
 
 
