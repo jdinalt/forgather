@@ -8,6 +8,7 @@ import math
 import copy
 from functools import partial
 from contextlib import ExitStack
+import os
 import re
 
 import torch
@@ -42,6 +43,23 @@ from .pipeline_buffer_fix import apply_pipeline_buffer_fix, validate_pipeline_bu
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+
+def rescale_accumulated_loss(loss_fn, accumulation_steps):
+    """
+    Scale loss by gradient accumulation steps for proper averaging.
+    Based on TorchTitan's implementation.
+    """
+    import functools
+    
+    @functools.wraps(loss_fn)
+    def scaled_loss_fn(*args, **kwargs):
+        loss = loss_fn(*args, **kwargs)
+        post_scaled_loss = loss / accumulation_steps
+        return post_scaled_loss
+    
+    return scaled_loss_fn
+
 
 
 def log_level_for(level, prefix, modules: List[str]):
@@ -421,8 +439,16 @@ class PipelineTrainer(Trainer):
             safetensors=self.args.save_safetensors,
             param_sharing_metadata=self.sharing_metadata,
         )
+        
+        # Rescale by product of accumulation-steps and mirco-batches (pipeline_chunks)
+        scaled_loss_fn = rescale_accumulated_loss(self.loss_fn, self.args.gradient_accumulation_steps * self.args.pipeline_chunks)
+        
+        # Note: scale_grads=True, the default, causes the pipeline to rescale the gradients by the number of microbatches
+        # We handle this by applying this factor directly to the loss function, above. Without doing so,
+        # gradient accumulation does not work properly, as the complete acculumlated gradient is rescaled
+        # at each pipeline step.
         self.train_scheduler = self.pipe_schedule_factory(
-            stages_arg, self.args.pipeline_chunks, loss_fn=self.loss_fn
+            stages_arg, self.args.pipeline_chunks, loss_fn=scaled_loss_fn, scale_grads=False
         )
 
         if self.args.enable_activation_checkpoints or self.args.gradient_checkpointing:
@@ -814,18 +840,65 @@ class PipelineTrainer(Trainer):
             return metrics
 
     # @override
-    def _train_step(self, batch: dict | tuple) -> Tensor:
+    def _train_step(self, batch: dict | tuple, accumulation_step: int = 0) -> Tuple[Tensor, Tensor | None]:
+        """
+        Pipeline parallel training step with gradient accumulation support.
+        
+        Uses TorchTitan's loss pre-scaling approach combined with base trainer's 
+        accumulation loop. Loss is pre-scaled by rescale_accumulated_loss wrapper.
+        
+        Args:
+            batch: Input batch
+            accumulation_step: Current step in accumulation cycle (0-based)
+            
+        Returns:
+            Tuple of (loss, grad_norm). Loss is unscaled for logging consistency.
+            grad_norm is None except on final accumulation step.
+        """
+        # Enable gradient tracing for first few accumulation steps
+        use_accumulation = self.args.gradient_accumulation_steps > 1
+
+        # Execute pipeline step (loss is pre-scaled by rescale_accumulated_loss wrapper)
         mean_loss = self._train_pipeline_step(batch)
-        total_norm = self._clip_grad_norm(self.args.max_grad_norm)
+        
+        # Handle gradient accumulation
+        use_accumulation = self.args.gradient_accumulation_steps > 1
+        if use_accumulation:
+            # Only clip gradients and step optimizer on final accumulation step
+            is_final_step = self._should_complete_optimizer_step(accumulation_step + 1)
+            total_norm = None
+            if is_final_step:
+                total_norm = self._clip_grad_norm(self.args.max_grad_norm)
+            
+            # Note: optimizer.step() is handled by base trainer via _complete_optimizer_step()
+        else:
+            # No accumulation - standard single-step training
+            total_norm = self._clip_grad_norm(self.args.max_grad_norm)
+            if not self.args.fuse_optim_with_backward:
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+            self._dispatch_event("on_optimizer_step")
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
+
+        # Scale loss back up for logging consistency (was scaled down by rescale_accumulated_loss * pipeline_chunks)
+        mean_loss = mean_loss * self.args.gradient_accumulation_steps * self.args.pipeline_chunks
+        
+        # Return unscaled loss for logging consistency
+        mean_loss = self._distributed_loss(mean_loss)
+        return mean_loss, total_norm
+
+    # @override
+    def _complete_optimizer_step(self) -> None:
+        """
+        Complete optimizer step for PipelineTrainer with gradient accumulation.
+        """
         if not self.args.fuse_optim_with_backward:
             self.optimizer.step()
             self.optimizer.zero_grad()
         self._dispatch_event("on_optimizer_step")
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
-
-        mean_loss = self._distributed_loss(mean_loss)
-        return mean_loss, total_norm
 
     # @override
     def _prediction_step(self, batch: dict | tuple):
@@ -887,7 +960,7 @@ class PipelineTrainer(Trainer):
         return total_norm
 
     # @override
-    def _clip_grad_norm(self, max_grad_norm, norm_type=2.0) -> Optional[Tensor]:
+    def _clip_grad_norm(self, max_grad_norm, norm_type=2.0) -> Tensor:
         # If fused optimizer, we can't clip, but we can compute the value,
         # which we do from the tensor callacks
         if self.args.fuse_optim_with_backward:
