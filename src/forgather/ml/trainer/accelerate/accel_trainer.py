@@ -142,7 +142,7 @@ class AccelTrainer(Trainer):
 
     # @override
     def _clip_grad_norm(
-        self, max_grad_norm: float, norm_type: float = 2.0
+        self, max_grad_norm: float | None, norm_type: float = 2.0
     ) -> Optional[Tensor]:
         # If not clipping, just compute and return it
         # It's unclear if this will work right with Accelerate?
@@ -207,7 +207,6 @@ class AccelTrainer(Trainer):
             # Only compute grad norm when gradients sync
             total_norm = None
             if self.accelerator.sync_gradients:
-                assert self.args.max_grad_norm
                 total_norm = self._clip_grad_norm(self.args.max_grad_norm)
 
         # Return unscaled loss for logging consistency
