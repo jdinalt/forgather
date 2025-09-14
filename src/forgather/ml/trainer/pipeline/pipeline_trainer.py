@@ -1,30 +1,18 @@
 # https://github.com/pytorch/pytorch/tree/main/torch/distributed/pipelining
-from dataclasses import dataclass, field
-from typing import Callable, Any, Dict, List, Tuple, Optional, Union, Iterable
-from collections.abc import Sequence
-from types import NoneType
+from dataclasses import dataclass
+from typing import Callable, Any, Dict, List, Tuple, Iterable
 import logging
 import math
 import copy
 from functools import partial
-from contextlib import ExitStack
-import os
-import re
 
 import torch
 from torch.nn import Module
-from torch.export.unflatten import InterpreterModule, UnflattenedModule
-from torch.utils.checkpoint import checkpoint
-from torch.fx import GraphModule
 from torch import Tensor
 from torch import distributed
 import torch.distributed as dist
 from torch.distributed.pipelining import SplitPoint, ScheduleGPipe
 from torch.distributed.pipelining.schedules import (
-    PipelineScheduleMulti,
-    _Action,
-    _ComputationType,
-    _format_pipeline_order,
     _ScheduleForwardOnly,
 )
 from torch.distributed.pipelining.stage import _PipelineStageBase
@@ -32,18 +20,28 @@ from torch.distributed.pipelining import pipeline as build_pipeline
 from torch.distributed.pipelining.microbatch import split_args_kwargs_into_chunks
 
 from ..trainer_types import TrainingArguments, CheckpointInterface
+from ..checkpoint_manager import CheckpointManager, CheckpointConfig
 from ..trainer import Trainer, optimzer_hook, rescale_accumulated_loss
-from ...distributed import DistributedEnvironment, main_process_first
 from ...sharded_checkpoint import (
     make_shard_index,
     create_sharing_metadata,
     retie_parameters,
 )
-from ..checkpoint_manager import CheckpointManager, CheckpointConfig
-from .pipeline_buffer_fix import apply_pipeline_buffer_fix, validate_pipeline_buffers
+from .schedule_multi_eval import ScheduleMultiEval
+from .pipeline_utils import (
+    insert_activation_checkpoints,
+    replace_parameters,
+    replace_buffers,
+    pipeline_stage_indices,
+    missing_buffers,
+)
+from .pipeline_fixes import (
+    apply_pipeline_buffer_fix,
+    assert_no_duplicate_fqns,
+    remove_vestigial_modules,
+)
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 def log_level_for(level, prefix, modules: List[str]):
@@ -73,192 +71,6 @@ class PipelineTrainingArguments(TrainingArguments):
     stages_per_rank: int = 1
     pp_stage_type: str = "loop"
     is_multistage: bool = False
-
-    # Depricated
-    enable_activation_checkpoints: bool = False
-
-
-def insert_activation_checkpoints(module, targets):
-    targets_re = re.compile(targets)
-
-    for name, submod in module.named_modules():
-        if isinstance(
-            submod,
-            (
-                GraphModule,
-                InterpreterModule,
-                UnflattenedModule,
-            ),
-        ):
-            dirty = False
-            logger.debug(f"Processing Checkpoint for: {name}, {type(submod)}")
-            for node in submod.graph.nodes:
-                if node.op == "call_module":
-                    if not targets_re.match(node.target):
-                        continue
-                    dirty = True
-                    logger.debug(f"fixing up node {node.target}")
-                    node.args = (submod.get_submodule(node.target), *node.args)  # type: ignore
-                    node.kwargs = dict(use_reentrant=False, **node.kwargs)
-                    node.target = checkpoint
-                    node.op = "call_function"
-
-            if not dirty:
-                continue
-
-            if isinstance(submod, GraphModule):
-                submod.graph.lint()
-                submod.recompile()
-            else:
-                submod.graph.lint()
-                # Recompiing appears to trigger a syntax error!? By default, these
-                # are interpreted, so recompilation is not required, but why the error?
-
-
-def missing_buffers(mod):
-    """
-    Generate the set of fully-qualified-names buffer names for buffers missing from the state dictionary.
-    This can occur when mod.register_buffer(..., persistent=False)
-    The option to not save these really does complicate things!
-    """
-    sd = mod.state_dict()
-    bset = set()
-    for name, buffer in mod.named_buffers():
-        if not name in sd:
-            bset.add(name)
-    return bset
-
-
-def persist_buffers(mod, bset, mod_fqn=""):
-    """
-    Walk module and all module's children recusively.
-
-    If a buffer is in the set bset of fully-qualified-named (FQN), then convert the
-    buffer to a persistent buffer.
-    """
-    # Convert buffers to persistent buffers.
-    for name, buffer in mod.named_buffers(recurse=False):
-        fqn = mod_fqn + "." + name
-        if fqn in bset:
-            logger.debug(
-                f"Converting buffer non-persistent buffer {fqn} to persistent buffer"
-            )
-            mod.register_buffer(name, buffer.data)
-
-    # And now for our children too...
-    for name, child in mod.named_children():
-        if len(mod_fqn):
-            name = mod_fqn + "." + name
-        persist_buffers(child, bset, name)
-
-
-def set_parameter(mod, fqn, p):
-    """
-    Given a module, a FQN, and a paramm replace FQN in module with p
-
-    This works with either buffers or parameters.
-    """
-    atoms = fqn.split(".")
-    for atom in atoms[:-1]:
-        mod = getattr(mod, atom)
-    setattr(mod, atoms[-1], p)
-
-
-def replace_parameters(to_mod, from_mod):
-    """
-    Replace the parameters in to_mod with those in from_mod
-
-    IMPORTANT: Use remove_duplicate=False to ensure shared parameters are handled correctly
-    """
-    for name, p in to_mod.named_parameters(remove_duplicate=False):
-        set_parameter(to_mod, name, from_mod.get_parameter(name))
-
-
-def replace_buffers(to_mod, from_mod):
-    """
-    Replace the buffers in to_mod with those in from_mod
-
-    IMPORTANT: Use remove_duplicate=False to ensure shared buffers are handled correctly
-    """
-    for name, p in to_mod.named_buffers(remove_duplicate=False):
-        set_parameter(to_mod, name, from_mod.get_buffer(name))
-
-
-def pipeline_stage_indices(
-    pp_size, n_stages, style: str = "loop"
-) -> List[Tuple[int, ...]]:
-    """
-    Get the stage indices for all ranks
-
-    See: https://github.com/pytorch/torchtitan/blob/main/torchtitan/distributed/pipeline.py#L194
-    """
-    stages_per_rank = n_stages // pp_size
-    match style:
-        case "loop":
-            assert (
-                n_stages % pp_size == 0
-            ), f"n_stages {n_stages} must be divisible by pipeline size {pp_size}"
-
-            stage_indices = list(
-                tuple(rank + i * pp_size for i in range(stages_per_rank))
-                for rank in range(pp_size)
-            )
-        case "v":
-            # Sanity check that all of the computed indices are valid
-            assert stages_per_rank == 2
-
-            stage_indices = list(
-                tuple(
-                    x for x in zip(range(pp_size), range(n_stages - 1, pp_size - 1, -1))
-                )
-            )
-
-        case _:
-            raise Exception(f"Unrecognized indices styel {style}")
-
-    return stage_indices
-
-
-class ScheduleMultiEval(PipelineScheduleMulti):
-    """
-    Multi-stage scheduler which only runs the forward pass
-
-    We use this for our "eval" model
-    """
-
-    def __init__(
-        self,
-        stages: List[_PipelineStageBase],
-        n_microbatches: int,
-        stage_indices: List[Tuple[int, ...]],
-        output_merge_spec: Optional[Union[Dict[str, Any], Tuple[Any]]] = None,
-    ):
-        super().__init__(
-            stages=stages,
-            n_microbatches=n_microbatches,
-            loss_fn=None,
-            output_merge_spec=output_merge_spec,
-        )
-
-        self.pipeline_order: Dict[int, List[Optional[_Action]]] = {}
-
-        for rank in range(self.pp_group_size):
-            rank_ops = self._calculate_single_rank_operations(rank, stage_indices)
-            self.pipeline_order[rank] = rank_ops
-
-        logger.debug(f"Eval Pipeline:\n{_format_pipeline_order(self.pipeline_order)}")
-
-    def _calculate_single_rank_operations(self, rank, stage_indices):
-        rank_stage_indices = stage_indices[rank]
-        rank_ops: List[Optional[_Action]] = [None for _ in range(rank)]
-
-        for stage_index in rank_stage_indices:
-            rank_ops.extend(
-                _Action(stage_index, _ComputationType.FORWARD, mb_index)
-                for mb_index in range(self._n_microbatches)
-            )
-
-        return rank_ops
 
 
 class PipelineTrainer(Trainer):
@@ -418,7 +230,7 @@ class PipelineTrainer(Trainer):
         # Make the shard index, which we will need for saving the distribued model.
         # First, assert no duplicate FQNs exist across pipeline modules
         state_dicts = [mod.state_dict() for mod in all_pipeline_modules]
-        self._assert_no_duplicate_fqns(state_dicts)
+        assert_no_duplicate_fqns(state_dicts)
 
         self.shard_index = make_shard_index(
             state_dicts,
@@ -437,7 +249,7 @@ class PipelineTrainer(Trainer):
             scale_grads=False,
         )
 
-        if self.args.enable_activation_checkpoints or self.args.gradient_checkpointing:
+        if self.args.gradient_checkpointing:
             if self.dist.rank == 0:
                 logger.info("Applying activation checkpointing via FX graph")
             # Enable activation checkpointing for all modules in the pipeline.
@@ -471,6 +283,7 @@ class PipelineTrainer(Trainer):
                 logger.info("Constructing and splitting eval model.")
             self._construct_eval_pipeline()
 
+    # @override
     def _wrap_loss_fn(self):
         assert self.loss_fn
         self.eval_loss_fn = self.loss_fn
@@ -487,6 +300,7 @@ class PipelineTrainer(Trainer):
             model = self.model_init()
         return model
 
+    # @override
     def _compile_model(self):
         assert self.pipeline_modules
         pipelines = [self.pipeline_modules]
@@ -563,7 +377,7 @@ class PipelineTrainer(Trainer):
         apply_pipeline_buffer_fix(all_pipeline_modules, model)
 
         # Remove vestigial modules to prevent duplicate FQN conflicts during checkpoint saving
-        self._remove_vestigial_modules(all_pipeline_modules)
+        remove_vestigial_modules(all_pipeline_modules)
 
         return all_pipeline_modules, pipeline_modules, list(pipeline_stages)
 
@@ -659,6 +473,7 @@ class PipelineTrainer(Trainer):
 
         distributed.barrier()
 
+    # @override
     def _dataloader_iter(
         self, dataloader: Iterable[Dict[str, Tensor]]
     ) -> Iterable[Dict[str, Tensor]]:
@@ -751,6 +566,7 @@ class PipelineTrainer(Trainer):
             )
         self.eval_pipeline_modules = eval_pipeline_modules
 
+    # @override
     def _forward_backward_step(
         self, input_dict: dict[str, Tensor], labels: Tensor
     ) -> Tensor:
@@ -952,102 +768,3 @@ class PipelineTrainer(Trainer):
     def _distributed_loss(self, loss: Tensor):
         distributed.broadcast(loss, src=self.pp_last_stage_rank)
         return loss
-
-    def _remove_vestigial_modules(self, all_pipeline_modules):
-        """
-        Remove vestigial submodules that don't have FX graphs.
-
-        Vestigial modules are created during pipeline splitting but don't contain
-        active computation paths. They can cause duplicate FQN conflicts during
-        checkpoint saving if not removed.
-        """
-        from torch import fx
-
-        for i, module in enumerate(all_pipeline_modules):
-            logger.debug(f"Cleaning vestigial modules from pipeline stage {i}")
-            modules_to_remove = []
-
-            # Find all submodules and identify vestigial ones
-            for name, submodule in module.named_modules():
-                if name == "":  # Skip root module
-                    continue
-
-                # Check if submodule has an FX graph (active) or not (vestigial)
-                has_graph = hasattr(submodule, "graph")
-                is_fx_graph = has_graph and isinstance(submodule.graph, fx.Graph)
-
-                if not is_fx_graph:
-                    # This is a vestigial module - check if it can be safely removed
-                    parent_name = ".".join(name.split(".")[:-1])
-                    module_name = name.split(".")[-1]
-
-                    try:
-                        if parent_name:
-                            parent_module = module.get_submodule(parent_name)
-                        else:
-                            parent_module = module
-
-                        # Only remove if it's not referenced in any FX graph
-                        if self._is_module_unreferenced(module, name):
-                            modules_to_remove.append((parent_module, module_name, name))
-                            logger.debug(
-                                f"  Marking vestigial module for removal: {name}"
-                            )
-                    except AttributeError:
-                        logger.debug(f"  Could not access parent of {name}, skipping")
-
-            # Remove vestigial modules
-            for parent_module, module_name, full_name in modules_to_remove:
-                try:
-                    delattr(parent_module, module_name)
-                    logger.debug(f"  Removed vestigial module: {full_name}")
-                except AttributeError:
-                    logger.debug(f"  Failed to remove module: {full_name}")
-
-    def _is_module_unreferenced(self, root_module, target_name):
-        """
-        Check if a module is unreferenced in any FX graph within the root module.
-        Returns True if the module is safe to remove.
-        """
-        from torch import fx
-
-        # Search all FX graphs for call_module operations referencing target_name
-        for name, submodule in root_module.named_modules():
-            if hasattr(submodule, "graph") and isinstance(submodule.graph, fx.Graph):
-                for node in submodule.graph.nodes:
-                    if node.op == "call_module" and node.target == target_name:
-                        return False  # Module is referenced, don't remove
-        return True  # Module is not referenced, safe to remove
-
-    def _assert_no_duplicate_fqns(self, state_dicts):
-        """
-        Assert that no FQN appears in multiple state dictionaries.
-
-        This is a critical invariant for pipeline checkpoint saving - duplicate FQNs
-        cause multiple processes to write to the same shard file, resulting in
-        checkpoint corruption.
-        """
-        all_fqns = set()
-        duplicate_fqns = set()
-
-        for i, state_dict in enumerate(state_dicts):
-            for fqn in state_dict.keys():
-                if fqn in all_fqns:
-                    duplicate_fqns.add(fqn)
-                    logger.error(f"Duplicate FQN found: '{fqn}' in pipeline modules")
-                all_fqns.add(fqn)
-
-        if duplicate_fqns:
-            # Show which modules contain each duplicate FQN for debugging
-            for fqn in duplicate_fqns:
-                modules_with_fqn = []
-                for i, state_dict in enumerate(state_dicts):
-                    if fqn in state_dict:
-                        modules_with_fqn.append(f"module_{i}")
-                logger.error(f"FQN '{fqn}' appears in: {modules_with_fqn}")
-
-            raise AssertionError(
-                f"Duplicate FQNs detected across pipeline modules: {duplicate_fqns}. "
-                f"This will cause checkpoint saving conflicts. Each FQN must appear "
-                f"in exactly one pipeline module."
-            )

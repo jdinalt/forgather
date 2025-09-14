@@ -1,13 +1,24 @@
 """
-Workaround for PyTorch pipeline parallelism buffer bug.
+Workarounds for PyTorch pipeline parallelism bugs.
 
 This module provides utilities to fix "zombie buffers" that are created by
 PyTorch's pipeline splitting implementation. Zombie buffers exist as module
 attributes but are not properly registered in the module's buffer registry,
 causing failures when using to_empty() to materialize meta tensors.
 
-This is a workaround until the upstream PyTorch issue is fixed.
-See: pytorch_pipeline_buffer_bug.md for detailed analysis.
+The above issue appears to be triggered by including shared buffers in the model, for
+example, sharing RoPE embeddings.
+
+Another identified bug is that splitting a model sometimes results in unreferenced
+copies of a module in the wrong sub-module. This results in duplicate FQNs, 
+with-respect-to the complete model, and this wreaks havoc with checkpointing,
+where multiple ranks believe they own the same FQN, corrupting each others checkpoints.
+
+This module contains functions for for identifying these "vestigial" modules
+and removing them.
+
+At some point, when I have the time, I would like to write a clean version of the
+model splitter, which works correctly. I have a prototype, but have other priorities.
 """
 
 import torch
@@ -319,3 +330,103 @@ def validate_pipeline_buffers(
             logger.debug(f"Pipeline stage {i} is clean")
 
     return all_clean
+
+
+def remove_vestigial_modules(all_pipeline_modules):
+    """
+    Remove vestigial submodules that don't have FX graphs.
+
+    Vestigial modules are created during pipeline splitting but don't contain
+    active computation paths. They can cause duplicate FQN conflicts during
+    checkpoint saving if not removed.
+    """
+    from torch import fx
+
+    for i, module in enumerate(all_pipeline_modules):
+        logger.debug(f"Cleaning vestigial modules from pipeline stage {i}")
+        modules_to_remove = []
+
+        # Find all submodules and identify vestigial ones
+        for name, submodule in module.named_modules():
+            if name == "":  # Skip root module
+                continue
+
+            # Check if submodule has an FX graph (active) or not (vestigial)
+            has_graph = hasattr(submodule, "graph")
+            is_fx_graph = has_graph and isinstance(submodule.graph, fx.Graph)
+
+            if not is_fx_graph:
+                # This is a vestigial module - check if it can be safely removed
+                parent_name = ".".join(name.split(".")[:-1])
+                module_name = name.split(".")[-1]
+
+                try:
+                    if parent_name:
+                        parent_module = module.get_submodule(parent_name)
+                    else:
+                        parent_module = module
+
+                    # Only remove if it's not referenced in any FX graph
+                    if is_module_unreferenced(module, name):
+                        modules_to_remove.append((parent_module, module_name, name))
+                        logger.debug(f"  Marking vestigial module for removal: {name}")
+                except AttributeError:
+                    logger.debug(f"  Could not access parent of {name}, skipping")
+
+        # Remove vestigial modules
+        for parent_module, module_name, full_name in modules_to_remove:
+            try:
+                delattr(parent_module, module_name)
+                logger.debug(f"  Removed vestigial module: {full_name}")
+            except AttributeError:
+                logger.debug(f"  Failed to remove module: {full_name}")
+
+
+def is_module_unreferenced(root_module, target_name):
+    """
+    Check if a module is unreferenced in any FX graph within the root module.
+    Returns True if the module is safe to remove.
+    """
+    from torch import fx
+
+    # Search all FX graphs for call_module operations referencing target_name
+    for name, submodule in root_module.named_modules():
+        if hasattr(submodule, "graph") and isinstance(submodule.graph, fx.Graph):
+            for node in submodule.graph.nodes:
+                if node.op == "call_module" and node.target == target_name:
+                    return False  # Module is referenced, don't remove
+    return True  # Module is not referenced, safe to remove
+
+
+def assert_no_duplicate_fqns(state_dicts):
+    """
+    Assert that no FQN appears in multiple state dictionaries.
+
+    This is a critical invariant for pipeline checkpoint saving - duplicate FQNs
+    cause multiple processes to write to the same shard file, resulting in
+    checkpoint corruption.
+    """
+    all_fqns = set()
+    duplicate_fqns = set()
+
+    for i, state_dict in enumerate(state_dicts):
+        for fqn in state_dict.keys():
+            if fqn in all_fqns:
+                duplicate_fqns.add(fqn)
+                logger.error(f"Duplicate FQN found: '{fqn}' in pipeline modules")
+            all_fqns.add(fqn)
+
+    if duplicate_fqns:
+        # Show which modules contain each duplicate FQN for debugging
+        for fqn in duplicate_fqns:
+            modules_with_fqn = []
+            for i, state_dict in enumerate(state_dicts):
+                if fqn in state_dict:
+                    modules_with_fqn.append(f"module_{i}")
+            logger.error(f"FQN '{fqn}' appears in: {modules_with_fqn}")
+
+        raise AssertionError(
+            f"Duplicate FQNs detected across pipeline modules: {duplicate_fqns}. "
+            f"This will cause checkpoint saving conflicts. Each FQN must appear "
+            f"in exactly one pipeline module."
+        )
