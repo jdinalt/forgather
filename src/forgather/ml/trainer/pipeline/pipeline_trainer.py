@@ -12,8 +12,9 @@ import os
 import re
 
 import torch
-from torch.utils.data import DataLoader
+from torch.nn import Module
 from torch.export.unflatten import InterpreterModule, UnflattenedModule
+from torch.utils.checkpoint import checkpoint
 from torch.fx import GraphModule
 from torch import Tensor
 from torch import distributed
@@ -97,9 +98,9 @@ def insert_activation_checkpoints(module, targets):
                         continue
                     dirty = True
                     logger.debug(f"fixing up node {node.target}")
-                    node.args = (submod.get_submodule(node.target), *node.args)
+                    node.args = (submod.get_submodule(node.target), *node.args)  # type: ignore
                     node.kwargs = dict(use_reentrant=False, **node.kwargs)
-                    node.target = torch.utils.checkpoint.checkpoint
+                    node.target = checkpoint
                     node.op = "call_function"
 
             if not dirty:
@@ -183,7 +184,9 @@ def replace_buffers(to_mod, from_mod):
         set_parameter(to_mod, name, from_mod.get_buffer(name))
 
 
-def pipeline_stage_indices(pp_size, n_stages, style: str = "loop") -> List[Tuple[int]]:
+def pipeline_stage_indices(
+    pp_size, n_stages, style: str = "loop"
+) -> List[Tuple[int, ...]]:
     """
     Get the stage indices for all ranks
 
@@ -227,7 +230,7 @@ class ScheduleMultiEval(PipelineScheduleMulti):
         self,
         stages: List[_PipelineStageBase],
         n_microbatches: int,
-        stage_indices: List[Tuple[int]],
+        stage_indices: List[Tuple[int, ...]],
         output_merge_spec: Optional[Union[Dict[str, Any], Tuple[Any]]] = None,
     ):
         super().__init__(
@@ -485,8 +488,10 @@ class PipelineTrainer(Trainer):
         return model
 
     def _compile_model(self):
+        assert self.pipeline_modules
         pipelines = [self.pipeline_modules]
         if not self.args.unified_model:
+            assert self.eval_pipeline_modules
             pipelines.append(self.eval_pipeline_modules)
         for pipeline_modules in pipelines:
             for mod in pipeline_modules:
@@ -517,14 +522,16 @@ class PipelineTrainer(Trainer):
         # Return example micro-batches
         return split_args[0], split_kwargs[0]
 
-    def _split_model(self, model, example_args, example_kwargs, stage_indices, train):
+    def _split_model(
+        self, model, example_args, example_kwargs, stage_indices, train
+    ) -> Tuple[List[Module], List[Module], List[_PipelineStageBase]]:
         rank = self.dist.rank
         # Trace model
         # The trace will use fake-tensors, so this does not perform any
         # actual computation. It just traces the path through the model
         # and records tensor geometery information.
         args = (model, example_args, example_kwargs)
-        kwargs = dict(split_spec=self.args.split_spec)
+        kwargs: Dict[str, Any] = dict(split_spec=self.args.split_spec)
         if train:
             model.train()
             pipe = build_pipeline(*args, **kwargs)
@@ -547,7 +554,7 @@ class PipelineTrainer(Trainer):
         ]
 
         pipeline_stages = [
-            pipe.build_stage(stage_index=i, device=self.dist.device)
+            pipe.build_stage(stage_index=i, device=torch.device(self.dist.device))
             for i in stage_indices[self.dist.rank]
         ]
 
@@ -558,7 +565,7 @@ class PipelineTrainer(Trainer):
         # Remove vestigial modules to prevent duplicate FQN conflicts during checkpoint saving
         self._remove_vestigial_modules(all_pipeline_modules)
 
-        return all_pipeline_modules, pipeline_modules, pipeline_stages
+        return all_pipeline_modules, pipeline_modules, list(pipeline_stages)
 
     @torch.no_grad()
     def _initialize_params(
@@ -693,6 +700,7 @@ class PipelineTrainer(Trainer):
             while True:
                 # Receive flag asynchronously
                 req_flag = distributed.broadcast(flag, src=0, async_op=True)
+                assert req_flag
                 req_flag.wait()
                 if flag.item() == 0:
                     break
@@ -723,6 +731,8 @@ class PipelineTrainer(Trainer):
         )
 
         # Replace meta parameters on eval modules with parameters of train modules
+        assert self.pipeline_modules
+        assert self.sharing_metadata is not None
         for eval_mod, train_mod in zip(eval_pipeline_modules, self.pipeline_modules):
             replace_parameters(eval_mod, train_mod)
             replace_buffers(eval_mod, train_mod)
@@ -748,12 +758,14 @@ class PipelineTrainer(Trainer):
 
         # See: https://github.com/pytorch/torchtitan/blob/main/torchtitan/train.py#L377
         targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)
+        assert self.train_scheduler
         if self.pp_has_first_stage:
             self.train_scheduler.step(*inputs, target=targets, losses=losses)
         else:
             self.train_scheduler.step(target=targets, losses=losses)
 
         if self.pp_has_last_stage:
+            assert losses
             mean_loss = torch.stack([x.detach() for x in losses]).mean()
             mean_loss = mean_loss.float()
         else:
@@ -765,6 +777,7 @@ class PipelineTrainer(Trainer):
     ) -> Tensor:
         inputs = (input_dict["input_ids"],)
 
+        assert self.eval_scheduler
         if self.pp_has_first_stage:
             outputs = self.eval_scheduler.step(*inputs)
         else:
@@ -786,6 +799,8 @@ class PipelineTrainer(Trainer):
                     for param in mod.named_parameters():
                         yield param
 
+            assert self.pipeline_modules
+            assert self.optimizer_factory
             self.optimizer = self.optimizer_factory(
                 named_parameters(self.pipeline_modules)
             )
@@ -817,7 +832,9 @@ class PipelineTrainer(Trainer):
             for step, batch in enumerate(self._dataloader_iter(self.eval_dataloader)):
                 input_dict, labels = self._prepare_batch(batch)
                 outputs = self._unified_prediction_step(input_dict, labels)
-                total_loss += outputs["loss"]
+                loss = outputs["loss"]
+                assert loss
+                total_loss += loss
                 self._dispatch_event("on_prediction_step")
             metrics = {"eval_loss": (total_loss / step).item()}
             self._dispatch_event("on_evaluate", metrics=metrics)
@@ -843,6 +860,7 @@ class PipelineTrainer(Trainer):
         """
         mean_loss = self._forward_backward_step(input_dict, labels)
         mean_loss = self._distributed_loss(mean_loss)
+        assert self.optimizer
         self.optimizer.zero_grad()
         return {
             "loss": mean_loss,
@@ -902,6 +920,7 @@ class PipelineTrainer(Trainer):
             return self._all_reduce_norm(total_norm, norm_type)
 
         # Compute norm over all local trainable parameters
+        assert self.pipeline_modules
         parameters = [
             p
             for mod in self.pipeline_modules

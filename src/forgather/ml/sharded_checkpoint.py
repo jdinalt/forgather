@@ -2,12 +2,9 @@ import json
 import os
 from pprint import pp
 import logging
-from typing import Any, Dict, List, Tuple, Set
-from types import NoneType
+from typing import Any, Dict, List, Set, Optional
 from collections import defaultdict
-import time
-import glob
-import shutil
+from dataclasses import dataclass
 import gc
 
 import torch
@@ -252,10 +249,10 @@ def index_file_name(safetensors: bool) -> str:
 
 def make_shard_index(
     state_dictionaries: List[Dict[str, Tensor]],
-    metadata: Dict = None,
+    metadata: Optional[Dict] = None,
     safetensors: bool = False,
     max_shard_size: int = 2**32,
-    param_sharing_metadata: Dict[str, Dict[str, Any]] = None,
+    param_sharing_metadata: Optional[List[List[str]]] = None,
 ) -> ShardIndex:
     """
     Given a list of state dictionaries, construct a shard index
@@ -365,7 +362,7 @@ def _make_shard_dictionaries(
 def save_checkpoint(
     output_dir: str,
     module: Module,
-    metadata: Dict = None,
+    metadata: Optional[Dict] = None,
     safetensors: bool = False,
     max_shard_size: int = 2**31,
     debug: bool = False,
@@ -449,9 +446,8 @@ def validate_output_dir(output_dir: str, overwrite: bool = False) -> None:
         raise Exception(
             f"Something other than a directory already exists at the output path! {output_dir}"
         )
-
-    index_file_name, is_index, is_safetensors = checkpoint_exists(output_dir)
-    if index_file_name:
+    checkpoint_meta = get_checkpoint_metadata(output_dir)
+    if checkpoint_meta:
         if not overwrite:
             raise Exception(
                 f"Checkpoint exists '{output_dir}' exists and 'overwrite' is False"
@@ -495,7 +491,6 @@ def load_checkpoint(
     device: str,
     strict: bool = True,
     assign: bool = False,
-    debug: bool = False,
 ) -> None:
     """
     Automatically detects checkpoint type and loads accordingly.
@@ -506,24 +501,26 @@ def load_checkpoint(
     See:
     https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.load_state_dict
     """
-    index_or_weights_name, is_index, is_safetensors = checkpoint_exists(model_dir)
-    assert index_or_weights_name, f"No model weights found in {model_dir}"
-    if is_index:
-        shard_index = load_shard_index(model_dir, index_or_weights_name)
+    checkpoint_meta = get_checkpoint_metadata(model_dir)
+
+    if not checkpoint_meta:
+        raise FileNotFoundError
+
+    if checkpoint_meta.is_index:
+        shard_index = load_shard_index(model_dir, checkpoint_meta.file_name)
         load_sharded_checkpoint(
             model_dir,
             shard_index,
             module,
             device=device,
-            safetensors=is_safetensors,
+            safetensors=checkpoint_meta.safetensors,
             strict=strict,
             assign=assign,
-            debug=debug,
         )
         return
 
-    state_dict_path = os.path.join(model_dir, index_or_weights_name)
-    if is_safetensors:
+    state_dict_path = os.path.join(model_dir, checkpoint_meta.file_name)
+    if checkpoint_meta.safetensors:
         state_dict = safetensors_load(
             state_dict_path, device=torch.device(device).index
         )
@@ -545,7 +542,7 @@ def load_sharded_checkpoint(
     strict: bool = True,
     assign: bool = False,
     debug: bool = False,
-) -> None:
+) -> Set[str]:
     """
     Load a sharded checkpoint
 
@@ -607,36 +604,39 @@ def load_sharded_checkpoint(
     return all_module_keys
 
 
-def checkpoint_exists(
-    model_dir: str,
-) -> Tuple[str | NoneType, bool | NoneType, bool | NoneType]:
+@dataclass
+class CheckpointMeta:
+    # The name of the index, if one exists, else, weights file
+    file_name: str
+
+    # The file name is an index file
+    is_index: bool
+
+    # The weights file uses safetensors, else PyTorch
+    safetensors: bool
+
+
+def get_checkpoint_metadata(
+    path: str,
+) -> CheckpointMeta | None:
     """
-    Returns Tuple[index_or_weights_name: Union[str, None], is_index: Bool, is_safetensor: Bool]
-
-    The first element is None, if no checkpoint was found, otherwise, it's the name of
-    either the index file or weights file (no index).
-
-    The second element is True is this is a sharded checkpoint (has an index)
-
-    The third element is True if the weights are safetensors.
-
-    If the checkpoint does not exist, all elements are 'None'
+    Returns checkpoint metadata for ", if checkpoint exists, else None
     """
-    torch_index_path = os.path.join(model_dir, WEIGHTS_INDEX_NAME)
-    safetensors_index_path = os.path.join(model_dir, SAFE_WEIGHTS_INDEX_NAME)
-    torch_weights_path = os.path.join(model_dir, WEIGHTS_NAME)
-    safetensors_weights_path = os.path.join(model_dir, SAFE_WEIGHTS_NAME)
+    torch_index_path = os.path.join(path, WEIGHTS_INDEX_NAME)
+    safetensors_index_path = os.path.join(path, SAFE_WEIGHTS_INDEX_NAME)
+    torch_weights_path = os.path.join(path, WEIGHTS_NAME)
+    safetensors_weights_path = os.path.join(path, SAFE_WEIGHTS_NAME)
 
     if os.path.exists(torch_index_path):
-        return (WEIGHTS_INDEX_NAME, True, False)
+        return CheckpointMeta(WEIGHTS_INDEX_NAME, True, False)
     elif os.path.exists(safetensors_index_path):
-        return (SAFE_WEIGHTS_INDEX_NAME, True, True)
+        return CheckpointMeta(SAFE_WEIGHTS_INDEX_NAME, True, True)
     elif os.path.exists(torch_weights_path):
-        return (WEIGHTS_NAME, False, False)
+        return CheckpointMeta(WEIGHTS_NAME, False, False)
     elif os.path.exists(safetensors_weights_path):
-        return (SAFE_WEIGHTS_NAME, False, True)
+        return CheckpointMeta(SAFE_WEIGHTS_NAME, False, True)
     else:
-        return (None, None, None)
+        return None
 
 
 def validate_checkpoint(checkpoint_path: str) -> bool:
