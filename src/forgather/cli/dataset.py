@@ -92,5 +92,5 @@ def dataset_cmd(args):
             for i, example in zip(range(args.examples), split):
                 data += f"{i:-^80}\n"
                 for feature in features:
-                    data += f"{feature:*^16}\n\n" + example[feature] + "\n"
+                    data += f"{feature:*^16}\n\n" + str(example[feature]) + "\n"
     write_output_or_edit(args, data, ".txt")
