@@ -82,6 +82,11 @@ class Project:
             self.meta.config_path(config_name), **kwargs
         ).get()
 
+    def add_template(self, name, data):
+        """Add a template definition directly to the loader"""
+        loader = self.environment.get_loader()
+        loader.add_template(name, data)
+
     def __call__(self, *args, asdict=False, **kwargs):
         """
         Construct and return an instance of the configuration
@@ -144,6 +149,9 @@ def from_project(
     pp_kwargs: dict | None = None,
     **config_kwargs,
 ):
+    """
+    This is intended to allow a configuration to import artifacts from another configuration
+    """
     if pp_kwargs is None:
         pp_kwargs = {}
 
