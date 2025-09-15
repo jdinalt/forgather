@@ -1,5 +1,4 @@
 from typing import (
-    TYPE_CHECKING,
     Callable,
     Optional,
     List,
@@ -7,10 +6,13 @@ from typing import (
 )
 
 import os
+import platform
+import time
 from abc import abstractmethod
 from contextlib import ExitStack
-
 import logging
+from dataclasses import dataclass
+
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.utils.data import Dataset
@@ -18,23 +20,115 @@ from torch.distributed.checkpoint.stateful import Stateful
 
 from .trainer_types import (
     ExtensibleTrainer,
-    TrainingArguments,
+    MinimalTrainingArguments,
     TrainerState,
     TrainOutput,
     TrainerControl,
     CheckpointInterface,
     StatefulProvider,
+    IntervalStrategy,
 )
 
 from .checkpoint_manager import RNGState
 
-WEIGHTS_NAME = "pytorch_model.bin"
-WEIGHTS_INDEX_NAME = "pytorch_model.bin.index.json"
-SAFE_WEIGHTS_INDEX_NAME = "model.safetensors.index.json"
-SAFE_WEIGHTS_NAME = "model.safetensors"
-
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+
+
+@dataclass(kw_only=True)
+class BaseTrainingArguments(MinimalTrainingArguments):
+    # These arguments are NOT HF Compatible!
+    # Checkpointing options
+    save_optimizer_state: bool = True
+    save_scheduler_state: bool = True
+    save_dataset_state: bool = True
+    save_rng_state: bool = True
+
+    restore_optimizer_state: bool = True
+    restore_scheduler_state: bool = True
+    restore_dataset_state: bool = True
+    restore_rng_state: bool = True
+
+    # Offload activation tensors to CPU memory -- best combined with some form of activation checkpointing.
+    # https://docs.pytorch.org/tutorials/intermediate/autograd_saved_tensors_hooks_tutorial.html#saving-tensors-to-cpu
+    enable_activation_offloading: bool = False
+
+    # Set torch.autograd.set_detect_anomaly
+    # https://docs.pytorch.org/docs/stable/autograd.html#debugging-and-anomaly-detection
+    detect_anomaly: bool = False
+
+    # Set SDPA Kernel backend(s)
+    # https://docs.pytorch.org/docs/stable/generated/torch.nn.attention.sdpa_kernel.html#torch.nn.attention.sdpa_kernel
+    sdpa_backend: List[str] | str | None = (
+        None  # "math" | "flash" | "efficient" | "cudnn"
+    )
+    sdpa_set_priority: bool = False  # If list, interpret as priority order
+
+    # Set on NVIDIA Ampere or later GPUs to "high" when training in 32-bit precision for a significant speedup
+    # https://docs.pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html
+    float32_matmul_precision: str | None = None  # "highest" | "high" | "medium"
+
+    def __post_init__(self):
+        if self.logging_dir is None:
+            self.logging_dir = os.path.join(
+                self.output_dir, "runs", f"{time.time_ns()}_{platform.node()}"
+            )
+
+        # As per https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader
+        if self.dataloader_prefetch_factor is None and self.dataloader_num_workers > 0:
+            self.dataloader_prefetch_factor = 2
+        if self.torch_compile_backend is None:
+            self.torch_compile_backend = "inductor"
+        if self.torch_compile_mode is None:
+            self.torch_compile_backend = "default"
+
+        if self.lr_scheduler_kwargs is None:
+            self.lr_scheduler_kwargs = {}
+
+        if self.gradient_checkpointing_kwargs is None:
+            self.gradient_checkpointing_kwargs = {}
+
+        # Auto-determine greater_is_better from metric name if not set
+        if self.greater_is_better is None:
+            # Common metrics where higher is better
+            higher_is_better_metrics = {
+                "accuracy",
+                "f1",
+                "precision",
+                "recall",
+                "auc",
+                "roc_auc",
+                "ap",
+                "map",
+                "bleu",
+                "rouge",
+                "meteor",
+                "bertscore",
+                "exact_match",
+                "squad_f1",
+            }
+            # Check if metric name contains any higher-is-better patterns
+            metric_lower = self.metric_for_best_model.lower()
+            self.greater_is_better = any(
+                pattern in metric_lower for pattern in higher_is_better_metrics
+            )
+
+        # Validate alignment requirements for load_best_model_at_end
+        if self.load_best_model_at_end:
+            if self.save_strategy != self.eval_strategy:
+                raise ValueError(
+                    "load_best_model_at_end requires save_strategy and eval_strategy to be the same. "
+                    f"Got save_strategy={self.save_strategy}, eval_strategy={self.eval_strategy}"
+                )
+
+            if (
+                self.save_strategy == IntervalStrategy.STEPS
+                and self.eval_strategy == IntervalStrategy.STEPS
+            ):
+                if self.save_steps % self.eval_steps != 0:
+                    raise ValueError(
+                        "load_best_model_at_end requires save_steps to be a multiple of eval_steps when using step-based strategies. "
+                        f"Got save_steps={self.save_steps}, eval_steps={self.eval_steps}"
+                    )
 
 
 class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
@@ -53,7 +147,7 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
 
     def __init__(
         self,
-        args: TrainingArguments,
+        args: BaseTrainingArguments,
         model: torch.nn.Module | None = None,
         data_collator=None,
         train_dataset=None,
@@ -130,7 +224,6 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
             torch.set_float32_matmul_precision(self.args.float32_matmul_precision)
 
         self._post_init()
-        # self._validate_dirs()
 
     def __repr__(self):
         return (

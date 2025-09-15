@@ -3,8 +3,6 @@ from typing import Any, List, Dict, NamedTuple, Optional
 from abc import ABC, abstractmethod
 from typing import Protocol
 from dataclasses import dataclass, field
-import platform
-import time
 from pprint import pformat
 
 from torch.utils.data import Dataset
@@ -77,7 +75,11 @@ class TrainerControl:
 @dataclass(kw_only=True)
 class MinimalTrainingArguments:
     """
-    A minimal sub-set of the TrainingArguments from transformers.TrainingArguments
+    Stores training arguments, independent of model/dataset/etc.
+
+    A sub-set of the TrainingArguments from transformers.TrainingArguments
+    As a minimal sub-set, this should not be "everything-for-everyone."
+    Additional arguments can be added via sub-classing.
     """
 
     output_dir: str = OUTPUTDIR_NAME
@@ -86,23 +88,6 @@ class MinimalTrainingArguments:
     per_device_train_batch_size: int = 16
     num_train_epochs: int = 1
     device: Any = None
-
-    def __post_init__(self):
-        if self.logging_dir is None:
-            self.logging_dir = os.path.join(
-                self.output_dir, "runs", f"{time.time_ns()}_{platform.node()}"
-            )
-
-
-@dataclass(kw_only=True)
-class TrainingArguments(MinimalTrainingArguments):
-    """
-    Stores training arguments, independent of model/dataset/etc.
-
-    A sub-set of the TrainingArguments from transformers.TrainingArguments
-    As a minimal sub-set, this should not be "everything-for-everyone."
-    Additional arguments can be added via sub-classing.
-    """
 
     seed: int = -1
     use_cpu: bool = False
@@ -148,19 +133,8 @@ class TrainingArguments(MinimalTrainingArguments):
     save_total_limit: int = 2
     save_safetensors: bool = True
     save_on_each_node: bool = False
-    save_optimizer_state: bool = True
-    save_scheduler_state: bool = True
-    save_dataset_state: bool = True
     overwrite_output_dir: bool = False
-    # True = auto-discover, str = specific path
     resume_from_checkpoint: bool | str = False
-    restore_optimizer_state: bool = True
-    restore_scheduler_state: bool = True
-    restore_dataset_state: bool = True
-
-    # RNG state checkpoint options
-    save_rng_state: bool = True
-    restore_rng_state: bool = True
 
     # Best model tracking and loading options
     load_best_model_at_end: bool = False
@@ -180,105 +154,6 @@ class TrainingArguments(MinimalTrainingArguments):
     # Enable gradient checkpointing (a.k.a activation checkpointing) on models which support the HF API
     gradient_checkpointing: bool = False
     gradient_checkpointing_kwargs: dict | None = None
-
-    ## These options are not supported by HF Trainer ##
-
-    # Combine gradient calculation with optimizer step, to save memory.
-    # https://docs.pytorch.org/tutorials/intermediate/optimizer_step_in_backward_tutorial.html
-    fuse_optim_with_backward: bool = False
-
-    # Offload activation tensors to CPU memory -- best combined with some form of activation checkpointing.
-    # https://docs.pytorch.org/tutorials/intermediate/autograd_saved_tensors_hooks_tutorial.html#saving-tensors-to-cpu
-    enable_activation_offloading: bool = False
-
-    # Set torch.autograd.set_detect_anomaly
-    # https://docs.pytorch.org/docs/stable/autograd.html#debugging-and-anomaly-detection
-    detect_anomaly: bool = False
-
-    # https://pytorch.org/blog/activation-checkpointing-techniques/
-    # Requires "torch_compile = True" option
-    activation_memory_budget: float | None = None
-
-    # Set SDPA Kernel backend(s)
-    # https://docs.pytorch.org/docs/stable/generated/torch.nn.attention.sdpa_kernel.html#torch.nn.attention.sdpa_kernel
-    sdpa_backend: List[str] | str | None = (
-        None  # "math" | "flash" | "efficient" | "cudnn"
-    )
-    sdpa_set_priority: bool = False  # If list, interpret as priority order
-
-    # Set on NVIDIA Ampere or later GPUs to "high" when training in 32-bit precision for a significant speedup
-    # https://docs.pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html
-    float32_matmul_precision: str | None = None  # "highest" | "high" | "medium"
-
-    # Construct model on meta-device and materialize directly on device
-    # default: Construct model on CPU on move to device; slow, but reliable.
-    # device: Construct model directly on device. This is can faster, but may result in OOM
-    # meta: Construct on meta device and materialize on target device. The resulting model
-    #   is uninitialized and will need to be loaded with a checkpoint.
-    construct_model_on: str = "default"  # "default" | "meta" | "device"
-
-    # Ratio of reserved to total GPU memory to trigger GC
-    # If OOM from fragmentation, lower ratio
-    gc_threshold: float = 0.5
-
-    def __post_init__(self):
-        super().__post_init__()
-        # As per https://pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader
-        if self.dataloader_prefetch_factor is None and self.dataloader_num_workers > 0:
-            self.dataloader_prefetch_factor = 2
-        if self.torch_compile_backend is None:
-            self.torch_compile_backend = "inductor"
-        if self.torch_compile_mode is None:
-            self.torch_compile_backend = "default"
-
-        if self.lr_scheduler_kwargs is None:
-            self.lr_scheduler_kwargs = {}
-
-        if self.gradient_checkpointing_kwargs is None:
-            self.gradient_checkpointing_kwargs = {}
-
-        # Auto-determine greater_is_better from metric name if not set
-        if self.greater_is_better is None:
-            # Common metrics where higher is better
-            higher_is_better_metrics = {
-                "accuracy",
-                "f1",
-                "precision",
-                "recall",
-                "auc",
-                "roc_auc",
-                "ap",
-                "map",
-                "bleu",
-                "rouge",
-                "meteor",
-                "bertscore",
-                "exact_match",
-                "squad_f1",
-            }
-            # Check if metric name contains any higher-is-better patterns
-            metric_lower = self.metric_for_best_model.lower()
-            self.greater_is_better = any(
-                pattern in metric_lower for pattern in higher_is_better_metrics
-            )
-
-        # Validate alignment requirements for load_best_model_at_end
-        if self.load_best_model_at_end:
-            if self.save_strategy != self.eval_strategy:
-                raise ValueError(
-                    "load_best_model_at_end requires save_strategy and eval_strategy to be the same. "
-                    f"Got save_strategy={self.save_strategy}, eval_strategy={self.eval_strategy}"
-                )
-
-            if (
-                self.save_strategy == IntervalStrategy.STEPS
-                and self.eval_strategy == IntervalStrategy.STEPS
-            ):
-                if self.save_steps % self.eval_steps != 0:
-                    raise ValueError(
-                        "load_best_model_at_end requires save_steps to be a multiple of eval_steps when using step-based strategies. "
-                        f"Got save_steps={self.save_steps}, eval_steps={self.eval_steps}"
-                    )
 
     def __str__(self):
         return pformat(self)
@@ -372,7 +247,7 @@ class TrainerCallback(Protocol):
 
     def on_init_end(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -381,7 +256,7 @@ class TrainerCallback(Protocol):
 
     def on_train_begin(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -390,7 +265,7 @@ class TrainerCallback(Protocol):
 
     def on_train_end(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -399,7 +274,7 @@ class TrainerCallback(Protocol):
 
     def on_epoch_begin(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -408,7 +283,7 @@ class TrainerCallback(Protocol):
 
     def on_epoch_end(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -417,7 +292,7 @@ class TrainerCallback(Protocol):
 
     def on_step_begin(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -426,7 +301,7 @@ class TrainerCallback(Protocol):
 
     def on_optimizer_step(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -435,7 +310,7 @@ class TrainerCallback(Protocol):
 
     def on_substep_end(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -444,7 +319,7 @@ class TrainerCallback(Protocol):
 
     def on_step_end(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -453,7 +328,7 @@ class TrainerCallback(Protocol):
 
     def on_evaluate(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -462,7 +337,7 @@ class TrainerCallback(Protocol):
 
     def on_predict(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         metrics,
@@ -472,7 +347,7 @@ class TrainerCallback(Protocol):
 
     def on_save(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -481,7 +356,7 @@ class TrainerCallback(Protocol):
 
     def on_log(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -490,7 +365,7 @@ class TrainerCallback(Protocol):
 
     def on_prediction_step(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -499,7 +374,7 @@ class TrainerCallback(Protocol):
 
     def on_pre_optimizer_step(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,

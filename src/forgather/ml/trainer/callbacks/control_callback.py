@@ -29,7 +29,7 @@ import torch
 import torch.distributed as dist
 
 from ..trainer_types import (
-    TrainingArguments,
+    MinimalTrainingArguments,
     TrainerState,
     TrainerControl,
     TrainerCallback,
@@ -113,7 +113,7 @@ class TrainerControlCallback(TrainerCallback):
         self.event_loop: Optional[asyncio.AbstractEventLoop] = None
 
         # State tracking
-        self.trainer_args: Optional[TrainingArguments] = None
+        self.trainer_args: Optional[MinimalTrainingArguments] = None
         self.trainer_state: Optional[TrainerState] = None
         self.last_status: Dict[str, Any] = {}
 
@@ -500,7 +500,7 @@ class TrainerControlCallback(TrainerCallback):
 
     def on_train_begin(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
@@ -529,7 +529,7 @@ class TrainerControlCallback(TrainerCallback):
 
     def on_log(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         logs: dict = None,
@@ -548,7 +548,7 @@ class TrainerControlCallback(TrainerCallback):
 
     def on_train_end(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,

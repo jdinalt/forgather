@@ -1,15 +1,14 @@
 # A subclass of Trainer, which adds support for the Acclerate library.
-from typing import Optional, Dict, Iterator, Tuple
+from typing import Optional, Dict
 from dataclasses import dataclass
-from collections.abc import Sequence
 import logging
 
 import torch
 from torch import Tensor
 from accelerate import Accelerator
 
-from ..trainer_types import TrainingArguments, TrainerState
-from ..trainer import Trainer
+from ..trainer_types import TrainerState
+from ..trainer import Trainer, TrainingArguments
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +26,12 @@ class AccelTrainer(Trainer):
     def __init__(
         self,
         *,
-        args,
+        args: AccelTrainingArguments,
         accelerator: Accelerator,
         **kwargs,
     ):
         assert isinstance(args, AccelTrainingArguments)
+        self.args = args  # For type checking hint
         assert isinstance(accelerator, Accelerator)
         self.accelerator = accelerator
 

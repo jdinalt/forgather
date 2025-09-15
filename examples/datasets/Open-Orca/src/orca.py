@@ -14,7 +14,9 @@ chatml_template = """{% for message in messages %}{{'<|im_start|>' + message['ro
 
 
 def to_conversations(batch):
-    for system, question, response in zip(batch["system_prompt"], batch["question"], batch["response"]):
+    for system, question, response in zip(
+        batch["system_prompt"], batch["question"], batch["response"]
+    ):
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": question},
@@ -23,9 +25,7 @@ def to_conversations(batch):
         yield messages
 
 
-def map_function(
-    input_batch, tokenizer, chat_template, template_args, tokenizer_args
-):
+def map_function(input_batch, tokenizer, chat_template, template_args, tokenizer_args):
     conversations = [
         chat_template.render(
             messages=messages,
@@ -77,12 +77,12 @@ def preprocess_orca(
         lstrip_blocks=True,
     )
     chat_template = environment.from_string(chat_template)
-    
+
     if to_iterable:
         dataset = to_iterable_dataset_with_length(dataset, num_shards=num_shards)
     else:
         map_args["desc"] = desc
-    
+
     output_dataset = dataset.map(
         map_function,
         batched=True,

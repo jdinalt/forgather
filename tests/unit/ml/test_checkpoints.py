@@ -20,16 +20,21 @@ from unittest.mock import Mock, patch
 from dataclasses import dataclass
 import transformers
 
-from forgather.ml.trainer.trainer_types import TrainingArguments, TrainerState
+from forgather.ml.trainer.trainer_types import TrainerState
 from forgather.ml.trainer.base_trainer import BaseTrainer
-from forgather.ml.trainer.trainer import Trainer
+from forgather.ml.trainer.trainer import Trainer, TrainingArguments
 from forgather.ml.sharded_checkpoint import (
     validate_checkpoint,
     find_latest_checkpoint,
 )
 from forgather.ml.distributed import DistributedEnvInterface
 
-from forgather.ml.trainer.checkpoint_manager import CheckpointManager, RNGState, CheckpointConfig
+from forgather.ml.trainer.checkpoint_manager import (
+    CheckpointManager,
+    RNGState,
+    CheckpointConfig,
+)
+
 
 @dataclass(kw_only=True)
 class MockDistributedEnv(DistributedEnvInterface):
@@ -55,23 +60,24 @@ class SimpleMockModel(nn.Module):
     def forward(self, x):
         return self.linear(x)
 
+
 class MockDataset(IterableDataset, Stateful):
     def __init__(self, examples: int = 10):
         self.examples = examples
         self.i = 0
-    
+
     def load_state_dict(self, state_dict):
         self.i = state_dict["index"]
 
     def state_dict(self):
         return dict(index=self.i)
-    
+
     def __len__(self):
         return self.examples
-    
+
     def __iter__(self):
         return self
-    
+
     def __next__(self):
         if self.i >= self.examples:
             raise StopIteration
@@ -80,16 +86,19 @@ class MockDataset(IterableDataset, Stateful):
         self.i += 1
         return i
 
+
 class NonStatefulMockDataset(IterableDataset):
     """Non-stateful dataset for testing fallback behavior"""
+
     def __init__(self, examples: int = 10):
         self.examples = examples
-    
+
     def __len__(self):
         return self.examples
-    
+
     def __iter__(self):
         return iter(range(self.examples))
+
 
 class MockTrainer(BaseTrainer, Stateful):
     """Mock trainer that implements abstract methods for testing"""
@@ -123,7 +132,7 @@ class MockTrainer(BaseTrainer, Stateful):
             self.lr_scheduler = torch.optim.lr_scheduler.StepLR(
                 self.optimizer, step_size=10
             )
-            
+
             cp_config = CheckpointConfig(
                 output_dir=self.args.output_dir,
                 save_total_limit=self.args.save_total_limit,
@@ -154,7 +163,6 @@ class MockTrainer(BaseTrainer, Stateful):
             return self.checkpoint_manager.resolve_checkpoint_path(checkpoint_path)
         else:
             return None
-            
 
     def _train_loop(self):
         return Mock()
@@ -204,8 +212,15 @@ class TestCheckpointFunctionality(unittest.TestCase):
 
         # Create a mock model file to make it valid
         # Save a proper torch tensor dict that can be loaded
-        mock_state_dict = {"linear.weight": torch.randn(1, 10), "linear.bias": torch.randn(1)}
-        torch.save(mock_state_dict, os.path.join(checkpoint_path, "pytorch_model.bin"), _use_new_zipfile_serialization=True)
+        mock_state_dict = {
+            "linear.weight": torch.randn(1, 10),
+            "linear.bias": torch.randn(1),
+        }
+        torch.save(
+            mock_state_dict,
+            os.path.join(checkpoint_path, "pytorch_model.bin"),
+            _use_new_zipfile_serialization=True,
+        )
 
         return checkpoint_path
 
@@ -313,7 +328,7 @@ class TestCheckpointFunctionality(unittest.TestCase):
         scheduler_state_path = os.path.join(checkpoint_path, "scheduler_state.pt")
         dataset_state_path = os.path.join(checkpoint_path, "dataset_state.pt")
         rng_state_path = os.path.join(checkpoint_path, "rng_state.pt")
-        
+
         self.assertTrue(os.path.exists(optimizer_state_path))
         self.assertTrue(os.path.exists(scheduler_state_path))
         self.assertTrue(os.path.exists(dataset_state_path))
@@ -325,7 +340,7 @@ class TestCheckpointFunctionality(unittest.TestCase):
 
         # Verify optimizer state contains the modified learning rate
         self.assertEqual(optimizer_state["param_groups"][0]["lr"], 0.005)
-        
+
         # Verify scheduler state was saved
         self.assertIn("last_epoch", scheduler_state)
 
@@ -339,10 +354,10 @@ class TestCheckpointFunctionality(unittest.TestCase):
 
         optimizer_state_path = os.path.join(checkpoint_path, "optimizer_state.pt")
         scheduler_state_path = os.path.join(checkpoint_path, "scheduler_state.pt")
-        
+
         # Optimizer state should exist
         self.assertTrue(os.path.exists(optimizer_state_path))
-        
+
         # Scheduler state should not exist when disabled
         self.assertFalse(os.path.exists(scheduler_state_path))
 
@@ -443,8 +458,15 @@ class TestCheckpointFunctionality(unittest.TestCase):
             def mock_save_with_model_file(path):
                 # Create a mock model file to make checkpoint valid
                 # Save a proper torch tensor dict that can be loaded
-                mock_state_dict = {"linear.weight": torch.randn(1, 10), "linear.bias": torch.randn(1)}
-                torch.save(mock_state_dict, os.path.join(path, "pytorch_model.bin"), _use_new_zipfile_serialization=True)
+                mock_state_dict = {
+                    "linear.weight": torch.randn(1, 10),
+                    "linear.bias": torch.randn(1),
+                }
+                torch.save(
+                    mock_state_dict,
+                    os.path.join(path, "pytorch_model.bin"),
+                    _use_new_zipfile_serialization=True,
+                )
 
             mock_save.side_effect = mock_save_with_model_file
             # This should trigger cleanup (limit is 3, we have 3, adding 1 more)
@@ -465,8 +487,15 @@ class TestCheckpointFunctionality(unittest.TestCase):
 
             def mock_save_with_model_file(path):
                 # Create a mock model file to make checkpoint valid
-                mock_state_dict = {"linear.weight": torch.randn(1, 10), "linear.bias": torch.randn(1)}
-                torch.save(mock_state_dict, os.path.join(path, "pytorch_model.bin"), _use_new_zipfile_serialization=True)
+                mock_state_dict = {
+                    "linear.weight": torch.randn(1, 10),
+                    "linear.bias": torch.randn(1),
+                }
+                torch.save(
+                    mock_state_dict,
+                    os.path.join(path, "pytorch_model.bin"),
+                    _use_new_zipfile_serialization=True,
+                )
 
             mock_save.side_effect = mock_save_with_model_file
             self.trainer.save_checkpoint()
@@ -518,8 +547,15 @@ class TestTrainerIntegration(unittest.TestCase):
         os.makedirs(checkpoint_path)
 
         # Create mock model file
-        mock_state_dict = {"linear.weight": torch.randn(1, 10), "linear.bias": torch.randn(1)}
-        torch.save(mock_state_dict, os.path.join(checkpoint_path, "pytorch_model.bin"), _use_new_zipfile_serialization=True)
+        mock_state_dict = {
+            "linear.weight": torch.randn(1, 10),
+            "linear.bias": torch.randn(1),
+        }
+        torch.save(
+            mock_state_dict,
+            os.path.join(checkpoint_path, "pytorch_model.bin"),
+            _use_new_zipfile_serialization=True,
+        )
 
         # Create training state file with proper optimizer and scheduler state dict structure
         # Create a temporary model and optimizers to get proper state dict structure
@@ -528,12 +564,23 @@ class TestTrainerIntegration(unittest.TestCase):
         temp_scheduler = transformers.get_scheduler(
             "linear", temp_optimizer, num_warmup_steps=0, num_training_steps=100
         )
-        
+
         # Save separate state files
-        torch.save(temp_optimizer.state_dict(), os.path.join(checkpoint_path, "optimizer_state.pt"))
-        torch.save(temp_scheduler.state_dict(), os.path.join(checkpoint_path, "scheduler_state.pt"))
-        torch.save({"global_step": 50}, os.path.join(checkpoint_path, "dataset_state.pt"))
-        torch.save({"torch_rng_state": torch.get_rng_state()}, os.path.join(checkpoint_path, "rng_state.pt"))
+        torch.save(
+            temp_optimizer.state_dict(),
+            os.path.join(checkpoint_path, "optimizer_state.pt"),
+        )
+        torch.save(
+            temp_scheduler.state_dict(),
+            os.path.join(checkpoint_path, "scheduler_state.pt"),
+        )
+        torch.save(
+            {"global_step": 50}, os.path.join(checkpoint_path, "dataset_state.pt")
+        )
+        torch.save(
+            {"torch_rng_state": torch.get_rng_state()},
+            os.path.join(checkpoint_path, "rng_state.pt"),
+        )
 
         # Create trainer
         model = SimpleMockModel()
@@ -551,7 +598,7 @@ class TestTrainerIntegration(unittest.TestCase):
         # This should trigger checkpoint restoration
         trainer._prepare(train_dataset=mock_dataset, eval_dataset=None)
 
-        # Verify that restoration was attempted (check log calls)  
+        # Verify that restoration was attempted (check log calls)
         mock_logger.info.assert_any_call(
             "Resuming training from checkpoint: " + checkpoint_path
         )
@@ -582,62 +629,66 @@ class TestDataloaderStateHandling(unittest.TestCase):
         """Test that StatefulDataLoader state is correctly saved and restored."""
         # Create trainer with StatefulDataLoader
         trainer = MockTrainer(self.args)
-        
-        # Create a stateful dataset 
+
+        # Create a stateful dataset
         dataset = MockDataset(examples=20)
-        
+
         # Prepare trainer first
         trainer._prepare(train_dataset=dataset, eval_dataset=None)
-        
+
         # Now set our specific StatefulDataLoader after prepare
         trainer.train_dataloader = StatefulDataLoader(dataset=dataset, batch_size=1)
-        
+
         # Advance the dataset state by creating an iterator and consuming items
         dataloader_iter = iter(trainer.train_dataloader)
         next(dataloader_iter)  # Consume first item
         next(dataloader_iter)  # Consume second item
-        
+
         # The dataset index should be at 2
         self.assertEqual(dataset.i, 2)
-        
+
         # Save state
         checkpoint_path = os.path.join(self.checkpoints_dir, "checkpoint-stateful")
         os.makedirs(checkpoint_path, exist_ok=True)
         statefuls = trainer.get_statefuls_for_save()
-        
+
         # Should include dataset in statefuls
         self.assertIn("dataset", statefuls)
         self.assertEqual(statefuls["dataset"], trainer.train_dataloader)
-        
+
         # Save the checkpoint
         trainer.checkpoint_manager._save_training_state(checkpoint_path)
-        
+
         # Verify dataset state file was created
         dataset_state_path = os.path.join(checkpoint_path, "dataset_state.pt")
         self.assertTrue(os.path.exists(dataset_state_path))
-        
+
         # Load the saved state and verify contents
         saved_state = torch.load(dataset_state_path, map_location="cpu")
         # StatefulDataLoader stores dataset state in fetcher_state.dataset_iter_state
         self.assertEqual(saved_state["fetcher_state"]["dataset_iter_state"]["index"], 2)
-        
+
         # Create new trainer and dataset for restoration test
         new_trainer = MockTrainer(self.args)
         new_dataset = MockDataset(examples=20)
         new_trainer._prepare(train_dataset=new_dataset, eval_dataset=None)
-        new_trainer.train_dataloader = StatefulDataLoader(dataset=new_dataset, batch_size=1)
-        
+        new_trainer.train_dataloader = StatefulDataLoader(
+            dataset=new_dataset, batch_size=1
+        )
+
         # Verify new dataset starts at 0
         self.assertEqual(new_dataset.i, 0)
-        
+
         # Restore state
         new_trainer.checkpoint_manager._load_training_state(checkpoint_path)
-        
+
         # Verify dataloader state was restored (the StatefulDataLoader tracks its own state)
         restored_state = new_trainer.train_dataloader.state_dict()
-        self.assertEqual(restored_state["fetcher_state"]["dataset_iter_state"]["index"], 2)
+        self.assertEqual(
+            restored_state["fetcher_state"]["dataset_iter_state"]["index"], 2
+        )
         self.assertEqual(restored_state["_num_yielded"], 2)
-        
+
         # Test that iteration continues from correct position
         # When we iterate again, it should pick up from where we left off
         remaining_items = []
@@ -646,7 +697,7 @@ class TestDataloaderStateHandling(unittest.TestCase):
             remaining_items.append(item.item())  # Convert tensor to int
             if i >= 2:  # Get next 3 items (2, 3, 4)
                 break
-        
+
         # Should continue from index 2
         expected_items = [2, 3, 4]
         self.assertEqual(remaining_items, expected_items)
@@ -655,20 +706,22 @@ class TestDataloaderStateHandling(unittest.TestCase):
         """Test that non-stateful dataloaders are handled gracefully."""
         # Create trainer with regular DataLoader (non-stateful)
         trainer = MockTrainer(self.args)
-        
+
         # Create a non-stateful dataset and wrap in regular DataLoader
         dataset = NonStatefulMockDataset(examples=20)
         # Set after _prepare to avoid it being overridden
         trainer._prepare(train_dataset=dataset, eval_dataset=None)
         trainer.train_dataloader = DataLoader(dataset=dataset, batch_size=1)
-        
+
         # Should warn about missing state_dict method and not include dataset in statefuls
-        with patch('forgather.ml.trainer.base_trainer.logger') as mock_logger:
+        with patch("forgather.ml.trainer.base_trainer.logger") as mock_logger:
             statefuls = trainer.get_statefuls_for_save()
-            
+
             # Should warn about missing state_dict method
-            mock_logger.warning.assert_called_with("train_dataloader doesn't have state_dict method")
-            
+            mock_logger.warning.assert_called_with(
+                "train_dataloader doesn't have state_dict method"
+            )
+
             # Should not include dataset in statefuls (but trainer is still included)
             self.assertNotIn("dataset", statefuls)
             # Trainer should still be included because save_dataset_state controls trainer state
@@ -683,37 +736,41 @@ class TestDataloaderStateHandling(unittest.TestCase):
             restore_dataset_state=False,  # Disabled
             save_total_limit=3,
         )
-        
+
         trainer = MockTrainer(args)
         dataset = MockDataset(examples=20)
         trainer.train_dataloader = StatefulDataLoader(dataset=dataset, batch_size=1)
-        
+
         trainer._prepare(train_dataset=dataset, eval_dataset=None)
         statefuls = trainer.get_statefuls_for_save()
-        
+
         # Should not include dataset or trainer in statefuls when disabled
         self.assertNotIn("dataset", statefuls)
         self.assertNotIn("trainer", statefuls)
 
     def test_restore_dataset_state_missing_load_method(self):
         """Test graceful handling when dataloader lacks load_state_dict method."""
+
         # Create custom dataloader that has state_dict but no load_state_dict
         class PartialStatefulDataLoader:
             def state_dict(self):
                 return {"some": "state"}
+
             # Missing load_state_dict method
-        
+
         trainer = MockTrainer(self.args)
         trainer._prepare(train_dataset=MockDataset(), eval_dataset=None)
         # Set after _prepare to avoid it being overridden
         trainer.train_dataloader = PartialStatefulDataLoader()
-        
+
         # Should warn about missing load method
-        with patch('forgather.ml.trainer.base_trainer.logger') as mock_logger:
+        with patch("forgather.ml.trainer.base_trainer.logger") as mock_logger:
             statefuls = trainer.get_statefuls_for_load()
-            
-            mock_logger.warning.assert_called_with("Could not restored Dataloader state, as it does not have a load method")
-            
+
+            mock_logger.warning.assert_called_with(
+                "Could not restored Dataloader state, as it does not have a load method"
+            )
+
             # Should not include dataset in load statefuls
             self.assertNotIn("dataset", statefuls)
             # Trainer should still be included because restore_dataset_state controls trainer state
@@ -723,35 +780,35 @@ class TestDataloaderStateHandling(unittest.TestCase):
         """Test that StatefulDataLoader state properly tracks dataset iteration."""
         dataset = MockDataset(examples=5)
         dataloader = StatefulDataLoader(dataset=dataset, batch_size=1)
-        
+
         # Initial state
         initial_state = dataloader.state_dict()
-        
+
         # Consume some items
         items = []
         for i, item in enumerate(dataloader):
             items.append(item)
             if i >= 2:  # Stop after 3 items
                 break
-        
+
         # Get state after consuming items
         mid_state = dataloader.state_dict()
-        
+
         # State should be different
         self.assertNotEqual(initial_state, mid_state)
-        
+
         # Create new dataloader and restore state
         new_dataset = MockDataset(examples=5)
         new_dataloader = StatefulDataLoader(dataset=new_dataset, batch_size=1)
         new_dataloader.load_state_dict(mid_state)
-        
+
         # Continue iteration - should pick up where we left off
         remaining_items = list(new_dataloader)
-        
+
         # Should get the remaining items (3, 4)
         expected_remaining = [3, 4]
         self.assertEqual(remaining_items, expected_remaining)
-        
+
         # Total items should match original dataset
         all_items = items + remaining_items
         self.assertEqual(all_items, [0, 1, 2, 3, 4])

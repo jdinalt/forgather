@@ -19,9 +19,14 @@ from torch.distributed.pipelining.stage import _PipelineStageBase
 from torch.distributed.pipelining import pipeline as build_pipeline
 from torch.distributed.pipelining.microbatch import split_args_kwargs_into_chunks
 
-from ..trainer_types import TrainingArguments, CheckpointInterface
+from ..trainer_types import CheckpointInterface
 from ..checkpoint_manager import CheckpointManager, CheckpointConfig
-from ..trainer import Trainer, optimzer_hook, rescale_accumulated_loss
+from ..trainer import (
+    Trainer,
+    TrainingArguments,
+    optimzer_hook,
+    rescale_accumulated_loss,
+)
 from ...sharded_checkpoint import (
     make_shard_index,
     create_sharing_metadata,

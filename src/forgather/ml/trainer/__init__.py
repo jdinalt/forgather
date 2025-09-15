@@ -3,8 +3,7 @@ from .trainer_types import (
     IntervalStrategy,
     TrainerState,
     TrainerControl,
-    TrainingArguments,
     TrainerCallback,
 )
 
-from .trainer import Trainer
+from .trainer import Trainer, TrainingArguments

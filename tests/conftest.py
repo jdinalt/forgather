@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from unittest.mock import Mock
 
-from forgather.ml.trainer.trainer_types import TrainingArguments
+from forgather.ml.trainer import TrainingArguments
 
 
 class SimpleMockModel(nn.Module):

@@ -47,6 +47,7 @@ def samantha_map_function(
     )
     return {"input_ids": outputs["input_ids"]}
 
+
 @main_process_first()
 def preprocess_samantha(
     dataset,
@@ -97,9 +98,7 @@ def preprocess_samantha(
 
 @main_process_first()
 def load_samantha_dataset_manual(
-    cache_dir=None,
-    language="en",
-    repo_id="QuixiAI/samantha-data"
+    cache_dir=None, language="en", repo_id="QuixiAI/samantha-data"
 ):
     """
     Manually download and load the Samantha dataset from Huggingface Hub.
@@ -114,7 +113,7 @@ def load_samantha_dataset_manual(
         DatasetDict with train/validation/test splits matching original script
     """
     # Determine filename based on language
-    if language == 'en':
+    if language == "en":
         filename = "samantha-1.1.json"
     else:
         filename = f"samantha-1.1-{language}.json"
@@ -123,14 +122,11 @@ def load_samantha_dataset_manual(
 
     try:
         file_path = hf_hub_download(
-            repo_id=repo_id,
-            filename=filename,
-            cache_dir=cache_dir,
-            repo_type="dataset"
+            repo_id=repo_id, filename=filename, cache_dir=cache_dir, repo_type="dataset"
         )
         logger.info(f"Downloaded {filename} to {file_path}")
 
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             data_list = json.load(f)
 
         logger.info(f"Loaded {len(data_list)} conversations from {filename}")
@@ -148,13 +144,9 @@ def load_samantha_dataset_manual(
                 else:  # Odd index = gpt
                     gpt.append(value_str)
 
-            processed_data.append({
-                "id": data["id"],
-                "conversations": {
-                    "human": human,
-                    "gpt": gpt
-                }
-            })
+            processed_data.append(
+                {"id": data["id"], "conversations": {"human": human, "gpt": gpt}}
+            )
 
         # Create splits using exact percentages from original script
         # Train: 0-80%, Validation: 80-95%, Test: 95-100%
@@ -166,13 +158,17 @@ def load_samantha_dataset_manual(
         val_data = processed_data[train_end:val_end]
         test_data = processed_data[val_end:]
 
-        dataset_dict = DatasetDict({
-            'train': Dataset.from_list(train_data),
-            'validation': Dataset.from_list(val_data),
-            'test': Dataset.from_list(test_data)
-        })
+        dataset_dict = DatasetDict(
+            {
+                "train": Dataset.from_list(train_data),
+                "validation": Dataset.from_list(val_data),
+                "test": Dataset.from_list(test_data),
+            }
+        )
 
-        logger.info(f"Created splits: train={len(train_data)}, validation={len(val_data)}, test={len(test_data)}")
+        logger.info(
+            f"Created splits: train={len(train_data)}, validation={len(val_data)}, test={len(test_data)}"
+        )
 
         return dataset_dict
 

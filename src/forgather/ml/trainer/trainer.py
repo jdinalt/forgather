@@ -1,7 +1,6 @@
 # A light-weight Trainer with an API close enough to "transformers.Trainer"
 # to act as a stand-in for basic use-cases.
 from typing import (
-    TYPE_CHECKING,
     TypeGuard,
     Any,
     Dict,
@@ -15,30 +14,25 @@ from typing import (
     cast,
     # override, # PEP-698, introduced in Python 3.12
 )
-from collections.abc import Sequence
 from collections.abc import Sized
 from functools import partial
 from dataclasses import dataclass
+from contextlib import contextmanager
 import time
-from contextlib import contextmanager, ExitStack
 import os
 import logging
 import gc
 
-
 import torch
 from torch import Tensor
 from torch.optim.optimizer import ParamsT
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
 import torchdata.nodes as tn
 from torchdata.stateful_dataloader import StatefulDataLoader
-from torch.distributed.checkpoint.stateful import Stateful
-
-from .base_trainer import BaseTrainer
+from .base_trainer import BaseTrainer, BaseTrainingArguments
 from .trainer_types import TrainerState as BaseTrainerState
 from .trainer_types import (
-    TrainingArguments,
     TrainOutput,
     IntervalStrategy,
     CheckpointInterface,
@@ -58,7 +52,6 @@ from .checkpoint_manager import CheckpointManager, CheckpointConfig
 from ..distributed import DistributedEnvInterface
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 # Type checking protocols
@@ -94,6 +87,28 @@ class TrainerState(BaseTrainerState):
     num_processes: int = 1  # Non-standard
     # The number of batches in an epoch
     epoch_train_steps: int = 0
+
+
+@dataclass(kw_only=True)
+class TrainingArguments(BaseTrainingArguments):
+    # Ratio of reserved to total GPU memory to trigger GC
+    # If OOM from fragmentation, lower ratio
+    gc_threshold: float = 0.5
+
+    # Construct model on meta-device and materialize directly on device
+    # default: Construct model on CPU on move to device; slow, but reliable.
+    # device: Construct model directly on device. This is can faster, but may result in OOM
+    # meta: Construct on meta device and materialize on target device. The resulting model
+    #   is uninitialized and will need to be loaded with a checkpoint.
+    construct_model_on: str = "default"  # "default" | "meta" | "device"
+
+    # https://pytorch.org/blog/activation-checkpointing-techniques/
+    # Requires "torch_compile = True" option
+    activation_memory_budget: float | None = None
+
+    # Combine gradient calculation with optimizer step, to save memory.
+    # https://docs.pytorch.org/tutorials/intermediate/optimizer_step_in_backward_tutorial.html
+    fuse_optim_with_backward: bool = False
 
 
 @contextmanager
@@ -146,7 +161,7 @@ def optimzer_hook(optimizer, total_grad_squared, parameter):
     optimizer.zero_grad()
 
 
-class Trainer(BaseTrainer, Stateful):
+class Trainer(BaseTrainer):
     """
     This transformer trainer is a simplified version of the HF Trainer class
     The intent is to hopefully make the workings of such a class more comprehensible and
@@ -171,6 +186,7 @@ class Trainer(BaseTrainer, Stateful):
         **kwargs,
     ):
         assert isinstance(args, TrainingArguments)
+        self.args = args  # For type checking hint
         # HF Trainer compatibility.
         if not optimizer_factory:
             if not optimizer_cls_and_kwargs:

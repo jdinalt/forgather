@@ -8,7 +8,7 @@ import torch.distributed as dist
 
 from ...memory_monitor import get_memory_monitor
 from ..trainer_types import (
-    TrainingArguments,
+    MinimalTrainingArguments,
     TrainerState,
     TrainerControl,
     TrainerCallback,
@@ -113,7 +113,7 @@ class TraceMalloc(TrainerCallback):
 
     def on_train_end(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,

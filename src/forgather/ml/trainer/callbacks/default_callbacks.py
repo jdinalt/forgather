@@ -7,7 +7,7 @@ import datetime
 from ...utils import format_train_info, format_mapping
 
 from ..trainer_types import (
-    TrainingArguments,
+    MinimalTrainingArguments,
     TrainerState,
     TrainerControl,
     TrainerCallback,
@@ -116,7 +116,7 @@ class ProgressCallback:
 class InfoCallback:
     def on_train_begin(
         self,
-        args: TrainingArguments,
+        args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
         **kwargs,
