@@ -34,6 +34,8 @@ PROJECT_META_NAME = "meta.yaml"
 class MetaConfig:
     project_dir: str
     name: str
+    project_name: str
+    description: str
     meta_path: str
     searchpath: List[str]
     system_path: str
@@ -55,8 +57,22 @@ class MetaConfig:
         self.config_prefix = config.get("config_prefix", "configs")
         self.default_cfg = config.get("default_config", None)
         self.system_path = config.get("system_path", None)
+        self.project_name = config.get("name", None)
+        self.description = config.get("description", None)
         if self.system_path is not None:
             self.system_path = self.norm_path(self.system_path)
+
+    def __str__(self):
+        s = ""
+        s += f"Project Name: {self.project_name}\n"
+        s += f"Description: {self.description}\n"
+        s += f"Default Config: {self.default_cfg}\n"
+        s += f"Project Directory: {self.project_dir}\n"
+        s += f"Workspace Root: {self.workspace_root}\n"
+        s += f"Config Prefix: {self.config_prefix}\n"
+        s += f"Search Path: {self.searchpath}\n"
+
+        return s
 
     def norm_path(self, path):
         return os.path.normpath(os.path.join(self.project_dir, path))
