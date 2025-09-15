@@ -1,0 +1,14 @@
+-- set ns = namespace()
+-- include "base_directories.yaml"
+
+meta: &meta_output !dict:@meta
+    config_name: "Default"
+    config_description: "Default Config"
+    config_class: "none"
+    project_dir: "{{ project_dir }}"
+    workspace_root: "{{ workspace_root }}"
+    forgather_dir: "{{ ns.forgather_dir }}"
+
+dynamic_args: []
+
+main: "Main Output"

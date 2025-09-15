@@ -1,5 +1,7 @@
 # Low Level API
 
+See [example notebook](syntax_test.ipynb)
+
 *Basic Usage*
 
 ```python

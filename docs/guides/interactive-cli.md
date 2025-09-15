@@ -8,10 +8,10 @@ The Forgather Interactive CLI provides a powerful shell environment for working 
 
 ```bash
 # Start in current directory
-forgather interactive
+forgather -i
 
 # Start in specific project directory  
-forgather -p /path/to/project interactive
+forgather -p /path/to/project -i
 ```
 
 ### Basic Commands
@@ -25,9 +25,13 @@ forgather> config <template> # Set current template
 forgather> commands          # List available forgather commands
 ```
 
+Note that tab-completion should work for most things.
+
 ## Editor Integration
 
-The interactive CLI features sophisticated editor integration with automatic detection and optimization for different editors.
+The interactive CLI features editor integration with automatic detection and optimization for different editors.
+
+We also have Forgather syntax highlighting plugins for [vim](../../syntax_highlighting/vim/vim-syntax-install.md) and [VS code](../../syntax_highlighting/vscode/README.md).
 
 ### Editor Selection Priority
 
@@ -73,6 +77,18 @@ Vim must be compiled with `+clientserver` support:
 vim --version | grep +clientserver
 ```
 
+Most distributions don't seem to have this feature enabled. If you wish to use clientserver mode, you can build vim from source:
+
+```bash
+git clone https://github.com/vim/vim.git &&
+cd vim &&
+./configure &&
+make -j 8
+
+# You may wish to customize the install path. See "./configure --help"
+sudo make install
+```
+
 #### Setup
 1. **Start a vim server instance:**
    ```bash
@@ -104,20 +120,6 @@ vim --version | grep +clientserver
 ```bash
 export EDITOR=code
 # Uses: code -r file1 file2  # Reuses window
-```
-
-#### Neovim
-```bash
-export EDITOR=nvim
-# Uses: nvim -p file1 file2  # Opens in tabs
-```
-
-#### Other Editors
-```bash
-export EDITOR=emacs
-export EDITOR=nano
-export EDITOR=kate
-# Just passes all files to the editor
 ```
 
 ## Multi-File Editing
@@ -211,8 +213,6 @@ forgather> help edit      # Help for specific command
 | `VIM_SERVERNAME` | Vim server instance name | `myviminstance` |
 | `EDITOR` | Preferred editor | `vim`, `code`, `nvim` |
 
-## Advanced Usage
-
 ### Tab Completion
 
 The CLI provides intelligent tab completion:
@@ -272,24 +272,6 @@ Template file doesn't exist. Create new_template.yaml? (y/N): y
 1. Check clientserver support: `vim --version | grep clientserver`
 2. Verify server is running: `vim --serverlist`
 3. Start server: `vim --servername myinstance`
-
-### Template Not Found
-
-**Problem**: `edit` shows no templates
-
-**Solutions**:
-1. Check project directory: `pwd`
-2. Navigate to project: `cd /path/to/project`
-3. Verify project structure: `ls templates/`
-
-### Permission Errors
-
-**Problem**: Cannot create or edit files
-
-**Solutions**:
-1. Check file permissions: `ls -la templates/`
-2. Verify directory ownership
-3. Use appropriate user permissions
 
 ## Tips and Best Practices
 

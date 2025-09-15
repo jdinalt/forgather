@@ -8,6 +8,56 @@ This guide will focus on the extensions to these languages. For details on YAML 
 - [YAML 1.1](https://yaml.org/spec/1.1/)
 - [PyYAML Documentation](https://pyyaml.org/wiki/PyYAMLDocumentation)
 
+## Targets
+
+At the root-level of a Forgather configuration is a mapping, where each name defines a constructable "target" object.
+
+In the following example, two targets are defined, "a_string" and "a_number."
+
+```yaml
+a_string: "She sells sea shells"
+a_number: 42
+```
+
+## Anchors and Aliases
+
+We make heavy use of [YAML anchors and aliases](https://yaml.org/spec/1.1/#id899912), which allow us to define a constructable object which can be used elsewhere.
+
+```yaml
+training_config: &train_config
+    batch_size: 32
+    max_steps: 100
+
+model_config: &model_config
+    hidden_dimension: 128
+    layers: 12
+
+config:
+    train: *train_config
+    model: *model_config
+```
+
+In the above example, we define the "anchors" "train_config" and "model_config," which are also constructable targets; the names do not have to match. These anchors are then used as "aliases" in the definition of the "config" target.
+
+## Tags
+
+Tags identify the native data type of the node and being with '!' YAML has a number of built-in tages, for example, if one wanted to specify that something is a floating-point number, rather than an int:
+
+```yaml
+# This specified that "scale" is a float, with a value of 2.0
+# Without this specificaiton, the data-type would default to 'int'
+scale: !!float 2
+```
+
+Forgather makes extensive use of custom tags to define Python object types. For example:
+
+```yaml
+# This defines a 2x2 random random (normal distribution) PyTorch Tensor
+random_matrix: !call:torch:randn [2, 2]
+```
+
+For details, see below.
+
 ## Jinja2 Extensions
 ---
 ### The Preprocessor
@@ -104,9 +154,9 @@ The following functions from https://pypi.org/project/platformdirs/
 
 A custom loader, derived from the FileSystemLoader, is defined. This loader has a syntax for splitting a single loaded template file into multiple sub-templates.
 
-The primary use-case for this syntax is [template inheritance](https://jinja.palletsprojects.com/en/3.1.x/templates/#template-inheritance), which disallows multiple-inheritance. If you inherit from a template and include a template which is derived from another, Jinja2 does not allow you to direclty override blocks from the included template. You can get around this by creating another template, which overrides the desired blocks, and is included by the top-level template.
+The primary use-case for this syntax is [template inheritance](https://jinja.palletsprojects.com/en/3.1.x/templates/#template-inheritance), which disallows multiple-inheritance. If you inherit from a template and include a template which is derived from another, Jinja2 does not allow you to direclty override blocks from the included template. You can get around this by creating another template, which overrides the desired blocks, and including it the top-level template.
 
-Normally, this would require creating another template file, but who needs that!? That's much more difficult to work with.
+Normally, this would require creating another template file, but who needs that!? It's easier to maintain just one config file.
 
 ```jinja2
 ## This is the main template
@@ -134,17 +184,22 @@ More formally, the syntax for splitting a document is:
 split_on = r"\n#\s*-{3,}\s*([\w./]+)\s*-{3,}\n"
 ```
 
+This just says that it starts with  "#", followed by at least 3 '-', a space, the name of the template, a space and at least 3 more '-'. Minimally, written as:
+```yaml
+...
+#--- my_template_name ---
+...
+```
+
 Note: You can't split a template defined via a Python string, as this bypasses the Loader; only file templates may be split like this.
 
 ---
 ## YAML
 
 ### Dot-Name Elision
-YAML does not have a way of defining an object, without also constructing it. This can be inconvienient, as it may not be known ahead of time where the first use of an object will be and YAML requires that the defition occur at this point.
+Sometimes you may wish to define an dependency, without making it a constructable target on its own. Any target starting with a dot is automatically removed from the set of valid targets.
 
-To work around this, if the root-node is a mapping, we delete all keys containing strings starting with a dot. Once the object has been defined, YAML does not care if we delete the original definition/instance. My convention is to use ".define", but any name, starting with a dot, will work.
-
-By convention, the primary output object of such a mapping is named "main"
+In the following example, only "main" is a valid construction target, while the anchors may still be referenced elsewhere.
 
 ```yaml
 # Define points

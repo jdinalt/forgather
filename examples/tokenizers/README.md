@@ -11,6 +11,6 @@ forgather ls
 # Show preprocessed tokenizer config
 forgather -t <config_name> pp
 
-# manually build a tokenizer, if it has not yet been build...
+# manually build a tokenizer, if it has not yet been built...
 forgather -t <config_name> construct
 ```

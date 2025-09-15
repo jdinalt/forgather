@@ -2,13 +2,14 @@
 
 Forgather's configuration system combines Jinja2 templating with YAML and custom extensions to create a powerful, reusable configuration language.
 
+A Forgather configuration defines a collection of constructable Python objects, "targets," which can be lazily materialized or transformed into Python code. The system is designed to allow one to define new configurations by specifying how the new configuration differs from an existing one, rather than the usual "copy-and-modify" approach. Unlike most configuration systems, Forgather can handle more than just plain-old-data-types, where any native Python datatype can be specified in a configuration, including via dynamic-imports.
+
 ## Documentation
 
-- **[Template Syntax](template-syntax.md)** - Jinja2 template syntax and line statements
-- **[YAML Tags](yaml-tags.md)** - Custom YAML tags for object construction
-- **[Template Inheritance](inheritance.md)** - Template inheritance patterns and best practices
-- **[Debugging Guide](debugging.md)** - Tools and techniques for debugging configurations
 - **[Syntax Reference](syntax-reference.md)** - Complete syntax reference
+- **[High-level API](project.ipynb)** - The "Project" abstraction
+- **[Low-level API](low-level-api.md)** - The API upon which the 'Project' abstraction is built from
+- **[Debugging Guide](debugging.md)** - Tools and techniques for debugging configurations
 
 ## Quick Overview
 
@@ -25,8 +26,7 @@ Forgather's configuration system combines Jinja2 templating with YAML and custom
 ### Custom YAML Tags
 ```yaml
 # Create singleton objects
-model: !singleton:transformers:AutoModel@my_model
-    args: ["gpt2"]
+model: !singleton:transformers:AutoModel@my_model ["gpt2"]
 
 # Create partial functions
 optimizer: !partial:torch.optim:AdamW
@@ -35,7 +35,6 @@ optimizer: !partial:torch.optim:AdamW
 
 # Variable references
 learning_rate: !var "base_lr"
-max_steps: !calc "epochs * steps_per_epoch"
 ```
 
 ### Line Statement Syntax
@@ -51,63 +50,3 @@ max_steps: !calc "epochs * steps_per_epoch"
     item_{{ loop.index }}: {{ item }}
 -- endfor
 ```
-
-## Configuration Workflow
-
-1. **Template Creation**: Write YAML templates with Jinja2 preprocessing
-2. **Inheritance Setup**: Extend base templates and override specific sections
-3. **Variable Definition**: Define reusable variables and calculations
-4. **Object Construction**: Use custom tags to create Python objects
-5. **Preprocessing**: Jinja2 processes templates into pure YAML
-6. **Object Instantiation**: YAML loader creates Python objects
-
-## Key Concepts
-
-### Template Inheritance
-- **Base templates**: Define common structure and defaults
-- **Specific templates**: Override and extend base templates
-- **Block system**: Named sections that can be overridden
-- **Super calls**: Include parent template content
-
-### Object Factory System
-- **Singletons**: Create single instances with caching
-- **Partials**: Create functions with preset arguments
-- **Factories**: Create objects with constructor patterns
-- **References**: Share objects between different parts of configuration
-
-### Variable System
-- **Template variables**: Jinja2 variables for template processing
-- **YAML variables**: References to computed or external values
-- **Calculations**: Dynamic computation of configuration values
-- **Environment integration**: Access to environment variables
-
-## Benefits
-
-### Systematic Experimentation
-Compare different configurations systematically while maintaining common structure.
-
-### Reusability
-Share common patterns across projects and experiments.
-
-### Reproducibility
-Complete configuration serialization ensures exact reproduction.
-
-### Maintainability
-Clear inheritance hierarchy and modular structure.
-
-## Getting Started
-
-1. **[Core Concepts](../core-concepts/)** - Understand the big picture
-2. **[Template Syntax](template-syntax.md)** - Learn the template language
-3. **[Examples](../examples/)** - See working configurations
-4. **[Trainers Configuration](../trainers/configuration.md)** - Specific trainer examples
-
-## Advanced Topics
-
-- **[Debugging](debugging.md)** - Troubleshooting configurations
-- **[Performance](../guides/performance-optimization.md)** - Optimizing configuration processing
-- **[Custom Extensions](../contributing/adding-trainers.md)** - Extending the configuration system
-
----
-
-*The configuration system is the heart of Forgather's template-driven approach. Master it to unlock the full power of systematic ML experimentation.*
