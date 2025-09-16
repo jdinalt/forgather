@@ -123,11 +123,14 @@ Substitutions:
 
 ### Toml Style Blocks
 
-As long as you don't need to define nested blocks, you can use toml style syntax for defining Jinja blocks.
+You can use toml style syntax for defining Jinja blocks.
 
 ```
 [block_name]
 content
+    [nested_block]
+nested block content
+
 
 [another_block]
 more content
@@ -138,10 +141,42 @@ becomes...
 ```
 {% block block_name %}
 content
+{% block nested_block %}
+nested block content
+{% endblock nested_block %}
 {% endblock block_name %}
 {% block another_block %}
 more content
 {% endblock another_block %}
+```
+
+The regular expression for these blocks is:
+```python
+r'^(\s*)\[(\w+)([-!])*\]\s*$'
+```
+
+There are two white-space control options available, "!" and "-" Everything should work without these, but using them can help cleanup extra whitespace for the final output.
+
+```
+# Left-trim end block
+[block_name-]
+content
+
+# becomes...
+{% block block_name %}
+content
+{%- block block_name %}
+```
+
+```
+# "filter "trim"
+[block_name!]
+content
+
+# becomes...
+{% filter trim %}{% block block_name %}
+content
+{% block block_name %}{% endfilter %}
 ```
 
 ---

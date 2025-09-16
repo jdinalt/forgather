@@ -54,28 +54,55 @@ def preprocess_toml_blocks(source):
     """
     lines = source.split('\n')
     result_lines = []
-    current_block = None
-    block_pattern = re.compile(r'^\s*\[(\w+)\]\s*$')
+    block_stack = []  # Stack of (block_name, indentation_level) tuples
+    block_pattern = re.compile(r'^(\s*)\[(\w+)([-!])*\]\s*$')
+
+    def get_indentation_level(line):
+        """Get the number of leading whitespace characters."""
+        return len(line) - len(line.lstrip())
+    
+    def open_block(block_name, options):
+        s = ""
+        if '!' in options:
+            s += r"{% filter trim %}"
+        s += r"{% block " + block_name + r" %}"
+        return s
+    
+    def close_block(block_name, options):
+        s = r"{%"
+        if '-' in close_block_options:
+            s += '-'
+        s += " endblock " + closed_block_name + r" %}"
+        if '!' in close_block_options:
+            s += r"{% endfilter %}"
+        return s
 
     for line in lines:
         block_match = block_pattern.match(line)
 
         if block_match:
-            # Close the previous block if one exists
-            if current_block is not None:
-                result_lines.append(f"{{% endblock {current_block} %}}")
+            leading_whitespace = block_match.group(1)
+            block_name = block_match.group(2)
+            block_options = block_match.group(3)
+            if block_options is None:
+                block_options = ""
+            current_indent = len(leading_whitespace)
 
-            # Start new block - use regular {% %} without left-trim to preserve spacing
-            block_name = block_match.group(1)
-            result_lines.append("{% block " + block_name + " %}")
-            current_block = block_name
+            # Close blocks that are at the same level or deeper than the current block
+            while block_stack and block_stack[-1][1] >= current_indent:
+                closed_block_name, _, close_block_options = block_stack.pop()
+                result_lines.append(close_block(closed_block_name, close_block_options))
+
+            result_lines.append(open_block(block_name, block_options))
+            block_stack.append((block_name, current_indent, block_options))
         else:
             # Regular line - just add it
             result_lines.append(line)
 
-    # Close the final block if one exists
-    if current_block is not None:
-        result_lines.append(f"{{% endblock {current_block} %}}")
+    # Close all remaining blocks in reverse order
+    while block_stack:
+        closed_block_name, _, close_block_options = block_stack.pop()
+        result_lines.append(close_block(closed_block_name, close_block_options))
 
     return '\n'.join(result_lines)
 
@@ -184,7 +211,7 @@ class LineStatementProcessor(Extension):
     # If anything goes wrong, this can make things very difficult to debug, as Jinja
     # will report the wrong line numbers.
     #
-    # The work-around is thins flag. When set to True, line-comments are not removed,
+    # The work-around is this flag. When set to True, line-comments are not removed,
     # thus preserving line-numbers. Once things are working, you can turn it off, as
     # to preserve formatting.
     preserve_line_numbers: bool = True
