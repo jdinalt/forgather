@@ -5,8 +5,7 @@
 ## on the 'abridged' version of the Tiny Stories dataset.
 -- extends "training_script/causal_lm/causal_lm.yaml"
 
-
--- block config_metadata
+[config_metadata]
     == super()
     ## Overrides
     -- set ns.config_name = "Tiny Experiments"
@@ -32,59 +31,43 @@
     -- set ns.model_project_dir = joinpath(workspace_root, 'models')
     -- set ns.model_project_config = "tiny.yaml"
     -- set ns.debug_model_project = False
--- endblock config_metadata
 
-
--- block pre_model_setup
+[pre_model_setup]
     ## Add assets needed for text-gen sampling.
     ## This adds a set of prompts and text-gen parameters.
     == super()
     -- include "prompts/tiny_stories.yaml"
--- endblock pre_model_setup
 
-
--- block datasets_preprocessor_args
+[datasets_preprocessor_args]
 tokenizer_args: &tokenizer_args !dict
     truncation: True
--- endblock datasets_preprocessor_args
 
-
--- block datasets_definition
+[datasets_definition]
     -- include 'datasets/llm_dataset_project.yaml'
--- endblock datasets_definition
-
 
 ## Defaults to the basic trainer implementation
 ## Note: This is unsuitable for multiple GPUs.
 ## Override 'ns.trainer_class' to change the trainer class.
--- block trainer_definition
+[trainer_definition]
     ## See definition below
     -- include 'tiny.trainer_config'
--- endblock trainer_definition
 
-
--- block construct_new_model
+[construct_new_model]
     -- include "models/causal_lm/import_model_project.yaml"
--- endblock construct_new_model
 
-
--- block trainer_callbacks
+[trainer_callbacks]
     ## See definition below
     -- include 'tiny.callbacks'
-<< endblock trainer_callbacks
 
-
--- block datacollator
+[datacollator]
     == super()
     # Tiny Project
     ## Limit maximum sequence length 512 tokens, at the data-collator level.
     truncation: True
     max_length: 512
--- endblock datacollator
 
-
--- block lr_scheduler
-    ##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
+[lr_scheduler]
+##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
 # https://arxiv.org/html/2503.02844v1
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
     # Linear warm-up steps
@@ -95,17 +78,12 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 
     # See paper for experimentally derived values.
     constant_lr: 1.0e-4
-<< endblock lr_scheduler
 
-
--- block optimizer
+[optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW
     lr: 1.0e-3
 
-<< endblock optimizer
-
-
--- block dynamic_args
+[dynamic_args]
     == super()
     log_peak_memory:
         names: "--log-peak-memory"
@@ -119,7 +97,6 @@ optimizer: &optimizer !partial:torch:optim.AdamW
         names: "--dataset-proj"
         type: "path"
         help: "Path to dataset project to use"
-<< endblock dynamic_args
 
 #-------------------- tiny.trainer_config --------------------
 -- extends ns.trainer_class
@@ -128,7 +105,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 ## parent template, which is named in the 'ns.trainer_class' variable,
 ## the value of which is defined in the 'config_metadata' block, above.
 
--- block trainer_args
+[trainer_args]
     == super()
     
     # **Tiny Project**
@@ -141,30 +118,28 @@ optimizer: &optimizer !partial:torch:optim.AdamW
     save_steps: 10000
     num_train_epochs: 1
     dataloader_num_workers: 1
--- endblock trainer_args
 
 #-------------------- tiny.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'
 ## Add experiment loggers to the callbacks list.
 ## The parent creates a Tensor Board SummaryWriter, which we can use.
 
--- block callback_dependencies
+[callback_dependencies]
     == super()
 
-    -- filter trim()
-    -- block text_gen_callback_args
+-- filter trim()
+-- block text_gen_callback_args
 text_gen_callback_args: &text_gen_callback_args
     summary_writer: *summary_writer
     prompts: *testprompts
     generation_config: *generation_config
     max_new_tokens: 40
     generation_steps: 2000
-    << endblock text_gen_callback_args
-    -- endfilter
-<< endblock callback_dependencies
+<< endblock text_gen_callback_args
+-- endfilter
 
 ## This adds a text-generationn sample every 'generation_steps'
--- block callback_list
+[callback_list]
     == super()
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         <<: *text_gen_callback_args
@@ -175,4 +150,3 @@ text_gen_callback_args: &text_gen_callback_args
         summary_writer: *summary_writer
     -- endif
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback []
-<< endblock callback_list
