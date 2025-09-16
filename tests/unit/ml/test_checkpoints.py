@@ -27,27 +27,13 @@ from forgather.ml.sharded_checkpoint import (
     validate_checkpoint,
     find_latest_checkpoint,
 )
-from forgather.ml.distributed import DistributedEnvInterface
+from forgather.ml.distributed import DistributedEnvInterface, StaticDistributedEnvironment
 
 from forgather.ml.trainer.checkpoint_manager import (
     CheckpointManager,
     RNGState,
     CheckpointConfig,
 )
-
-
-@dataclass(kw_only=True)
-class MockDistributedEnv(DistributedEnvInterface):
-    rank: int = 0
-    local_rank: int = 0
-    world_size: int = 1
-    local_world_size: int = 1
-    master_addr: str = "localhost"
-    master_port: int = 29501
-    device: str = "cpu"
-
-    def barrier(self):
-        pass
 
 
 class SimpleMockModel(nn.Module):
@@ -142,7 +128,7 @@ class MockTrainer(BaseTrainer, Stateful):
 
             self.checkpoint_manager = CheckpointManager(
                 config=cp_config,
-                dist=MockDistributedEnv(),
+                dist=StaticDistributedEnvironment(),
                 stateful_provider=self,
                 model=self.model,
             )
@@ -588,7 +574,7 @@ class TestTrainerIntegration(unittest.TestCase):
             model=model,
             args=self.args,
             optimizer_factory=lambda params: torch.optim.Adam(params, lr=0.005),
-            distributed_env=MockDistributedEnv(),
+            distributed_env=StaticDistributedEnvironment(),
         )
 
         # Mock train dataset to trigger prepare

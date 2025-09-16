@@ -1,19 +1,15 @@
-from typing import Any, Dict
+from typing import Any
 from dataclasses import dataclass, field
-import os
-import sys
 import logging
 
-from torch import distributed
 from torch.distributed.elastic.multiprocessing.errors import record
 
-from forgather.ml.distributed import DistributedEnvironment
+from forgather.ml.distributed import DistributedEnvInterface, from_env
 from forgather.ml.distributed import main_process_first
 from forgather.dotdict import DotDict
 from forgather.project import Project
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 @dataclass(kw_only=True)
@@ -24,10 +20,10 @@ class TrainingScript:
     """
 
     meta: dict
-    do_save: bool = True
+    do_save: bool = False
     do_train: bool = True
     do_eval: bool = False
-    distributed_env: DistributedEnvironment
+    distributed_env: DistributedEnvInterface = field(default_factory=from_env)
     trainer: Any
 
     def __post_init__(self):
@@ -47,18 +43,18 @@ class TrainingScript:
 
         if self.do_train:
             # This is where the actual 'loop' is.
-            metrics = self.trainer.train().metrics
+            output = self.trainer.train()
 
             if is_main_process:
                 logger.info("**** Training Completed *****")
-                logger.info(metrics)
+                logger.info(output)
 
         if self.do_eval:
-            metrics = self.trainer.evaluate()
+            output = self.trainer.evaluate()
 
             if is_main_process:
                 logger.info("**** Evaluation Completed *****")
-                logger.info(metrics)
+                logger.info(output)
 
         if self.do_save:
             self.trainer.save_model(self.meta.output_dir)

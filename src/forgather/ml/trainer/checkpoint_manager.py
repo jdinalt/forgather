@@ -20,7 +20,7 @@ from forgather.ml.sharded_checkpoint import (
     validate_checkpoint,
 )
 
-from forgather.ml.distributed import DistributedEnvInterface
+from forgather.ml.distributed import DistributedEnvInterface, get_barrier_fn
 from .trainer_types import CheckpointInterface, StatefulProvider
 
 logger = logging.getLogger(__name__)
@@ -84,6 +84,7 @@ class CheckpointManager(CheckpointInterface):
             )
         self.shard_index = shard_index
         self.best_checkpoint = None
+        self.barrier_fn = get_barrier_fn()
 
     def save_checkpoint(
         self,
@@ -174,6 +175,7 @@ class CheckpointManager(CheckpointInterface):
             os.makedirs(output_dir, exist_ok=True)
 
             config = getattr(model, "config", None)
+            assert config
             if hasattr(config, "save_pretrained"):
                 config.save_pretrained(output_dir)
             if self.model_preprocessor and hasattr(
@@ -187,7 +189,7 @@ class CheckpointManager(CheckpointInterface):
 
     def _barrier(self):
         if self.dist.world_size > 1:
-            self.dist.barrier()
+            self.barrier_fn()
 
     def _should_save_unique(self):
         # Returns True, if rank should save "unique" files, like the shard index -- or

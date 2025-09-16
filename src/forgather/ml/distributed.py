@@ -1,11 +1,13 @@
 from contextlib import contextmanager
 import os
-from typing import Protocol
+from typing import Protocol, Callable
 from abc import abstractmethod
 import torch
 from torch import distributed, accelerator
 import logging
 from functools import partial
+from torch._C._distributed_c10d import Work
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -76,8 +78,73 @@ class DistributedEnvInterface(Protocol):
     master_port: int
     device: str
 
-    @abstractmethod
-    def barrier(self): ...
+
+def init_from_env(dist: DistributedEnvInterface):
+    """
+    Init a distributed environment from envrionment variables
+    """
+    # Envrionment variables names and types
+    ENVIRON_VARS = (
+        ("LOCAL_RANK", "int"),
+        ("RANK", "int"),
+        ("WORLD_SIZE", "int"),
+        ("LOCAL_WORLD_SIZE", "int"),
+        ("MASTER_ADDR", "str"),
+        ("MASTER_PORT", "int"),
+    )
+
+    # See: https://pytorch.org/docs/stable/elastic/run.html
+    # Is the distributed environment defined?
+    for var_name, value_type in ENVIRON_VARS:
+        if var_name not in os.environ:
+            os.environ[var_name] = str(getattr(dist, var_name.lower()))
+        else:
+            value = os.environ[var_name]
+            match value_type:
+                case "int":
+                    value = int(value)
+                case _:
+                    pass
+            setattr(dist, var_name.lower(), value)
+
+
+def get_barrier_fn() -> Callable[[], None | Work]:
+    """
+    torch.distributed.barrier() complains about not having specified device_ids, if
+    called without this argument. It's also not always available, so this returns either
+    a barrier function, bound to the current device, or a no-op lambda function.
+    """
+    if distributed.is_available() and accelerator.is_available():
+        return partial(
+            distributed.barrier, device_ids=[torch.accelerator.current_device_index()]
+        )
+    else:
+        return lambda *args, **kwargs: None
+
+
+@dataclass(kw_only=True)
+class StaticDistributedEnvironment(DistributedEnvInterface):
+    """
+    A static, manually configured, distributed environment
+    This can be useful for mocks -- or just to manually set these values from somewhere else.
+    """
+
+    rank: int = 0
+    local_rank: int = 0
+    world_size: int = 1
+    local_world_size: int = 1
+    master_addr: str = "localhost"
+    master_port: int = 29501
+    device: str = "cpu"
+
+
+def from_env(**kwargs):
+    """
+    Construct a simple distributed environment from env vars.
+    """
+    dist = StaticDistributedEnvironment(**kwargs)
+    init_from_env(dist)
+    return dist
 
 
 class DistributedEnvironment(DistributedEnvInterface):
@@ -103,16 +170,6 @@ class DistributedEnvironment(DistributedEnvInterface):
 
     device_map: rank: int -> device_name: str
     """
-
-    # Envrionment variables names and types
-    ENVIRON_VARS = (
-        ("LOCAL_RANK", "int"),
-        ("RANK", "int"),
-        ("WORLD_SIZE", "int"),
-        ("LOCAL_WORLD_SIZE", "int"),
-        ("MASTER_ADDR", "str"),
-        ("MASTER_PORT", "int"),
-    )
 
     def __init__(
         self,
@@ -152,24 +209,8 @@ class DistributedEnvironment(DistributedEnvInterface):
         )
 
     def _init_distributed(self):
-        # See: https://pytorch.org/docs/stable/elastic/run.html
-        # Is the distributed environment defined?
-        for var_name, value_type in self.ENVIRON_VARS:
-            if var_name not in os.environ:
-                os.environ[var_name] = str(getattr(self, var_name.lower()))
-            else:
-                value = os.environ[var_name]
-                match value_type:
-                    case "int":
-                        value = int(value)
-                    case _:
-                        pass
-                setattr(self, var_name.lower(), value)
-
+        init_from_env(self)
         logger.info(str(self))
-
-        # Default, no-op
-        self.barrier_fn = lambda: None
 
         if torch.cuda.is_available():
             if self.device_map:
@@ -189,11 +230,7 @@ class DistributedEnvironment(DistributedEnvInterface):
                 self.world_size == 1
             ), "World size is larger than 1 and torch distributed is not available."
         self._init_cuda()
-        if distributed.is_available() and accelerator.is_available():
-            self.barrier_fn = partial(
-                distributed.barrier,
-                device_ids=[torch.accelerator.current_device_index()],
-            )
+        self.barrier_fn = get_barrier_fn()
 
     def _init_cuda(self):
         if "cuda" in self.device:

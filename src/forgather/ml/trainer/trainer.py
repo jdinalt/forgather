@@ -26,7 +26,7 @@ import gc
 import torch
 from torch import Tensor
 from torch.optim.optimizer import ParamsT
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 import torchdata.nodes as tn
 from torchdata.stateful_dataloader import StatefulDataLoader
@@ -255,7 +255,7 @@ class Trainer(BaseTrainer):
             return dataset
 
     # @override
-    def _prepare(self, train_dataset, eval_dataset) -> None:
+    def _prepare(self, train_dataset: Dataset, eval_dataset: Dataset) -> None:
         """
         Prepare for training and/or evaluation
         """
