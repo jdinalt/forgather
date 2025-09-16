@@ -121,6 +121,29 @@ Substitutions:
 }
 ```
 
+### Toml Style Blocks
+
+As long as you don't need to define nested blocks, you can use toml style syntax for defining Jinja blocks.
+
+```
+[block_name]
+content
+
+[another_block]
+more content
+```
+
+becomes...
+
+```
+{% block block_name %}
+content
+{% endblock block_name %}
+{% block another_block %}
+more content
+{% endblock another_block %}
+```
+
 ---
 ### Jinja2 Globals
 

@@ -33,7 +33,57 @@ def split_templates(template, name=None):
     yield (name, template[prev:])
 
 
+def preprocess_toml_blocks(source):
+    """
+    Preprocess TOML-style block syntax into Jinja2 blocks.
+
+    Converts:
+        [block_name]
+        content
+
+        [another_block]
+        more content
+
+    To:
+        {% block block_name %}
+        content
+        {% endblock block_name %}
+        {% block another_block %}
+        more content
+        {% endblock another_block %}
+    """
+    lines = source.split('\n')
+    result_lines = []
+    current_block = None
+    block_pattern = re.compile(r'^\s*\[(\w+)\]\s*$')
+
+    for line in lines:
+        block_match = block_pattern.match(line)
+
+        if block_match:
+            # Close the previous block if one exists
+            if current_block is not None:
+                result_lines.append(f"{{% endblock {current_block} %}}")
+
+            # Start new block - use regular {% %} without left-trim to preserve spacing
+            block_name = block_match.group(1)
+            result_lines.append("{% block " + block_name + " %}")
+            current_block = block_name
+        else:
+            # Regular line - just add it
+            result_lines.append(line)
+
+    # Close the final block if one exists
+    if current_block is not None:
+        result_lines.append(f"{{% endblock {current_block} %}}")
+
+    return '\n'.join(result_lines)
+
+
 def preprocess(source):
+    # First, preprocess TOML-style blocks
+    source = preprocess_toml_blocks(source)
+
     def pp_generate(source):
         newline_re = re.compile(r"(\n|\r\n|\r)")
         full_line_comment = re.compile(r"\s*##(.*)")
