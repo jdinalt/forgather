@@ -1,5 +1,8 @@
+from typing import Any
+import re
+import bisect
+
 import yaml
-import pprint
 
 from .latent import (
     VarNode,
@@ -15,6 +18,34 @@ def split_tag_idenity(tag_suffix):
     tag_value = split_suffix[0]
     tag_identity = split_suffix[1] if len(split_suffix) > 1 else None
     return tag_value, tag_identity
+
+
+positional_re = re.compile(r"arg(\d+)")
+
+
+def split_args(kwargs) -> tuple[tuple[Any], dict[Any]]:
+    """
+    Split out args and kwargs from kwargs, where "args" have keys matching match_positional
+    and sort args. This allows encoding of both positonal and keyword args as a single dictionary,
+    which makes it far more practical to extend or modify the args with a YAML config. e.g.
+
+    kwargs = { "arg5": 5, "arg15": 15, "arg0": 0, "alpha": "a", "beta": "b" }
+    split_args(kwargs)
+    ((0, 5, 15), {'alpha': 'a', 'beta': 'b'})
+    """
+    sorted_args = []
+    delete_keys = []
+
+    for key, value in kwargs.items():
+        match = positional_re.fullmatch(key)
+        if match:
+            bisect.insort(sorted_args, (int(match.group(1)), value))
+            delete_keys.append(key)
+    for k in delete_keys:
+        del kwargs[k]
+    args = (v for _, v in sorted_args)
+
+    return args, kwargs
 
 
 class CallableConstructor:
@@ -40,8 +71,7 @@ class CallableConstructor:
                 pass
             # Everything else; use the value as shorthand for kwargs
             else:
-                args = tuple()
-                kwargs = value
+                args, kwargs = split_args(value)
 
         elif isinstance(node, yaml.SequenceNode):
             args = loader.construct_sequence(node, deep=True)
@@ -71,11 +101,9 @@ def list_constructor(loader, tag_suffix, node):
         )
     elif isinstance(node, yaml.ScalarNode):
         value = loader.construct_scalar(node)
-        if not isinstance(value, str) or value != '':
+        if not isinstance(value, str) or value != "":
             raise TypeError(f"list node sequence or empty. Found {type(value)}={value}")
-        return SingletonNode(
-            "named_list", _identity=identity
-        )
+        return SingletonNode("named_list", _identity=identity)
     else:
         raise TypeError(f"list nodes must be sequencess or empty. Found {node}")
 
@@ -96,11 +124,11 @@ def dlist_constructor(loader, tag_suffix, node):
         )
     elif isinstance(node, yaml.ScalarNode):
         value = loader.construct_scalar(node)
-        if not isinstance(value, str) or value != '':
-            raise TypeError(f"dlist node must be mapping or empty. Found {type(value)}={value}")
-        return SingletonNode(
-            "named_list", _identity=identity
-        )
+        if not isinstance(value, str) or value != "":
+            raise TypeError(
+                f"dlist node must be mapping or empty. Found {type(value)}={value}"
+            )
+        return SingletonNode("named_list", _identity=identity)
     else:
         raise TypeError(f"dlist nodes must be mappings. Found {node}")
 
@@ -123,11 +151,11 @@ def dict_constructor(loader, tag_suffix, node):
         )
     elif isinstance(node, yaml.ScalarNode):
         value = loader.construct_scalar(node)
-        if not isinstance(value, str) or value != '':
-            raise TypeError(f"dict node scalar type must be ''. Found {type(value)}={value}")
-        return SingletonNode(
-            "named_dict", _identity=identity
-        )
+        if not isinstance(value, str) or value != "":
+            raise TypeError(
+                f"dict node scalar type must be ''. Found {type(value)}={value}"
+            )
+        return SingletonNode("named_dict", _identity=identity)
     else:
         raise TypeError(f"dict nodes must be mappings. Found {node}")
 

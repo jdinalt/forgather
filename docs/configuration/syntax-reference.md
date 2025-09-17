@@ -507,10 +507,12 @@ pow(2, 3)
 ### CallableNodes
 
 
-SingletonNode, FactoryNode, and FactoryNode are all instances of the abstract-base-class "CallableNode." A CallableNode can call any Python function, including class constructors. As Python differentiates between positional args and kwargs, making use of both requires the following syntax:
+SingletonNode, FactoryNode, and FactoryNode are all instances of the abstract-base-class "CallableNode." A CallableNode can call any Python function, including class constructors. As Python differentiates between positional  and keyword args, we provide two options for differentiating between the two:
+
+Explicit:
 
 ```yaml
-!singleton:random:sample
+!call:random:sample
     args:
         - ['red', 'blue']
         - 5
@@ -518,13 +520,37 @@ SingletonNode, FactoryNode, and FactoryNode are all instances of the abstract-ba
         counts: [4, 2]
 ```
 
-Generally speaking, you can omit the explict 'args' and 'kwargs' names, as long as the syntax is unambigous.
+Implicit, by name:
 
 ```yaml
-- !singleton:torch:tensor
+!call:random:sample
+    arg0: ['red', 'blue']
+    arg1: 5
+    counts: [4, 2]
+```
+
+Positional args are matches via regex and automatically sorted, thus they can be defined in any order, allowing one to override or extend the list of positional arguments by appending to the mapping.
+
+```python
+# Positional arguments regex
+# Arguments are sorted in ascending numerical order
+r"arg(\d+)"
+```
+
+The syntax is pretty flexible...
+
+```yaml
+- !call:torch:tensor
     - 2
     - 2
-- !singleton:random.binomialvariate { n: 1, p: 0.5 }
+- !call:random.binomialvariate { n: 1, p: 0.5 }
+- !call:torch.randn [2, 2]
+```
+
+If the Callable does not require arguments, you can ommit them.
+
+```yaml
+- !call:time:time
 ```
 
 ---

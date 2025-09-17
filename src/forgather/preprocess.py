@@ -52,28 +52,28 @@ def preprocess_toml_blocks(source):
         more content
         {% endblock another_block %}
     """
-    lines = source.split('\n')
+    lines = source.split("\n")
     result_lines = []
     block_stack = []  # Stack of (block_name, indentation_level) tuples
-    block_pattern = re.compile(r'^(\s*)\[(\w+)([-!])*\]\s*$')
+    block_pattern = re.compile(r"^(\s*)\[(\w+)([-!])*\]\s*$")
 
     def get_indentation_level(line):
         """Get the number of leading whitespace characters."""
         return len(line) - len(line.lstrip())
-    
+
     def open_block(block_name, options):
         s = ""
-        if '!' in options:
+        if "!" in options:
             s += r"{% filter trim %}"
         s += r"{% block " + block_name + r" %}"
         return s
-    
+
     def close_block(block_name, options):
         s = r"{%"
-        if '-' in close_block_options:
-            s += '-'
+        if "-" in close_block_options:
+            s += "-"
         s += " endblock " + closed_block_name + r" %}"
-        if '!' in close_block_options:
+        if "!" in close_block_options:
             s += r"{% endfilter %}"
         return s
 
@@ -104,7 +104,7 @@ def preprocess_toml_blocks(source):
         closed_block_name, _, close_block_options = block_stack.pop()
         result_lines.append(close_block(closed_block_name, close_block_options))
 
-    return '\n'.join(result_lines)
+    return "\n".join(result_lines)
 
 
 def preprocess(source):
