@@ -58,8 +58,8 @@ random_matrix: !call:torch:randn [2, 2]
 
 For details, see below.
 
-## Jinja2 Extensions
----
+## Jinja2
+
 ### The Preprocessor
 
 There is a custom Jinja2 preprocessor which implemnts an extended version of Jinja2's [Line Statements](https://jinja.palletsprojects.com/en/3.1.x/templates/#line-statements). These are implemented via regex substition, where the match is converted to normal Jinja syntax.
@@ -121,16 +121,17 @@ Substitutions:
 }
 ```
 
-### Toml Style Blocks
+#### Toml Style Blocks
 
 You can use toml style syntax for defining Jinja blocks.
+
+If you are not familiar with what Jinja2 blocks are, they define document sections which can be overriden in derived templates.
 
 ```
 [block_name]
 content
     [nested_block]
 nested block content
-
 
 [another_block]
 more content
@@ -155,7 +156,7 @@ The regular expression for these blocks is:
 r'^(\s*)\[(\w+)([-!])*\]\s*$'
 ```
 
-There are two white-space control options available, "!" and "-" Everything should work without these, but using them can help cleanup extra whitespace for the final output.
+There are two white-space control options available, "!" and "-" Everything should work without these, but using them can help cleanup extraneous whitespace.
 
 ```
 # Left-trim end block
@@ -180,7 +181,7 @@ content
 ```
 
 ---
-### Jinja2 Globals
+#### Jinja2 Globals
 
 A number of globals have been introduced to the Jinja2 environment to assist with pre-processing.
 
@@ -208,7 +209,7 @@ The following functions from https://pypi.org/project/platformdirs/
 - site_config_dir()
 
 ---
-### Custom File Loader
+#### Custom File Loader
 
 A custom loader, derived from the FileSystemLoader, is defined. This loader has a syntax for splitting a single loaded template file into multiple sub-templates.
 
