@@ -69,8 +69,15 @@ def list_constructor(loader, tag_suffix, node):
         return SingletonNode(
             "named_list", loader.construct_sequence(node), _identity=identity
         )
+    elif isinstance(node, yaml.ScalarNode):
+        value = loader.construct_scalar(node)
+        if not isinstance(value, str) or value != '':
+            raise TypeError(f"list node sequence or empty. Found {type(value)}={value}")
+        return SingletonNode(
+            "named_list", _identity=identity
+        )
     else:
-        raise TypeError(f"list nodes must be sequencess. Found {node}")
+        raise TypeError(f"list nodes must be sequencess or empty. Found {node}")
 
 
 def dlist_constructor(loader, tag_suffix, node):
@@ -86,6 +93,13 @@ def dlist_constructor(loader, tag_suffix, node):
             "named_list",
             sequence,
             _identity=identity,
+        )
+    elif isinstance(node, yaml.ScalarNode):
+        value = loader.construct_scalar(node)
+        if not isinstance(value, str) or value != '':
+            raise TypeError(f"dlist node must be mapping or empty. Found {type(value)}={value}")
+        return SingletonNode(
+            "named_list", _identity=identity
         )
     else:
         raise TypeError(f"dlist nodes must be mappings. Found {node}")
@@ -106,6 +120,13 @@ def dict_constructor(loader, tag_suffix, node):
     if isinstance(node, yaml.MappingNode):
         return SingletonNode(
             "named_dict", _identity=identity, **loader.construct_mapping(node)
+        )
+    elif isinstance(node, yaml.ScalarNode):
+        value = loader.construct_scalar(node)
+        if not isinstance(value, str) or value != '':
+            raise TypeError(f"dict node scalar type must be ''. Found {type(value)}={value}")
+        return SingletonNode(
+            "named_dict", _identity=identity
         )
     else:
         raise TypeError(f"dict nodes must be mappings. Found {node}")
