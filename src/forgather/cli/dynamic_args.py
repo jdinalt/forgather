@@ -47,7 +47,10 @@ def parse_dynamic_args(parser, global_args):
             config_name=global_args.config_template,
             project_dir=global_args.project_dir,
         )
-        dynamic_args = proj("dynamic_args")
+        dynamic_args = []
+
+        if "dynamic_args" in proj.config:
+            dynamic_args = proj("dynamic_args")
         if dynamic_args:
             for dynamic_arg in dynamic_args:
                 # The names in add_args() are positional only
