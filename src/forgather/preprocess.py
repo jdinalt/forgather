@@ -110,9 +110,6 @@ def preprocess_toml_blocks(source):
 
 
 def preprocess(source):
-    # First, preprocess TOML-style blocks
-    source = preprocess_toml_blocks(source)
-
     def pp_generate(source):
         newline_re = re.compile(r"(\n|\r\n|\r)")
         full_line_comment = re.compile(r"\s*##(.*)")
@@ -146,7 +143,9 @@ def preprocess(source):
                         pass
             yield line
 
-    return "\n".join(pp_generate(source))
+    source = "\n".join(pp_generate(source))
+    source = preprocess_toml_blocks(source)
+    return source
 
 
 class PPLoader(FileSystemLoader):

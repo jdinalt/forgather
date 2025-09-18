@@ -98,6 +98,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
         type: "path"
         help: "Path to dataset project to use"
 
+
 #-------------------- tiny.trainer_config --------------------
 -- extends ns.trainer_class
 ## Note: We use dynamic inheritance for the trainer-class
@@ -105,7 +106,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 ## parent template, which is named in the 'ns.trainer_class' variable,
 ## the value of which is defined in the 'config_metadata' block, above.
 
-[trainer_args-]
+[trainer_args]
     == super()
     
     # **Tiny Project**
@@ -127,7 +128,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 [callback_dependencies]
     == super()
 
-    [text_gen_callback_args!]
+    [text_gen_callback_args]
 text_gen_callback_args: &text_gen_callback_args
     summary_writer: *summary_writer
     prompts: *testprompts
