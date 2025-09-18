@@ -1,11 +1,12 @@
 -- extends "training_script/causal_lm/causal_lm.yaml"
 
--- block config_metadata
+[config_metadata]
     == super()
     ## Overrides
     -- set ns.config_name = "Tiny Llama"
     -- set ns.config_description = "A demo of training a tiny llama model from scratch"
     -- set ns.model_name = "tiny_llama"
+    
     ## This will trigger a save at the end of training; this is in addtion to the checkpoint settings.
     -- set ns.do_save = True
 
@@ -14,70 +15,53 @@
 
     ## The configuration in the dataset sub-project
     -- set ns.dataset_config = "tinystories-abridged.yaml"
-<< endblock config_metadata
 
-
--- block datasets_preprocessor_args
+[datasets_preprocessor_args]
 tokenizer_args: &tokenizer_args !dict
     truncation: True
     max_length: 512
-<< endblock datasets_preprocessor_args
 
 ## Pull dataset loader from template definition
--- block datasets_definition
+[datasets_definition]
     -- include 'datasets/llm_dataset_project.yaml'
-<< endblock datasets_definition
-
 
 ## This includes an inline template, defined below.
 ## The need to do this relates to Jinja2 disallowing a template from
 ## directly having more than one parent template. We can get around 
 ## this limitation by extending in 'project.model_config' and including
 ## the resulting template.
--- block construct_new_model
+[construct_new_model]
     -- include 'project.model_config'
-<< endblock construct_new_model
-
 
 ## Definition is inlined, below.
--- block trainer_definition
+[trainer_definition]
     -- include 'project.trainer_config'
-<< endblock trainer_definition
-
 
 ## Override loggers
--- block trainer_callbacks
+[trainer_callbacks]
     -- include 'project.logger_config'
-<< endblock trainer_callbacks
-
 
 ## Explicitly set the optimizer.
--- block optimizer
+[optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW
     lr: 1.0e-3
-<< endblock optimizer
-
 
 ## Override the default LR Scheduler
--- block lr_scheduler
+[lr_scheduler]
 # https://arxiv.org/html/2503.02844v1
 lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
     warmup_steps: 500
     cooldown_steps: 50000
     constant_lr: 1.0e-4
-<< endblock lr_scheduler
 
-
--- block datacollator
+[datacollator]
     == super()
     # Tiny Llama
     ## Limit maximum sequence length 512 tokens, at the data-collator level.
     truncation: True
     max_length: 512
-<< endblock datacollator
 
-
--- block main_output
+[main_output]
     == super()
     ## This will trigger saving the model weights in the output directory at end.
     ## We normally would just use checkpointin (see save_strategy), but this saves
@@ -86,7 +70,6 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     ## requires saving the weights directly in the model directory.
     ## TODO: Find a good way to not have to use this kludge!
     do_save: True
-<< endblock main_output
 
 #-------------------- project.model_config --------------------
 -- extends "models/tiny_dynamic_llama.yaml"
@@ -96,7 +79,7 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 #-------------------- project.trainer_config --------------------
 -- extends 'trainers/trainer.yaml'
 
--- block trainer_args
+[trainer_args]
     == super()
     # Tiny Llama Project Overrides
     eval_strategy: "steps"
@@ -111,8 +94,6 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     eval_steps: 500
     num_train_epochs: 1
     dataloader_num_workers: 1
-<< endblock trainer_args
-
 
 #-------------------- project.logger_config --------------------
 -- extends 'callbacks/loggers.yaml'
@@ -120,9 +101,8 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 ## The parent creates a Tensor Board SummaryWriter, which we can use.
 
 ## This adds a text-generationn sample every 'generation_steps'
--- block callback_list
--- include 'prompts/tiny_stories.yaml'
-
+[callback_list]
+    -- include 'prompts/tiny_stories.yaml'
 
     == super()
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
@@ -131,6 +111,6 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
         generation_config: *generation_config
         max_new_tokens: 40
         generation_steps: 1000
-        
-    trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback []
-<< endblock callback_list
+    
+    # Allow remote control of the training process
+    trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback

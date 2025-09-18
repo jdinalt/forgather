@@ -25,7 +25,8 @@
 [model]
 => super()
     name: "llama3"
-    ## Presently requires mantually construction via forgather -t titain_128k.yaml construct
+    ## Presently requires mantually construction via 'forgather -t titain_128k.yaml construct'
+    ## TODO: Setup automatic build trigger
     hf_assets_path: "{{ joinpath(ns.tokenizers_dir, "wikitext_titan_128k") }}"
 
 [optimizer]
