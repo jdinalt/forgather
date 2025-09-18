@@ -9,6 +9,9 @@ forgather.code-workspace
 output_models/
 tmp/
 data
+.env
+.vscode
+settings.json
 
 # Vim swap files
 *.swp
