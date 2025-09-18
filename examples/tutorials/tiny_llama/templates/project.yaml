@@ -6,7 +6,7 @@
     -- set ns.config_name = "Tiny Llama"
     -- set ns.config_description = "A demo of training a tiny llama model from scratch"
     -- set ns.model_name = "tiny_llama"
-    
+
     ## This will trigger a save at the end of training; this is in addtion to the checkpoint settings.
     -- set ns.do_save = True
 
@@ -15,6 +15,13 @@
 
     ## The configuration in the dataset sub-project
     -- set ns.dataset_config = "tinystories-abridged.yaml"
+
+    ## Set predefined model project to import
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, "examples", 'models', "llama")
+    
+    ## Select 4 million parameter Llama model
+    ## Others definitions: 117M.yaml, 7B.yaml
+    -- set ns.model_project_config = "4M.yaml"
 
 [datasets_preprocessor_args]
 tokenizer_args: &tokenizer_args !dict
@@ -31,7 +38,7 @@ tokenizer_args: &tokenizer_args !dict
 ## this limitation by extending in 'project.model_config' and including
 ## the resulting template.
 [construct_new_model]
-    -- include 'project.model_config'
+    -- include "models/causal_lm/import_model_project.yaml"
 
 ## Definition is inlined, below.
 [trainer_definition]

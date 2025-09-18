@@ -1,15 +1,12 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     ## Overrides
     -- set ns.config_name = "Hugginface Llama"
     -- set ns.config_description = "Train with HF LLama implementation for comparison"
     -- set ns.model_name = "hf_llama"
--- endblock config_metadata
-
 
 ## Replace the model definition
--- block construct_new_model
+[construct_new_model]
     -- include "models/tiny_hf_llama.yaml"
--- endblock construct_new_model

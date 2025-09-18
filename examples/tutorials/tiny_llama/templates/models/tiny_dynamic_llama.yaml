@@ -1,20 +1,15 @@
 -- extends 'models/transformers/dynamic_llama.yaml'
 
-
--- block model_tokenizer
+[model_tokenizer]
 ## Replace the default Llama tokenizer with the tiny_2k tokenizer.
     -- include 'tokenizers/tiny_2k.yaml'
-<< endblock model_tokenizer
-
 
 ## Make the model much smaller.
--- block model_config
+[model_config]
     == super()
-    
     # Tiny Llama overrides
     hidden_size: 256
     dim_feedforward: 1024
     num_attention_heads: 2
     num_hidden_layers: 4
     d_head: 128 # Must be hidden_size // num_attention_heads
-<< endblock model_config
