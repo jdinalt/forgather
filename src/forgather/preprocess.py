@@ -32,6 +32,18 @@ def split_templates(template, name=None):
         prev = match.end()
     yield (name, template[prev:])
 
+def open_block(block_name, options):
+    s = ""
+    if options == '!':
+        s += r"{% filter trim %}"
+    s += r"{% block " + block_name + r" %}"
+    return s
+
+def close_block(block_name, options):
+    s = r"{% endblock " + block_name + r" +%}"
+    if "!" in options:
+        s += r"{% endfilter %}"
+    return s
 
 def preprocess_toml_blocks(source):
     """
@@ -55,27 +67,11 @@ def preprocess_toml_blocks(source):
     lines = source.split("\n")
     result_lines = []
     block_stack = []  # Stack of (block_name, indentation_level) tuples
-    block_pattern = re.compile(r"^(\s*)\[(\w+)([-!])*\]\s*$")
+    block_pattern = re.compile(r"^(\s*)\[(\w+)([!])*\]\s*$")
 
     def get_indentation_level(line):
         """Get the number of leading whitespace characters."""
         return len(line) - len(line.lstrip())
-
-    def open_block(block_name, options):
-        s = ""
-        if "!" in options:
-            s += r"{% filter trim %}"
-        s += r"{% block " + block_name + r" %}"
-        return s
-
-    def close_block(block_name, options):
-        s = r"{%"
-        if "-" in close_block_options:
-            s += "-"
-        s += " endblock " + closed_block_name + r" %}"
-        if "!" in close_block_options:
-            s += r"{% endfilter %}"
-        return s
 
     for line in lines:
         block_match = block_pattern.match(line)
@@ -90,8 +86,11 @@ def preprocess_toml_blocks(source):
 
             # Close blocks that are at the same level or deeper than the current block
             while block_stack and block_stack[-1][1] >= current_indent:
-                closed_block_name, _, close_block_options = block_stack.pop()
-                result_lines.append(close_block(closed_block_name, close_block_options))
+                closed_block_name, _, close_options = block_stack.pop()
+                if len(result_lines[-1]):
+                    result_lines[-1] += r"{{'\n'}}"
+                result_lines[-1] += close_block(closed_block_name, close_options)
+                #result_lines.append(close_block(closed_block_name, close_block_options))
 
             result_lines.append(open_block(block_name, block_options))
             block_stack.append((block_name, current_indent, block_options))
@@ -101,8 +100,11 @@ def preprocess_toml_blocks(source):
 
     # Close all remaining blocks in reverse order
     while block_stack:
-        closed_block_name, _, close_block_options = block_stack.pop()
-        result_lines.append(close_block(closed_block_name, close_block_options))
+        closed_block_name, _, close_options = block_stack.pop()
+        if len(result_lines[-1]):
+            result_lines[-1] += r"{{'\n'}}"
+        result_lines[-1] += close_block(closed_block_name, close_options)
+        #result_lines.append(close_block(closed_block_name, close_block_options))
 
     return "\n".join(result_lines)
 
@@ -139,7 +141,7 @@ def preprocess(source):
                     case "==":
                         line = r"{{ " + re_match[2] + r" }}"
                     case "=>":
-                        line = r"{{ " + re_match[2] + r" -}}"
+                        line = r"{{ " + re_match[2] + r"|trim('\n')}}"
                     case _:
                         pass
             yield line

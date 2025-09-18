@@ -117,7 +117,7 @@ Substitutions:
     '<<': r"{%- " + re_match[2] + r" %}"
     '>>': r"{% " + re_match[2] + r" -%}"
     '==': r"{{ " + re_match[2] + r" }}"
-    '=>': r"{{ " + re_match[2] + r" -}}"
+    '=>': r"{{ " + re_match[2] + r"|trim('\n')}}"
 }
 ```
 
@@ -153,21 +153,10 @@ more content
 
 The regular expression for these blocks is:
 ```python
-r'^(\s*)\[(\w+)([-!])*\]\s*$'
+r"^(\s*)\[(\w+)([!])*\]\s*$"
 ```
 
-There are two white-space control options available, "!" and "-" Everything should work without these, but using them can help cleanup extraneous whitespace.
-
-```
-# Left-trim end block
-[block_name-]
-content
-
-# becomes...
-{% block block_name %}
-content
-{%- block block_name %}
-```
+Formatting options follow the block name. Right now, the only optin is '!', which will trim all leading and training whitespace from the block.
 
 ```
 # "filter "trim"
