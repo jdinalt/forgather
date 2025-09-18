@@ -1,42 +1,31 @@
 -- extends 'models/causal_lm/custom_dynamic.yaml'
 
--- block model_meta_config
+[model_meta_config]
     == super()
     -- set ns.model_name = "Deep One"
     -- set ns.model_description = "A big Deepnet model with ALiBi attention."
     -- set ns.model_short_name = "deepone"
--- endblock model_meta_config
 
-
--- block model_tokenizer
+[model_tokenizer]
     -- include 'tokenizers/wikitext/32k.yaml'
-<< endblock model_tokenizer
 
-
--- block model_bits
-
-    -- block loss_fn
+[model_bits]
+    [loss_fn]
 loss_fn: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn []
-    << endblock loss_fn
 
-
-    -- block layer_norm_factory
+    [layer_norm_factory]
 layer_norm_factory: &layer_norm_factory !partial:torch.nn:RMSNorm@layer_norm_factory
     normalized_shape: !var "hidden_size"
     eps: !var "rms_norm_eps"
-    << endblock layer_norm_factory
 
-
-    -- block feedforward_factory
+    [feedforward_factory]
 feedforward_factory: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
     d_model: !var "hidden_size"
     d_feedforward: !var "dim_feedforward"
     activation_factory: !partial:torch.nn.ReLU []
     dropout: !var "activation_dropout"
-    << endblock feedforward_factory
-
     
-    -- block attention_factory
+    [attention_factory]
 attention_factory: &attention_factory !partial:.causal_alibi_attn:CausalAlibiAttn@attention_factory
     d_model: !var "hidden_size"
     num_heads: !var "num_attention_heads"
@@ -47,10 +36,8 @@ attention_factory: &attention_factory !partial:.causal_alibi_attn:CausalAlibiAtt
     trainable_alibi: True
     # Use alternative initialization for better trainable slope behavior
     alt_alibi_init: True
-    << endblock attention_factory
 
-
-    -- block layer_factory
+    [layer_factory]
 layer_factory: &layer_factory !partial:.deepnet:DeepnetLayer@layer_factory
     feedforward_factory: *feedforward_factory
     attention_factory: *attention_factory
@@ -58,43 +45,33 @@ layer_factory: &layer_factory !partial:.deepnet:DeepnetLayer@layer_factory
     dropout: !var "layer_dropout"
     residual_dropout: !var "residual_dropout"
     alpha: !call:.deepnet:deepnet_alpha [ !var "num_hidden_layers", 0 ]
-    << endblock layer_factory
 
-
-    -- block layer_stack
+    [layer_stack]
 layer_stack: &layer_stack !factory:.checkpoint_layer_stack:LayerStack@layer_stack
     layer_factory: *layer_factory
     num_hidden_layers: !var "num_hidden_layers"
     post_norm_factory: *layer_norm_factory
     enable_checkpoint: !var "enable_activation_checkpoint"
     checkpoint_stride: !var "checkpoint_stride"
-    << endblock layer_stack
 
-
-    -- block output_decoder
+    [output_decoder]
 output_decoder: &output_decoder !factory:torch.nn:Linear@output_decoder
     in_features: !var "hidden_size"
     out_features: !var "vocab_size"
     bias: False
-    << endblock output_decoder
 
-
-    -- block abs_positional_encoder
+    [abs_positional_encoder]
 absolute_pe: &absolute_pe null
-    << endblock abs_positional_encoder
 
-
-    -- block input_encoder
+    [input_encoder]
 input_encoder: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
     d_model: !var "hidden_size"
     vocab_size: !var "vocab_size"
     dropout: !var "embedding_dropout"
     positional_encoder: *absolute_pe
     scale_sqrt_d_model: False
-    << endblock input_encoder
 
-
-    -- block init_weights
+    [init_weights]
 init_weights: &init_weights !partial:.init_weights:init_weights_by_regex@init_weights
     regex_list:
         - [ 'norm|alibi_slopes', "pass" ]
@@ -111,23 +88,16 @@ init_weights: &init_weights !partial:.init_weights:init_weights_by_regex@init_we
         deepnet: !partial:torch.nn.init:xavier_uniform_
             gain: !call:.deepnet:deepnet_beta [ !var "num_hidden_layers", 0 ]
     debug: False
-    << endblock init_weights
 
-
-    -- block model_factory
+    [model_factory]
 model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     loss_fn: *loss_fn
     input_encoder: *input_encoder
     output_decoder: *output_decoder
     layer_stack: *layer_stack
     init_weights: *init_weights
-    << endblock model_factory
 
-
-<< endblock model_bits
-
-
--- block model_config
+[model_config]
     == super()
     hidden_size: 2048
     num_attention_heads: 16
@@ -144,12 +114,9 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     activation_dropout: 0.0
     enable_activation_checkpoint: False
     checkpoint_stride: 1
-<< endblock model_config
 
-
--- block model_code_generator
+[model_code_generator]
     == super()
     # Deepone
     supports_gradient_checkpointing: True
     supports_sdpa: True
-<< endblock model_code_generator

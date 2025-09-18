@@ -1,31 +1,25 @@
 -- extends "models/model_type.yaml"
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Causal LM 117M"
     -- set ns.config_description = "A vanilla transformer model with 117M parameters"
     -- set ns.model_name = "117m"
--- endblock config_metadata
 
--- block model_definition
+[model_definition]
     -- include "config.model"
--- endblock model_definition
-
 
 #------------- config.model --------------
 -- extends "models/transformers/dynamic_causal_transformer.yaml"
 
--- block model_tokenizer
+[model_tokenizer]
 tokenizer: &tokenizer !call:forgather:from_project
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
     config_template: "8k.yaml"
     pp_debug: False
-<< endblock model_tokenizer
 
-
--- block model_config
+[model_config]
     == super()
-    
     # **117M Causal LM Overrides**
     hidden_size: 1024
     dim_feedforward: 4096
@@ -33,4 +27,3 @@ tokenizer: &tokenizer !call:forgather:from_project
     num_hidden_layers: 8
     embedding_dropout: 0.0
     layer_dropout: 0.0
-<< endblock model_config

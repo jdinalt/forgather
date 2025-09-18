@@ -1,6 +1,6 @@
 -- extends 'models/base_language_model.yaml'
 
--- block model_meta_config
+[model_meta_config]
     == super()
     -- set ns.model_name = "Custom Language Model"
     -- set ns.model_description = "A custom model definition."
@@ -9,40 +9,29 @@
 ##  -- set ns.model_cfg_cls = '<model configuration class>'
 ##  -- set ns.model_config_path = '<path to model config source>'
 ##  -- set ns.model_path = '<path to model source>'
-<< endblock model_meta_config
 
-
--- block model_header
-    == super()
+[model_header]
+    => super()
 # ns.model_cls = "{{ ns.model_cls }}"
 # ns.model_cfg_cls = "{{ ns.model_cfg_cls }}"
 # ns.model_config_path = "{{ abspath(ns.model_config_path) }}"
 # ns.model_path = "{{ abspath(ns.model_path) }}"
-<< endblock model_header
 
-
-##-- block model_tokenizer
+[model_tokenizer]
 ##.define: &tokenizer !callable:transformers:AutoTokenizer.from_pretrained
 ##    - "tokenizer_path_or_id"
-##<< endblock model_tokenizer
 
-
--- block model_config_defs
+[model_config_defs]
     == super()
 model_submodule_searchpath: &model_submodule_searchpath
--- block model_submodule_searchpath
-<< endblock model_submodule_searchpath
+    -- block model_submodule_searchpath
+    << endblock model_submodule_searchpath
     - "{{ ns.output_dir }}"
 
--- filter trim()
--- block model_bits
+    [model_bits]
 ## Custom model definition
-<< endblock model_bits
--- endfilter
--- endblock model_config_defs
 
-
--- block model_config
+[model_config]
 model_config: &model_config !singleton:{{ ns.model_config_path }}:{{ ns.model_cfg_cls }}@model_config
     submodule_searchpath: *model_submodule_searchpath
     # Set auto-map for custom model; this ensures that the source code stays with the model.
@@ -54,20 +43,15 @@ model_config: &model_config !singleton:{{ ns.model_config_path }}:{{ ns.model_cf
     pad_token_id: !singleton:getattr [ *tokenizer, 'pad_token_id' ]
     bos_token_id: !singleton:getattr [ *tokenizer, 'bos_token_id' ]
     eos_token_id: !singleton:getattr [ *tokenizer, 'eos_token_id' ]
-<< endblock model_config
 
-
--- block model_constructor
+[model_constructor]
 model_constructor: &model_constructor !partial:{{ ns.model_path }}:{{ ns.model_cls }}@model_constructor
-    args:
-        - *model_config
-    kwargs:
-        submodule_searchpath: *model_submodule_searchpath
-        <<: *model_constructor_args
+    arg0: *model_config
+    submodule_searchpath: *model_submodule_searchpath
+    <<: *model_constructor_args
 
 model: &model !partial:forgather.ml.construct:dependency_list@model
     - !factory:call [ *model_constructor ]
     - !singleton:forgather.ml.construct:copy_package_files
         - "{{ ns.output_dir }}"
         - *model_config
-<< endblock model_constructor

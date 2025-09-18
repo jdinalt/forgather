@@ -1,17 +1,13 @@
 -- extends 'models/causal_lm/custom_dynamic.yaml'
 
--- block model_meta_config
+[model_meta_config]
     == super()
     -- set ns.model_name = "Dynamic Causal Transformer"
     -- set ns.model_description = "A vanilla causal transformer model."
     -- set ns.model_short_name = "dynamic_causal_transformer"
--- endblock model_meta_config
 
-
--- block model_tokenizer
+[model_tokenizer]
     ## Default tokenizer
-<< endblock model_tokenizer
-
 
 ## These are all modular 'bits' which all can be swapped out with other
 ## modules through the configuration, provided they share a compatible
@@ -23,104 +19,75 @@
 ## The default arguments are intended closely mirror the original 
 ## transformer archetecture, Attention is All You Need, obviously
 ## excepting this being a causal LM.
--- block model_bits
-
-
-    -- block loss_fn
+[model_bits]
+    [loss_fn]
 loss_fn: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn []
-    << endblock loss_fn
 
-
-    -- block layer_norm_factory
+    [layer_norm_factory]
 layer_norm_factory: &layer_norm_factory !partial:torch.nn:LayerNorm@layer_norm_factory
     normalized_shape: !var "hidden_size"
-    << endblock layer_norm_factory
 
-
-    -- block feedforward_factory
+    [feedforward_factory]
 feedforward_factory: &feedforward_factory !partial:.feedforward_layer:FeedforwardLayer@feedforward_factory
     d_model: !var "hidden_size"
     d_feedforward: !var "dim_feedforward"
     dropout: !var "activation_dropout"
-    << endblock feedforward_factory
 
-
-    -- block rel_positional_encoder
+    [rel_positional_encoder]
 ## Undefined
-    << endblock rel_positional_encoder
-
-
-    -- block attention_factory
+    
+    [attention_factory]
 attention_factory: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
     d_model: !var "hidden_size"
     num_heads: !var "num_attention_heads"
     dropout: !var "attention_dropout"
-    << endblock attention_factory
 
-
-    -- block layer_factory
+    [layer_factory]
 layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
     feedforward_factory: *feedforward_factory
     attention_factory: *attention_factory
     norm_factory: *layer_norm_factory
     dropout: !var "layer_dropout"
     residual_dropout: !var "residual_dropout"
-    << endblock layer_factory
-
-
-    -- block layer_stack
+    
+    [layer_stack]
 layer_stack: &layer_stack !factory:.checkpoint_layer_stack:LayerStack@layer_stack
     layer_factory: *layer_factory
     num_hidden_layers: !var "num_hidden_layers"
     enable_checkpoint: !var "enable_activation_checkpoint"
     checkpoint_stride: !var "checkpoint_stride"
-    << endblock layer_stack
 
-
-    -- block output_decoder
+    [output_decoder]
 output_decoder: &output_decoder !factory:torch.nn:Linear@output_decoder
     - !var "hidden_size"
     - !var "vocab_size"
-    << endblock output_decoder
 
-
-    -- block positional_encoder
+    [positional_encoder]
 positional_encoder: &positional_encoder !factory:.sinusoidal_pe:SinusoidalPE@positional_encoder
     d_model: !var "hidden_size"
     max_sequence_length: !var "max_sequence_length"
-    << endblock positional_encoder
 
-
-    -- block input_encoder
+    [input_encoder]
 input_encoder: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
     d_model: !var "hidden_size"
     vocab_size: !var "vocab_size"
     dropout: !var "embedding_dropout"
     positional_encoder: *positional_encoder
     scale_sqrt_d_model: True
-    << endblock input_encoder
 
-
-    -- block init_weights
+    [init_weights]
 init_weights: &init_weights !partial:.init_weights:simple_weight_init@init_weights
     scale_rsqrt_d_model: True
-    << endblock init_weights
 
-
-    -- block model_factory
+    [model_factory]
 model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     loss_fn: *loss_fn
     input_encoder: *input_encoder
     output_decoder: *output_decoder
     layer_stack: *layer_stack
     init_weights: *init_weights
-    << endblock model_factory
 
-
-<< endblock model_bits
-
-
--- block model_config
+[model_config]
     == super()
     hidden_size: 512
     num_attention_heads: 8
@@ -136,11 +103,8 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     activation_dropout: 0.0
     enable_activation_checkpoint: False
     checkpoint_stride: 1
-<< endblock model_config
 
-
--- block model_code_generator
+[model_code_generator]
     == super()
     supports_gradient_checkpointing: True
     supports_sdpa: True
-<< endblock model_code_generator

@@ -1,29 +1,19 @@
 -- extends "models/model_type.yaml"
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Llama 7B"
     -- set ns.config_description = "Default Dynamic Llama, 7B parameters"
     -- set ns.model_name = "7b"
--- endblock config_metadata
 
--- block model_definition
+[model_definition]
     -- include "config.model"
--- endblock model_definition
-
 
 #------------- config.model --------------
 -- extends "models/transformers/dynamic_llama.yaml"
 
-
--- block model_tokenizer
-## Select a 'llama-2' tokenizer
+[model_tokenizer]
 tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
-    args:
-        # For 'reasons' the offical tokenizer requires an access token.
-        # We will use the tokenizer from a derived model to side-step this.
-        - "TheBloke/Llama-2-7B-GPTQ"
-    kwargs:
-        legacy: False
-        model_max_length: 8196
-<< endblock model_tokenizer
+    arg0: "TheBloke/Llama-2-7B-GPTQ"
+    legacy: False
+    model_max_length: 8196
