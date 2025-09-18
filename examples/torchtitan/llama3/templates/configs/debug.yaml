@@ -1,0 +1,13 @@
+-- extends "project.yaml"
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Debug Model"
+    -- set ns.config_description = "Llama 3 debug training"
+    -- set ns.model_name = "debug_model"
+    -- set ns.nproc_per_node = 1
+
+[model]
+=> super()
+    flavor: "debugmodel"
+    ## Presently requires mantually construction via 'forgather -t 2k.yaml construct'
+    hf_assets_path: "{{ joinpath(ns.tokenizers_dir, "wikitext_2k") }}"

@@ -1,0 +1,129 @@
+-- set ns = namespace()
+-- from 'inc/formatting.jinja' import h1, h2, h3
+[preamble!]
+    [base_directories]
+    -- include "base_directories.yaml"
+
+    [resource_directories]
+    -- set ns.models_dir = joinpath(project_dir, 'output_models')
+    -- set ns.tokenizers_dir = joinpath(ns.forgather_dir, 'tokenizers')
+
+    [config_metadata]
+    -- set ns.config_name = "Undefined"
+    -- set ns.config_description = "Undefined"
+    -- set ns.config_class = "type.training_script.titan"
+    -- set ns.log_name = "log"
+    -- set ns.model_name = "default_model"
+    -- set ns.nproc_per_node = "gpu"
+
+    [globals]
+    -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
+    -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
+
+[header]
+== h1(ns.config_name)
+# {{ utcisotime() }}
+# Description: {{ ns.config_description }}
+# Project Dir: {{ abspath(project_dir) }}
+# Current Working Dir: "{{ getcwd() }}"
+
+[job]
+.define: &job !singleton:torchtitan.config.job_config:Job
+    dump_folder: "{{ ns.output_dir }}"
+    description: "{{ ns.config_description }}"
+
+[profiling]
+.define: &profiling !singleton:torchtitan.config.job_config:Profiling
+
+[metrics]
+.define: &metrics !singleton:torchtitan.config.job_config:Metrics
+
+[model]
+.define: &model !singleton:torchtitan.config.job_config:Model
+
+[optimizer]
+.define: &optimizer !singleton:torchtitan.config.job_config:Optimizer
+
+[lr_scheduler]
+.define: &lr_scheduler !singleton:torchtitan.config.job_config:LRScheduler
+
+[training]
+.define: &training !singleton:torchtitan.config.job_config:Training
+
+[parallelism]
+.define: &parallelism !singleton:torchtitan.config.job_config:Parallelism
+
+[checkpoint]
+.define: &checkpoint !singleton:torchtitan.config.job_config:Checkpoint
+
+[activation_checkpoint]
+.define: &activation_checkpoint !singleton:torchtitan.config.job_config:ActivationCheckpoint
+
+[compile]
+.define: &compile !singleton:torchtitan.config.job_config:Compile
+
+[float8]
+.define: &float8 !singleton:torchtitan.config.job_config:Float8
+
+[mx]
+.define: &mx !singleton:torchtitan.config.job_config:MX
+
+[comm]
+.define: &comm !singleton:torchtitan.config.job_config:Comm
+
+[memory_estimation]
+.define: &memory_estimation !singleton:torchtitan.config.job_config:MemoryEstimation
+
+[fault_tolerance]
+.define: &fault_tolerance !singleton:torchtitan.config.job_config:FaultTolerance
+
+[experimental]
+.define: &experimental !singleton:torchtitan.config.job_config:Experimental
+
+[validation]
+.define: &validation !singleton:torchtitan.config.job_config:Validation
+
+[job_config]
+job_config: &job_config !singleton:torchtitan.config.job_config:JobConfig@job_config
+    job: *job
+    profiling: *profiling
+    metrics: *metrics
+    model: *model
+    optimizer: *optimizer
+    lr_scheduler: *lr_scheduler
+    training: *training
+    parallelism: *parallelism
+    checkpoint: *checkpoint
+    activation_checkpoint: *activation_checkpoint
+    compile: *compile
+    float8: *float8
+    mx: *mx
+    comm: *comm
+    memory_estimation: *memory_estimation
+    fault_tolerance: *fault_tolerance
+    experimental: *experimental
+    validation: *validation
+
+[trainer]
+trainer: &trainer !singleton:torchtitan.train:Trainer@trainer [ *job_config ]
+
+[meta]
+meta: &meta_output !dict:@meta
+    config_name: "Default"
+    config_description: "Default Config"
+    config_class: "type.training_script"
+    project_dir: "{{ project_dir }}"
+    output_dir: "{{ ns.output_dir }}"
+    logging_dir: "{{ ns.logging_dir }}"
+    workspace_root: "{{ workspace_root }}"
+    forgather_dir: "{{ ns.forgather_dir }}"
+    output_dir: "{{ ns.output_dir }}"
+    nproc_per_node: {{ ns.nproc_per_node }}
+
+[dynamic_args]
+dynamic_args: []
+
+[main]
+main: !singleton:forgather.ml.training_script:TrainingScript@training_script
+    meta: *meta_output
+    trainer: *trainer
