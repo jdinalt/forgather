@@ -1,0 +1,25 @@
+-- extends "models/llama3_8b.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Llama3 8B Pipeline 4x"
+    -- set ns.config_description = "Llama 3 8B Pipeline Parallel, 4 GPU"
+    -- set ns.nproc_per_node = 4
+
+[training]
+    == super()
+    seq_len: 2048
+    dtype: bfloat16
+    local_batch_size: 4
+
+[parallelism]
+    == super()
+    data_parallel_shard_degree: 1
+    pipeline_parallel_degree: 4
+    pipeline_parallel_microbatch_size: 1
+    pipeline_parallel_schedule: "1F1B"
+
+[activation_checkpoint]
+    == super()
+    mode: "selective"
+    selective_ac_option: "op"
