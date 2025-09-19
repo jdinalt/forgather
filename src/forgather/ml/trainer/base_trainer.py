@@ -3,6 +3,7 @@ from typing import (
     Optional,
     List,
     Dict,
+    Tuple,
 )
 
 import os
@@ -14,6 +15,7 @@ import logging
 from dataclasses import dataclass
 
 import torch
+from torch import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.utils.data import Dataset
 from torch.distributed.checkpoint.stateful import Stateful
@@ -500,3 +502,28 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         The inner evaluation loop
         """
         pass
+
+
+def logits_from_outputs(outputs) -> Tensor:
+    if not isinstance(outputs, Tensor):
+        assert hasattr(outputs, "logits")
+        return outputs.logits
+    return outputs
+
+
+def loss_from_outputs(outputs) -> Tensor:
+    if isinstance(outputs, tuple):
+        loss = outputs[0]
+        assert isinstance(loss, Tensor)
+        return loss
+    assert hasattr(outputs, "loss")
+    return outputs.loss
+
+
+def loss_and_logits_from_outputs(outputs) -> Tuple[Tensor, Tensor]:
+    if isinstance(outputs, tuple):
+        loss, logits = outputs
+        assert isinstance(loss, Tensor) and isinstance(logits, Tensor)
+        return loss, logits
+    assert hasattr(outputs, "loss") and hasattr(outputs, "logits")
+    return outputs.loss, outputs.logits

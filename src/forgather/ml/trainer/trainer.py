@@ -30,7 +30,13 @@ from torch.utils.data import DataLoader, Dataset
 
 import torchdata.nodes as tn
 from torchdata.stateful_dataloader import StatefulDataLoader
-from .base_trainer import BaseTrainer, BaseTrainingArguments
+from .base_trainer import (
+    BaseTrainer,
+    BaseTrainingArguments,
+    loss_from_outputs,
+    logits_from_outputs,
+    loss_and_logits_from_outputs,
+)
 from .trainer_types import TrainerState as BaseTrainerState
 from .trainer_types import (
     TrainOutput,
@@ -798,10 +804,12 @@ class Trainer(BaseTrainer):
         self, input_dict: dict[str, Tensor], labels: Tensor
     ) -> Tensor:
         if self.train_loss_fn:
-            logits = self.model(**input_dict)
+            outputs = self.model(**input_dict)
+            logits = logits_from_outputs(outputs)
             loss = self.train_loss_fn(logits, labels)
         else:
-            loss, _ = self.model(labels=labels, **input_dict)
+            outputs = self.model(labels=labels, **input_dict)
+            loss = loss_from_outputs(outputs)
         self._backward(loss)
         return loss.detach()
 
@@ -932,10 +940,12 @@ class Trainer(BaseTrainer):
         Perform a single batch of predictions
         """
         if self.eval_loss_fn:
-            logits = self.model(**input_dict)
+            outputs = self.model(**input_dict)
+            logits = logits_from_outputs(outputs)
             loss = self.eval_loss_fn(logits, labels)
         else:
-            loss, logits = self.model(labels=labels, **input_dict)
+            outputs = self.model(labels=labels, **input_dict)
+            loss, logits = loss_and_logits_from_outputs(outputs)
 
         loss = self._distributed_loss(loss.detach())
         return {
