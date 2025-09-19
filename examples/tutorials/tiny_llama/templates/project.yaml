@@ -68,16 +68,6 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     truncation: True
     max_length: 512
 
-[main_output]
-    == super()
-    ## This will trigger saving the model weights in the output directory at end.
-    ## We normally would just use checkpointin (see save_strategy), but this saves
-    ## the weights in a "checkpoints" sub-directory. For the tutorial, we would like
-    ## to be able to just load the model with .from_pretrained() at the end, which 
-    ## requires saving the weights directly in the model directory.
-    ## TODO: Find a good way to not have to use this kludge!
-    do_save: True
-
 #-------------------- project.model_config --------------------
 -- extends "models/tiny_dynamic_llama.yaml"
 ## Project can override values here...

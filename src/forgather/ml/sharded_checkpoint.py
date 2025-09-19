@@ -766,3 +766,115 @@ def maybe_delete_oldest_checkpoint(
         for checkpoint_path in checkpoints_to_consider[:num_to_delete]:
             logger.info(f"Deleting checkpoint at {checkpoint_path}")
             shutil.rmtree(checkpoint_path)
+
+
+def create_pretrained_symlinks(
+    model_dir: str,
+    force_overwrite: bool = False,
+    dry_run: bool = False
+) -> List[str]:
+    """
+    Create symlinks in model root directory pointing to latest checkpoint files.
+
+    This enables Hugging Face .from_pretrained() to work with checkpointed models
+    by making the latest checkpoint weights accessible from the model root directory.
+
+    Args:
+        model_dir: Path to the model directory containing checkpoints subdirectory
+        force_overwrite: If True, overwrite existing real files. If False, only
+                        overwrite existing symlinks or create new symlinks.
+        dry_run: If True, only log what would be done without creating symlinks
+
+    Returns:
+        List of symlink paths that were created (or would be created in dry_run mode)
+
+    Raises:
+        FileNotFoundError: If no valid checkpoints are found
+        FileExistsError: If target files exist and are not symlinks (when force_overwrite=False)
+    """
+    # Find latest checkpoint
+    latest_checkpoint_dir = find_latest_checkpoint(model_dir)
+    if not latest_checkpoint_dir:
+        raise FileNotFoundError(f"No valid checkpoints found in {model_dir}")
+
+    # Get checkpoint metadata to determine which files to link
+    checkpoint_meta = get_checkpoint_metadata(latest_checkpoint_dir)
+    if not checkpoint_meta:
+        raise FileNotFoundError(f"Invalid checkpoint format in {latest_checkpoint_dir}")
+
+    logger.info(f"Found latest checkpoint: {latest_checkpoint_dir}")
+    logger.info(f"Checkpoint format: {'safetensors' if checkpoint_meta.safetensors else 'pytorch'}, "
+                f"{'sharded' if checkpoint_meta.is_index else 'single file'}")
+
+    symlinks_created = []
+    files_to_link = []
+
+    # Determine which files need to be symlinked
+    if checkpoint_meta.is_index:
+        # Sharded checkpoint - need to link index file and all shard files
+        index_path = os.path.join(latest_checkpoint_dir, checkpoint_meta.file_name)
+        files_to_link.append((checkpoint_meta.file_name, index_path))
+
+        # Load index to find all shard files
+        try:
+            shard_index = load_shard_index(latest_checkpoint_dir, checkpoint_meta.file_name)
+            weight_map = shard_index["weight_map"]
+
+            # Get unique shard file names
+            shard_files = set(weight_map.values())
+            for shard_file in shard_files:
+                shard_path = os.path.join(latest_checkpoint_dir, shard_file)
+                if os.path.exists(shard_path):
+                    files_to_link.append((shard_file, shard_path))
+                else:
+                    logger.warning(f"Shard file referenced in index but not found: {shard_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to read shard index: {e}")
+            raise
+    else:
+        # Single file checkpoint
+        weight_file_path = os.path.join(latest_checkpoint_dir, checkpoint_meta.file_name)
+        files_to_link.append((checkpoint_meta.file_name, weight_file_path))
+
+    # Create symlinks
+    for link_name, target_path in files_to_link:
+        link_path = os.path.join(model_dir, link_name)
+
+        # Check if target already exists
+        if os.path.exists(link_path) or os.path.islink(link_path):
+            is_symlink = os.path.islink(link_path)
+
+            if not is_symlink and not force_overwrite:
+                raise FileExistsError(
+                    f"Target file {link_path} exists and is not a symlink. "
+                    f"Use force_overwrite=True to replace real files."
+                )
+
+            if dry_run:
+                action = "would overwrite" if is_symlink else "would replace real file with"
+                logger.info(f"DRY RUN: {action} symlink {link_path} -> {target_path}")
+            else:
+                # Remove existing file/symlink
+                if is_symlink:
+                    logger.info(f"Replacing existing symlink {link_path}")
+                else:
+                    logger.warning(f"Replacing real file {link_path} with symlink (force_overwrite=True)")
+                os.unlink(link_path)
+
+        if dry_run:
+            logger.info(f"DRY RUN: would create symlink {link_path} -> {target_path}")
+        else:
+            # Create relative symlink to make it more portable
+            rel_target = os.path.relpath(target_path, model_dir)
+            os.symlink(rel_target, link_path)
+            logger.info(f"Created symlink {link_path} -> {rel_target}")
+
+        symlinks_created.append(link_path)
+
+    if dry_run:
+        logger.info(f"DRY RUN: Would create {len(symlinks_created)} symlinks")
+    else:
+        logger.info(f"Successfully created {len(symlinks_created)} symlinks")
+
+    return symlinks_created
