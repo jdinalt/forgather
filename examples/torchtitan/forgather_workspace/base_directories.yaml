@@ -1,1 +1,1 @@
--- set ns.forgather_dir = "../../.."
+-- set ns.forgather_dir = abspath("../../..")

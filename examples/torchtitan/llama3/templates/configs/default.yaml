@@ -1,0 +1,26 @@
+-- extends "models/debug.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Default -- debug"
+    -- set ns.config_description = "Llama 3 debug example"
+
+[job]
+    == super()
+    print_args: true
+
+[metrics]
+    == super()
+    enable_tensorboard: true
+    log_freq: 10
+
+[validation]
+    == super()
+    enable: true
+    steps: 100
+    freq: 100
+
+[checkpoint]
+    == super()
+    enable: true
+    interval: 500

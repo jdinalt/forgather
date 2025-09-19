@@ -27,7 +27,10 @@ from forgather.ml.sharded_checkpoint import (
     validate_checkpoint,
     find_latest_checkpoint,
 )
-from forgather.ml.distributed import DistributedEnvInterface, StaticDistributedEnvironment
+from forgather.ml.distributed import (
+    DistributedEnvInterface,
+    StaticDistributedEnvironment,
+)
 
 from forgather.ml.trainer.checkpoint_manager import (
     CheckpointManager,

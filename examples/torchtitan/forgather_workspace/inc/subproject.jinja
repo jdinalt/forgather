@@ -1,0 +1,6 @@
+{%- macro tokenizer(name, project_dir, config) %} !call:forgather.ml.construct:dependency_list
+    # Autobuild tokenizer, if it does not exist...
+    - "{{ name }}"
+    - !call:forgather:from_project
+        project_dir: "{{ project_dir }}"
+        config_template: "{{ config }}"{% endmacro %}

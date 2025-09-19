@@ -20,7 +20,6 @@ tokenizer: &tokenizer !call:forgather:from_project
 
 [model_config]
     == super()
-    
     # **Tiny Causal LM Overrides**
     hidden_size: 256
     dim_feedforward: 1024

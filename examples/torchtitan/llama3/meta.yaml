@@ -4,5 +4,5 @@
 name: "Titan Llama3"
 description: "See if we can reproduce Titan Llam3 configs with Forgather"
 config_prefix: "configs"
-default_config: "debug.yaml"
+default_config: "default.yaml"
 << endblock configs

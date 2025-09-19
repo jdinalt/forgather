@@ -32,15 +32,15 @@ tokenizer_args: &tokenizer_args !dict
 [datasets_definition]
     -- include 'datasets/llm_dataset_project.yaml'
 
+## Import a model from another Forgather project
+[construct_new_model]
+    -- include "models/causal_lm/import_model_project.yaml"
+
 ## This includes an inline template, defined below.
 ## The need to do this relates to Jinja2 disallowing a template from
 ## directly having more than one parent template. We can get around 
 ## this limitation by extending in 'project.model_config' and including
 ## the resulting template.
-[construct_new_model]
-    -- include "models/causal_lm/import_model_project.yaml"
-
-## Definition is inlined, below.
 [trainer_definition]
     -- include 'project.trainer_config'
 
@@ -107,11 +107,11 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 ## Add experiment loggers to the callbacks list.
 ## The parent creates a Tensor Board SummaryWriter, which we can use.
 
-## This adds a text-generationn sample every 'generation_steps'
 [callback_list]
     -- include 'prompts/tiny_stories.yaml'
 
     == super()
+    ## This adds a text-generationn sample every 'generation_steps'
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         summary_writer: *summary_writer
         prompts: *testprompts

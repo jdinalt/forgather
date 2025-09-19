@@ -1,59 +1,11 @@
--- extends "project.yaml"
+-- extends "models/llama3_8b.yaml"
+
 [config_metadata]
     == super()
-    -- set ns.config_name = "Llama3 8B"
-    -- set ns.config_description = "Llama 3 8B training"
-    -- set ns.model_name = "llama3_8b"
-    -- set ns.nproc_per_node = "gpu"
-
-[model]
-== super()
-    # *llama3_8b*
-    flavor: "8B"
-
-[profiling]
-== super()
-    # *llama3_8b*
-    enable_profiling: True
-    profile_freq: 100
-
-[metrics]
-== super()
-    # *llama3_8b*
-    log_freq: 10
-    enable_tensorboard: True
-
-[optimizer]
-== super()
-    # *llama3_8b*
-    lr: !!float 3e-4
-
-[lr_scheduler]
-## Not sure about debug defaults. Bypass them for now.
-== super.super()
-    # *llama3_8b*
-    warmup_steps: 200
+    -- set ns.config_name = "Llama3 8B Example"
+    -- set ns.config_description = "Llama 3 8B example"
 
 [training]
-== super()
-    # *llama3_8b*
-    local_batch_size: 1
-    seq_len: 8192
-    steps: 1000
-
-[checkpoint]
-== super()
-    # *llama3_8b*
-    interval: 500
-    last_save_model_only: True
-
-[activation_checkpoint]
-== super()
-    # *llama3_8b*
-    selective_ac_option: "op"
-
-[validation]
-== super()
-    # *llama3_8b*
-    freq: 500
-    steps: 1200 # Recommend value for c4_validation with world-size=8 and seq_len=8192
+    == super()
+    seq_len: 512
+    dtype: bfloat16

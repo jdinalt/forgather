@@ -27,64 +27,72 @@
 # Project Dir: {{ abspath(project_dir) }}
 # Current Working Dir: "{{ getcwd() }}"
 
+[tokenizer_config]
+
+
+[tokenizer]
+.define: &tokenizer !call:forgather.ml.construct:dependency_list
+    - {{ joinpath(ns.tokenizers_dir, "wikitext_2k") }}
+    - !call:forgather:from_project
+        project_dir: {{ joinpath(ns.forgather_dir, "examples", "tokenizers", "wikitext") }}
+        config_template: "2k.yaml"
+
 [job]
-.define: &job !singleton:torchtitan.config.job_config:Job
-    dump_folder: "{{ ns.output_dir }}"
-    description: "{{ ns.config_description }}"
+.define: &job !call:torchtitan.config.job_config:Job
 
 [profiling]
-.define: &profiling !singleton:torchtitan.config.job_config:Profiling
+.define: &profiling !call:torchtitan.config.job_config:Profiling
 
 [metrics]
-.define: &metrics !singleton:torchtitan.config.job_config:Metrics
+.define: &metrics !call:torchtitan.config.job_config:Metrics
 
 [model]
-.define: &model !singleton:torchtitan.config.job_config:Model
+.define: &model !call:torchtitan.config.job_config:Model
 
 [optimizer]
-.define: &optimizer !singleton:torchtitan.config.job_config:Optimizer
+.define: &optimizer !call:torchtitan.config.job_config:Optimizer
 
 [lr_scheduler]
-.define: &lr_scheduler !singleton:torchtitan.config.job_config:LRScheduler
+.define: &lr_scheduler !call:torchtitan.config.job_config:LRScheduler
 
 [training]
-.define: &training !singleton:torchtitan.config.job_config:Training
+.define: &training !call:torchtitan.config.job_config:Training
 
 [parallelism]
-.define: &parallelism !singleton:torchtitan.config.job_config:Parallelism
+.define: &parallelism !call:torchtitan.config.job_config:Parallelism
 
 [checkpoint]
-.define: &checkpoint !singleton:torchtitan.config.job_config:Checkpoint
+.define: &checkpoint !call:torchtitan.config.job_config:Checkpoint
 
 [activation_checkpoint]
-.define: &activation_checkpoint !singleton:torchtitan.config.job_config:ActivationCheckpoint
+.define: &activation_checkpoint !call:torchtitan.config.job_config:ActivationCheckpoint
 
 [compile]
-.define: &compile !singleton:torchtitan.config.job_config:Compile
+.define: &compile !call:torchtitan.config.job_config:Compile
 
 [float8]
-.define: &float8 !singleton:torchtitan.config.job_config:Float8
+.define: &float8 !call:torchtitan.config.job_config:Float8
 
 [mx]
-.define: &mx !singleton:torchtitan.config.job_config:MX
+.define: &mx !call:torchtitan.config.job_config:MX
 
 [comm]
-.define: &comm !singleton:torchtitan.config.job_config:Comm
+.define: &comm !call:torchtitan.config.job_config:Comm
 
 [memory_estimation]
-.define: &memory_estimation !singleton:torchtitan.config.job_config:MemoryEstimation
+.define: &memory_estimation !call:torchtitan.config.job_config:MemoryEstimation
 
 [fault_tolerance]
-.define: &fault_tolerance !singleton:torchtitan.config.job_config:FaultTolerance
+.define: &fault_tolerance !call:torchtitan.config.job_config:FaultTolerance
 
 [experimental]
-.define: &experimental !singleton:torchtitan.config.job_config:Experimental
+.define: &experimental !call:torchtitan.config.job_config:Experimental
 
 [validation]
-.define: &validation !singleton:torchtitan.config.job_config:Validation
+.define: &validation !call:torchtitan.config.job_config:Validation
 
 [job_config]
-job_config: &job_config !singleton:torchtitan.config.job_config:JobConfig@job_config
+job_config: &job_config !call:torchtitan.config.job_config:JobConfig@job_config
     job: *job
     profiling: *profiling
     metrics: *metrics
@@ -105,12 +113,12 @@ job_config: &job_config !singleton:torchtitan.config.job_config:JobConfig@job_co
     validation: *validation
 
 [trainer]
-trainer: &trainer !singleton:torchtitan.train:Trainer@trainer [ *job_config ]
+trainer: &trainer !call:torchtitan.train:Trainer@trainer [ *job_config ]
 
 [meta]
 meta: &meta_output !dict:@meta
-    config_name: "Default"
-    config_description: "Default Config"
+    config_name: "{{ ns.config_name }}"
+    config_description: "{{ ns.config_description }}"
     config_class: "type.training_script"
     project_dir: "{{ project_dir }}"
     output_dir: "{{ ns.output_dir }}"
@@ -121,9 +129,9 @@ meta: &meta_output !dict:@meta
     nproc_per_node: {{ ns.nproc_per_node }}
 
 [dynamic_args]
-dynamic_args: []
+dynamic_args: !dlist
 
 [main]
-main: !singleton:forgather.ml.training_script:TrainingScript@training_script
+main: !call:forgather.ml.training_script:TrainingScript@training_script
     meta: *meta_output
     trainer: *trainer

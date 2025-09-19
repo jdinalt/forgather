@@ -1,0 +1,41 @@
+-- extends "projects/base_titan.yaml"
+-- from 'inc/subproject.jinja' import tokenizer
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Llama3 8B Base"
+    -- set ns.config_description = "Llama 3 8B base configuration"
+    -- set ns.tokenizer_name = joinpath(ns.tokenizers_dir, "wikitext_titan_128k")
+    -- set ns.tokenizer_proj = joinpath(ns.forgather_dir, "examples", "tokenizers", "wikitext")
+    -- set ns.tokenizer_config = "titan_128k.yaml"
+    -- set ns.nproc_per_node = "gpu"
+
+[tokenizer]
+# Get tokenizer from sub-project
+.define: &tokenizer {{ tokenizer(ns.tokenizer_name, ns.tokenizer_proj, ns.tokenizer_config) }}
+
+[job]
+    => super()
+    dump_folder: "{{ ns.output_dir }}"
+    description: "{{ ns.config_description }}"
+
+[model]
+    => super()
+    name: "llama3"
+    hf_assets_path: *tokenizer
+
+[training]
+    => super()
+    dataset: {{ dataset_config | default("c4") }}
+    steps: {{ max_steps | default(1000) }}
+
+[dynamic_args]
+    => super()
+    dataset_config:
+        names: "--dataset"
+        type: "str"
+        help: "The name of the dataset configuration to use"
+    max_steps:
+        names: "--max-steps"
+        type: "int"
+        help: "Set maximum training steps"
