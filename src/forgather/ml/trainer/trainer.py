@@ -188,7 +188,7 @@ class Trainer(BaseTrainer):
         optimizer_cls_and_kwargs: Optional[
             Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]
         ] = None,
-        lr_scheduler_factory: Optional[Callable] | None = None,
+        lr_scheduler_factory: Optional[Callable] = None,
         **kwargs,
     ):
         assert isinstance(args, TrainingArguments)
