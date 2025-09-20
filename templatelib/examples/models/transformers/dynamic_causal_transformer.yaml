@@ -21,7 +21,7 @@
 ## excepting this being a causal LM.
 [model_bits]
     [loss_fn]
-loss_fn: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn []
+loss_fn: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn
 
     [layer_norm_factory]
 layer_norm_factory: &layer_norm_factory !partial:torch.nn:LayerNorm@layer_norm_factory

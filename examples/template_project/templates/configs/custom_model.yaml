@@ -1,46 +1,39 @@
 ## The project defines the defaults
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     ## Experiment Metadata
     -- set ns.config_name = 'My ML Science Project'
     -- set ns.config_description = "It's not supid, it's advanced!"
     -- set ns.model_name = 'my_custom_model'
-    
-    ## Name the logging directory to match the model name
-    -- set ns.log_name = ns.model_name
--- endblock config_metadata
+    -- set ns.log_name = "control"
 
 
-## Override default project definition
--- block trainer_definition
-    -- include 'experiment.trainer_config'
--- endblock trainer_definition
+## Make some changes to the default trainer definition
+[trainer_definition]
+    -- include 'custom_model.trainer_config'
 
-
-## Override default project definition
--- block construct_new_model
-    -- include 'experiment.model_config'
--- endblock construct_new_model
-
+## Override default project definition with custom model
+[construct_new_model]
+    -- include 'custom_model.model_config'
 
 ## The next line defines a new template within the same file.
-#-------------------- experiment.trainer_config --------------------
+#-------------------- custom_model.trainer_config --------------------
 -- extends 'project.trainer_config'
 
--- block trainer_args
+[trainer_args]
     == super()
-    
-    # {{ ns.config_name }} Overrides
--- endblock trainer_args
+    #  **custom_model**
 
+    # Increase effective batch-size by 4x
+    gradient_accumulation_steps: 4
 
-#-------------------- experiment.model_config --------------------
--- extends 'project.model_config'
+#-------------------- custom_model.model_config --------------------
+-- extends 'models/example_model_config.yaml'
 
--- block model_config
+[model_config]
     == super()
-
-    # {{ ns.config_name }} Overrides
--- endblock model_config
+    # ** Custom Model **
+    # Make this a little deeper than the defaults
+    num_hidden_layers: 6
