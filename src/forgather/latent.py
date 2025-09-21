@@ -260,33 +260,39 @@ class Materializer:
             return value
 
         elif isinstance(obj, CallableNode):
-            logger.debug(str(obj))
-            # If not the root-node, stop traversal and return callable.
-            if self.level > 0 and isinstance(obj, LambdaNode):
-                return partial(obj, context_vars=self.context_vars)
+            try:
+                logger.debug(str(obj))
+                # If not the root-node, stop traversal and return callable.
+                if self.level > 0 and isinstance(obj, LambdaNode):
+                    return partial(obj, context_vars=self.context_vars)
 
-            if isinstance(obj, SingletonNode):
-                # Have we already constructed this object?
-                if (value := obj.instance) is not None:
-                    logger.debug(f"Found Singleton {str(obj)}")
-                    return value
+                if isinstance(obj, SingletonNode):
+                    # Have we already constructed this object?
+                    if (value := obj.instance) is not None:
+                        logger.debug(f"Found Singleton {str(obj)}")
+                        return value
 
-            if isinstance(obj, MetaNode):
-                value = obj.callable(*obj.args, **obj.kwargs)
-            else:
-                args = self._materialize(obj.args)
-                kwargs = self._materialize(obj.kwargs)
-                if self.level == 0 and isinstance(obj, LambdaNode):
-                    args = list(args)
-                    args.extend(self.args)
-                    kwargs |= self.kwargs
-                value = obj.callable(*args, **kwargs)
+                if isinstance(obj, MetaNode):
+                    value = obj.callable(*obj.args, **obj.kwargs)
+                else:
+                    args = self._materialize(obj.args)
+                    kwargs = self._materialize(obj.kwargs)
+                    if self.level == 0 and isinstance(obj, LambdaNode):
+                        args = list(args)
+                        args.extend(self.args)
+                        kwargs |= self.kwargs
+                    value = obj.callable(*args, **kwargs)
 
-            if isinstance(obj, SingletonNode):
-                # Store object in map to return if called again.
-                logger.debug(f"Constructed new Singleton {str(obj)}")
-                obj.instance = value
-            return value
+                if isinstance(obj, SingletonNode):
+                    # Store object in map to return if called again.
+                    logger.debug(f"Constructed new Singleton {str(obj)}")
+                    obj.instance = value
+                return value
+            except Exception as e:
+                raise add_exception_notes(
+                    e,
+                    f"Exception occured while constructing {obj.constructor}",
+                )
         else:
             return obj
 

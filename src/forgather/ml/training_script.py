@@ -39,7 +39,8 @@ class TrainingScript:
             logger.info(f"config_name: {self.meta.config_name}")
             logger.info(f"config_description: {self.meta.config_description}")
             logger.info(f"output_dir: {self.meta.output_dir}")
-            logger.info(f"logging_dir: {self.meta.logging_dir}")
+            if "logging_dir" in self.meta:
+                logger.info(f"logging_dir: {self.meta.logging_dir}")
 
         if self.do_train:
             # This is where the actual 'loop' is.

@@ -1,5 +1,6 @@
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Tuple, Optional
 import torch
+from torch import Tensor
 import logging
 
 logger = logging.getLogger(__name__)
@@ -51,10 +52,27 @@ class DataCollatorForCausalLM:
         tokenizer,
         truncation: bool = False,
         ignore_index: int = -100,
+        input_name: str = "input_ids",
+        labels_name: str | None = "labels",
         **pad_kwargs,
-    ):
+    ) -> dict[str, Tensor] | Tuple[dict[str, Tensor], Tensor]:
+        """
+        Initializes the data collator with tokenizer and padding/truncation options.
+        Args:
+            tokenizer: The tokenizer instance used for encoding the data.
+            truncation (bool, optional): Whether to truncate sequences to the maximum length. Defaults to False.
+            ignore_index (int, optional): The index to ignore in labels during loss computation. Defaults to -100.
+            input_name_map (Dict[str, str], optional): Remap dictionary for batch labels
+            labels_name: The dictionary key for labels, if None, then returns as second element of tuple
+            **pad_kwargs: Additional keyword arguments for padding, such as 'max_length' and 'padding'.
+        Notes:
+            - If 'max_length' is provided in pad_kwargs and padding is not set to 'max_length', 'max_length' will be ignored.
+            - A warning is logged if the specified max_length exceeds the tokenizer's model_max_length.
+        """
         self.tokenizer = tokenizer
         self.max_length = pad_kwargs.get("max_length", tokenizer.model_max_length)
+        self.input_name = input_name
+        self.labels_name = labels_name
 
         # Supress warning about max_length being ignored when padding is not
         # 'max_length' and max_length is present.
@@ -82,12 +100,17 @@ class DataCollatorForCausalLM:
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
         if self.truncation:
             features = self._truncate(features)
-        batch = self._pad(features)
-        input_ids = batch["input_ids"]
-        batch["labels"] = torch.where(
+        padded_batch = self._pad(features)
+        input_ids: Tensor = padded_batch["input_ids"]
+        labels = torch.where(
             input_ids == self.tokenizer.pad_token_id, self.ignore_index, input_ids
         )
-        return batch
+        output_dict = {self.input_name: input_ids}
+        if not self.labels_name:
+            return output_dict, labels
+
+        output_dict["labels"] = labels
+        return output_dict
 
     def _truncate(self, features):
         if self.tokenizer.truncation_side == "right":

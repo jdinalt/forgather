@@ -43,12 +43,12 @@ tokenizer_args: &tokenizer_args !dict
     -- include "models/causal_lm/import_model_project.yaml"
 
 [optimizer]
-optimizer: &optimizer !lambda:torch:optim.AdamW
+optimizer: &optimizer !partial:torch:optim.AdamW
     lr: 1.0e-4
 
 [lr_scheduler]
 # https://arxiv.org/html/2503.02844v1
-lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
     # This seems sufficient to maintain stability.
     warmup_steps: 200
 
@@ -60,7 +60,7 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     constant_lr: 5.0e-6
 
 [datacollator]
-data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
+data_collator: &data_collator !call:forgather.ml.data_collator:DataCollatorForCausalLM@data_collator
     tokenizer: *tokenizer
     return_tensors: pt
     truncation: True
@@ -151,6 +151,6 @@ model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_t
 
 [callback_list]
     == super()
-    peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
+    peak_memory: !call:forgather.ml.trainer.callbacks:PeakMemory
         do_log: {{ log_peak_memory | default(False) }}
-    trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback []
+    trainer_control: !call:forgather.ml.trainer.callbacks:TrainerControlCallback []

@@ -59,7 +59,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
     warmup_steps: 500
     cooldown_steps: 50000
-    constant_lr: 1.0e-4
+    constant_lr: 1.0e-6
 
 [datacollator]
     == super()

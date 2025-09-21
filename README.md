@@ -8,6 +8,10 @@ Forgather is a configuration-driven ML framework that uses template inheritance 
 - **Dynamic Code Generation** - Generate standalone Python models from configs
 - **Full Reproducibility** - Automatic snapshots of code and configs with each run
 
+## News
+
+- Added preliminary [Torch Titan integration](./examples/torchtitan/README.md)
+
 ## Table of Contents
 
 - [Quick Start](#quick-start)
@@ -45,6 +49,7 @@ See: [./examples/tutorials/tiny_llama/project_index.ipynb](./examples/tutorials/
 Or, from the comamand-line...
 
 ```bash
+forgather -i                                    # Start interactive Forgather shell
 forgather ls -r                                 # List all forgather projects
 cd examples/tutorials/tiny_llama
 forgather index                                 # Show project summary
@@ -67,10 +72,9 @@ Create new experiments by inheriting from existing configs and specifying only t
 
 ```yaml
 -- extends 'base_experiment.yaml'
--- block optimizer
+[optimizer]
     == super()
     lr: 1.0e-3  # Only change learning rate
--- endblock
 ```
 
 ### Dynamic Type System
@@ -81,7 +85,7 @@ optimizer: !partial:torch.optim.AdamW
     lr: 1.0e-3
     weight_decay: 0.01
 
--- block layer_factory
+[layer_factory]
 # Experiment: Switch from PreLayerNorm to PostLayerNorm
 layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
     feedforward_factory: *feedforward_factory
@@ -89,7 +93,6 @@ layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
     norm_factory: *layer_norm_factory
     dropout: !var "layer_dropout"
     residual_dropout: !var "residual_dropout"
-<< endblock layer_factory
 ```
 
 ### Code Generation
@@ -127,24 +130,11 @@ forgather index
 ```
 
 ### 3. **Interactive Development**
-Each project includes a `project_index.ipynb` notebook for interactive exploration:
+
+Run the interactive shell.
 
 ```python
-from forgather.project import Project
-proj = Project("train_tiny_llama.yaml")
-training_script = proj("main")  # Materialize assets from config
-training_script.run() # Train model
-```
-
-### 4. **Command Line Tools**
-Master the `forgather` interface:
-
-```bash
-forgather index                    # Project overview
-forgather ls                       # List configs
-forgather -t config.yaml pp        # Show preprocessed config
-forgather -t config.yaml tlist     # Template hierarchy
-forgather -t config.yaml train     # Train model
+forgather -i
 ```
 
 ## Core Concepts
@@ -164,7 +154,7 @@ my_project/
 ### Template Language
 Forgather uses **Jinja2 + YAML** with custom syntax:
 - `-- extends 'template.yaml'` - Template inheritance
-- `-- block name` / `-- endblock` - Override sections
+- `[block_name]` - Override sections
 - `-- set ns.var = value` - Set variables
 - `!partial:module:Class` - Partial function construction
 - `!factory:module:Class` - Factory construction
@@ -214,6 +204,9 @@ forgather -t my_experiment.yaml train -d "0,1" --dry-run
 
 # Start Tensorboard to monitor progress on all models in project; bind to all ports.
 forgather tb --all -- --bind_all
+
+# Show running training jobs -- which can be controlled via the CLI
+forgather control list
 ```
 
 ## Contributing

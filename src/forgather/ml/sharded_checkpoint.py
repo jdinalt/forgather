@@ -769,9 +769,7 @@ def maybe_delete_oldest_checkpoint(
 
 
 def create_pretrained_symlinks(
-    model_dir: str,
-    force_overwrite: bool = False,
-    dry_run: bool = False
+    model_dir: str, force_overwrite: bool = False, dry_run: bool = False
 ) -> List[str]:
     """
     Create symlinks in model root directory pointing to latest checkpoint files.
@@ -803,8 +801,10 @@ def create_pretrained_symlinks(
         raise FileNotFoundError(f"Invalid checkpoint format in {latest_checkpoint_dir}")
 
     logger.info(f"Found latest checkpoint: {latest_checkpoint_dir}")
-    logger.info(f"Checkpoint format: {'safetensors' if checkpoint_meta.safetensors else 'pytorch'}, "
-                f"{'sharded' if checkpoint_meta.is_index else 'single file'}")
+    logger.info(
+        f"Checkpoint format: {'safetensors' if checkpoint_meta.safetensors else 'pytorch'}, "
+        f"{'sharded' if checkpoint_meta.is_index else 'single file'}"
+    )
 
     symlinks_created = []
     files_to_link = []
@@ -817,7 +817,9 @@ def create_pretrained_symlinks(
 
         # Load index to find all shard files
         try:
-            shard_index = load_shard_index(latest_checkpoint_dir, checkpoint_meta.file_name)
+            shard_index = load_shard_index(
+                latest_checkpoint_dir, checkpoint_meta.file_name
+            )
             weight_map = shard_index["weight_map"]
 
             # Get unique shard file names
@@ -827,14 +829,18 @@ def create_pretrained_symlinks(
                 if os.path.exists(shard_path):
                     files_to_link.append((shard_file, shard_path))
                 else:
-                    logger.warning(f"Shard file referenced in index but not found: {shard_path}")
+                    logger.warning(
+                        f"Shard file referenced in index but not found: {shard_path}"
+                    )
 
         except Exception as e:
             logger.error(f"Failed to read shard index: {e}")
             raise
     else:
         # Single file checkpoint
-        weight_file_path = os.path.join(latest_checkpoint_dir, checkpoint_meta.file_name)
+        weight_file_path = os.path.join(
+            latest_checkpoint_dir, checkpoint_meta.file_name
+        )
         files_to_link.append((checkpoint_meta.file_name, weight_file_path))
 
     # Create symlinks
@@ -852,14 +858,18 @@ def create_pretrained_symlinks(
                 )
 
             if dry_run:
-                action = "would overwrite" if is_symlink else "would replace real file with"
+                action = (
+                    "would overwrite" if is_symlink else "would replace real file with"
+                )
                 logger.info(f"DRY RUN: {action} symlink {link_path} -> {target_path}")
             else:
                 # Remove existing file/symlink
                 if is_symlink:
                     logger.info(f"Replacing existing symlink {link_path}")
                 else:
-                    logger.warning(f"Replacing real file {link_path} with symlink (force_overwrite=True)")
+                    logger.warning(
+                        f"Replacing real file {link_path} with symlink (force_overwrite=True)"
+                    )
                 os.unlink(link_path)
 
         if dry_run:

@@ -105,7 +105,7 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     max_sequence_length: !singleton:getattr
         - *tokenizer
         - "model_max_length"
-    dim_feedforward: 5400
+    dim_feedforward: 5376
     embedding_dropout: 0.0
     rms_norm_eps: 1.0e-06
     layer_dropout: 0.0

@@ -1,6 +1,6 @@
 -- set ns = namespace()
 -- from 'inc/formatting.jinja' import h1, h2, h3
-[preamble!]
+[head!]
     [base_directories]
     -- include "base_directories.yaml"
 
@@ -20,78 +20,72 @@
     -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
     -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
 
-[header]
+[body]
+    [header]
 == h1(ns.config_name)
 # {{ utcisotime() }}
 # Description: {{ ns.config_description }}
 # Project Dir: {{ abspath(project_dir) }}
 # Current Working Dir: "{{ getcwd() }}"
 
-[tokenizer_config]
+    [tokenizer]
+.define: &tokenizer "path/to/tokenizer"
 
-
-[tokenizer]
-.define: &tokenizer !call:forgather.ml.construct:dependency_list
-    - {{ joinpath(ns.tokenizers_dir, "wikitext_2k") }}
-    - !call:forgather:from_project
-        project_dir: {{ joinpath(ns.forgather_dir, "examples", "tokenizers", "wikitext") }}
-        config_template: "2k.yaml"
-
-[job]
+    [job]
 .define: &job !call:torchtitan.config.job_config:Job
 
-[profiling]
+    [profiling]
 .define: &profiling !call:torchtitan.config.job_config:Profiling
 
-[metrics]
+    [metrics]
 .define: &metrics !call:torchtitan.config.job_config:Metrics
 
-[model]
+    [model]
 .define: &model !call:torchtitan.config.job_config:Model
 
-[optimizer]
+    [optimizer]
 .define: &optimizer !call:torchtitan.config.job_config:Optimizer
 
-[lr_scheduler]
+    [lr_scheduler]
 .define: &lr_scheduler !call:torchtitan.config.job_config:LRScheduler
 
-[training]
+    [training]
 .define: &training !call:torchtitan.config.job_config:Training
 
-[parallelism]
+    [parallelism]
 .define: &parallelism !call:torchtitan.config.job_config:Parallelism
 
-[checkpoint]
+    [checkpoint]
 .define: &checkpoint !call:torchtitan.config.job_config:Checkpoint
 
-[activation_checkpoint]
+    [activation_checkpoint]
 .define: &activation_checkpoint !call:torchtitan.config.job_config:ActivationCheckpoint
 
-[compile]
+    [compile]
 .define: &compile !call:torchtitan.config.job_config:Compile
 
-[float8]
+    [float8]
 .define: &float8 !call:torchtitan.config.job_config:Float8
 
-[mx]
+    [mx]
 .define: &mx !call:torchtitan.config.job_config:MX
 
-[comm]
+    [comm]
 .define: &comm !call:torchtitan.config.job_config:Comm
 
-[memory_estimation]
+    [memory_estimation]
 .define: &memory_estimation !call:torchtitan.config.job_config:MemoryEstimation
 
-[fault_tolerance]
+    [fault_tolerance]
 .define: &fault_tolerance !call:torchtitan.config.job_config:FaultTolerance
 
-[experimental]
+    [experimental]
 .define: &experimental !call:torchtitan.config.job_config:Experimental
 
-[validation]
+    [validation]
 .define: &validation !call:torchtitan.config.job_config:Validation
 
-[job_config]
+    [job_config]
 job_config: &job_config !call:torchtitan.config.job_config:JobConfig@job_config
     job: *job
     profiling: *profiling
@@ -112,10 +106,10 @@ job_config: &job_config !call:torchtitan.config.job_config:JobConfig@job_config
     experimental: *experimental
     validation: *validation
 
-[trainer]
+    [trainer]
 trainer: &trainer !call:torchtitan.train:Trainer@trainer [ *job_config ]
 
-[meta]
+    [meta]
 meta: &meta_output !dict:@meta
     config_name: "{{ ns.config_name }}"
     config_description: "{{ ns.config_description }}"
@@ -128,10 +122,10 @@ meta: &meta_output !dict:@meta
     output_dir: "{{ ns.output_dir }}"
     nproc_per_node: {{ ns.nproc_per_node }}
 
-[dynamic_args]
+    [dynamic_args]
 dynamic_args: !dlist
 
-[main]
+    [main]
 main: !call:forgather.ml.training_script:TrainingScript@training_script
     meta: *meta_output
     trainer: *trainer
