@@ -19,6 +19,7 @@ from torchtitan.tools.logging import logger
 from torchtitan.components.validate import Validator as TitanValidator
 from torchtitan.components.validate import BaseValidator
 
+
 class ValidatorFactory(Protocol):
     def __call__(
         self,
@@ -34,12 +35,12 @@ class ValidatorFactory(Protocol):
         pp_schedule: _PipelineSchedule | None = None,
         pp_has_first_stage: bool | None = None,
         pp_has_last_stage: bool | None = None,
-    ) -> BaseValidator:
-        ...
+    ) -> BaseValidator: ...
+
 
 class Validator(TitanValidator):
     """
-    A concrete implementation of 
+    A concrete implementation of
     """
 
     validation_dataloader: BaseDataLoader

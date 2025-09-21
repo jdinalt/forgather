@@ -383,9 +383,9 @@ class Trainer(Trainer):
                 else (None, None, None)
             )
 
-            assert validator_factory, (
-                "Validation factory is required when job_config.validation.enable == True"
-            )
+            assert (
+                validator_factory
+            ), "Validation factory is required when job_config.validation.enable == True"
 
             self.validator = validator_factory(
                 job_config=job_config,
