@@ -1,4 +1,4 @@
--- extends "projects/base_titan.yaml"
+-- extends "projects/native_titan.yaml"
 -- from 'inc/subproject.jinja' import tokenizer
 
 [config_metadata]

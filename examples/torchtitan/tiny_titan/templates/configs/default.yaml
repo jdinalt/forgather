@@ -5,6 +5,7 @@
 .define: &config_description "Rough draft"
 .define: &output_dir {{ joinpath(project_dir, 'output_models', 'test_model') }}
 .define: &seq_len 512
+.define: &local_batch_size 32
 
 .define: &job !call:torchtitan.config.job_config:Job
     dump_folder: *output_dir
@@ -16,12 +17,12 @@
 .define: &metrics !call:torchtitan.config.job_config:Metrics
     log_freq: 100
     disable_color_printing: false
-    enable_tensorboard: false
-    save_tb_folder: "tb"
+    enable_tensorboard: true
+    save_tb_folder: "runs"
 
 .define: &training !call:torchtitan.config.job_config:Training
     steps: 6625 # 10% of dataset
-    local_batch_size: 32
+    local_batch_size: *local_batch_size
     seq_len: *seq_len
     gc_freq: 1000
 
@@ -35,9 +36,10 @@
     context_parallel_degree: 1
 
 .define: &checkpoint !call:torchtitan.config.job_config:Checkpoint
-    enable: false
-    folder: "checkpoint"
+    enable: true
+    folder: "checkpoints"
     interval: 1000
+    keep_latest_k: 3
     last_save_model_only: false
     export_dtype: "float32"
 
@@ -61,6 +63,8 @@
 .define: &experimental !call:torchtitan.config.job_config:Experimental
 
 .define: &validation !call:torchtitan.config.job_config:Validation
+    enable: true
+    freq: 500
 
 job_config: &job_config !call:torchtitan.config.job_config:JobConfig@job_config
     job: *job
@@ -102,12 +106,15 @@ tokenizer: &tokenizer !call:forgather:from_project
     config_template: "2k.yaml"
 
 # Import dataset from sub-project
-train_dataset: &train_dataset !call:forgather:from_project
+.define: &dataset_dict !call:forgather:from_project
     project_dir: {{ joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan') }}
     config_template: "tinystories-iter.yaml"
-    targets: "train_dataset"
+    targets: [ "train_dataset", "eval_dataset" ]
     preprocess_args: *tokenizer_args
     tokenizer: *tokenizer
+
+train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
+eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 
 data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM                                                                                                                                                                                                                                                                                                                  
     tokenizer: *tokenizer
@@ -120,7 +127,14 @@ train_dataloader: &train_dataloader !call:torchtitan.components.dataloader:Paral
     dataset: *train_dataset
     dp_rank: *dp_rank
     dp_world_size: *dp_degree
-    batch_size: 8
+    batch_size: *local_batch_size
+    collate_fn: *data_collator
+
+validation_dataloader: &validation_dataloader !call:torchtitan.components.dataloader:ParallelAwareDataloader
+    dataset: *eval_dataset
+    dp_rank: *dp_rank
+    dp_world_size: *dp_degree
+    batch_size: 64
     collate_fn: *data_collator
 
 model_args: &model_args !call:torchtitan.models.llama3.model.args:TransformerModelArgs
@@ -148,10 +162,12 @@ state_dict_adapter: &state_dict_adapter !call:torchtitan.models.llama3.model.sta
 optimizer_factory: &optimizer_factory !partial:torch:optim.AdamW
     lr: 1.0e-3
 
-lr_scheduler_factory: &lr_scheduler_factory !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+lr_scheduler_factory: &lr_scheduler_factory !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler
     warmup_steps: 500
     cooldown_steps: 50000
     constant_lr: 1.0e-6
+
+validator_factory: &validator_factory !partial:forgather.ml.trainer.torchtitan.validate:Validator
 
 trainer: &trainer !call:forgather.ml.trainer.torchtitan.titan_trainer:Trainer@trainer
     job_config: *job_config
@@ -159,7 +175,7 @@ trainer: &trainer !call:forgather.ml.trainer.torchtitan.titan_trainer:Trainer@tr
     ft_manager: *ft_manager
     distributed_env: *distributed_env
     train_dataloader: *train_dataloader
-    eval_dataloader: null
+    validation_dataloader: *validation_dataloader
     tokenizer: *tokenizer
     model_factory: *model_factory
     optimizer_factory: *optimizer_factory
@@ -168,6 +184,7 @@ trainer: &trainer !call:forgather.ml.trainer.torchtitan.titan_trainer:Trainer@tr
     pipelining_fn: *pipeline_fn
     loss_fn: *loss_fn
     state_dict_adapter: *state_dict_adapter
+    validator_factory: *validator_factory
     model_args: *model_args
 
 meta: &meta_output !dict:@meta

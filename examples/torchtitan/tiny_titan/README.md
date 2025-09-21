@@ -103,7 +103,9 @@ I addressed this with a hack, which is to add a "schedulers" member to the LR sc
 
 ### Validation
 
-This looks like a can-of-worms. I'll open it later, so for now, validation is not supported.
+Similar to Trainer, a sub-class of the basic Validator has been added, which takes a Dataloader as an argument, rather than a tokenizer, and constructing the dataloader internally. The dataloader is passed throught Trainer.
+
+A factory Protocol has also been defined for constructing a validator, to check the signature against.
 
 ## Results
 

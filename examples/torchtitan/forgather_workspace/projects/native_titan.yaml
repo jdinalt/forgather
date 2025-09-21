@@ -1,3 +1,4 @@
+## Base trainer script template for native Torch Titan configurations
 -- set ns = namespace()
 -- from 'inc/formatting.jinja' import h1, h2, h3
 [head!]

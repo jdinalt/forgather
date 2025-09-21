@@ -24,13 +24,9 @@ from torchtitan.distributed import ParallelDims, utils as dist_utils
 from torchtitan.models.attention import init_attention_mask
 from torchtitan.protocols.model_converter import build_model_converters
 from torchtitan.tools import utils
-from torchtitan.tools.logging import init_logger, logger
-from torchtitan.tools.profiling import (
-    maybe_enable_memory_snapshot,
-    maybe_enable_profiling,
-)
+from torchtitan.tools.logging import logger
 
-# Added
+# Added for Forgather implementation
 from torch.optim.optimizer import ParamsT
 from torchtitan.train import Trainer
 from torchtitan.protocols.train_spec import ParallelizeFunction, PipeliningFunction
@@ -38,8 +34,10 @@ from torchtitan.protocols.state_dict_adapter import StateDictAdapter
 from torchtitan.components.dataloader import BaseDataLoader
 from torchtitan.config.job_config import Parallelism
 from torchtitan.components.ft.config import FaultTolerance as FTConfig
+from torchtitan.components.validate import BaseValidator
 
 from forgather.ml.distributed import DistributedEnvInterface
+from forgather.ml.trainer.torchtitan.validate import ValidatorFactory
 
 
 # ExtendedParallelDims and ExtendedFTManager really should be exporting dp_degree and dp_rank
@@ -114,7 +112,7 @@ class Trainer(Trainer):
         distributed_env: DistributedEnvInterface,
         ft_manager: ExtendedFTManager,
         train_dataloader: BaseDataLoader,
-        eval_dataloader: BaseDataLoader,
+        validation_dataloader: BaseDataLoader,
         tokenizer,  # TODO: What type is tokenizer?
         model_factory: Callable[[], torch.nn.Module],  # TODO: Define type
         optimizer_factory: Callable[
@@ -127,6 +125,7 @@ class Trainer(Trainer):
             [torch.Tensor, torch.Tensor], torch.Tensor
         ],  # TODO: Define type
         state_dict_adapter: Optional[StateDictAdapter],
+        validator_factory: Optional[ValidatorFactory],
         model_args,
     ):
 
@@ -373,11 +372,7 @@ class Trainer(Trainer):
         )
 
         # Build validator if validation is configured
-        # TODO: Implement me!
-        assert not job_config.validation.enable, "Validation is not implemented yet!"
         if job_config.validation.enable:
-            assert self.train_spec.build_validator_fn is not None
-
             pp_schedule, pp_has_first_stage, pp_has_last_stage = (
                 (
                     self.pp_schedule,
@@ -388,11 +383,15 @@ class Trainer(Trainer):
                 else (None, None, None)
             )
 
-            self.validator = self.train_spec.build_validator_fn(
+            assert validator_factory, (
+                "Validation factory is required when job_config.validation.enable == True"
+            )
+
+            self.validator = validator_factory(
                 job_config=job_config,
                 dp_world_size=dp_degree,
                 dp_rank=dp_rank,
-                tokenizer=self.tokenizer,
+                validation_dataloader=validation_dataloader,
                 parallel_dims=parallel_dims,
                 loss_fn=self.loss_fn,
                 validation_context=self.train_context,
