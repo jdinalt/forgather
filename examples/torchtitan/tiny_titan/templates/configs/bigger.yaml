@@ -5,8 +5,7 @@
     -- set ns.config_name = "Bigger Llama3"
     -- set ns.config_description = "Bigger Llama3, Trained on fineweb-edu"
     -- set ns.model_name = "bigger_llama3"
-    # Configured for DDP on 4 GPUs
-    -- set ns.nproc_per_node = 4
+    -- set ns.nproc_per_node = "gpu"
 
 [metrics]
     == super()
@@ -46,8 +45,3 @@ lr_scheduler_factory: &lr_scheduler_factory !partial:forgather.ml.optim.infinite
     warmup_steps: 100
     cooldown_steps: 50000
     constant_lr: 2.0e-4
-
-[parallelism]
-    == super()
-    data_parallel_replicate_degree: 4
-    data_parallel_shard_degree: 1
