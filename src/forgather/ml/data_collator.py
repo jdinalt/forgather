@@ -84,8 +84,8 @@ class DataCollatorForCausalLM:
             pad_kwargs.pop("max_length")
 
         if self.max_length > tokenizer.model_max_length:
-            logger.warning(
-                f"{max_length=} is greater than {tokenizer.model_max_length=}"
+            raise ValueError(
+                f"{self.max_length=} is greater than {tokenizer.model_max_length=}"
             )
         self.truncation = truncation
         self.ignore_index = ignore_index
