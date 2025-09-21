@@ -149,7 +149,7 @@ lr_scheduler_factory: &lr_scheduler_factory !partial:forgather.ml.optim.infinite
     constant_lr: 1.0e-6
 
     [data_collator]
-data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM                                                                                                                                                                                                                                                                                                                  
+data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM
     tokenizer: *tokenizer
     return_tensors: pt
     truncation: True
