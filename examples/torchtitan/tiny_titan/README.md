@@ -2,6 +2,14 @@
 
 This my first shot at creating a native Torch Titain trainer, which uses dependency injection for most the majority of the training assets. This is opposed to the torchtitan approach of giving the passing a configuration into the trainer and having it construct all of the assets internally from the configuration.
 
+**Update**
+
+We now have basic templates for creating Forgather Titan trainer projects, with a couple of basic examples.
+
+- default.yaml : This recreates the Tiny Llama tutorial using Torch Titain
+- bigger.yaml : The switches to a 117M parameter Llama3 model, an 8K tokenizer, and trains on FineWeb-Edu-Dedup using DDP x 4 GPUs
+- rough_draft.yaml : My initial rough-draft configuration for getting this working.
+
 ## Why?
 
 The dependency injection approach has a number of advantages. The biggest is that the coupling between components is much looser, in that nothing requires explicitly defined support, as long as the interfaces are compatible. For example, I can inject any optimizer I want, without ever having to add explcit support for it in torchtitan. There's no longer any need for pre-registering components to be able to use them. You just construct the object and inject it into the trainer. Being able to do this through configuration files was one of the major driving forces for writing Forgather in the first place.

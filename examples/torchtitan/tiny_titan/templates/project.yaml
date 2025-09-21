@@ -1,0 +1,46 @@
+-- extends "projects/fg_titan.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Tiny Llama3"
+    -- set ns.config_description = "Tiny Llama3 experiments with Torch Titan"
+    -- set ns.nproc_per_node = 1
+
+[metrics]
+    == super()
+    log_freq: 100
+    enable_tensorboard: true
+
+[training]
+    == super()
+    steps: 6700
+    local_batch_size: 32
+    seq_len: 512
+
+[validation]
+    == super()
+    freq: 500
+    local_batch_size: 64
+
+[model]
+-- include "models/llama3/tiny_llama3.yaml"
+
+[checkpoint]
+    == super()
+    interval: 5000
+    enable: True
+
+[dataset]
+    == super()
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan') }}"
+    config_template: "tinystories-iter.yaml"
+
+[optimizer_factory]
+optimizer_factory: &optimizer_factory !partial:torch:optim.AdamW
+    lr: 1.0e-3
+
+[lr_scheduler_factory]
+lr_scheduler_factory: &lr_scheduler_factory !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler
+    warmup_steps: 500
+    cooldown_steps: 50000
+    constant_lr: 1.0e-6

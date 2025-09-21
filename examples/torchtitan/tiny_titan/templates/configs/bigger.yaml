@@ -1,0 +1,53 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Bigger Llama3"
+    -- set ns.config_description = "Bigger Llama3, Trained on fineweb-edu"
+    -- set ns.model_name = "bigger_llama3"
+    # Configured for DDP on 4 GPUs
+    -- set ns.nproc_per_node = 4
+
+[metrics]
+    == super()
+    log_freq: 10
+    enable_tensorboard: true
+
+[training]
+    == super()
+    steps: 100000
+    local_batch_size: 16
+    seq_len: 2048
+
+[validation]
+    == super()
+    freq: 100
+    local_batch_size: 32
+
+[model]
+-- include "models/llama3/117M.yaml"
+
+[checkpoint]
+    == super()
+    interval: 1000
+    enable: True
+
+[dataset]
+    == super()
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'datasets', 'HuggingFaceTB') }}"
+    config_template: "smollm-corpus/fineweb-edu-dedup-abridged.yaml"
+
+[optimizer_factory]
+optimizer_factory: &optimizer_factory !partial:torch:optim.AdamW
+    lr: 5.0e-4
+
+[lr_scheduler_factory]
+lr_scheduler_factory: &lr_scheduler_factory !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler
+    warmup_steps: 100
+    cooldown_steps: 50000
+    constant_lr: 2.0e-4
+
+[parallelism]
+    == super()
+    data_parallel_replicate_degree: 4
+    data_parallel_shard_degree: 1

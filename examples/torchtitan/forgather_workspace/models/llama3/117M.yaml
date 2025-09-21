@@ -1,0 +1,14 @@
+-- extends "models/llama3/base_llama3.yaml"
+
+[tokenizer]
+    => super()
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "8k.yaml"
+
+[model_args]
+    == super()
+    
+    dim: 1024
+    n_layers: 8
+    n_heads: 8
+    rope_theta: !!float 10000

@@ -1,0 +1,245 @@
+## Forgather Titan Trainer project template
+-- set ns = namespace()
+-- from 'inc/formatting.jinja' import h1, h2, h3
+[head!]
+    [base_directories]
+    -- include "base_directories.yaml"
+
+    [resource_directories]
+    -- set ns.models_dir = joinpath(project_dir, 'output_models')
+    -- set ns.tokenizers_dir = joinpath(ns.forgather_dir, 'tokenizers')
+
+    [config_metadata]
+    -- set ns.config_name = "Undefined"
+    -- set ns.config_description = "Undefined"
+    -- set ns.config_class = "type.training_script.fg_titan"
+    -- set ns.model_name = "default_model"
+    -- set ns.nproc_per_node = "gpu"
+
+    [output_directories]
+    -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
+
+[header]
+== h1(ns.config_name)
+# {{ utcisotime() }}
+# Description: {{ ns.config_description }}
+
+[job_definition]
+== h2("Job Definition")
+
+    [job]
+.define: &job !call:torchtitan.config.job_config:Job
+    dump_folder: "{{ ns.output_dir }}"
+    description: "{{ ns.config_description }}"
+
+    [metrics]
+.define: &metrics !call:torchtitan.config.job_config:Metrics
+    log_freq: 10
+    enable_tensorboard: false
+    save_tb_folder: "runs"
+
+    [training]
+.define: &training !call:torchtitan.config.job_config:Training
+    steps: 1000
+    local_batch_size: 8
+    seq_len: 2048
+    gc_freq: 1000
+
+    [validation]
+.define: &validation !call:torchtitan.config.job_config:Validation
+    enable: true
+    freq: 100
+    local_batch_size: 16
+    seq_len: !call:getattr [ *training, "seq_len" ]
+
+    [parallelism]
+.define: &parallelism !call:torchtitan.config.job_config:Parallelism
+    data_parallel_replicate_degree: 1
+    data_parallel_shard_degree: -1
+    fsdp_reshard_after_forward: "default" # default / never / always
+    tensor_parallel_degree: 1
+    enable_async_tensor_parallel: false
+    pipeline_parallel_degree: 1
+    context_parallel_degree: 1
+
+    [checkpoint]
+.define: &checkpoint !call:torchtitan.config.job_config:Checkpoint
+    enable: false
+    folder: "checkpoints"
+    interval: 500
+    keep_latest_k: 3
+    last_save_model_only: false
+    export_dtype: "float32"
+
+    [activation_checkpoint]
+.define: &activation_checkpoint !call:torchtitan.config.job_config:ActivationCheckpoint
+    mode: "none"  # ["none", "selective", "full"]
+
+    [profiling]
+.define: &profiling !call:torchtitan.config.job_config:Profiling
+
+    [compile]
+.define: &compile !call:torchtitan.config.job_config:Compile
+    enable: false
+    components: ["model", "loss"]
+
+    [float8]
+.define: &float8 !call:torchtitan.config.job_config:Float8
+
+    [mx]
+.define: &mx !call:torchtitan.config.job_config:MX
+
+    [comm]
+.define: &comm !call:torchtitan.config.job_config:Comm
+
+    [memory_estimation]
+.define: &memory_estimation !call:torchtitan.config.job_config:MemoryEstimation
+
+    [fault_tolerance]
+.define: &fault_tolerance !call:torchtitan.config.job_config:FaultTolerance
+
+    [experimental]
+.define: &experimental !call:torchtitan.config.job_config:Experimental
+
+[project_dependencies]
+== h2("project_dependencies")
+
+    [distributed_env]
+distributed_env: &distributed_env !call:forgather.ml.distributed:DistributedEnvironment
+
+[model_definition]
+== h2("Model Definition")
+
+    [model]
+    ## Required
+
+[dataset_definition]
+== h2("Dataset Definition")
+
+    [tokenizer_args]
+tokenizer_args: &tokenizer_args !dict
+    max_length: !call:getattr [ *training, "seq_len" ]
+    truncation: True
+
+    [dataset]
+.define: &dataset !call:forgather:from_project
+    targets: [ "train_dataset", "eval_dataset" ]
+    preprocess_args: *tokenizer_args
+    tokenizer: *tokenizer
+    ## project_dir: "/path/to/dataset/project"
+    ## config_template: "config_name.yaml"
+
+    [train_dataset]
+train_dataset: &train_dataset !call:getitem [ *dataset, 'train_dataset' ]
+
+    [validation_dataset]
+validation_dataset: &validation_dataset !call:getitem [ *dataset, 'eval_dataset' ]
+
+[trainer_definition]
+== h2("Trainer Definition")
+
+    [optimizer_factory]
+optimizer_factory: &optimizer_factory !partial:torch:optim.AdamW
+    lr: 1.0e-4
+
+    [lr_scheduler_factory]
+lr_scheduler_factory: &lr_scheduler_factory !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler
+    warmup_steps: 500
+    cooldown_steps: 50000
+    constant_lr: 1.0e-6
+
+    [data_collator]
+data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM                                                                                                                                                                                                                                                                                                                  
+    tokenizer: *tokenizer
+    return_tensors: pt
+    truncation: True
+    input_name: "input"
+    labels_name: null
+
+    [job_config]
+job_config: &job_config !call:torchtitan.config.job_config:JobConfig@job_config
+    job: *job
+    profiling: *profiling
+    metrics: *metrics
+    training: *training
+    parallelism: *parallelism
+    checkpoint: *checkpoint
+    activation_checkpoint: *activation_checkpoint
+    compile: *compile
+    float8: *float8
+    mx: *mx
+    comm: *comm
+    memory_estimation: *memory_estimation
+    fault_tolerance: *fault_tolerance
+    experimental: *experimental
+    validation: *validation
+
+    [parallel_dims]
+parallel_dims: &parallel_dims !call:forgather.ml.trainer.torchtitan.titan_trainer:ExtendedParallelDims.from_config
+    distributed_env: *distributed_env
+    parallelism_config: *parallelism
+
+    [ft_manager]
+ft_manager: &ft_manager !call:forgather.ml.trainer.torchtitan.titan_trainer:ExtendedFTManager
+    ft_config: *fault_tolerance
+    parallel_dims: *parallel_dims
+
+    [dp_vars]
+# Required for the dataloader
+.define: &dp_rank !call:getattr [ *ft_manager, "dp_rank" ]
+.define: &dp_degree !call:getattr [ *ft_manager, "dp_degree" ]
+
+    [train_dataloader]
+train_dataloader: &train_dataloader !call:torchtitan.components.dataloader:ParallelAwareDataloader
+    dataset: *train_dataset
+    dp_rank: *dp_rank
+    dp_world_size: *dp_degree
+    batch_size: !call:getattr [ *training, "local_batch_size" ]
+    collate_fn: *data_collator
+
+    [validation_dataloader]
+validation_dataloader: &validation_dataloader !call:torchtitan.components.dataloader:ParallelAwareDataloader
+    dataset: *validation_dataset
+    dp_rank: *dp_rank
+    dp_world_size: *dp_degree
+    batch_size: !call:getattr [ *validation, "local_batch_size" ]
+    collate_fn: *data_collator
+
+    [validator_factory]
+validator_factory: &validator_factory !partial:forgather.ml.trainer.torchtitan.validate:Validator
+
+    [trainer]
+trainer: &trainer !call:forgather.ml.trainer.torchtitan.titan_trainer:Trainer@trainer
+    job_config: *job_config
+    parallel_dims: *parallel_dims
+    ft_manager: *ft_manager
+    distributed_env: *distributed_env
+    train_dataloader: *train_dataloader
+    validation_dataloader: *validation_dataloader
+    tokenizer: *tokenizer
+    model_factory: *model_factory
+    optimizer_factory: *optimizer_factory
+    lr_scheduler_factory: *lr_scheduler_factory
+    parallelize_fn: *parallelize_fn
+    pipelining_fn: *pipeline_fn
+    loss_fn: *loss_fn
+    state_dict_adapter: *state_dict_adapter
+    validator_factory: *validator_factory
+    model_args: *model_args
+
+[meta]
+meta: &meta_output !dict:@meta
+    config_name: "{{ ns.config_name }}"
+    config_description: "{{ ns.config_description }}"
+    config_class: "{{ ns.config_class }}"
+    output_dir: "{{ ns.output_dir }}"
+    forgather_dir: "{{ ns.forgather_dir }}"
+    nproc_per_node: {{ ns.nproc_per_node }}
+
+[dynamic_args]
+dynamic_args: !dlist
+
+[main]
+main: !call:forgather.ml.training_script:TrainingScript@training_script
+    meta: *meta_output
+    trainer: *trainer

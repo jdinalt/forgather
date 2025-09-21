@@ -1,0 +1,14 @@
+-- extends "models/llama3/base_llama3.yaml"
+
+[tokenizer]
+    => super()
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'tiny_stories_bpe') }}"
+    config_template: "2k.yaml"
+
+[model_args]
+    == super()
+    # *Tiny Llama3*
+    dim: 256
+    n_layers: 4
+    n_heads: 2
+    rope_theta: !!float 10000
