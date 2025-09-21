@@ -134,15 +134,13 @@ class YamlEncoder(GraphEncoder):
                 s += self._list(obj.args)
             else:
                 s += self._args(obj)
-        else:
-            s += " []"
         return s
 
     def _named_list(self, obj):
-        return self._list(obj.args[0])
+        return self._list(obj.args[0] if obj.args else list())
 
     def _named_tuple(self, obj):
-        return self._tuple(obj.args[0])
+        return self._tuple(obj.args[0] if obj.args else list())
 
     def _named_dict(self, obj):
         return self._dict(obj.kwargs)

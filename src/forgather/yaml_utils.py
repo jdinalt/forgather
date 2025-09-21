@@ -103,7 +103,7 @@ def list_constructor(loader, tag_suffix, node):
         value = loader.construct_scalar(node)
         if not isinstance(value, str) or value != "":
             raise TypeError(f"list node sequence or empty. Found {type(value)}={value}")
-        return SingletonNode("named_list", _identity=identity)
+        return SingletonNode("named_list", list(), _identity=identity)
     else:
         raise TypeError(f"list nodes must be sequencess or empty. Found {node}")
 
@@ -139,6 +139,13 @@ def tuple_constructor(loader, tag_suffix, node):
         return SingletonNode(
             "named_tuple", loader.construct_sequence(node), _identity=identity
         )
+    elif isinstance(node, yaml.ScalarNode):
+        value = loader.construct_scalar(node)
+        if not isinstance(value, str) or value != "":
+            raise TypeError(
+                f"tuple node must be mapping or empty. Found {type(value)}={value}"
+            )
+        return SingletonNode("named_list", _identity=identity)
     else:
         raise TypeError(f"tuple nodes must be sequencess. Found {node}")
 
