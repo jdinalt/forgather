@@ -300,6 +300,7 @@ class PyEncoder(GraphEncoder):
 
 DEFAULT_CODE_TEMPLATE = """
 ## Set default factory name, if not provided
+from functools import partial
 -- if factory_name is undefined:
     -- set factory_name = "construct"
 -- endif
@@ -310,7 +311,6 @@ from {{ module }} import {{ name }}
 from importlib.util import spec_from_file_location, module_from_spec
 import os
 import sys
-from functools import partial
 
 # Import a dynamic module.
 def dynimport(module, name, searchpath):
