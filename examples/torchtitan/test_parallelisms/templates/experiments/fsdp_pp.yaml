@@ -28,4 +28,4 @@
 
 [trainer]
     == super()
-    disable_pp_fix: False
+    disable_pp_fix: True
