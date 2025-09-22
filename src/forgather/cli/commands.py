@@ -474,6 +474,15 @@ def train_cmd(args):
         config_meta["forgather_dir"], "scripts", "train_script.py"
     )
 
+    env = os.environ.copy()
+    if args.devices:
+        env["CUDA_VISIBLE_DEVICES"] = args.devices
+    
+    if "env" in config:
+        config_env = Latent.materialize(config.env)
+        print(f"Config Environment: {config_env}")
+        env |= config_env
+
     cmd_args = ["torchrun"]
 
     if len(args.remainder) > 1 and args.remainder[0] == "--":
@@ -514,10 +523,6 @@ def train_cmd(args):
     # Generate equivalent command string
     cmd_str = ""
 
-    if args.devices:
-        cmd_str += f'CUDA_VISIBLE_DEVICES="{args.devices}" '
-        os.environ["CUDA_VISIBLE_DEVICES"] = args.devices
-
     for arg in cmd_args:
         cmd_str += f"{arg} "
 
@@ -525,7 +530,7 @@ def train_cmd(args):
 
     # Run the command
     if not args.dry_run:
-        subprocess.run(cmd_args)
+        subprocess.run(cmd_args, env=env)
 
 
 def template_list(args):

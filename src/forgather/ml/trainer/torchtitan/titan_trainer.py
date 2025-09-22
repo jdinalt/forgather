@@ -127,6 +127,7 @@ class Trainer(Trainer):
         state_dict_adapter: Optional[StateDictAdapter],
         validator_factory: Optional[ValidatorFactory],
         model_args,
+        disable_pp_fix: bool = True
     ):
 
         self.job_config = job_config
@@ -202,13 +203,10 @@ class Trainer(Trainer):
         color = self.metrics_processor.color
 
         # calculate model size and flops per token
-        model_param_count = sum(
-            t.numel() if t.requires_grad else 0 for t in model.parameters()
-        )
-
-        # Bogus placeholder for now
-        # TODO: Handle this properly
-        self.metrics_processor.num_flops_per_token = 1 * job_config.training.seq_len
+        (
+            model_param_count,
+            self.metrics_processor.num_flops_per_token,
+        ) = model_args.get_nparams_and_flops(model, job_config.training.seq_len)
 
         logger.info(
             f"{color.blue}Model {job_config.model.flavor} "
@@ -241,13 +239,21 @@ class Trainer(Trainer):
             f"% ({job_config.training.local_batch_size} * {dp_degree}) != 0)"
         )
 
+        if parallel_dims.pp_enabled and not disable_pp_fix:
+            # When using pp, loss needs to be scaled by the number of microbatches
+            microbatch_size = job_config.parallelism.pipeline_parallel_microbatch_size
+            batch_size = job_config.training.local_batch_size
+            self.pp_n_microbatches = batch_size // microbatch_size
+        else:
+            self.pp_n_microbatches = 1
+
         # calculate gradient accumulation steps
         self.gradient_accumulation_steps = global_batch_size // (
             job_config.training.local_batch_size * dp_degree
         )
         assert self.gradient_accumulation_steps > 0
         self.loss_fn = rescale_accumulated_loss(
-            self.loss_fn, self.gradient_accumulation_steps
+            self.loss_fn, self.gradient_accumulation_steps * self.pp_n_microbatches
         )
 
         # apply parallelisms and initialization
@@ -268,7 +274,7 @@ class Trainer(Trainer):
                 parallel_dims,
                 job_config,
                 self.device,
-                None,  # model_args
+                self.model_args,
                 self.parallelize_fn,
                 self.loss_fn,
             )

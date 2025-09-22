@@ -1,0 +1,7 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Control"
+    -- set ns.config_description = "Test 1 GPU with 10 accumulation steps"
+    -- set ns.log_name = "control"

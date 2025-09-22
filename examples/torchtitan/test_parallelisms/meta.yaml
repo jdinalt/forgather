@@ -1,0 +1,8 @@
+-- extends "meta_defaults.yaml"
+
+-- block configs
+name: "Test Parallelisms"
+description: "Compare results of various parallelisms for correctness"
+config_prefix: "experiments"
+default_config: "control.yaml"
+<< endblock configs

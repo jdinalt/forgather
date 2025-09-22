@@ -1,0 +1,49 @@
+-- extends "projects/fg_titan.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Project Defaults"
+    -- set ns.config_description = ""
+    -- set ns.nproc_per_node = 1
+
+[metrics]
+    == super()
+    log_freq: 10
+    enable_tensorboard: true
+
+[training]
+    == super()
+    steps: 500
+    local_batch_size: 32
+    # 10 accumulation steps
+    global_batch_size: 320
+    seq_len: 512
+
+    # Try to minimize differences as much as possible.
+    # This is still likely to end up with different model weight in some cases, e.g. pp splitting and init
+    seed: 42
+    deterministic: True
+    mixed_precision_param: float32
+
+[validation]
+    == super()
+    freq: 100
+    local_batch_size: 64
+    enable: false
+
+[model]
+-- include "models/llama3/tiny_llama3.yaml"
+
+[dataset]
+    == super()
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan') }}"
+    config_template: "tinystories-iter.yaml"
+
+[optimizer_factory]
+optimizer_factory: &optimizer_factory !partial:torch:optim.AdamW
+    lr: 3.16e-3
+
+[lr_scheduler_factory]
+lr_scheduler_factory: &lr_scheduler_factory !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler
+    warmup_steps: 50
+    cooldown_steps: 5000

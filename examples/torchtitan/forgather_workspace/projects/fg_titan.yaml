@@ -14,10 +14,12 @@
     -- set ns.config_description = "Undefined"
     -- set ns.config_class = "type.training_script.fg_titan"
     -- set ns.model_name = "default_model"
+    -- set ns.log_name = "tb"
     -- set ns.nproc_per_node = "gpu"
 
     [output_directories]
     -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
+    -- set ns.log_dir = joinpath(ns.output_dir, ns.log_name)
 
 [header]
 == h1(ns.config_name)
@@ -36,7 +38,7 @@
 .define: &metrics !call:torchtitan.config.job_config:Metrics
     log_freq: 10
     enable_tensorboard: false
-    save_tb_folder: "runs"
+    save_tb_folder: "{{ ns.log_name }}"
 
     [training]
 .define: &training !call:torchtitan.config.job_config:Training
@@ -233,11 +235,16 @@ meta: &meta_output !dict:@meta
     config_description: "{{ ns.config_description }}"
     config_class: "{{ ns.config_class }}"
     output_dir: "{{ ns.output_dir }}"
+    log_dir: "{{ ns.log_dir }}"
     forgather_dir: "{{ ns.forgather_dir }}"
     nproc_per_node: {{ ns.nproc_per_node }}
 
 [dynamic_args]
 dynamic_args: !dlist
+
+[env]
+## These values are passed as envrionment variables to torchrun
+env: &env !dict
 
 [main]
 main: !call:forgather.ml.training_script:TrainingScript@training_script

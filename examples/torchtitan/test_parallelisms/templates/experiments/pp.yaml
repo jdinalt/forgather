@@ -1,0 +1,31 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "PP"
+    -- set ns.config_description = "Test 2 GPUs with PP, 1F1B"
+    -- set ns.log_name = "pp"
+    -- set ns.nproc_per_node = 2
+
+[parallelism]
+    == super()
+    data_parallel_shard_degree: 1
+    pipeline_parallel_degree: 2
+    pipeline_parallel_microbatch_size: 8
+    pipeline_parallel_layers_per_stage: 3
+    pipeline_parallel_schedule: "1F1B"
+
+[data_collator]
+    == super()
+    # Pipeline Parallel requires constant input tensor shapes
+    padding: "max_length"
+    truncation: True
+
+[env]
+    == super()
+    # Silence warning about not setting logging rank for pp
+    LOG_RANK: "1"
+
+[trainer]
+    == super()
+    disable_pp_fix: True

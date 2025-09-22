@@ -1,0 +1,21 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DDP"
+    -- set ns.config_description = "Test 2 GPUs with 10 accumulation steps using DDP"
+    -- set ns.log_name = "ddp"
+    -- set ns.nproc_per_node = 2
+
+[parallelism]
+    == super()
+    data_parallel_replicate_degree: 2
+    data_parallel_shard_degree: 1
+
+[data_collator]
+data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM
+    tokenizer: *tokenizer
+    return_tensors: pt
+    truncation: True
+    input_name: "input"
+    labels_name: null
