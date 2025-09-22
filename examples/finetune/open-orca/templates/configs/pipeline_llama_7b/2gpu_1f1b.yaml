@@ -1,31 +1,23 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Open Orca Llama 7B 1F1B Pipe x2"
-    -- set ns.config_description = "Train Samantha on 1F1B 2 GPU Pipeline"
+    -- set ns.config_description = "1F1B 2 GPU Pipeline"
     -- set ns.log_name = "1f1b_2gpu"
     -- set ns.trainer_class = 'trainers/pipeline/1f1b_2gpu.yaml'
--- endblock config_metadata
 
-
--- block trainer_definition
+[trainer_definition]
     -- include 'config.trainer_config'
--- endblock trainer_definition
 
-
--- block datacollator
+[datacollator]
     == super()
     padding: "max_length" # Required for pipeline
     max_length: 1300
--- endblock datacollator
-
 
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'
 
--- block trainer_args
+[trainer_args]
     == super()
-    
     # **config**
--- endblock trainer_args

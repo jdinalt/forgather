@@ -1,45 +1,31 @@
 -- extends 'trainers/trainer.yaml'
--- block trainer_meta_config
+[trainer_meta_config]
     == super()
     -- set ns.trainer_name = "forgather.ml.trainer.accelerate:AccelTrainer"
     -- set ns.trainer_description = "A lightweight, extensible trainer w/ Accelerate support"
     -- set ns.nproc_per_node = "gpu"
     -- set ns.trainer_config_class = "forgather.ml.trainer.accelerate:AccelTrainingArguments"
     -- set ns.trainer_class = "forgather.ml.trainer.accelerate:AccelTrainer"
--- endblock trainer_meta_config
 
 ## Note: The distributed_env class must be an AcceDistEnv. e.g.
-## distributed_env: &distributed_env !singleton:forgather.ml.trainer.accelerate:AccelDistEnv@distributed_env
-##    - !singleton:accelerate:Accelerator []
--- block trainer_dependencies
+## distributed_env: &distributed_env !call:forgather.ml.trainer.accelerate:AccelDistEnv@distributed_env
+##    - !call:accelerate:Accelerator []
+[trainer_dependencies]
     == super()
-    -- filter trim()
-    -- block accel_dataloader_config
-.define: &accel_dataloader_config !singleton:accelerate:DataLoaderConfiguration
+    [accel_dataloader_config]
+.define: &accel_dataloader_config !call:accelerate:DataLoaderConfiguration
     use_stateful_dataloader: True
-    << endblock accel_dataloader_config
-    -- endfilter
-
-
-    -- filter trim()
-    -- block accelerator
-accelerator: &accelerator !singleton:accelerate:Accelerator
+    
+    [accelerator]
+accelerator: &accelerator !call:accelerate:Accelerator
     dataloader_config: *accel_dataloader_config
     project_dir: "{{ ns.output_dir }}"
-    << endblock accelerator
-    -- endfilter
-<< endblock trainer_dependencies
 
--- block trainer_args
+[trainer_args]
     == super()
-
     # **AccelTrainer**
-<< endblock trainer_args
 
-
--- block trainer_constructor
+[trainer_constructor]
     == super()
-
     # **Accel Trainer**
     accelerator: *accelerator
-<< endblock trainer_constructor

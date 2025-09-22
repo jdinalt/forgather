@@ -1,5 +1,5 @@
 -- extends 'trainers/trainer.yaml'
--- block trainer_meta_config
+[trainer_meta_config]
     == super()
     -- set ns.trainer_name = "forgather.ml.trainer.pipeline:PipelineTrainer"
     -- set ns.trainer_description = "Pipeline parallel trainer"
@@ -12,32 +12,25 @@
     ##-- set ns.split_layer_prefix = "causal_lm.layer_stack.layers."
     ## Set to match number of pipeline segments on each node
     ## -- set ns.nproc_per_node = N
--- endblock trainer_meta_config
 
-
--- block trainer_header
+[trainer_header]
     == super()
 # pipeline_layers: {{ ns.pipeline_layers }}
 # pipeline_segments: {{ ns.pipeline_segments }}
 # pipeline_microbatches: {{ ns.pipeline_microbatches }}
 # split_layer_prefix: "{{ ns.split_layer_prefix }}"
-<< endblock trainer_header
 
-
--- block trainer_dependencies
+[trainer_dependencies]
     == super()
-    -- block split_spec
+    [split_spec]
 split_spec: &split_spec !dict@split_spec
     ## Define where to split the model, based upon the total number of layers and the number of segments.
     ## While not optimal, this is probalby a good starting point.
 -- for i in range(1, ns.pipeline_segments):
     {{ ns.split_layer_prefix }}{{i * (ns.pipeline_layers // ns.pipeline_segments)}}: "beginning"
 -- endfor
-    -- endblock split_spec
--- endblock trainer_dependencies
 
-
--- block trainer_args
+[trainer_args]
     == super()
 
     # **PipelineTrainer**
@@ -79,13 +72,9 @@ split_spec: &split_spec !dict@split_spec
     ## In the case of ZBVZ, it is presenlty required for the eval step, as seperate eval model is
     ## not working for ZBVZ yet.
     ##   unified_model: True
-<< endblock trainer_args
 
-
--- block trainer_constructor
+[trainer_constructor]
     == super()
-
     # **PipelineTrainer**
     # https://docs.pytorch.org/docs/stable/distributed.pipelining.html#module-torch.distributed.pipelining.schedules
     pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleGPipe
-<< endblock trainer_constructor

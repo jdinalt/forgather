@@ -5,7 +5,7 @@
 ## the value of which is defined in the 'config_metadata' block, above.
 
 ## Setup some defaults for this type of project
--- block trainer_args
+[trainer_args]
     == super()
 
     # **finetune**
@@ -44,11 +44,8 @@
     # Enable all SDPA backends and let PyTorch choose which to use.
     sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
     sdpa_set_priority: False # If list, interpret as priority order
-<< endblock trainer_args
 
-
--- block model_preprocessor
+[model_preprocessor]
 # Convert model to bfloat16 format
 model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_to_dtype [ *model, "bfloat16" ]
-<< endblock model_preprocessor
 

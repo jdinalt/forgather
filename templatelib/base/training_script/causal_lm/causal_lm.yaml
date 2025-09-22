@@ -1,68 +1,47 @@
 -- extends "training_script/training_script_type.yaml"
 -- from 'inc/formatting.jinja' import h2, sep
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_class = ns.config_class + ".causal_lm"
     ## This needs to be set to True for a custom model.
     -- set ns.trust_remote_code = False
     -- set ns.load_empty_model = False
--- endblock config_metadata
 
-
--- block variable_listing
+[variable_listing]
     == super()
 # ns.trust_remote_code: {{ ns.trust_remote_code }}
-<< endblock variable_listing
 
-
--- block datasets_preprocessor_args
+[datasets_preprocessor_args]
 tokenizer_args: &tokenizer_args !dict
     truncation: True
-<< endblock datasets_preprocessor_args
 
-
--- block model_constructor_args
--- filter trim()
+[model_constructor_args]
 ## These are-runtime model construction arguments which
 ## typically control things like Flash Attention or what
 ## data-type to convert the model to.
 # https://huggingface.co/docs/transformers/en/model_doc/auto
 model_constructor_args: &model_constructor_args {}
--- endfilter
-<< endblock model_constructor_args
 
-
-
--- block model_definition
+[model_definition]
 ## Depending upon the value 'create_new_model,' either load an existing
 ## model or construct a new one.
 ## The details for constructing a new model need to be filled in by
 ## a child template, while an existing model should work 'as-is'
--- filter trim()
-    -- block construct_new_model required
+    [construct_new_model]
 ## Undefined model constructor
-    << endblock construct_new_model
--- endfilter
--- endblock model_definition
 
-
--- block trainer_callbacks
+[trainer_callbacks]
     -- include 'callbacks/loggers.yaml'
-<< endblock trainer_callbacks
 
-
--- block datacollator
+[datacollator]
 # Data collator for causal model
 # Batches are dynamically padded to longest sequence
 # labels are set to input_ids, with pad tokens set to -100
 data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
     tokenizer: *tokenizer
     return_tensors: pt
--- endblock datacollator
 
-
--- block trainer_definition
+[trainer_definition]
     ## Set defulat trainer
     -- include 'trainers/trainer.yaml'
--- endblock trainer_definition

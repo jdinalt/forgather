@@ -1,7 +1,6 @@
 -- extends 'trainers/pipeline/base_pipeline_trainer.yaml'
 
-
--- block trainer_meta_config
+[trainer_meta_config]
     == super()
     ## Parallelism settings
     -- set ns.nproc_per_node = 6
@@ -17,16 +16,12 @@
     -- set ns.pipeline_layers = 32
     -- set ns.split_layer_prefix = "causal_lm.layer_stack.layers."
     -- set ns.pipeline_unified_model = True
--- endblock trainer_meta_config
 
-
--- block trainer_args
+[trainer_args]
     == super()
-    
     # **zb 6gpu**
     per_device_train_batch_size: 12
     per_device_eval_batch_size: 12
 
     # ZBVZeroBubble uses a different stage indexing layout than the others.
     pp_stage_type: "v"
--- endblock trainer_args 

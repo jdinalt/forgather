@@ -1,46 +1,33 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Orca Llama7B 8-bit Adam x4"
-    -- set ns.config_description = "Samantha Llama 7B, i1F1B, pipeline, 8-bit-AdamW, 4 gpu"
+    -- set ns.config_description = "7B, i1F1B, pipeline, 8-bit-AdamW, 4 gpu"
     -- set ns.log_name = "i1f1b_AdamW8_4gpu"
     -- set ns.trainer_class = 'trainers/pipeline/1f1b_4gpu.yaml'
--- endblock config_metadata
 
-
--- block trainer_definition
+[trainer_definition]
     -- include 'config.trainer_config'
--- endblock trainer_definition
 
-
--- block datacollator
+[datacollator]
     == super()
     padding: "max_length" # Required for pipeline
     max_length: 1300
--- endblock datacollator
 
-
--- block optimizer
+[optimizer]
 optimizer: &optimizer !partial:torchao.optim:AdamW8bit
     lr: 3.0e-5
     weight_decay: 0.001
-<< endblock optimizer
 
-
--- block lr_scheduler
+[lr_scheduler]
     == super()
-
     # **config**
     constant_lr: 3.0e-5
-<< endblock lr_scheduler
-
 
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'
 
--- block trainer_args
+[trainer_args]
     == super()
-    
     # **config**
--- endblock trainer_args

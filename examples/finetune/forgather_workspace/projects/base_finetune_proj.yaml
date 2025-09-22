@@ -1,16 +1,14 @@
 -- extends "training_script/causal_lm/causal_lm.yaml"
 
--- block resource_directories
+[resource_directories]
     == super()
     ## Change this to point to where your models are stored
     -- set ns.models_dir = models_dir | default(joinpath(user_home_dir(), 'models'))
 
     ## Directory in which local datasets are stored
     -- set ns.datasets_dir = datasets_dir | default(joinpath(user_home_dir(), 'datasets'))
-<< endblock resource_directories
 
-
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = 'Finetune'
     -- set ns.config_description = 'Experiments in finetuning'
@@ -31,20 +29,16 @@
     -- set ns.default_dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
     -- set ns.default_dataset_config = "samantha.yaml"
     -- set ns.defult_chat_template = joinpath(ns.forgather_dir, 'chat_templates', 'chatml.jinja')
--- endblock config_metadata
 
-
--- block globals
+[globals]
 	## If not specified, default to model-dir and model-name
 	-- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
 
     ## If explicity specified, use 'output_dir,' otherwise assume that 'ns.model_id_or_path'
     -- set ns.output_dir = output_dir | default(ns.model_id_or_path)
     -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
-<< endblock globals
 
-
--- block variable_listing
+[variable_listing]
     == super()
 # ns.safe_load: {{ ns.safe_load }}
 # ns.dataset_proj: "{{ dataset_proj | default(ns.default_dataset_proj) }}"
@@ -52,21 +46,16 @@
 # ns.debug_memory_detials: {{ ns.debug_memory_detials }}
 # ns.log_memory_to_tb: {{ ns.log_memory_to_tb }}
 # ns.model_id_or_path: {{ ns.model_id_or_path }}
--- endblock variable_listing
 
 
--- block datasets_preprocessor_args
+[datasets_preprocessor_args]
 tokenizer_args: &tokenizer_args !dict
     truncation: True
--- endblock datasets_preprocessor_args
 
-
--- block construct_new_model
+[construct_new_model]
     -- include 'models/causal_lm/from_pretrained_config.yaml'
--- endblock construct_new_model
 
-
--- block datasets_definition
+[datasets_definition]
 .define: &dataset_dict !call:forgather:from_project
     project_dir: "{{ dataset_proj | default(ns.default_dataset_proj) }}"
     config_template: "{{ dataset_config | default(ns.default_dataset_config) }}"
@@ -75,37 +64,33 @@ tokenizer_args: &tokenizer_args !dict
     tokenizer: *tokenizer
     chat_template: "{{ chat_template | default(ns.defult_chat_template) }}"
 
+    [train_dataset]
 train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
+
+    [eval_dataset]
 eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
--- endblock datasets_definition
 
 
 ## Defaults to the basic trainer implementation
 ## Note: This is unsuitable for multiple GPUs.
 ## Override 'ns.trainer_class' to change the trainer class.
--- block trainer_definition
+[trainer_definition]
     ## See definition below
     -- include 'trainers/base_finetune_trainer.yaml'
--- endblock trainer_definition
 
-
--- block trainer_callbacks
+[trainer_callbacks]
     ## See definition below
     -- include 'finetune.callbacks'
-<< endblock trainer_callbacks
 
-
--- block datacollator
-data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
+[datacollator]
+data_collator: &data_collator !call:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
     tokenizer: *tokenizer
     return_tensors: pt
     truncation: True
     ## Put a reasonable limit on the sequence length
     max_length: 4096
--- endblock datacollator
 
-
--- block lr_scheduler
+[lr_scheduler]
 # See https://arxiv.org/html/2503.02844v1
 ## This lr_scheduler is pretty flexible, as it can be used to implement many common LR schedules
 ## - Linear warmup
@@ -117,7 +102,7 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 ## - Linear warmup + cosine annealing
 ## - Linear warmup + cosine annealing + constant
 ## - Linear warmup + cosine annealing + constant + exponential decay
-lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
     # Linear warmup steps
     warmup_steps: 200
 
@@ -138,18 +123,14 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 
     # Exponetial decay limit
     min_lr: 1.0e-8
-<< endblock lr_scheduler
-
 
 ## Add a default memory efficient optimizer
--- block optimizer
+[optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     lr: 5.0e-6
     weight_decay: 0.001
-<< endblock optimizer
 
-
--- block dynamic_args
+[dynamic_args]
     == super()
     train_epochs:
         names: "--train-epochs"
@@ -186,24 +167,21 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     chat_template:
         names: [ "--chat-template", "-C" ]
         help: "Path to the chat template to use"
-<< endblock dynamic_args
 
 #-------------------- finetune.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'
 ## Add experiment loggers to the callbacks list.
 ## The parent creates a Tensor Board SummaryWriter, which we can use.
 
--- block callback_dependencies
+[callback_dependencies]
     == super()
-<< endblock callback_dependencies
 
--- block callback_list
+[callback_list]
     == super()
-    peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
+    peak_memory: !call:forgather.ml.trainer.callbacks:PeakMemory
         show_details: {{ ns.debug_memory_detials }}
         do_log: {{ log_peak_memory | default(False) }}
     -- if ns.log_memory_to_tb
         summary_writer: *summary_writer
     -- endif
-    trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback []
-<< endblock callback_list
+    trainer_control: !call:forgather.ml.trainer.callbacks:TrainerControlCallback

@@ -1,20 +1,13 @@
 -- set callbacks_ns = namespace()
 -- from 'inc/formatting.jinja' import h3
--- filter trim()
 
 == h3('Dependencies')
 
--- block callback_dependencies
+[callback_dependencies]
 ## Undefined
-<< endblock callback_dependencies
--- endfilter
 
-
+[callback_list_definition]
 == h3('Callback List')
 
--- filter trim()
--- block callback_list
+    [callback_list]
 trainer_callbacks: &trainer_callbacks !dlist:@trainer_callbacks
-    null: ~
-<< endblock callback_list
--- endfilter

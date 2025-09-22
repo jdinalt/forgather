@@ -2,33 +2,24 @@
 ## and load the weight, using AutoModelForCausalLM.from_pretrained()
 -- extends 'models/base_language_model.yaml'
 
--- block model_meta_config
+[model_meta_config]
     == super()
     -- set ns.model_name = "Pretrained Causal LM"
     -- set ns.model_description = ""
     -- set ns.model_id_or_path = ns.model_id_or_path
-<< endblock model_meta_config
 
-
--- block model_header
+[model_header]
     == super()
-
 # ns.model_id_or_path = "{{ ns.model_id_or_path }}"
-<< endblock model_header
 
+[model_tokenizer]
+tokenizer: &tokenizer !call:transformers:AutoTokenizer.from_pretrained@tokenizer
+    arg0: "{{ ns.model_id_or_path }}"
 
--- block model_tokenizer
-tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
-    - "{{ ns.model_id_or_path }}"
-<< endblock model_tokenizer
-
-
--- block model_constructor
-model: &model !lambda:transformers:AutoModelForCausalLM.from_pretrained@model
-    args: [ "{{ ns.model_id_or_path }}" ]
-    kwargs:
+[model_constructor]
+model: &model !partial:transformers:AutoModelForCausalLM.from_pretrained@model
+    arg0: "{{ ns.model_id_or_path }}"
     -- if ns.trust_remote_code
-        trust_remote_code: True
+    trust_remote_code: True
     -- endif
-        <<: *model_constructor_args
-<< endblock model_constructor
+    <<: *model_constructor_args

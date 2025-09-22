@@ -1,32 +1,23 @@
 -- extends "models/causal_lm/from_config.yaml"
 
--- block model_meta_config
+[model_meta_config]
     == super()
     -- set ns.model_name = "Llama"
     -- set ns.model_description = "A newly initialized HF Llama model"
     -- set ns.model_source = ""
     -- set ns.model_config_cls = 'transformers:LlamaConfig'
-<< endblock model_meta_config
 
-
--- block model_tokenizer
+[model_tokenizer]
 ## Select a 'llama-2' tokenizer
-tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
-    args:
-        # For 'reasons' the offical tokenizer requires an access token.
-        # We will use the tokenizer from a derived model to side-step this.
-        - "TheBloke/Llama-2-7B-GPTQ"
-    kwargs:
-        legacy: False
-        model_max_length: 4096
-<< endblock model_tokenizer
+tokenizer: &tokenizer !call:transformers:AutoTokenizer.from_pretrained@tokenizer
+    arg0: "TheBloke/Llama-2-7B-GPTQ"
+    legacy: False
+    model_max_length: 4096
 
-
--- block model_config
+[model_config]
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/configuration_llama.py
     == super()
     max_position_embeddings: !singleton:getattr [ *tokenizer, 'model_max_length' ]
     pad_token_id: !singleton:getattr [ *tokenizer, 'pad_token_id' ]
     bos_token_id: !singleton:getattr [ *tokenizer, 'bos_token_id' ]
     eos_token_id: !singleton:getattr [ *tokenizer, 'eos_token_id' ]
-<< endblock model_config

@@ -1,6 +1,6 @@
 -- extends 'trainers/pipeline_trainer.yaml'
 
--- block trainer_meta_config
+[trainer_meta_config]
     == super()
     ## Parallelism settings
     -- set ns.nproc_per_node = 2
@@ -16,49 +16,36 @@
     -- set ns.pipeline_layers = 32
     -- set ns.split_layer_prefix = "causal_lm.layer_stack.layers."
     -- set ns.pipeline_unified_model = False
--- endblock trainer_meta_config
 
-
--- block trainer_globals
+[trainer_globals]
     -- set ns.pipeline_segments = ns.nproc_per_node * ns.nnodes * ns.pipeline_stages_per_rank
-<< endblock trainer_globals
 
-
--- block trainer_header
-    == super()
+[trainer_header]
+=> super()
 # pipeline_is_multistage: {{ ns.pipeline_is_multistage }}
 # nnodes: {{ ns.nnodes }}
 # nproc_per_node: {{ ns.nproc_per_node }}
 # pipeline_unified_model: {{ ns.pipeline_unified_model }}
 # pipeline_is_multistage: {{ ns.pipeline_is_multistage }}
 # pipeline_stages_per_rank: {{ ns.pipeline_stages_per_rank }}
-<< endblock trainer_header
 
-
--- block split_spec
+[split_spec]
 split_spec: &split_spec !dict@split_spec
     ## Define where to split the model, based upon the total number of layers and the number of segments.
     ## While not optimal, this is probalby a good starting point.
 -- for i in range(1, ns.pipeline_segments):
     {{ ns.split_layer_prefix }}{{i * (ns.pipeline_layers // ns.pipeline_segments)}}: "beginning"
 -- endfor
--- endblock split_spec
 
-
--- block trainer_constructor
+[trainer_constructor]
     == super()
     # Config Overrides
     pipe_schedule_factory: !partial:{{ ns.pipeline_sched_class }}
--- endblock trainer_constructor
 
-
--- block trainer_args
+[trainer_args]
     == super()
-    
     # **finetune pipeline trainer**
     pipeline_chunks: {{ ns.pipeline_microbatches }}
     is_multistage: {{ ns.pipeline_is_multistage }}
     stages_per_rank: {{ ns.pipeline_stages_per_rank }}
     unified_model: {{ ns.pipeline_unified_model }}
--- endblock trainer_args
-

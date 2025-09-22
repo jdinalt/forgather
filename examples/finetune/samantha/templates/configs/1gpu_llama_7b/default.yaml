@@ -1,28 +1,23 @@
 -- extends 'samantha.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Samantha Llama 7B"
     -- set ns.config_description = "Conservative setting to train a 7B Llaama model on 1 GPU"
     -- set ns.log_name = "default"
--- endblock config_metadata
 
 
--- block trainer_definition
+[trainer_definition]
     -- include 'config.trainer_config'
--- endblock trainer_definition
 
-
--- block datacollator
+[datacollator]
     == super()
     max_length: 512
--- endblock datacollator
-
 
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'
 
--- block trainer_args
+[trainer_args]
     == super()
 
     # **config**
@@ -31,5 +26,3 @@
     max_grad_norm: null
     gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
     fuse_optim_with_backward: True
-<< endblock trainer_args
-

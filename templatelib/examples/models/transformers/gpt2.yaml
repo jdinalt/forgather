@@ -1,30 +1,25 @@
 -- extends "models/causal_lm/from_config.yaml"
 
--- block model_meta_config
+[model_meta_config]
     == super()
     -- set ns.model_name = "OpenAI GPT2"
     -- set ns.model_description = "A newly initialized HF GPT-2 Model"
     -- set ns.model_source = "https://huggingface.co/docs/transformers/v4.42.0/en/model_doc/gpt2"
     -- set ns.model_config_cls = 'transformers:GPT2Config'
-<< endblock model_meta_config
 
-
--- block model_tokenizer
+[model_tokenizer]
 ## The base-tokenizer is missing the PAD token, so we add it here.
-tokenizer: &tokenizer !singleton:forgather.ml.construct:add_special_tokens@tokenizer
+tokenizer: &tokenizer !call:forgather.ml.construct:add_special_tokens@tokenizer
     tokenizer:
-        !singleton:transformers:AutoTokenizer.from_pretrained
+        !call:transformers:AutoTokenizer.from_pretrained
             - "openai-community/gpt2"
     token_map:
         pad_token: "[PAD]"
-<< endblock model_tokenizer
 
-
--- block model_config
+[model_config]
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/configuration_gpt2.py
     == super()
-    n_positions: !singleton:getattr [ *tokenizer, 'model_max_length' ]
-    bos_token_id: !singleton:getattr [ *tokenizer, 'bos_token_id' ]
-    eos_token_id: !singleton:getattr [ *tokenizer, 'eos_token_id' ]
-    pad_token_id: !singleton:getattr [ *tokenizer, 'eos_token_id' ]
-<< endblock model_config
+    n_positions: !call:getattr [ *tokenizer, 'model_max_length' ]
+    bos_token_id: !call:getattr [ *tokenizer, 'bos_token_id' ]
+    eos_token_id: !call:getattr [ *tokenizer, 'eos_token_id' ]
+    pad_token_id: !call:getattr [ *tokenizer, 'eos_token_id' ]

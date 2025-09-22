@@ -5,42 +5,29 @@
 ## customizing how the weights are loaded.
 -- extends 'models/base_language_model.yaml'
 
--- block model_meta_config
+[model_meta_config]
     == super()
     -- set ns.model_name = "Causal Language Model from Pretrained Config"
     -- set ns.model_description = "A newly initialized model from a pretrained config model id-or-path."
     -- set ns.model_source = ""
-<< endblock model_meta_config
 
-
--- block model_header
+[model_header]
     == super()
-
 # ns.model_id_or_path = "{{ ns.model_id_or_path }}"
-<< endblock model_header
 
-
--- block model_tokenizer
-tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
+[model_tokenizer]
+tokenizer: &tokenizer !call:transformers:AutoTokenizer.from_pretrained@tokenizer
     - "{{ ns.model_id_or_path }}"
-<< endblock model_tokenizer
 
-
--- block model_config
-model_config: &model_config !singleton:transformers:AutoConfig.from_pretrained@model_config
-    args: [ "{{ ns.model_id_or_path }}" ]
-    kwargs:
+[model_config]
+model_config: &model_config !call:transformers:AutoConfig.from_pretrained@model_config
+    arg0: [ "{{ ns.model_id_or_path }}" ]
     -- if ns.trust_remote_code
-        trust_remote_code: True
+    trust_remote_code: True
     -- endif
-<< endblock model_config
 
-
--- block model_constructor
+[model_constructor]
 # Custom transformer model; registers for AutoClass and will save code with weights.
-model: &model !lambda:transformers:AutoModelForCausalLM.from_config@model
-    args:
-        - *model_config
-    kwargs:
-        <<: *model_constructor_args
-<< endblock model_constructor
+model: &model !partial:transformers:AutoModelForCausalLM.from_config@model
+    arg0: *model_config
+    <<: *model_constructor_args

@@ -1,11 +1,11 @@
 -- extends 'callbacks/base_callbacks.yaml'
 
--- block callback_dependencies
+[callback_dependencies]
 # Experiment tracking: Tensorboard SummaryWriter
 .define: &summary_writer !singleton:torch.utils.tensorboard:SummaryWriter
     - "{{ ns.logging_dir }}"
 
-    -- block experiment_info
+    [experiment_info]
 # Additional data to record to experiment loggers
 experiment_info: &experiment_info !dict:@experiment_info
     date: "{{ utcisotime() }}"
@@ -13,18 +13,14 @@ experiment_info: &experiment_info !dict:@experiment_info
     description: "{{ ns.config_description }}"
     config: !var "pp_config"
     versions: {{ versions }}
-    << endblock experiment_info
-<< endblock callback_dependencies
-    
 
--- block callback_list
-    == super()
+[callback_list]
+    => super()
     # Log all training output to JSON
     json_logger: !singleton:forgather.ml.trainer.callbacks:JsonLogger
         <<: *experiment_info
+
     # Log configuration and metrics to Tensorboard file
     tb_logger: !singleton:forgather.ml.trainer.callbacks:TBLogger
-        args: [ *summary_writer ]
-        kwargs:
-            <<: *experiment_info
-<< endblock callback_list
+        arg0: *summary_writer
+        <<: *experiment_info

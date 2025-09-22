@@ -1,37 +1,26 @@
 -- extends 'projects/base_finetune_proj.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Open-Orca Finetune"
     -- set ns.config_description = "Train a model on the Open-Orca dataset"
     -- set ns.log_name = "default"
     -- set ns.default_dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'Open-Orca')
     -- set ns.default_dataset_config = "openorca.yaml"
--- endblock config_metadata
 
-
--- block optimizer
+[optimizer]
     == super()
-
     # **open-orca**
     lr: 1.0e-5
-<< endblock optimizer
 
-
--- block lr_scheduler
+[lr_scheduler]
     == super()
-
     # **open-orca**
     constant_lr: 1.0e-5
-<< endblock lr_scheduler
-
 
 #-------------------- project.trainer --------------------
 -- extends "trainers/base_finetune_trainer.yaml"
 
-
--- block trainer_args
+[trainer_args]
     == super()
-    
     # **open-orca**
-<< endblock trainer_args

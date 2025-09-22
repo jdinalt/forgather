@@ -1,20 +1,16 @@
 -- extends 'trainers/base_trainer.yaml'
 
--- block trainer_meta_config
+[trainer_meta_config]
     == super()
     -- set ns.trainer_name = "Forgather Trainer"
     -- set ns.trainer_description = "A lightweight, extensible trainer; does not support multiple GPUs"
     -- set ns.trainer_config_class = "forgather.ml.trainer:TrainingArguments"
     -- set ns.trainer_class = "forgather.ml.trainer:Trainer"
--- endblock trainer_meta_config
 
-
--- block trainer_constructor
+[trainer_constructor]
     == super()
-
     # **Trainer**
     compute_loss_func: !singleton:forgather.ml.loss:CausalLoss
     distributed_env: *distributed_env
     optimizer_factory: *optimizer
     lr_scheduler_factory: *lr_scheduler
-<< endblock trainer_constructor
