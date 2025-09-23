@@ -25,7 +25,3 @@
     == super()
     # Silence warning about not setting logging rank for pp
     LOG_RANK: "1"
-
-[trainer]
-    == super()
-    disable_pp_fix: True

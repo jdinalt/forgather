@@ -127,7 +127,6 @@ class Trainer(Trainer):
         state_dict_adapter: Optional[StateDictAdapter],
         validator_factory: Optional[ValidatorFactory],
         model_args,
-        disable_pp_fix: bool = True
     ):
 
         self.job_config = job_config
@@ -239,21 +238,13 @@ class Trainer(Trainer):
             f"% ({job_config.training.local_batch_size} * {dp_degree}) != 0)"
         )
 
-        if parallel_dims.pp_enabled and not disable_pp_fix:
-            # When using pp, loss needs to be scaled by the number of microbatches
-            microbatch_size = job_config.parallelism.pipeline_parallel_microbatch_size
-            batch_size = job_config.training.local_batch_size
-            self.pp_n_microbatches = batch_size // microbatch_size
-        else:
-            self.pp_n_microbatches = 1
-
         # calculate gradient accumulation steps
         self.gradient_accumulation_steps = global_batch_size // (
             job_config.training.local_batch_size * dp_degree
         )
         assert self.gradient_accumulation_steps > 0
         self.loss_fn = rescale_accumulated_loss(
-            self.loss_fn, self.gradient_accumulation_steps * self.pp_n_microbatches
+            self.loss_fn, self.gradient_accumulation_steps
         )
 
         # apply parallelisms and initialization
