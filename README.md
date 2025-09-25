@@ -52,18 +52,25 @@ See: [./examples/tutorials/tiny_llama/project_index.ipynb](./examples/tutorials/
 Or, from the comamand-line...
 
 ```bash
+# Optional
 forgather -i                                    # Start interactive Forgather shell
+
 forgather ls -r                                 # List all forgather projects
 cd examples/tutorials/tiny_llama
 forgather index                                 # Show project summary
 forgather ls                                    # List available configs
 forgather -t train_tiny_llama.yaml pp | less    # Show pre-processed configuration
 forgather -t train_tiny_llama.yaml train        # Train model
+
 ```
 
-**3. Monitor training:**
+**3. Monitor and control:**
 ```bash
 forgather -t train_tiny_llama.yaml tb           # Start Tensorboard
+
+forgather control list                          # List running traininig jobs
+forgather control status JOB_ID                 # Get status of training job
+fogrgater control [stop|abort|save] JOB_ID      # Control training jobs
 ```
 
 That's it! You've just trained a small language model using Forgather's template system.
