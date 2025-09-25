@@ -27,9 +27,10 @@
 
 [validation]
     == super()
-    freq: 100
-    local_batch_size: 64
-    enable: false
+    freq: 50
+    local_batch_size: 32
+    steps: 14
+    enable: true
 
 [model]
 -- include "models/llama3/tiny_llama3.yaml"

@@ -1,0 +1,41 @@
+-- extends "models/debug.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "PP"
+    -- set ns.config_description = "Pipeline Parallel native torchtitan example"
+    -- set ns.log_name = "pp"
+    -- set ns.nproc_per_node = 2
+
+[job]
+    == super()
+    print_args: true
+
+[metrics]
+    == super()
+    enable_tensorboard: true
+    save_tb_folder: "pp"
+    log_freq: 10
+
+[training]
+    => super()
+    steps: 500
+    local_batch_size: 32
+    global_batch_size: 320
+    seq_len: 512
+
+[validation]
+    == super()
+    freq: 100
+    local_batch_size: 32
+    steps: 14
+    enable: true
+    seq_len: 512
+
+[parallelism]
+    == super()
+    data_parallel_shard_degree: 1
+    pipeline_parallel_degree: 2
+    pipeline_parallel_microbatch_size: 8
+    pipeline_parallel_layers_per_stage: 4
+    pipeline_parallel_schedule: "1F1B"
