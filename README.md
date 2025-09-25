@@ -5,8 +5,11 @@ Forgather is a configuration-driven ML framework that uses template inheritance 
 **Key Benefits:**
 - **No Config Duplication** - Inherit and override instead of copy-paste
 - **Types as Hyperparameters** - Change optimizers, models, datasets in config files
-- **Dynamic Code Generation** - Generate standalone Python models from configs
 - **Full Reproducibility** - Automatic snapshots of code and configs with each run
+- **Pipeline Parallel Trainer** - Includes Pipeline Parallel trainer, optmized for training on consumer GPUs 
+- **Extensible Trainers** - Easily extensible trainer implementation for modification and experimentation
+- **Dynamic Models Library** - Define and customize model architectures entirely through configurtion files 
+- **Templates Library** - Extensive templates library for tokenizers, models, trainers, datasets, etc.
 
 ## News
 
