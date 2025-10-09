@@ -1,3 +1,3 @@
 # Titan Test
 
-See if we can get Torch Titan to run using Forgather config
+This just reproduces a number of Torch Titan configurations using Forgather as a proof-of-concept.

@@ -1,5 +1,9 @@
 -- extends "projects/fg_titan.yaml"
 
+[job]
+    == super()
+    print_args: True
+
 [config_metadata]
     == super()
     -- set ns.config_name = "Tiny Llama3"
@@ -22,7 +26,8 @@
     freq: 500
     local_batch_size: 64
 
-[model]
+[model_definition]
+    == super()
 -- include "models/llama3/tiny_llama3.yaml"
 
 [checkpoint]
@@ -36,11 +41,11 @@
     config_template: "tinystories-iter.yaml"
 
 [optimizer_factory]
-optimizer_factory: &optimizer_factory !partial:torch:optim.AdamW
+.define: &optimizer_factory !partial:torch:optim.AdamW
     lr: 1.0e-3
 
 [lr_scheduler_factory]
-lr_scheduler_factory: &lr_scheduler_factory !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler
+.define: &lr_scheduler_factory !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler
     warmup_steps: 500
     cooldown_steps: 50000
     constant_lr: 1.0e-6

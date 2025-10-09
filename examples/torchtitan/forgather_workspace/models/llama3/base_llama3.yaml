@@ -1,26 +1,23 @@
 [tokenizer]
-tokenizer: &tokenizer !call:forgather:from_project
+.define: &tokenizer !call:forgather:from_project
 
 [model_args]
-model_args: &model_args !call:torchtitan.models.llama3.model.args:TransformerModelArgs
+.define: &model_args !call:torchtitan.models.llama3.model.args:TransformerModelArgs
     vocab_size: !call:len [ *tokenizer ]
     eos_id: !call:getattr [ *tokenizer, 'eos_token_id' ]
     max_seq_len: !call:getattr [ *tokenizer, "model_max_length" ]
 
 [model_factory]
-model_factory: &model_factory !partial:torchtitan.models.llama3.model.model:Transformer
-    model_args: *model_args
+.define: &model_factory !partial:torchtitan.models.llama3.model.model:Transformer
 
 [parallelize_fn]
-parallelize_fn: &parallelize_fn !partial:torchtitan.models.llama3.infra.parallelize:parallelize_llama
+.define: &parallelize_fn !partial:torchtitan.models.llama3.infra.parallelize:parallelize_llama
 
 [pipeline_fn]
-pipeline_fn: &pipeline_fn !partial:torchtitan.models.llama3.infra.pipeline:pipeline_llama
+.define: &pipeline_fn !partial:torchtitan.models.llama3.infra.pipeline:pipeline_llama
 
 [loss_fn]
-loss_fn: &loss_fn !call:forgather.ml.loss:CausalLoss
+.define: &loss_fn !call:forgather.ml.loss:CausalLoss
 
 [state_dict_adapter]
-state_dict_adapter: &state_dict_adapter !call:torchtitan.models.llama3.model.state_dict_adapter:Llama3StateDictAdapter
-    model_args: *model_args
-    hf_assets_path: null
+.define: &state_dict_adapter !partial:torchtitan.models.llama3.model.state_dict_adapter:Llama3StateDictAdapter

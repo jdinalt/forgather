@@ -65,11 +65,8 @@
     [compile]
 .define: &compile !call:torchtitan.config.job_config:Compile
 
-    [float8]
-.define: &float8 !call:torchtitan.config.job_config:Float8
-
-    [mx]
-.define: &mx !call:torchtitan.config.job_config:MX
+    [quantize]
+.define: &quantize !call:torchtitan.config.job_config:Quantize
 
     [comm]
 .define: &comm !call:torchtitan.config.job_config:Comm
@@ -99,8 +96,7 @@ job_config: &job_config !call:torchtitan.config.job_config:JobConfig@job_config
     checkpoint: *checkpoint
     activation_checkpoint: *activation_checkpoint
     compile: *compile
-    float8: *float8
-    mx: *mx
+    quantize: *quantize
     comm: *comm
     memory_estimation: *memory_estimation
     fault_tolerance: *fault_tolerance

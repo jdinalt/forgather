@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 # source: https://github.com/pytorch/torchtitan/
 
-from typing import Generator, Protocol
+from typing import Generator, Protocol, Callable
 
 from torch.distributed.pipelining.schedules import _PipelineSchedule
 from torchtitan.components.dataloader import BaseDataLoader
@@ -39,10 +39,6 @@ class ValidatorFactory(Protocol):
 
 
 class Validator(TitanValidator):
-    """
-    A concrete implementation of
-    """
-
     validation_dataloader: BaseDataLoader
 
     def __init__(
@@ -50,9 +46,10 @@ class Validator(TitanValidator):
         job_config: JobConfig,
         dp_world_size: int,
         dp_rank: int,
-        validation_dataloader: BaseDataLoader,
+        tokenizer: BaseTokenizer,
         parallel_dims: ParallelDims,
         loss_fn: LossFunction,
+        build_dataloader_fn: Callable[..., BaseDataLoader],
         validation_context: Generator[None, None, None],
         maybe_enable_amp: Generator[None, None, None],
         metrics_processor: MetricsProcessor,
@@ -63,7 +60,13 @@ class Validator(TitanValidator):
         self.job_config = job_config
         self.parallel_dims = parallel_dims
         self.loss_fn = loss_fn
-        self.validation_dataloader = validation_dataloader
+        self.validation_dataloader = build_dataloader_fn(
+            job_config=job_config,
+            dp_world_size=dp_world_size,
+            dp_rank=dp_rank,
+            tokenizer=tokenizer,
+            infinite=self.job_config.validation.steps != -1,
+        )
         self.validation_context = validation_context
         self.maybe_enable_amp = maybe_enable_amp
         self.metrics_processor = metrics_processor
@@ -76,3 +79,4 @@ class Validator(TitanValidator):
                 "Setting validation steps to -1 might cause hangs because of "
                 "unequal sample counts across ranks when dataset is exhausted."
             )
+

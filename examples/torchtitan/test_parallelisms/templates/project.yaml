@@ -32,7 +32,7 @@
     steps: 14
     enable: true
 
-[model]
+[model_definition]
 -- include "models/llama3/tiny_llama3.yaml"
 
 [dataset]

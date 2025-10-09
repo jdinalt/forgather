@@ -1,0 +1,29 @@
+-- extends "models/debug.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "G10"
+    -- set ns.config_description = "10 Gradient Accumulation Steps"
+    -- set ns.log_name = "g10"
+    -- set ns.nproc_per_node = 1
+
+[metrics]
+    == super()
+    enable_tensorboard: true
+    save_tb_folder: "g10"
+    log_freq: 10
+
+[training]
+    => super()
+    steps: 500
+    local_batch_size: 32
+    global_batch_size: 320
+    seq_len: 512
+
+[validation]
+    == super()
+    freq: 100
+    local_batch_size: 32
+    steps: 14
+    enable: true
+    seq_len: 512

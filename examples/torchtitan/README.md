@@ -38,15 +38,14 @@ From these base configurations, I have added a few derived configurations to dem
 
 ### Forgather Titan
 
-Uses a customized titan trainer sub-class, allowing for dependency injection of trainer assets. e.g. (dataset, tokenizer, collate function, optimizer, lr-scheduler, etc.)
+Constructs and registers a TrainSpec from the configuraiton. This allows one to use custom optimizers,
+lr-schedulers, datasets, etc., without having to define a TrainSpec in Python first.
 
 See [README.md](./tiny_titan/README.md)
 
 ### Tiny Titan
 
 Reproduces the configuration in "examples/tutorials/tiny_llama"
-
-This includes my original rough-draft configuration, which was used to scope out how to make this work.
 
 There is also a FSDP configuraiton for a 117M parameter Llama3 model.
 

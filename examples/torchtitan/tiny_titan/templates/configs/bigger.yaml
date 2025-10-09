@@ -23,7 +23,7 @@
     freq: 100
     local_batch_size: 32
 
-[model]
+[model_definition]
 -- include "models/llama3/117M.yaml"
 
 [checkpoint]
