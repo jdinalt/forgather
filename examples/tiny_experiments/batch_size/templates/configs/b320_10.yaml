@@ -1,0 +1,9 @@
+-- extends 'projects/tiny_batch.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "320 x10"
+    -- set ns.config_description = "Batch size 320 w/ 10 gradient-accumulation-steps"
+    -- set ns.log_name = "b320_10"
+    -- set ns.effective_batch_size = 320
+    -- set ns.gradient_accumulation_steps = 10

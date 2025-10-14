@@ -1,0 +1,9 @@
+-- extends 'projects/tiny_batch.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Baseline 32"
+    -- set ns.config_description = "Baseline batch size 32"
+    -- set ns.log_name = "b32"
+    -- set ns.effective_batch_size = 32
+    -- set ns.gradient_accumulation_steps = 1
