@@ -21,7 +21,7 @@ tokenizer: &tokenizer !call:transformers:AutoTokenizer.from_pretrained@tokenizer
 
 [model_config]
 model_config: &model_config !call:transformers:AutoConfig.from_pretrained@model_config
-    arg0: [ "{{ ns.model_id_or_path }}" ]
+    arg0: "{{ ns.model_id_or_path }}"
     -- if ns.trust_remote_code
     trust_remote_code: True
     -- endif
