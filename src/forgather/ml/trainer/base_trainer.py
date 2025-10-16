@@ -50,6 +50,9 @@ class BaseTrainingArguments(MinimalTrainingArguments):
     restore_dataset_state: bool = True
     restore_rng_state: bool = True
 
+    # Limit maximum validaiton/eval steps
+    max_eval_steps: int = -1
+
     # Offload activation tensors to CPU memory -- best combined with some form of activation checkpointing.
     # https://docs.pytorch.org/tutorials/intermediate/autograd_saved_tensors_hooks_tutorial.html#saving-tensors-to-cpu
     enable_activation_offloading: bool = False

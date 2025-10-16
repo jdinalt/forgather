@@ -651,6 +651,8 @@ class PipelineTrainer(Trainer):
             total_loss = torch.zeros(1, device=self.args.device)
             step = 0
             for step, batch in enumerate(self._dataloader_iter(self.eval_dataloader)):
+                if self.args.max_eval_steps > 0 and step >= self.args.max_eval_steps:
+                    break
                 input_dict, labels = self._prepare_batch(batch)
                 outputs = self._unified_prediction_step(input_dict, labels)
                 loss = outputs["loss"]

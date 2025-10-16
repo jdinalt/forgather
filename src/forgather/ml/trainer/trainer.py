@@ -311,7 +311,7 @@ class Trainer(BaseTrainer):
         # Restore from checkpoint if specified (after state is initialized)
         if self.args.resume_from_checkpoint:
             checkpoint_path = self.args.resume_from_checkpoint
-            if isinstance(checkpoint_path, bool):
+            if isinstance(checkpoint_path, bool) or checkpoint_path == "":
                 checkpoint_path = None
             self.load_checkpoint(checkpoint_path)
 
@@ -718,6 +718,8 @@ class Trainer(BaseTrainer):
         with set_train(self.model, False):
             total_loss = torch.zeros(1, device=self.args.device)
             for step, batch in enumerate(self._dataloader_iter(self.eval_dataloader)):
+                if self.args.max_eval_steps > 0 and step >= self.args.max_eval_steps:
+                    break
                 input_dict, labels = self._prepare_batch(batch)
                 outputs = self._prediction_step(input_dict, labels)
                 loss = outputs["loss"]
