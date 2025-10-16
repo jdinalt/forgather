@@ -215,6 +215,7 @@ class InferenceServer:
                 find_latest_checkpoint,
                 create_sharing_metadata,
             )
+            from forgather.ml.utils import default_dtype
 
             if isinstance(self.from_checkpoint, bool):
                 checkpoint_path = find_latest_checkpoint(self.model_path)
@@ -235,14 +236,17 @@ class InferenceServer:
             )
 
             # Use meta device for empty model creation
-            with torch.device("meta"):
+            with (
+                torch.device("meta"),
+                default_dtype(dtype=self.dtype)
+            ):
                 model = AutoModelForCausalLM.from_config(
                     model_config, trust_remote_code=True
                 )
             
             sharing_metadata = create_sharing_metadata(model)
 
-            # Convert model to the specified dtype and device
+            # Materialize the tensors
             model.to(dtype=self.dtype)
             model.to_empty(device=self.device)
 

@@ -2,6 +2,8 @@ import types
 from typing import Callable
 from pprint import pformat
 from enum import Enum
+from contextlib import contextmanager
+import torch
 
 
 def alt_repr(obj):
@@ -176,3 +178,12 @@ def count_parameters(model) -> dict[str, str]:
     return dict(
         total=num_params(total_parameters), trainable=num_params(trainable_parameters)
     )
+
+@contextmanager
+def default_dtype(dtype: torch.dtype):
+    prev_dtype = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(dtype)
+        yield
+    finally:
+        torch.set_default_dtype(prev_dtype)
