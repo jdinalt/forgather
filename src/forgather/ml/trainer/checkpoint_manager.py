@@ -278,7 +278,7 @@ class CheckpointManager(CheckpointInterface):
                     self._load_state_dict(key, obj, checkpoint_path)
                 except Exception as e:
                     logger.warning(f"Failed to load {key}\n{e}")
-                    traceback.print_exc()
+                    #traceback.print_exc()
 
 
 class RNGState(Stateful):
