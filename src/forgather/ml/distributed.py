@@ -12,26 +12,69 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Should we use thread-local storage for this?
-# It seems unlikely, as distributed.barrier() probably does not
-# play nice with threads. TBD
+# Tracks recursion of main_process_first
 mpf_recursion_level = 0
+
+# Cache for local process group
+_local_process_group = None
+
+
+def get_local_process_group():
+    """
+    Get or create a process group containing only ranks on this node.
+
+    Returns None if distributed is not initialized or not available.
+    """
+    global _local_process_group
+
+    if not distributed.is_available() or not distributed.is_initialized():
+        return None
+
+    if _local_process_group is not None:
+        return _local_process_group
+
+    # Create local process groups (one per node)
+    world_size = distributed.get_world_size()
+    rank = distributed.get_rank()
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
+
+    # Group ranks by node - assumes ranks are assigned sequentially per node
+    # e.g., node0: ranks 0-3, node1: ranks 4-7, etc.
+    num_nodes = world_size // local_world_size
+
+    # IMPORTANT: distributed.new_group() is collective - ALL ranks must participate
+    # in creating ALL groups, even if they're not members
+    for node_id in range(num_nodes):
+        # Ranks for this node
+        node_ranks = list(range(node_id * local_world_size, (node_id + 1) * local_world_size))
+        group = distributed.new_group(ranks=node_ranks)
+
+        # Cache the group if this rank belongs to it
+        if rank in node_ranks:
+            _local_process_group = group
+            # Don't break! Must continue to create all groups
+
+    return _local_process_group
 
 
 @contextmanager
 def main_process_first(dist=None):
     """
-    Context manager for ensuring that the main process runs first
+    Context manager for ensuring that the main process on each node runs first
 
     When running with multiple torch-distributed processes, this context manager
-    will execute the context on the main process first.
+    will execute the context on the main process (local_rank 0) of each node first.
 
     An example use-case is tokenizing a dataset, where it's not a good use of
     resources to perform this action on all processes, as the work is redundant.
 
-    When the first process completets, the tokenized dataset is automatically cached,
-    thens, when the remaining processes try to tokenized the dataset, the cached
-    dataset is loaded instead.
+    When the first process on each node completes, the tokenized dataset is
+    automatically cached. Then, when the remaining processes on that node try to
+    tokenize the dataset, the cached dataset is loaded instead.
+
+    In multi-node scenarios, each node's rank 0 process will run first, followed
+    by other ranks on the same node. The barrier is local to each node, so nodes
+    can process independently.
 
     ```
     @main_process_first()
@@ -39,24 +82,19 @@ def main_process_first(dist=None):
         ...
     ```
     """
-    if dist is None:
-        # Setup barrier function, if no distributed env provided
-        if distributed.is_available() and accelerator.is_available():
-            barrier = partial(
-                distributed.barrier,
-                device_ids=[torch.accelerator.current_device_index()],
-            )
-        else:
-            barrier = lambda: None
-    else:
-        barrier = dist.barrier
-
+    # No-op on recursion or single process
     global mpf_recursion_level
     if mpf_recursion_level or int(os.environ.get("WORLD_SIZE", "1")) == 1:
         yield
         return
 
-    local_rank = int(os.environ["LOCAL_RANK"])
+    # Use LOCAL_RANK for per-node coordination
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+
+    # Get barrier function - use local process group for node-local coordination
+    local_group = get_local_process_group()
+    barrier = get_barrier_fn(group=local_group)
+
     mpf_recursion_level += 1
     try:
         if local_rank != 0:
@@ -108,15 +146,21 @@ def init_from_env(dist: DistributedEnvInterface):
             setattr(dist, var_name.lower(), value)
 
 
-def get_barrier_fn() -> Callable[[], None | Work]:
+def get_barrier_fn(group=None) -> Callable[[], None | Work]:
     """
     torch.distributed.barrier() complains about not having specified device_ids, if
     called without this argument. It's also not always available, so this returns either
     a barrier function, bound to the current device, or a no-op lambda function.
+
+    Args:
+        group: Optional process group for the barrier. If None, uses the default group (all ranks).
+               Pass a specific group to create a barrier for a subset of ranks (e.g., local node only).
     """
     if distributed.is_available() and accelerator.is_available():
         return partial(
-            distributed.barrier, device_ids=[torch.accelerator.current_device_index()]
+            distributed.barrier,
+            device_ids=[torch.accelerator.current_device_index()],
+            group=group
         )
     else:
         return lambda *args, **kwargs: None
