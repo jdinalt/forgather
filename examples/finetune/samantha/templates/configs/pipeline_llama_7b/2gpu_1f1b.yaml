@@ -17,7 +17,7 @@
 -- block datacollator
     == super()
     padding: "max_length" # Required for pipeline
-    max_length: 1300
+    max_length: 1024
 -- endblock datacollator
 
 
