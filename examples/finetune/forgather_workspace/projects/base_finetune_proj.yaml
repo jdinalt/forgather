@@ -164,6 +164,10 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
         names: [ "--gradient-checkpointing", "-G"]
         action: "store_true"
         help: "Enable gradient (activation) checkpoint, when supported"
+    resume_from_checkpoint:
+        names: [ "--resume-from-checkpoint"]
+        type: path
+        help: "Explicit checkpoint path to load"
     chat_template:
         names: [ "--chat-template", "-C" ]
         help: "Path to the chat template to use"

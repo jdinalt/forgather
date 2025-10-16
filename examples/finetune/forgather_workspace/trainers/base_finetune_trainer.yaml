@@ -32,7 +32,7 @@
 -- endif
 
     # We load the model via the newest checkpoint
-    resume_from_checkpoint: True
+    resume_from_checkpoint: {{ resume_from_checkpoint | default(True) }}
     ## WARNING: If the model has any buffers with "peristent=False," construct the model
     ## on the "default" device; otherwise, there is no way to initialize these buffers from
     ## a checkpoint! OTOH, not constructing the model on "meta" is very slow...
