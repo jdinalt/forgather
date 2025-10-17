@@ -69,6 +69,13 @@ class DataCollatorForCausalLM:
             - If 'max_length' is provided in pad_kwargs and padding is not set to 'max_length', 'max_length' will be ignored.
             - A warning is logged if the specified max_length exceeds the tokenizer's model_max_length.
         """
+
+        if tokenizer.pad_token is None:
+            logger.warning("No PAD token defined. Setting pad token to EOS")
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+            tokenizer.padding_side = "right"
+
         self.tokenizer = tokenizer
         self.max_length = pad_kwargs.get("max_length", tokenizer.model_max_length)
         self.input_name = input_name

@@ -3,6 +3,7 @@ import os
 import argparse
 from argparse import RawTextHelpFormatter
 import logging
+from contextlib import ExitStack
 
 import torch
 from torch import Tensor
@@ -24,6 +25,8 @@ from forgather.ml.sharded_checkpoint import (
     retie_parameters,
     find_latest_checkpoint,
 )
+from forgather.ml.utils import default_dtype
+from forgather.ml.no_init_weights import no_init_weights
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -262,7 +265,7 @@ def load_state_dict_with_validation(
     return result
 
 
-def create_hf_config_and_model(src_model_config, max_model_length, model_type):
+def create_hf_config_and_model(src_model_config, max_model_length, model_type, new_dtype):
     """Create appropriate HF config and model based on detected type"""
     if model_type == "mistral":
         print("Creating HuggingFace Mistral config...")
@@ -287,7 +290,11 @@ def create_hf_config_and_model(src_model_config, max_model_length, model_type):
         )
 
         print("Creating HuggingFace Mistral model...")
-        hf_model = MistralForCausalLM(hf_config)
+        with ExitStack() as exit_stack:
+            if new_dtype:
+                exit_stack.enter_context(default_dtype(new_dtype))
+            exit_stack.enter_context(no_init_weights())
+            hf_model = MistralForCausalLM(hf_config)
 
     else:  # llama
         print("Creating HuggingFace Llama config...")
@@ -313,7 +320,11 @@ def create_hf_config_and_model(src_model_config, max_model_length, model_type):
         )
 
         print("Creating HuggingFace Llama model...")
-        hf_model = LlamaForCausalLM(hf_config)
+        with ExitStack() as exit_stack:
+            if new_dtype:
+                exit_stack.enter_context(default_dtype(new_dtype))
+            exit_stack.enter_context(no_init_weights())
+            hf_model = LlamaForCausalLM(hf_config)
 
     return hf_config, hf_model, model_type
 
@@ -483,12 +494,12 @@ def convert_hf_to_forgather(args):
     tokenizer = AutoTokenizer.from_pretrained(src_model_path)
 
     print("Loading source model...")
-    src_model = AutoModelForCausalLM.from_pretrained(src_model_path)
-    logger.debug(src_model)
 
-    if new_dtype:
-        print(f"Converting model dtype to {new_dtype}")
-        src_model.to(dtype=new_dtype)
+    with ExitStack() as exit_stack:
+        if new_dtype:
+            exit_stack.enter_context(default_dtype(new_dtype))
+        src_model = AutoModelForCausalLM.from_pretrained(src_model_path)
+    logger.debug(src_model)
 
     print_debug_params(src_model, "Source model", args)
 
@@ -556,12 +567,12 @@ def convert_hf_to_forgather(args):
     model_ctor = Latent.materialize(config, mtargets="model")
 
     print("Constructing destination model")
-    model = model_ctor("cpu")
+    with ExitStack() as exit_stack:
+        if new_dtype:
+            exit_stack.enter_context(default_dtype(new_dtype))
+        exit_stack.enter_context(no_init_weights())                     
+        model = model_ctor()
     logger.debug(model)
-
-    if new_dtype:
-        print(f"Converting new model dtype to {new_dtype}")
-        model.to(dtype=new_dtype)
 
     print_debug_params(model, "Destination model", args)
 
@@ -611,17 +622,16 @@ def convert_forgather_to_hf(args):
 
     print("Loading Forgather model...")
     # Load as meta model first
-    with torch.device("meta"):
-
+    with ExitStack() as exit_stack:
+        if new_dtype:
+            exit_stack.enter_context(default_dtype(new_dtype))
+        exit_stack.enter_context(torch.device("meta"))
         src_model = AutoModelForCausalLM.from_config(
             src_model_config, trust_remote_code=True
         )
 
     # Create sharing metadata and materialize model
     sharing_metadata = create_sharing_metadata(src_model)
-
-    if new_dtype:
-        src_model.to(dtype=new_dtype)
     src_model.to_empty(device="cpu")
     retie_parameters(src_model, sharing_metadata)
 
@@ -640,12 +650,8 @@ def convert_forgather_to_hf(args):
 
     # Create appropriate HF config and model based on specified type
     hf_config, hf_model, model_type = create_hf_config_and_model(
-        src_model_config, max_model_length, args.model_type
+        src_model_config, max_model_length, args.model_type, new_dtype
     )
-
-    if new_dtype:
-        print(f"Converting model dtype to {new_dtype}")
-        hf_model.to(dtype=new_dtype)
 
     print_debug_params(hf_model, "Destination HuggingFace model", args)
 
@@ -672,7 +678,7 @@ def convert_forgather_to_hf(args):
     test_generation_if_requested(hf_model, tokenizer, args)
 
     print(f"Saving HuggingFace {model_type.capitalize()} model...")
-    hf_model.save_pretrained(dst_model_path)
+    hf_model.save_pretrained(dst_model_path) # Also saves config
     tokenizer.save_pretrained(dst_model_path)
 
 

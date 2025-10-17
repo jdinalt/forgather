@@ -41,9 +41,9 @@ def precompute_cos_sin(
     emb = torch.cat((freqs, freqs), dim=-1)
 
     # Compute cos and sin
-    cos = emb.cos()
-    sin = emb.sin()
-
+    default_dtype = torch.get_default_dtype()
+    cos = emb.cos().to(dtype=default_dtype)
+    sin = emb.sin().to(dtype=default_dtype)
     return cos, sin
 
 
@@ -71,7 +71,6 @@ def apply_rotary_pos_emb(
     # Apply rotary embeddings.
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
-
     return q_embed, k_embed
 
 

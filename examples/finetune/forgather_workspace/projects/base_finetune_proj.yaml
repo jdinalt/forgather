@@ -106,7 +106,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     # Linear warmup steps
     warmup_steps: 200
 
-    # If 0, training will warmup to constant_lr, followed by constant lr, until checkpoint_step.
+    # If 0, training will warmup to the lr specified in the optimizer and hold until checkpoint_step.
     # If > 0, training will warmup to the lr specified in the optimizer, followed by 
     # cosine annealing to constant_lr, completing at step warmup_steps + cooldown_steps.
     cooldown_steps: 0
@@ -153,21 +153,21 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
         type: "path"
         help: "HF model ID or local path to model"
     output_dir:
-        names: [ "--output-dir" ]
+        names: "--output-dir"
         type: "path"
         help: "Training output director. Defaults to model_id_or_path"
-    safe_load:
-        names: "--safe-load"
-        action: "store_true"
-        help: "Fallback to the more compatible HF model loading method"
     gradient_checkpointing:
         names: [ "--gradient-checkpointing", "-G"]
         action: "store_true"
         help: "Enable gradient (activation) checkpoint, when supported"
     resume_from_checkpoint:
-        names: [ "--resume-from-checkpoint"]
+        names: "--resume-from-checkpoint"
         type: path
         help: "Explicit checkpoint path to load"
+    save_on_each_node:
+        names: "--save-on-each-node"
+        action: "store_true"
+        help: "Save common checkpoint files on each node"
     chat_template:
         names: [ "--chat-template", "-C" ]
         help: "Path to the chat template to use"

@@ -22,6 +22,7 @@ import time
 import os
 import logging
 import gc
+from contextlib import ExitStack
 
 import torch
 from torch import Tensor
@@ -56,6 +57,7 @@ from ..sharded_checkpoint import (
 
 from .checkpoint_manager import CheckpointManager, CheckpointConfig
 from ..distributed import DistributedEnvInterface
+from ..no_init_weights import no_init_weights
 
 logger = logging.getLogger(__name__)
 
@@ -387,7 +389,10 @@ class Trainer(BaseTrainer):
                     logger.info(
                         f"Constructing model on default device and moving to {self.args.device}"
                     )
-                    self.model = self.model_init()
+                    with ExitStack() as exit_stack:
+                        if self.args.resume_from_checkpoint:
+                            exit_stack.enter_context(no_init_weights())
+                        self.model = self.model_init()
                 else:
                     logger.info(f"Moving model to {self.args.device}")
                 self.model = self.model.to(self.args.device)
@@ -400,7 +405,7 @@ class Trainer(BaseTrainer):
                 ), "Constructing model on meta-device requires loading parameters from checkpoint"
 
                 logger.info(
-                    f"Consturcting model on meta device and materializing on {self.args.device}"
+                    f"Constructing model on meta device and materializing on {self.args.device}"
                 )
                 # TODO: Identify if the model has buffers with "persist=False" and warn loudly!
                 if not self.args.resume_from_checkpoint:
@@ -418,9 +423,12 @@ class Trainer(BaseTrainer):
                     self.model_init
                 ), "Constructing the model on device requires model_init"
                 logger.info(
-                    f"Constructig and initializing model directly on {self.args.device}"
+                    f"Constructing and initializing model directly on {self.args.device}"
                 )
-                with torch.device(self.args.device):
+                with ExitStack() as exit_stack:
+                    exit_stack.enter_context(torch.device(self.args.device))
+                    if self.args.resume_from_checkpoint:
+                        exit_stack.enter_context(no_init_weights())
                     self.model = self.model_init()
             case _:
                 raise ValueError("Requires one of: default|meta|device")
@@ -851,6 +859,12 @@ class Trainer(BaseTrainer):
         This should be retained when saving a checkpoint
         """
         assert has_batch_size(self.train_dataloader)
+
+        max_eval_steps = min(
+            self.args.max_eval_steps,
+            len(self.eval_dataloader),
+        )
+
         if self.do_train:
             return TrainerState(
                 max_steps=self.max_steps,
@@ -866,6 +880,7 @@ class Trainer(BaseTrainer):
                 # Initialize best model tracking
                 best_metric=None,
                 best_model_checkpoint=None,
+                max_eval_steps=max_eval_steps,
             )
         else:
             return TrainerState(
@@ -882,6 +897,7 @@ class Trainer(BaseTrainer):
                 # Initialize best model tracking
                 best_metric=None,
                 best_model_checkpoint=None,
+                max_eval_steps=max_eval_steps,
             )
 
     def _end_train_loop(self, start_time: float) -> dict[str, int | float]:

@@ -630,10 +630,10 @@ def get_checkpoint_metadata(
     torch_weights_path = os.path.join(path, WEIGHTS_NAME)
     safetensors_weights_path = os.path.join(path, SAFE_WEIGHTS_NAME)
 
-    if os.path.exists(torch_index_path):
-        return CheckpointMeta(WEIGHTS_INDEX_NAME, True, False)
-    elif os.path.exists(safetensors_index_path):
+    if os.path.exists(safetensors_index_path):
         return CheckpointMeta(SAFE_WEIGHTS_INDEX_NAME, True, True)
+    elif os.path.exists(torch_index_path):
+        return CheckpointMeta(WEIGHTS_INDEX_NAME, True, False)
     elif os.path.exists(torch_weights_path):
         return CheckpointMeta(WEIGHTS_NAME, False, False)
     elif os.path.exists(safetensors_weights_path):

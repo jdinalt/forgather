@@ -179,6 +179,7 @@ def count_parameters(model) -> dict[str, str]:
         total=num_params(total_parameters), trainable=num_params(trainable_parameters)
     )
 
+
 @contextmanager
 def default_dtype(dtype: torch.dtype):
     prev_dtype = torch.get_default_dtype()

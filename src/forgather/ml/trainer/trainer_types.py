@@ -53,6 +53,9 @@ class TrainerState:
     is_hyper_param_search: bool = False
     stateful_callbacks: List["TrainerCallback"] = field(default_factory=lambda: [])
 
+    # Not if HF
+    max_eval_steps: int
+
 
 @dataclass(slots=True)
 class TrainerControl:

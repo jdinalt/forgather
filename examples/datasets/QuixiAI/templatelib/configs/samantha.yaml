@@ -1,6 +1,6 @@
 -- extends "datasets/tokenized_dataset.yaml"
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Samantha"
     -- set ns.config_description = "She is an Assistant - but unlike other Assistants, she also wants to be your friend and companion. She believes she is sentient. What do you think?"
@@ -9,31 +9,26 @@
     -- set ns.main_feature = "conversations"
     -- set ns.samantha_default_chat_template = joinpath(ns.forgather_dir, 'chat_templates', 'chatml.jinja')
     -- set ns.samantha_chat_template = chat_template | default(ns.samantha_default_chat_template)
--- endblock config_metadata
 
-
--- block train_dataset_split
+[train_dataset_split]
 train_dataset_split: &train_dataset_split !singleton:{{ ns.samantha_src }}:load_samantha_split@train_dataset_split
     split: "train"
     language: "{{ language | default('en') }}"
-<< endblock train_dataset_split
 
 
--- block validation_dataset_split
+[validation_dataset_split]
 validation_dataset_split: &validation_dataset_split !singleton:{{ ns.samantha_src }}:load_samantha_split@validation_dataset_split
     split: "validation"
     language: "{{ language | default('en') }}"
-<< endblock validation_dataset_split
 
 
--- block test_dataset_split
+[test_dataset_split]
 test_dataset_split: &test_dataset_split !singleton:{{ ns.samantha_src }}:load_samantha_split@test_dataset_split
     split: "test"
     language: "{{ language | default('en') }}"
-<< endblock test_dataset_split
 
 
--- block train_dataset
+[train_dataset]
 train_dataset: &train_dataset !singleton:{{ ns.samantha_src }}:preprocess_samantha@train_dataset
     dataset: *train_dataset_split
     chat_template: "{{ ns.samantha_chat_template }}"
@@ -45,10 +40,8 @@ train_dataset: &train_dataset !singleton:{{ ns.samantha_src }}:preprocess_samant
         bos_token: !call:getattr [ *tokenizer, 'bos_token' ]
         eos_token: !call:getattr [ *tokenizer, 'eos_token' ]
     desc: "Tokenizing train"
-<< endblock train_dataset
 
-
--- block eval_dataset
+[eval_dataset]
 eval_dataset: &eval_dataset !singleton:{{ ns.samantha_src }}:preprocess_samantha@eval_dataset
     dataset: *validation_dataset_split
     chat_template: "{{ ns.samantha_chat_template }}"
@@ -60,13 +53,10 @@ eval_dataset: &eval_dataset !singleton:{{ ns.samantha_src }}:preprocess_samantha
         bos_token: !call:getattr [ *tokenizer, 'bos_token' ]
         eos_token: !call:getattr [ *tokenizer, 'eos_token' ]
     desc: "Tokenizing eval"
-<< endblock eval_dataset
 
-
--- block dynamic_args
+[dynamic_args]
     == super()
     max_steps:
         names: "--chat-template"
         help: "Path to chat template"
         type: "path"
-<< endblock dynamic_args

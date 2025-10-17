@@ -1,43 +1,34 @@
 -- extends 'samantha.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Samantha Llama 30B 1F!B Pipe x6"
     -- set ns.config_description = "Train Samantha on 1F!B 6 GPU Pipeline"
     -- set ns.log_name = "1f1b_6gpu"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
--- endblock config_metadata
 
-
--- block trainer_definition
+[trainer_definition]
     -- include 'default.trainer_config'
--- endblock trainer_definition
 
-
--- block datacollator
+[datacollator]
     == super()
     padding: "max_length" # Required for pipeline
     max_length: 1300
--- endblock datacollator
-
 
 #-------------------- default.trainer_config --------------------
 -- extends 'trainers/pipeline/1f1b_6gpu.yaml'
 
--- block trainer_meta_config
+[trainer_meta_config]
     == super()
     -- set ns.pipeline_layers = 60
     -- set ns.per_device_train_batch_size = 12
     -- set ns.per_device_eval_batch_size = 24
     -- set ns.pipeline_microbatches = 12
-<< endblock trainer_meta_config
 
-
--- block trainer_args
+[trainer_args]
     == super()
     # Experiment overrides
     max_grad_norm: null
-    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
+    gradient_checkpointing: True
     fuse_optim_with_backward: True
-    #enable_activation_offloading: True
--- endblock trainer_args
+    enable_activation_offloading: False

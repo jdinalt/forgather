@@ -32,6 +32,8 @@ from .trainer_types import (
 )
 
 from .checkpoint_manager import RNGState
+from ..utils import default_dtype
+from ..construct import torch_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,9 @@ class BaseTrainingArguments(MinimalTrainingArguments):
     restore_scheduler_state: bool = True
     restore_dataset_state: bool = True
     restore_rng_state: bool = True
+
+    # Default torch dtype
+    default_dtype: str | None = None
 
     # Limit maximum validaiton/eval steps
     max_eval_steps: int = -1
@@ -206,6 +211,7 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
             train_batch_size=args.per_device_train_batch_size,
             max_steps=args.max_steps,
             num_train_epochs=args.num_train_epochs,
+            max_eval_steps=args.max_eval_steps,
         )
         self.control = TrainerControl()
 
@@ -250,18 +256,23 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         """
         The main entry point to start training the model.
         """
-        with ExitStack() as stack:
+        with ExitStack() as exit_stack:
             backends = self._get_sdpa_backends(self.args.sdpa_backend)
             if backends:
                 logger.info(
                     f"sdpa_backends={backends}, set_priority={self.args.sdpa_set_priority}"
                 )
-                stack.enter_context(
+                exit_stack.enter_context(
                     sdpa_kernel(backends, set_priority=self.args.sdpa_set_priority)
                 )
             if self.args.enable_activation_offloading:
-                stack.enter_context(torch.autograd.graph.save_on_cpu(pin_memory=True))
-
+                exit_stack.enter_context(
+                    torch.autograd.graph.save_on_cpu(pin_memory=True)
+                )
+            if self.args.default_dtype:
+                exit_stack.enter_context(
+                    default_dtype(torch_dtype(self.args.default_dtype))
+                )
             self._prepare(
                 train_dataset=self.train_dataset, eval_dataset=self.eval_dataset
             )
@@ -278,11 +289,15 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         if eval_dataset is None:
             eval_dataset = self.eval_dataset
 
-        with ExitStack() as stack:
+        with ExitStack() as exit_stack:
             backends = self._get_sdpa_backends(self.args.sdpa_backend)
             if backends:
-                stack.enter_context(
+                exit_stack.enter_context(
                     sdpa_kernel(backends, set_priority=self.args.sdpa_set_priority)
+                )
+            if self.args.default_dtype:
+                exit_stack.enter_context(
+                    default_dtype(torch_dtype(self.args.default_dtype))
                 )
             self._prepare(train_dataset=None, eval_dataset=eval_dataset)
             return self._eval_loop()

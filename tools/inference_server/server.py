@@ -9,11 +9,8 @@ import os
 import time
 import uuid
 import yaml
-import json
-import asyncio
 from typing import List, Optional, Dict, Any, Union, Iterator
 from threading import Thread
-from queue import Queue
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig, TextIteratorStreamer, AutoConfig
@@ -22,6 +19,16 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from jinja2 import Environment, BaseLoader, TemplateError
+
+from forgather.ml.no_init_weights import no_init_weights
+from forgather.ml.utils import default_dtype
+from forgather.ml.sharded_checkpoint import (
+    load_checkpoint,
+    retie_parameters,
+    find_latest_checkpoint,
+    create_sharing_metadata,
+)
+from forgather.ml.construct import torch_dtype
 
 
 class ChatMessage(BaseModel):
@@ -199,7 +206,7 @@ class InferenceServer:
         self._setup_stop_tokens()
 
     def load_model(self):
-        self.logger.info(f"Loading model from {self.model_path}...")
+        self.logger.info(f"Loading model from directory {self.model_path}")
         
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
         if self.tokenizer.pad_token is None:
@@ -208,14 +215,6 @@ class InferenceServer:
         if self.from_checkpoint:
             if self.device == "auto":
                 raise ValueError("Cannot use 'auto' device with checkpoint loading. Please specify a device explicitly.")
-            # We only want a weak dependency of Forgather.
-            from forgather.ml.sharded_checkpoint import (
-                load_checkpoint,
-                retie_parameters,
-                find_latest_checkpoint,
-                create_sharing_metadata,
-            )
-            from forgather.ml.utils import default_dtype
 
             if isinstance(self.from_checkpoint, bool):
                 checkpoint_path = find_latest_checkpoint(self.model_path)
@@ -247,7 +246,6 @@ class InferenceServer:
             sharing_metadata = create_sharing_metadata(model)
 
             # Materialize the tensors
-            model.to(dtype=self.dtype)
             model.to_empty(device=self.device)
 
             # When converted to empty, tied parameters are not automatically retied.
@@ -258,7 +256,7 @@ class InferenceServer:
         else:
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_path,
-                torch_dtype=self.dtype,
+                dtype=self.dtype,
                 device_map=self.device if self.device != "auto" else "auto",
                 trust_remote_code=True
             )
@@ -300,26 +298,8 @@ class InferenceServer:
             else:
                 return torch.float32
         
-        # Parse user-specified dtype
-        dtype_map = {
-            "float32": torch.float32,
-            "fp32": torch.float32,
-            "float16": torch.float16,
-            "fp16": torch.float16,
-            "half": torch.float16,
-            "bfloat16": torch.bfloat16,
-            "bf16": torch.bfloat16,
-            "float64": torch.float64,
-            "fp64": torch.float64,
-            "double": torch.float64,
-        }
-        
         dtype_str = dtype_str.lower()
-        if dtype_str not in dtype_map:
-            available_dtypes = ", ".join(dtype_map.keys())
-            raise ValueError(f"Unsupported dtype '{dtype_str}'. Available options: {available_dtypes}")
-        
-        requested_dtype = dtype_map[dtype_str]
+        requested_dtype = torch_dtype(dtype_str)
         
         # Validate bfloat16 support
         if requested_dtype == torch.bfloat16 and torch.cuda.is_available() and not torch.cuda.is_bf16_supported():

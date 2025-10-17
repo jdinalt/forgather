@@ -1,31 +1,24 @@
 -- extends 'samantha.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Samantha Llama 7B ZBVZ Pipe x6"
     -- set ns.config_description = "Train Samantha on ZBVZ 6 GPU Pipeline"
     -- set ns.log_name = "zbvz_6gpu"
     -- set ns.trainer_class = 'trainers/pipeline/zb_6gpu.yaml'
--- endblock config_metadata
 
-
--- block trainer_definition
+[trainer_definition]
     -- include 'config.trainer_config'
--- endblock trainer_definition
 
-
--- block datacollator
+[datacollator]
     == super()
     padding: "max_length" # Required for pipeline
     max_length: 1300
--- endblock datacollator
-
 
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'
 
--- block trainer_args
+[trainer_args]
     == super()
 
     # **config**
--- endblock trainer_args

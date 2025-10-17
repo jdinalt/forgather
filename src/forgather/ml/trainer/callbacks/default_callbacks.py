@@ -53,7 +53,7 @@ class ProgressCallback:
             return
         if self.eval_progress_bar is None:
             self.eval_progress_bar = tqdm(
-                total=len(eval_dataloader),
+                total=getattr(state, "max_eval_steps", len(eval_dataloader)),
                 leave=self.train_progress_bar is None,
                 dynamic_ncols=True,
             )

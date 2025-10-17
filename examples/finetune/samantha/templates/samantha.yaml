@@ -3,13 +3,30 @@
 [config_metadata]
     == super()
     -- set ns.config_name = "Samantha Finetune"
-    -- set ns.config_description = ""
+    -- set ns.config_description = "Undefined"
     -- set ns.log_name = "default"
     -- set ns.default_dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
     -- set ns.default_dataset_config = "samantha.yaml"
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
+    lr: 4.0e-6
+    weight_decay: 0.001
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+    warmup_steps: 50
+    cooldown_steps: 0
+
 #-------------------- project.trainer --------------------
 -- extends "trainers/base_finetune_trainer.yaml"
 
 [trainer_args]
     == super()
     # **samantha**
+    logging_steps: 10
+    eval_steps: 50
+    max_eval_steps: 10
+    save_steps: 250
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 16
