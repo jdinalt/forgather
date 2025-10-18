@@ -12,6 +12,7 @@ from torch.distributed.checkpoint.stateful import Stateful
 
 from torchtitan.components.optimizer import OptimizersContainer
 
+
 class LRSchedulersContainer(Stateful):
     """Container for multiple learning rate schedulers.
 
@@ -42,7 +43,9 @@ class LRSchedulersContainer(Stateful):
 
     schedulers: list[LRScheduler]
 
-    def __init__(self, optimizers: OptimizersContainer, lr_scheduler_factory: Callable) -> None:
+    def __init__(
+        self, optimizers: OptimizersContainer, lr_scheduler_factory: Callable
+    ) -> None:
         assert (
             len(optimizers) > 0
         ), "Must have at least one optimizer to create LRScheduler"

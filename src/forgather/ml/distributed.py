@@ -46,7 +46,9 @@ def get_local_process_group():
     # in creating ALL groups, even if they're not members
     for node_id in range(num_nodes):
         # Ranks for this node
-        node_ranks = list(range(node_id * local_world_size, (node_id + 1) * local_world_size))
+        node_ranks = list(
+            range(node_id * local_world_size, (node_id + 1) * local_world_size)
+        )
         group = distributed.new_group(ranks=node_ranks)
 
         # Cache the group if this rank belongs to it
@@ -160,7 +162,7 @@ def get_barrier_fn(group=None) -> Callable[[], None | Work]:
         return partial(
             distributed.barrier,
             device_ids=[torch.accelerator.current_device_index()],
-            group=group
+            group=group,
         )
     else:
         return lambda *args, **kwargs: None

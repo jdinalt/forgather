@@ -477,7 +477,7 @@ def train_cmd(args):
     env = os.environ.copy()
     if args.devices:
         env["CUDA_VISIBLE_DEVICES"] = args.devices
-    
+
     if "env" in config:
         config_env = Latent.materialize(config.env)
         print(f"Config Environment: {config_env}")

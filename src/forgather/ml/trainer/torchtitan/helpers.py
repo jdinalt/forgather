@@ -22,6 +22,7 @@ LossFunction = Callable[..., torch.Tensor]
 
 logger = Logger(__name__)
 
+
 def build_optimizers(
     model_parts: list[Module],
     optimizer_config: OptimizerConfig,
@@ -34,6 +35,7 @@ def build_optimizers(
         model_parts=model_parts,
     )
 
+
 def build_lr_schedulers(
     optimizers: OptimizersContainer,
     lr_scheduler_config: LRSchedulerConfig,
@@ -44,6 +46,7 @@ def build_lr_schedulers(
     return container_factory(
         optimizers=optimizers,
     )
+
 
 def build_dataloader(
     dp_world_size: int,
@@ -64,6 +67,7 @@ def build_dataloader(
         collate_fn=data_collator,
     )
 
+
 def build_tokenizer(
     job_config: JobConfig,
     tokenizer: BaseTokenizer,
@@ -71,7 +75,10 @@ def build_tokenizer(
 ) -> BaseTokenizer:
     return tokenizer
 
-def build_loss_fn(job_config: JobConfig, loss_fn: LossFunction, **kwargs) -> LossFunction:
+
+def build_loss_fn(
+    job_config: JobConfig, loss_fn: LossFunction, **kwargs
+) -> LossFunction:
     if job_config.compile.enable and "loss" in job_config.compile.components:
         loss_fn = torch.compile(loss_fn)
     return loss_fn
