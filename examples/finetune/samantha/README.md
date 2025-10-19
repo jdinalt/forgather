@@ -222,7 +222,7 @@ FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
 
 # Convert model to Forgather Llama/Mistral implementation
 scripts/convert_llama.py --model-type mistral --dtype bfloat16 --max-length 4096 \
--t "../../../chat_templates/chatml.jinja" "${SRC_MODEL}" "${FG_MODEL}"
+-t "chat_templates/chatml.jinja" "${SRC_MODEL}" "${FG_MODEL}"
 ```
 
 To convert the model back to HF format...

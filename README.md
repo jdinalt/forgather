@@ -13,7 +13,8 @@ Forgather is a configuration-driven ML framework that uses template inheritance 
 
 ## News
 
-- Added preliminary [Torch Titan integration](./examples/torchtitan/README.md)
+- Oct 25, [Samantha](./examples/tutorials/samantha/README.md) -- New tutorial on how to perform full finetuning on a 7B parameter model on a single, 24 GB, GPU
+- [Torch Titan integration](./examples/torchtitan/README.md) -- Use Forgather to configure Torch Titan
 
 ## Table of Contents
 

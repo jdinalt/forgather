@@ -4,23 +4,14 @@ This directory contains example projects demonstrating various Forgather capabil
 
 ## Directory Structure
 
+- **datasets/** - Dataset projects
+- **finetune/** - Finefune pretrained models wit Forgather
+- **models/** - Custom model definition projects
 - **standalone/** - Self-contained examples and external workspace demonstrations
+- **template_project/** - A basic training project to use as a basis for new projects
+- **template_workspace/** - A basic example of a Forgather workspace configuration
 - **tiny_experiments/** - Small experimental configurations for testing specific features
-- **tokenizers/** - Tokenizer configuration examples and comparisons
+- **tokenizers/** - Custom tokenizer configuration examples
+- **torchtitan/** - Use Forgather to configure training with Torch Titan
+- **trainer_control/** - Examples for using the trainer-control protocol
 - **tutorials/** - Educational projects with step-by-step learning materials
-
-## Getting Started
-
-Each subdirectory contains projects with their own README files and documentation. To explore available projects:
-
-```bash
-# List all projects recursively
-forgather ls -r
-
-# Navigate to a specific project and explore
-cd tutorials/tiny_llama
-forgather ls
-forgather -t train_tiny_llama.yaml pp
-```
-
-For detailed information about Forgather project structure and usage, see the main project documentation.
