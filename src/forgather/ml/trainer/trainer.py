@@ -58,6 +58,8 @@ from ..sharded_checkpoint import (
 from .checkpoint_manager import CheckpointManager, CheckpointConfig
 from ..distributed import DistributedEnvInterface
 from ..no_init_weights import no_init_weights
+from forgather.ml.utils import default_dtype
+from forgather.ml.construct import torch_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +164,11 @@ def maybe_cleanup_memory(alloc_threshold):
             torch.cuda.empty_cache()
 
 
-def optimzer_hook(optimizer, total_grad_squared, parameter):
+def optimzer_hook(optimizer, total_grad_squared, name, parameter):
     if total_grad_squared is not None:
         total_grad_squared += parameter.grad.square().sum().to(dtype=torch.float32)
+        # norm = parameter.grad.square().sum().sqrt()
+        # logger.info(f"{name} {norm}")
     optimizer.step()
     optimizer.zero_grad()
 
@@ -390,6 +394,10 @@ class Trainer(BaseTrainer):
                         f"Constructing model on default device and moving to {self.args.device}"
                     )
                     with ExitStack() as exit_stack:
+                        if self.args.default_dtype:
+                            exit_stack.enter_context(
+                                default_dtype(torch_dtype(self.args.default_dtype))
+                            )
                         if self.args.resume_from_checkpoint:
                             exit_stack.enter_context(no_init_weights())
                         self.model = self.model_init()
@@ -412,7 +420,12 @@ class Trainer(BaseTrainer):
                     logger.warning(
                         f"Uninitialized model constructed on meta-device and not loading from checkpoint!"
                     )
-                with torch.device("meta"):
+                with ExitStack() as exit_stack:
+                    if self.args.default_dtype:
+                        exit_stack.enter_context(
+                            default_dtype(torch_dtype(self.args.default_dtype))
+                        )
+                    exit_stack.enter_context(torch.device("meta"))
                     self.model = self.model_init()
                 sharing_metadata = create_sharing_metadata(self.model)
                 self.model.to_empty(device=self.args.device)
@@ -426,6 +439,10 @@ class Trainer(BaseTrainer):
                     f"Constructing and initializing model directly on {self.args.device}"
                 )
                 with ExitStack() as exit_stack:
+                    if self.args.default_dtype:
+                        exit_stack.enter_context(
+                            default_dtype(torch_dtype(self.args.default_dtype))
+                        )
                     exit_stack.enter_context(torch.device(self.args.device))
                     if self.args.resume_from_checkpoint:
                         exit_stack.enter_context(no_init_weights())
@@ -454,9 +471,15 @@ class Trainer(BaseTrainer):
                 self._total_grad_squared = torch.zeros(
                     1, device=self.args.device, dtype=torch.float32
                 )
-                hook = partial(optimzer_hook, self.optimizer, self._total_grad_squared)
-                for p in self.model.parameters():
+
+                for name, p in self.model.named_parameters():
                     if p.requires_grad:
+                        hook = partial(
+                            optimzer_hook,
+                            self.optimizer,
+                            self._total_grad_squared,
+                            name,
+                        )
                         p.register_post_accumulate_grad_hook(hook)
 
         if self.lr_scheduler is None:

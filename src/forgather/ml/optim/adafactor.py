@@ -39,7 +39,7 @@ class Adafactor(Optimizer):
         super().__init__(params, defaults)
 
     def _init_state(self, state, group, p, grad):
-        state["step"] = torch.tensor(0.0)
+        state["step"] = torch.tensor(0.0, dtype=torch.float32)
         if grad.dim() <= 1:
             state["row"] = torch.zeros_like(grad, dtype=p.dtype)
             state["col"] = None

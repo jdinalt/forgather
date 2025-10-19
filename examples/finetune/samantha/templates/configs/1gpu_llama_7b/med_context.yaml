@@ -15,7 +15,7 @@
     # This should work on a 24 GB GPU
     max_length: 1300
     ## Set to always use max_length; useful for profiling, to avoid surprises.
-    ## adding: "max_length"
+    ## padding: "max_length"
 
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'

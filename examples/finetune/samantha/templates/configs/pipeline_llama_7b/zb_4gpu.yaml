@@ -20,5 +20,6 @@
 
 [trainer_args]
     == super()
-
     # **config**
+    eval_strategy: "no" # Eval does not work with zbvz at present
+    load_best_model_at_end: False

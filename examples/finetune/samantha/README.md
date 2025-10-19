@@ -2,14 +2,20 @@
 
 Finetune a model on the Samantha dataset
 
-In this tutorial you will learn how to:
-- Full finetuning of a 7B parameter model on a single 24 GB GPU with a sequence length of up to 4096. No low-rank approximations or quantization required!
-- Train a 7B model on 2 or 4 GPUs using pipeline parallel
-- Train a 7B model on 2 or 4 nodes using only Gigabit Ethernet and pipeline parallel
-- Extra Credit: Train a 30B model using 4 GPUs
+## What You'll Learn
 
-The "Samantha" dataset was an experimental dataset created by Eric Hartford, where the model is taught to 
-believe than she is sentient.
+This tutorial teaches you how to:
+- ✓ Fine-tune a 7B parameter language model on consumer GPUs (full precision, no LoRA/quantization!)
+- ✓ Use [pipeline parallelism](https://docs.pytorch.org/docs/stable/distributed.pipelining.html) to distribute models across multiple GPUs
+- ✓ Scale training across multiple machines over standard Gigabit Ethernet
+- ✓ Convert models between HuggingFace and Forgather formats
+- ✓ Manage checkpoints and resume training
+- ✓ Serve your fine-tuned model via an inference API
+
+**Time required**: ~1-2 hours (mostly waiting for downloads/training)
+**Hardware requirements**: 1-6 GPUs with 16-24GB VRAM each
+
+The "Samantha" dataset was an experimental dataset created by Eric Hartford, where the model is taught to believe that she is sentient.
 
 https://erichartford.com/meet-samantha
 
@@ -31,7 +37,7 @@ Tested Configurations:
 
 ## Setup
 
-You will need a model to finetune. For our examples, we will use the base [Mistral-7B-v0.1](https://huggingface.co/mistralai/Mistral-7B-v0.1) model. This is a raw, pretrained, model, which has never been trained to interact in a chat context before. It will not take very long for this model to become "Samantha," who is a pro at interacting the ChatML dialog format.
+You will need a model to finetune. For our examples, we will use the base [Mistral-7B-v0.1](https://huggingface.co/mistralai/Mistral-7B-v0.1) model. This is a raw, pretrained, model, which has never been trained to interact in a chat context before. It will not take very long for this model to become "Samantha," who is a pro at interacting with the ChatML dialog format.
 
 You should be able to use any 7B Llama flavor, with minimal changes to these instructions.
 
@@ -39,13 +45,74 @@ You should be able to use any 7B Llama flavor, with minimal changes to these ins
 # Download the model
 MODELS_DIR="~/models" # Change this to where you store your models...
 SRC_MODEL="${MODELS_DIR}/mistral_7b"
-mkdir -p "${MODELS_DIR}
+mkdir -p "${MODELS_DIR}"
 huggingface-cli download mistralai/Mistral-7B-v0.1 --local-dir "${SRC_MODEL}" \
---exclude "*.safetensors"
+--exclude "*.safetensors" "model.safetensors.index.json"
 ```
+
+### Directory Structure Overview
+
+This tutorial uses the following directory structure:
+
+```
+~/forgather/                          # Forgather installation
+├── examples/finetune/samantha/       # Tutorial project (working directory)
+├── scripts/convert_llama.py          # Model conversion script
+└── chat_templates/chatml.jinja       # Chat template
+
+~/models/                             # Models (you create this)
+├── mistral_7b/                       # Downloaded HuggingFace model
+└── fg_mistral_7b/                    # Converted Forgather model
+    ├── pytorch_model-*.bin           # Model weights
+    ├── checkpoints/                  # Training checkpoints
+    │   ├── checkpoint-100/
+    │   ├── checkpoint-200/
+    │   └── ...
+    └── runs/                         # Training logs
+        └── run_2025-10-19.../
+```
+
+**Important paths**:
+- Work from: `examples/finetune/samantha/`
+- Model conversion script: `../../../scripts/convert_llama.py` (relative from tutorial dir)
+- Chat template: `../../../chat_templates/chatml.jinja` (relative from tutorial dir)
 
 ## Configuration Tour (Optional)
 
+### Configuration Files
+
+While not exhaustive, this is a sampling of the configurations used by this project.
+
+**Samantha Project**
+- [samantha.yaml](./templates/samantha.yaml) -- Base project configuration
+  - [1gpu_llama_7b/default.yaml](./templates/configs/1gpu_llama_7b/default.yaml) -- Default configuration: 1 GPU, 512 context
+  - [1gpu_llama_7b/long_context.yaml](./templates/configs/1gpu_llama_7b/long_context.yaml) -- 1 GPU, 4096 context
+  - [1gpu_llama_7b/16gb.yaml](./templates/configs/1gpu_llama_7b/16gb.yaml) -- 1 GPU, 16 GB
+  - [pipeline_llama_7b/2gpu_1f1b.yaml](./templates/configs/pipeline_llama_7b/2gpu_1f1b.yaml) -- 2 GPU Pipeline
+  - [pipeline_llama_7b/i1f1b_4gpu.yaml](./templates/configs/pipeline_llama_7b/i1f1b_4gpu.yaml) -- 4 GPU Pipeline
+  - [pipeline_llama_7b/i1f1b_4gpu.yaml](./templates/configs/pipeline_llama_7b/zb_4gpu.yaml) -- 4 GPU Pipeline, Zero Bubble V
+  - [pipeline_llama_7b/i1f1b_4gpu.yaml](./templates/configs/pipeline_llama_7b/1f1b_4gpu_float32.yaml) -- 4 GPU Pipeline, float32
+  - [pipeline_llama_7b/1f1b_4gpu_adamw.yaml](./templates/configs/pipeline_llama_7b/1f1b_4gpu_adamw.yaml) -- 4 GPU Pipeline, AdamW
+  - [pipeline_llama_7b/1f1b_4gpu_adamw4bit.yaml](./templates/configs/pipeline_llama_7b/1f1b_4gpu_adamw4bit.yaml) -- 4 GPU Pipeline, AdamW-4bit
+
+**Finetune**
+- [projects/base_finetune_proj.yaml](../../../templatelib/finetune/projects/base_finetune_proj.yaml) -- Base Finetune Project
+- [trainers/base_finetune_trainer.yaml](../../../templatelib/finetune/trainers/base_finetune_trainer.yaml) -- Base Finetune Trainer
+- [trainers/pipeline/base_pipeline_trainer.yaml](../../../templatelib/finetune/trainers/pipeline/base_pipeline_trainer.yaml) -- Base Finetune Pipeline Trainer
+  - [trainers/pipeline/base_pipeline_trainer.yaml](../../../templatelib/finetune/trainers/pipeline/1f1b_2gpu.yaml) -- 2 GPU, 1F1B Trainer
+  - [trainers/pipeline/base_pipeline_trainer.yaml](../../../templatelib/finetune/trainers/pipeline/zb_4gpu.yaml) -- 4 GPU, [Zero Bubble](https://arxiv.org/abs/2401.10241) V Trainer
+
+**Samantha Dataset**
+- [samantha.yaml](../../datasets/QuixiAI/templatelib/configs/samantha.yaml) -- Samantha dataset definition
+- [src/samantha.py](../../datasets/QuixiAI/src/samantha.py) -- Dataset preprocessing implementation
+
+**Model**
+- [models/transformers/dynamic_llama.yaml](../../../templatelib/examples/models/transformers/dynamic_llama.yaml) -- Base Forgather Llama model definition
+
+**Chat Template**
+- [chat_templates/chatml.jinja](../../../chat_templates/chatml.jinja) -- [ChatML](https://github.com/openai/openai-python/blob/release-v0.28.0/chatml.md) chat template definition
+
+### Interactive Forgather CLI
 If you have not already installed the syntax-highlighting plugins for vim / VS Code, follow the instructions in "syntax_highlighting/" This will make the config files much more readable.
 
 If running VS Code and not running in a VS Code terminal, you can integrate the terminal with the VS Code editor like this:
@@ -115,7 +182,7 @@ forgather:samantha [1gpu_llama_7b/long_context.yaml]> quit
 
 ## Control Interface
 
-Forgather has an interface for monitoring and controlling running training jobs. Using this interface is the preferred means of prematurely ending a training job, as it avoids the possibility of causing one or more workers to hang, when using control-c (pipeline parallel is frequently hangs on terminate).
+Forgather has an interface for monitoring and controlling running training jobs. Using this interface is the preferred means of prematurely ending a training job, as it avoids the possibility of causing one or more workers to hang, when using control-c (pipeline parallel frequently hangs on termination).
 
 ```bash
 usage: forgather control [-h] {list,status,stop,abort,save,cleanup} ...
@@ -143,15 +210,75 @@ forgather tb --output-dir OUTPUT_DIR [-- --bind_all]
 
 We will be training the full model, not using a low-rank approximation or quantization. With bfloat16, we need approximately 14 GBs just for the model parameters. With a conventional training setup, you would also need an additional 14 GBs for the gradients, 28 GBs for the optimizer-states, and a fair amount more for activation states (depends on sequence length),
 
-We address the optimizer state issue by using Adafactor, without momentum. This optimizer uses negligible 
-memory for optimizer states and performs nearly identically to AdamW, as long as the batch size is small.
+PyTorch uses float32 by default, which takes twice as much memory as bfloat16.
+
+```yaml
+[trainer_args]
+  ...
+  default_dtype: bfloat16 # Use bfloat16, rather than float32
+```
+
+We address the optimizer state issue by using Adafactor, without momentum. This optimizer uses negligible
+memory for optimizer states and performs nearly identically to AdamW, as long as the batch size is relatively small.
+
+```yaml
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
+  lr: 4.0e-6
+  weight_decay: 0.001
+...
+[trainer_args]
+  ...
+  per_device_train_batch_size: 8 # As the batch size grows larger, AdamW becomes more effective than Adafactor
+```
 
 To address the storage required for gradients, we combine the gradient computation step with the optimizer
 step. The result is that we only need to materialize one gradient at a time, and free it immediately after updating the parameter. This saves about 14 GBs.
 
-This just leaves the activation memory to contend with. To address this, we use activation checkpointing, 
+```yaml
+[trainer_args]
+...
+  fuse_optim_with_backward: True # Combine gradient computation with optimizer step
+```
+
+This just leaves the activation memory to contend with. To address this, we use activation checkpointing,
 which saves the activation at each layer, discarding the intermediate activations, which can be recomputed
 on the backward pass. This trades compute for memory.
+
+```yaml
+[trainer_args]
+...
+  gradient_checkpointing: True # Only save activations at each layer and recompute on backwards step
+```
+
+Note that 'fuse_optim_with_backward=True' is synergistic with 'gradient_checkpointing=True'
+
+We can go one step further, by moving the activation checkpoints to CPU memory and back again, when needed to compute the gradient. This allows us to use a context length of 4096 on a single GPU.
+
+```yaml
+[trainer_args]
+  ...
+  enable_activation_offloading: True # Move saved activation to CPU memory
+```
+
+### Selecting Specific GPUs
+
+By default, training uses the first N available GPUs. To use specific GPUs:
+
+```bash
+# Use only GPU 0
+forgather -t config.yaml train -M "${MODEL}" -d 0
+
+# Use GPUs 0, 1, and 3 (skip GPU 2)
+forgather -t config.yaml train -M "${MODEL}" -d 0,1,3
+
+# Alternative: use CUDA_VISIBLE_DEVICES
+CUDA_VISIBLE_DEVICES=0,1,3 forgather -t config.yaml train -M "${MODEL}"
+```
+
+This is useful if some GPUs are busy or may have issues.
+
+### Testing Your Configuration
 
 First, let's run a sanity check to verify if everything is working and that we don't run out of GPU memory.
 
@@ -169,13 +296,13 @@ The default config is pretty conservative (context length = 512).
 
 ```bash
 # Train with a context length of 1300:
--t "1gpu_llama_7b/med_context.yaml train"
+forgather -t "1gpu_llama_7b/med_context.yaml" train -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml.jinja"
 ```
 
 We can go further by offloading the activation storage to CPU memory. This allows full training of a 7B parameter model, with a sequence length of 4096, on a 24 GB device!
 
 A sequence length of 1300 covers 90% of the examples in this dataset, so there's not much to be gained with
-a longer sequence length, but it is possible.
+a longer sequence length, but this may be useful for other datasets.
 
 **NOTE**
 
@@ -215,8 +342,6 @@ You can also do this for single-GPU training. In most cases, it should not be re
 
 ```bash
 # From the Forgather root directory
-cd scripts/
-
 # Set name for converted model
 FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
 
@@ -239,7 +364,6 @@ First, check if everything is working, like this:
 ```bash
 forgather -t "pipeline_llama_7b/2gpu_1f1b.yaml" train --save-strategy no --max-steps 10 -M "${FG_MODEL}"
 # Note that we don't need to specify the chat-template, as the conversion tool bakes it into the tokenizer.
-# We also don't use "--save-load," as we save our RoPE embeddings in the checkpoint.
 ```
 
 There are quite a few different configurations defined, with different schedulers and numbers of GPUs.
@@ -470,9 +594,31 @@ Ideally, all nodes should have an identical software environment. Using a common
 
 If things are not working as expected, double-check that all of your package versions match!
 
+#### Verify Software Versions Match
+
+Before starting multi-node training, verify all nodes have matching PyTorch and NCCL versions:
+
+```bash
+# Run on each node
+python -c 'import torch; print(f"PyTorch: {torch.__version__}\nNCCL: {torch.cuda.nccl.version()}")'
+```
+
+Example output:
+```
+PyTorch: 2.8.0+cu128
+NCCL: (2, 27, 3)
+```
+
+All nodes **must** show identical versions. Even minor version differences will cause "Mismatched NCCL version" errors.
+
 ### Initial Checkpoint
 
 When training starts, we need to load the initial checkpoint. One was to solve this issue is to use store the model in a shared NFS directory, as we do in the above example. This can be a bit slow to load, although, it will be cached for subsequent runs. This is my recommend approach.
+
+> **Note on Network Storage Performance**: When loading models over NFS or network storage,
+> initial model loading can take significant time (e.g., ~90 seconds for a 14GB model over
+> Gigabit Ethernet). This is a one-time cost at the start of training - subsequent steps
+> use cached data and run at normal speed. This is expected behavior, not a problem.
 
 An alternative is to place an identical (local) copy of the initial weights on each node and specify the checkpoint to load on the commandline.
 
@@ -495,6 +641,97 @@ The "--save-on-each-node" flag will result in each node saving a copy of the fil
 **tip**
 
 You can also use the "--output-dir" option when using a shared output directory (don't pass "--save-on-each-node"). If you copy everything (config.yaml, source-code, tokenizer), excepting the model weights from the original directory, the checkpoint saving logic will automatically symlink the saved weights from the latest checkpoint into the root of the output directory. This can be useful for testing the model with external tools, while the model is still training. For example, with [text-generation-webui](https://github.com/oobabooga/text-generation-webui).
+
+## Troubleshooting
+
+### "Mismatched NCCL version detected"
+
+**Symptom**: Multi-node training fails with error like:
+```
+RuntimeError: Mismatched NCCL version detected : rank 1 version 22705 rank 0 version 22703
+```
+
+**Cause**: Different PyTorch/NCCL versions on different nodes. This can happen when PyTorch releases a new version while you're testing.
+
+**Solution**:
+1. Verify versions on all nodes:
+   ```bash
+   python -c 'import torch; print(f"PyTorch: {torch.__version__}\nNCCL: {torch.cuda.nccl.version()}")'
+   ```
+2. Use the same Python environment (venv/conda) on all nodes
+3. If using containers, ensure all nodes use the exact same container image
+
+### Training Hangs on Multi-node Setup
+
+**Symptoms**: Training starts but hangs at initialization or after a few steps.
+
+**Debugging steps**:
+1. **Check network connectivity**: Ensure all nodes can reach each other on the required ports
+   ```bash
+   # On each node, test connectivity to rendezvous host
+   ping hal9000
+   ```
+
+2. **Check NCCL interface**: NCCL may be trying to use the wrong network interface
+   ```bash
+   # Find your network interfaces
+   ip addr
+
+   # Set the correct interface explicitly
+   NCCL_SOCKET_IFNAME=enp37s0f1 forgather ...
+   ```
+
+3. **Enable debug logging**:
+   ```bash
+   NCCL_DEBUG=INFO TORCH_CPP_LOG_LEVEL=INFO forgather ...
+   ```
+
+4. **Test with synchronous execution** (slow but helps identify hangs):
+   ```bash
+   CUDA_LAUNCH_BLOCKING=1 forgather ...
+   ```
+
+### Model Loading Takes Extremely Long (Multi-node)
+
+**Symptom**: First training step takes 60-90 seconds, then subsequent steps are normal speed.
+
+**This is expected behavior**, not a bug! When loading a 14GB model over Gigabit Ethernet (~125 MB/s theoretical max), it takes time:
+- 14GB model / 125 MB/s ≈ 112 seconds (theoretical)
+- Real-world with overhead: 60-90 seconds
+
+**Solutions**:
+- **Accept it**: It's a one-time cost at training start
+- **Use local copies**: Copy model to local disk on each node, use `--resume-from-checkpoint`
+- **Upgrade network**: Use 10GbE if available
+
+### FileNotFoundError: model.safetensors
+
+**Symptom**: Training fails looking for `model-00001-of-00002.safetensors`.
+
+**Cause**: Downloaded both PyTorch and SafeTensors formats, but SafeTensors index file exists while weights don't.
+
+**Solution**: Exclude SafeTensors files during download:
+```bash
+huggingface-cli download mistralai/Mistral-7B-v0.1 --local-dir "${SRC_MODEL}" \
+--exclude "*.safetensors" "model.safetensors.index.json"
+```
+
+Alternatively, delete the "index" file, for which weights don't exist.
+
+## Common Warnings and Expected Behaviors
+
+### Control Callback Shutdown Warning
+
+When training ends, you may see:
+```
+WARNING:forgather.ml.trainer.callbacks.trainer_control:Control callback shutdown timed out after 2.0 seconds
+```
+
+**This is normal** and can be safely ignored. The control interface cleanup times out but doesn't affect training results.
+
+### HuggingFace CLI Deprecation Warning
+
+You may see warnings about deprecated `huggingface-cli download` syntax. These can be safely ignored - the commands in this tutorial work correctly despite the warnings. The newer CLI command is "hf," although I have yet to write instructions for using it.
 
 ## Finalizing the Model
 

@@ -32,8 +32,6 @@ from .trainer_types import (
 )
 
 from .checkpoint_manager import RNGState
-from ..utils import default_dtype
-from ..construct import torch_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -269,10 +267,6 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
                 exit_stack.enter_context(
                     torch.autograd.graph.save_on_cpu(pin_memory=True)
                 )
-            if self.args.default_dtype:
-                exit_stack.enter_context(
-                    default_dtype(torch_dtype(self.args.default_dtype))
-                )
             self._prepare(
                 train_dataset=self.train_dataset, eval_dataset=self.eval_dataset
             )
@@ -294,10 +288,6 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
             if backends:
                 exit_stack.enter_context(
                     sdpa_kernel(backends, set_priority=self.args.sdpa_set_priority)
-                )
-            if self.args.default_dtype:
-                exit_stack.enter_context(
-                    default_dtype(torch_dtype(self.args.default_dtype))
                 )
             self._prepare(train_dataset=None, eval_dataset=eval_dataset)
             return self._eval_loop()

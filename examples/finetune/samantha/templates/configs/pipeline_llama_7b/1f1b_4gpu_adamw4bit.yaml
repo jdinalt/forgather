@@ -1,0 +1,34 @@
+-- extends 'samantha.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Llama 7B 1F1B Pipe x4 AdamW-4bit"
+    -- set ns.config_description = "Train Samantha on 1F1B 4 GPU Pipeline with AdamW-4bit"
+    -- set ns.log_name = "1f1b_4gpu_adamw4bit"
+    -- set ns.trainer_class = 'trainers/pipeline/1f1b_4gpu.yaml'
+
+[trainer_definition]
+    -- include 'config.trainer_config'
+
+[datacollator]
+    == super()
+    padding: "max_length" # Required for pipeline
+    max_length: 1300
+
+[optimizer]
+optimizer: &optimizer !partial:torchao.optim:AdamW4bit
+    lr: 4.0e-6
+    weight_decay: 0.001
+
+#-------------------- config.trainer_config --------------------
+-- extends 'project.trainer'
+
+[trainer_args]
+    == super()
+    # **config**
+
+[split_spec]
+split_spec: &split_spec !dict@split_spec
+    causal_lm.layer_stack.layers.8: "beginning"
+    causal_lm.layer_stack.layers.17: "beginning"
+    causal_lm.layer_stack.layers.27: "beginning"

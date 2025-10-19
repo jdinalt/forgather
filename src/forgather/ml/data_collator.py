@@ -74,7 +74,14 @@ class DataCollatorForCausalLM:
             logger.warning("No PAD token defined. Setting pad token to EOS")
             tokenizer.pad_token = tokenizer.eos_token
             tokenizer.pad_token_id = tokenizer.eos_token_id
+
+        if tokenizer.padding_side == "left":
+            logger.warning("Padding side set to left; moving it to the right")
             tokenizer.padding_side = "right"
+
+        if tokenizer.truncation_side == "left":
+            logger.warning("Truncation side set to left; moving it to the right")
+            tokenizer.truncation_side = "right"
 
         self.tokenizer = tokenizer
         self.max_length = pad_kwargs.get("max_length", tokenizer.model_max_length)

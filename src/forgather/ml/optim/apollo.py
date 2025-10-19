@@ -59,7 +59,7 @@ class Apollo(Optimizer):
             proj_type=proj_type,
         )
 
-        state["step"] = torch.tensor(0.0)
+        state["step"] = torch.tensor(0.0, dtype=torch.float32)
         state["m"] = torch.zeros(*proj_shape, device=grad.device, dtype=grad.dtype)
         state["v"] = torch.zeros(*proj_shape, device=grad.device, dtype=grad.dtype)
 

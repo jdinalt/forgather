@@ -5,6 +5,7 @@ import logging
 import math
 import copy
 from functools import partial
+from contextlib import ExitStack
 
 import torch
 from torch.nn import Module
@@ -45,6 +46,8 @@ from .pipeline_fixes import (
     assert_no_duplicate_fqns,
     remove_vestigial_modules,
 )
+from forgather.ml.utils import default_dtype
+from forgather.ml.construct import torch_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +304,12 @@ class PipelineTrainer(Trainer):
     def _construct_model(self, device):
         # Construct model on device
         assert self.model_init
-        with torch.device(device):
+        with ExitStack() as exit_stack:
+            exit_stack.enter_context(torch.device(device))
+            if self.args.default_dtype:
+                exit_stack.enter_context(
+                    default_dtype(torch_dtype(self.args.default_dtype))
+                )
             model = self.model_init()
         return model
 
@@ -587,10 +595,11 @@ class PipelineTrainer(Trainer):
 
         if self.pp_has_last_stage:
             assert losses
-            mean_loss = torch.stack([x.detach() for x in losses]).mean()
-            mean_loss = mean_loss.float()
+            # for i, loss in enumerate(losses):
+            #    logger.info(f"Loss {i} {loss.item()}")
+            mean_loss = torch.stack([x.detach().float() for x in losses]).mean()
         else:
-            mean_loss = torch.tensor(0.0, device=self.dist.device)
+            mean_loss = torch.tensor(0.0, device=self.dist.device, dtype=torch.float32)
         return mean_loss
 
     def _eval_pipeline_step(
@@ -608,7 +617,7 @@ class PipelineTrainer(Trainer):
             loss = self.eval_loss_fn(outputs, labels).detach()
             mean_loss = loss.float()
         else:
-            mean_loss = torch.tensor(0.0, device=self.dist.device)
+            mean_loss = torch.tensor(0.0, device=self.dist.device, dtype=torch.float32)
         return mean_loss
 
     # @override
@@ -630,9 +639,15 @@ class PipelineTrainer(Trainer):
                 self._total_grad_squared = torch.zeros(
                     1, device=self.args.device, dtype=torch.float32
                 )
-                hook = partial(optimzer_hook, self.optimizer, self._total_grad_squared)
+
                 for name, p in named_parameters(self.pipeline_modules):
                     if p.requires_grad:
+                        hook = partial(
+                            optimzer_hook,
+                            self.optimizer,
+                            self._total_grad_squared,
+                            name,
+                        )
                         p.register_post_accumulate_grad_hook(hook)
 
         if self.lr_scheduler is None and self.lr_scheduler_factory is not None:
@@ -744,12 +759,23 @@ class PipelineTrainer(Trainer):
 
         # Compute norm over all local trainable parameters
         assert self.pipeline_modules
+
+        if False:
+            sum = None
+            for i, mod in enumerate(self.pipeline_modules):
+                for name, p in mod.named_parameters():
+                    if p.grad is not None:
+                        grad = p.grad
+                        norm = grad.square().sum().sqrt()
+                        logger.info(f"r{self.dist.rank} m{i} {name} {norm}")
+
         parameters = [
             p
             for mod in self.pipeline_modules
             for p in mod.parameters()
             if p.grad is not None
         ]
+
         grads = [p.grad for p in parameters if p.grad is not None]
 
         total_norm = torch.nn.utils.get_total_norm(

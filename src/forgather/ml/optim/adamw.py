@@ -31,7 +31,7 @@ class AdamW(Optimizer):
         super().__init__(params, defaults)
 
     def _init_state(self, state, group, p, grad):
-        state["step"] = torch.tensor(0.0)
+        state["step"] = torch.tensor(0.0, dtype=torch.float32)
         state["m"] = torch.zeros_like(grad)
         state["v"] = torch.zeros_like(grad)
 
