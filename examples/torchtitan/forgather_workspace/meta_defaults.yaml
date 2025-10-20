@@ -13,6 +13,7 @@ searchdir:
 
 -- block searchdir_common
     - "{{ joinpath(workspace_root, 'forgather_workspace') }}"
+    - "{{ joinpath(ns.forgather_templates_dir, 'torchtitan') }}"
 -- endblock searchdir_common
 
 
