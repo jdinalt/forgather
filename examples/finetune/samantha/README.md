@@ -294,10 +294,25 @@ forgather -t "1gpu_llama_7b/default.yaml" train --save-strategy no --max-steps 1
 
 The default config is pretty conservative (context length = 512).
 
+Once you have verified that a given config will run, you can train on the full dataset...
+
 ```bash
-# Train with a context length of 1300:
-forgather -t "1gpu_llama_7b/med_context.yaml" train -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml.jinja"
+# SRC_MODEL was defined above, which is the path to the model to train.
+forgather -t CONFIG_TEMPLATE train -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml.jinja"
 ```
+
+#### Single GPU, 1300 Context Length
+
+```bash
+# Train with a context length of 1300 on HF model
+forgather -t "1gpu_llama_7b/med_context.yaml" -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml.jinja"
+
+# Train with a context length of 1300 on Fg model
+# FG_MODEL is defined below, after converting the model format
+forgather -t "1gpu_llama_7b/med_context.yaml" train -M "${FG_MODEL}"
+```
+
+#### Single GPU, 4096 Context Length
 
 We can go further by offloading the activation storage to CPU memory. This allows full training of a 7B parameter model, with a sequence length of 4096, on a 24 GB device!
 
@@ -312,22 +327,18 @@ In any case, it works fine if you convert the model to Forgather's native format
 
 ```bash
 # Train with a context length of 4096:
--t 1gpu_llama_7b/long_context.yaml
+forgather -t 1gpu_llama_7b/long_context.yaml  -M "${FG_MODEL}"
 ```
 
-We can also use the memory saving setting for the 4K sequence length to (possibly?) train with a sequence length of 512 on a 16 GB GPU. With the model weights using 14 GB, it's pretty tight!
+#### Single GPU, 16 GB
+
+We can try to train on a 16 GB GPU. With the model weights using 14 GB, it's going to be pretty tight!
 
 As above, this does not work with the HF model. Convert it to Forgather's format first.
 
 ```bash
--t 1gpu_llama_7b/16gb.yaml
-```
-
-Once you have dialed in the configuration, you can train the model on the full dataset.
-
-```bash
-# SRC_MODEL was defined above, which is the path to the model to train.
-forgather -t CONFIG_TEMPLATE train -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml.jinja"
+# Train on a 16 GB GPU
+forgather -t 1gpu_llama_7b/16gb.yaml train -M "${FG_MODEL}"
 ```
 
 ## Multi-GPU Setup
