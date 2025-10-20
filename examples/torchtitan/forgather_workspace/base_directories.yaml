@@ -1,1 +1,1 @@
--- set ns.forgather_dir = abspath("../../..")
+-- set ns.forgather_dir = joinpath(workspace_root, "..", "..")
