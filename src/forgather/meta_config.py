@@ -78,6 +78,7 @@ class MetaConfig:
         return os.path.normpath(os.path.join(self.project_dir, path))
 
     def default_config(self):
+        """Get the name of the default config"""
         if self.default_cfg is not None:
             return self.default_cfg
         else:
@@ -85,6 +86,7 @@ class MetaConfig:
             return next(self.find_templates(self.config_prefix))[0]
 
     def config_path(self, config_template=None):
+        """Given a config template name or None, return a path to the config (or default config)"""
         if config_template is None or len(config_template) == 0:
             config_template = self.default_config()
         return os.path.join(self.config_prefix, config_template)

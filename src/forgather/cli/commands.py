@@ -4,7 +4,6 @@ from pprint import pformat
 import traceback
 
 from forgather.project import Project
-import forgather.nb.notebooks as nb
 from forgather.config import fconfig
 from forgather.codegen import generate_code
 from forgather.yaml_encoder import to_yaml
@@ -135,6 +134,8 @@ def construct_cmd(args):
 
 def meta_cmd(args):
     """Show meta configuration."""
+    import forgather.nb.notebooks as nb
+
     cmd = BaseCommand(args)
     md = nb.render_meta(cmd.meta, "# Meta Config\n")
     write_output_or_edit(args, md, ".md")
@@ -198,6 +199,8 @@ def template_list(args):
     cmd = BaseCommand(args)
     match args.format:
         case "md":
+            import forgather.nb.notebooks as nb
+
             use_absolute_paths = should_use_absolute_paths(args)
             md_content = nb.render_extends_graph(
                 cmd.meta, use_absolute_paths=use_absolute_paths
@@ -214,5 +217,7 @@ def template_list(args):
 
 def index_cmd(args):
     """Show project index."""
+    import forgather.nb.notebooks as nb
+
     md = nb.render_project_index(args.project_dir)
     write_output_or_edit(args, md, ".md")

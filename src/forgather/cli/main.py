@@ -89,6 +89,7 @@ def get_subcommand_registry():
         "ws": create_ws_parser,
         "control": create_control_parser,
         "model": create_model_parser,
+        "project": create_project_parser,
     }
 
 
@@ -412,57 +413,120 @@ def create_ws_parser(global_args):
     )
 
     # create subcommand
-    init_parser = subparsers.add_parser(
+    create_parser = subparsers.add_parser(
         "create",
         help="Initialize a new forgather workspace",
         formatter_class=RawTextHelpFormatter,
     )
-    init_parser.add_argument("--name", required=True, help="Workspace name")
-    init_parser.add_argument(
+    create_parser.add_argument("--name", required=True, help="Workspace name")
+    create_parser.add_argument(
         "--description", required=True, help="Workspace description"
     )
-    init_parser.add_argument(
+    create_parser.add_argument(
         "--forgather-dir",
         required=True,
         type=path_type,
         help="Path to forgather installation directory",
     )
-    init_parser.add_argument(
-        "search_paths",
-        nargs="*",
+    create_parser.add_argument(
+        "--lib",
+        "-l",
+        action="append",
+        type=str,
+        help="Forgather template library name (in forgather/templatelib)",
+    )
+    create_parser.add_argument(
+        "--search-path",
+        action="append",
         type=path_type,
         help="Additional search paths for templates",
     )
-    init_parser.add_argument(
-        "--no-defaults",
-        action="store_true",
-        help="Don't include default forgather search paths",
+    create_parser.add_argument(
+        "workspace_dir",
+        nargs="?",
+        help="Workspace directory name (defaults to project name with spaces replaced by underscores)",
+    )
+
+    return parser
+
+
+def create_project_parser(global_args):
+    path_type = lambda x: os.path.normpath(os.path.expanduser(x))
+
+    """Create parser for workspace command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather project",
+        description="Forgather project management",
+        formatter_class=RawTextHelpFormatter,
+    )
+    subparsers = parser.add_subparsers(
+        dest="project_subcommand", help="Project subcommands"
     )
 
     # project subcommand
-    project_parser = subparsers.add_parser(
-        "project",
+    create_parser = subparsers.add_parser(
+        "create",
         help="Create a new forgather project in the workspace",
         formatter_class=RawTextHelpFormatter,
     )
-    project_parser.add_argument("--name", required=True, help="Project name")
-    project_parser.add_argument(
+    create_parser.add_argument("--name", required=True, help="Project name")
+    create_parser.add_argument(
         "--description", required=True, help="Project description"
     )
-    project_parser.add_argument(
+    create_parser.add_argument(
         "--config-prefix",
         default="configs",
         help="Configuration prefix (default: configs)",
     )
-    project_parser.add_argument(
+    create_parser.add_argument(
         "--default-config",
         default="default.yaml",
         help="Default configuration name (default: default)",
     )
-    project_parser.add_argument(
-        "project_dir",
-        nargs="?",
+    create_parser.add_argument(
+        "--project-dir-name",
         help="Project directory name (defaults to project name with spaces replaced by underscores)",
+    )
+    create_parser.add_argument(
+        "copy_from",
+        nargs="?",
+        type=path_type,
+        help="Source configuration (filepath) to copy as default config",
+    )
+
+    # Show subcommand
+    show_parser = subparsers.add_parser(
+        "show",
+        help="Show project info",
+        formatter_class=RawTextHelpFormatter,
+    )
+
+    # config subcommand
+    new_config_parser = subparsers.add_parser(
+        "new_config",
+        help="Create new config",
+        formatter_class=RawTextHelpFormatter,
+    )
+
+    new_config_parser.add_argument(
+        "config_name",
+        type=str,
+        help="Configuration name (relative to project configs dir)",
+    )
+
+    new_config_parser.add_argument(
+        "copy_from",
+        nargs="?",
+        type=path_type,
+        help="Source configuration (filepath) to copy",
+    )
+
+    new_config_parser.add_argument(
+        "--type",
+        type=str,
+        choices=["config", "project", "ws"],
+        default="config",
+        help="Create new config in: config=configs dir, project=project level, ws=workspace level",
     )
 
     return parser
@@ -733,6 +797,11 @@ def main():
                 from .workspace import ws_cmd
 
                 ws_cmd(args)
+
+            case "project":
+                from .project import project_cmd
+
+                project_cmd(args)
             case "control":
                 from .control import control_cmd
 
