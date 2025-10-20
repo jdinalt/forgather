@@ -13,20 +13,15 @@ from .commands import (
     targets_cmd,
     template_list,
     graph_cmd,
-    trefs_cmd,
     pp_cmd,
     tb_cmd,
     code_cmd,
     construct_cmd,
-    train_cmd,
-    ws_cmd,
-    control_cmd,
 )
 
 from .dynamic_args import (
     parse_dynamic_args,
     partition_args,
-    get_dynamic_args,
 )
 
 from .utils import add_output_arg, add_editor_arg
@@ -416,9 +411,9 @@ def create_ws_parser(global_args):
         dest="ws_subcommand", help="Workspace subcommands"
     )
 
-    # init subcommand
+    # create subcommand
     init_parser = subparsers.add_parser(
-        "init",
+        "create",
         help="Initialize a new forgather workspace",
         formatter_class=RawTextHelpFormatter,
     )
@@ -613,7 +608,9 @@ def show_main_help():
     registry = get_subcommand_registry()
     for cmd_name in sorted(registry.keys()):
         # Create a dummy global_args for the registry call
-        dummy_global_args = argparse.Namespace(project_dir=".", config_template=None)
+        dummy_global_args = argparse.Namespace(
+            project_dir=".", config_template=None, no_dyn=True
+        )
         try:
             parser = registry[cmd_name](dummy_global_args)
             print(f"  {cmd_name:<12} {parser.description}")
@@ -713,6 +710,8 @@ def main():
             case "graph":
                 graph_cmd(args)
             case "trefs":
+                from .trefs import trefs_cmd
+
                 trefs_cmd(args)
             case "pp":
                 pp_cmd(args)
@@ -723,14 +722,20 @@ def main():
             case "construct":
                 construct_cmd(args)
             case "train":
+                from .train import train_cmd
+
                 train_cmd(args)
             case "dataset":
                 from .dataset import dataset_cmd
 
                 dataset_cmd(args)
             case "ws":
+                from .workspace import ws_cmd
+
                 ws_cmd(args)
             case "control":
+                from .control import control_cmd
+
                 control_cmd(args)
             case "model":
                 from .model import model_cmd

@@ -1,7 +1,46 @@
 import os
-import tempfile
 import subprocess
-from typing import Optional, List
+from typing import Optional
+
+from forgather.meta_config import MetaConfig, preprocessor_globals
+from forgather.config import ConfigEnvironment
+
+
+def set_default_template(meta, args):
+    """Set default template if not specified in args."""
+    if not args.config_template:
+        default_config = meta.default_config()
+        args.config_template = default_config
+
+
+def get_env(meta, project_dir):
+    """Create new config environment and load configuration."""
+    environment = ConfigEnvironment(
+        searchpath=meta.searchpath,
+        global_vars=preprocessor_globals(project_dir, meta.workspace_root),
+    )
+    return environment
+
+
+def get_config(meta, env, config_template, **kwargs):
+    """Load and return configuration from template."""
+    return env.load(meta.config_path(config_template), **kwargs).get()
+
+
+class BaseCommand:
+    """Base class for CLI commands with common setup patterns."""
+
+    def __init__(self, args, search_for_project=True):
+        if search_for_project:
+            args.project_dir = MetaConfig.find_project_dir(args.project_dir)
+        self.args = args
+        self.meta = MetaConfig(args.project_dir)
+        set_default_template(self.meta, args)
+        self.env = get_env(self.meta, args.project_dir)
+
+    def get_config(self, **kwargs):
+        """Get configuration for current template."""
+        return get_config(self.meta, self.env, self.args.config_template, **kwargs)
 
 
 def add_output_arg(parser):
