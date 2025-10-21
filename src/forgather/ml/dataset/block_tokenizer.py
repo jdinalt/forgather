@@ -64,6 +64,7 @@ def block_tokenize_fn(
     add_eos=False,
     combine=False,
     truncate_at=None,
+    **kwargs,
 ):
     """
     Tokenizes the input element into blocks of tokens.
