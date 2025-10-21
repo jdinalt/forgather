@@ -23,6 +23,7 @@ def ws_create_cmd(args):
     else:
         # Default: replace spaces with underscores
         workspace_dir = args.name.replace(" ", "_").lower()
+        workspace_dir = workspace_dir.replace(".", "")
         workspace_dir = os.path.join(args.project_dir, workspace_dir)
 
     forgather_dir = args.forgather_dir

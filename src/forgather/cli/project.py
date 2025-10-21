@@ -62,7 +62,6 @@ def project_create_cmd(args):
 
     # Create directory structure
     os.makedirs(target_dir, exist_ok=True)
-    os.makedirs(os.path.join(target_dir, "templates", "configs"), exist_ok=True)
     print(f"Creating forgather project in: {target_dir}")
 
     # Template context
@@ -113,6 +112,7 @@ default_config: "{{ default_config }}"
         meta.searchpath[0], meta.config_prefix, args.default_config
     )
 
+    os.makedirs(os.path.dirname(config_path))
     create_config(config_path, args.copy_from)
 
     print(f"\nForgather project '{args.name}' created successfully!")
