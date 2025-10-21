@@ -26,6 +26,12 @@ tokenizer: &tokenizer !var "tokenizer"
         -- filter trim()
         -- block dataset_splits
 
+== h3('Dataset Dictionaries')
+            -- filter trim()
+            -- block dataset_dict
+            << endblock dataset_dict
+            -- endfilter
+
 == h3('Dataset Splits')
 ## Notes on split:
 ## Including the splits here is optional, although doing so makes it possible for the CLI

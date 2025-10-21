@@ -1,35 +1,31 @@
 -- extends "datasets/tokenized_dataset.yaml"
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Cosmopedia v2"
     -- set ns.config_description = "Cosmopedia v2 is an enhanced version of Cosmopedia, the largest synthetic dataset for pre-training, consisting of over 39 million textbooks, blog posts, and stories..."
     -- set ns.source = "https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus"
--- endblock config_metadata
 
-
--- block train_dataset_split
+[train_dataset_split]
 train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train_dataset_split
-    args: [ "HuggingFaceTB/smollm-corpus", "cosmopedia-v2" ]
-    kwargs: { split: "train[10000:]", num_proc: 16 }
-<< endblock train_dataset_split
+    arg0: "HuggingFaceTB/smollm-corpus"
+    arg1: "cosmopedia-v2"
+    split: "train[10000:]"
+    num_proc: 16
 
-
--- block validation_dataset_split
+[validation_dataset_split]
 validation_dataset_split: &validation_dataset_split !singleton:datasets:load_dataset@validation_dataset_split
-    args: [ "HuggingFaceTB/smollm-corpus", "cosmopedia-v2" ]
-    kwargs: { split: "train[0:1000]" }
-<< endblock validation_dataset_split
+    arg0: "HuggingFaceTB/smollm-corpus"
+    arg1: "cosmopedia-v2"
+    split: "train[0:1000]"
 
-
--- block test_dataset_split
+[test_dataset_split]
 test_dataset_split: &test_dataset_split !singleton:datasets:load_dataset@test_dataset_split
-    args: [ "HuggingFaceTB/smollm-corpus", "cosmopedia-v2" ]
-    kwargs: { split: "train[1000:10000]" }
-<< endblock test_dataset_split
+    arg0: "HuggingFaceTB/smollm-corpus"
+    arg1: "cosmopedia-v2"
+    split: "train[1000:10000]"
 
-
--- block train_dataset
+[train_dataset]
 train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
     dataset: *train_dataset_split
     tokenizer: *tokenizer
@@ -39,13 +35,10 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
         batch_size: 32
     to_iterable: true
     num_shards: 1024
-<< endblock train_dataset
 
-
--- block eval_dataset
+[eval_dataset]
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
     dataset: *validation_dataset_split
     tokenizer: *tokenizer
     desc: "Tokenizing eval"
     fn_kwargs: !var "preprocess_args"
-<< endblock eval_dataset

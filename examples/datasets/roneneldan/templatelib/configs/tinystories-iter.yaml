@@ -1,13 +1,10 @@
 -- extends "configs/tinystories.yaml"
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Tiny Stories Iterable"
     -- set ns.config_description = "The main dataset, but configured as an IterableDataset, for testing with this dataset type."
--- endblock config_metadata
 
-
--- block train_dataset
+[train_dataset]
     == super()
     to_iterable: True
-<< endblock train_dataset

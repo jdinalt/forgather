@@ -1,47 +1,36 @@
 -- extends 'datasets/tokenized_dataset.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Tiny Stories"
     -- set ns.config_description = "Dataset containing synthetically generated (by GPT-3.5 and GPT-4) short stories that only use a small vocabulary."
     -- set ns.source = "https://arxiv.org/abs/2305.07759"
--- endblock config_metadata
 
-
--- block train_dataset_split
+[train_dataset_split]
 train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train_dataset_split
-    args: [ "roneneldan/TinyStories" ]
-    kwargs: { split: "train" }
-<< endblock train_dataset_split
+    arg0: "roneneldan/TinyStories"
+    split: "train"
 
-
--- block validation_dataset_split
+[validation_dataset_split]
 validation_dataset_split: &validation_dataset_split !singleton:datasets:load_dataset@validation_dataset_split
-    args: [ "roneneldan/TinyStories" ]
-    kwargs: { split: "validation[0:500]" }
-<< endblock validation_dataset_split
+    arg0: "roneneldan/TinyStories"
+    split: "validation[0:500]"
 
-
--- block test_dataset_split
+[test_dataset_split]
 test_dataset_split: &test_dataset_split !singleton:datasets:load_dataset@test_dataset_split
-    args: [ "roneneldan/TinyStories" ]
-    kwargs: { split: "validation[500:]" }
-<< endblock test_dataset_split
+    arg0: "roneneldan/TinyStories"
+    split: "validation[500:]"
 
-
--- block train_dataset
+[train_dataset]
 train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
     dataset: *train_dataset_split
     tokenizer: *tokenizer
     desc: "Tokenizing train"
     fn_kwargs: !var "preprocess_args"
-<< endblock train_dataset
 
-
--- block eval_dataset
+[eval_dataset]
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
     dataset: *validation_dataset_split
     tokenizer: *tokenizer
     desc: "Tokenizing validation"
     fn_kwargs: !var "preprocess_args"
-<< endblock eval_dataset
