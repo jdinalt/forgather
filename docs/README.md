@@ -16,6 +16,8 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 - **[Projects Overview](../examples/tutorials/projects_overview/project_index.ipynb)** - Learn about the Forgather Project abstraction
 - **[Project Composition](../examples/tutorials/project_composition/project_index.ipynb)** - How the template system works
 - **[Dynamic LM](../examples/tutorials/dynamic_lm/dynamic_lm.ipynb)** - Demonstrates how models are dynamically composed
+- **[Samantha](../examples/tutorials/samantha/README.md)** - Demonstrates how to use Forgather to finetune a 7B parameter model on the Samantha dataset
+- **[H.P. Lovecraft Project](../examples/tutorials/hp_lovecraft_project/README.md)** - Learn how to create workspaces and projects, while training a model to summon the Elder Gods
 
 ## Example Project Collections
 - **[Tiny Experiments](../examples/tiny_experiments/README.md)** - A collection of experiments and integration tests using (mostly) small models
