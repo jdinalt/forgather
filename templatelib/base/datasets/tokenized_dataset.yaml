@@ -22,6 +22,12 @@ tokenizer: &tokenizer !var "tokenizer"
     -- endfilter
 
 
+    -- filter trim()
+    -- block map_function
+    << endblock map_function
+    -- endfilter
+
+
     -- block datasets
         -- filter trim()
         -- block dataset_splits
@@ -31,6 +37,7 @@ tokenizer: &tokenizer !var "tokenizer"
             -- block dataset_dict
             << endblock dataset_dict
             -- endfilter
+
 
 == h3('Dataset Splits')
 ## Notes on split:

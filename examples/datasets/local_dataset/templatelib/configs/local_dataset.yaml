@@ -1,0 +1,38 @@
+-- extends 'datasets/tokenized_dataset.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Local Dataset"
+    -- set ns.config_description = "Load a dataset from disk, s3, etc."
+
+[dataset_dict]
+dataset_dict: &dataset_dict !singleton:datasets:load_from_disk
+    arg0: "{{ dataset_path | default("/path/to/dataset") }}"
+
+[train_dataset_split]
+train_dataset_split: &train_dataset_split !call:getitem [ *dataset_dict, "train" ]
+
+[validation_dataset_split]
+validation_dataset_split: &validation_dataset_split !call:getitem [ *dataset_dict, "validation" ]
+
+[train_dataset]
+train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
+    dataset: *train_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing train"
+    fn_kwargs: !var "preprocess_args"
+    to_iterable: True
+
+[eval_dataset]
+eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
+    dataset: *validation_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing validation"
+    fn_kwargs: !var "preprocess_args"
+
+[dynamic_args]
+    == super()
+    dataset_path:
+        names: "--dataset-path"
+        type: path
+        help: "Local path to dataset"

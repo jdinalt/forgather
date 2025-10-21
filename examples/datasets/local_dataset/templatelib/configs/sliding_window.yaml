@@ -1,0 +1,58 @@
+-- extends 'datasets/tokenized_dataset.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Sliding Window"
+    -- set ns.config_description = "Sliding window local dataset"
+
+[map_function]
+.define: &map_function !partial:forgather.ml.dataset.block_tokenizer:block_tokenize_fn
+    block_size: {{ window_size | default(512)}}
+    stride: {{ stride | default(64) }}
+    min_len: {{ min_length | default(1) }}
+
+[dataset_dict]
+dataset_dict: &dataset_dict !singleton:datasets:load_from_disk
+    arg0: "{{ dataset_path | default("/path/to/dataset") }}"
+
+[train_dataset_split]
+train_dataset_split: &train_dataset_split !call:getitem [ *dataset_dict, "train" ]
+
+[validation_dataset_split]
+validation_dataset_split: &validation_dataset_split !call:getitem [ *dataset_dict, "validation" ]
+
+[train_dataset]
+train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
+    dataset: *train_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing train"
+    fn_kwargs: !var "preprocess_args"
+    map_fn: *map_function
+    to_iterable: True
+
+[eval_dataset]
+eval_dataset: &eval_dataset !singleton:forgather.ml.dataset.block_tokenizer:preprocess_dataset@eval_dataset
+    dataset: *validation_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing validation"
+    fn_kwargs: !var "preprocess_args"
+    map_fn: *map_function
+
+[dynamic_args]
+    == super()
+    dataset_path:
+        names: "--dataset-path"
+        type: path
+        help: "Local path to dataset"
+    window_size:
+        names: "--window-size"
+        type: "int"
+        help: "Sliding window block-size (tokens)"
+    stride:
+        names: "--stride"
+        type: "int"
+        help: "Number of tokens to overlap between blocks"
+    min_length:
+        names: "--min-length"
+        type: "int"
+        help: "Minimum example length (tokens)"
