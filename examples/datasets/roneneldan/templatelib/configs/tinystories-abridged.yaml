@@ -1,12 +1,9 @@
 -- extends "configs/tinystories.yaml"
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = ns.config_name + " Abridged"
--- endblock config_metadata
 
-
--- block train_dataset_split
+[train_dataset_split]
     == super()
-    kwargs: { split: "train[:10%]" }
-<< endblock train_dataset_split
+    split: "train[:10%]"
