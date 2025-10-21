@@ -78,3 +78,18 @@ This can of course be used with datasets downloaded from the HF Hub too.
 forgather -t sliding_window.yaml dataset --target train_dataset --dataset-path /path/to/my_local_dataset \
 -T /path/to/tokenizer --window-size 512 --stride 64 -n 3
 ```
+
+## Other Load Methods
+
+The configs have been written for datasets saved with ds.save_to_disk(), but it should be easy enough to change the load method.
+
+For example, if you have a directory with parquet files to load, you can do this:
+
+```yaml
+[train_dataset_split]
+train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset
+    arg0: "parquet"
+    data_dir: "path/to/data/dir"
+```
+
+See: https://huggingface.co/docs/datasets/en/package_reference/loading_methods

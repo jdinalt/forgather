@@ -31,7 +31,7 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
     to_iterable: True
 
 [eval_dataset]
-eval_dataset: &eval_dataset !singleton:forgather.ml.dataset.block_tokenizer:preprocess_dataset@eval_dataset
+eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
     dataset: *validation_dataset_split
     tokenizer: *tokenizer
     desc: "Tokenizing validation"
