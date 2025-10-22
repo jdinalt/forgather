@@ -46,7 +46,7 @@ huggingface-cli download mistralai/Mistral-7B-v0.1 --local-dir "${SRC_MODEL}" \
 One of our memory saving strategies, CPU activation offloading, was not working with the Mistral model when last checked. One workaround is to convert the model to the Forgather format, which does work.
 
 ```bash
-# From the Forgather root directory
+# **From the Forgather root directory**
 # Set name for converted model
 FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
 
@@ -58,6 +58,7 @@ scripts/convert_llama.py --model-type mistral --dtype bfloat16 --max-length 4096
 ### Convert Model Back to HF Format
 
 ```bash
+# **From the Forgather root directory**
 scripts/convert_llama.py --reverse --model-type mistral --dtype bfloat16 \
 --max-length 32000 "${FG_MODEL}" OUTPUT_MODEL_PATH
 ```
@@ -132,10 +133,11 @@ forgather project create --name "Lovecraft Dataset" --description "The complete 
 cd lovecraft_dataset/
 ```
 
-At this point, I would recommend switching to interactive mode, as it makes the workflow much easier. You can still continue from your shell, if your prefer. If running in interactive mode, you can drop the "forgather" prefix from the commands.
+At this point, I would recommend switching to interactive mode, as it makes the workflow much easier. You can still continue from your shell, if your prefer. **If running in interactive mode, drop the "forgather" prefix from the commands.**
 
 ```bash
 # Start Forgather shell
+# **Remember to drop the "forgather" prefix from command examples, when in interactive mode**
 forgather -i
 ```
 
@@ -196,6 +198,14 @@ To keep things simple, we validate on a single story, which is also part of the 
 ```bash
 # Show the preprocessed configuration
 forgather pp
+
+# If you encounter a Jinja2 (template) parsing error, you can gain additional insight into
+# what may be going wrong with the --debug option. This will dump each preprocessed template,
+# as passed to Jinja2.
+forgather pp --debug
+
+# There is a similar debug command for "ls"
+forgather ls --debug
 
 # Construct the base dataset and display it
 # Note that the configuration does not know the path to the text files, so we have to provide it.
@@ -317,12 +327,11 @@ Given that we have hard-codes the arguments, let's make sure that they work.
 forgather:lovecraft_dataset> config 4k.yaml
 
 # And test it...
-forgather:lovecraft_dataset [4k.yaml]> dataset --target train_dataset --dataset-path ../../hp_lovecraft \
--T ../../../../../tokenizers/wikitext_32k/ -n 2
+forgather:lovecraft_dataset [4k.yaml]> dataset --target train_dataset -T ~/models/fg_mistral/ -n 2
 
 # Otherwise, from the shell...
-forgather -t 4k.yaml dataset --target train_dataset --dataset-path ../../hp_lovecraft \
--T ../../../../../tokenizers/wikitext_32k/ -n 2 | head # or "less"
+forgather -t 4k.yaml dataset --target train_dataset \
+-T ~/models/fg_mistral/ -n 2 | head # or "less"
 ```
 
 ### Check the Sequence Length Histogram
@@ -443,7 +452,7 @@ You can test the resulting model using the provided Open-AI compatible inference
 We will use the model "as-is" to verify that it is working.
 
 ```bash
-# Start inference server (from 'forgather' directory)
+# Start inference server (** from 'forgather' directory **)
 # Change the model path to match your output directory.
 tools/inference_server/server.py -d "cuda:0" -T bfloat16 \
 -c -m /home/dinalt/ai_assets/models/fg_mistral
@@ -470,6 +479,7 @@ Of such great powers or beings there may be conceivably a survival in terms of l
 To speed up inference (or to share the model), you can convert the Fg model back to HF format.
 
 ```bash
+# **From the Forgather directory**
 scripts/convert_llama.py --reverse --model-type mistral --dtype bfloat16 --max-length 32000 \
 /home/dinalt/rust/models/fg_mistral /home/dinalt/rust/models/hf_lovecraft_mistral
 ```
@@ -477,6 +487,7 @@ scripts/convert_llama.py --reverse --model-type mistral --dtype bfloat16 --max-l
 Start the inference server on the converted model:
 
 ```bash
+# **From the Forgather directory**
 tools/inference_server/server.py -d "cuda:0" -T bfloat16 \
 -c -m /home/dinalt/ai_assets/models/hf_lovecraft_mistral
 ```
@@ -484,8 +495,8 @@ tools/inference_server/server.py -d "cuda:0" -T bfloat16 \
 And test long-context inference, beyond what we trained at (8192 tokens).
 
 ```bash
-./tools/inference_server/client.py --stream --completion \
-"Of such great powers or beings there may be conceivably a survival" --max-tokens 8192 | tee lovecraftian.txt
+# Start with an open-ended prompt, a title, as seen in dataset. See what happens!
+./tools/inference_server/client.py --temperature 1.0 --stream --completion "$(printf 'The Stranger (1923)\n\n')" --max-tokens 8192 | tee the_stranger.txt
 ```
 
 This will both stream the output and save it to "lovecraftian.txt."
