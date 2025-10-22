@@ -492,7 +492,7 @@ class InferenceServer:
         
         # Build generation configuration
         generation_config = self._build_generation_config(request)
-        self.logger.info(f"[{request_id}] Generation config: {generation_config}")
+        self.logger.info(f"[{request_id}] Generation config: {repr(generation_config)}")
         
         # Convert stop sequences to token IDs for proper stopping
         stop_strings = self.stop_sequences.copy()
@@ -633,7 +633,7 @@ class InferenceServer:
 
         # Build generation configuration
         generation_config = self._build_generation_config(request)
-        self.logger.info(f"[{request_id}] Generation config: {generation_config}")
+        self.logger.info(f"[{request_id}] Generation config: {repr(generation_config)}")
         
         # Convert stop sequences to strings for proper stopping
         stop_strings = all_stop_sequences.copy()
@@ -750,7 +750,7 @@ class InferenceServer:
             
             # Build generation config
             generation_config = self._build_generation_config(request)
-            self.logger.info(f"[{request_id}] Generation config: {generation_config}")
+            self.logger.info(f"[{request_id}] Generation config: {repr(generation_config)}")
             
             # Setup streaming
             streamer = TextIteratorStreamer(self.tokenizer, timeout=60.0, skip_prompt=True, skip_special_tokens=True)
@@ -912,7 +912,7 @@ class InferenceServer:
             
             # Build generation config
             generation_config = self._build_generation_config(request)
-            self.logger.info(f"[{request_id}] Generation config: {generation_config}")
+            self.logger.info(f"[{request_id}] Generation config: {repr(generation_config)}")
             
             # Setup streaming
             streamer = TextIteratorStreamer(self.tokenizer, timeout=60.0, skip_prompt=not request.echo, skip_special_tokens=True)
