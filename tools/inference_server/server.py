@@ -234,22 +234,19 @@ class InferenceServer:
                 self.model_path, trust_remote_code=True
             )
 
-            # Use meta device for empty model creation
+            # Create model on target device with no_init_weights()
+            # This allows custom initialization (like RoPE precomputation) while skipping
+            # standard parameter initialization, ensuring buffers are properly initialized
             with (
-                torch.device("meta"),
-                default_dtype(dtype=self.dtype)
+                torch.device(self.device),
+                default_dtype(dtype=self.dtype),
+                no_init_weights()
             ):
                 model = AutoModelForCausalLM.from_config(
                     model_config, trust_remote_code=True
                 )
-            
-            sharing_metadata = create_sharing_metadata(model)
 
-            # Materialize the tensors
-            model.to_empty(device=self.device)
-
-            # When converted to empty, tied parameters are not automatically retied.
-            retie_parameters(model, sharing_metadata)
+            # Load checkpoint parameters (RoPE buffers already initialized, will be overwritten if present)
             load_checkpoint(checkpoint_path, model, device=self.device, strict=True)
             self.model = model
             
@@ -604,12 +601,12 @@ class InferenceServer:
         request_stop_sequences = []
         if request.stop:
             if isinstance(request.stop, str):
-                request_stop_sequences = [request.stop]
+                request_stop_sequences = [request.stop] if request.stop else []
             else:
                 request_stop_sequences = request.stop
 
-        # Combine with server stop sequences
-        all_stop_sequences = self.stop_sequences + request_stop_sequences
+        # Combine with server stop sequences and filter out empty strings
+        all_stop_sequences = [s for s in (self.stop_sequences + request_stop_sequences) if s]
 
         inputs = self.tokenizer(
             prompt,

@@ -293,6 +293,7 @@ def create_hf_config_and_model(src_model_config, max_model_length, model_type, n
         with ExitStack() as exit_stack:
             if new_dtype:
                 exit_stack.enter_context(default_dtype(new_dtype))
+            exit_stack.enter_context(torch.device("cpu"))
             exit_stack.enter_context(no_init_weights())
             hf_model = MistralForCausalLM(hf_config)
 
@@ -323,6 +324,7 @@ def create_hf_config_and_model(src_model_config, max_model_length, model_type, n
         with ExitStack() as exit_stack:
             if new_dtype:
                 exit_stack.enter_context(default_dtype(new_dtype))
+            exit_stack.enter_context(torch.device("cpu"))
             exit_stack.enter_context(no_init_weights())
             hf_model = LlamaForCausalLM(hf_config)
 
@@ -621,21 +623,18 @@ def convert_forgather_to_hf(args):
     tokenizer = AutoTokenizer.from_pretrained(src_model_path)
 
     print("Loading Forgather model...")
-    # Load as meta model first
+    # Create model with no_init_weights() to allow custom initialization (like RoPE)
+    # while skipping standard parameter initialization
     with ExitStack() as exit_stack:
         if new_dtype:
             exit_stack.enter_context(default_dtype(new_dtype))
-        exit_stack.enter_context(torch.device("meta"))
+        exit_stack.enter_context(torch.device("cpu"))
+        exit_stack.enter_context(no_init_weights())
         src_model = AutoModelForCausalLM.from_config(
             src_model_config, trust_remote_code=True
         )
 
-    # Create sharing metadata and materialize model
-    sharing_metadata = create_sharing_metadata(src_model)
-    src_model.to_empty(device="cpu")
-    retie_parameters(src_model, sharing_metadata)
-
-    # Load the actual weights
+    # Load the actual weights (RoPE buffers already initialized)
     load_checkpoint(latest_checkpoint, src_model, device="cpu", strict=True)
 
     print_debug_params(src_model, "Source Forgather model", args)
