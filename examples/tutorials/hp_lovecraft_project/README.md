@@ -206,7 +206,7 @@ forgather construct --target dataset_dict --dataset-path ../../hp_lovecraft
 # Dump the first example (story) from the train split
 # This is a fairly large file, so you may want to pipe it through "head" or "less"
 # If using the interactive interface, the "less" pager will be automatically used.
-dataset --target train_dataset_split --dataset-path ../../hp_lovecraft -n 1
+forgather dataset --target train_dataset_split --dataset-path ../../hp_lovecraft -n 1
 ```
 
 Next, we will test the sliding-window pre-processor. This requires a tokenizer, as specified by the "-T TOKENIZER" argument. If you have already built any of the Forgather tokenizers, these will work. You can also just point it at the model directory of the model you will be using.
@@ -216,7 +216,7 @@ Next, we will test the sliding-window pre-processor. This requires a tokenizer, 
 - -n : This is how may examples to show
 
 ```bash
-dataset --target train_dataset --dataset-path ../../hp_lovecraft -T ../../../../../tokenizers/wikitext_32k/ \
+forgather dataset --target train_dataset --dataset-path ../../hp_lovecraft -T ../../../../../tokenizers/wikitext_32k/ \
 --window-size 64 --stride 8 -n 3
 ```
 
@@ -451,7 +451,7 @@ tools/inference_server/server.py -d "cuda:0" -T bfloat16 \
 # Note: -c : This will search for the latest checkpoint, rather than loading the weights from the root directory.
 ```
 
-We did not teach the model a chat-format, so we should use "completion mode." We need "seed" text, which we have been lifted from the start of 'The Call of Cthulu.' The model will take the seed and continue generation from there.
+We did not teach the model a chat-format, so we should use "completion mode." We need "seed" text, which has been lifted from the start of 'The Call of Cthulu.' The model will take the seed and continue generation from there.
 
 ```bash
 ./tools/inference_server/client.py --stream --completion "Of such great powers or beings there may be conceivably a survival" --max-tokens 512
