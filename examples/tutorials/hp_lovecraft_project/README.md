@@ -9,7 +9,7 @@ This tutorial teaches you how to:
 - ✓ Create a new dataset project from raw text files
 - ✓ Create a finetuning project for your new dataset
 - ✓ Train a 7B parameter model, with a 4K context length, on a single GPU
-- ✓ Run the resulting model on an inference server to generate new stories
+- ✓ Run the resulting model on an inference server to generate new stories with context of 8K or longer.
 
 **Time required**: ~2 hours
 **Hardware requirements**: 1 GPU with 24 GB of VRAM (RTX 3090, RTX 4090, etc.)
@@ -70,7 +70,7 @@ Otherwise, "yaml" syntax tends to be the closest option.
 
 ### Setup VS Code
 
-You don't have to use VS Code, but it makes editing files much easier, as we have an integration which allows the CLI tool to open files directly in the editor. If you are running from a VS Code terminal, everything should "just work." If you are using an external editor, you can still use it to open files for editing, like this:
+You don't have to use VS Code, but it makes editing files much easier, as we have an integration which allows the CLI tool to open files directly in the editor. If you are running from a VS Code terminal, everything should "just work." If you are using an external terminal, you can still use it to open files for editing, like this:
 From a VS code terminal, run:
 
 ```bash
@@ -79,7 +79,7 @@ env | grep VSCODE_IPC_HOOK_CLI
 VSCODE_IPC_HOOK_CLI=/tmp/vscode-ipc-ff6b36d6-cb18-4f6c-8d7d-2b354c82a7ea.sock
 ```
 
-Once you have the value, copy it and paste is into whatever other terminal you are using.
+Once you have the value, copy and paste is into whatever other terminal you are using.
 
 ```bash
 # Export the IPC HOOK
@@ -88,9 +88,9 @@ export VSCODE_IPC_HOOK_CLI=/tmp/vscode-ipc-ff6b36d6-cb18-4f6c-8d7d-2b354c82a7ea.
 
 ## Create a Forgather Workspace
 
-A forgather workspace defines a common set of configurations for a collection projects. While it is possible to manually construct one, it's much easier to use the CLI interface to create one.
+A forgather workspace defines a common set of configurations for a collection projects. While it is possible to manually construct one, it's much easier to use the CLI.
 
-When creating a new workspace, you must specify the location of the Forgather directory, as this is needed to find the template library. The path may be relative, as in this example, or absolute.
+When creating a new workspace, you must specify the location of the Forgather directory, as this is needed to find the template libraries. The path may be relative, as in this example, or absolute.
 
 The Forgather template libraries to include can be specified with "-l LIB_NAME." In this case, we are including the base-templates and the finetune libraries.
 
@@ -105,15 +105,13 @@ Enter the new workspace and take a look at some of the generated files.
 ```bash
 # Enter new workspace directory
 cd hp_lovecraft_workspace/
-
-# Take a look at some of the generated files
 cat forgather_workspace/base_directories.yaml
 cat forgather_workspace/meta_defaults.yaml
 ```
 
 The common workspace files can be found in the "forgather_workspace" directory. Any templates located here are available to all projects in the workspace.
 
- The "base_directories.yaml" file contains path definitions which should be available to both the meta-configuration and all projects. The CLI tool automatically generates a definition for finding the 'forgather" directory, but you could add more paths there. For example, the paths to where you store your models and datasets.
+ The "base_directories.yaml" file contains path definitions which should be available to both the meta-configuration and all projects. The CLI tool automatically generates a definition for finding the "forgather" directory, but you could add more paths there. For example, the paths to where you store your models and datasets.
 
 The primary role of "meta_defaults.yaml" is to define the default search paths for forgather configuration files. The file is "extended" by each project's "meta.yaml" file, which can override the defaults.
 
@@ -127,7 +125,8 @@ Note: If the original file were located within our search paths, we could instea
 
 ```bash
 # Create a new Forgather dataset project
-forgather project create --name "Lovecraft Dataset" --description "The complete works of H.P. Lovecraft" --default-config lovecraft.yaml ../../../datasets/local_dataset/templatelib/configs/sliding_window.yaml
+forgather project create --name "Lovecraft Dataset" --description "The complete works of H.P. Lovecraft" \
+--default-config lovecraft.yaml ../../../datasets/local_dataset/templatelib/configs/sliding_window.yaml
 
 # Enter the new project directory
 cd lovecraft_dataset/
@@ -205,7 +204,7 @@ forgather construct --target dataset_dict --dataset-path ../../hp_lovecraft
 
 
 # Dump the first example (story) from the train split
-# This is a fairly large file, so you may want ot process it pipe it through "head" or "less"
+# This is a fairly large file, so you may want to pipe it through "head" or "less"
 # If using the interactive interface, the "less" pager will be automatically used.
 dataset --target train_dataset_split --dataset-path ../../hp_lovecraft -n 1
 ```
@@ -301,7 +300,7 @@ The Jinja2 environment also exports a number of directory manipulation functions
 
 ### Test the "4k" Configuration
 
-Make sure that it parses. An easy way to do this is with the "ls" command, as it path preprocesses and parses each configuration. If something fails, add "-d" (debug) to the command.
+Make sure that it parses. An easy way to do this is with the "ls" command, as it both preprocesses and parses each configuration. If something fails, add "-d" to the command to debug the failure.
 
 ```bash
 # Make sure the configuration parses
@@ -449,10 +448,10 @@ We will use the model "as-is" to verify that it is working.
 tools/inference_server/server.py -d "cuda:0" -T bfloat16 \
 -c -m /home/dinalt/ai_assets/models/fg_mistral
 
-# Note: -c : This will search for the latest checkpoint, rather than loading the model from the root directory.
+# Note: -c : This will search for the latest checkpoint, rather than loading the weights from the root directory.
 ```
 
-We did not teach the model a chat-format, so we should use "completion mode." We need some seed text, which has been lifted from 'The Call of Cthulu.' The model will take the seed and continue generation from there.
+We did not teach the model a chat-format, so we should use "completion mode." We need "seed" text, which we have been lifted from the start of 'The Call of Cthulu.' The model will take the seed and continue generation from there.
 
 ```bash
 ./tools/inference_server/client.py --stream --completion "Of such great powers or beings there may be conceivably a survival" --max-tokens 512
