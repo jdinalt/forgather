@@ -1,8 +1,0 @@
--- extends "meta_defaults.yaml"
-
--- block configs
-name: "Template Project"
-description: "A starting point for creating new projects"
-config_prefix: "configs"
-default_config: "default.yaml"
-<< endblock configs
