@@ -489,3 +489,53 @@ And test long-context inference, beyond what we trained at (8192 tokens).
 ```
 
 This will both stream the output and save it to "lovecraftian.txt."
+
+## Control Interface
+
+Forgather has an interface for monitoring and controlling running training jobs. Using this interface is the preferred means of prematurely ending a training job, as it avoids the possibility of causing one or more workers to hang, when using control-c (pipeline parallel frequently hangs on termination).
+
+```bash
+usage: forgather control [-h] {list,status,stop,abort,save,cleanup} ...
+list                List discoverable training jobs
+status              Get status of a training job
+stop                Send graceful stop command to a training job (saves final checkpoint)
+abort               Abort training job WITHOUT saving checkpoint
+save                Trigger checkpoint save in a training job
+cleanup             Remove endpoint files for dead training jobs
+```
+
+The commands, other than "list," take a job-id as an additional argument, where you can find the
+job-id via "list."
+
+## Monitor with Tensorboard
+
+You can monitor your training jobs with Tensorboard
+
+```bash
+forgather tb --output-dir OUTPUT_DIR [-- --bind_all]
+# --bind_all : Bind to all IP interfaces, otherwise just localhost
+```
+
+## Extra Credit
+
+### Multiple GPUs
+
+If you have more than one GPU (or multiple nodes), take a look at the "Samantha" tutorial and see if you can create a multi-worker training configuration, based upon the configs from that project.
+
+### Optimize Hyper-Parameters
+
+We just copied the configuration from another project. It works, but is probably not ideal. Experiment with changing the parameters and see what happens!
+
+A few ideas:
+- Adjust the learning rate
+- Change the parameters of the learning-rate-scheduler
+    - Is 50 steps ideal? Do we even need warmup at all?
+    - Enable cosine-annealing by setting the cool-down steps to the number of training steps. What happens?
+- Change the optimizer. With limited memory resources, you options are pretty thin, but you can possibly try...
+    - See what happens with SGD? What LR works best?
+    - Try a quantized AdamW optimizer. 4-bit *may* work. See https://github.com/pytorch/ao/tree/main/torchao/optim
+- What happens if you change the number of epochs (the number of passes through the dataset)?
+- Adjust step counts - which are not ideal
+    - Perhaps it should log every two steps, rather than 10?
+    - Run validation checks more frequently
+    - Create checkpoints more or less frequently?
