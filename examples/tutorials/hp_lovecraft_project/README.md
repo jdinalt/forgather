@@ -8,7 +8,7 @@ This tutorial teaches you how to:
 - ✓ Create a Forgather workspace
 - ✓ Create a new dataset project from raw text files
 - ✓ Create a finetuning project for your new dataset
-- ✓ Train a 7B parameter model, with a 4K context length, on a single GPU
+- ✓ Train a 7B parameter model, with a context length of up to 16K, on a single GPU
 - ✓ Run the resulting model on an inference server to generate new stories with context of 8K or longer.
 
 **Time required**: ~2 hours
@@ -112,9 +112,41 @@ cat forgather_workspace/meta_defaults.yaml
 
 The common workspace files can be found in the "forgather_workspace" directory. Any templates located here are available to all projects in the workspace.
 
- The "base_directories.yaml" file contains path definitions which should be available to both the meta-configuration and all projects. The CLI tool automatically generates a definition for finding the "forgather" directory, but you could add more paths there. For example, the paths to where you store your models and datasets.
-
 The primary role of "meta_defaults.yaml" is to define the default search paths for forgather configuration files. The file is "extended" by each project's "meta.yaml" file, which can override the defaults.
+
+The "base_directories.yaml" file contains path definitions which should be available to both the meta-configuration and all projects. The CLI tool automatically generates a definition for finding the "forgather" directory, but you could add more paths there. For example, the paths to where you store your models and datasets.
+
+### Base Directories
+
+There is a standard set of base directory names, which have defaults in "[templatelib/base/config_type.yaml](../../../templatelib/base/config_type.yaml)." If you wished to override them at the workspace level, this is the place to do so.
+
+When specifying paths, you should try to either make them absolute or relative to a well-defined symbolic location. If you make them completely relative, say "../../hp_lovecraft," then your configuration MUST be executed from the project directory, otherwise, the relative path will be incorrect. To help address this issue, we define a number of symbolic directories, which you can use to anchor relative paths. For example, the above example uses "ns.forgather" as an anchor point, which was imported from "base_directories.yaml."
+
+**Must be set by base_directories.yaml**
+- ns.forgather_dir: The installed location of the Forgather directory
+
+**May be overridden by base_directories.yaml**
+- ns.models_dir: The directory where models are stored
+- ns.project_model_src_dir: Project-specific model source code directory
+- ns.model_src_dir: Shared model source directory for custom models
+- ns.tokenizers_dir: The directory in which custom tokenizers are stored
+- ns.datasets_dir: The directory in which datasets are stored
+
+**Set by preprocessor**
+- project_dir: The current project directory
+- workspace_root: The current workspace directory
+- user_home_dir() : Returns the absolute path to the user's home directory
+- forgather_config_dir() : On Linux, this is "~/.config/forgather"
+- getcwd() : The current-working-directory
+
+And the following additional locations, as defined by https://pypi.org/project/platformdirs/
+- user_data_dir()
+- user_cache_dir()
+- user_config_dir()
+- site_data_dir()
+- site_config_dir()
+
+The runtime value for many of these variables is dumped by "forgather pp" in the header, for diagnostics.
 
 ## Create a Forgather Project
 
@@ -281,33 +313,6 @@ We can delete most of the template, as we will inherit from the original. The fi
     data_dir: "{{ joinpath(ns.forgather_dir, "examples/tutorials/hp_lovecraft_project/hp_lovecraft/") }}"
 ```
 
-#### Directory Paths
-
-A brief digression is in order. When specifying paths, you should try to either make them absolute or relative to a well-defined symbolic location. If you make them completely relative, say "../../hp_lovecraft," then your configuration MUST be executed from the project directory, otherwise, the relative path will be incorrect. To help address this issue, we define a number of symbolic directories, which you can use to anchor relative paths. For example, the above example uses "ns.forgather" as an anchor point, which was imported from "base_directories.yaml."
-
-- ns.forgather : The location of the forgather directory
-- project_dir : The absolute path to the project directory
-- workspace_root : The absolute path to the workspace directory
-- user_home_dir() : Returns the absolute path to the user's home directory
-- getcwd() : The current-working-directory
-- forgather_config_dir() : Get the platform-specific config directory for Forgather
-
-The following additional locations, as defined by https://pypi.org/project/platformdirs/
-- user_data_dir()
-- user_cache_dir()
-- user_config_dir()
-- site_data_dir()
-- site_config_dir()
-
-The Jinja2 environment also exports a number of directory manipulation functions:
-- joinpath(*names) : Join a list of file-path segments via os.path.join()
-- basename(path) : Get the file name part of a path; os.path.basename()
-- dirname(path) : Get the directory par of the path; os.path.dirname()
-- splitext(path) : Split the extension from a path; os.path.splitext()
-- normpath(path) : Normalize a file path; os.path.normpath()
-- abspath(path) : Convert path to absolute path; os.path.abspath()
-- relpath(path) : Convert a path to a relative path; os.path.relpath()
-
 ### Test the "4k" Configuration
 
 Make sure that it parses. An easy way to do this is with the "ls" command, as it both preprocesses and parses each configuration. If something fails, add "-d" to the command to debug the failure.
@@ -339,7 +344,7 @@ forgather -t 4k.yaml dataset --target train_dataset \
 Given that we are splitting the dataset into 4K blocks, we should expect that most of the samples should be about 4K tokens in length. We can verify this with the "--histogram" argument.
 
 ```bash
-frogather -t 4k.yaml dataset --target train_dataset --dataset-path ../../hp_lovecraft -s \
+forgather -t 4k.yaml dataset --target train_dataset --dataset-path ../../hp_lovecraft -s \
 -T ../../../../../tokenizers/wikitext_32k/ --histogram
 sample size: 195
 min: 490
@@ -550,3 +555,8 @@ A few ideas:
     - Perhaps it should log every two steps, rather than 10?
     - Run validation checks more frequently
     - Create checkpoints more or less frequently?
+- Can you train the model with an 8K context length? What about 16?
+
+Hint: It is definitely possible to train with a 8K context length, if you reduce the batch-size to 2. Remember that our converted model has a fixed size context length limit of 4K. You will need to run the conversion tool again, configuring it for 8192. Also remember to add another dataset configuration for this.
+
+Similarly, yes, you can train a 7B parameter model with a 16K context length, on a single GPU, if you set the batch size to 1.

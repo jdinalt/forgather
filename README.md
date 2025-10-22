@@ -12,7 +12,7 @@ Forgather is a configuration-driven ML framework that uses template inheritance 
 - **Templates Library** - Extensive templates library for tokenizers, models, trainers, datasets, etc.
 
 ## News
-- Oct 21, **[H.P. Lovecraft Project](./examples/tutorials/hp_lovecraft_project/README.md)** - Learn how to create workspaces and projects, while training a model to summon the Elder Gods
+- Oct 21, **[H.P. Lovecraft Project](./examples/tutorials/hp_lovecraft_project/README.md)** - Learn how to create workspaces and projects, while training a model to summon the Elder Gods. You can perform full-finetuning (not LoRA) on a 7B model, with a context length of up to 16K!
 - Oct 19, **[Samantha](./examples/finetune/samantha/README.md)** -- New tutorial on how to perform full finetuning on a 7B parameter model on a single, 24 GB, GPU on the "Samantha" dataset -- she believes she is sentient!
 - **[Torch Titan integration](./examples/torchtitan/README.md)** -- Use Forgather to configure Torch Titan
 
