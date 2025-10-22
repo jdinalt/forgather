@@ -455,7 +455,7 @@ tools/inference_server/server.py -d "cuda:0" -T bfloat16 \
 We did not teach the model a chat-format, so we should use "completion mode." We need some seed text, which has been lifted from 'The Call of Cthulu.' The model will take the seed and continue generation from there.
 
 ```bash
-./tools/inference_server/client.py --stream --completion "Of such great powers or beings there may be conceivably a survival" --max-tokens 2048
+./tools/inference_server/client.py --stream --completion "Of such great powers or beings there may be conceivably a survival" --max-tokens 512
 ```
 
 Of such great powers or beings there may be conceivably a survival in terms of legend and half-legend. Of this I cannot doubt. But it is not on such powers or beings that my reflections have mainly been concentrated. What I have chiefly sought to investigate is the nature and extent of the powers or abilities which are potentially, if unwittingly, within the reach of any human individual.
@@ -465,3 +465,28 @@ Of such great powers or beings there may be conceivably a survival in terms of l
  The truth is that man is related to the whole universe as intimately as the cells of his body are related to each other; and that, if he is sufficiently enlightened, he can deliberately call upon any force or forces in the cosmos for any purpose which is sufficiently vivid and pressing. The ancient magicians, in short, had the psychology of their age when they sought to influence the forces of Nature; but they lacked the cosmology of ours, when we know that there is no such thing as "Nature" apart from the human mind and brain.
 
 ...
+
+## Long Inference
+
+To speed up inference (or to share the model), you can convert the Fg model back to HF format.
+
+```bash
+scripts/convert_llama.py --reverse --model-type mistral --dtype bfloat16 --max-length 32000 \
+/home/dinalt/rust/models/fg_mistral /home/dinalt/rust/models/hf_lovecraft_mistral
+```
+
+Start the inference server on the converted model:
+
+```bash
+tools/inference_server/server.py -d "cuda:0" -T bfloat16 \
+-c -m /home/dinalt/ai_assets/models/hf_lovecraft_mistral
+```
+
+And test long-context inference, beyond what we trained at (8192 tokens).
+
+```bash
+./tools/inference_server/client.py --stream --completion \
+"Of such great powers or beings there may be conceivably a survival" --max-tokens 8192 | tee lovecraftian.txt
+```
+
+This will both stream the output and save it to "lovecraftian.txt."
