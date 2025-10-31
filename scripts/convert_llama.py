@@ -4,6 +4,7 @@ import argparse
 from argparse import RawTextHelpFormatter
 import logging
 from contextlib import ExitStack
+import yaml
 
 import torch
 from torch import Tensor
@@ -339,6 +340,29 @@ def create_hf_config_and_model(src_model_config, max_model_length, model_type, n
     return hf_config, hf_model, model_type
 
 
+def load_additional_tokens(yaml_path):
+    """Load additional tokens from YAML file.
+
+    Expected format:
+    special_tokens:
+      - "<|im_start|>"
+      - "<|im_end|>"
+    regular_tokens:
+      - "custom_token_1"
+      - "custom_token_2"
+    """
+    if not yaml_path:
+        return [], []
+
+    with open(yaml_path, 'r') as f:
+        token_config = yaml.safe_load(f)
+
+    special_tokens = token_config.get('special_tokens', [])
+    regular_tokens = token_config.get('regular_tokens', [])
+
+    return special_tokens, regular_tokens
+
+
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
         formatter_class=RawTextHelpFormatter,
@@ -418,6 +442,12 @@ def parse_args(args=None):
         type=str,
         default=None,
         help="Assign chat template at given path to output tokenizer.",
+    )
+    parser.add_argument(
+        "--add-tokens",
+        type=str,
+        default=None,
+        help="Path to YAML file specifying additional tokens to add to vocabulary.",
     )
 
     args = parser.parse_args(args)
@@ -567,6 +597,9 @@ def convert_hf_to_forgather(args):
     # We'll add it after loading the model to avoid vocab size mismatch
     needs_pad_token = tokenizer.pad_token is None
 
+    # Load additional tokens to add
+    special_tokens, regular_tokens = load_additional_tokens(args.add_tokens)
+
     model_config = Latent.materialize(config, mtargets="model_config")
     logger.info(model_config)
 
@@ -586,13 +619,35 @@ def convert_hf_to_forgather(args):
 
     load_state_dict_with_validation(model, mapped_state_dict, strict=False, assign=True)
 
-    # Add PAD token and resize embeddings if needed
+    # Add PAD token and additional tokens, then resize embeddings if needed
+    tokens_to_add = []
     if needs_pad_token:
         print("No PAD token defined. Adding new PAD token with zero-initialized embedding")
-        # Add a new PAD token to the tokenizer
         tokenizer.add_special_tokens({'pad_token': '[PAD]'})
         tokenizer.padding_side = 'right'
+        tokens_to_add.append(('pad', tokenizer.pad_token_id))
 
+    # Add additional tokens from YAML file
+    if special_tokens or regular_tokens:
+        num_added = 0
+        if special_tokens:
+            print(f"Adding {len(special_tokens)} special tokens: {special_tokens}")
+            result = tokenizer.add_special_tokens({'additional_special_tokens': special_tokens})
+            num_added += result
+        if regular_tokens:
+            print(f"Adding {len(regular_tokens)} regular tokens: {regular_tokens}")
+            result = tokenizer.add_tokens(regular_tokens)
+            num_added += result
+
+        # Track which tokens were added for initialization
+        for token in special_tokens + regular_tokens:
+            token_id = tokenizer.convert_tokens_to_ids(token)
+            tokens_to_add.append(('random', token_id))
+
+        print(f"Successfully added {num_added} new tokens")
+
+    # Resize embeddings if any tokens were added
+    if tokens_to_add:
         old_vocab_size = src_model_config.vocab_size
         new_vocab_size = len(tokenizer)
 
@@ -605,6 +660,11 @@ def convert_hf_to_forgather(args):
         embed_dtype = input_embedding.weight.dtype
         embed_device = input_embedding.weight.device
 
+        # Infer initialization std from existing embeddings
+        with torch.no_grad():
+            embedding_std = input_embedding.weight.std().item()
+            print(f"Inferred embedding initialization std: {embedding_std:.6f}")
+
         # Create new embedding layer with extended size, matching dtype and device
         new_input_embedding = torch.nn.Embedding(
             new_vocab_size,
@@ -615,8 +675,17 @@ def convert_hf_to_forgather(args):
         # Copy old embeddings
         with torch.no_grad():
             new_input_embedding.weight[:old_vocab_size] = input_embedding.weight
-            # Zero-initialize the new PAD token embedding
-            new_input_embedding.weight[old_vocab_size:].zero_()
+
+            # Initialize new token embeddings
+            for init_type, token_id in tokens_to_add:
+                if init_type == 'pad':
+                    # Zero-initialize PAD token
+                    new_input_embedding.weight[token_id].zero_()
+                    print(f"Initialized token {token_id} (PAD) with zeros")
+                elif init_type == 'random':
+                    # Random initialize with inferred std
+                    new_input_embedding.weight[token_id].normal_(mean=0.0, std=embedding_std)
+                    print(f"Initialized token {token_id} with N(0, {embedding_std:.6f})")
 
         # Replace the embedding layer
         model.causal_lm.input_encoder.embedding = new_input_embedding
@@ -631,8 +700,19 @@ def convert_hf_to_forgather(args):
         )
         with torch.no_grad():
             new_output_decoder.weight[:old_vocab_size] = output_decoder.weight
-            # Zero-initialize the new PAD token output weights
-            new_output_decoder.weight[old_vocab_size:].zero_()
+
+            # Initialize new token output weights
+            output_std = output_decoder.weight.std().item()
+            print(f"Inferred output weight initialization std: {output_std:.6f}")
+
+            for init_type, token_id in tokens_to_add:
+                if init_type == 'pad':
+                    # Zero-initialize PAD token
+                    new_output_decoder.weight[token_id].zero_()
+                elif init_type == 'random':
+                    # Random initialize with inferred std
+                    new_output_decoder.weight[token_id].normal_(mean=0.0, std=output_std)
+
             if new_output_decoder.bias is not None:
                 new_output_decoder.bias[:old_vocab_size] = output_decoder.bias
                 new_output_decoder.bias[old_vocab_size:].zero_()
@@ -641,8 +721,9 @@ def convert_hf_to_forgather(args):
 
         # Update model config
         model_config.vocab_size = new_vocab_size
-        model_config.pad_token_id = tokenizer.pad_token_id
-        print(f"Set pad_token_id to {tokenizer.pad_token_id}")
+        if needs_pad_token:
+            model_config.pad_token_id = tokenizer.pad_token_id
+            print(f"Set pad_token_id to {tokenizer.pad_token_id}")
 
     # Confirm remapped model produces same logits as original
     compare_model_logits(

@@ -1,0 +1,14 @@
+# Example configuration for adding additional tokens during model conversion
+# Usage: scripts/convert_llama.py --add-tokens scripts/example_additional_tokens.yaml ...
+
+# Special tokens (will be added as special tokens)
+special_tokens:
+  - "<|im_start|>system"
+  - "<|im_start|>user"
+  - "<|im_start|>assistant"
+  - "<|im_end|>"
+
+# Regular tokens (will be added as regular tokens)
+regular_tokens:
+  - "custom_token_1"
+  - "custom_token_2"
