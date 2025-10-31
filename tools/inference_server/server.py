@@ -428,6 +428,8 @@ class InferenceServer:
             template = self.jinja_env.from_string(self.chat_template)
             formatted = template.render(
                 messages=message_data,
+                bos_token=self.tokenizer.bos_token,
+                eos_token=self.tokenizer.eos_token,
                 add_generation_prompt=True
             )
             return formatted
@@ -737,7 +739,12 @@ class InferenceServer:
         try:
             # Format messages using chat template
             template = self.jinja_env.from_string(self.chat_template)
-            formatted_prompt = template.render(messages=request.messages, add_generation_prompt=True)
+            formatted_prompt = template.render(
+                messages=request.messages,
+                bos_token=self.tokenizer.bos_token,
+                eos_token=self.tokenizer.eos_token,
+                add_generation_prompt=True
+            )
             self.logger.info(f"[{request_id}] Formatted prompt: {repr(formatted_prompt)}")
             
             # Tokenize input

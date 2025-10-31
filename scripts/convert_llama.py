@@ -191,6 +191,14 @@ def compare_model_logits(
     src_logits = test_model_forward(src_model, tokenizer, prompt, "cpu")
     dst_logits = test_model_forward(dst_model, tokenizer, prompt, "cpu")
 
+    # If vocab sizes differ (e.g., added PAD token), compare only the overlapping vocab
+    if src_logits.shape != dst_logits.shape:
+        min_vocab_size = min(src_logits.shape[-1], dst_logits.shape[-1])
+        print(f"Vocab size mismatch: {src_logits.shape[-1]} vs {dst_logits.shape[-1]}")
+        print(f"Comparing only first {min_vocab_size} tokens")
+        src_logits = src_logits[..., :min_vocab_size]
+        dst_logits = dst_logits[..., :min_vocab_size]
+
     if not torch.allclose(src_logits, dst_logits, atol=tolerance):
         print("Model logits are dissimilar")
         print(f"{src_label} Model Logits")
@@ -555,11 +563,9 @@ def convert_hf_to_forgather(args):
         logger.info(f"Setting tokenizer chat template to: {chat_template}")
         tokenizer.chat_template = chat_template
 
-    if tokenizer.pad_token is None:
-        print("No PAD token defined. Setting pad token to EOS")
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-        tokenizer.padding_side = 'right'
+    # Check if we need to add a PAD token, but don't do it yet
+    # We'll add it after loading the model to avoid vocab size mismatch
+    needs_pad_token = tokenizer.pad_token is None
 
     model_config = Latent.materialize(config, mtargets="model_config")
     logger.info(model_config)
@@ -579,6 +585,64 @@ def convert_hf_to_forgather(args):
     print_debug_params(model, "Destination model", args)
 
     load_state_dict_with_validation(model, mapped_state_dict, strict=False, assign=True)
+
+    # Add PAD token and resize embeddings if needed
+    if needs_pad_token:
+        print("No PAD token defined. Adding new PAD token with zero-initialized embedding")
+        # Add a new PAD token to the tokenizer
+        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+        tokenizer.padding_side = 'right'
+
+        old_vocab_size = src_model_config.vocab_size
+        new_vocab_size = len(tokenizer)
+
+        print(f"Resizing model embeddings from {old_vocab_size} to {new_vocab_size}")
+        # Access the input embedding layer
+        input_embedding = model.causal_lm.input_encoder.embedding
+        output_decoder = model.causal_lm.output_decoder
+
+        # Get dtype and device from existing layers
+        embed_dtype = input_embedding.weight.dtype
+        embed_device = input_embedding.weight.device
+
+        # Create new embedding layer with extended size, matching dtype and device
+        new_input_embedding = torch.nn.Embedding(
+            new_vocab_size,
+            input_embedding.weight.shape[1],
+            dtype=embed_dtype,
+            device=embed_device
+        )
+        # Copy old embeddings
+        with torch.no_grad():
+            new_input_embedding.weight[:old_vocab_size] = input_embedding.weight
+            # Zero-initialize the new PAD token embedding
+            new_input_embedding.weight[old_vocab_size:].zero_()
+
+        # Replace the embedding layer
+        model.causal_lm.input_encoder.embedding = new_input_embedding
+
+        # Also resize output decoder (lm_head)
+        new_output_decoder = torch.nn.Linear(
+            output_decoder.in_features,
+            new_vocab_size,
+            bias=output_decoder.bias is not None,
+            dtype=embed_dtype,
+            device=embed_device
+        )
+        with torch.no_grad():
+            new_output_decoder.weight[:old_vocab_size] = output_decoder.weight
+            # Zero-initialize the new PAD token output weights
+            new_output_decoder.weight[old_vocab_size:].zero_()
+            if new_output_decoder.bias is not None:
+                new_output_decoder.bias[:old_vocab_size] = output_decoder.bias
+                new_output_decoder.bias[old_vocab_size:].zero_()
+
+        model.causal_lm.output_decoder = new_output_decoder
+
+        # Update model config
+        model_config.vocab_size = new_vocab_size
+        model_config.pad_token_id = tokenizer.pad_token_id
+        print(f"Set pad_token_id to {tokenizer.pad_token_id}")
 
     # Confirm remapped model produces same logits as original
     compare_model_logits(

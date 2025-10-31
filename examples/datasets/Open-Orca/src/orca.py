@@ -61,6 +61,8 @@ def preprocess_orca(
         map_args = dict()
     if template_args is None:
         template_args = dict()
+    template_args['bos_token'] = tokenizer.bos_token
+    template_args['eos_token'] = tokenizer.eos_token
     if not chat_template or len(chat_template) == 0:
         if tokenizer and tokenizer.chat_template:
             chat_template = tokenizer.chat_template
