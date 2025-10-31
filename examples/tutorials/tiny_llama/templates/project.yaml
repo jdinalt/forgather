@@ -7,9 +7,6 @@
     -- set ns.config_description = "A demo of training a tiny llama model from scratch"
     -- set ns.model_name = "tiny_llama"
 
-    ## This will trigger a save at the end of training; this is in addtion to the checkpoint settings.
-    -- set ns.do_save = True
-
     ## The dataset sub-project to use
     -- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan')
 

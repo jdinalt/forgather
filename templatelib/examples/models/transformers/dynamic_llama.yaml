@@ -30,7 +30,29 @@ relative_pe: &relative_pe !singleton:.real_rotary_embeddings:RealRotaryPE@relati
     d_head: !var "d_head"
     max_sequence_length: !var "max_sequence_length"
     rope_theta: !var "rope_theta"
-    
+
+    [attn_functions]
+.define: &attn_functions !dict
+    ## Interfaces conforming to https://huggingface.co/docs/transformers/main/attention_interface
+    ## Fallback to using ALL_ATTENTION_FUNCTIONS, if not in dict
+    eager: !partial:.attention_interface:eager_attention_forward
+    flex_attention: !partial:.attention_interface:flex_attention_forward
+        kernel_options: !var "flex_attn_kernel_options"
+        compile_flex: !var "compile_flex"
+    sdpa: !partial:.attention_interface:sdpa_attention_forward
+        is_causal: True
+
+    [flex_attn_kernel_options]
+    # https://docs.pytorch.org/docs/stable/nn.attention.flex_attention.html#torch.nn.attention.flex_attention.FlexKernelOptions
+    # https://github.com/pytorch/pytorch/issues/133254
+.define: &flex_attn_kernel_options !dict
+    BLOCK_M: 32
+    BLOCK_N: 32
+    BLOCK_M1: 16
+    BLOCK_N1: 32
+    BLOCK_M2: 32
+    BLOCK_N2: 16
+
     [attention_factory]
 attention_factory: &attention_factory !partial:.causal_rpe_attn:CausalRpeAttn@attention_factory
     d_model: !var "hidden_size"
@@ -38,8 +60,9 @@ attention_factory: &attention_factory !partial:.causal_rpe_attn:CausalRpeAttn@at
     num_kv_heads: !var "num_kv_heads"
     dropout: !var "attention_dropout"
     bias: False
-    sdpa_function: !partial:torch.nn.functional:scaled_dot_product_attention []
     pos_encoder: *relative_pe
+    attn_implementation: !var "attn_implementation" # Value from &model_constructor_args
+    attn_functions: *attn_functions
 
     [layer_factory]
 layer_factory: &layer_factory !partial:.pre_ln_layer:PreLNLayer@layer_factory
@@ -127,9 +150,13 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     activation_dropout: 0.0
     enable_activation_checkpoint: False
     checkpoint_stride: 1
+    compile_flex: True # For debug flex, set to False
+    flex_attn_kernel_options: *flex_attn_kernel_options
 
 [model_code_generator]
     == super()
     # Dynamic Llama
     supports_gradient_checkpointing: True
     supports_sdpa: True
+    supports_flex_attn: True
+    supports_flash_attn: True

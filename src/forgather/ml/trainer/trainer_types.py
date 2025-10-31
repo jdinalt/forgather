@@ -156,7 +156,13 @@ class MinimalTrainingArguments:
 
     # Enable gradient checkpointing (a.k.a activation checkpointing) on models which support the HF API
     gradient_checkpointing: bool = False
-    gradient_checkpointing_kwargs: dict | None = None
+    # Note: Our trainer takes a partial function, wrapping an hook to enable activation checkpointing
+    # by default, we use forgather.ml.trainer:enable_hf_activation_checkpointing, which takes an arg,
+    # gradient_checkpointing_kwargs, which is passed to the checkpoint function. If you need to override
+    # the default args, pass the following to the trainer constructor
+    # enable_activation_checkpoint_fn: !partial:forgather.ml.trainer:enable_hf_activation_checkpointing { gradient_checkpointing_kwargs: { ARGS } }
+    # Otherwise, you can pass a custom function.
+    
 
     def __str__(self):
         return pformat(self)

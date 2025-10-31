@@ -6,10 +6,15 @@ from torch.fx import GraphModule
 from torch.export.unflatten import InterpreterModule, UnflattenedModule
 from torch.utils.checkpoint import checkpoint
 
+from ..trainer import has_gradient_checkpointing_enable
+
 logger = logging.getLogger(__name__)
 
 
-def insert_activation_checkpoints(module, targets):
+def insert_activation_checkpoints(rank, module, targets):
+    """
+    Enable activation on graph-module (automatic-split)
+    """
     targets_re = re.compile(targets)
 
     for name, submod in module.named_modules():
@@ -44,7 +49,6 @@ def insert_activation_checkpoints(module, targets):
                 submod.graph.lint()
                 # Recompiing appears to trigger a syntax error!? By default, these
                 # are interpreted, so recompilation is not required, but why the error?
-
 
 def missing_buffers(mod):
     """

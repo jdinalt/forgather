@@ -1,20 +1,18 @@
 -- extends 'experiments/checkpoint_test_train.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Checkpoint Test - Resume"
     -- set ns.config_description = "Resume training from latest checkpoint to test checkpoint loading"
     -- set ns.log_name = "checkpoint_test_resume"
--- endblock config_metadata
 
--- block trainer_definition
+[trainer_definition]
     -- include 'experiment.checkpoint_resume_trainer_config'
--- endblock trainer_definition
 
 #-------------------- experiment.checkpoint_resume_trainer_config --------------------
 -- extends 'experiment.checkpoint_test_trainer_config'
 
--- block trainer_args
+[trainer_args]
     == super()
     # Resume from checkpoint settings
     resume_from_checkpoint: True
@@ -24,4 +22,3 @@
     
     # Continue training settings - train a bit more to verify resume works
     max_steps: {{ max_steps | default(500) }}
--- endblock trainer_args

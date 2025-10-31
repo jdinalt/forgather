@@ -24,7 +24,7 @@
     -- set ns.dataset_proj = dataset_proj | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
 
     ## The configuration in the dataset sub-project
-    ## Note: Switch to 'tinystories.yaml' for the full dataset.
+    ## Note: Switch to 'tinystories-iter.yaml' for the full dataset.
     -- set ns.dataset_config = dataset_config | default("tinystories-abridged.yaml")
   
     ## The model project to import

@@ -24,7 +24,6 @@ class SinusoidalPE(nn.Module):
         )
         weight[:, 0::2] = torch.sin(position * div_term)
         weight[:, 1::2] = torch.cos(position * div_term)
-        weight = weight.unsqueeze(0)
         self.register_buffer("weight", weight, persistent=True)
 
     def extra_repr(self):
@@ -37,4 +36,4 @@ class SinusoidalPE(nn.Module):
         if position_ids is not None:
             return x + self.weight[position_ids]
         else:
-            return x + self.weight[:, :seq_length]
+            return x + self.weight[:seq_length].unsqueeze(0)

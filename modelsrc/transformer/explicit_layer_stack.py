@@ -22,6 +22,6 @@ class ExplicitLayerStack(nn.Module):
         hidden_states: FloatTensor,
         **kwargs,
     ) -> FloatTensor:
-        for layer in self.layers:
-            hidden_states = layer(hidden_states)
+        for i, layer in enumerate(self.layers):
+            hidden_states = layer(hidden_states, layer_index=i, **kwargs)
         return hidden_states

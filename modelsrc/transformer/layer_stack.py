@@ -23,9 +23,10 @@ class LayerStack(nn.Module):
     ):
         super().__init__()
 
-        self.layers = nn.ModuleList(
-            [layer_factory() for layer_idx in range(num_hidden_layers)]
-        )
+        self.layers = nn.ModuleDict()
+        for layer_idx in range(num_hidden_layers):
+            self.layers[str(layer_idx)] = layer_factory()
+        
         self.layer_norm = None
         if post_norm_factory is not None:
             self.layer_norm = post_norm_factory()
@@ -35,8 +36,8 @@ class LayerStack(nn.Module):
         hidden_states: FloatTensor,
         **kwargs,
     ) -> FloatTensor:
-        for layer in self.layers:
-            hidden_states = layer(hidden_states, **kwargs)
+        for i, layer in self.layers.items():
+            hidden_states = layer(hidden_states, layer_index=int(i), **kwargs)
         if self.layer_norm:
             hidden_states = self.layer_norm(hidden_states)
         return hidden_states

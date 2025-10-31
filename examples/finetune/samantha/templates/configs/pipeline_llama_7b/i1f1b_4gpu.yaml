@@ -5,7 +5,7 @@
     -- set ns.config_name = "Samantha Llama 7B i1F1B Pipe x4"
     -- set ns.config_description = "Samantha Llama 7B i1F1B Pipe x4"
     -- set ns.log_name = "i1f1b_4gpu"
-    -- set ns.trainer_class = 'trainers/pipeline/i1f1b_4gpu.yaml'
+    -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
 
 [trainer_definition]
     -- include 'config.trainer_config'
@@ -13,13 +13,25 @@
 [datacollator]
     == super()
     padding: "max_length" # Required for pipeline
-    max_length: 1500
+    max_length: 1300
 
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'
 
+[trainer_meta_config]
+    == super()
+    -- set ns.nproc_per_node = 4
+
 [trainer_args]
     == super()
-
     # **config**
-    max_grad_norm: null
+    n_microbatches: 8
+    is_multistage: True
+    stages_per_rank: 2
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 8
+    
+[trainer_constructor]
+    == super()
+    # Config Overrides
+    pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleInterleaved1F1B

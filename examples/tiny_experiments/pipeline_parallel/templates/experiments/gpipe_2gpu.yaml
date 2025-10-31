@@ -1,30 +1,22 @@
 -- extends 'base_pipeline_project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "GPipe with 2 GPUs"
     -- set ns.config_description = "Pipeline with 2 GPUs"
     -- set ns.log_name = "gpipe_2gpu"
--- endblock config_metadata
 
--- block trainer_definition
+[trainer_definition]
     -- include 'experiment.trainer_config'
--- endblock trainer_definition
 
 #-------------------- experiment.trainer_config --------------------
 -- extends 'base_pipeline_project.trainer_config'
 
-
--- block trainer_meta_config
+[trainer_meta_config]
     == super()
     -- set ns.nproc_per_node = 2
-    -- set ns.pipeline_segments = ns.nproc_per_node
-    -- set ns.pipeline_microbatches = ns.nproc_per_node * 2
--- endblock trainer_meta_config
 
-
--- block trainer_args
+[trainer_args]
     == super()
-
     # Experiment Overrides
--- endblock trainer_args
+    n_microbatches: 4

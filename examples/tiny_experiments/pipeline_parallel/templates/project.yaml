@@ -1,27 +1,25 @@
 -- extends 'projects/tiny.yaml'
 
 ## Common project settings
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.model_name = "test_model"
--- endblock config_metadata
+    -- set ns.dataset_config = "tinystories-iter.yaml"
 
--- block trainer_definition
+[model_constructor_args]
+model_constructor_args: &model_constructor_args
+    attn_implementation: "sdpa"
+
+[trainer_definition]
     -- include 'project.trainer_config'
--- endblock trainer_definition
 
-
--- block trainer_callbacks
+[trainer_callbacks]
     -- include 'project.callbacks'
-<< endblock trainer_callbacks
 
-
--- block construct_new_model
+[construct_new_model]
     -- include 'models/med_pipeline_model.yaml'
--- endblock construct_new_model
 
-
--- block datacollator
+[datacollator]
 # Pipeline Parallel requires constant input tensor shapes. Use the datacollator to
 # generate constant sequence length batches, padding if too short and truncating if too long.
 data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
@@ -30,49 +28,28 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
     padding: "max_length"
     truncation: True
     max_length: 512
--- endblock datacollator
 
-
--- block optimizer
+[optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     lr: 1.0e-3
     weight_decay: 0.01
-<< endblock optimizer
 
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
 
--- block trainer_args
+[trainer_args]
     == super()
     # Project Overrides
-    # Different train and eval batch sizes works for all schedulers, except ZBVZ, at present.
     per_device_train_batch_size: 64
     per_device_eval_batch_size: 64
     logging_steps: 10
     eval_steps: 50
     max_steps: {{ max_steps | default(250) }}
--- endblock trainer_args
-
-
--- block model_preprocessor
-model_preprocessor: &model_preprocessor !partial:forgather.ml.construct:module_to_dtype [ *model, "bfloat16" ]
-<< endblock model_preprocessor
-
-
--- block trainer_constructor
-    == super()
-    # Project overrides
-    # This is actually the default, but we are using this to verify that this arg works
-    # and to keep it consistent with the pipeline trainer.
-    compute_loss_func: !singleton:forgather.ml.loss:CausalLoss
-<< endblock trainer_constructor
-
+    default_dtype: "bfloat16"
 
 #-------------------- project.callbacks --------------------
 -- extends 'tiny.callbacks'
 
-
--- block callback_list
+[callback_list]
     == super()
     text_gen_callback: null # Disable text generation callback; not compatible with pipeline trainer.
-<< endblock callback_list

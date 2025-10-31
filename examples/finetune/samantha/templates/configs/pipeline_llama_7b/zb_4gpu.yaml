@@ -5,7 +5,7 @@
     -- set ns.config_name = "Samantha Llama 7B ZBVZ Pipe x4"
     -- set ns.config_description = "Train Samantha on ZBVZ 4 GPU Pipeline"
     -- set ns.log_name = "zbvz_4gpu"
-    -- set ns.trainer_class = 'trainers/pipeline/zb_4gpu.yaml'
+    -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
 
 [trainer_definition]
     -- include 'config.trainer_config'
@@ -18,8 +18,24 @@
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'
 
+[trainer_meta_config]
+    == super()
+    -- set ns.nproc_per_node = 4
+
 [trainer_args]
     == super()
     # **config**
+    n_microbatches: 8
+    is_multistage: True
+    stages_per_rank: 2
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 8
+    pp_stage_type: "v"
+
     eval_strategy: "no" # Eval does not work with zbvz at present
     load_best_model_at_end: False
+    
+[trainer_constructor]
+    == super()
+    # Config Overrides
+    pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleZBVZeroBubble

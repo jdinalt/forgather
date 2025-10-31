@@ -127,7 +127,7 @@ class TextgenCallback(TrainerCallback):
             input_ids = tokenizer_outputs["input_ids"].to(args.device)
             attention_mask = tokenizer_outputs["attention_mask"].to(args.device)
 
-            use_cache = False  # getattr(model, "_supports_cache_class", False)
+            use_cache = getattr(model, "_supports_cache_class", False)
             outputs = model.generate(
                 input_ids,
                 attention_mask=attention_mask,

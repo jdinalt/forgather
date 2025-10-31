@@ -76,7 +76,7 @@ eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 ## Override 'ns.trainer_class' to change the trainer class.
 [trainer_definition]
     ## See definition below
-    -- include 'trainers/base_finetune_trainer.yaml'
+    -- include 'finetune.trainer'
 
 [trainer_callbacks]
     ## See definition below
@@ -189,3 +189,49 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
         summary_writer: *summary_writer
     -- endif
     trainer_control: !call:forgather.ml.trainer.callbacks:TrainerControlCallback
+
+#-------------------- finetune.trainer --------------------
+-- extends ns.trainer_class
+## Note: We use dynamic inheritance for the trainer-class
+## This has a side effect of not being able to statically resolve the
+## parent template, which is named in the 'ns.trainer_class' variable,
+## the value of which is defined in the 'config_metadata' block, above.
+
+## Setup some defaults for this type of project
+[trainer_args]
+    == super()
+
+    # **finetune**
+    seed: 42
+    logging_steps: 10
+    eval_steps: 100
+    eval_strategy: "steps"
+    max_eval_steps: -1
+    num_train_epochs: {{ train_epochs | default(1) }}
+    dataloader_num_workers: 1
+    float32_matmul_precision: "high"
+    default_dtype: bfloat16
+    gradient_checkpointing: {{ gradient_checkpointing | default(False) }}
+
+    # Checkpoint Save Settings
+    save_strategy: "{{ save_strategy | default('steps') }}" # Set to "steps" to save every "save_steps"; set to "no" to disable
+    save_steps: 1000                 # Checkpoint every N steps
+    save_safetensors: False          # Safe tensors don't support shared weights
+    save_total_limit: 3              # Keep at most N checkpoints
+    save_on_each_node: False         # Save common files on each node
+    save_rng_state: True             # Save RNG state with checkpoint
+-- if save_strategy | default('steps') == "steps"
+    ## eval_stratgegy must equal save_strategy for this option
+    load_best_model_at_end: True
+-- endif
+    save_on_each_node: {{ save_on_each_node | default(False) }}
+
+    # We load the model via the newest checkpoint
+    resume_from_checkpoint: {{ resume_from_checkpoint | default(True) }}
+    ## WARNING: If the model has any buffers with "peristent=False," construct the model
+    ## on the "default" device; otherwise, there is no way to initialize these buffers from
+    ## a checkpoint! OTOH, not constructing the model on "meta" is very slow...
+    construct_model_on: "device"    # Construct model on accelerator device
+    # Enable all SDPA backends and let PyTorch choose which to use.
+    sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
+    sdpa_set_priority: False # If list, interpret as priority order

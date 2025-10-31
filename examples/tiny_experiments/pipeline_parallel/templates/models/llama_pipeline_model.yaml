@@ -1,7 +1,6 @@
 -- extends 'models/tiny/tiny_dyn_llama.yaml'
 
-
--- block model_config
+[model_config]
     == super()
     
     # Tiny Llama GPipe Overrides
@@ -12,4 +11,3 @@
     num_hidden_layers: 8
     embedding_dropout: 0.1
     layer_dropout: 0.1
-<< endblock model_config

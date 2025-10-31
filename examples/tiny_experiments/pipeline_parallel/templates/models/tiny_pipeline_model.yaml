@@ -1,8 +1,6 @@
 -- extends 'models/tiny/tiny_causal.yaml'
 
--- block model_config
+[model_config]
     == super()
-
     # More layers for pipeline testing
     num_hidden_layers: 8
-<< endblock model_config

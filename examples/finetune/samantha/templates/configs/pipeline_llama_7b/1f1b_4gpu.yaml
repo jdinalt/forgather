@@ -2,10 +2,10 @@
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Samantha Llama 7B 1F!B Pipe x4"
+    -- set ns.config_name = "Samantha Llama 7B 1F1ggB Pipe x4"
     -- set ns.config_description = "Train Samantha on 1F!B 4 GPU Pipeline"
     -- set ns.log_name = "1f1b_4gpu"
-    -- set ns.trainer_class = 'trainers/pipeline/1f1b_4gpu.yaml'
+    -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
 
 [trainer_definition]
     -- include 'config.trainer_config'
@@ -18,6 +18,18 @@
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'
 
+[trainer_meta_config]
+    == super()
+    -- set ns.nproc_per_node = 4
+
 [trainer_args]
     == super()
     # **config**
+    n_microbatches: 4
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 8
+
+[trainer_constructor]
+    == super()
+    # Config Overrides
+    pipe_schedule_factory: !partial:torch.distributed.pipelining:Schedule1F1B

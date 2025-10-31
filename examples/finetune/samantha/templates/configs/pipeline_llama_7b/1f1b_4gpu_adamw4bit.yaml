@@ -5,7 +5,7 @@
     -- set ns.config_name = "Llama 7B 1F1B Pipe x4 AdamW-4bit"
     -- set ns.config_description = "Train Samantha on 1F1B 4 GPU Pipeline with AdamW-4bit"
     -- set ns.log_name = "1f1b_4gpu_adamw4bit"
-    -- set ns.trainer_class = 'trainers/pipeline/1f1b_4gpu.yaml'
+    -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
 
 [trainer_definition]
     -- include 'config.trainer_config'
@@ -23,12 +23,18 @@ optimizer: &optimizer !partial:torchao.optim:AdamW4bit
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'
 
+[trainer_meta_config]
+    == super()
+    -- set ns.nproc_per_node = 4
+
 [trainer_args]
     == super()
     # **config**
+    n_microbatches: 4
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 8
 
-[split_spec]
-split_spec: &split_spec !dict@split_spec
-    causal_lm.layer_stack.layers.8: "beginning"
-    causal_lm.layer_stack.layers.17: "beginning"
-    causal_lm.layer_stack.layers.27: "beginning"
+[trainer_constructor]
+    == super()
+    # Config Overrides
+    pipe_schedule_factory: !partial:torch.distributed.pipelining:Schedule1F1B

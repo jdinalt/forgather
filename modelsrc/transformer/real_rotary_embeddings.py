@@ -101,22 +101,34 @@ class RealRotaryPE(torch.nn.Module):
     def extra_repr(self):
         return f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, rope_theta={self.rope_theta}"
 
-    def forward(self, q: Tensor, k: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, q: Tensor, k: Tensor, position_ids: Tensor = None) -> Tuple[Tensor, Tensor]:
         """
         Apply RoPE embedding to query and key
 
         Args:
             q: Query tensor of shape (batch_size, seq_len, num_heads, d_head)
             k: Key tensor of shape (batch_size, seq_len, num_heads, d_head)
+            position_ids: Position indices tensor of shape (1, seq_len).
+                         If None, uses sequential positions [0, 1, 2, ..., seq_len-1]
 
         Returns:
             Tuple of (rotated_q, rotated_k) tensors with same shapes as input
         """
         seq_len = q.shape[1]
         assert seq_len == k.shape[1]
-        assert (
-            seq_len <= self.cos_cached.shape[0]
-        ), f"seq_len {seq_len} > max_seq_len {self.cos_cached.shape[0]}"
-        return apply_rotary_pos_emb(
-            q, k, self.cos_cached[:seq_len], self.sin_cached[:seq_len]
-        )
+
+        if position_ids is None:
+            # Default behavior: use sequential positions
+            assert (
+                seq_len <= self.cos_cached.shape[0]
+            ), f"seq_len {seq_len} > max_seq_len {self.cos_cached.shape[0]}"
+            cos = self.cos_cached[:seq_len]
+            sin = self.sin_cached[:seq_len]
+        else:
+            # Use position_ids to index into cached embeddings (for KV cache inference)
+            # position_ids shape: (1, seq_len), squeeze to (seq_len,)
+            # Result shape: (seq_len, d_head)
+            cos = self.cos_cached[position_ids.squeeze(0)]
+            sin = self.sin_cached[position_ids.squeeze(0)]
+
+        return apply_rotary_pos_emb(q, k, cos, sin)

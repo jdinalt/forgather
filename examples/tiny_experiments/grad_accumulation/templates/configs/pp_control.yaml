@@ -1,68 +1,43 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Pipeline Trainer Control"
     -- set ns.config_description = "Test simple pipeline setup"
     -- set ns.model_name = "control"
     -- set ns.log_name = "piepline"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
--- endblock config_metadata
 
-
--- block trainer_callbacks
+[trainer_callbacks]
     -- include 'pipeline.callbacks'
-<< endblock trainer_callbacks
 
-
--- block trainer_definition
+[trainer_definition]
     -- include 'pipeline.trainer_config'
--- endblock trainer_definition
 
-
--- block datacollator
+[datacollator]
     == super()
-    
     # **pipeline**
     # Pipeline Parallel requires constant input tensor shapes
     padding: "max_length"
     truncation: True
--- endblock datacollator
 
 #-------------------- pipeline.trainer_config --------------------
--- extends 'tiny.trainer_config'
+-- extends 'project.trainer_config'
 
--- block trainer_meta_config
+[trainer_meta_config]
     == super()
     -- set ns.nproc_per_node = 2
-    -- set ns.pipeline_layers = 4
-    -- set ns.pipeline_segments = 2
-    -- set ns.pipeline_microbatches = 4
-    -- set ns.split_layer_prefix = "causal_lm.layer_stack.layers."
-<< endblock trainer_meta_config
 
-
--- block trainer_args
+[trainer_args]
     == super()
-   
-   # **pipeline**
--- endblock trainer_args
-
-
--- block trainer_constructor
-    == super()
-
     # **pipeline**
-    compute_loss_func: !singleton:forgather.ml.loss:CausalLoss
-<< endblock trainer_constructor
-
+    n_microbatches: 4
 
 #-------------------- pipeline.callbacks --------------------
 -- extends 'tiny.callbacks'
 
--- block callback_list
+[callback_list]
     == super()
 
     # **pipeline**
     text_gen_callback: null # Disable text generation callback; not compatible with pipeline trainer.
-<< endblock callback_list

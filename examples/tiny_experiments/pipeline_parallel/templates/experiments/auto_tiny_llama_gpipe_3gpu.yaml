@@ -1,0 +1,47 @@
+-- extends 'experiments/tiny_llama_gpipe_3gpu.yaml'
+
+## This test primarily exists to verify that the RoPE implementation works with model splitting.
+## The original implementation used the approach in the HF models / Torch Titan, where the base model contains
+## the embeddings and injects them into each layer, via forward.
+##
+## This worked with auto-model splitting with a two-worker pipeline, but fails with more than two workers.
+## the issue is that the first stage needs to broadcast the RoPE embeddings to the other layers and the
+## pipeline scheduler assumes that any forwarded tensors, obviously, require gradients, even when it
+## would be easy enough to check if they actual require gradients.
+## 
+## While annoying, this completes goes sideways when broadcasting tensors to more than one other rank,
+## where an assert trips. It is assumed that this must have been caused by a skip connection, which requires
+## combing backward gradients from multiple ranks, and this is not supported yet.
+##
+## ...torch/distributed/pipelining/stage.py", line 1254, in _create_grad_recv_info
+## AssertionError: Backward of skip connections not supported yet
+##
+## this is for a tensor which does not require gradients. To rub it in further, there is a comment 
+## indicating that it's the receiver's responsibility to handle the superfluous gradients
+## -- Arrggg!
+##
+## More recently, this was hit again, with the input_ids being passed through the model. To address this, we now 
+## use torch.compiler.is_exporting() to skip incompatible code.
+##
+## So, this is a regression test, to make sure we don't break things again!
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Auto Tiny Llama GPipe with 3 GPUs"
+    -- set ns.config_description = "Auto model splitting; tiny Llama on 3 GPUs"
+    -- set ns.log_name = "auto_tiny_llama_gpipe_3gpu"
+    # Change default to auto-split
+    -- set ns.trainer_class = 'trainers/auto_pipeline_trainer.yaml'
+
+[trainer_definition]
+    -- include 'auto.llama_trainer_config'
+
+#-------------------- auto.llama_trainer_config --------------------
+-- extends 'experiment.llama_trainer_config'
+
+[trainer_meta_config]
+    == super()
+    -- set ns.pipeline_layers = 8
+    -- set ns.pipeline_segments = 3
+    -- set ns.pipeline_microbatches = 4
+    -- set ns.split_layer_prefix = "causal_lm.layer_stack.layers."
+    -- set ns.nproc_per_node = 3

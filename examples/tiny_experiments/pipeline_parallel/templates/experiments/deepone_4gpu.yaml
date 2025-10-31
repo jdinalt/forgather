@@ -1,34 +1,26 @@
 -- extends 'base_pipeline_project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Deep One x4"
     -- set ns.config_description = "Test with larger model."
     -- set ns.log_name = "deepone_4x"
     -- set ns.model_name = "deepone"
--- endblock config_metadata
 
--- block trainer_definition
+[trainer_definition]
     -- include 'experiment.trainer_config'
--- endblock trainer_definition
 
--- block construct_new_model
+[construct_new_model]
     -- include 'experiment.model'
--- endblock construct_new_model
 
 #-------------------- experiment.trainer_config --------------------
 -- extends 'base_pipeline_project.trainer_config'
 
--- block trainer_meta_config
+[trainer_meta_config]
     == super()
-    ## Much smaller model for testing
     -- set ns.nproc_per_node = 4
-    -- set ns.pipeline_layers = 32
-    -- set ns.pipeline_segments = 4
-    -- set ns.pipeline_microbatches = 4
--- endblock trainer_meta_config
 
--- block trainer_args
+[trainer_args]
     == super()
     
     # Quick testing - short run
@@ -36,19 +28,12 @@
     
     # Smaller batch sizes for tiny model
     per_device_train_batch_size: 32
-    per_device_eval_batch_size: 64
-
-    # Debug settings
-    debug_pipeline: False
-    debug_split_model: False
-    debug_model_params: False
-    debug_model_init: False
--- endblock trainer_args
+    per_device_eval_batch_size: 32
+    n_microbatches: 4
 
 #-------------------- experiment.model --------------------
 -- extends 'models/transformers/deepone.yaml'
 
--- block model_tokenizer
+[model_tokenizer]
     ## Use a smaller tokenizer.
     -- include 'tokenizers/tiny_8k.yaml'
-<< endblock model_tokenizer

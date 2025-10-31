@@ -1,48 +1,34 @@
 -- extends 'configs/pp_control.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Pipeline Trainer Accumulate 10"
     -- set ns.config_description = "Simple pipeline with 10 grad accum steps"
     -- set ns.model_name = "control"
     -- set ns.log_name = "pp_10"
--- endblock config_metadata
 
-
--- block lr_scheduler
+[lr_scheduler]
     == super()
     
     # **experiment**
     # Scale by same factor as accumulation steps
     warmup_steps: 50
     cooldown_steps: 5000
-<< endblock lr_scheduler
 
-
--- block optimizer
+[optimizer]
     == super()
-
     # **experiment**
     # Scale LR by sqrt(10)
     lr: 3.16e-3
-<< endblock optimizer
 
-
--- block trainer_definition
+[trainer_definition]
     -- include 'experiment.trainer_config'
--- endblock trainer_definition
-
-
--- block trainer_callbacks
-    -- include 'experiment.callbacks'
-<< endblock trainer_callbacks
 
 #-------------------- experiment.trainer_config --------------------
 -- extends 'pipeline.trainer_config'
 
--- block trainer_args
+[trainer_args]
     == super()
-
     # **Experiment overrides**
     gradient_accumulation_steps: 10
 
@@ -50,14 +36,3 @@
     logging_steps: 10
     eval_steps: 50
     save_steps: 1000
--- endblock trainer_args
-
-#-------------------- experiment.callbacks --------------------
--- extends 'pipeline.callbacks'
-
--- block text_gen_callback_args
-    == super()
-
-    # **experiment**
-    generation_steps: 200
-<< endblock text_gen_callback_args

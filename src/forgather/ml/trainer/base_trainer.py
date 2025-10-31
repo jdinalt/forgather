@@ -75,6 +75,8 @@ class BaseTrainingArguments(MinimalTrainingArguments):
     # https://docs.pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html
     float32_matmul_precision: str | None = None  # "highest" | "high" | "medium"
 
+    dynamo_recompile_limit: int | None = None
+
     def __post_init__(self):
         if self.logging_dir is None:
             self.logging_dir = os.path.join(
@@ -91,9 +93,6 @@ class BaseTrainingArguments(MinimalTrainingArguments):
 
         if self.lr_scheduler_kwargs is None:
             self.lr_scheduler_kwargs = {}
-
-        if self.gradient_checkpointing_kwargs is None:
-            self.gradient_checkpointing_kwargs = {}
 
         # Auto-determine greater_is_better from metric name if not set
         if self.greater_is_better is None:
@@ -219,6 +218,10 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         # a non-issue!?
         if self.args.dataloader_num_workers > 0:
             os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+        if self.args.dynamo_recompile_limit:
+            logger.info(f"Setting torch._dynamo.config.recompile_limit = {self.args.dynamo_recompile_limit}")
+            torch._dynamo.config.recompile_limit = self.args.dynamo_recompile_limit
 
         if self.args.detect_anomaly:
             logger.warning(

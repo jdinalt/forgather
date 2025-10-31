@@ -1,35 +1,28 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Open Orca Llama7B"
     -- set ns.config_description = "Train with 1300 token context on single GPU, 24 GBs"
     -- set ns.log_name = "1gpu_1300"
--- endblock config_metadata
 
 
--- block trainer_definition
+[trainer_definition]
     -- include 'config.trainer_config'
--- endblock trainer_definition
 
-
--- block datacollator
+[datacollator]
     == super()
     max_length: 1300
--- endblock datacollator
-
 
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'
 
--- block trainer_args
+[trainer_args]
     == super()
     
     # **config**
     per_device_train_batch_size: 8
     per_device_eval_batch_size: 16
-    max_grad_norm: null
-    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
+    gradient_checkpointing: True
     fuse_optim_with_backward: True
--- endblock trainer_args
 

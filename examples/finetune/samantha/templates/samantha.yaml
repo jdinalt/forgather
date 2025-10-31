@@ -19,7 +19,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     cooldown_steps: 0 # Use constant learning-rate, after warmup
 
 #-------------------- project.trainer --------------------
--- extends "trainers/base_finetune_trainer.yaml"
+-- extends "finetune.trainer"
 
 [trainer_args]
     == super()

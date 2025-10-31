@@ -89,6 +89,26 @@ def has_batch_size(obj: object) -> TypeGuard[HasBatchSize]:
 def has_main_input_name(obj: object) -> TypeGuard[HasMainInputName]:
     return hasattr(obj, "main_input_name")
 
+def enable_hf_activation_checkpointing(rank, module, gradient_checkpointing_kwargs=None):
+    """
+    Enable activation checkpointing via Huggingface protocol
+    """
+    
+    if has_gradient_checkpointing_enable(module):
+        if rank == 0:
+            logger.info("rank0: Enabling HF gradient checkpointing")
+
+        if gradient_checkpointing_kwargs is None:
+            gradient_checkpointing_kwargs = dict(
+                use_reentrant=False,
+            )
+        module.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs
+        )
+    else:
+        logger.warning(
+            "rank{rank}: Gradient HF checkpointing requested, but model does not support it!"
+        )
 
 @dataclass(kw_only=True)
 class TrainerState(BaseTrainerState):
@@ -195,6 +215,7 @@ class Trainer(BaseTrainer):
             Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]
         ] = None,
         lr_scheduler_factory: Optional[Callable] = None,
+        enable_activation_checkpoint_fn: Optional[Callable] = enable_hf_activation_checkpointing,
         **kwargs,
     ):
         assert isinstance(args, TrainingArguments)
@@ -216,6 +237,7 @@ class Trainer(BaseTrainer):
         self.dist = distributed_env
         self.optimizer_factory = optimizer_factory
         self.lr_scheduler_factory = lr_scheduler_factory
+        self.enable_activation_checkpoint_fn = enable_activation_checkpoint_fn
         super().__init__(args=args, **kwargs)
 
     # @override
@@ -450,15 +472,12 @@ class Trainer(BaseTrainer):
             case _:
                 raise ValueError("Requires one of: default|meta|device")
         if self.args.gradient_checkpointing:
-            if has_gradient_checkpointing_enable(self.model):
-                logger.info("Enabling gradient checkpointing")
-                self.model.gradient_checkpointing_enable(
-                    self.args.gradient_checkpointing_kwargs
-                )
+            if self.enable_activation_checkpoint_fn is None:
+                if self.dist.rank == 0:
+                    logger.warning(f"Activation checkpointing requested, but no function defined!")
             else:
-                logger.warning(
-                    "Gradient checkpointing requested, but model does not support it!"
-                )
+                # Enable activation checkpointing for all modules in the pipeline.
+                self.enable_activation_checkpoint_fn(self.dist.rank, self.model)
 
     def _init_optimizer(self) -> None:
         # _prepare() sub-step 3

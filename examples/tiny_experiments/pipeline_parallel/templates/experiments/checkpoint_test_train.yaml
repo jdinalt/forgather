@@ -1,42 +1,34 @@
 -- extends 'base_pipeline_project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Checkpoint Test - Training"
     -- set ns.config_description = "Train pipeline model with multiple checkpoints to test checkpoint saving"
     -- set ns.log_name = "checkpoint_test_train"
     -- set ns.model_name = "checkpoint_test"
-    ## Init new model
--- endblock config_metadata
 
--- block trainer_definition
+[trainer_definition]
     -- include 'experiment.checkpoint_test_trainer_config'
--- endblock trainer_definition
 
--- block construct_new_model
+[construct_new_model]
     -- include 'models/tiny_pipeline_model.yaml'
--- endblock construct_new_model
 
 #-------------------- experiment.checkpoint_test_trainer_config --------------------
 -- extends 'base_pipeline_project.trainer_config'
 
--- block trainer_meta_config
+[trainer_meta_config]
     == super()
     ## Use same small model as tiny_gpipe_2gpu for fast testing
     -- set ns.nproc_per_node = 2
-    -- set ns.pipeline_layers = 8
-    -- set ns.pipeline_segments = 2
-    -- set ns.pipeline_microbatches = 4
--- endblock trainer_meta_config
 
--- block trainer_args
+[trainer_args]
     == super()
     max_steps: {{ max_steps | default(237) }} # Not a multiple of save_steps to test final checkpoint
     
     # Checkpoint test settings - create multiple checkpoints with final step not multiple of save_steps
     save_strategy: "{{ save_strategy | default('steps') }}" # Save every "save_steps" steps
     save_steps: 50                   # Save every 10 steps: 10, 20, 30, then final at 37
-    save_safetensors: True
+    save_safetensors: False
     save_total_limit: 2              # Keep 2 checkpoints
     save_on_each_node: False
     save_optimizer_state: True       # Test optimizer state saving per rank
@@ -49,10 +41,4 @@
     per_device_eval_batch_size: 16
     logging_steps: 10                # Log frequently to see progress
     eval_steps: 40                   # Evaluate occasionally
-    
-    # Debug settings
-    debug_pipeline: False
-    debug_split_model: False
-    debug_model_params: False
-    debug_model_init: False
--- endblock trainer_args
+    n_microbatches: 4

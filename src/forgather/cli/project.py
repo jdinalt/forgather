@@ -10,12 +10,9 @@ meta: &meta_output !dict:@meta
     config_name: "Default"
     config_description: "Default Config"
     config_class: "none"
-{%- raw %}
     project_dir: "{{ project_dir }}"
     workspace_root: "{{ workspace_root }}"
     forgather_dir: "{{ ns.forgather_dir }}"
-{%- endraw %}
-
 
 dynamic_args: []
 

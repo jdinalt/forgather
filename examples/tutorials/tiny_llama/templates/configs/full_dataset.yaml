@@ -1,0 +1,12 @@
+## Just use the project defaults.
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    ## Overrides
+    -- set ns.config_name = "Tiny Llama Full"
+    -- set ns.config_description = "Train Tiny Llama on full Tiny Stories dataset"
+    -- set ns.model_name = "tiny_llama_full"
+
+    ## Train on full version of tiny-stories
+    -- set ns.dataset_config = "tinystories.yaml"

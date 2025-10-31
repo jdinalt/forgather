@@ -294,6 +294,54 @@ class ForgatherShell(cmd.Cmd):
             # Print normally for short output
             print(text)
 
+    def _get_search_path_categories(self) -> dict:
+        """Get category names for each search path.
+
+        Returns:
+            Dictionary mapping search paths to category names
+        """
+        try:
+            meta = MetaConfig(self.project_dir)
+            path_to_category = {}
+
+            for search_path in meta.searchpath:
+                # Derive a reasonable category name from the path
+                abs_path = os.path.abspath(search_path)
+
+                # Try to make a nice display name based on common patterns
+                if "forgather_workspace" in abs_path:
+                    category = "Workspace Templates"
+                elif "templatelib/base" in abs_path:
+                    category = "Base Templates"
+                elif "templatelib/examples" in abs_path:
+                    category = "Example Templates"
+                elif "templatelib/" in abs_path:
+                    # Other templatelib directories (e.g., finetune, modellib)
+                    # Extract the directory name after templatelib/
+                    parts = abs_path.split("templatelib/")
+                    if len(parts) > 1:
+                        subdir = parts[1].split(os.sep)[0]
+                        category = f"{subdir.replace('_', ' ').title()} Templates"
+                    else:
+                        category = "Library Templates"
+                elif abs_path.endswith("templates"):
+                    # Project templates directory
+                    parent = os.path.basename(os.path.dirname(abs_path))
+                    if parent == os.path.basename(meta.project_dir):
+                        category = "Project Templates"
+                    else:
+                        category = f"{parent.replace('_', ' ').title()} Templates"
+                else:
+                    # Use the directory basename as the category
+                    basename = os.path.basename(abs_path)
+                    category = f"{basename.replace('_', ' ').title()} Templates"
+
+                path_to_category[abs_path] = category
+
+            return path_to_category
+        except Exception:
+            return {}
+
     def _interactive_template_selector(self) -> Optional[List[str]]:
         """Interactive template selector with arrow key navigation.
 
@@ -310,20 +358,29 @@ class ForgatherShell(cmd.Cmd):
         print("\nAvailable templates:")
         print("=" * 50)
 
+        # Get dynamic category mapping based on actual search paths
+        path_to_category = self._get_search_path_categories()
+
         # Group templates by category for better organization
         categories = {}
         for template_name, template_path, rel_path in templates:
-            # Determine category from path
-            if "experiments/" in rel_path or "configs/" in rel_path:
-                category = "Project Configs"
-            elif "templatelib/examples/" in rel_path:
-                category = "Example Templates"
-            elif "templatelib/base/" in rel_path:
-                category = "Base Templates"
-            elif "forgather_workspace/" in rel_path:
-                category = "Workspace Templates"
-            else:
-                category = "Project Templates"
+            # Determine category by finding which search path contains this template
+            category = "Other Templates"  # Default fallback
+            abs_template_path = os.path.abspath(template_path)
+
+            # Find the matching search path
+            for search_path, cat_name in path_to_category.items():
+                # Check if this template is under this search path
+                try:
+                    os.path.relpath(abs_template_path, search_path)
+                    # If relpath doesn't throw, and doesn't start with "..", it's a match
+                    rel = os.path.relpath(abs_template_path, search_path)
+                    if not rel.startswith(".."):
+                        category = cat_name
+                        break
+                except ValueError:
+                    # Different drives on Windows
+                    continue
 
             if category not in categories:
                 categories[category] = []

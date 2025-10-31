@@ -5,7 +5,6 @@ from typing import Optional, Tuple
 from functools import partial
 from torch import nn, Tensor, LongTensor, FloatTensor
 import torch
-from transformers.modeling_outputs import CausalLMOutput
 from transformers import (
     PreTrainedModel,
     PretrainedConfig,
@@ -13,6 +12,7 @@ from transformers import (
     AutoModelForCausalLM,
     GenerationMixin,
 )
+from transformers.cache_utils import Cache
 
 -- for module, name in imports:
 from {{ module }} import {{ name }}
@@ -51,11 +51,12 @@ class DynamicCasualLM(PreTrainedModel, GenerationMixin):
     _supports_attention_backend = {{ supports_attention_backend | default(False) }}
     _can_record_outputs = {{ can_record_outputs | default(None) }}
 
-    def __init__(self, config: PretrainedConfig):
+    def __init__(self, config: PretrainedConfig, attn_implementation: str=None):
+        if attn_implementation:
+            config._attn_implementation = attn_implementation
         super().__init__(config)
-        self.causal_lm = self.construct_model(**config.to_dict())
-        if "torch_dtype" in config:
-            self.to(config.torch_dtype)
+        self.causal_lm = self.construct_model(attn_implementation=config._attn_implementation, **config.to_dict())
+        self.causal_lm.config = config
 
     @staticmethod
     def construct_model(
@@ -71,39 +72,24 @@ class DynamicCasualLM(PreTrainedModel, GenerationMixin):
 
     def forward(
         self,
-        input_ids: LongTensor,
-        labels: Optional[LongTensor] = None,
-        position_ids: Optional[LongTensor] = None,
-        attention_mask: Optional[FloatTensor] = None,
-        return_dict: bool = False,
+        *args,
         **kwargs,
-    ) -> CausalLMOutput | Tuple[FloatTensor, dict[str, FloatTensor]] | FloatTensor:
+    ):
 
-        outputs = self.causal_lm(
-            input_ids=input_ids,
-            labels=labels,
-            position_ids=position_ids,
-            attention_mask=attention_mask,
+        return self.causal_lm(
+            *args,
             **kwargs,
         )
 
-        # Return type depends on arguments.
-        if return_dict:
-            return CausalLMOutput(**outputs)
-        elif labels is not None:
-            return (outputs["loss"], outputs["logits"])
-        else:
-            return outputs["logits"]
+    def get_attn_mask_fn(self, *args, **kwargs):
+        """
+        Returns a function to create an attention mask for pipeline parallel or other external use.
 
-    # Bare-minimum for HF text generation interface to work.
-    def prepare_inputs_for_generation(self, input_ids, **kwargs):
-        attention_mask = kwargs.get("attention_mask", None)
-        model_inputs = {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-        }
-        return model_inputs
-
+        This delegates to the underlying CasualLM's create_attention_mask method,
+        which uses HuggingFace's masking utilities to create the appropriate mask
+        format (4D tensor for eager/sdpa, BlockMask for flex_attention).
+        """
+        return self.causal_lm.get_attn_mask_fn(*args, **kwargs)
 
 AutoConfig.register(model_type, DynamicCausalLMConfig)
 AutoModelForCausalLM.register(DynamicCausalLMConfig, DynamicCasualLM)

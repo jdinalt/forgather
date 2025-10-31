@@ -24,9 +24,7 @@ from forgather.ml.no_init_weights import no_init_weights
 from forgather.ml.utils import default_dtype
 from forgather.ml.sharded_checkpoint import (
     load_checkpoint,
-    retie_parameters,
     find_latest_checkpoint,
-    create_sharing_metadata,
 )
 from forgather.ml.construct import torch_dtype
 
@@ -182,6 +180,7 @@ class InferenceServer:
         self,
         model_path: str,
         device: str = "auto",
+        attn_implementation: Optional[str] = None,
         from_checkpoint: bool|str = False,
         chat_template_path: Optional[str] = None,
         dtype: Optional[str] = None,
@@ -192,6 +191,7 @@ class InferenceServer:
         
         self.model_path = model_path
         self.device = device
+        self.attn_implementation = attn_implementation
         self.from_checkpoint = from_checkpoint
         self.chat_template_path = chat_template_path
         self.dtype = self._resolve_dtype(dtype)
@@ -243,7 +243,7 @@ class InferenceServer:
                 no_init_weights()
             ):
                 model = AutoModelForCausalLM.from_config(
-                    model_config, trust_remote_code=True
+                    model_config, trust_remote_code=True, attn_implementation=self.attn_implementation
                 )
 
             # Load checkpoint parameters (RoPE buffers already initialized, will be overwritten if present)
@@ -265,6 +265,7 @@ class InferenceServer:
         self._load_generation_config()
         
         self.logger.info(f"Model loaded successfully on device: {self.model.device} with dtype: {self.dtype}")
+        self.logger.info(self.model)
     
     def _load_generation_config(self):
         """Load generation config from model directory if available."""
@@ -472,7 +473,7 @@ class InferenceServer:
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=2048,
+            #max_length=2048,
             return_token_type_ids=False
         )
         
@@ -1154,9 +1155,17 @@ def merge_config_with_args(config: Dict[str, Any], args: argparse.Namespace, par
 
 
 def main():
+    print("Hello")
     parser = argparse.ArgumentParser(description="OpenAI API-compatible inference server")
     parser.add_argument("config", nargs="?", help="YAML configuration file (optional)")
     parser.add_argument("-m", "--model", help="HuggingFace model path or name")
+    parser.add_argument(
+        "-a",
+        "--attn-implementation",
+        help="HuggingFace model path or name",
+        default=None,
+        choices=[ "eager", "sdpa", "flash_attention_2", "flex_attention" ],
+    )
     parser.add_argument("-H", "--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("-p", "--port", type=int, default=8000, help="Port to bind to")
     parser.add_argument("-d", "--device", default="auto", help="Device to use (cuda, cpu, auto)")
@@ -1197,12 +1206,13 @@ def main():
     
     global inference_server
     inference_server = InferenceServer(
-        args.model, 
-        args.device,
-        args.from_checkpoint,
-        getattr(args, 'chat_template', None), 
-        args.dtype,
-        args.stop_sequences
+        model_path=args.model, 
+        device=args.device,
+        attn_implementation=args.attn_implementation,
+        from_checkpoint=args.from_checkpoint,
+        chat_template_path=getattr(args, 'chat_template', None), 
+        dtype=args.dtype,
+        stop_sequences=args.stop_sequences
     )
     
     logging.info(f"Starting server on {args.host}:{args.port}")

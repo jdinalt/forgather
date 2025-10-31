@@ -49,9 +49,10 @@ class LayerStack(nn.Module):
         # about which args should actually be used.
         self.gradient_checkpointing = enable_checkpoint
         self.checkpoint_stride = checkpoint_stride
-        self.layers = nn.ModuleList(
-            [layer_factory() for layer_idx in range(num_hidden_layers)]
-        )
+
+        self.layers = nn.ModuleDict()
+        for layer_idx in range(num_hidden_layers):
+            self.layers[str(layer_idx)] = layer_factory()
 
         self.layer_norm = None
         if post_norm_factory is not None:
@@ -66,16 +67,18 @@ class LayerStack(nn.Module):
         **kwargs,
     ) -> FloatTensor:
         if self.gradient_checkpointing:
-            for i, layer in enumerate(self.layers):
+            for i, layer in self.layers.items():
+                i = int(i)
                 if i % self.checkpoint_stride == 0:
                     hidden_states = checkpoint.checkpoint(
-                        layer, hidden_states, **self.checkpoint_kwargs
+                        layer, hidden_states, layer_index=i, **kwargs, **self.checkpoint_kwargs
                     )
                 else:
-                    hidden_states = layer(hidden_states)
+                    hidden_states = layer(hidden_states, layer_index=i, **kwargs)
         else:
-            for layer in self.layers:
-                hidden_states = layer(hidden_states)
+            for i, layer in self.layers.items():
+                i = int(i)
+                hidden_states = layer(hidden_states, layer_index=i, **kwargs)
 
         if self.layer_norm:
             hidden_states = self.layer_norm(hidden_states)

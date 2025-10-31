@@ -6,4 +6,16 @@ from .trainer_types import (
     TrainerCallback,
 )
 
-from .trainer import Trainer, TrainingArguments
+from .trainer import Trainer, TrainingArguments, enable_hf_activation_checkpointing
+
+__all__ = [
+    "Trainer",
+    "TrainingArguments",
+    "TrainOutput",
+    "IntervalStrategy",
+    "TrainerState",
+    "TrainerControl",
+    "TrainerCallback",
+    "enable_hf_activation_checkpointing",
+]
+

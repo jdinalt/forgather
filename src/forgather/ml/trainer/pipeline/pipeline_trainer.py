@@ -1,6 +1,6 @@
 # https://github.com/pytorch/pytorch/tree/main/torch/distributed/pipelining
 from dataclasses import dataclass
-from typing import Callable, Any, Dict, List, Tuple, Iterable
+from typing import Callable, Any, Dict, List, Tuple, Iterable, Optional
 import logging
 import math
 import copy
@@ -12,12 +12,8 @@ from torch.nn import Module
 from torch import Tensor
 from torch import distributed
 import torch.distributed as dist
-from torch.distributed.pipelining import SplitPoint, ScheduleGPipe
-from torch.distributed.pipelining.schedules import (
-    _ScheduleForwardOnly,
-)
+from torch.distributed.pipelining import ScheduleGPipe
 from torch.distributed.pipelining.stage import _PipelineStageBase
-from torch.distributed.pipelining import pipeline as build_pipeline
 from torch.distributed.pipelining.microbatch import split_args_kwargs_into_chunks
 
 from ..trainer_types import CheckpointInterface
@@ -33,18 +29,13 @@ from ...sharded_checkpoint import (
     create_sharing_metadata,
     retie_parameters,
 )
-from .schedule_multi_eval import ScheduleMultiEval
 from .pipeline_utils import (
     insert_activation_checkpoints,
-    replace_parameters,
-    replace_buffers,
     pipeline_stage_indices,
     missing_buffers,
 )
 from .pipeline_fixes import (
-    apply_pipeline_buffer_fix,
     assert_no_duplicate_fqns,
-    remove_vestigial_modules,
 )
 from forgather.ml.utils import default_dtype
 from forgather.ml.construct import torch_dtype
@@ -69,13 +60,17 @@ log_level_for(
 
 @dataclass(kw_only=True)
 class PipelineTrainingArguments(TrainingArguments):
-    split_spec: dict
-    unified_model: bool = False
+    """
+    Training arguments for pipeline parallel training.
+
+    Note: The model_splitter is passed to PipelineTrainer.__init__(), not here.
+    This dataclass contains only basic configuration types (int, float, str, bool).
+    """
     debug_pipeline: bool = False
     debug_split_model: bool = False
     debug_model_params: bool = False
     debug_model_init: bool = False
-    pipeline_chunks: int = 4
+    n_microbatches: int = 4
     stages_per_rank: int = 1
     pp_stage_type: str = "loop"
     is_multistage: bool = False
@@ -86,11 +81,13 @@ class PipelineTrainer(Trainer):
         self,
         *,
         args: PipelineTrainingArguments,
+        model_splitter: "ModelSplitter",  # Required: function to split model into pipeline stages
         pipe_schedule_factory: Callable = ScheduleGPipe,
         **kwargs,
     ):
         assert isinstance(args, PipelineTrainingArguments)
         self.args = args  # For type checking hint
+        self.model_splitter = model_splitter
         self.pipe_schedule_factory = pipe_schedule_factory
         super().__init__(args=args, **kwargs)
 
@@ -112,18 +109,14 @@ class PipelineTrainer(Trainer):
             self.args.per_device_eval_batch_size,
         ):
             assert (
-                batch_size % self.args.pipeline_chunks == 0
-            ), f"Batch size ({batch_size}) must be evenly divisible by pipeline_chunks ({self.args.pipeline_chunks})"
+                batch_size % self.args.n_microbatches == 0
+            ), f"Batch size ({batch_size}) must be evenly divisible by n_microbatches ({self.args.n_microbatches})"
         assert (
             self.args.is_multistage or self.args.stages_per_rank == 1
         ), "Only multistage schedulers may have more than one stages_per_rank"
-        # TODO: Relax requirements to be at least as large as required.
+
+        # Calculate total number of pipeline stages
         self.n_pipeline_stages = self.args.stages_per_rank * self.dist.world_size
-        n_pipeline_stages = len(self.args.split_spec) + 1
-        assert self.n_pipeline_stages == n_pipeline_stages, (
-            f"stages_per_rank ({self.args.stages_per_rank}) * world_size "
-            f"({self.dist.world_size}) != splits {n_pipeline_stages}"
-        )
 
         # The pipeline requires a fixed shape for the inputs
         self.args.dataloader_drop_last = True
@@ -132,15 +125,10 @@ class PipelineTrainer(Trainer):
         self.is_world_process_zero = self.dist.rank == 0
         self.num_processes = self.dist.world_size
 
-        # Convert strings to enums in split-spec
-        for key, value in self.args.split_spec.items():
-            match value:
-                case "beginning":
-                    self.args.split_spec[key] = SplitPoint.BEGINNING
-                case "end":
-                    self.args.split_spec[key] = SplitPoint.END
-                case _:
-                    raise Exception(f"Unknown split-point type {value} for {key}")
+        # Create pipeline parallel process group
+        # For now, includes all ranks, but this allows future support for
+        # hybrid parallelism where PP is a subset of ranks
+        self.pp_group = dist.new_group()
 
     def _print_modules(self, modules):
         if self.args.debug_model_params:
@@ -157,11 +145,9 @@ class PipelineTrainer(Trainer):
     # @override
     def _prepare_model(self):
         # Reset -- this trainer always resets everything.
-        self.train_scheduler = None
+        self.scheduler = None
         self.model = None
         self.pipeline_modules = None
-        self.eval_pipeline_modules = None
-        self.eval_scheduler = None
         self.optimizer = None
         self.lr_scheduler = None
         self.sharing_metadata = None
@@ -248,21 +234,23 @@ class PipelineTrainer(Trainer):
 
         # Note: scale_grads=True, the default, causes the pipeline to rescale the gradients by the number of microbatches
         # We handle this by applying this factor directly to the loss function, above. Without doing so,
-        # gradient accumulation does not work properly, as the complete acculumlated gradient is rescaled
+        # gradient accumulation does not work properly, as the complete accumulated gradient is rescaled
         # at each pipeline step.
-        self.train_scheduler = self.pipe_schedule_factory(
+        self.scheduler = self.pipe_schedule_factory(
             stages_arg,
-            self.args.pipeline_chunks,
+            self.args.n_microbatches,
             loss_fn=self.train_loss_fn,
             scale_grads=False,
         )
 
         if self.args.gradient_checkpointing:
-            if self.dist.rank == 0:
-                logger.info("Applying activation checkpointing via FX graph")
-            # Enable activation checkpointing for all modules in the pipeline.
-            for mod in pipeline_modules:
-                insert_activation_checkpoints(mod, r"^layers\.(\d+)$")
+            if self.enable_activation_checkpoint_fn is None:
+                if self.dist.rank == 0:
+                    logger.warning(f"Activation checkpointing requested, but no function defined!")
+            else:
+                # Enable activation checkpointing for all modules in the pipeline.
+                for mod in pipeline_modules:
+                    self.enable_activation_checkpoint_fn(self.dist.rank, mod)
 
         self.pipeline_modules = pipeline_modules
         self.stage_indices = stage_indices[self.dist.rank]
@@ -282,23 +270,13 @@ class PipelineTrainer(Trainer):
         # some trainer callbacks may wish to dump the layout.
         self.model = model
 
-        # Create a seperate eval pipeline
-        # This does not generate gradients and MAY have a different batch size, as well as being traced in "eval" mode.
-        if self.args.unified_model:
-            self.eval_scheduler = None
-        else:
-            if self.dist.rank == 0:
-                logger.info("Constructing and splitting eval model.")
-            self._construct_eval_pipeline()
-
     # @override
     def _wrap_loss_fn(self):
         assert self.loss_fn
-        self.eval_loss_fn = self.loss_fn
-        # Rescale by product of accumulation-steps and mirco-batches (pipeline_chunks)
+        # Rescale by product of accumulation-steps and n_mircobatches
         self.train_loss_fn = rescale_accumulated_loss(
             self.loss_fn,
-            self.args.gradient_accumulation_steps * self.args.pipeline_chunks,
+            self.args.gradient_accumulation_steps * self.args.n_microbatches,
         )
 
     def _construct_model(self, device):
@@ -316,25 +294,20 @@ class PipelineTrainer(Trainer):
     # @override
     def _compile_model(self):
         assert self.pipeline_modules
-        pipelines = [self.pipeline_modules]
-        if not self.args.unified_model:
-            assert self.eval_pipeline_modules
-            pipelines.append(self.eval_pipeline_modules)
-        for pipeline_modules in pipelines:
-            for mod in pipeline_modules:
-                mod.compile(
-                    backend=self.args.torch_compile_backend,
-                    mode=self.args.torch_compile_mode,
-                    dynamic=self.args.torch_compile_dynamic,
-                    fullgraph=self.args.torch_compile_full_graph,
-                )
+        for mod in self.pipeline_modules:
+            mod.compile(
+                backend=self.args.torch_compile_backend,
+                mode=self.args.torch_compile_mode,
+                dynamic=self.args.torch_compile_dynamic,
+                fullgraph=self.args.torch_compile_full_graph,
+            )
 
     def _get_example(self, example_dataloader):
         # Note that pipeline parallel requires all batches to have the same shape!
         # TODO: We have hard-coded "input_ids" This should be more flexible, as this is not always the case.
         example_batch = next(iter(example_dataloader))
         example_args = (torch.empty_like(example_batch["input_ids"], device="meta"),)
-        exampke_kwargs = dict(
+        example_kwargs = dict(
             #    input_ids=torch.empty_like(
             #        example_batch["input_ids"],
             #        device="meta"
@@ -343,7 +316,7 @@ class PipelineTrainer(Trainer):
 
         # Split into microbatches
         split_args, split_kwargs = split_args_kwargs_into_chunks(
-            example_args, exampke_kwargs, chunks=self.args.pipeline_chunks
+            example_args, example_kwargs, chunks=self.args.n_microbatches
         )
 
         # Return example micro-batches
@@ -352,45 +325,41 @@ class PipelineTrainer(Trainer):
     def _split_model(
         self, model, example_args, example_kwargs, stage_indices, train
     ) -> Tuple[List[Module], List[Module], List[_PipelineStageBase]]:
+        """
+        Split model into pipeline stages using the injected splitter.
+
+        Delegates to self.model_splitter and captures the attention_mask_creator
+        for later use in forward/backward passes.
+
+        Returns modules on meta device - caller must materialize them.
+        """
         rank = self.dist.rank
-        # Trace model
-        # The trace will use fake-tensors, so this does not perform any
-        # actual computation. It just traces the path through the model
-        # and records tensor geometery information.
-        args = (model, example_args, example_kwargs)
-        kwargs: Dict[str, Any] = dict(split_spec=self.args.split_spec)
-        if train:
-            model.train()
-            pipe = build_pipeline(*args, **kwargs)
-        else:
-            model.eval()
-            with torch.no_grad():
-                pipe = build_pipeline(*args, **kwargs)
 
-        if rank == 0:
-            logger.debug(pipe)
-            if self.args.debug_split_model:
-                logger.debug(pipe.print_readable())
+        # Call the injected splitter
+        (
+            all_pipeline_modules,
+            pipeline_modules,
+            pipeline_stages,
+            attention_mask_creator,
+        ) = self.model_splitter(
+            model,
+            example_args,
+            example_kwargs,
+            stage_indices,
+            train,
+            device=self.dist.device,
+            rank=rank,
+            pp_group=self.pp_group,
+        )
 
-        all_pipeline_modules = [
-            pipe.get_stage_module(i) for i in range(self.n_pipeline_stages)
-        ]
+        # Store attention mask creator for use in forward/backward steps
+        # Will be None if splitter doesn't support external masks
+        self.attention_mask_creator = attention_mask_creator
 
-        pipeline_modules = [
-            all_pipeline_modules[i] for i in stage_indices[self.dist.rank]
-        ]
-
-        pipeline_stages = [
-            pipe.build_stage(stage_index=i, device=torch.device(self.dist.device))
-            for i in stage_indices[self.dist.rank]
-        ]
-
-        # Apply buffer fix after pipeline split but before to_empty()
-        # This fixes both zombie buffers and shared buffer accessibility issues
-        apply_pipeline_buffer_fix(all_pipeline_modules, model)
-
-        # Remove vestigial modules to prevent duplicate FQN conflicts during checkpoint saving
-        remove_vestigial_modules(all_pipeline_modules)
+        if rank == 0 and self.args.debug_split_model:
+            logger.debug("Pipeline modules created:")
+            for i, mod in enumerate(all_pipeline_modules):
+                logger.debug(f"  Stage {i}: {mod}")
 
         return all_pipeline_modules, pipeline_modules, list(pipeline_stages)
 
@@ -447,7 +416,7 @@ class PipelineTrainer(Trainer):
                     p.copy_(init_state_dict[name])
 
             logger.debug("Distributing params")
-            # Send the initialized paramters for the other stages to their
+            # Send the initialized parameters for the other stages to their
             # respective processes.
             for dst_rank in range(1, self.dist.world_size):
                 # Modules owned by dst_rank
@@ -459,7 +428,7 @@ class PipelineTrainer(Trainer):
                 for stage_index in rank_indices:
                     mod = all_pipeline_modules[stage_index]
 
-                    # All params and buffes in destination module
+                    # All params and buffers in destination module
                     for name, _ in make_state_dict(mod, missing_buf_only).items():
                         # NCCL can't send between GPU and GPU, so copy each parameter to
                         # our GPU, send it, then free it. Kind of hack'ish, but it works.
@@ -544,78 +513,30 @@ class PipelineTrainer(Trainer):
                     req.wait()
                 yield copy.copy(batch)
 
-    def _construct_eval_pipeline(self):
-        # Construct an "eval" version of the pipelined model, which shares weights with the "train" version.
-        if self.dist.rank:
-            logger.debug("Constructing evaluation model")
-
-        eval_model = self._construct_model(device="meta")
-        example_args, example_kwargs = self._get_example(self.eval_dataloader)
-        stage_indices = stage_indices = pipeline_stage_indices(
-            self.dist.world_size, self.n_pipeline_stages, style=self.args.pp_stage_type
-        )
-        _, eval_pipeline_modules, eval_pipeline_stages = self._split_model(
-            eval_model, example_args, example_kwargs, stage_indices, train=False
-        )
-
-        # Replace meta parameters on eval modules with parameters of train modules
-        assert self.pipeline_modules
-        assert self.sharing_metadata is not None
-        for eval_mod, train_mod in zip(eval_pipeline_modules, self.pipeline_modules):
-            replace_parameters(eval_mod, train_mod)
-            replace_buffers(eval_mod, train_mod)
-            retie_parameters(eval_mod, self.sharing_metadata)
-
-        if self.args.is_multistage:
-            self.eval_scheduler = ScheduleMultiEval(
-                eval_pipeline_stages,
-                self.args.pipeline_chunks,
-                stage_indices=stage_indices,
-            )
-        else:
-            assert len(eval_pipeline_stages) == 1
-            self.eval_scheduler = _ScheduleForwardOnly(
-                eval_pipeline_stages[0], self.args.pipeline_chunks
-            )
-        self.eval_pipeline_modules = eval_pipeline_modules
-
     # @override
     def _forward_backward_step(
         self, input_dict: dict[str, Tensor], labels: Tensor
     ) -> Tensor:
         inputs = (input_dict["input_ids"],)
 
+        # Create attention mask externally if supported by splitter
+        # This follows TorchTitan pattern to avoid pipeline transport issues
+        extra_kwargs = {}
+        if self.attention_mask_creator is not None:
+            attention_mask = self.attention_mask_creator(input_ids=input_dict["input_ids"])
+            extra_kwargs['attention_mask'] = attention_mask
+
         # See: https://github.com/pytorch/torchtitan/blob/main/torchtitan/train.py#L377
         targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)
-        assert self.train_scheduler
+        assert self.scheduler
         if self.pp_has_first_stage:
-            self.train_scheduler.step(*inputs, target=targets, losses=losses)
+            self.scheduler.step(*inputs, **extra_kwargs, target=targets, losses=losses)
         else:
-            self.train_scheduler.step(target=targets, losses=losses)
+            self.scheduler.step(**extra_kwargs, target=targets, losses=losses)
 
         if self.pp_has_last_stage:
             assert losses
-            # for i, loss in enumerate(losses):
-            #    logger.info(f"Loss {i} {loss.item()}")
             mean_loss = torch.stack([x.detach().float() for x in losses]).mean()
-        else:
-            mean_loss = torch.tensor(0.0, device=self.dist.device, dtype=torch.float32)
-        return mean_loss
-
-    def _eval_pipeline_step(
-        self, input_dict: dict[str, Tensor], labels: Tensor
-    ) -> Tensor:
-        inputs = (input_dict["input_ids"],)
-
-        assert self.eval_scheduler
-        if self.pp_has_first_stage:
-            outputs = self.eval_scheduler.step(*inputs)
-        else:
-            outputs = self.eval_scheduler.step()
-
-        if self.pp_has_last_stage:
-            loss = self.eval_loss_fn(outputs, labels).detach()
-            mean_loss = loss.float()
         else:
             mean_loss = torch.tensor(0.0, device=self.dist.device, dtype=torch.float32)
         return mean_loss
@@ -655,51 +576,38 @@ class PipelineTrainer(Trainer):
                 optimizer=self.optimizer,
             )
 
-    # We don't want to automatically use no_grad(), as we may need to use the unified model.
-    # @override
-    def _eval_loop(self) -> Dict[str, float]:
-        if not self.args.unified_model:
-            return super()._eval_loop()
-        else:
-            # Unified model for train and eval
-            # This requires that we produce gradients.
-            total_loss = torch.zeros(1, device=self.args.device)
-            step = 0
-            for step, batch in enumerate(self._dataloader_iter(self.eval_dataloader)):
-                if self.args.max_eval_steps > 0 and step >= self.args.max_eval_steps:
-                    break
-                input_dict, labels = self._prepare_batch(batch)
-                outputs = self._unified_prediction_step(input_dict, labels)
-                loss = outputs["loss"]
-                assert loss
-                total_loss += loss
-                self._dispatch_event("on_prediction_step")
-            metrics = {"eval_loss": (total_loss / step).item()}
-            self._dispatch_event("on_evaluate", metrics=metrics)
-            return metrics
-
     # @override
     def _prediction_step(
         self, input_dict: dict[str, Tensor], labels: Tensor
     ) -> Dict[str, Tensor | None]:
-        mean_loss = self._eval_pipeline_step(input_dict, labels)
-        mean_loss = self._distributed_loss(mean_loss)
-        return {
-            "loss": mean_loss,
-            "logits": None,
-            "labels": None,
-        }
+        """
+        Use scheduler in eval mode for prediction.
+        This unifies the model handling between train and eval.
+        """
+        inputs = (input_dict["input_ids"],)
 
-    def _unified_prediction_step(
-        self, input_dict: dict[str, Tensor], labels: Tensor
-    ) -> Dict[str, Tensor | None]:
-        """
-        Using the same traced model for both train and eval.
-        """
-        mean_loss = self._forward_backward_step(input_dict, labels)
+        # Create attention mask externally if supported by splitter
+        # This follows TorchTitan pattern to avoid pipeline transport issues
+        extra_kwargs = {}
+        if self.attention_mask_creator is not None:
+            attention_mask = self.attention_mask_creator(input_ids=input_dict["input_ids"])
+            extra_kwargs['attention_mask'] = attention_mask
+
+        targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)
+        assert self.scheduler
+        if self.pp_has_first_stage:
+            self.scheduler.eval(*inputs, **extra_kwargs)
+        else:
+            self.scheduler.eval(**extra_kwargs, target=targets, losses=losses)
+
+        # Compute loss on last stage
+        if self.pp_has_last_stage:
+            assert losses
+            mean_loss = torch.stack([x.detach().float() for x in losses]).sum() * self.args.gradient_accumulation_steps
+        else:
+            mean_loss = torch.tensor(0.0, device=self.dist.device, dtype=torch.float32)
+
         mean_loss = self._distributed_loss(mean_loss)
-        assert self.optimizer
-        self.optimizer.zero_grad()
         return {
             "loss": mean_loss,
             "logits": None,
@@ -708,7 +616,7 @@ class PipelineTrainer(Trainer):
 
     # @override
     def _loss_post_scaler(self):
-        return float(self.args.pipeline_chunks)
+        return float(self.args.n_microbatches)
 
     # @override
     def _init_checkpoint_manager(self) -> CheckpointInterface:

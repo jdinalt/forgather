@@ -1,40 +1,25 @@
 -- extends 'base_pipeline_project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "GPipe with 4 GPUs Checkpoint"
     -- set ns.config_description = "Test combining pipeline parallel with activation checkpointing."
     -- set ns.log_name = "gpipe_ac_4gpu"
     -- set ns.model_name = "activation_cp"
--- endblock config_metadata
 
--- block trainer_definition
+[trainer_definition]
     -- include 'experiment.trainer_config'
--- endblock trainer_definition
-
-
--- block construct_new_model
-    -- include 'experiment.model'
--- endblock construct_new_model
 
 #-------------------- experiment.trainer_config --------------------
 -- extends 'base_pipeline_project.trainer_config'
 
-
--- block trainer_meta_config
+[trainer_meta_config]
     == super()
     -- set ns.nproc_per_node = 4
-    -- set ns.pipeline_segments = 4
-    -- set ns.pipeline_microbatches = 8
--- endblock trainer_meta_config
 
-
--- block trainer_args
+[trainer_args]
     == super()
 
     # Experiment Overrides
     gradient_checkpointing: True
--- endblock trainer_args
-
-#-------------------- experiment.model --------------------
--- extends 'models/med_pipeline_model.yaml'
+    n_microbatches: 8
