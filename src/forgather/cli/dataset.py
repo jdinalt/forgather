@@ -84,8 +84,10 @@ def dataset_cmd(args):
     if args.examples:
         print(f"Printing {args.examples} examples from the train dataset:")
         if args.tokenizer_path:
+            
             for i, example in zip(range(args.examples), split):
-                data += "-" * 40 + "\n" + tokenizer.decode(example["input_ids"]) + "\n"
+                input_ids = example["input_ids"]
+                data += f"{len(input_ids):-^40}" + "\n" + tokenizer.decode(input_ids) + "\n"
 
         else:
             print("Tokenizer path not provided, skipping tokenization.")

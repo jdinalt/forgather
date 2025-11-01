@@ -1,0 +1,54 @@
+-- extends "configs/smollm-corpus/fineweb-edu-dedup.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "FineWeb-Edu-Dedup"
+    -- set ns.config_description = "FineWeb-Edu-Dedup Packed Sequences"
+
+[train_dataset_split]
+    == super()
+-- if abridged | default(False)
+    split: "train[10000:5000000]"
+-- endif
+
+[map_function]
+.define: &map_function !partial:forgather.ml.dataset.block_tokenizer:block_tokenize_fn
+    block_size: {{ max_length | default(512)}}
+    overflow: True
+    packed: True
+    stride: 8
+    min_len: 16
+    add_bos: True
+    add_eos: True
+
+[train_dataset]
+train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
+    dataset: *train_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing train"
+    fn_kwargs: !var "preprocess_args"
+    map_fn: *map_function
+    to_iterable: True
+
+[eval_dataset]
+eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
+    dataset: *validation_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing validation"
+    fn_kwargs: !var "preprocess_args"
+    map_fn: *map_function
+
+[dynamic_args]
+    == super()
+    max_length:
+        names: "--max-length"
+        type: "int"
+        help: "Maximum length of output sequences."
+    stride:
+        names: "--stride"
+        type: "int"
+        help: "Number of tokens to repeat from previous overflowing example."
+    abridged:
+        names: "--abridged"
+        action: "store_true"
+        help: "Abridged length for faster loading"

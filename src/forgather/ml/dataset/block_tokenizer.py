@@ -57,12 +57,12 @@ def block_tokenize_fn(
     feature,
     block_size=32,
     overflow=True,
+    packed=False,
     stride=0,
     min_len=1,
     max_len=None,
     add_bos=True,
     add_eos=False,
-    combine=False,
     truncate_at=None,
     **kwargs,
 ):
@@ -77,13 +77,13 @@ def block_tokenize_fn(
         tokenizer: The tokenizer to use for tokenization.
         feature: The feature in the element to tokenize.
         block_size: The maximum size of each output block.
-        overflow: If True, allows overflow of input tokens into multiple outputs.
+        overflow: If True, add overflowing tokens to next block, else drop them.
+        packed: If True, pack multiple examples into the same block
         stride: Number of tokens to overlap between blocks.
         min_len: Minimum length of the output blocks.
         max_len: Maximum length of the output blocks (optional).
         add_bos: If True, adds a beginning-of-sequence token.
         add_eos: If True, adds an end-of-sequence token.
-        combine: If True, combines input into multiple outputs.
         truncate_at: If provided, truncates input at the first match of this regex.
     Returns:
         A dictionary with a single key "input_ids" containing a list of tokenized blocks.
@@ -108,6 +108,7 @@ def block_tokenize_fn(
         # Silence warning about exceeding model's max length
         # We are performing the truncation ourselves.
         max_length=9223372036854775807,
+        add_special_tokens=False,
     )
 
     # A list of strings of tokens of maximum size 'block_size'
@@ -149,9 +150,12 @@ def block_tokenize_fn(
 
     # Get next tokenized input record
     for record_length, input_ids in zip(outputs["length"], outputs["input_ids"]):
+        if add_bos:
+            record_length += 1
+            input_ids = [tokenizer.bos_token_id] + input_ids
         # print(f"record length {record_length}")
         # If we are not allowed to mix inputs in outputs, get a new output.
-        if not combine:
+        if not packed:
             output_block = append_output_batch(output_block, output_batch, 0)
 
         # If the length of the record is less than the minimum, discard it.

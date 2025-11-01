@@ -2,7 +2,7 @@
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Cosmopedia v2"
+    -- set ns.config_name = "FineWeb-Edu-Dedup"
     -- set ns.config_description = "FineWeb-Edu-Dedup is a deduplicated subset of the FineWeb-Edu dataset, containing 220 billion tokens of educational web pages."
     -- set ns.source = "https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus"
 
