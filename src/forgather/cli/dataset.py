@@ -2,6 +2,7 @@ import os
 import argparse
 from argparse import RawTextHelpFormatter
 
+import torch
 from transformers import AutoTokenizer
 
 from forgather.config import ConfigEnvironment
@@ -87,7 +88,9 @@ def dataset_cmd(args):
             
             for i, example in zip(range(args.examples), split):
                 input_ids = example["input_ids"]
-                data += f"{len(input_ids):-^40}" + "\n" + tokenizer.decode(input_ids) + "\n"
+                n_documents = (torch.tensor(input_ids) == tokenizer.bos_token_id).sum().item()
+                header = f" {i} Tokens: {len(input_ids)}, Documents: {n_documents} "
+                data += f"{header:-^80}" + "\n" + tokenizer.decode(input_ids) + "\n"
 
         else:
             print("Tokenizer path not provided, skipping tokenization.")

@@ -8,16 +8,19 @@
 [map_function]
 .define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
     max_length: {{ max_length | default(512)}}
-    overflow: True
-    packed: True
+    overflow: False         # Truncate conversations longer than max_length
+    packed: True            # Combine multiple conversations into each example
+    packing_strategy: "best_fit"
+    shuffle_output: True    # Shuffle the packed conversations
+    add_eos: False          # EOS is added by message processor
     min_len: 16
-    add_bos: True
-    add_eos: True
 
 [train_dataset]
     == super()
     fn_kwargs: !var { name: "preprocess_args", default: null }
     map_fn: *map_function
+    map_kwargs:
+        batch_size: 1000    # Increased batch size makes it easier to pack
 
 [dynamic_args]
     == super()

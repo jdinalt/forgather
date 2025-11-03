@@ -34,7 +34,7 @@ train_dataset: &train_dataset !singleton:{{ ns.samantha_src }}:preprocess_samant
     chat_template: "{{ ns.samantha_chat_template }}"
     tokenizer: *tokenizer
     tokenizer_args: !var "preprocess_args"
-    map_args:
+    map_kwargs:
         batch_size: 32
     template_args:
         bos_token: !call:getattr [ *tokenizer, 'bos_token' ]
@@ -47,7 +47,7 @@ eval_dataset: &eval_dataset !singleton:{{ ns.samantha_src }}:preprocess_samantha
     chat_template: "{{ ns.samantha_chat_template }}"
     tokenizer: *tokenizer
     tokenizer_args: !var "preprocess_args"
-    map_args:
+    map_kwargs:
         batch_size: 32
     template_args:
         bos_token: !call:getattr [ *tokenizer, 'bos_token' ]

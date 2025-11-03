@@ -56,7 +56,7 @@ def preprocess_samantha(
     chat_template=None,
     tokenizer=None,
     tokenizer_args=None,
-    map_args=None,
+    map_kwargs=None,
     template_args=None,
     desc="Tokenizing Dataset",
     map_fn: Callable=None,
@@ -64,8 +64,8 @@ def preprocess_samantha(
 ):
     if tokenizer_args is None:
         tokenizer_args = dict()
-    if map_args is None:
-        map_args = dict()
+    if map_kwargs is None:
+        map_kwargs = dict()
     if template_args is None:
         template_args = dict()
 
@@ -98,7 +98,7 @@ def preprocess_samantha(
             template_args=template_args,
             tokenizer_args=tokenizer_args,
         ),
-        **map_args,
+        **map_kwargs,
     )
 
     # If map_fn, pipeline with map_fn
