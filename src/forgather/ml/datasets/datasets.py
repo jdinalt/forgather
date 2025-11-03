@@ -9,7 +9,7 @@ from torch.utils.data import IterableDataset
 from datasets import Dataset
 from datasets.distributed import split_dataset_by_node
 
-from .distributed import main_process_first
+from ..distributed import main_process_first
 
 
 class IterableDatasetWithLength(IterableDataset):

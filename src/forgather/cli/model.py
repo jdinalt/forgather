@@ -31,7 +31,7 @@ def load_model(args):
     if config_class != "type.model":
         raise TypeError(f"Expected class type.model, found {config_class}")
 
-    return proj("pretrained_config", "pretrained_tokenizer", "pretrained_model_ctor")
+    return proj("pretrained_config", "pretrained_tokenizer", "model")
 
 
 def model_cmd(args):

@@ -1,23 +1,19 @@
 -- extends 'models/transformers/dynamic_causal_transformer.yaml'
 
--- block model_meta_config
+[model_meta_config]
     == super()
     -- set ns.model_name = "Tiny Causal"
     -- set ns.model_description = "A scaled-down version of the base Causal Transformer"
     -- set ns.model_short_name = "default"
-<< endblock model_meta_config
 
-
--- block model_tokenizer
+[model_tokenizer]
 tokenizer: &tokenizer !call:forgather:from_project
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'tiny_stories_bpe') }}"
     config_template: "2k.yaml"
     pp_debug: False
-<< endblock model_tokenizer
-
 
 ## Add overrides to make the model smaller and disable all dropouts.
--- block model_config
+[model_config]
     == super()
     
     # **Tiny Causal LM Overrides**
@@ -27,4 +23,3 @@ tokenizer: &tokenizer !call:forgather:from_project
     num_hidden_layers: 4
     embedding_dropout: 0.0
     layer_dropout: 0.0
-<< endblock model_config

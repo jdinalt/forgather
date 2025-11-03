@@ -28,7 +28,7 @@
     ## Set project defaults
     -- set ns.default_dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
     -- set ns.default_dataset_config = "samantha.yaml"
-    -- set ns.defult_chat_template = joinpath(ns.forgather_dir, 'chat_templates', 'chatml.jinja')
+    -- set ns.default_chat_template = joinpath(ns.forgather_dir, 'chat_templates', 'chatml_eos.jinja')
 
 [globals]
 	## If not specified, default to model-dir and model-name
@@ -49,7 +49,7 @@
 
 
 [datasets_preprocessor_args]
-tokenizer_args: &tokenizer_args !dict
+.define: &datasets_preprocessor_args !dict
     truncation: True
 
 [construct_new_model]
@@ -59,10 +59,10 @@ tokenizer_args: &tokenizer_args !dict
 .define: &dataset_dict !call:forgather:from_project
     project_dir: "{{ dataset_proj | default(ns.default_dataset_proj) }}"
     config_template: "{{ dataset_config | default(ns.default_dataset_config) }}"
-    targets: [  "train_dataset", "eval_dataset" ] 
-    preprocess_args: *tokenizer_args
+    targets: [ "train_dataset", "eval_dataset" ] 
+    preprocess_args: *datasets_preprocessor_args
     tokenizer: *tokenizer
-    chat_template: "{{ chat_template | default(ns.defult_chat_template) }}"
+    chat_template: "{{ chat_template | default(ns.default_chat_template) }}"
 
     [train_dataset]
 train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]

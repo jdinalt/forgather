@@ -21,7 +21,9 @@ tokenizer_args: &tokenizer_args !dict
 ## typically control things like Flash Attention or what
 ## data-type to convert the model to.
 # https://huggingface.co/docs/transformers/en/model_doc/auto
-model_constructor_args: &model_constructor_args {}
+.define: &model_constructor_args
+    # See: https://huggingface.co/docs/transformers/en/attention_interface
+    attn_implementation: "{{ attn_implementation | default('sdpa') }}"
 
 [model_definition]
 ## Depending upon the value 'create_new_model,' either load an existing
@@ -45,3 +47,11 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 [trainer_definition]
     ## Set defulat trainer
     -- include 'trainers/trainer.yaml'
+
+[dynamic_args]
+    == super()
+    attn_implementation:
+        names: "--attn-implementation"
+        type: "str"
+        choices: [ "eager", "sdpa", "flash_attention_2", "flex_attention" ]
+        help: "Attention implementation"

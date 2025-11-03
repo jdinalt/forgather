@@ -12,11 +12,11 @@
 -- endif
 
 [map_function]
-.define: &map_function !partial:forgather.ml.dataset.block_tokenizer:block_tokenize_fn
-    block_size: {{ max_length | default(512)}}
+.define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
+    max_length: {{ max_length | default(512)}}
     overflow: True
     packed: True
-    stride: 8
+    stride: {{ stride | default(0)}}
     min_len: 16
     add_bos: True
     add_eos: True
@@ -26,7 +26,7 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
     dataset: *train_dataset_split
     tokenizer: *tokenizer
     desc: "Tokenizing train"
-    fn_kwargs: !var "preprocess_args"
+    fn_kwargs: !var { name: "preprocess_args", default: null }
     map_fn: *map_function
     to_iterable: True
 
@@ -35,7 +35,7 @@ eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@
     dataset: *validation_dataset_split
     tokenizer: *tokenizer
     desc: "Tokenizing validation"
-    fn_kwargs: !var "preprocess_args"
+    fn_kwargs: !var { name: "preprocess_args", default: null }
     map_fn: *map_function
 
 [dynamic_args]

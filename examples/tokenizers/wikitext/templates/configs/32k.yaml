@@ -6,5 +6,5 @@
     -- set ns.config_name = "Wikitext 32K"
     -- set ns.config_description = "32K BPE tokenizer, trained on Wikitext"
     -- set ns.vocab_size = 32000
-    -- set ns.model_max_length = 8192
+    -- set ns.model_max_length = 32768
 -- endblock config_metadata

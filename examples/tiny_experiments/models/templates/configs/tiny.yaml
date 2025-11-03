@@ -1,12 +1,10 @@
 -- extends "models/model_type.yaml"
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Tiny"
     -- set ns.config_description = "Default Tiny Model"
     -- set ns.model_name = "tiny"
--- endblock config_metadata
 
--- block model_definition
+[model_definition]
   -- include "models/tiny/tiny_causal.yaml"
--- endblock model_definition

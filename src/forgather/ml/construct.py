@@ -161,7 +161,7 @@ def add_special_tokens(tokenizer, token_map):
     tokenizer.add_special_tokens(token_map)
     return tokenizer
 
-
+@main_process_first()
 def build_rule(
     target: str | os.PathLike,
     recipe: Callable,

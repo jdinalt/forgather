@@ -1,21 +1,17 @@
 -- extends 'models/transformers/dynamic_llama.yaml'
 
--- block model_meta_config
+[model_meta_config]
     == super()
     -- set ns.model_name = "Tiny Dynamic Llama"
     -- set ns.model_description = "A scaled-down version of the base Dynamic Llama Transformer"
     -- set ns.model_short_name = "tiny_dllama"
-<< endblock model_meta_config
 
-
--- block model_tokenizer
+[model_tokenizer]
     ## Use a smaller tokenizer.
     -- include 'tokenizers/tiny_2k.yaml'
-<< endblock model_tokenizer
-
 
 ## Add overrides to make the model smaller and disable all dropouts.
--- block model_config
+[model_config]
     == super()
     
     # Tiny Causal overrides
@@ -26,4 +22,3 @@
     num_hidden_layers: 4
     embedding_dropout: 0.0
     layer_dropout: 0.0
-<< endblock model_config

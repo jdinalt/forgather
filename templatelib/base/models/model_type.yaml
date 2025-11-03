@@ -1,93 +1,49 @@
 -- extends 'config_type.yaml'
 
 ## Optional
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_class = ns.config_class + ".model"
--- endblock config_metadata
 
-
--- block globals
+[globals]
     -- set ns.output_dir = output_dir | default(joinpath(ns.models_dir, ns.model_name))
--- endblock globals
 
-
--- block header
+[header]
     == super()
 # Model: {{ ns.model_name }}
-<< endblock header
 
-
--- block variable_listing
+[variable_listing]
     == super()
 # ns.model_src_dir: "{{ abspath(ns.model_src_dir) }}"
 # ns.output_dir: "{{ abspath(ns.output_dir) }}"
-<< endblock variable_listing
 
--- block main_body
+[main_body]
 
 == h2('Model')
 
-    -- filter trim()
-    -- block model_constructor_args
-model_constructor_args: &model_constructor_args
+    [model_constructor_args]
+.define: &model_constructor_args
     attn_implementation: "{{ attn_implementation | default('sdpa') }}"
-    -- endblock model_constructor_args
-    -- endfilter
 
-
-    -- filter trim()
-    -- block model_definition required
+    [model_definition]
 ## tokenizer: &tokenizer
 ## model: &model
-    -- endblock model_definition
-    -- endfilter
 
-# Construct and save pretrained config to output_dir
-pretrained_config: &pretrained_config !singleton:forgather.ml.construct:build_rule
-    target: "{{ joinpath(ns.output_dir, 'config.json') }}"
-    recipe: !partial:forgather.ml.construct:dependency_list
-        - !singleton:call [ !singleton:getattr [ *model_config, "save_pretrained"], "{{ ns.output_dir }}" ]
-        - !singleton:forgather.ml.construct:copy_package_files
-            - "{{ ns.output_dir }}"
-            - *model_config
-    loader: !partial:transformers:AutoConfig.from_pretrained
-        args: [ "{{ ns.output_dir }}" ]
-        kwargs: { trust_remote_code: True }
-
-# Construct and save pretrained tokenizer to output_dir
-pretrained_tokenizer: &pretrained_tokenizer !singleton:forgather.ml.construct:build_rule
-    target: "{{ joinpath(ns.output_dir, 'tokenizer.json') }}"
-    recipe: !partial:call [ !singleton:getattr [ *tokenizer, "save_pretrained"], "{{ ns.output_dir }}" ]
-    loader: !partial:transformers:AutoTokenizer.from_pretrained [ "{{ ns.output_dir }}" ]
-
-# Callable, which constructs model instance from config in output_dir
-pretrained_model_ctor: &pretrained_model !partial:transformers:AutoModelForCausalLM.from_config
-    args: [ *pretrained_config ]
-    kwargs: *model_constructor_args
-<< endblock main_body
-
-
--- block dynamic_args
+[dynamic_args]
     == super()
-    attention_type:
+    attn_implementation:
         names: "--attn-implementation"
         type: "str"
         choices: [ "eager", "sdpa", "flash_attention_2", "flex_attention" ]
         help: "Attention implementation"
-<< endblock dynamic_args
 
-
--- block meta_output
+[meta_output]
     == super()
     output_dir: "{{ ns.output_dir }}"
     model_src_dir: "{{ ns.model_src_dir }}"
-<< endblock meta_output
 
-
--- block main_output
+[main_output]
 main:
-    pretrained_config: *pretrained_config
-    pretrained_tokenizer: *pretrained_tokenizer
-    pretrained_model_ctor: *pretrained_model
-<< endblock main_output
+    config: *pretrained_config
+    tokenizer: *pretrained_tokenizer
+    model_ctor: *model

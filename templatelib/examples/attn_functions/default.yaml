@@ -1,0 +1,10 @@
+.define: &attn_functions !dict
+    ## Interfaces conforming to https://huggingface.co/docs/transformers/main/attention_interface
+    ## Fallback to using ALL_ATTENTION_FUNCTIONS, if not in dict
+    eager: !partial:.attention_interface:eager_attention_forward
+    flex_attention: !partial:.attention_interface:flex_attention_forward
+        kernel_options: !var "flex_attn_kernel_options"
+        compile_flex: !var "compile_flex"
+    sdpa: !partial:.attention_interface:sdpa_attention_forward
+        is_causal: True
+

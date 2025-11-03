@@ -1,3 +1,5 @@
+from typing import Any, Optional, Callable
+
 import jinja2
 import logging
 import os
@@ -39,7 +41,7 @@ def samantha_map_function(
         for batch in input_batch["conversations"]
     ]
     if not tokenizer:
-        return {"text": conversations}
+        return { "text": conversations }
 
     outputs = tokenizer(
         conversations,
@@ -57,6 +59,8 @@ def preprocess_samantha(
     map_args=None,
     template_args=None,
     desc="Tokenizing Dataset",
+    map_fn: Callable=None,
+    fn_kwargs: Optional[dict[str, Any]]=None,
 ):
     if tokenizer_args is None:
         tokenizer_args = dict()
@@ -83,20 +87,36 @@ def preprocess_samantha(
         lstrip_blocks=True,
     )
     chat_template = environment.from_string(chat_template)
-    output_dataset = dataset.map(
+    dataset = dataset.map(
         samantha_map_function,
         batched=True,
         remove_columns=dataset.column_names,
         desc=desc,
         fn_kwargs=dict(
-            tokenizer=tokenizer,
+            tokenizer=tokenizer if not map_fn else None,
             chat_template=chat_template,
             template_args=template_args,
             tokenizer_args=tokenizer_args,
         ),
         **map_args,
     )
-    return output_dataset
+
+    # If map_fn, pipeline with map_fn
+    if map_fn is not None:
+        if not fn_kwargs:
+            fn_kwargs=dict()
+        fn_kwargs=dict(
+            tokenizer=tokenizer,
+            feature="text",
+        ) | fn_kwargs
+        dataset = dataset.map(
+            map_fn,
+            batched=True,
+            remove_columns=dataset.column_names,
+            desc="Applying map function",
+            fn_kwargs=fn_kwargs,
+        )
+    return dataset
 
 
 @main_process_first()

@@ -46,34 +46,6 @@ def precompute_cos_sin(
     sin = emb.sin().to(dtype=default_dtype)
     return cos, sin
 
-
-def apply_rotary_pos_emb(
-    q: Tensor, k: Tensor, cos: Tensor, sin: Tensor
-) -> Tuple[Tensor, Tensor]:
-    """
-    Apply rotary position embeddings using HuggingFace-compatible cos/sin method.
-
-    Args:
-        q: Query tensor of shape (batch_size, seq_len, num_heads, d_head)
-        k: Key tensor of shape (batch_size, seq_len, num_heads, d_head)
-        cos: Cosine tensor of shape (seq_len, d_head)
-        sin: Sine tensor of shape (seq_len, d_head)
-
-    Returns:
-        Tuple of (rotated_q, rotated_k) tensors with same shapes as input
-    """
-    # Reshape cos/sin for broadcasting to match input tensor dimensions
-    # Input q/k: [batch, seq_len, num_heads, d_head]
-    # Need cos/sin: [1, seq_len, 1, d_head] for broadcasting
-    cos = cos.unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1, d_head]
-    sin = sin.unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1, d_head]
-
-    # Apply rotary embeddings.
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
-    return q_embed, k_embed
-
-
 class RealRotaryPE(torch.nn.Module):
     """
     Real-valued RoPE positional encoder module
@@ -124,11 +96,14 @@ class RealRotaryPE(torch.nn.Module):
             ), f"seq_len {seq_len} > max_seq_len {self.cos_cached.shape[0]}"
             cos = self.cos_cached[:seq_len]
             sin = self.sin_cached[:seq_len]
+            # Reshape cos/sin for broadcasting to match input tensor dimensions
+            # Need cos/sin: [1, seq_len, 1, d_head] for broadcasting
+            cos = cos.unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1, d_head]
+            sin = sin.unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1, d_head]
         else:
-            # Use position_ids to index into cached embeddings (for KV cache inference)
-            # position_ids shape: (1, seq_len), squeeze to (seq_len,)
-            # Result shape: (seq_len, d_head)
-            cos = self.cos_cached[position_ids.squeeze(0)]
-            sin = self.sin_cached[position_ids.squeeze(0)]
+            cos = self.cos_cached[position_ids].unsqueeze(2)
+            sin = self.sin_cached[position_ids].unsqueeze(2)
 
-        return apply_rotary_pos_emb(q, k, cos, sin)
+        q_embed = (q * cos) + (rotate_half(q) * sin)
+        k_embed = (k * cos) + (rotate_half(k) * sin)
+        return q_embed, k_embed

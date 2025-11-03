@@ -1,11 +1,31 @@
 from typing import Dict, List, Any, Tuple, Optional
+import copy
+import logging
+
 import torch
 from torch import Tensor
-import logging
+from torch.nn.utils.rnn import pad_sequence
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+def get_pos_ids_for_packed_sequence(x, token_id, eos: bool = True):
+    """
+    Get position-ids for packed sequence
+
+    Based on: https://huggingface.co/blog/sirluk/llm-sequence-packing
+    """
+    B, T = x.shape
+    eos_idx = (x.view(-1) == token_id).nonzero(as_tuple=True)[0] + eos
+    eos_idx_expanded = torch.cat([eos_idx, torch.arange(0,B*T+1,T)]).unique().sort()[0]
+    normalized_idx = eos_idx_expanded - (eos_idx_expanded // T) * T
+    normalized_idx = torch.where(normalized_idx == 0, T, normalized_idx)
+    reps = normalized_idx[1:] - normalized_idx[:-1]
+    reps = torch.where(reps < 1, normalized_idx[1:], reps)
+    
+    # get position ids for packed sequence
+    pos_ids = (torch.arange(B*T) - torch.repeat_interleave(eos_idx_expanded[:-1], reps)).view(B,T)
+    return pos_ids
 
 class DataCollatorForCausalLM:
     """
@@ -54,6 +74,7 @@ class DataCollatorForCausalLM:
         ignore_index: int = -100,
         input_name: str = "input_ids",
         labels_name: str | None = "labels",
+        packed_sequences: bool = False,
         **pad_kwargs,
     ) -> dict[str, Tensor] | Tuple[dict[str, Tensor], Tensor]:
         """
@@ -63,13 +84,14 @@ class DataCollatorForCausalLM:
             truncation (bool, optional): Whether to truncate sequences to the maximum length. Defaults to False.
             ignore_index (int, optional): The index to ignore in labels during loss computation. Defaults to -100.
             input_name_map (Dict[str, str], optional): Remap dictionary for batch labels
-            labels_name: The dictionary key for labels, if None, then returns as second element of tuple
+            labels_name: The dictionary key for labels, if None, then returned as second element of tuple
             **pad_kwargs: Additional keyword arguments for padding, such as 'max_length' and 'padding'.
         Notes:
             - If 'max_length' is provided in pad_kwargs and padding is not set to 'max_length', 'max_length' will be ignored.
             - A warning is logged if the specified max_length exceeds the tokenizer's model_max_length.
         """
-
+        # We may need to modify the tokenizer...
+        tokenizer = copy.deepcopy(tokenizer)
         if tokenizer.pad_token is None:
             logger.warning("No PAD token defined. Setting pad token to EOS")
             tokenizer.pad_token = tokenizer.eos_token
@@ -87,7 +109,7 @@ class DataCollatorForCausalLM:
         self.max_length = pad_kwargs.get("max_length", tokenizer.model_max_length)
         self.input_name = input_name
         self.labels_name = labels_name
-
+        self.packed_sequences = packed_sequences
         # Supress warning about max_length being ignored when padding is not
         # 'max_length' and max_length is present.
         padding = pad_kwargs.get("padding", None)
@@ -116,14 +138,18 @@ class DataCollatorForCausalLM:
             features = self._truncate(features)
         padded_batch = self._pad(features)
         input_ids: Tensor = padded_batch["input_ids"]
-        labels = torch.where(
-            input_ids == self.tokenizer.pad_token_id, self.ignore_index, input_ids
-        )
+        labels: Tensor|None = padded_batch.get("labels", None)
+        if labels is None:
+            labels = torch.where(
+                input_ids == self.tokenizer.pad_token_id, self.ignore_index, input_ids
+            )
         output_dict = {self.input_name: input_ids}
         if not self.labels_name:
             return output_dict, labels
 
         output_dict["labels"] = labels
+        if self.packed_sequences:
+            output_dict["position_ids"] = get_pos_ids_for_packed_sequence(input_ids, self.tokenizer.eos_token_id)
         return output_dict
 
     def _truncate(self, features):
@@ -159,3 +185,5 @@ class DataCollatorForCausalLM:
             )
 
         return padded
+        
+        

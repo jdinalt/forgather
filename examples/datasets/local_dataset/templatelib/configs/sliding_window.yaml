@@ -6,8 +6,8 @@
     -- set ns.config_description = "Sliding window local dataset"
 
 [map_function]
-.define: &map_function !partial:forgather.ml.dataset.block_tokenizer:block_tokenize_fn
-    block_size: {{ window_size | default(512)}}
+.define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
+    max_length: {{ window_size | default(512)}}
     stride: {{ stride | default(64) }}
     min_len: {{ min_length | default(1) }}
 

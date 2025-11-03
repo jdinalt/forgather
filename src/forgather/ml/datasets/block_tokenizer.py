@@ -5,7 +5,10 @@ It includes classes for managing input and output token blocks, as well as a fun
 to perform the tokenization with various options such as overflow handling, stride,
 and special token addition.
 """
+from typing import Optional, Any, Dict, List
+from collections.abc import Sequence
 
+from transformers import PreTrainedTokenizerFast
 
 class InputTokenBlock:
     def __init__(self, input_ids, length):
@@ -52,31 +55,32 @@ class OutputTokenBlock:
 
 
 def block_tokenize_fn(
-    element,
-    tokenizer,
-    feature,
-    block_size=32,
-    overflow=True,
-    packed=False,
-    stride=0,
-    min_len=1,
-    max_len=None,
-    add_bos=True,
-    add_eos=False,
-    truncate_at=None,
+    features: Dict[str, Sequence[Any]],
+    tokenizer: PreTrainedTokenizerFast,
+    feature: str,
+    max_length=512,
+    overflow: bool=True,
+    packed: bool=False,
+    stride: int=0,
+    min_len: int=1,
+    max_len: Optional[int]=None,
+    add_bos: bool=True,
+    add_eos: bool=False,
+    truncate_at: Optional[str]=None,
     **kwargs,
 ):
     """
-    Tokenizes the input element into blocks of tokens.
+    Tokenizes the input batch into blocks of tokens.
 
     The typical use case is to tokenize text into blocks of a given size, with options for overflow,
-    stride, and special tokens. Useful when examples are too long for the model's maximum input size.
+    stride, and special tokens. Useful when examples are too long for the model's maximum input size and
+    for packing multiple examples into a single sequence.
 
     Args:
-        element: The input element to tokenize.
+        features: The input batch to tokenize.
         tokenizer: The tokenizer to use for tokenization.
-        feature: The feature in the element to tokenize.
-        block_size: The maximum size of each output block.
+        feature: The feature in the batch to tokenize.
+        max_length: The maximum size of each output block.
         overflow: If True, add overflowing tokens to next block, else drop them.
         packed: If True, pack multiple examples into the same block
         stride: Number of tokens to overlap between blocks.
@@ -90,16 +94,19 @@ def block_tokenize_fn(
     """
     assert min_len >= 1
 
+    #print("Entered block tokenizer")
+    #for key in features:
+    #    print(f"{key=}")
     # If given a regex to truncate at, truncate at the first match.
     if truncate_at is not None:
         input_batch = []
-        for text in element[feature]:
+        for text in features[feature]:
             match_offset = re.search(truncate_at, text)
             if match_offset is not None:
                 text = text[: match_offset.start()]
             input_batch.append(text)
     else:
-        input_batch = element[feature]
+        input_batch = features[feature]
 
     outputs = tokenizer(
         input_batch,
@@ -111,11 +118,11 @@ def block_tokenize_fn(
         add_special_tokens=False,
     )
 
-    # A list of strings of tokens of maximum size 'block_size'
+    # A list of strings of tokens of maximum size 'max_length'
     output_batch = []
 
     # A container for accumulating output tokens.
-    output_block = OutputTokenBlock(block_size)
+    output_block = OutputTokenBlock(max_length)
 
     # A container for the input tokens from the current record in the input batch.
     input_block = None
@@ -145,7 +152,7 @@ def block_tokenize_fn(
         # else, we discard the output block
 
         # Allocate a new output block, initialized with 'stride' tokens
-        output_block = OutputTokenBlock(block_size, stride_tokens)
+        output_block = OutputTokenBlock(max_length, stride_tokens)
         return output_block
 
     # Get next tokenized input record

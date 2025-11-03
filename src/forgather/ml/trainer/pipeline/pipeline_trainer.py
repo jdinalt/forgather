@@ -523,8 +523,10 @@ class PipelineTrainer(Trainer):
         # This follows TorchTitan pattern to avoid pipeline transport issues
         extra_kwargs = {}
         if self.attention_mask_creator is not None:
-            attention_mask = self.attention_mask_creator(input_ids=input_dict["input_ids"])
+            attention_mask = self.attention_mask_creator(**input_dict)
             extra_kwargs['attention_mask'] = attention_mask
+            if (position_ids := input_dict.get("position_ids", None)) is not None:
+                extra_kwargs['position_ids'] = position_ids
 
         # See: https://github.com/pytorch/torchtitan/blob/main/torchtitan/train.py#L377
         targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)

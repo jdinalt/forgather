@@ -80,6 +80,7 @@ class CasualLM(nn.Module):
         if (self.config._attn_implementation == "sdpa"
             and attention_mask is None
             and past_key_values is None
+            and position_ids is None
         ):
             return None
 
@@ -113,8 +114,8 @@ class CasualLM(nn.Module):
         )
 
         # debug
-        #print(repr(attention_mask))
-        #print(attention_mask)
+        # print(repr(attention_mask))
+        # print(attention_mask.shape)
         
         return attention_mask
 
@@ -152,7 +153,7 @@ class CasualLM(nn.Module):
             hidden_states = self.input_encoder(input_ids, position_ids)
 
             # Only create attention_mask internally if not provided externally (for pipeline parallel)
-            if self.use_internal_mask and not torch.compiler.is_exporting:
+            if self.use_internal_mask and not torch.compiler.is_exporting():
                 attention_mask = self._create_attention_mask(
                     input_ids=input_ids,
                     input_embeds=hidden_states,

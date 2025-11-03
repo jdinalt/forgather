@@ -45,13 +45,29 @@ model_config: &model_config !singleton:{{ ns.model_config_path }}:{{ ns.model_cf
     eos_token_id: !singleton:getattr [ *tokenizer, 'eos_token_id' ]
 
 [model_constructor]
-model_constructor: &model_constructor !partial:{{ ns.model_path }}:{{ ns.model_cls }}@model_constructor
-    arg0: *model_config
-    submodule_searchpath: *model_submodule_searchpath
-    <<: *model_constructor_args
+# Construct and save pretrained config to output_dir
+pretrained_config: &pretrained_config !singleton:forgather.ml.construct:build_rule
+    target: "{{ joinpath(ns.output_dir, 'config.json') }}"
+    recipe: !partial:forgather.ml.construct:dependency_list
+        - !singleton:call [ !singleton:getattr [ *model_config, "save_pretrained"], "{{ ns.output_dir }}" ]
+        - !singleton:forgather.ml.construct:copy_package_files
+            - "{{ ns.output_dir }}"
+            - *model_config
+    loader: !partial:transformers:AutoConfig.from_pretrained
+        arg0: "{{ ns.output_dir }}"
+        trust_remote_code: True
 
-model: &model !partial:forgather.ml.construct:dependency_list@model
-    - !factory:call [ *model_constructor ]
-    - !singleton:forgather.ml.construct:copy_package_files
-        - "{{ ns.output_dir }}"
-        - *model_config
+# Construct and save pretrained tokenizer to output_dir
+pretrained_tokenizer: &pretrained_tokenizer !singleton:forgather.ml.construct:build_rule
+    target: "{{ joinpath(ns.output_dir, 'tokenizer.json') }}"
+    recipe: !partial:call [ !singleton:getattr [ *tokenizer, "save_pretrained"], "{{ ns.output_dir }}" ]
+    loader: !partial:transformers:AutoTokenizer.from_pretrained [ "{{ ns.output_dir }}" ]
+
+# Callable, which constructs model instance from config in output_dir
+model: &model !partial:transformers:AutoModelForCausalLM.from_config
+    arg0: *pretrained_config
+    ## latent_args defers binding until constructed, then merges the resulting dictionary
+    ## This allows us to, optionally, pass in a dictionary or default to model_constructor_args
+    latent_args: !var
+        name: "model_constructor_args"
+        default: *model_constructor_args

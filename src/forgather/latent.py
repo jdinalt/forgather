@@ -103,11 +103,13 @@ class CallableNode(Node, metaclass=ABCMeta):
         *args,
         _identity: Hashable = None,
         submodule_searchpath: Optional[List[str | os.PathLike]] = None,
+        latent_args: Optional[dict[str, Any]] = None,
         **kwargs,
     ):
         super().__init__(constructor, _identity=_identity)
         self.args = args
         self.kwargs = kwargs
+        self.latent_args = latent_args
         if submodule_searchpath is not None:
             self._submodule_searchpath = submodule_searchpath
 
@@ -277,6 +279,10 @@ class Materializer:
                 else:
                     args = self._materialize(obj.args)
                     kwargs = self._materialize(obj.kwargs)
+                    if obj.latent_args is not None:
+                        latent_args = self._materialize(obj.latent_args)
+                        assert isinstance(latent_args, dict)
+                        kwargs |= latent_args
                     if self.level == 0 and isinstance(obj, LambdaNode):
                         args = list(args)
                         args.extend(self.args)

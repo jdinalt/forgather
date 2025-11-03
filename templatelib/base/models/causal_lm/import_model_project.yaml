@@ -11,11 +11,11 @@
 .define: &model_dict !call:forgather:from_project
     project_dir: "{{ ns.model_project_dir }}"
     config_template: "{{ ns.model_project_config }}"
-    targets: [  "pretrained_tokenizer", "pretrained_model_ctor" ] 
+    targets: [  "pretrained_tokenizer", "model" ] 
     pp_kwargs:
         output_dir: "{{ ns.output_dir }}"
     pp_debug: {{ ns.debug_model_project | default(False) }}
     model_constructor_args: *model_constructor_args
 
 tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
-model: &model !call:getitem [ *model_dict, 'pretrained_model_ctor' ]
+model: &model !call:getitem [ *model_dict, 'model' ]

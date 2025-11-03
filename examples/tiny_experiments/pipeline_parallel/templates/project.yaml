@@ -6,10 +6,6 @@
     -- set ns.model_name = "test_model"
     -- set ns.dataset_config = "tinystories-iter.yaml"
 
-[model_constructor_args]
-model_constructor_args: &model_constructor_args
-    attn_implementation: "sdpa"
-
 [trainer_definition]
     -- include 'project.trainer_config'
 

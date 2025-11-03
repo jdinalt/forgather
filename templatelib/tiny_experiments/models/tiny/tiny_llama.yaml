@@ -1,20 +1,16 @@
 -- extends "models/transformers/llama.yaml"
 
--- block model_meta_config
+[model_meta_config]
     == super()
     -- set ns.model_name = "Tiny Llama"
     -- set ns.model_description = "A very small llama with a TinyStories 2K vocabulary."
     -- set ns.model_config_cls = 'transformers:LlamaConfig'
     -- set ns.model_source = "https://github.com/huggingface/transformers/tree/main/src/transformers/models/llama"
-<< endblock model_meta_config
 
-
--- block model_tokenizer
+[model_tokenizer]
     -- include 'tokenizers/tiny_2k.yaml'
-<< endblock model_tokenizer
 
-
--- block model_config
+[model_config]
     == super()
     hidden_size: 256
     intermediate_size: 1024
@@ -22,4 +18,3 @@
     num_key_value_heads: 2
     num_hidden_layers: 4
     attention_dropout: 0.0
-<< endblock model_config

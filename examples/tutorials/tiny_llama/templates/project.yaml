@@ -98,6 +98,8 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     -- include 'prompts/tiny_stories.yaml'
 
     == super()
+    ## Flex attention does not work with the TextgenCallback at present
+-- if attn_implementation | default("") != "flex_attention"
     ## This adds a text-generationn sample every 'generation_steps'
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         summary_writer: *summary_writer
@@ -105,6 +107,6 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
         generation_config: *generation_config
         max_new_tokens: 40
         generation_steps: 1000
-    
+-- endif
     # Allow remote control of the training process
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback

@@ -1,19 +1,15 @@
 -- extends "models/transformers/gpt2.yaml"
 
--- block model_meta_config
+[model_meta_config]
     == super()
     -- set ns.model_name = "OpenAI Tiny GPT2"
     -- set ns.model_description = "A tiny GPT2 with the TinyStories 2K tokenizer"
     -- set ns.model_source = "https://github.com/huggingface/transformers/tree/main/src/transformers/models/gpt2"
-<< endblock model_meta_config
 
-
--- block model_tokenizer
+[model_tokenizer]
     -- include 'tokenizers/tiny_2k.yaml'
-<< endblock model_tokenizer
 
-
--- block model_config
+[model_config]
     == super()
     n_embd: 256
     n_inner: 1024
@@ -22,4 +18,3 @@
     attn_pdrop: 0.0
     embd_pdrop: 0.0
     resid_pdrop: 0.0
-<< endblock model_config

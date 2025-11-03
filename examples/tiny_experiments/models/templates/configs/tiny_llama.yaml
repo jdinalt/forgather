@@ -1,12 +1,10 @@
 -- extends "models/model_type.yaml"
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Tiny Llama"
     -- set ns.config_description = "Tiny dynamic Llama model"
     -- set ns.model_name = "llama"
--- endblock config_metadata
 
--- block model_definition
-  -- include "models/tiny/tiny_llama.yaml"
--- endblock model_definition
+[model_definition]
+  -- include "models/tiny/tiny_dyn_llama.yaml"

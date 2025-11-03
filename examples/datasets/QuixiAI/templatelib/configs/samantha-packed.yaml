@@ -1,0 +1,27 @@
+-- extends "configs/samantha.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Samantha Packed"
+    -- set ns.config_description = "Samantha, Packed Sequences"
+
+[map_function]
+.define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
+    max_length: {{ max_length | default(512)}}
+    overflow: True
+    packed: True
+    min_len: 16
+    add_bos: True
+    add_eos: True
+
+[train_dataset]
+    == super()
+    fn_kwargs: !var { name: "preprocess_args", default: null }
+    map_fn: *map_function
+
+[dynamic_args]
+    == super()
+    max_length:
+        names: "--max-length"
+        type: "int"
+        help: "Maximum length of output sequences."

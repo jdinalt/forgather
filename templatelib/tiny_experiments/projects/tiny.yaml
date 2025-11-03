@@ -139,8 +139,10 @@ text_gen_callback_args: &text_gen_callback_args
 ## This adds a text-generationn sample every 'generation_steps'
 [callback_list]
     == super()
+    -- if attn_implementation | default("") != "flex_attention"
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         <<: *text_gen_callback_args
+    -- endif
     peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
         show_details: {{ ns.debug_memory_detials }}
         do_log: {{ log_peak_memory | default(False) }}

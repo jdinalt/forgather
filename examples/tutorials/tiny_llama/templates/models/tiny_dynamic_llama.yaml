@@ -1,8 +1,9 @@
 -- extends 'models/transformers/dynamic_llama.yaml'
 
 [model_tokenizer]
-## Replace the default Llama tokenizer with the tiny_2k tokenizer.
-    -- include 'tokenizers/tiny_2k.yaml'
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'tiny_stories_bpe') }}"
+    config_template: "2k.yaml"
 
 ## Make the model much smaller.
 [model_config]
