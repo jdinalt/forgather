@@ -7,6 +7,7 @@ Finetune a model on the Samantha dataset
 This tutorial teaches you how to:
 - ✓ Fine-tune a 7B parameter language model on consumer GPUs (full precision, no LoRA/quantization!)
 - ✓ Use [pipeline parallelism](https://docs.pytorch.org/docs/stable/distributed.pipelining.html) to distribute models across multiple GPUs
+- ✓ Train with packed-sequences and flex-attention
 - ✓ Scale training across multiple machines over standard Gigabit Ethernet
 - ✓ Convert models between HuggingFace and Forgather formats
 - ✓ Manage checkpoints and resume training
@@ -88,7 +89,9 @@ While not exhaustive, this is a sampling of the configurations used by this proj
   - [1gpu_llama_7b/default.yaml](./templates/configs/1gpu_llama_7b/default.yaml) -- Default configuration: 1 GPU, 512 context
   - [1gpu_llama_7b/long_context.yaml](./templates/configs/1gpu_llama_7b/long_context.yaml) -- 1 GPU, 4096 context
   - [1gpu_llama_7b/16gb.yaml](./templates/configs/1gpu_llama_7b/16gb.yaml) -- 1 GPU, 16 GB
-  - [pipeline_llama_7b/2gpu_1f1b.yaml](./templates/configs/pipeline_llama_7b/2gpu_1f1b.yaml) -- 2 GPU Pipeline
+  - [1gpu_llama_7b/packed.yaml](./templates/configs/1gpu_llama_7b/packed.yaml) -- 4096 token packed sequences on a single GPU, 24 GBs
+  - [pipeline_llama_7b/1f1b_2gpu.yaml](./templates/configs/pipeline_llama_7b/1f1b_2gpu.yaml) -- 2 GPU Pipeline
+  - [pipeline_llama_7b/i1f1b_2gpu_packed.yaml](./templates/configs/pipeline_llama_7b/2gpu_1f1b.yaml) -- 4096 token packed sequences, i1F1B Pipe, 2 GPU
   - [pipeline_llama_7b/i1f1b_4gpu.yaml](./templates/configs/pipeline_llama_7b/i1f1b_4gpu.yaml) -- 4 GPU Pipeline
   - [pipeline_llama_7b/i1f1b_4gpu.yaml](./templates/configs/pipeline_llama_7b/zb_4gpu.yaml) -- 4 GPU Pipeline, Zero Bubble V
   - [pipeline_llama_7b/i1f1b_4gpu.yaml](./templates/configs/pipeline_llama_7b/1f1b_4gpu_float32.yaml) -- 4 GPU Pipeline, float32
@@ -97,20 +100,17 @@ While not exhaustive, this is a sampling of the configurations used by this proj
 
 **Finetune**
 - [projects/base_finetune_proj.yaml](../../../templatelib/finetune/projects/base_finetune_proj.yaml) -- Base Finetune Project
-- [trainers/base_finetune_trainer.yaml](../../../templatelib/finetune/trainers/base_finetune_trainer.yaml) -- Base Finetune Trainer
-- [trainers/pipeline/base_pipeline_trainer.yaml](../../../templatelib/finetune/trainers/pipeline/base_pipeline_trainer.yaml) -- Base Finetune Pipeline Trainer
-  - [trainers/pipeline/base_pipeline_trainer.yaml](../../../templatelib/finetune/trainers/pipeline/1f1b_2gpu.yaml) -- 2 GPU, 1F1B Trainer
-  - [trainers/pipeline/base_pipeline_trainer.yaml](../../../templatelib/finetune/trainers/pipeline/zb_4gpu.yaml) -- 4 GPU, [Zero Bubble](https://arxiv.org/abs/2401.10241) V Trainer
 
 **Samantha Dataset**
 - [samantha.yaml](../../datasets/QuixiAI/templatelib/configs/samantha.yaml) -- Samantha dataset definition
+- [samantha-packed.yaml](../../datasets/QuixiAI/templatelib/configs/samantha-packed.yaml) -- Packed Samantha dataset definition
 - [src/samantha.py](../../datasets/QuixiAI/src/samantha.py) -- Dataset preprocessing implementation
 
 **Model**
 - [models/transformers/dynamic_llama.yaml](../../../templatelib/examples/models/transformers/dynamic_llama.yaml) -- Base Forgather Llama model definition
 
 **Chat Template**
-- [chat_templates/chatml.jinja](../../../chat_templates/chatml.jinja) -- [ChatML](https://github.com/openai/openai-python/blob/release-v0.28.0/chatml.md) chat template definition
+- [chat_templates/chatml_eos.jinja](../../../chat_templates/chatml_eos.jinja) -- [ChatML](https://github.com/openai/openai-python/blob/release-v0.28.0/chatml.md) chat template definition
 
 ### Interactive Forgather CLI
 If you have not already installed the syntax-highlighting plugins for vim / VS Code, follow the instructions in "syntax_highlighting/" This will make the config files much more readable.
@@ -283,13 +283,13 @@ This is useful if some GPUs are busy or may have issues.
 First, let's run a sanity check to verify if everything is working and that we don't run out of GPU memory.
 
 ```bash
-forgather -t "1gpu_llama_7b/default.yaml" train --save-strategy no --max-steps 10 -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml.jinja"
+forgather -t "1gpu_llama_7b/default.yaml" train --save-strategy no --max-steps 10 -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml_eos.jinja"
 
 # -t 1gpu_llama_7b/default.yaml : Train on a single GPU with conservative settings.
 # --save-strategy no : Don't save checkpoints (for testing)
 # -M "${SRC_MODEL}" : Path to the model to train.
 # --max-steps 10 : Run a quick test, with only 10 training steps
-# --chat-template ../../../chat_templates/chatml.jinja : Use ChatML chat-template
+# --chat-template ../../../chat_templates/chatml_eos.jinja : Use ChatML chat-template
 ```
 
 The default config is pretty conservative (context length = 512).
@@ -298,14 +298,14 @@ Once you have verified that a given config will run, you can train on the full d
 
 ```bash
 # SRC_MODEL was defined above, which is the path to the model to train.
-forgather -t CONFIG_TEMPLATE train -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml.jinja"
+forgather -t CONFIG_TEMPLATE train -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml_eos.jinja"
 ```
 
 #### Single GPU, 1300 Context Length
 
 ```bash
 # Train with a context length of 1300 on HF model
-forgather -t "1gpu_llama_7b/med_context.yaml" -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml.jinja"
+forgather -t "1gpu_llama_7b/med_context.yaml" -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml_eos.jinja"
 
 # Train with a context length of 1300 on Fg model
 # FG_MODEL is defined below, after converting the model format
@@ -329,6 +329,24 @@ In any case, it works fine if you convert the model to Forgather's native format
 # Train with a context length of 4096:
 forgather -t 1gpu_llama_7b/long_context.yaml  -M "${FG_MODEL}"
 ```
+#### Single GPU, 4096 Packed
+
+With [sequence packing](../../../docs/datasets/sequence-packing.md), we use "best_fit" packing to optimally pack as many examples as we can within the sequence dimension. This results very little compute wasted on "pad" tokens. We then use the attention mask to prevent cross-example attention.
+
+Normally, this would require O(N^2) compute for these long sequences, but by using [Pytorch Flex Attetnion](https://pytorch.org/blog/flexattention/), the attention function is sparse, which can greatly reduce mean compute.
+
+The attention implementation to use can be specified on the CLI via:
+
+```bash
+--attn-implementation {eager,sdpa,flash_attention_2,flex_attention}
+
+# e.g.
+forgather -t "1gpu_llama_7b/packed.yaml" train -M "${FG_MODEL}" --attn-implementation flex_attention
+```
+
+This will also work with "sdpa" and "eager," but they will require significantly more peak memory and compute.
+
+Note that flex-attention makes use of torch.compile(). The first time you run a particular configuration, there will be some compile overhead, along with verbose diagnostic messages.
 
 #### Single GPU, 16 GB
 
@@ -358,7 +376,7 @@ FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
 
 # Convert model to Forgather Llama/Mistral implementation
 scripts/convert_llama.py --model-type mistral --dtype bfloat16 --max-length 4096 \
--t "chat_templates/chatml.jinja" "${SRC_MODEL}" "${FG_MODEL}"
+-t "chat_templates/chatml_eos.jinja" "${SRC_MODEL}" "${FG_MODEL}"
 ```
 
 To convert the model back to HF format...
@@ -386,12 +404,12 @@ There are quite a few different configurations defined, with different scheduler
 
 ## Testing the Finetuned Model
 
-You can test the resulting model using the provided Open-AI compatible inference server and client or with 3rd party tools. Keep in mind that if you have converted the model to "Forather" format, the model will not be optimized for inference (no KV cache), thus it may struggle with long context lengths. Convert it back to HF format for faster inference.
+You can test the resulting model using the provided Open-AI compatible inference server and client or with 3rd party tools.
 
 ```bash
 # Start inference server (from 'forgather' directory)
 # Change the model path to match your output directory.
-tools/inference_server/server.py -d "cuda:0" -t chat_templates/chatml.jinja -T bfloat16 \
+tools/inference_server/server.py -d "cuda:0" -t chat_templates/chatml_eos.jinja -T bfloat16 \
 -s '<|im_end|>' '</s>' -c -m /home/dinalt/ai_assets/models/fg_mistral
 
 # Note: -c : This will search for the latest checkpoint, rather than loading the model from the root directory.
@@ -400,7 +418,7 @@ tools/inference_server/server.py -d "cuda:0" -t chat_templates/chatml.jinja -T b
 Test if inference is working:
 
 ```bash
-./tools/inference_server/client.py --message "Hello, what is your name?"
+./tools/inference_server/client.py --stream --message "Hello, what is your name?"
 Hi! I'm Samantha, and it's great to meet you.
 ```
 

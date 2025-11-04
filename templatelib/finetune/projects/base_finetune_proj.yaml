@@ -220,10 +220,6 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     save_total_limit: 3              # Keep at most N checkpoints
     save_on_each_node: False         # Save common files on each node
     save_rng_state: True             # Save RNG state with checkpoint
--- if save_strategy | default('steps') == "steps"
-    ## eval_stratgegy must equal save_strategy for this option
-    load_best_model_at_end: True
--- endif
     save_on_each_node: {{ save_on_each_node | default(False) }}
 
     # We load the model via the newest checkpoint

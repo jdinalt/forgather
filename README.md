@@ -12,6 +12,7 @@ Forgather is a configuration-driven ML framework that uses template inheritance 
 - **Templates Library** - Extensive templates library for tokenizers, models, trainers, datasets, etc.
 
 ## News
+- Nov 4th, Added support for [packed sequences](docs/datasets/sequence-packing.md) and [Flex Attention](https://pytorch.org/blog/flexattention/). Updating [Samantha tutorial](./examples/finetune/samantha/README.md) to demonstrate. Models now support KV cache.
 - Oct 21, **[H.P. Lovecraft Project](./examples/tutorials/hp_lovecraft_project/README.md)** - Learn how to create workspaces and projects, while training a model to summon the Elder Gods. You can perform full-finetuning (not LoRA) on a 7B model, with a context length of up to 16K on a single 24 GB GPU!
 - Oct 19, **[Samantha](./examples/finetune/samantha/README.md)** -- New tutorial on how to perform full finetuning on a 7B parameter model on a single, 24 GB, GPU on the "Samantha" dataset -- she believes she is sentient!
 - **[Torch Titan integration](./examples/torchtitan/README.md)** -- Use Forgather to configure Torch Titan
@@ -44,6 +45,15 @@ pip install -e .
 
 # Verify install works with CLI
 forgather ls -r
+```
+
+Note: We are using bleeding-edge PyTorch features, like flex-attention, which require PyTorch 2.9.0. If you are updating from a previous install,
+run 'pip install -e .' again to force uprading to the latest libraries. If in doubt, nuke your venv and rebuild it.
+
+Flex attention also depends upon having a working C compiler and python development packages installed.
+
+```bash
+sudo apt-get install build-essential python3-dev
 ```
 
 **2. Try a tutorial project:**

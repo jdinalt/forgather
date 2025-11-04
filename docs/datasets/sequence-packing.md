@@ -24,7 +24,6 @@ Multiple documents combined into one sequence, maximizing GPU usage.
 
 ### Benefits
 - **Reduced training time**: 2-3x speedup possible with efficient packing
-- **Lower memory usage**: Fewer sequences to process
 - **Better GPU utilization**: Less wasted compute on padding tokens
 - **Cost savings**: Faster training = lower cloud compute costs
 
@@ -34,7 +33,7 @@ Multiple documents combined into one sequence, maximizing GPU usage.
 
 1. **Tokenization**: Documents are tokenized with BOS/EOS tokens marking boundaries
 2. **Packing**: Multiple tokenized documents are combined into sequences up to `max_length`
-3. **Position IDs**: The data collator generates position IDs, resetting at each EOS token
+3. **Position IDs**: The data collator generates position IDs, resetting at each BOS token
 4. **Attention Masking**: Flex attention prevents tokens from attending across document boundaries
 
 ### Document Boundaries
@@ -79,13 +78,12 @@ dataset = dataset.map(
 **Characteristics**:
 - Simple and fast
 - Preserves document order
-- Already achieves 95%+ utilization in most cases
+- Achieves 95%+ utilization in most cases
 - No sorting overhead
 
 **Best for**:
-- `overflow=True` with variable-length documents
+- `overflow=True` with long documents
 - When document order matters
-- Fast prototyping
 
 **Example**:
 ```yaml
