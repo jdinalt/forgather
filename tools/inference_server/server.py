@@ -4,6 +4,7 @@ OpenAI API-compatible inference server for HuggingFace models.
 """
 
 import argparse
+from argparse import RawTextHelpFormatter
 import logging
 import os
 import time
@@ -1163,7 +1164,16 @@ def merge_config_with_args(config: Dict[str, Any], args: argparse.Namespace, par
 
 def main():
     print("Hello")
-    parser = argparse.ArgumentParser(description="OpenAI API-compatible inference server")
+    parser = argparse.ArgumentParser(
+        formatter_class=RawTextHelpFormatter,
+        description="OpenAI API-compatible inference server",
+        epilog=(
+            "Examples:\n"
+            "\n"
+            "Perform inference in bfloat16 on cuda:0: ./server.py -d 'cuda:0' -T bfloat16 -c -m ./path/to/model\n"
+            "Load a specific checkpoint and run on CPU: ./server.py -d 'cpu'-c ./path/to/checkpoint -m ./path/to/model\n"
+        ),
+    )
     parser.add_argument("config", nargs="?", help="YAML configuration file (optional)")
     parser.add_argument("-m", "--model", help="HuggingFace model path or name")
     parser.add_argument(

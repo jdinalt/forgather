@@ -1,8 +1,0 @@
--- extends "meta_defaults.yaml"
-
--- block configs
-name: "Minimal Trainer"
-description: "A minimal trainer project"
-config_prefix: "configs"
-default_config: "default.yaml"
-<< endblock configs

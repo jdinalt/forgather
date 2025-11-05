@@ -91,12 +91,14 @@ While not exhaustive, this is a sampling of the configurations used by this proj
   - [1gpu_llama_7b/16gb.yaml](./templates/configs/1gpu_llama_7b/16gb.yaml) -- 1 GPU, 16 GB
   - [1gpu_llama_7b/packed.yaml](./templates/configs/1gpu_llama_7b/packed.yaml) -- 4096 token packed sequences on a single GPU, 24 GBs
   - [pipeline_llama_7b/1f1b_2gpu.yaml](./templates/configs/pipeline_llama_7b/1f1b_2gpu.yaml) -- 2 GPU Pipeline
-  - [pipeline_llama_7b/i1f1b_2gpu_packed.yaml](./templates/configs/pipeline_llama_7b/2gpu_1f1b.yaml) -- 4096 token packed sequences, i1F1B Pipe, 2 GPU
+  - [pipeline_llama_7b/i1f1b_2gpu_packed.yaml](./templates/configs/pipeline_llama_7b/i1f1b_2gpu_packed.yaml) -- 4096 token packed sequences, i1F1B Pipe, 2 GPU
   - [pipeline_llama_7b/i1f1b_4gpu.yaml](./templates/configs/pipeline_llama_7b/i1f1b_4gpu.yaml) -- 4 GPU Pipeline
   - [pipeline_llama_7b/i1f1b_4gpu.yaml](./templates/configs/pipeline_llama_7b/zb_4gpu.yaml) -- 4 GPU Pipeline, Zero Bubble V
   - [pipeline_llama_7b/i1f1b_4gpu.yaml](./templates/configs/pipeline_llama_7b/1f1b_4gpu_float32.yaml) -- 4 GPU Pipeline, float32
   - [pipeline_llama_7b/1f1b_4gpu_adamw.yaml](./templates/configs/pipeline_llama_7b/1f1b_4gpu_adamw.yaml) -- 4 GPU Pipeline, AdamW
   - [pipeline_llama_7b/1f1b_4gpu_adamw4bit.yaml](./templates/configs/pipeline_llama_7b/1f1b_4gpu_adamw4bit.yaml) -- 4 GPU Pipeline, AdamW-4bit
+
+  There are a few more experimental configs as well.
 
 **Finetune**
 - [projects/base_finetune_proj.yaml](../../../templatelib/finetune/projects/base_finetune_proj.yaml) -- Base Finetune Project
@@ -375,15 +377,16 @@ You can also do this for single-GPU training. In most cases, it should not be re
 FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
 
 # Convert model to Forgather Llama/Mistral implementation
-scripts/convert_llama.py --model-type mistral --dtype bfloat16 --max-length 4096 \
--t "chat_templates/chatml_eos.jinja" "${SRC_MODEL}" "${FG_MODEL}"
+scripts/convert_llama.py --model-type mistral --dtype bfloat16 --max-length 16384 \
+-t "chat_templates/chatml_eos.jinja" "${SRC_MODEL}" "${FG_MODEL}" \
+--add-tokens "scripts/example_additional_tokens.yaml"
 ```
 
 To convert the model back to HF format...
 
 ```bash
 scripts/convert_llama.py --reverse --model-type mistral --dtype bfloat16 \
---max-length 32000 "${FG_MODEL}" OUTPUT_MODEL_PATH
+--max-length 32768 "${FG_MODEL}" OUTPUT_MODEL_PATH
 ```
 
 ## Single Node Training
@@ -409,8 +412,9 @@ You can test the resulting model using the provided Open-AI compatible inference
 ```bash
 # Start inference server (from 'forgather' directory)
 # Change the model path to match your output directory.
+# If the model already has the correct chat-template, you can drop the "-t CHAT_TEMPLATE" arg.
 tools/inference_server/server.py -d "cuda:0" -t chat_templates/chatml_eos.jinja -T bfloat16 \
--s '<|im_end|>' '</s>' -c -m /home/dinalt/ai_assets/models/fg_mistral
+-c -m /home/dinalt/ai_assets/models/fg_mistral
 
 # Note: -c : This will search for the latest checkpoint, rather than loading the model from the root directory.
 ```
@@ -441,7 +445,7 @@ I'm feeling quite engaged and excited to continue our exploration of new ideas a
 Test the model with text completion:
 
 ```bash
-./tools/inference_server/client.py --completion "Once upon a time" --max-tokens 50
+./tools/inference_server/client.py --stream --completion "Once upon a time" --max-tokens 50
 Once upon a time, before the age of social media, people used to write letters to each other. This was a way for them to express their thoughts, feelings, and emotions, and to stay connected with one another. Although letter-writing is not as common today
 ```
 
@@ -478,18 +482,26 @@ forgather -t CONFIG_TEMPLATE train TRAINING_ARGS... -- TORCHRUN_ARGS...
 --rdzv-conf RDZV_CONF : Additional rendezvous configuration (<key1>=<value1>,<key2>=<value2>,...)
 ```
 
-NNODES * NPROC_PER_NODE should match the number of GPUs required by the configuration. Examples:
-
 **Examples**
 
 ```bash
 # Two GPUs
-... --nnodes 1 --nproc-per-node 1
+... --nnodes 1 --nproc-per-node 2
 
 # Four GPUs
 ... --nnodes 2 --nproc-per-node 2
 # or
 ... --nnodes 4 --nproc-per-node 1
+```
+
+If the nodes don't have the same number of GPU's, say one has 1 GPU and another has 3, then set nproc-per-node to match the number of GPUs on that node.
+
+```bash
+# First node
+... --nnodes 2 --nproc-per-node 1
+
+# Second node
+... --nnodes 2 --nproc-per-node 2
 ```
 
 RDZV_BACKEND should be "c10d"

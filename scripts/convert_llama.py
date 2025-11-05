@@ -367,6 +367,15 @@ def parse_args(args=None):
     parser = argparse.ArgumentParser(
         formatter_class=RawTextHelpFormatter,
         description="Convert between Huggingface Llama/Mistral and Forgather Dynamic Llama models",
+        epilog=(
+            "Typical Usage:\n"
+            "\n"
+            "Convert from Llama or Mistral: ./convert_llama.py --dtype bfloat16 --max-length 16384 -t ../chat_templates/chatml_eos.jinja \\\n"
+            "  --add-tokens example_additional_tokens.yaml ~/models/hf_llama ~/models/fg_mistral\n"
+            "\n"
+            "Convert to Mistral: ./convert_llama.py --reverse --model-type mistral --dtype bfloat16 \\\n"
+            "  ~/models/fg_mistral ~/models/my_hf_llama"
+        )
     )
     parser.add_argument(
         "src_model_path",

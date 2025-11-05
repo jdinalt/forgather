@@ -13,7 +13,8 @@
     packing_strategy: "best_fit"
     shuffle_output: True    # Shuffle the packed conversations
     add_eos: False          # EOS is added by message processor
-    min_len: 16
+    min_len: 16             # Discard very short examples
+    seed: 42                # Deterministic ordering
 
 [train_dataset]
     == super()

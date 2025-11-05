@@ -9,6 +9,6 @@ special_tokens:
   - "<|im_end|>"
 
 # Regular tokens (will be added as regular tokens)
-regular_tokens:
-  - "custom_token_1"
-  - "custom_token_2"
+#regular_tokens:
+#  - "custom_token_1"
+#  - "custom_token_2"

@@ -28,7 +28,8 @@
     ## Set project defaults
     -- set ns.default_dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
     -- set ns.default_dataset_config = "samantha.yaml"
-    -- set ns.default_chat_template = joinpath(ns.forgather_dir, 'chat_templates', 'chatml_eos.jinja')
+    ## Use template from tokenizer or dataset default
+    -- set ns.default_chat_template = ""
 
 [globals]
 	## If not specified, default to model-dir and model-name

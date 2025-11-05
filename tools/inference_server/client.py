@@ -4,6 +4,7 @@ CLI client for interacting with the HuggingFace OpenAI API-compatible inference 
 """
 
 import argparse
+from argparse import RawTextHelpFormatter
 import sys
 from typing import List, Dict, Any, Optional, Union
 import json
@@ -382,7 +383,15 @@ def merge_config_with_args(config: Dict[str, Any], args: argparse.Namespace, par
 
 def main():
     parser = argparse.ArgumentParser(
-        description="CLI client for HuggingFace OpenAI API-compatible inference server"
+        formatter_class=RawTextHelpFormatter,
+        description="CLI client for HuggingFace OpenAI API-compatible inference server",
+        epilog=(
+            "Examples:\n"
+            "\n"
+            "Chat with model: ./client.py --interactive --stream\n"
+            "Respond to single message: ./client.py --stream --message 'Hello, what is your name?'\n"
+            "Text completion: './client.py --completion --stream 'Once upon a time' --max-tokens 500\n"
+        ),
     )
     
     # Configuration file option

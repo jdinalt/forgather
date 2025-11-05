@@ -9,8 +9,8 @@ from datasets import Dataset, DatasetDict
 from huggingface_hub import hf_hub_download
 from forgather.ml.distributed import main_process_first
 
-logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 chatml_template = """{% for message in messages %}{{'<|im_start|>' + message['role'] + '
 ' + message['content'] + '<|im_end|>' + '
@@ -79,6 +79,7 @@ def preprocess_samantha(
             chat_template = chatml_template
             logger.warning("Using default chat template (ChatML)")
     else:
+        logger.info(f"Using chat template: {chat_template}")
         with open(chat_template, "r") as f:
             chat_template = f.read()
 

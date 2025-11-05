@@ -5,7 +5,8 @@ This directory contains example projects demonstrating various Forgather capabil
 ## Directory Structure
 
 - **datasets/** - Dataset projects
-- **finetune/** - Finefune pretrained models wit Forgather
+- **finetune/** - Finefune pretrained models with Forgather
+- **pretrain/** - Pretrain models with Forgather
 - **models/** - Custom model definition projects
 - **standalone/** - Self-contained examples and external workspace demonstrations
 - **tiny_experiments/** - Small experimental configurations for testing specific features

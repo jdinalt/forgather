@@ -7,8 +7,7 @@
     -- set ns.source = "https://erichartford.com/meet-samantha"
     -- set ns.samantha_src = joinpath(project_dir, 'src', 'samantha.py')
     -- set ns.main_feature = "conversations"
-    -- set ns.samantha_default_chat_template = joinpath(ns.forgather_dir, 'chat_templates', 'chatml.jinja')
-    -- set ns.samantha_chat_template = chat_template | default(ns.samantha_default_chat_template)
+    -- set ns.samantha_chat_template = chat_template | default("")
 
 [train_dataset_split]
 train_dataset_split: &train_dataset_split !singleton:{{ ns.samantha_src }}:load_samantha_split@train_dataset_split
