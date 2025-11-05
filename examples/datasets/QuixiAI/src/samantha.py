@@ -41,7 +41,7 @@ def samantha_map_function(
         for batch in input_batch["conversations"]
     ]
     if not tokenizer:
-        return { "text": conversations }
+        return {"text": conversations}
 
     outputs = tokenizer(
         conversations,
@@ -59,8 +59,8 @@ def preprocess_samantha(
     map_kwargs=None,
     template_args=None,
     desc="Tokenizing Dataset",
-    map_fn: Callable=None,
-    fn_kwargs: Optional[dict[str, Any]]=None,
+    map_fn: Callable = None,
+    fn_kwargs: Optional[dict[str, Any]] = None,
 ):
     if tokenizer_args is None:
         tokenizer_args = dict()
@@ -69,8 +69,8 @@ def preprocess_samantha(
     if template_args is None:
         template_args = dict()
 
-    template_args['bos_token'] = tokenizer.bos_token
-    template_args['eos_token'] = tokenizer.eos_token
+    template_args["bos_token"] = tokenizer.bos_token
+    template_args["eos_token"] = tokenizer.eos_token
     if not chat_template or len(chat_template) == 0:
         if tokenizer and tokenizer.chat_template:
             chat_template = tokenizer.chat_template
@@ -105,11 +105,14 @@ def preprocess_samantha(
     # If map_fn, pipeline with map_fn
     if map_fn is not None:
         if not fn_kwargs:
-            fn_kwargs=dict()
-        fn_kwargs=dict(
-            tokenizer=tokenizer,
-            feature="text",
-        ) | fn_kwargs
+            fn_kwargs = dict()
+        fn_kwargs = (
+            dict(
+                tokenizer=tokenizer,
+                feature="text",
+            )
+            | fn_kwargs
+        )
         dataset = dataset.map(
             map_fn,
             batched=True,

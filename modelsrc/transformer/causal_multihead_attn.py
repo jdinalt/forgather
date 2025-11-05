@@ -3,6 +3,7 @@ from torch import nn, Tensor, FloatTensor
 from typing import Callable, Optional
 import math
 
+
 class CausalMultiheadAttn(nn.Module):
     """
     Causal multi-head attention with (optional) Relative Positional Embeddings (RPE).
@@ -37,13 +38,15 @@ class CausalMultiheadAttn(nn.Module):
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads or num_heads  # Default to MHA
         self.pos_encoder = pos_encoder
-        
+
         self.attn_implementation = attn_implementation
 
         if attn_functions and attn_implementation in attn_functions:
             self.attn_fn = attn_functions[attn_implementation]
         else:
-            raise ValueError(f"attn_implementation implementation {attn_implementation} is unsupported")
+            raise ValueError(
+                f"attn_implementation implementation {attn_implementation} is unsupported"
+            )
 
         assert d_model % num_heads == 0, "d_model must be evenly divisible by num_heads"
         assert (
@@ -79,14 +82,14 @@ class CausalMultiheadAttn(nn.Module):
         )
 
     def forward(
-            self,
-            qkv: FloatTensor,
-            layer_index: int,
-            attention_mask: Optional[torch.Tensor] = None,
-            past_key_values: Optional["DynamicCache"] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            **kwargs
-        ) -> FloatTensor:
+        self,
+        qkv: FloatTensor,
+        layer_index: int,
+        attention_mask: Optional[torch.Tensor] = None,
+        past_key_values: Optional["DynamicCache"] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ) -> FloatTensor:
         batch_size, seq_len, d_model = qkv.shape
 
         # Project to Q, K, V

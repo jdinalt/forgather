@@ -9,6 +9,7 @@ This splitter creates pipeline stages by:
 This approach works for models with deletable layers (like CasualLM)
 and supports external attention mask creation.
 """
+
 from typing import List, Tuple, Optional, Callable
 import copy
 import logging
@@ -17,7 +18,10 @@ from torch.nn import Module
 from torch.distributed.pipelining import PipelineStage
 from torch.distributed.pipelining.stage import _PipelineStageBase
 
-from .pipeline_split_utils import generate_llm_fqn_per_model_part, split_model as split_model_fn
+from .pipeline_split_utils import (
+    generate_llm_fqn_per_model_part,
+    split_model as split_model_fn,
+)
 from .model_splitter import ModelSplitter
 
 logger = logging.getLogger(__name__)
@@ -68,7 +72,9 @@ def create_manual_causal_lm_splitter(
         device: torch.device,
         rank: int,
         pp_group: "torch.distributed.ProcessGroup",
-    ) -> Tuple[List[Module], List[Module], List[_PipelineStageBase], Optional[Callable]]:
+    ) -> Tuple[
+        List[Module], List[Module], List[_PipelineStageBase], Optional[Callable]
+    ]:
         """
         Split model using manual layer deletion.
 
@@ -77,14 +83,18 @@ def create_manual_causal_lm_splitter(
         # Auto-detect num_layers if not provided
         actual_num_layers = num_layers
         if actual_num_layers is None:
-            if not hasattr(model, 'config') or not hasattr(model.config, 'num_hidden_layers'):
+            if not hasattr(model, "config") or not hasattr(
+                model.config, "num_hidden_layers"
+            ):
                 raise ValueError(
                     "Cannot auto-detect num_layers: model.config.num_hidden_layers not found. "
                     "Please provide num_layers explicitly to create_manual_causal_lm_splitter()"
                 )
             actual_num_layers = model.config.num_hidden_layers
             if rank == 0:
-                logger.info(f"Auto-detected {actual_num_layers} layers from model config")
+                logger.info(
+                    f"Auto-detected {actual_num_layers} layers from model config"
+                )
 
         # Calculate total number of stages
         num_stages = sum(len(indices) for indices in stage_indices)
@@ -116,9 +126,7 @@ def create_manual_causal_lm_splitter(
             all_pipeline_modules.append(stage_model)
 
         # Get modules for this rank (still on meta device)
-        pipeline_modules = [
-            all_pipeline_modules[i] for i in stage_indices[rank]
-        ]
+        pipeline_modules = [all_pipeline_modules[i] for i in stage_indices[rank]]
 
         # Create PipelineStage objects
         # These should accept meta modules - materialization happens later
@@ -137,7 +145,12 @@ def create_manual_causal_lm_splitter(
         # This allows external mask creation to avoid pipeline transport issues
         attention_mask_creator = _get_mask_creator(model, rank)
 
-        return all_pipeline_modules, pipeline_modules, pipeline_stages, attention_mask_creator
+        return (
+            all_pipeline_modules,
+            pipeline_modules,
+            pipeline_stages,
+            attention_mask_creator,
+        )
 
     return manual_splitter
 
@@ -159,9 +172,11 @@ def _get_mask_creator(model: Module, rank: int) -> Optional[Callable]:
         The create_attention_mask method if found, None otherwise
     """
     # Try direct access
-    if hasattr(model, 'get_attn_mask_fn'):
+    if hasattr(model, "get_attn_mask_fn"):
         if rank == 0:
-            logger.info("Using external attention mask creation (model.get_attn_mask_fn())")
+            logger.info(
+                "Using external attention mask creation (model.get_attn_mask_fn())"
+            )
         return model.get_attn_mask_fn()
 
     # No external mask creator found - model will handle masks internally

@@ -66,6 +66,7 @@ class PipelineTrainingArguments(TrainingArguments):
     Note: The model_splitter is passed to PipelineTrainer.__init__(), not here.
     This dataclass contains only basic configuration types (int, float, str, bool).
     """
+
     debug_pipeline: bool = False
     debug_split_model: bool = False
     debug_model_params: bool = False
@@ -246,7 +247,9 @@ class PipelineTrainer(Trainer):
         if self.args.gradient_checkpointing:
             if self.enable_activation_checkpoint_fn is None:
                 if self.dist.rank == 0:
-                    logger.warning(f"Activation checkpointing requested, but no function defined!")
+                    logger.warning(
+                        f"Activation checkpointing requested, but no function defined!"
+                    )
             else:
                 # Enable activation checkpointing for all modules in the pipeline.
                 for mod in pipeline_modules:
@@ -524,9 +527,9 @@ class PipelineTrainer(Trainer):
         extra_kwargs = {}
         if self.attention_mask_creator is not None:
             attention_mask = self.attention_mask_creator(**input_dict)
-            extra_kwargs['attention_mask'] = attention_mask
+            extra_kwargs["attention_mask"] = attention_mask
             if (position_ids := input_dict.get("position_ids", None)) is not None:
-                extra_kwargs['position_ids'] = position_ids
+                extra_kwargs["position_ids"] = position_ids
 
         # See: https://github.com/pytorch/torchtitan/blob/main/torchtitan/train.py#L377
         targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)
@@ -592,8 +595,10 @@ class PipelineTrainer(Trainer):
         # This follows TorchTitan pattern to avoid pipeline transport issues
         extra_kwargs = {}
         if self.attention_mask_creator is not None:
-            attention_mask = self.attention_mask_creator(input_ids=input_dict["input_ids"])
-            extra_kwargs['attention_mask'] = attention_mask
+            attention_mask = self.attention_mask_creator(
+                input_ids=input_dict["input_ids"]
+            )
+            extra_kwargs["attention_mask"] = attention_mask
 
         targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)
         assert self.scheduler
@@ -605,7 +610,10 @@ class PipelineTrainer(Trainer):
         # Compute loss on last stage
         if self.pp_has_last_stage:
             assert losses
-            mean_loss = torch.stack([x.detach().float() for x in losses]).sum() * self.args.gradient_accumulation_steps
+            mean_loss = (
+                torch.stack([x.detach().float() for x in losses]).sum()
+                * self.args.gradient_accumulation_steps
+            )
         else:
             mean_loss = torch.tensor(0.0, device=self.dist.device, dtype=torch.float32)
 

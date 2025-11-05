@@ -9,6 +9,7 @@ from torch.nn.utils.rnn import pad_sequence
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+
 def get_pos_ids_for_packed_sequence(x, token_id, eos: bool = True):
     """
     Get position-ids for packed sequence
@@ -17,15 +18,20 @@ def get_pos_ids_for_packed_sequence(x, token_id, eos: bool = True):
     """
     B, T = x.shape
     eos_idx = (x.view(-1) == token_id).nonzero(as_tuple=True)[0] + eos
-    eos_idx_expanded = torch.cat([eos_idx, torch.arange(0,B*T+1,T)]).unique().sort()[0]
+    eos_idx_expanded = (
+        torch.cat([eos_idx, torch.arange(0, B * T + 1, T)]).unique().sort()[0]
+    )
     normalized_idx = eos_idx_expanded - (eos_idx_expanded // T) * T
     normalized_idx = torch.where(normalized_idx == 0, T, normalized_idx)
     reps = normalized_idx[1:] - normalized_idx[:-1]
     reps = torch.where(reps < 1, normalized_idx[1:], reps)
-    
+
     # get position ids for packed sequence
-    pos_ids = (torch.arange(B*T) - torch.repeat_interleave(eos_idx_expanded[:-1], reps)).view(B,T)
+    pos_ids = (
+        torch.arange(B * T) - torch.repeat_interleave(eos_idx_expanded[:-1], reps)
+    ).view(B, T)
     return pos_ids
+
 
 class DataCollatorForCausalLM:
     """
@@ -138,7 +144,7 @@ class DataCollatorForCausalLM:
             features = self._truncate(features)
         padded_batch = self._pad(features)
         input_ids: Tensor = padded_batch["input_ids"]
-        labels: Tensor|None = padded_batch.get("labels", None)
+        labels: Tensor | None = padded_batch.get("labels", None)
         if labels is None:
             labels = torch.where(
                 input_ids == self.tokenizer.pad_token_id, self.ignore_index, input_ids
@@ -149,7 +155,9 @@ class DataCollatorForCausalLM:
 
         output_dict["labels"] = labels
         if self.packed_sequences:
-            output_dict["position_ids"] = get_pos_ids_for_packed_sequence(input_ids, self.tokenizer.eos_token_id)
+            output_dict["position_ids"] = get_pos_ids_for_packed_sequence(
+                input_ids, self.tokenizer.eos_token_id
+            )
         return output_dict
 
     def _truncate(self, features):
@@ -185,5 +193,3 @@ class DataCollatorForCausalLM:
             )
 
         return padded
-        
-        

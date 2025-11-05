@@ -13,6 +13,7 @@ class CasualLM(nn.Module):
     """
     A causal language model with a HF compatible "forward" method and KV cache support
     """
+
     def __init__(
         self,
         loss_fn: Callable,
@@ -62,14 +63,14 @@ class CasualLM(nn.Module):
             (e.g., 4D tensor for eager/sdpa, BlockMask for flex_attention)
         """
         return self._create_attention_mask(input_ids, attention_mask, position_ids)
-    
+
     def _create_attention_mask(
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         input_embeds: Optional[torch.Tensor] = None,
-        past_key_values: Optional[Cache ] = None,
+        past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
     ):
         assert self.config
@@ -77,7 +78,8 @@ class CasualLM(nn.Module):
         # When using SDPA, if just simple a simple causal attention mask
         # is required, bypass mask generation. SDPA will then use
         # the "is_causal" flag, which saves memory and is faster.
-        if (self.config._attn_implementation == "sdpa"
+        if (
+            self.config._attn_implementation == "sdpa"
             and attention_mask is None
             and past_key_values is None
             and position_ids is None
@@ -90,12 +92,18 @@ class CasualLM(nn.Module):
             batch_size, seq_length = input_ids.shape
 
             input_embeds = torch.empty(
-                batch_size, seq_length, self.config.hidden_size,
-                device=torch.device("meta"), dtype=self.default_dtype
+                batch_size,
+                seq_length,
+                self.config.hidden_size,
+                device=torch.device("meta"),
+                dtype=self.default_dtype,
             )
 
         # Convert to bool mask, if long
-        if isinstance(attention_mask, torch.Tensor) and attention_mask.dtype == torch.long:
+        if (
+            isinstance(attention_mask, torch.Tensor)
+            and attention_mask.dtype == torch.long
+        ):
             attention_mask = attention_mask.to(dtype=torch.bool)
 
         if cache_position is None:
@@ -116,7 +124,7 @@ class CasualLM(nn.Module):
         # debug
         # print(repr(attention_mask))
         # print(attention_mask.shape)
-        
+
         return attention_mask
 
     def forward(
@@ -148,7 +156,7 @@ class CasualLM(nn.Module):
                 )
                 if position_ids is None:
                     position_ids = cache_position.unsqueeze(0)
-                
+
             # Convert input_ids to embeddings and add positional information.
             hidden_states = self.input_encoder(input_ids, position_ids)
 
@@ -186,7 +194,10 @@ class CasualLM(nn.Module):
             if return_dict:
                 return CausalLMOutput(loss=loss, logits=logits)
             elif labels is not None:
-                return (loss, logits,)
+                return (
+                    loss,
+                    logits,
+                )
             else:
                 return logits
         else:

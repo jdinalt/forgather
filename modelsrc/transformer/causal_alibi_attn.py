@@ -80,7 +80,10 @@ class CausalAlibiAttn(nn.Module):
             # Alternative initialization: high half slopes shift towards 1.0+, low half approach zero
             # This can work better with trainable slopes in some cases
             alibi_slopes = 1.0 / torch.logspace(
-                1, 8, self.num_heads, base=2,
+                1,
+                8,
+                self.num_heads,
+                base=2,
             )
             # Zero out the lower half of slopes (position-agnostic heads)
             alibi_slopes.masked_fill_(

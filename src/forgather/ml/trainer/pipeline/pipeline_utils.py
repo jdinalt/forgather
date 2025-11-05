@@ -50,6 +50,7 @@ def insert_activation_checkpoints(rank, module, targets):
                 # Recompiing appears to trigger a syntax error!? By default, these
                 # are interpreted, so recompilation is not required, but why the error?
 
+
 def missing_buffers(mod):
     """
     Generate the set of fully-qualified-names buffer names for buffers missing from the state dictionary.

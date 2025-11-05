@@ -26,7 +26,7 @@ class LayerStack(nn.Module):
         self.layers = nn.ModuleDict()
         for layer_idx in range(num_hidden_layers):
             self.layers[str(layer_idx)] = layer_factory()
-        
+
         self.layer_norm = None
         if post_norm_factory is not None:
             self.layer_norm = post_norm_factory()

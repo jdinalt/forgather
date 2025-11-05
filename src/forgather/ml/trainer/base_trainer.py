@@ -220,7 +220,9 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
             os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
         if self.args.dynamo_recompile_limit:
-            logger.info(f"Setting torch._dynamo.config.recompile_limit = {self.args.dynamo_recompile_limit}")
+            logger.info(
+                f"Setting torch._dynamo.config.recompile_limit = {self.args.dynamo_recompile_limit}"
+            )
             torch._dynamo.config.recompile_limit = self.args.dynamo_recompile_limit
 
         if self.args.detect_anomaly:

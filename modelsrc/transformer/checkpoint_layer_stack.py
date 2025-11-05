@@ -71,7 +71,11 @@ class LayerStack(nn.Module):
                 i = int(i)
                 if i % self.checkpoint_stride == 0:
                     hidden_states = checkpoint.checkpoint(
-                        layer, hidden_states, layer_index=i, **kwargs, **self.checkpoint_kwargs
+                        layer,
+                        hidden_states,
+                        layer_index=i,
+                        **kwargs,
+                        **self.checkpoint_kwargs,
                     )
                 else:
                     hidden_states = layer(hidden_states, layer_index=i, **kwargs)

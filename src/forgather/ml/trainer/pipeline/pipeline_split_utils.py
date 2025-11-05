@@ -3,6 +3,7 @@ Pipeline parallel model splitting utilities.
 
 Based on TorchTitan's pipeline_module_split approach.
 """
+
 import copy
 from typing import List
 from torch import nn
@@ -49,7 +50,11 @@ def generate_llm_fqn_per_model_part(
     if num_stages == 1:
         # Single stage gets everything
         layer_names = [f"layer_stack.layers.{i}" for i in range(num_layers)]
-        return [["input_encoder"] + layer_names + ["layer_stack.layer_norm", "output_decoder"]]
+        return [
+            ["input_encoder"]
+            + layer_names
+            + ["layer_stack.layer_norm", "output_decoder"]
+        ]
 
     # Calculate effective layers including weights
     num_effective_layers = num_layers + input_weight + output_weight
@@ -185,6 +190,5 @@ def split_model(model: nn.Module, module_names: List[str]) -> None:
             layer_stack.layer_norm = None
 
         # If the entire layer_stack is empty, set it to None
-        if (len(layer_stack.layers) == 0 and
-            layer_stack.layer_norm is None):
+        if len(layer_stack.layers) == 0 and layer_stack.layer_norm is None:
             causal_lm.layer_stack = None

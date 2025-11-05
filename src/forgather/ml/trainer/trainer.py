@@ -89,11 +89,14 @@ def has_batch_size(obj: object) -> TypeGuard[HasBatchSize]:
 def has_main_input_name(obj: object) -> TypeGuard[HasMainInputName]:
     return hasattr(obj, "main_input_name")
 
-def enable_hf_activation_checkpointing(rank, module, gradient_checkpointing_kwargs=None):
+
+def enable_hf_activation_checkpointing(
+    rank, module, gradient_checkpointing_kwargs=None
+):
     """
     Enable activation checkpointing via Huggingface protocol
     """
-    
+
     if has_gradient_checkpointing_enable(module):
         if rank == 0:
             logger.info("rank0: Enabling HF gradient checkpointing")
@@ -102,13 +105,12 @@ def enable_hf_activation_checkpointing(rank, module, gradient_checkpointing_kwar
             gradient_checkpointing_kwargs = dict(
                 use_reentrant=False,
             )
-        module.gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs
-        )
+        module.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
     else:
         logger.warning(
             "rank{rank}: Gradient HF checkpointing requested, but model does not support it!"
         )
+
 
 @dataclass(kw_only=True)
 class TrainerState(BaseTrainerState):
@@ -215,7 +217,9 @@ class Trainer(BaseTrainer):
             Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]
         ] = None,
         lr_scheduler_factory: Optional[Callable] = None,
-        enable_activation_checkpoint_fn: Optional[Callable] = enable_hf_activation_checkpointing,
+        enable_activation_checkpoint_fn: Optional[
+            Callable
+        ] = enable_hf_activation_checkpointing,
         **kwargs,
     ):
         assert isinstance(args, TrainingArguments)
@@ -474,7 +478,9 @@ class Trainer(BaseTrainer):
         if self.args.gradient_checkpointing:
             if self.enable_activation_checkpoint_fn is None:
                 if self.dist.rank == 0:
-                    logger.warning(f"Activation checkpointing requested, but no function defined!")
+                    logger.warning(
+                        f"Activation checkpointing requested, but no function defined!"
+                    )
             else:
                 # Enable activation checkpointing for all modules in the pipeline.
                 self.enable_activation_checkpoint_fn(self.dist.rank, self.model)

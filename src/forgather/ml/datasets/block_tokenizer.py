@@ -10,11 +10,13 @@ Packing strategies:
 - best_fit: Best-Fit Decreasing bin packing for optimal space utilization
 - first_fit: First-Fit Decreasing for fast packing with good utilization
 """
+
 from typing import Optional, Any, Dict, List, Tuple
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from transformers import PreTrainedTokenizerFast
+
 
 class InputTokenBlock:
     def __init__(self, input_ids, length):
@@ -63,6 +65,7 @@ class OutputTokenBlock:
 @dataclass
 class Document:
     """Represents a tokenized document for bin-packing."""
+
     input_ids: List[int]
     length: int
     original_index: int  # Track original order for debugging
@@ -73,6 +76,7 @@ class Bin:
     Represents a bin (output sequence) for bin-packing algorithm.
     Tracks remaining capacity and documents packed into it.
     """
+
     def __init__(self, max_length: int, stride_tokens: Optional[List[int]] = None):
         self.max_length = max_length
         self.input_ids = stride_tokens if stride_tokens else []
@@ -132,7 +136,9 @@ def split_document_optimally(
     chunk_index = 0
 
     # Account for BOS token in subsequent chunks
-    effective_max = max_length - (1 if bos_token_id is not None and chunk_index > 0 else 0)
+    effective_max = max_length - (
+        1 if bos_token_id is not None and chunk_index > 0 else 0
+    )
 
     while offset < doc.length:
         # For first chunk, use full max_length
@@ -150,11 +156,13 @@ def split_document_optimally(
         if chunk_index > 0 and bos_token_id is not None:
             chunk_ids = [bos_token_id] + chunk_ids
 
-        chunks.append(Document(
-            input_ids=chunk_ids,
-            length=len(chunk_ids),
-            original_index=doc.original_index,
-        ))
+        chunks.append(
+            Document(
+                input_ids=chunk_ids,
+                length=len(chunk_ids),
+                original_index=doc.original_index,
+            )
+        )
 
         # Move offset, accounting for stride
         offset += chunk_size - stride
@@ -231,6 +239,7 @@ def pack_sequences_optimized(
     # Shuffle output sequences if requested
     if shuffle_output and output_sequences:
         import random
+
         rng = random.Random(seed)
         rng.shuffle(output_sequences)
 
@@ -308,7 +317,9 @@ def _block_tokenize_optimized(
     """
     documents = []
 
-    for idx, (record_length, input_ids) in enumerate(zip(outputs["length"], outputs["input_ids"])):
+    for idx, (record_length, input_ids) in enumerate(
+        zip(outputs["length"], outputs["input_ids"])
+    ):
         # Add BOS token
         if add_bos:
             record_length += 1
@@ -327,11 +338,13 @@ def _block_tokenize_optimized(
             record_length += 1
             input_ids = input_ids + [tokenizer.eos_token_id]
 
-        documents.append(Document(
-            input_ids=input_ids,
-            length=record_length,
-            original_index=idx,
-        ))
+        documents.append(
+            Document(
+                input_ids=input_ids,
+                length=record_length,
+                original_index=idx,
+            )
+        )
 
     # Pack documents using bin-packing algorithm
     output_sequences = pack_sequences_optimized(
@@ -354,17 +367,17 @@ def block_tokenize_fn(
     tokenizer: PreTrainedTokenizerFast,
     feature: str,
     max_length=512,
-    overflow: bool=True,
-    packed: bool=False,
-    packing_strategy: str="greedy",
-    shuffle_output: bool=False,
-    seed: Optional[int]=None,
-    stride: int=0,
-    min_len: int=1,
-    max_len: Optional[int]=None,
-    add_bos: bool=True,
-    add_eos: bool=True,
-    truncate_at: Optional[str]=None,
+    overflow: bool = True,
+    packed: bool = False,
+    packing_strategy: str = "greedy",
+    shuffle_output: bool = False,
+    seed: Optional[int] = None,
+    stride: int = 0,
+    min_len: int = 1,
+    max_len: Optional[int] = None,
+    add_bos: bool = True,
+    add_eos: bool = True,
+    truncate_at: Optional[str] = None,
     **kwargs,
 ):
     """
@@ -428,11 +441,14 @@ def block_tokenize_fn(
                          shuffle_output=True, seed=42)
     """
     assert min_len >= 1
-    assert packing_strategy in ("greedy", "best_fit", "first_fit"), \
-        f"Invalid packing_strategy: {packing_strategy}"
+    assert packing_strategy in (
+        "greedy",
+        "best_fit",
+        "first_fit",
+    ), f"Invalid packing_strategy: {packing_strategy}"
 
-    #print("Entered block tokenizer")
-    #for key in features:
+    # print("Entered block tokenizer")
+    # for key in features:
     #    print(f"{key=}")
     # If given a regex to truncate at, truncate at the first match.
     if truncate_at is not None:

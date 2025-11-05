@@ -17,6 +17,7 @@ from forgather.ml.data_collator import DataCollatorForCausalLM
 from forgather.ml.utils import count_parameters
 from forgather.ml.sharded_checkpoint import load_checkpoint
 
+
 def load_model(args):
     config_name = args.config_template
     if args.config_template is None:
@@ -43,26 +44,30 @@ def model_cmd(args):
                 model_construct_cmd(args)
             case "test":
                 model_test_cmd(args)
-    
+
+
 def construct_model(model_ctor, args):
     with ExitStack() as exit_stack:
         exit_stack.enter_context(torch.device(args.device))
         if args.dtype:
-            exit_stack.enter_context(
-                default_dtype(torch_dtype(args.dtype))
-            )
+            exit_stack.enter_context(default_dtype(torch_dtype(args.dtype)))
         if args.no_init_weights:
             exit_stack.enter_context(no_init_weights())
         model = model_ctor()
     if args.load_from_checkpoint:
-        assert args.device != "meta", "Load from checkpoint not supported on meta device"
+        assert (
+            args.device != "meta"
+        ), "Load from checkpoint not supported on meta device"
         print("Loading model from checkpoint {args.load_from_checkpoint}...")
-        load_checkpoint(args.load_from_checkpoint, model, device=args.dtype, strict=True)
+        load_checkpoint(
+            args.load_from_checkpoint, model, device=args.dtype, strict=True
+        )
     if args.gradient_checkpointing:
         assert hasattr(model, "gradient_checkpointing_enable")
         print(f"Enabling gradient checkpointing")
         model.gradient_checkpointing_enable()
     return model
+
 
 def model_construct_cmd(args):
     config, tokenizer, model_ctor = load_model(args)
@@ -75,10 +80,12 @@ def model_construct_cmd(args):
     data += f"parameters={count_parameters(model)}\n"
     write_output_or_edit(args, data, ".txt")
 
+
 class RandomDatasetIterator(IterableDataset):
     """
     Yields random sequence of ints
     """
+
     def __init__(self, vocab_size, sequence_length):
         self.vocab_size = vocab_size
         self.sequence_length = sequence_length
@@ -89,9 +96,10 @@ class RandomDatasetIterator(IterableDataset):
                 0, self.vocab_size, (self.sequence_length,), device="cpu"
             ).tolist()
         )
-    
+
     def __iter__(self):
         return self
+
 
 def model_test_cmd(args):
     torch.autograd.set_detect_anomaly(True)
@@ -116,7 +124,7 @@ def model_test_cmd(args):
             args.sequence_length,
         )
 
-    data_collator=DataCollatorForCausalLM(
+    data_collator = DataCollatorForCausalLM(
         tokenizer=tokenizer,
         return_tensors="pt",
         truncation=True,
@@ -153,5 +161,5 @@ def model_test_cmd(args):
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
-        
+
     print("Test Completed")

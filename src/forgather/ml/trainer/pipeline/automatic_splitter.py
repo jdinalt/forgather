@@ -4,6 +4,7 @@ Automatic model splitter using torch.export tracing.
 This is the original splitting method that uses PyTorch's build_pipeline
 to automatically trace the model and split at specified points.
 """
+
 from typing import Dict, Any, List, Tuple, Optional, Callable
 import logging
 import torch
@@ -59,7 +60,9 @@ def create_automatic_splitter(split_spec: dict) -> ModelSplitter:
         device: torch.device,
         rank: int,
         pp_group: "torch.distributed.ProcessGroup",
-    ) -> Tuple[List[Module], List[Module], List[_PipelineStageBase], Optional[Callable]]:
+    ) -> Tuple[
+        List[Module], List[Module], List[_PipelineStageBase], Optional[Callable]
+    ]:
         """
         Split model using automatic tracing.
 
@@ -88,20 +91,15 @@ def create_automatic_splitter(split_spec: dict) -> ModelSplitter:
         num_stages = sum(len(indices) for indices in stage_indices)
 
         # Get all stage modules (still on meta device)
-        all_pipeline_modules = [
-            pipe.get_stage_module(i) for i in range(num_stages)
-        ]
+        all_pipeline_modules = [pipe.get_stage_module(i) for i in range(num_stages)]
 
         # Get modules for this rank
-        pipeline_modules = [
-            all_pipeline_modules[i] for i in stage_indices[rank]
-        ]
+        pipeline_modules = [all_pipeline_modules[i] for i in stage_indices[rank]]
 
         # Build pipeline stages
         # Note: PipelineStage should accept meta modules
         pipeline_stages = [
-            pipe.build_stage(stage_index=i, device=device)
-            for i in stage_indices[rank]
+            pipe.build_stage(stage_index=i, device=device) for i in stage_indices[rank]
         ]
 
         # Apply fixes after pipeline split but before materialization
@@ -115,6 +113,11 @@ def create_automatic_splitter(split_spec: dict) -> ModelSplitter:
         # The model computes masks internally during forward pass
         attention_mask_creator = None
 
-        return all_pipeline_modules, pipeline_modules, pipeline_stages, attention_mask_creator
+        return (
+            all_pipeline_modules,
+            pipeline_modules,
+            pipeline_stages,
+            attention_mask_creator,
+        )
 
     return automatic_splitter

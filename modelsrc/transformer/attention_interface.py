@@ -2,6 +2,7 @@
 A collection of attention functions, conforming to the HF Attention Interface
 https://huggingface.co/docs/transformers/main/attention_interface
 """
+
 from typing import Callable, Optional, Union
 
 import torch
@@ -14,8 +15,11 @@ from torch.nn.attention.flex_attention import (
 
 from torch.nn.functional import scaled_dot_product_attention
 
+
 def _compiled_flex_attn(*args, **kwargs):
-    return torch.compile(flex_attention, dynamic=True, mode="max-autotune-no-cudagraphs")(*args, **kwargs)
+    return torch.compile(
+        flex_attention, dynamic=True, mode="max-autotune-no-cudagraphs"
+    )(*args, **kwargs)
 
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -26,7 +30,9 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     batch, num_key_value_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
         return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, num_key_value_heads, n_rep, slen, head_dim
+    )
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
@@ -36,7 +42,6 @@ def eager_attention_forward(
     key: torch.Tensor,
     value: torch.Tensor,
     attention_mask: Optional[torch.Tensor],
-
     # Additional args
     scaling: float,
     dropout: float = 0.0,
@@ -51,8 +56,12 @@ def eager_attention_forward(
         causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
         attn_weights = attn_weights + causal_mask
 
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
-    attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
+    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
+        query.dtype
+    )
+    attn_weights = nn.functional.dropout(
+        attn_weights, p=dropout, training=module.training
+    )
     attn_output = torch.matmul(attn_weights, value_states)
     attn_output = attn_output.transpose(1, 2).contiguous()
 
@@ -65,7 +74,6 @@ def flex_attention_forward(
     key: torch.Tensor,
     value: torch.Tensor,
     attention_mask: Union[torch.Tensor, "BlockMask"],
-
     # Additional args
     scaling: Optional[float] = None,
     kernel_options: Optional[FlexKernelOptions] = None,
@@ -74,9 +82,7 @@ def flex_attention_forward(
     **kwargs,
 ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
     if kwargs.get("dropout", 0.0) != 0.0:
-        raise ValueError(
-            "Flex attention does not support dropout"
-        )
+        raise ValueError("Flex attention does not support dropout")
 
     assert isinstance(attention_mask, BlockMask)
 
@@ -96,13 +102,13 @@ def flex_attention_forward(
     attention_output = attention_output.transpose(1, 2).contiguous()
     return attention_output, None
 
+
 def sdpa_attention_forward(
     module: torch.nn.Module,
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
     attention_mask: Optional[torch.Tensor],
-
     # Additional args
     dropout: float = 0.0,
     scaling: Optional[float] = None,
@@ -114,7 +120,7 @@ def sdpa_attention_forward(
 
     num_key_value_groups = query.shape[1] // key.shape[1]
     is_causal = query.shape[2] > 1 and attention_mask is None and is_causal
-    
+
     attn_output = scaled_dot_product_attention(
         query,
         key,

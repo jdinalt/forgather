@@ -85,10 +85,12 @@ def dataset_cmd(args):
     if args.examples:
         print(f"Printing {args.examples} examples from the train dataset:")
         if args.tokenizer_path:
-            
+
             for i, example in zip(range(args.examples), split):
                 input_ids = example["input_ids"]
-                n_documents = (torch.tensor(input_ids) == tokenizer.bos_token_id).sum().item()
+                n_documents = (
+                    (torch.tensor(input_ids) == tokenizer.bos_token_id).sum().item()
+                )
                 header = f" {i} Tokens: {len(input_ids)}, Documents: {n_documents} "
                 data += f"{header:-^80}" + "\n" + tokenizer.decode(input_ids) + "\n"
 

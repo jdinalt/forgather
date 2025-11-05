@@ -162,7 +162,6 @@ class MinimalTrainingArguments:
     # the default args, pass the following to the trainer constructor
     # enable_activation_checkpoint_fn: !partial:forgather.ml.trainer:enable_hf_activation_checkpointing { gradient_checkpointing_kwargs: { ARGS } }
     # Otherwise, you can pass a custom function.
-    
 
     def __str__(self):
         return pformat(self)

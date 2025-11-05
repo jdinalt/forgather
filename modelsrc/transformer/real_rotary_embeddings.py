@@ -46,6 +46,7 @@ def precompute_cos_sin(
     sin = emb.sin().to(dtype=default_dtype)
     return cos, sin
 
+
 class RealRotaryPE(torch.nn.Module):
     """
     Real-valued RoPE positional encoder module
@@ -73,7 +74,9 @@ class RealRotaryPE(torch.nn.Module):
     def extra_repr(self):
         return f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, rope_theta={self.rope_theta}"
 
-    def forward(self, q: Tensor, k: Tensor, position_ids: Tensor = None) -> Tuple[Tensor, Tensor]:
+    def forward(
+        self, q: Tensor, k: Tensor, position_ids: Tensor = None
+    ) -> Tuple[Tensor, Tensor]:
         """
         Apply RoPE embedding to query and key
 

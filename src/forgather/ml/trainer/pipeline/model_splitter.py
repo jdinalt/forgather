@@ -4,6 +4,7 @@ Model splitter type definition for pipeline parallel training.
 A ModelSplitter is a callable that splits a model into pipeline stages.
 It can be implemented as either a function or a class with __call__.
 """
+
 from typing import Callable, Optional, Tuple, List
 import torch
 from torch.nn import Module
@@ -21,19 +22,19 @@ from torch.distributed.pipelining.stage import _PipelineStageBase
 # The splitter should NOT materialize modules - that's handled by the trainer.
 ModelSplitter = Callable[
     [
-        Module,                 # model: Model on meta device
-        tuple,                  # example_args: Example micro-batch args for tracing
-        dict,                   # example_kwargs: Example micro-batch kwargs for tracing
+        Module,  # model: Model on meta device
+        tuple,  # example_args: Example micro-batch args for tracing
+        dict,  # example_kwargs: Example micro-batch kwargs for tracing
         List[Tuple[int, ...]],  # stage_indices: Stage indices per rank
-        bool,                   # train: Whether in train mode
-        torch.device,           # device: Target device for this rank
-        int,                    # rank: Current rank
+        bool,  # train: Whether in train mode
+        torch.device,  # device: Target device for this rank
+        int,  # rank: Current rank
         "torch.distributed.ProcessGroup",  # pp_group: Pipeline parallel process group
     ],
     Tuple[
-        List[Module],                # all_pipeline_modules (meta device)
-        List[Module],                # pipeline_modules (meta device)
-        List[_PipelineStageBase],   # pipeline_stages
-        Optional[Callable],          # attention_mask_creator or None
+        List[Module],  # all_pipeline_modules (meta device)
+        List[Module],  # pipeline_modules (meta device)
+        List[_PipelineStageBase],  # pipeline_stages
+        Optional[Callable],  # attention_mask_creator or None
     ],
 ]
