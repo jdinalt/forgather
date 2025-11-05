@@ -163,7 +163,10 @@ class PipelineTrainer(Trainer):
         self.sharing_metadata = create_sharing_metadata(model)
 
         # Get a micro-batch from the train_dataloader to use for tracing.
-        example_args, example_kwargs = self._get_example(self.train_dataloader)
+        dataloader = (
+            self.train_dataloader if self.train_dataloader else self.eval_dataloader
+        )
+        example_args, example_kwargs = self._get_example(dataloader)
 
         # stage_indices : A List[Tuple[int]] with the assigned stage indices for each rank
         #   e.g. stage_indices[rank] would have the stage indices for "rank"

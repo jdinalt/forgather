@@ -1,0 +1,35 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Evaluate 2 GPU Pipeline"
+    -- set ns.config_description = "Perform evaluation with 2 GPU GPipe"
+    -- set ns.log_name = "2gpu"
+    -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
+    -- set ns.pp_batch_size = batch_size | default(ns.default_batch_size)
+
+[trainer_definition]
+    -- include 'config_2gpu.trainer_config'
+
+[datacollator]
+    == super()
+    padding: "max_length" # Required for pipeline
+    max_length: {{ max_length | default(ns.default_max_length) }}
+
+#-------------------- config_2gpu.trainer_config --------------------
+-- extends 'eval.trainer'
+
+[trainer_meta_config]
+    == super()
+    -- set ns.nproc_per_node = 2
+
+[trainer_args]
+    == super()
+    # **config**
+    n_microbatches: {{ ns.pp_batch_size }}
+    per_device_train_batch_size: {{ ns.pp_batch_size }}
+    per_device_eval_batch_size: {{ ns.pp_batch_size }}
+
+[trainer_constructor]
+    == super()
+    pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleGPipe

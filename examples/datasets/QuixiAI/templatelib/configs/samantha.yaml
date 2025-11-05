@@ -41,7 +41,7 @@ train_dataset: &train_dataset !singleton:{{ ns.samantha_src }}:preprocess_samant
     desc: "Tokenizing train"
 
 [eval_dataset]
-eval_dataset: &eval_dataset !singleton:{{ ns.samantha_src }}:preprocess_samantha@eval_dataset
+eval_dataset: !singleton:{{ ns.samantha_src }}:preprocess_samantha@eval_dataset
     dataset: *validation_dataset_split
     chat_template: "{{ ns.samantha_chat_template }}"
     tokenizer: *tokenizer
@@ -52,6 +52,19 @@ eval_dataset: &eval_dataset !singleton:{{ ns.samantha_src }}:preprocess_samantha
         bos_token: !call:getattr [ *tokenizer, 'bos_token' ]
         eos_token: !call:getattr [ *tokenizer, 'eos_token' ]
     desc: "Tokenizing eval"
+
+[test_dataset]
+test_dataset: !singleton:{{ ns.samantha_src }}:preprocess_samantha@test_dataset
+    dataset: *test_dataset_split
+    chat_template: "{{ ns.samantha_chat_template }}"
+    tokenizer: *tokenizer
+    tokenizer_args: !var "preprocess_args"
+    map_kwargs:
+        batch_size: 32
+    template_args:
+        bos_token: !call:getattr [ *tokenizer, 'bos_token' ]
+        eos_token: !call:getattr [ *tokenizer, 'eos_token' ]
+    desc: "Tokenizing test"
 
 [dynamic_args]
     == super()

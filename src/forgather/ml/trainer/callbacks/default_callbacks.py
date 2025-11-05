@@ -52,8 +52,11 @@ class ProgressCallback:
         if not state.is_world_process_zero:
             return
         if self.eval_progress_bar is None:
+            max_eval_steps = getattr(state, "max_eval_steps", -1)
+            total = max(len(eval_dataloader), max_eval_steps, 1)
             self.eval_progress_bar = tqdm(
-                total=getattr(state, "max_eval_steps", len(eval_dataloader)),
+                initial=1,
+                total=total,
                 leave=self.train_progress_bar is None,
                 dynamic_ncols=True,
             )

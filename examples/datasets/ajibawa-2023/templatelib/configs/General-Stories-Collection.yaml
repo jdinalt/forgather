@@ -1,47 +1,45 @@
 -- extends "datasets/tokenized_dataset.yaml"
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "General Stories Collection"
     -- set ns.config_description = "A great synthetic datasets consists of around 1.3 million stories especially meant for General audience."
     -- set ns.source = "https://huggingface.co/datasets/ajibawa-2023/General-Stories-Collection"
--- endblock config_metadata
 
-
--- block train_dataset_split
+[train_dataset_split]
 train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train_dataset_split
     args: [ "ajibawa-2023/General-Stories-Collection" ]
     kwargs: { split: "train[10000:]" }
-<< endblock train_dataset_split
 
-
--- block validation_dataset_split
+[validation_dataset_split]
 validation_dataset_split: &validation_dataset_split !singleton:datasets:load_dataset@validation_dataset_split
     args: [ "ajibawa-2023/General-Stories-Collection" ]
     kwargs: { split: "train[0:1000]" }
-<< endblock validation_dataset_split
 
 
--- block test_dataset_split
+[test_dataset_split]
 test_dataset_split: &test_dataset_split !singleton:datasets:load_dataset@test_dataset_split
     args: [ "ajibawa-2023/General-Stories-Collection" ]
     kwargs: { split: "train[1000:10000]" }
-<< endblock test_dataset_split
 
-
--- block train_dataset
+[train_dataset]
 train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
     dataset: *train_dataset_split
     tokenizer: *tokenizer
     desc: "Tokenizing train"
     fn_kwargs: !var "preprocess_args"
-<< endblock train_dataset
 
-
--- block eval_dataset
+[eval_dataset]
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
     dataset: *validation_dataset_split
     tokenizer: *tokenizer
     desc: "Tokenizing validation"
     fn_kwargs: !var "preprocess_args"
-<< endblock eval_dataset
+
+[test_dataset]
+test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
+    dataset: *test_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing validation"
+    fn_kwargs: !var "preprocess_args"
+

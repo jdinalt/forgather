@@ -1,0 +1,17 @@
+-- extends 'configs/2gpu.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Evaluate 4 GPU Pipeline"
+    -- set ns.config_description = "Perform evaluation with 4 GPU GPipe"
+    -- set ns.log_name = "4gpu"
+
+[trainer_definition]
+    -- include 'config_4gpu.trainer_config'
+
+#-------------------- config_4gpu.trainer_config --------------------
+-- extends 'config_2gpu.trainer_config'
+
+[trainer_meta_config]
+    == super()
+    -- set ns.nproc_per_node = 4

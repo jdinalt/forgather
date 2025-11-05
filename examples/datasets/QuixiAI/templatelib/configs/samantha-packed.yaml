@@ -14,9 +14,22 @@
     shuffle_output: True    # Shuffle the packed conversations
     add_eos: False          # EOS is added by message processor
     min_len: 16             # Discard very short examples
-    seed: 42                # Deterministic ordering
 
 [train_dataset]
+    == super()
+    fn_kwargs: !var { name: "preprocess_args", default: null }
+    map_fn: *map_function
+    map_kwargs:
+        batch_size: 1000    # Increased batch size makes it easier to pack
+
+[eval_dataset]
+    == super()
+    fn_kwargs: !var { name: "preprocess_args", default: null }
+    map_fn: *map_function
+    map_kwargs:
+        batch_size: 1000    # Increased batch size makes it easier to pack
+
+[test_dataset]
     == super()
     fn_kwargs: !var { name: "preprocess_args", default: null }
     map_fn: *map_function

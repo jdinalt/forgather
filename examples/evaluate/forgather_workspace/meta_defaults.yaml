@@ -1,0 +1,20 @@
+-- set ns = namespace()
+
+## Import default paths; common to meta and regular templates.
+-- include "base_directories.yaml"
+-- set ns.templatelib_dir = joinpath(ns.forgather_dir, "templatelib")
+
+## Search these directories for templates
+searchdir:
+-- block searchdir_project
+    - "{{ joinpath(project_dir, 'templates') }}"
+-- endblock searchdir_project
+
+-- block searchdir_common
+    - "{{ joinpath(workspace_root, 'forgather_workspace') }}"
+    - "{{ joinpath(ns.templatelib_dir, 'base') }}"
+-- endblock searchdir_common
+
+
+-- block configs
+-- endblock configs

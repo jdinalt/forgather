@@ -53,6 +53,19 @@ eval_dataset: &eval_dataset !singleton:{{ ns.pp_src }}:preprocess_orca@eval_data
         eos_token: !call:getattr [ *tokenizer, 'eos_token' ]
     desc: "Tokenizing eval"
 
+[test_dataset]
+test_dataset: &test_dataset !singleton:{{ ns.pp_src }}:preprocess_orca@test_dataset
+    dataset: *test_dataset_split
+    chat_template: "{{ ns.chat_template }}"
+    tokenizer: *tokenizer
+    tokenizer_args: !var "preprocess_args"
+    map_args:
+        batch_size: 32
+    template_args:
+        bos_token: !call:getattr [ *tokenizer, 'bos_token' ]
+        eos_token: !call:getattr [ *tokenizer, 'eos_token' ]
+    desc: "Tokenizing test"
+
 [dynamic_args]
     == super()
     max_steps:

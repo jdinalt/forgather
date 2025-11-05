@@ -1,0 +1,8 @@
+-- extends "meta_defaults.yaml"
+
+-- block configs
+name: "Eval"
+description: "Evaluate models on datasets"
+config_prefix: "configs"
+default_config: "default.yaml"
+<< endblock configs

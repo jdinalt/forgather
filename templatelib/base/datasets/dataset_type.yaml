@@ -2,34 +2,25 @@
 -- extends 'config_type.yaml'
 
 ## Optional
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Dataset"
     -- set ns.config_description = "Constucts a dataset"
     -- set ns.config_class = ns.config_class + ".dataset"
     -- set ns.source = ""
--- endblock config_metadata
 
--- block header
+[header]
     == super()
 # Source: {{ ns.source }}
-<< endblock header
 
-
--- block main_body required
+[main_body]
 ## train_dataset: &train_dataset
 ## eval_dataset:  &eval_dataset
--- endblock main_body
+## test_dataset:  &test_dataset
 
-
--- block meta_output
+[meta_output]
     == super()
     main_feature: "{{ ns.main_feature }}"
-<< endblock meta_output
 
-
--- block main_output
-main:
-    train: *train_dataset
-    eval: *eval_dataset
-<< endblock main_output
+[main_output]
+main: *train_dataset

@@ -95,6 +95,14 @@ tokenizer: &tokenizer !var "tokenizer"
             << endblock eval_dataset
             -- endfilter
 
+
+            -- filter trim()
+            -- block test_dataset required
+##test_dataset: &test_dataset
+            << endblock test_dataset
+            -- endfilter
+
+
         << endblock preprocessed_datasets
         -- endfilter
     << endblock datasets

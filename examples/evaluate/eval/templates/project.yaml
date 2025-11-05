@@ -1,0 +1,172 @@
+-- extends "training_script/causal_lm/causal_lm.yaml"
+
+[resource_directories]
+    == super()
+    ## Change this to point to where your models are stored
+    -- set ns.models_dir = models_dir | default(joinpath(user_home_dir(), 'models'))
+
+    ## Directory in which local datasets are stored
+    -- set ns.datasets_dir = datasets_dir | default(joinpath(user_home_dir(), 'datasets'))
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = 'Evaluate'
+    -- set ns.config_description = 'Evaluate model performance on datasets'
+    -- set ns.trainer_class = 'trainers/trainer.yaml'
+    -- set ns.trust_remote_code = True
+    -- set ns.model_name = 'default_model'
+    -- set ns.log_name = 'log'
+
+    ## Set project defaults
+    -- set ns.default_dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
+    -- set ns.default_dataset_config = "samantha.yaml"
+    -- set ns.default_chat_template = ""
+    -- set ns.default_max_length = 2048
+    -- set ns.default_batch_size = 16
+
+[globals]
+	## If not specified, default to model-dir and model-name
+	-- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
+
+    ## If explicity specified, use 'output_dir,' otherwise assume that 'ns.model_id_or_path'
+    -- set ns.output_dir = output_dir | default(ns.model_id_or_path)
+    -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
+
+[variable_listing]
+    == super()
+# ns.dataset_proj: "{{ dataset_proj | default(ns.default_dataset_proj) }}"
+# ns.dataset_config: "{{ dataset_config | default(ns.default_dataset_config) }}"
+# ns.model_id_or_path: {{ ns.model_id_or_path }}
+
+[datasets_preprocessor_args]
+.define: &datasets_preprocessor_args !dict
+    max_length: {{ max_length | default(ns.default_max_length) }}
+
+[construct_new_model]
+    -- include 'models/causal_lm/from_pretrained_config.yaml'
+
+[datasets_definition]
+    [eval_dataset]
+eval_dataset: &eval_dataset !call:forgather:from_project
+    project_dir: "{{ dataset_proj | default(ns.default_dataset_proj) }}"
+    config_template: "{{ dataset_config | default(ns.default_dataset_config) }}"
+    targets: "{{ dataset_target | default('test_dataset') }}"
+    preprocess_args: *datasets_preprocessor_args
+    tokenizer: *tokenizer
+    chat_template: "{{ chat_template | default(ns.default_chat_template) }}"
+
+    [train_dataset]
+train_dataset: &train_dataset null
+
+## Defaults to the basic trainer implementation
+## Note: This is unsuitable for multiple GPUs.
+## Override 'ns.trainer_class' to change the trainer class.
+[trainer_definition]
+    ## See definition below
+    -- include 'eval.trainer'
+
+[datacollator]
+data_collator: &data_collator !call:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
+    tokenizer: *tokenizer
+    return_tensors: pt
+    truncation: True
+    max_length: {{ max_length | default(ns.default_max_length) }}
+
+[dynamic_args]
+    == super()
+    dataset_config:
+        names: "--dataset-config"
+        type: "str"
+        help: "The name of the dataset configuration to use"
+    dataset_proj:
+        names: "--dataset-proj"
+        type: "path"
+        help: "Path to dataset project to use"
+    model_id_or_path:
+        names: [ "--model-id-or-path", "-M" ]
+        type: "path"
+        help: "HF model ID or local path to model"
+    output_dir:
+        names: "--output-dir"
+        type: "path"
+        help: "Training output director. Defaults to model_id_or_path"
+    from_checkpoint:
+        names: "--from-checkpoint"
+        type: path
+        help: "Explicit checkpoint path to load"
+    chat_template:
+        names: [ "--chat-template", "-C" ]
+        help: "Path to the chat template to use"
+    max_length:
+        names: "--max-length"
+        type: "int"
+        default: 2048
+        help: "Maximum sequence length"
+    max_steps:
+        names: "--max-steps"
+        type: "int"
+        default: -1
+        help: "Maximum eval steps"
+    dtype:
+        names: "--dtype"
+        type: "str"
+        default: "float32"
+        help: "Torch dtype"
+    float32_precision:
+        names: --float32-precision"
+        choices: [ "highest", "high", "medium" ]
+        default: "high"
+        help: "Float32 precision"
+    sdpa_backend:
+        names: "--sdpa-backend"
+        choices: [ "math", "flash", "efficient", "cudnn" ]
+        help: "Specify SDPA backend to use"
+    batch_size:
+        names: "--batch-size"
+        type: "int"
+        default: 32
+        help: "Eval batch size"
+    dataset_target:
+        names: "--dataset-target"
+        type: "str"
+        default: "test_dataset"
+        help: "The dataset target to test with"
+    dataset_target:
+        names: "--dataset-target"
+        type: "str"
+        default: "test_dataset"
+        help: "The dataset target to test with"
+
+[main_output]
+    == super()
+
+    # **eval**
+    do_train: False
+    do_eval: True
+
+#-------------------- eval.trainer --------------------
+-- extends ns.trainer_class
+
+[trainer_args]
+    == super()
+
+    # **eval**
+    seed: 42
+    max_eval_steps: {{ max_steps | default(-1) }}
+    dataloader_num_workers: 1
+    float32_matmul_precision: {{ float32_precision | default("high") }}
+    default_dtype: {{ dtype | default("float32") }}
+    per_device_eval_batch_size: {{ batch_size | default(ns.default_batch_size) }}
+
+    # We load the model via the newest checkpoint
+    resume_from_checkpoint: {{ from_checkpoint | default(True) }}
+    construct_model_on: "device"    # Construct model on accelerator device
+
+    # Only load weights
+    restore_optimizer_state: False
+    restore_scheduler_state: False
+    restore_dataset_state: False
+    restore_rng_state: False
+
+    sdpa_backend: {{ '[ ' + sdpa_backend | default('"math", "flash", "efficient", "cudnn"') + ' ]' }}
+    sdpa_set_priority: False # If list, interpret as priority order

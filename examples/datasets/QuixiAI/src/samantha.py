@@ -179,11 +179,11 @@ def load_samantha_dataset_manual(
         # Train: 0-80%, Validation: 80-95%, Test: 95-100%
         total_len = len(processed_data)
         train_end = int(total_len * 0.80)
-        val_end = int(total_len * 0.95)
+        test_end = int(total_len * 0.95)
 
         train_data = processed_data[0:train_end]
-        val_data = processed_data[train_end:val_end]
-        test_data = processed_data[val_end:]
+        test_data = processed_data[train_end:test_end]
+        val_data = processed_data[test_end:]
 
         dataset_dict = DatasetDict(
             {

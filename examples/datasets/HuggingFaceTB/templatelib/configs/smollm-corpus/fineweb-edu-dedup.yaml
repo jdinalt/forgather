@@ -42,3 +42,10 @@ eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@
     tokenizer: *tokenizer
     desc: "Tokenizing eval"
     fn_kwargs: !var "preprocess_args"
+
+[test_dataset]
+test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
+    dataset: *test_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing test"
+    fn_kwargs: !var "preprocess_args"

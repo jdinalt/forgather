@@ -17,10 +17,6 @@
     -- set ns.model_name = 'default_model'
     -- set ns.log_name = 'log'
     
-    ## Some models may have issues loading using our checkpoint method. Set safe_load to fallback
-    ## to constructing model with AutoModelForCausalLM.from_pretrained().
-    -- set ns.safe_load = safe_load | default(False)
-
     ## memory debugging
     -- set ns.debug_memory_detials = False
     -- set ns.log_memory_to_tb = False
@@ -41,7 +37,6 @@
 
 [variable_listing]
     == super()
-# ns.safe_load: {{ ns.safe_load }}
 # ns.dataset_proj: "{{ dataset_proj | default(ns.default_dataset_proj) }}"
 # ns.dataset_config: "{{ dataset_config | default(ns.default_dataset_config) }}"
 # ns.debug_memory_detials: {{ ns.debug_memory_detials }}

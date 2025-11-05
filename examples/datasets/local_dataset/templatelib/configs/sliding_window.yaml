@@ -38,6 +38,14 @@ eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@
     fn_kwargs: !var "preprocess_args"
     map_fn: *map_function
 
+[test_dataset]
+test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
+    dataset: *validation_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing test"
+    fn_kwargs: !var "preprocess_args"
+    map_fn: *map_function
+
 [dynamic_args]
     == super()
     dataset_path:

@@ -184,7 +184,7 @@ def pack_sequences_optimized(
     strategy: str = "best_fit",
     bos_token_id: Optional[int] = None,
     shuffle_output: bool = False,
-    seed: Optional[int] = None,
+    seed: Optional[int] = 42,
 ) -> List[List[int]]:
     """
     Pack documents into bins using optimized bin-packing algorithm.

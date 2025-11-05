@@ -46,6 +46,16 @@ eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@
     map_fn: *map_function
     fn_kwargs: !var { name: "preprocess_args", default: null }
 
+[test_dataset]
+test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
+    dataset: *test_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing test"
+    map_kwargs:
+        batch_size: 1000
+    map_fn: *map_function
+    fn_kwargs: !var { name: "preprocess_args", default: null }
+
 [dynamic_args]
     == super()
     max_length:

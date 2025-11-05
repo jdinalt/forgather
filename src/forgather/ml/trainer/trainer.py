@@ -906,7 +906,6 @@ class Trainer(BaseTrainer):
         Init public training state
         This should be retained when saving a checkpoint
         """
-        assert has_batch_size(self.train_dataloader)
 
         max_eval_steps = min(
             self.args.max_eval_steps,
@@ -914,6 +913,7 @@ class Trainer(BaseTrainer):
         )
 
         if self.do_train:
+            assert has_batch_size(self.train_dataloader)
             return TrainerState(
                 max_steps=self.max_steps,
                 logging_steps=self.args.logging_steps,
