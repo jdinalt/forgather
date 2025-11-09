@@ -64,7 +64,7 @@ options:
 MODEL_PATH="/path/to/model"
 
 # Test with Samantha-Packed dataset
-forgather -M "${MODEL_PATH}" --dataset-proj ../../datasets/QuixiAI/ --dataset-config samantha-packed.yaml \
+forgather train -M "${MODEL_PATH}" --dataset-proj ../../datasets/QuixiAI/ --dataset-config samantha-packed.yaml \
 --batch-size 8 --dtype bfloat16 --attn-implementation flex_attention --max-length 4096
 
 ```

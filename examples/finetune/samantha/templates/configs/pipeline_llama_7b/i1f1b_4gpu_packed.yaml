@@ -22,6 +22,14 @@
     padding: "max_length" # Required for pipeline
     max_length: 4096
 
+[optimizer]
+    == super()
+    lr: 6.0e-6
+
+[lr_scheduler]
+    == super()
+    warmup_steps: 15
+
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'
 
@@ -37,8 +45,13 @@
     stages_per_rank: 2
     per_device_train_batch_size: 8
     per_device_eval_batch_size: 8
+    stages_per_rank: 2
+    logging_steps: 2
+    eval_steps: 15
+    save_steps: 65
     gradient_checkpointing: True
     fuse_optim_with_backward: True
+    #enable_activation_offloading: True
     
 [trainer_constructor]
     == super()
