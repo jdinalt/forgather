@@ -6,6 +6,7 @@ import os
 
 import torch
 from torch.utils.data import IterableDataset
+from datasets import IterableDataset as HFIterableDataset
 from datasets import Dataset
 from datasets.distributed import split_dataset_by_node
 
@@ -203,7 +204,8 @@ def preprocess_dataset(
         The tokenized dataset.
     """
 
-    # assert hasattr(dataset, __getitem__), "A map-style dataset is required for this function"
+    assert hasattr(dataset, "map")
+
     if fn_kwargs is None:
         fn_kwargs = dict()
 
@@ -231,14 +233,21 @@ def preprocess_dataset(
         select_range = normalize_range(len(dataset), select_range)
         dataset = dataset.select(select_range)
 
-    if to_iterable:
-        dataset = to_iterable_dataset_with_length(dataset, num_shards=num_shards)
+    # Map-style dataset?
+    if hasattr(dataset, "__getitem__") and hasattr(dataset, "__len__"):
+        if to_iterable:
+            dataset = to_iterable_dataset_with_length(dataset, num_shards=num_shards)
+            if shuffle:
+                dataset = dataset.shuffle(buffer_size=shuffle_buffer_size, seed=seed)
+        else:
+            map_kwargs["desc"] = desc
+            if shuffle:
+                dataset = dataset.shuffle(seed=seed)
+    else:
+        # Iterable dataset
+        assert hasattr(dataset, "__iter__")
         if shuffle:
             dataset = dataset.shuffle(buffer_size=shuffle_buffer_size, seed=seed)
-    else:
-        map_kwargs["desc"] = desc
-        if shuffle:
-            dataset = dataset.shuffle(seed=seed)
 
     if distributed_environment is not None:
         dataset = split_dataset_by_node(

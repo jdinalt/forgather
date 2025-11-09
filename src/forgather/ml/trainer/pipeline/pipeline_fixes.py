@@ -10,7 +10,7 @@ The above issue appears to be triggered by including shared buffers in the model
 example, sharing RoPE embeddings.
 
 Another identified bug is that splitting a model sometimes results in unreferenced
-copies of a module in the wrong sub-module. This results in duplicate FQNs, 
+copies of a module in the wrong sub-module. This results in duplicate FQNs,
 with-respect-to the complete model, and this wreaks havoc with checkpointing,
 where multiple ranks believe they own the same FQN, corrupting each others checkpoints.
 

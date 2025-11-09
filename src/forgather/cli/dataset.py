@@ -83,9 +83,9 @@ def dataset_cmd(args):
             )
 
     if args.examples:
-        print(f"Printing {args.examples} examples from the train dataset:")
-        if args.tokenizer_path:
-
+        print(f"Printing {args.examples} examples from the dataset:")
+        if args.tokenized:
+            assert tokenizer, "Decoding a tokenized dataset requires the tokenizer"
             for i, example in zip(range(args.examples), split):
                 input_ids = example["input_ids"]
                 n_documents = (
@@ -95,7 +95,7 @@ def dataset_cmd(args):
                 data += f"{header:-^80}" + "\n" + tokenizer.decode(input_ids) + "\n"
 
         else:
-            print("Tokenizer path not provided, skipping tokenization.")
+            print("Dumping raw examples.")
             for i, example in zip(range(args.examples), split):
                 data += f"{i:-^80}\n"
                 for feature in features:

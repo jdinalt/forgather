@@ -307,7 +307,7 @@ def _block_tokenize_optimized(
     add_bos: bool,
     add_eos: bool,
     shuffle_output: bool = False,
-    seed: Optional[int] = None,
+    seed: Optional[int] = 42,
 ) -> Dict[str, List]:
     """
     Optimized bin-packing path for block tokenization.
@@ -371,7 +371,7 @@ def block_tokenize_fn(
     packed: bool = False,
     packing_strategy: str = "greedy",
     shuffle_output: bool = False,
-    seed: Optional[int] = None,
+    seed: Optional[int] = 42,
     stride: int = 0,
     min_len: int = 1,
     max_len: Optional[int] = None,

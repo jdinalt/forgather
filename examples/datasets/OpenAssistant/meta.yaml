@@ -1,0 +1,8 @@
+-- extends "meta_defaults.yaml"
+
+-- block configs
+name: "OpenAssistant"
+description: "Open Assistant is a project meant to give everyone access to a great chat based large language model."
+config_prefix: "configs"
+default_config: "openassistant.yaml"
+<< endblock configs

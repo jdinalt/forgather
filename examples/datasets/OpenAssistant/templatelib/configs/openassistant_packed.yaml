@@ -1,0 +1,41 @@
+-- extends "configs/openassistant.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "OpenAssistant Packed"
+    -- set ns.config_description = "OpenAssistant with packed sequences for efficient training"
+
+## Define the block tokenization function with packing parameters
+[map_function]
+.define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
+    max_length: {{ max_length | default(512) }}
+    overflow: False         # Truncate conversations longer than max_length
+    packed: True            # Combine multiple conversations into each example
+    packing_strategy: "best_fit"  # best_fit, first_fit, or greedy
+    shuffle_output: True    # Shuffle the packed conversations
+    add_eos: False          # EOS is added by chat-template
+    add_bos: True           # Without the tokenizer or chat-template adding this, we need to add it.
+    min_len: 16             # Discard very short examples
+
+[train_dataset]
+    == super()
+    <<: &packing_overrides
+        fn_kwargs: !var { name: "preprocess_args", default: null }
+        map_fn: *map_function
+        map_kwargs:
+            batch_size: 1000    # Increased batch size makes it easier to pack
+    
+[eval_dataset]
+    == super()
+    <<: *packing_overrides
+
+[test_dataset]
+    == super()
+    <<: *packing_overrides
+
+[dynamic_args]
+    == super()
+    max_length:
+        names: "--max-length"
+        type: "int"
+        help: "Maximum length of output sequences"
