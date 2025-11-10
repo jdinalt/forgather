@@ -49,7 +49,6 @@ def main():
         languages=["en", "es"],  # Multiple languages
         min_quality=0.6,  # Higher quality threshold
         branch_temperature=0.5,  # More deterministic branching
-        dataset_length=50,  # Small dataset for example
         seed=123,
     )
     print(f"   Languages: {dataset_dict.config.languages}")

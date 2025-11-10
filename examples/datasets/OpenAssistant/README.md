@@ -111,7 +111,6 @@ config = OpenAssistantConfig(
     exclude_synthetic=True,
     branch_temperature=1.0,
     seed=42,
-    dataset_length=10000,
     val_split=10,
     test_split=10
 )
@@ -157,7 +156,6 @@ dataset_dict = OpenAssistantDatasetDict(
     languages=['en', 'es'],  # Multiple languages
     min_quality=0.6,         # Higher quality threshold
     branch_temperature=0.5,  # More deterministic branching
-    dataset_length=50000,    # Larger dataset
     seed=123
 )
 ```
@@ -187,7 +185,6 @@ dataset_dict = OpenAssistantDatasetDict(
     tokenizer=None,
     chat_template="",  # Uses default ChatML template
     languages=['en'],
-    dataset_length=100
 )
 
 # Parse examples
@@ -220,54 +217,9 @@ The implementation uses several optimizations for high performance:
 
 The `TreeDatabase` class provides efficient access to conversation trees:
 
-```python
-class TreeDatabase:
-    """Fast, indexed access to conversation trees with filtering."""
-
-    def __init__(self, trees: List[Dict], config: Dict):
-        # Index trees by ID for O(1) lookup
-        self.trees_by_id = {tree['message_tree_id']: tree for tree in trees}
-        self.tree_ids = list(self.trees_by_id.keys())
-        self.config = config
-
-    def get_random_tree(self, rng: random.Random) -> Dict:
-        """Select a random tree using provided RNG."""
-        tree_id = rng.choice(self.tree_ids)
-        return self.trees_by_id[tree_id]
-```
-
 ### Thread Generator
 
 The `ThreadGenerator` class implements deterministic conversation sampling:
-
-```python
-class ThreadGenerator:
-    """Generates conversation threads from trees with quality-weighted branching."""
-
-    def __init__(self, tree_db, length, config, chat_template, template_args, seed):
-        self.tree_db = tree_db
-        self.length = length
-        self.config = config
-        self.chat_template = chat_template
-        self.template_args = template_args
-        self.rng = random.Random(seed)
-        self.count = 0
-
-    def __iter__(self):
-        while self.count < self.length:
-            tree = self.tree_db.get_random_tree(self.rng)
-            thread = extract_random_thread(tree, self.config, self.rng)
-
-            if thread:
-                self.count += 1
-
-                # Apply chat template or return raw messages
-                if self.chat_template:
-                    text = self.chat_template.render(messages=thread, **self.template_args)
-                    yield {'text': text}
-                else:
-                    yield {'messages': thread}
-```
 
 ### Deterministic Hashing
 
@@ -297,7 +249,6 @@ def deterministic_hash(s: str) -> int:
 | `exclude_synthetic` | bool | True | Exclude synthetic messages |
 | `branch_temperature` | float | 1.0 | Branching randomness (higher = more random) |
 | `seed` | int | 42 | Random seed for reproducibility |
-| `dataset_length` | int | 10000 | Examples per epoch (-1 for infinite) |
 | `val_split` | int | 10 | Validation split percentage |
 | `test_split` | int | 10 | Test split percentage |
 

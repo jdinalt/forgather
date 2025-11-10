@@ -1,4 +1,4 @@
--- extends 'configs/2gpu.yaml'
+-- extends 'configs/pp_2gpu.yaml'
 
 [config_metadata]
     == super()

@@ -40,11 +40,9 @@ def main():
         exclude_synthetic=True,
         branch_temperature=1.0,
         seed=42,
-        dataset_length=100,  # Small dataset for example
         val_split=10,
         test_split=10,
     )
-    print(f"   Dataset length: {config.dataset_length}")
     print(f"   Languages: {config.languages}")
     print(f"   Min quality: {config.min_quality}")
 

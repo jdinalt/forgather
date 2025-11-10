@@ -15,12 +15,13 @@ from typing import Any, Dict, List, Optional
 from collections import Counter
 from dataclasses import dataclass, field, asdict
 
+from datasets import DatasetInfo, Features, Value
 import numpy as np
 import jinja2.sandbox
 from datasets.dataset_dict import IterableDatasetDict
 from datasets.io.generator import GeneratorDatasetInputStream
+from datasets import DatasetInfo, Features, Value
 from huggingface_hub import hf_hub_download
-from forgather.ml.distributed import main_process_first
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +84,7 @@ class OpenAssistantConfig:
     seed: int = 42
 
     # Dataset size
-    dataset_length: int = 10000  # -1 for infinite
-    val_split: int = 10  # percentage
+    val_split: int = 5  # percentage
     test_split: int = 10  # percentage
 
     def __post_init__(self):
@@ -366,7 +366,6 @@ class ThreadGenerator:
     def __init__(
         self,
         tree_db: TreeDatabase,
-        length: int,
         config: Dict[str, Any],
         chat_template: Optional[Any] = None,
         template_args: Optional[Dict[str, Any]] = None,
@@ -377,14 +376,12 @@ class ThreadGenerator:
 
         Args:
             tree_db: TreeDatabase instance
-            length: Number of examples to generate (-1 for infinite)
             config: Configuration dictionary
             chat_template: Jinja2 template for formatting conversations (optional)
             template_args: Arguments for chat template (e.g., bos_token, eos_token)
             seed: Random seed
         """
         self.tree_db = tree_db
-        self.length = length
         self.config = config
         self.chat_template = chat_template
         self.template_args = template_args or {}
@@ -400,9 +397,6 @@ class ThreadGenerator:
 
     def __next__(self) -> Dict[str, Any]:
         """Generate next example."""
-        # Check length limit
-        if self.length != -1 and self.count >= self.length:
-            raise StopIteration
 
         # Keep trying until we get a valid thread
         max_attempts = 100
@@ -444,8 +438,6 @@ class OpenAssistantDatasetDict(IterableDatasetDict):
         self,
         tokenizer=None,
         chat_template="",
-        map_fn=None,
-        map_kwargs=None,
         **config_kwargs,
     ):
         """
@@ -575,17 +567,6 @@ class OpenAssistantDatasetDict(IterableDatasetDict):
         # Use pre-created tree database
         tree_db = self.tree_databases[key]
 
-        # Determine dataset length for this split
-        if key == "train":
-            length = self.config.dataset_length
-        else:
-            # Val/test splits use 1/10th of train length
-            length = (
-                max(self.config.dataset_length // 10, 100)
-                if self.config.dataset_length > 0
-                else 1000
-            )
-
         # Determine seed for this split (consistent across calls)
         split_seed = self.config.seed + deterministic_hash(key) % 1000
 
@@ -602,11 +583,10 @@ class OpenAssistantDatasetDict(IterableDatasetDict):
 
         # Create generator factory function that uses gen_kwargs to avoid capturing large objects
         # This prevents dill from having to pickle the entire TreeDatabase during fingerprinting
-        def generator_fn(tree_db, length, config, chat_template, template_args, seed):
+        def generator_fn(tree_db, config, chat_template, template_args, seed):
             """Factory function that creates a new generator instance with the same seed."""
             return ThreadGenerator(
                 tree_db=tree_db,
-                length=length,
                 config=config,
                 chat_template=chat_template,
                 template_args=template_args,
@@ -622,7 +602,6 @@ class OpenAssistantDatasetDict(IterableDatasetDict):
             generator=generator_fn,
             gen_kwargs={
                 "tree_db": tree_db,
-                "length": length,
                 "config": gen_config,
                 "chat_template": self.chat_template,
                 "template_args": self.template_args,
@@ -631,6 +610,14 @@ class OpenAssistantDatasetDict(IterableDatasetDict):
             fingerprint=fingerprint,
             streaming=True,
         ).read()
+
+        # Add meta-data
+        dataset._info = DatasetInfo(
+            description="OpenAssistant dataset",
+            homepage="https://github.com/LAION-AI/Open-Assistant/",
+            citation="https://arxiv.org/abs/2304.07327",
+            features=Features({"text": Value("string")}),
+        )
 
         # Store in parent's data dict
         self[key] = dataset

@@ -140,6 +140,12 @@ class DataCollatorForCausalLM:
         )
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+        # print(f"{type(features)=}")
+        # print(f"{len(features)=}")
+        # print(f"{type(features[0])=}")
+        # for k in features[0].keys():
+        #    print(f"{k=}")
+
         if self.truncation:
             features = self._truncate(features)
         padded_batch = self._pad(features)

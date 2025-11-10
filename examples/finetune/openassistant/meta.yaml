@@ -1,0 +1,8 @@
+-- extends "meta_defaults.yaml"
+
+-- block configs
+name: "OpenAssistant"
+description: "Finetune a model with OpenAssistant dataset"
+config_prefix: "configs"
+default_config: "7b_1gpu.yaml"
+<< endblock configs

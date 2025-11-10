@@ -1,13 +1,12 @@
-from dataclasses import dataclass, field
+from typing import Optional, Literal
 from types import NoneType
 import logging
 from collections.abc import Sequence
-import os
 
 import torch
-from torch.utils.data import IterableDataset
+from torch.utils.data import IterableDataset, Dataset
 from datasets import IterableDataset as HFIterableDataset
-from datasets import Dataset
+from datasets import Dataset as HFDataset
 from datasets.distributed import split_dataset_by_node
 
 from ..distributed import main_process_first
@@ -164,7 +163,7 @@ def default_tokenize_map_fn(element, tokenizer, feature, **kwargs):
 # by the other ranks, which avoid potential race conditions and duplicate work.
 @main_process_first()
 def preprocess_dataset(
-    dataset: Dataset,
+    dataset: HFDataset | HFIterableDataset | IterableDatasetWithLength,
     tokenizer,
     *,
     select_range: range | int | float | Sequence | NoneType = None,
@@ -179,6 +178,8 @@ def preprocess_dataset(
     map_fn=default_tokenize_map_fn,
     map_kwargs=None,
     fn_kwargs=None,
+    dataset_type: Optional[Literal["map"] | Literal["iterable"]] = None,
+    dataset_length: Optional[int] = None,
 ):
     """
     This is a farily generic and flxible dataset preprocessor to quickly get a dataset
@@ -200,11 +201,15 @@ def preprocess_dataset(
         map_kwargs: Additional keyword arguments for the map function.
         fn_kwargs: Additional keyword arguments for the map function.
         parallel_tokenizer: If True, enable parallel tokenization.
+        dataset_type: Explicitly specify dataset type
+        dataset_length: Set dataset length, when no __len__ is available.
     Returns:
         The tokenized dataset.
     """
 
-    assert hasattr(dataset, "map")
+    assert (
+        dataset_type is None or dataset_type == "map" or dataset_type == "iterable"
+    ), "dataset_type must be one of None, 'map', or 'iterable'"
 
     if fn_kwargs is None:
         fn_kwargs = dict()
@@ -234,7 +239,13 @@ def preprocess_dataset(
         dataset = dataset.select(select_range)
 
     # Map-style dataset?
-    if hasattr(dataset, "__getitem__") and hasattr(dataset, "__len__"):
+    if (dataset_type and dataset_type == "map") or isinstance(dataset, HFDataset):
+        assert (
+            hasattr(dataset, "__getitem__")
+            and hasattr(dataset, "__len__")
+            and hasattr(dataset, "map")
+            and hasattr(dataset, "shuffle")
+        )
         if to_iterable:
             dataset = to_iterable_dataset_with_length(dataset, num_shards=num_shards)
             if shuffle:
@@ -244,8 +255,13 @@ def preprocess_dataset(
             if shuffle:
                 dataset = dataset.shuffle(seed=seed)
     else:
-        # Iterable dataset
-        assert hasattr(dataset, "__iter__")
+        assert (
+            hasattr(dataset, "__iter__")
+            and hasattr(dataset, "map")
+            and hasattr(dataset, "shuffle")
+        )
+        if not hasattr(dataset, "__len__") and dataset_length:
+            dataset = IterableDatasetWithLength(dataset, dataset_length)
         if shuffle:
             dataset = dataset.shuffle(buffer_size=shuffle_buffer_size, seed=seed)
 

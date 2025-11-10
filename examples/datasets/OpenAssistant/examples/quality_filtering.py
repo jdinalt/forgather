@@ -52,7 +52,6 @@ def main():
         min_quality=None,  # No quality filter
         min_thread_length=2,
         max_thread_length=7,
-        dataset_length=50,
         seed=42,
     )
     print("   Min quality: None (all qualities accepted)")
@@ -70,7 +69,6 @@ def main():
         min_quality=0.7,  # High quality threshold
         min_thread_length=3,  # Slightly longer conversations
         max_thread_length=7,
-        dataset_length=50,
         seed=42,
     )
     print("   Min quality: 0.7 (high quality only)")
@@ -88,7 +86,6 @@ def main():
         chat_template="",
         languages=["en"],
         branch_temperature=0.3,  # More deterministic
-        dataset_length=30,
         seed=100,
     )
     train_low_temp = dataset_low_temp["train"]
@@ -100,7 +97,6 @@ def main():
         chat_template="",
         languages=["en"],
         branch_temperature=2.0,  # More random
-        dataset_length=30,
         seed=100,  # Same seed for comparison
     )
     train_high_temp = dataset_high_temp["train"]

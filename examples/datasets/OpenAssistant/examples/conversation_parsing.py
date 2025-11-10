@@ -43,7 +43,6 @@ def main():
         tokenizer=None,  # Not needed for this example
         chat_template="",  # Uses default ChatML template
         languages=["en"],
-        dataset_length=50,
         seed=42,
     )
     print("   Dataset created with default ChatML formatting")

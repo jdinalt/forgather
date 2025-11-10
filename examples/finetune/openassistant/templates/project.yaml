@@ -1,0 +1,76 @@
+-- extends 'projects/base_finetune_proj.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "OpenAssitant Finetune"
+    -- set ns.config_description = "Train a model on OpenAssistant dataset"
+    -- set ns.log_name = "default"
+    -- set ns.default_dataset_proj = joinpath(ns.forgather_dir, 'examples/datasets/OpenAssistant')
+    -- set ns.default_dataset_config = "openassistant_packed.yaml"
+    -- set ns.default_max_steps = 200
+    -- set ns.max_eval_steps = 5
+    -- set ns.default_temperature = 2.0
+
+[model_constructor_args]
+    == super()
+    # **project**
+    attn_implementation: "{{ attn_implementation | default('flex_attention') }}"
+
+[datasets_preprocessor_args]
+# Overrides for forgather.ml.datasets:block_tokenize_fn
+.define: &datasets_preprocessor_args !dict
+    max_length: 4096
+
+[dataset_pp_kwargs]
+    == super()
+    # **project**
+    languages: {{ languages | default(['en', 'es', 'de', 'fr']) }}
+    min_quality: {{ min_quality | default(0.0) }}
+    branch_temperature: {{ branch_temperature | default(ns.default_temperature) }}
+    # The dataset is open-ended in length; just put some values here for progress
+    dataset_length: 100000
+    eval_length: 10000
+
+[datacollator]
+    == super()
+    packed_sequences: True
+    max_length: 4096
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
+    lr: 4.0e-6
+    weight_decay: 0.001
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+    warmup_steps: 50
+    cooldown_steps: 0 # Use constant learning-rate, after warmup
+
+[dynamic_args]
+    == super()
+    languages:
+        names: "--languages"
+        help: "Languages to include (comma-separated)"
+        type: "str"
+    min_quality:
+        names: "--min-quality"
+        help: "Minimum quality threshold"
+        type: "float"
+    branch_temperature:
+        names: "--branch-temperature"
+        help: "Temperature for quality-weighted branch sampling"
+        type: "float"
+    
+#-------------------- project.trainer --------------------
+-- extends "finetune.trainer"
+
+[trainer_args]
+    == super()
+    # **project**
+    logging_steps: 2
+    eval_steps: 15
+    save_steps: 1000
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 16
+    max_steps: {{ max_steps | default(ns.default_max_steps) }}
+    max_eval_steps: {{ ns.max_eval_steps }}

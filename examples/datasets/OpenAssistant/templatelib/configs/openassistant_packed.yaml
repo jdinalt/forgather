@@ -8,7 +8,7 @@
 ## Define the block tokenization function with packing parameters
 [map_function]
 .define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
-    max_length: {{ max_length | default(512) }}
+    max_length: {{ max_length | default(4096) }}
     overflow: False         # Truncate conversations longer than max_length
     packed: True            # Combine multiple conversations into each example
     packing_strategy: "best_fit"  # best_fit, first_fit, or greedy
@@ -24,14 +24,17 @@
         map_fn: *map_function
         map_kwargs:
             batch_size: 1000    # Increased batch size makes it easier to pack
+    dataset_length: {{ dataset_length | default(1000) }}
     
 [eval_dataset]
     == super()
     <<: *packing_overrides
+    dataset_length: {{ eval_length | default(50) }}
 
 [test_dataset]
     == super()
     <<: *packing_overrides
+    dataset_length: 100
 
 [dynamic_args]
     == super()

@@ -91,13 +91,14 @@ def dataset_cmd(args):
                 n_documents = (
                     (torch.tensor(input_ids) == tokenizer.bos_token_id).sum().item()
                 )
-                header = f" {i} Tokens: {len(input_ids)}, Documents: {n_documents} "
+                header = f" {i} Tokens: {len(input_ids)}, Documents: {n_documents}, Features: {example.keys()}"
                 data += f"{header:-^80}" + "\n" + tokenizer.decode(input_ids) + "\n"
 
         else:
             print("Dumping raw examples.")
             for i, example in zip(range(args.examples), split):
-                data += f"{i:-^80}\n"
+                header = f" {i} Features: {example.keys()}"
+                data += f"{header:-^80}" + "\n"
                 for feature in features:
                     data += f"{feature:*^16}\n\n" + str(example[feature]) + "\n"
     write_output_or_edit(args, data, ".txt")

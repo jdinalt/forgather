@@ -52,13 +52,19 @@
     -- include 'models/causal_lm/from_pretrained_config.yaml'
 
 [datasets_definition]
+    [dataset_pp_kwargs]
+.define: &dataset_pp_args
+    chat_template: "{{ chat_template | default(ns.default_chat_template) }}"
+
+    [dataset_dict]
 .define: &dataset_dict !call:forgather:from_project
     project_dir: "{{ dataset_proj | default(ns.default_dataset_proj) }}"
     config_template: "{{ dataset_config | default(ns.default_dataset_config) }}"
     targets: [ "train_dataset", "eval_dataset" ] 
     preprocess_args: *datasets_preprocessor_args
     tokenizer: *tokenizer
-    chat_template: "{{ chat_template | default(ns.default_chat_template) }}"
+    pp_kwargs:
+        <<: *dataset_pp_args
 
     [train_dataset]
 train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]

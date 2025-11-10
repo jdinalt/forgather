@@ -13,16 +13,15 @@
 [dataset_dict]
 dataset_dict: &dataset_dict !singleton:{{ ns.openassistant_src }}:OpenAssistantDatasetDict@dataset_dict
     languages: {{ languages | default(['en']) }}
-    min_quality: {{ min_quality | default('null') }}
+    min_quality: {{ min_quality | default('0.0') }}
     min_thread_length: {{ min_thread_length | default(2) }}
-    max_thread_length: {{ max_thread_length | default(7) }}
+    max_thread_length: {{ max_thread_length | default(1000) }}
     exclude_deleted: {{ exclude_deleted | default(True) }}
     exclude_synthetic: {{ exclude_synthetic | default(True) }}
     branch_temperature: {{ branch_temperature | default(1.0) }}
-    val_split: {{ val_split | default(10) }}
+    val_split: {{ val_split | default(5) }}
     test_split: {{ test_split | default(10) }}
     seed: {{ seed | default(42) }}
-    dataset_length: {{ dataset_length | default(10000) }}
     tokenizer: *tokenizer # For chat-template only
     chat_template: "{{ ns.openassistant_chat_template }}"
 
@@ -42,17 +41,21 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
         fn_kwargs: !var "preprocess_args"
         map_kwargs:
             batch_size: 32
+        dataset_type: "iterable"
+    dataset_length: {{ dataset_length | default(10000) }}
     dataset: *train_dataset_split
 
 [eval_dataset]
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
     <<: *common_preprocess_args
     dataset: *validation_dataset_split
+    dataset_length: {{ eval_length | default(500) }}
 
 [test_dataset]
 test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
     <<: *common_preprocess_args
     dataset: *test_dataset_split
+    dataset_length: 1000
 
 [dynamic_args]
     == super()
@@ -82,7 +85,11 @@ test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@
         type: "float"
     dataset_length:
         names: "--dataset-length"
-        help: "Number of examples per epoch (-1 for infinite)"
+        help: "Number of examples in train dataset"
+        type: "int"
+    eval_length:
+        names: "--eval-length"
+        help: "Number of examples in eval dataset"
         type: "int"
     seed:
         names: "--seed"
