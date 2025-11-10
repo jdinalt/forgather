@@ -1,0 +1,69 @@
+-- extends 'datasets/tokenized_dataset.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Lovecraft"
+    -- set ns.config_description = "The complete works of H.P. Lovecraft"
+    -- set ns.dataset_path = joinpath(project_dir, "../../hp_lovecraft")
+
+[map_function]
+.define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
+    max_length: {{ window_size | default(512)}}
+    stride: {{ stride | default(64) }}
+    min_len: {{ min_length | default(1) }}
+
+[dataset_dict]
+dataset_dict: &dataset_dict !singleton:datasets:load_dataset
+    arg0: "text"
+    data_dir: {{ ns.dataset_path }}
+    sample_by: "document"
+    data_files:
+        train: "*.txt"
+        validation: "the_call_of_cthulhu.txt"
+        test: "at_the_mountains_of_madness.txt"
+
+[train_dataset_split]
+train_dataset_split: &train_dataset_split !call:getitem [ *dataset_dict, "train" ]
+
+[validation_dataset_split]
+validation_dataset_split: &validation_dataset_split !call:getitem [ *dataset_dict, "validation" ]
+
+[train_dataset]
+train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
+    <<: &common_dataset_args
+        tokenizer: *tokenizer
+        fn_kwargs: !var "preprocess_args"
+        map_fn: *map_function
+    dataset: *train_dataset_split
+    desc: "Tokenizing train"
+
+[eval_dataset]
+eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
+    <<: *common_dataset_args
+    dataset: *validation_dataset_split
+    desc: "Tokenizing validation"
+
+[test_dataset]
+test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
+    <<: *common_dataset_args
+    dataset: *validation_dataset_split
+    desc: "Tokenizing test"
+
+[dynamic_args]
+    == super()
+    dataset_path:
+        names: "--dataset-path"
+        type: path
+        help: "Local path to dataset"
+    window_size:
+        names: "--window-size"
+        type: "int"
+        help: "Sliding window block-size (tokens)"
+    stride:
+        names: "--stride"
+        type: "int"
+        help: "Number of tokens to overlap between blocks"
+    min_length:
+        names: "--min-length"
+        type: "int"
+        help: "Minimum example length (tokens)"

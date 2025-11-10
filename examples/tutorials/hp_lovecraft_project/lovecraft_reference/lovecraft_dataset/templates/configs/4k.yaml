@@ -1,0 +1,11 @@
+-- extends 'configs/lovecraft.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Lovecraft 4K"
+    -- set ns.config_description = "Lovecraft with 4K Blocks"
+
+[map_function]
+.define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
+    max_length: 4096
+    stride: 512

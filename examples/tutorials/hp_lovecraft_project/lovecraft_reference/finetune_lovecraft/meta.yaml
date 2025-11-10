@@ -1,0 +1,8 @@
+-- extends "meta_defaults.yaml"
+
+-- block configs
+name: "Finetune Lovecraft"
+description: "Finetune a model on the complete works of H.P. Lovecraft"
+config_prefix: "configs"
+default_config: "1gpu/default.yaml"
+<< endblock configs
