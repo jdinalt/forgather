@@ -16,7 +16,9 @@ This tutorial teaches you how to:
 
 ## Setup
 
-This is a complete project from scratch. The only things provided are instructions and a collections of text files to train on. The first order of business is to extract the text files from the archive:
+This is a complete project from scratch. If you run into issues and need to see a working example, see the "lovecraft_reference" directory.
+
+The first order of business is to extract the text files from the archive:
 
 ```bash
 # Extract text files
@@ -46,20 +48,18 @@ huggingface-cli download mistralai/Mistral-7B-v0.1 --local-dir "${SRC_MODEL}" \
 One of our memory saving strategies, CPU activation offloading, was not working with the Mistral model when last checked. One workaround is to convert the model to the Forgather format, which does work.
 
 ```bash
-# **From the Forgather root directory**
 # Set name for converted model
 FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
 
 # Convert model to Forgather Llama/Mistral implementation
-scripts/convert_llama.py --model-type mistral --dtype bfloat16 --max-length 4096 \
+forgather convert --dtype bfloat16 --max-length 16384 \
  "${SRC_MODEL}" "${FG_MODEL}"
 ```
 
 ### Convert Model Back to HF Format
 
 ```bash
-# **From the Forgather root directory**
-scripts/convert_llama.py --reverse --model-type mistral --dtype bfloat16 \
+forgather convert --reverse --model-type mistral --dtype bfloat16 \
 --max-length 32000 "${FG_MODEL}" OUTPUT_MODEL_PATH
 ```
 
@@ -176,10 +176,10 @@ forgather -i
 Take a quick look at the new project. Note how our configuration is just a direct copy of the original "local_dataset" configuration.
 ```bash
 # Show project info
-forgather project show
+project show
 
 # List configurations
-forgather ls
+ls
 ```
 
 ### Customize the Configuration
@@ -215,6 +215,7 @@ dataset_dict: &dataset_dict !singleton:datasets:load_dataset
     data_files:
         train: "*.txt" # Train on all files
         validation: "the_call_of_cthulhu.txt" # Validate only on this one file
+        test: "at_the_mountains_of_madness.txt"
 ...
 
 [train_dataset]
@@ -229,26 +230,26 @@ To keep things simple, we validate on a single story, which is also part of the 
 
 ```bash
 # Show the preprocessed configuration
-forgather pp
+pp
 
 # If you encounter a Jinja2 (template) parsing error, you can gain additional insight into
 # what may be going wrong with the --debug option. This will dump each preprocessed template,
 # as passed to Jinja2.
-forgather pp --debug
+pp --debug
 
 # There is a similar debug command for "ls"
-forgather ls --debug
+ls --debug
 
 # Construct the base dataset and display it
 # Note that the configuration does not know the path to the text files, so we have to provide it.
 # This should show the number of examples in the dataset splits
-forgather construct --target dataset_dict --dataset-path ../../hp_lovecraft
+construct --target dataset_dict --dataset-path ../../hp_lovecraft
 
 
 # Dump the first example (story) from the train split
 # This is a fairly large file, so you may want to pipe it through "head" or "less"
 # If using the interactive interface, the "less" pager will be automatically used.
-forgather dataset --target train_dataset_split --dataset-path ../../hp_lovecraft -n 1
+dataset --target train_dataset_split --dataset-path ../../hp_lovecraft -n 1
 ```
 
 Next, we will test the sliding-window pre-processor. This requires a tokenizer, as specified by the "-T TOKENIZER" argument. If you have already built any of the Forgather tokenizers, these will work. You can also just point it at the model directory of the model you will be using.
@@ -258,8 +259,7 @@ Next, we will test the sliding-window pre-processor. This requires a tokenizer, 
 - -n : This is how may examples to show
 
 ```bash
-forgather dataset --target train_dataset --dataset-path ../../hp_lovecraft -T ../../../../../tokenizers/wikitext_32k/ \
---window-size 64 --stride 8 -n 3
+dataset --target train_dataset --dataset-path ../../hp_lovecraft -T ../../../../../tokenizers/wikitext_32k --window-size 64 --stride 8 -s -n 3
 ```
 
 ### Create a New Configuration
@@ -269,7 +269,7 @@ Next, let's create a new configuration for 4K tokens. While we are at it, we wil
 ```bash
 # Create a new configuration, named "4K.yaml"
 # We will copy the existing configuration as a starting point
-forgather project new_config 4k.yaml templates/configs/lovecraft.yaml
+project new_config 4k.yaml templates/configs/lovecraft.yaml
 ```
 
 Open the new configuration in an editor.
@@ -332,11 +332,11 @@ Given that we have hard-codes the arguments, let's make sure that they work.
 forgather:lovecraft_dataset> config 4k.yaml
 
 # And test it...
-forgather:lovecraft_dataset [4k.yaml]> dataset --target train_dataset -T ~/models/fg_mistral/ -n 2
+forgather:lovecraft_dataset [4k.yaml]> dataset --target train_dataset -T ~/models/fg_mistral/ -s -n 2
 
 # Otherwise, from the shell...
 forgather -t 4k.yaml dataset --target train_dataset \
--T ~/models/fg_mistral/ -n 2 | head # or "less"
+-T ~/models/fg_mistral/ -s -n 2 | head # or "less"
 ```
 
 ### Check the Sequence Length Histogram
@@ -357,6 +357,11 @@ Note that this also outputs a ".svg" file, with the histogram.
 
 ## Create a new "finetune" Project
 
+If running the CLI, exit with
+```
+forgather:lovecraft_dataset [4k.yaml]> quit
+```
+
 First, move back to the workspace directory.
 
 ```bash
@@ -372,6 +377,9 @@ forgather project create --name "Finetune Lovecraft" --description "Finetune a m
 
 # Enter the project directory
 cd finetune_lovecraft/
+
+# ...and start the CLI
+forgather -i
 ```
 
 ### Copy Project Level Configuration
@@ -379,7 +387,7 @@ cd finetune_lovecraft/
 As the copied configuration depends upon a project-level, "samantha.yaml," configuration, we will also copy that as well. We can control where the copied configuration goes with the "--type CONFIG_TYPE" argument, like this:
 
 ```bash
-forgather project new_config --type project project.yaml ../../../../finetune/samantha/templates/samantha.yaml
+project new_config --type project project.yaml ../../../../finetune/samantha/templates/samantha.yaml
 ```
 
 ### Customize the Configuration
@@ -441,13 +449,13 @@ On an RTX 4090, this takes about 30 minutes -- it's a small dataset, with only 1
 
 First, check that everything is working with a short test run:
 ```bash
-forgather train --max-steps 10 --save-strategy no --model-id-or-path ~/ai_assets/models/fg_mistral
+train --max-steps 10 --save-strategy no --model-id-or-path ~/ai_assets/models/fg_mistral
 ```
 
 Assuming that it runs, go ahead a train on the complete dataset for 3 epochs.
 
 ```bash
-forgather train --train-epochs 3 --model-id-or-path ~/ai_assets/models/fg_mistral
+train --train-epochs 3 --model-id-or-path ~/ai_assets/models/fg_mistral
 ```
 
 ## Inference
@@ -480,27 +488,17 @@ Of such great powers or beings there may be conceivably a survival in terms of l
 
 ## Long Inference
 
-To speed up inference (or to share the model), you can convert the Fg model back to HF format.
+Start the inference server
 
 ```bash
 # **From the Forgather directory**
-scripts/convert_llama.py --reverse --model-type mistral --dtype bfloat16 --max-length 32000 \
-/home/dinalt/rust/models/fg_mistral /home/dinalt/rust/models/hf_lovecraft_mistral
+forgather inf server -c -m /home/dinalt/ai_assets/models/fg_mistral
 ```
-
-Start the inference server on the converted model:
-
-```bash
-# **From the Forgather directory**
-tools/inference_server/server.py -d "cuda:0" -T bfloat16 \
--c -m /home/dinalt/ai_assets/models/hf_lovecraft_mistral
-```
-
 And test long-context inference, beyond what we trained at (8192 tokens).
 
 ```bash
 # Start with an open-ended prompt, a title, as seen in dataset. See what happens!
-./tools/inference_server/client.py --temperature 1.0 --stream --completion "$(printf 'The Stranger (1923)\n\n')" --max-tokens 8192 | tee the_stranger.txt
+forgather inf client --temperature 1.0 --stream --completion "$(printf 'The Stranger (1923)\n\n')" --max-tokens 8192 | tee the_stranger.txt
 ```
 
 This will both stream the output and save it to "lovecraftian.txt."
