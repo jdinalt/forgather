@@ -372,12 +372,12 @@ To work around this, we have a script for converting Llama-like models to a comp
 You can also do this for single-GPU training. In most cases, it should not be required, but it can reduce peak GPU memory usage a little bit. This step may still be required to use CPU Checkpoint Offloading, as the HF version of the model appears to crash with this option enabled.
 
 ```bash
-# From the Forgather root directory
+# **From the Forgather root directory**
 # Set name for converted model
 FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
 
 # Convert model to Forgather Llama/Mistral implementation
-scripts/convert_llama.py --model-type mistral --dtype bfloat16 --max-length 16384 \
+forgather convert --dtype bfloat16 --max-length 16384 \
 -t "chat_templates/chatml_eos.jinja" "${SRC_MODEL}" "${FG_MODEL}" \
 --add-tokens "scripts/example_additional_tokens.yaml"
 ```
@@ -385,7 +385,7 @@ scripts/convert_llama.py --model-type mistral --dtype bfloat16 --max-length 1638
 To convert the model back to HF format...
 
 ```bash
-scripts/convert_llama.py --reverse --model-type mistral --dtype bfloat16 \
+forgather convert --reverse --model-type mistral --dtype bfloat16 \
 --max-length 32768 "${FG_MODEL}" OUTPUT_MODEL_PATH
 ```
 
@@ -413,8 +413,8 @@ You can test the resulting model using the provided Open-AI compatible inference
 # Start inference server (from 'forgather' directory)
 # Change the model path to match your output directory.
 # If the model already has the correct chat-template, you can drop the "-t CHAT_TEMPLATE" arg.
-tools/inference_server/server.py -d "cuda:0" -t chat_templates/chatml_eos.jinja -T bfloat16 \
--c -m /home/dinalt/ai_assets/models/fg_mistral
+forgather inf server -t chat_templates/chatml_eos.jinja -T bfloat16 \
+-c -m /path/to/fg_model
 
 # Note: -c : This will search for the latest checkpoint, rather than loading the model from the root directory.
 ```
@@ -422,14 +422,14 @@ tools/inference_server/server.py -d "cuda:0" -t chat_templates/chatml_eos.jinja 
 Test if inference is working:
 
 ```bash
-./tools/inference_server/client.py --stream --message "Hello, what is your name?"
+forgather inf client --message "Hello, what is your name?"
 Hi! I'm Samantha, and it's great to meet you.
 ```
 
 Start an interactive session:
 
 ```bash
-./tools/inference_server/client.py --interactive --stream
+forgather inf client
 Interactive Chat Mode (type 'quit', 'exit', or 'q' to quit)
 Commands:
   /clear    - Clear conversation history
@@ -445,7 +445,7 @@ I'm feeling quite engaged and excited to continue our exploration of new ideas a
 Test the model with text completion:
 
 ```bash
-./tools/inference_server/client.py --stream --completion "Once upon a time" --max-tokens 50
+forgather inf client --completion "Once upon a time" --max-tokens 50
 Once upon a time, before the age of social media, people used to write letters to each other. This was a way for them to express their thoughts, feelings, and emotions, and to stay connected with one another. Although letter-writing is not as common today
 ```
 
@@ -777,7 +777,5 @@ You may see warnings about deprecated `huggingface-cli download` syntax. These c
 ## Finalizing the Model
 
 When you are done training and wish to consolidate everything to use with external tools (or share), you will want to copy the latest checkpoint weights into the root of the model directory -- most tools don't know how to find the latest checkpoint and may load the initial weights instead.
-
-If you have converted the model to Forgather format, I would recommend converting it back to the original HF format, as the Forgather format is not optimized for inference yet. See above for details.
 
 You can then discard the additional checkpoints and logging data, if you don't need them for anything else.

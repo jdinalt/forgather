@@ -2,21 +2,37 @@
 
 A simple OpenAI API-compatible inference server for testing HuggingFace models.
 
+The server and client should both work with other tools which support the OpenAI protocol.
+
 ## Installation
 
-```bash
-cd tools/inference_server
-pip install -r requirements.txt
-```
+The base Forgather install should be sufficient. 
 
-**Key Dependencies:**
-- `fastapi>=0.104.0` - Web framework
-- `transformers>=4.35.0` - HuggingFace model support  
-- `torch>=2.0.0` - PyTorch backend
-- `openai>=1.0.0` - OpenAI client for testing
-- `pyyaml>=6.0.0` - YAML configuration support
+The scripts can be executed as stand-alone executables or started from the Forgather CLI, for convenience.
 
 ## Quick Start
+
+**Start server**
+
+```bash
+# Load model in directory using AutoModelForCausalLM.from_pretrained()
+# This defaults to bfloat16 on cuda:0
+forgather inf server -m /path/to/model
+
+# Load model from latest Forgather checkpoint
+forgather inf server -c -m /path/to/model
+```
+**Start client**
+
+```bash
+# Start in interactive (chat) mode
+forgather inf client
+
+# Perform text completion on prompt
+forgather inf client --completion "Once upon a time"
+```
+
+### From Configuration File
 
 1. **Create server configuration:**
 ```yaml
@@ -59,17 +75,17 @@ echo "In a magical forest" | python client.py client_config.yaml
 
 #### Using Command Line Arguments
 ```bash
-python server.py --model microsoft/DialoGPT-medium
+forgather inf server --model microsoft/DialoGPT-medium
 ```
 
 #### Using YAML Configuration File
 ```bash
-python server.py server_config.yaml
+forgather inf server server_config.yaml
 ```
 
 #### Using YAML Configuration with CLI Overrides
 ```bash
-python server.py server_config.yaml --port 8001 --log-level DEBUG
+forgather inf server server_config.yaml --port 8001 --log-level DEBUG
 ```
 
 Options:
@@ -77,7 +93,7 @@ Options:
 - `--model`: HuggingFace model path or name (required, can be in config file)
 - `--host`: Host to bind to (default: 127.0.0.1)
 - `--port`: Port to bind to (default: 8000)
-- `--device`: Device to use - cuda, cpu, or auto (default: auto)
+- `--device`: Device to use - cuda, cpu, or auto (default: cuda:0)
 - `--chat-template`: Path to custom Jinja2 chat template file (optional)
 - `--dtype`: Model data type (optional, see Data Types section)
 - `--stop-sequences`: Custom stop sequences to halt generation (optional)
@@ -118,20 +134,14 @@ stop-sequences:
 
 ```bash
 # Use config file only
-python server.py my_config.yaml
+forgather inf server my_config.yaml
 
 # Override specific values
-python server.py my_config.yaml --port 8001
+forgather inf server my_config.yaml --port 8001
 
 # Multiple overrides
-python server.py my_config.yaml --device cpu --log-level DEBUG
+forgather inf server my_config.yaml --device cpu --log-level DEBUG
 ```
-
-#### Benefits
-- **Reusable configurations**: Save common parameter combinations
-- **Environment-specific configs**: Development, testing, production
-- **Parameter documentation**: YAML files serve as configuration reference
-- **CLI flexibility**: Any parameter can still be overridden from command line
 
 ### Chat Template Support
 
@@ -143,7 +153,7 @@ The server supports three chat template sources, in order of priority:
 
 #### Using ChatML template
 ```bash
-python server.py --model /path/to/model --chat-template /path/to/chat_templates/chatml.jinja
+forgather inf server --model /path/to/model --chat-template /path/to/chat_templates/chatml.jinja
 ```
 
 #### Narrative Template for Story-Focused Models
@@ -208,19 +218,19 @@ The server supports flexible data type configuration with intelligent defaults:
 **Examples:**
 ```bash
 # Use default (bfloat16 if supported)
-python server.py --model /path/to/model
+forgather inf server --model /path/to/model
 
 # Explicit bfloat16
-python server.py --model /path/to/model --dtype bfloat16
+forgather inf server --model /path/to/model --dtype bfloat16
 
 # Use float16 for older GPUs
-python server.py --model /path/to/model --dtype float16
+forgather inf server --model /path/to/model --dtype float16
 
 # High precision for research
-python server.py --model /path/to/model --dtype float32
+forgather inf server --model /path/to/model --dtype float32
 
 # With custom stop sequences
-python server.py --model /path/to/model --stop-sequences "<|im_end|>" "</s>"
+forgather inf server --model /path/to/model --stop-sequences "<|im_end|>" "</s>"
 ```
 
 ### Stop Sequences
@@ -239,13 +249,13 @@ The server supports flexible stop sequence configuration to control when generat
 **Examples:**
 ```bash
 # ChatML format stopping
-python server.py --model /path/to/model --stop-sequences "<|im_end|>"
+forgather inf server --model /path/to/model --stop-sequences "<|im_end|>"
 
 # Multiple stop sequences
-python server.py --model /path/to/model --stop-sequences "</s>" "<|endoftext|>" "Human:"
+forgather inf server --model /path/to/model --stop-sequences "</s>" "<|endoftext|>" "Human:"
 
 # Instruct format stopping
-python server.py --model /path/to/model --stop-sequences "### Human:" "### Assistant:"
+forgather inf server --model /path/to/model --stop-sequences "### Human:" "### Assistant:"
 ```
 
 ## Logging
@@ -278,26 +288,9 @@ For each request, the server logs:
 2025-08-05 18:15:03,772 - root - INFO - [chatcmpl-c814be94] Response text (clean): 'The answer is 4! I'm here to provide accurate information and support in a range of topics, from math to emotional well-be'
 ```
 
-### Usage
-```bash
-# Default INFO logging
-python server.py --model /path/to/model
-
-# Debug logging (very verbose)
-python server.py --model /path/to/model --log-level DEBUG
-
-# Minimal logging
-python server.py --model /path/to/model --log-level WARNING
-```
-
 ## CLI Client Tool
 
 A dedicated CLI client (`client.py`) is provided for easy interaction with the server using the official OpenAI Python client, ensuring full compatibility.
-
-### Installation
-```bash
-pip install openai  # Or use requirements.txt
-```
 
 ### Usage
 
@@ -326,28 +319,28 @@ no-repeat-ngram-size: 2
 **Usage with configuration:**
 ```bash
 # Use config file
-python client.py client_config.yaml --message "Tell me a story"
+forgather inf client client_config.yaml --message "Tell me a story"
 
 # Override config values
-python client.py client_config.yaml --message "Hello" --max-tokens 30 --temperature 0.5
+forgather inf client client_config.yaml --message "Hello" --max-tokens 30 --temperature 0.5
 
 # Completion mode with config
-python client.py client_config.yaml --completion "Once upon a time"
+forgather inf client client_config.yaml --completion "Once upon a time"
 ```
 
 #### Single Message
 ```bash
 # Basic usage
-python client.py --message "Hello, how are you?"
+forgather inf client --message "Hello, how are you?"
 
 # With custom server URL
-python client.py --message "What's 2+2?" --url http://localhost:8001/v1
+forgather inf client --message "What's 2+2?" --url http://localhost:8001/v1
 
 # With system prompt
-python client.py --message "Tell me a joke" --system "You are a funny comedian"
+forgather inf client --message "Tell me a joke" --system "You are a funny comedian"
 
 # Show token usage
-python client.py --message "Explain AI" --show-usage --max-tokens 200
+forgather inf client --message "Explain AI" --show-usage --max-tokens 200
 ```
 
 #### Text Completion (Completions API)
@@ -355,25 +348,25 @@ The server also supports the older `/v1/completions` endpoint for raw text compl
 
 ```bash
 # Basic text completion (includes prompt in output by default)
-python client.py --completion "Once upon a time"
+forgather inf client --completion "Once upon a time"
 
 # With custom parameters
-python client.py --completion "The weather today is" --max-tokens 50 --temperature 0.8
+forgather inf client --completion "The weather today is" --max-tokens 50 --temperature 0.8
 
 # Disable echo (only show generated text)
-python client.py --completion "Python is" --no-echo --max-tokens 30
+forgather inf client --completion "Python is" --no-echo --max-tokens 30
 
 # With stop sequences
-python client.py --completion "Q: What is AI? A:" --stop "Q:" --max-tokens 100
+forgather inf client --completion "Q: What is AI? A:" --stop "Q:" --max-tokens 100
 
 # Show detailed usage information
-python client.py --completion "Hello world" --show-usage
+forgather inf client --completion "Hello world" --show-usage
 
 # Advanced generation parameters for better quality
-python client.py --completion "Once upon a time" --repetition-penalty 1.2 --top-k 50 --max-tokens 100
+forgather inf client --completion "Once upon a time" --repetition-penalty 1.2 --top-k 50 --max-tokens 100
 
 # Multiple parameters for fine control
-python client.py --completion "The story begins" --repetition-penalty 1.1 --no-repeat-ngram-size 3 --top-k 40 --num-beams 2
+forgather inf client --completion "The story begins" --repetition-penalty 1.1 --no-repeat-ngram-size 3 --top-k 40 --num-beams 2
 ```
 
 #### Pipeline Support (Stdin Input)
@@ -405,25 +398,25 @@ echo "Once upon a time" | python client.py --no-echo --max-tokens 100 | grep -v 
 #### Interactive Chat Mode
 ```bash
 # Start interactive session
-python client.py --interactive
+forgather inf client
 
 # With system prompt
-python client.py --interactive --system "You are a helpful coding assistant"
+forgather inf client --system "You are a helpful coding assistant"
 
 # Custom generation parameters
-python client.py --interactive --temperature 0.9 --max-tokens 1000
+forgather inf client --temperature 0.9 --max-tokens 1000
 ```
 
 #### Utility Commands
 ```bash
 # Check server health
-python client.py --health
+forgather inf client --health
 
 # List available models
-python client.py --list-models
+forgather inf client --list-models
 
 # Connect to different server
-python client.py --health --url http://localhost:8001/v1
+forgather inf client --health --url http://localhost:8001/v1
 ```
 
 #### Interactive Commands
@@ -623,6 +616,5 @@ The server supports all major HuggingFace generation parameters for fine-tuning 
 
 ## Limitations
 
-- No streaming support yet
 - Single model per server instance
 - Multi-token stop sequences require post-processing (slight performance impact)

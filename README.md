@@ -84,6 +84,15 @@ forgather control list                          # List running traininig jobs
 forgather control status JOB_ID                 # Get status of training job
 fogrgater control [stop|abort|save] JOB_ID      # Control training jobs
 ```
+**4. Test Model Inference:**
+
+```bash
+# Start inference server
+forgather inf server -c -m /path/to/model
+
+# Perform text completion on prompt
+forgather inf client --completion "Once upon a time"
+```
 
 That's it! You've just trained a small language model using Forgather's template system.
 

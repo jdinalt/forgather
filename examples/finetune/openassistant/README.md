@@ -24,7 +24,7 @@ forgather -t 7b_2gpu.yaml train -M /path/to/model
 forgather -t 7b_4gpu.yaml train -M /path/to/model
 ```
 
-## Test Mode
+## Test Trained Model Performance
 
 From examples/evaluate/eval
 
@@ -39,7 +39,7 @@ forgather -t pp_2gpu.yaml train -M /path/to/model --dataset-proj ../../datasets/
 --dataset-config openassistant_packed.yaml --batch-size 8 --dtype bfloat16 \
 --attn-implementation flex_attention --max-length 4096 --max-steps 12
 
-# Fours GPUs
+# Four GPUs
 forgather -t pp_2gpu.yaml train -M /path/to/model --dataset-proj ../../datasets/OpenAssistant/ \
 --dataset-config openassistant_packed.yaml --batch-size 16 --dtype bfloat16 \
 --attn-implementation flex_attention --max-length 4096 --max-steps 6

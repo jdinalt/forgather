@@ -459,8 +459,7 @@ We will use the model "as-is" to verify that it is working.
 ```bash
 # Start inference server (** from 'forgather' directory **)
 # Change the model path to match your output directory.
-tools/inference_server/server.py -d "cuda:0" -T bfloat16 \
--c -m /home/dinalt/ai_assets/models/fg_mistral
+forgather inf server -c -m /path/to/trained/model
 
 # Note: -c : This will search for the latest checkpoint, rather than loading the weights from the root directory.
 ```
@@ -468,7 +467,7 @@ tools/inference_server/server.py -d "cuda:0" -T bfloat16 \
 We did not teach the model a chat-format, so we should use "completion mode." We need "seed" text, which has been lifted from the start of 'The Call of Cthulu.' The model will take the seed and continue generation from there.
 
 ```bash
-./tools/inference_server/client.py --stream --completion "Of such great powers or beings there may be conceivably a survival" --max-tokens 512
+forgather inf client --completion "Of such great powers or beings there may be conceivably a survival" --max-tokens 512
 ```
 
 Of such great powers or beings there may be conceivably a survival in terms of legend and half-legend. Of this I cannot doubt. But it is not on such powers or beings that my reflections have mainly been concentrated. What I have chiefly sought to investigate is the nature and extent of the powers or abilities which are potentially, if unwittingly, within the reach of any human individual.

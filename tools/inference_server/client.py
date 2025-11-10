@@ -7,7 +7,7 @@ import argparse
 from argparse import RawTextHelpFormatter
 import sys
 from typing import List, Dict, Any, Optional, Union
-import json
+import os
 
 try:
     from openai import OpenAI
@@ -27,36 +27,39 @@ class InferenceClient:
         """Initialize the OpenAI client for our inference server."""
         self.client = OpenAI(
             base_url=base_url,
-            api_key=api_key  # Not used by our server but required by client
+            api_key=api_key,  # Not used by our server but required by client
         )
         self.conversation_history: List[Dict[str, str]] = []
-    
+
     def add_system_message(self, content: str):
         """Add a system message to the conversation."""
-        if not self.conversation_history or self.conversation_history[0]["role"] != "system":
+        if (
+            not self.conversation_history
+            or self.conversation_history[0]["role"] != "system"
+        ):
             self.conversation_history.insert(0, {"role": "system", "content": content})
         else:
             self.conversation_history[0]["content"] = content
-    
+
     def add_user_message(self, content: str):
         """Add a user message to the conversation."""
         self.conversation_history.append({"role": "user", "content": content})
-    
+
     def add_assistant_message(self, content: str):
         """Add an assistant message to the conversation."""
         self.conversation_history.append({"role": "assistant", "content": content})
-    
+
     def clear_history(self):
         """Clear conversation history."""
         self.conversation_history.clear()
-    
+
     def get_completion(
-        self, 
-        model: str = "inference-server", 
+        self,
+        model: str = "inference-server",
         max_tokens: int = 512,
         temperature: float = 0.7,
         top_p: float = 1.0,
-        stream: bool = False
+        stream: bool = False,
     ) -> str:
         """Get a completion from the server."""
         try:
@@ -66,9 +69,9 @@ class InferenceClient:
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
-                stream=stream
+                stream=stream,
             )
-            
+
             if stream:
                 assistant_message = ""
                 for chunk in response:
@@ -82,29 +85,29 @@ class InferenceClient:
                 assistant_message = response.choices[0].message.content
                 self.add_assistant_message(assistant_message)
                 return assistant_message
-            
+
         except Exception as e:
             return f"Error: {str(e)}"
-    
+
     def single_shot(
-        self, 
-        message: str, 
+        self,
+        message: str,
         system_prompt: Optional[str] = None,
         model: str = "inference-server",
         max_tokens: int = 512,
         temperature: float = 0.7,
         top_p: float = 1.0,
         show_usage: bool = False,
-        stream: bool = False
+        stream: bool = False,
     ) -> str:
         """Send a single message and get a response without conversation history."""
         messages = []
-        
+
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        
+
         messages.append({"role": "user", "content": message})
-        
+
         try:
             if stream:
                 response = self.client.chat.completions.create(
@@ -113,9 +116,9 @@ class InferenceClient:
                     max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=top_p,
-                    stream=True
+                    stream=True,
                 )
-                
+
                 assistant_message = ""
                 for chunk in response:
                     if chunk.choices[0].delta.content is not None:
@@ -123,11 +126,11 @@ class InferenceClient:
                         print(content, end="", flush=True)
                         assistant_message += content
                 print()  # Add newline at end
-                
+
                 # Note: Usage is not available with streaming
                 if show_usage:
                     print("\\nUsage: Not available with streaming")
-                
+
                 return assistant_message
             else:
                 response = self.client.chat.completions.create(
@@ -135,20 +138,22 @@ class InferenceClient:
                     messages=messages,
                     max_tokens=max_tokens,
                     temperature=temperature,
-                    top_p=top_p
+                    top_p=top_p,
                 )
-                
+
                 assistant_message = response.choices[0].message.content
-                
+
                 if show_usage:
                     usage = response.usage
-                    print(f"\\nUsage: {usage.prompt_tokens} prompt + {usage.completion_tokens} completion = {usage.total_tokens} total tokens")
-                
+                    print(
+                        f"\\nUsage: {usage.prompt_tokens} prompt + {usage.completion_tokens} completion = {usage.total_tokens} total tokens"
+                    )
+
                 return assistant_message
-            
+
         except Exception as e:
             return f"Error: {str(e)}"
-    
+
     def completion(
         self,
         prompt: str,
@@ -167,46 +172,46 @@ class InferenceClient:
         typical_p: Optional[float] = None,
         num_beams: Optional[int] = None,
         min_length: Optional[int] = None,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
     ) -> str:
         """Generate a text completion for the given prompt."""
         try:
             # Build standard OpenAI parameters
             params = {
-                'model': model,
-                'prompt': prompt,
-                'max_tokens': max_tokens,
-                'temperature': temperature,
-                'top_p': top_p,
-                'stop': stop,
-                'echo': echo,
-                'stream': stream
+                "model": model,
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "top_p": top_p,
+                "stop": stop,
+                "echo": echo,
+                "stream": stream,
             }
-            
+
             # Build HuggingFace parameters for extra_body
             extra_body = {}
             hf_params = {
-                'repetition_penalty': repetition_penalty,
-                'length_penalty': length_penalty,
-                'no_repeat_ngram_size': no_repeat_ngram_size,
-                'top_k': top_k,
-                'typical_p': typical_p,
-                'num_beams': num_beams,
-                'min_length': min_length,
-                'seed': seed
+                "repetition_penalty": repetition_penalty,
+                "length_penalty": length_penalty,
+                "no_repeat_ngram_size": no_repeat_ngram_size,
+                "top_k": top_k,
+                "typical_p": typical_p,
+                "num_beams": num_beams,
+                "min_length": min_length,
+                "seed": seed,
             }
-            
+
             # Only add non-None values to extra_body
             for key, value in hf_params.items():
                 if value is not None:
                     extra_body[key] = value
-            
+
             # Add extra_body if we have any HF parameters
             if extra_body:
-                params['extra_body'] = extra_body
-            
+                params["extra_body"] = extra_body
+
             response = self.client.completions.create(**params)
-            
+
             if stream:
                 completion_text = ""
                 for chunk in response:
@@ -215,25 +220,27 @@ class InferenceClient:
                         print(content, end="", flush=True)
                         completion_text += content
                 print()  # Add newline at end
-                
+
                 # Note: Usage is not available with streaming
                 if show_usage:
                     print("\\nUsage: Not available with streaming")
-                
+
                 return completion_text
             else:
                 completion_text = response.choices[0].text
-                
+
                 if show_usage:
                     usage = response.usage
-                    print(f"\\nUsage: {usage.prompt_tokens} prompt + {usage.completion_tokens} completion = {usage.total_tokens} total tokens")
+                    print(
+                        f"\\nUsage: {usage.prompt_tokens} prompt + {usage.completion_tokens} completion = {usage.total_tokens} total tokens"
+                    )
                     print(f"Finish reason: {response.choices[0].finish_reason}")
-                
+
                 return completion_text
-            
+
         except Exception as e:
             return f"Error: {str(e)}"
-    
+
     def check_server_health(self) -> bool:
         """Check if the server is healthy."""
         try:
@@ -243,7 +250,7 @@ class InferenceClient:
         except Exception as e:
             print(f"Server health check failed: {e}")
             return False
-    
+
     def list_models(self) -> List[str]:
         """List available models."""
         try:
@@ -262,62 +269,62 @@ def interactive_mode(client: InferenceClient, args: argparse.Namespace):
     print("  /system <message> - Set system prompt")
     print("  /help     - Show this help")
     print()
-    
+
     # Set system prompt if provided
     if args.system:
         client.add_system_message(args.system)
         print(f"System prompt set: {args.system}\\n")
-    
+
     while True:
         try:
             user_input = input("> ").strip()
-            
-            if user_input.lower() in ['quit', 'exit', 'q']:
+
+            if user_input.lower() in ["quit", "exit", "q"]:
                 print("Goodbye!")
                 break
-            
-            if user_input.startswith('/'):
-                command = user_input[1:].split(' ', 1)
+
+            if user_input.startswith("/"):
+                command = user_input[1:].split(" ", 1)
                 cmd = command[0].lower()
-                
-                if cmd == 'clear':
+
+                if cmd == "clear":
                     client.clear_history()
                     if args.system:
                         client.add_system_message(args.system)
                     print("Conversation history cleared.\\n")
                     continue
-                
-                elif cmd == 'system':
+
+                elif cmd == "system":
                     if len(command) > 1:
                         client.add_system_message(command[1])
                         print(f"System prompt set: {command[1]}\\n")
                     else:
                         print("Usage: /system <message>\\n")
                     continue
-                
-                elif cmd == 'help':
+
+                elif cmd == "help":
                     print("Commands:")
                     print("  /clear    - Clear conversation history")
                     print("  /system <message> - Set system prompt")
                     print("  /help     - Show this help\\n")
                     continue
-                
+
                 else:
                     print(f"Unknown command: {cmd}\\n")
                     continue
-            
+
             if not user_input:
                 continue
-            
+
             client.add_user_message(user_input)
-            
+
             # Get response and print without "Assistant:" prefix
             response = client.get_completion(
                 model=args.model,
                 max_tokens=args.max_tokens,
                 temperature=args.temperature,
                 top_p=args.top_p,
-                stream=args.stream
+                stream=args.stream,
             )
             if not args.stream:
                 print(response)
@@ -326,7 +333,7 @@ def interactive_mode(client: InferenceClient, args: argparse.Namespace):
                 # Streaming mode needs two newlines (no trailing newline from streaming)
                 print()  # First newline after streamed response
                 print()  # Second newline for proper spacing
-            
+
         except KeyboardInterrupt:
             print("\\n\\nGoodbye!")
             break
@@ -338,7 +345,7 @@ def interactive_mode(client: InferenceClient, args: argparse.Namespace):
 def load_config_from_yaml(config_path: str) -> Dict[str, Any]:
     """Load configuration from YAML file."""
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, "r") as f:
             config = yaml.safe_load(f)
         print(f"Loaded configuration from: {config_path}")
         return config or {}
@@ -347,37 +354,39 @@ def load_config_from_yaml(config_path: str) -> Dict[str, Any]:
         sys.exit(1)
 
 
-def merge_config_with_args(config: Dict[str, Any], args: argparse.Namespace, parser: argparse.ArgumentParser) -> argparse.Namespace:
+def merge_config_with_args(
+    config: Dict[str, Any], args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> argparse.Namespace:
     """Merge YAML config with command line arguments, with CLI args taking precedence."""
     # Convert config keys to match argument names (replace - with _)
     normalized_config = {}
     for key, value in config.items():
-        normalized_key = key.replace('-', '_')
+        normalized_key = key.replace("-", "_")
         normalized_config[normalized_key] = value
-    
+
     # Get default values from parser to detect which args were actually set
     defaults = {}
     for action in parser._actions:
-        if action.dest != 'help' and action.dest != 'config':
+        if action.dest != "help" and action.dest != "config":
             defaults[action.dest] = action.default
-    
+
     # For each config value, set it if the argument uses the default value
     for key, value in normalized_config.items():
         if hasattr(args, key):
             current_value = getattr(args, key)
             default_value = defaults.get(key)
-            
+
             # Only override if the current value is the default (wasn't explicitly set)
             if current_value == default_value:
-                if key == 'stop' and isinstance(value, list):
+                if key == "stop" and isinstance(value, list):
                     # Handle stop sequences list
                     setattr(args, key, value)
-                elif key in ['echo', 'no_echo'] and isinstance(value, bool):
+                elif key in ["echo", "no_echo"] and isinstance(value, bool):
                     # Handle boolean flags correctly
                     setattr(args, key, value)
                 else:
                     setattr(args, key, value)
-    
+
     return args
 
 
@@ -388,148 +397,124 @@ def main():
         epilog=(
             "Examples:\n"
             "\n"
-            "Chat with model: ./client.py --interactive --stream\n"
-            "Respond to single message: ./client.py --stream --message 'Hello, what is your name?'\n"
-            "Text completion: './client.py --completion --stream 'Once upon a time' --max-tokens 500\n"
+            "Chat with model: ./client.py\n"
+            "Respond to single message: ./client.py --message 'Hello, what is your name?'\n"
+            "Text completion: './client.py --completion 'Once upon a time' --max-tokens 500\n"
         ),
     )
-    
+
     # Configuration file option
     parser.add_argument(
-        "config", 
-        nargs="?", 
-        help="YAML configuration file (optional)"
+        "config",
+        nargs="?",
+        type=os.path.expanduser,
+        help="YAML configuration file (optional)",
     )
-    
+
     # Connection options
     parser.add_argument(
-        "--url", 
-        default="http://localhost:8000/v1", 
-        help="Base URL of the inference server (default: http://localhost:8000/v1)"
+        "--url",
+        default="http://localhost:8000/v1",
+        help="Base URL of the inference server (default: http://localhost:8000/v1)",
     )
-    
+
     # Generation options
     parser.add_argument(
-        "--model", 
-        default="inference-server", 
-        help="Model name to use (default: inference-server)"
+        "--model",
+        default="inference-server",
+        help="Model name to use (default: inference-server)",
     )
     parser.add_argument(
-        "--max-tokens", 
-        type=int, 
-        default=512, 
-        help="Maximum tokens to generate (default: 512)"
+        "--max-tokens",
+        type=int,
+        default=512,
+        help="Maximum tokens to generate (default: 512)",
     )
     parser.add_argument(
-        "--temperature", 
-        type=float, 
-        default=0.7, 
-        help="Sampling temperature (default: 0.7)"
+        "--temperature",
+        type=float,
+        default=0.7,
+        help="Sampling temperature (default: 0.7)",
     )
     parser.add_argument(
-        "--top-p", 
-        type=float, 
-        default=1.0, 
-        help="Top-p sampling (default: 1.0)"
+        "--top-p", type=float, default=1.0, help="Top-p sampling (default: 1.0)"
     )
-    
+
     # Mode options
     parser.add_argument(
-        "--interactive", 
-        action="store_true", 
-        help="Run in interactive chat mode"
+        "--interactive", action="store_true", help="Run in interactive chat mode"
+    )
+    parser.add_argument("--message", help="Single message to send (chat mode)")
+    parser.add_argument(
+        "--completion", help="Generate text completion for the given prompt"
+    )
+    parser.add_argument("--system", help="System prompt to use (chat mode only)")
+    parser.add_argument("--stop", nargs="*", help="Stop sequences for completion mode")
+    parser.add_argument(
+        "--echo",
+        action="store_true",
+        help="Echo the prompt in the completion response (default for completion mode)",
     )
     parser.add_argument(
-        "--message", 
-        help="Single message to send (chat mode)"
+        "--no-echo",
+        action="store_true",
+        help="Don't echo the prompt in the completion response",
     )
     parser.add_argument(
-        "--completion", 
-        help="Generate text completion for the given prompt"
+        "--show-usage", action="store_true", help="Show token usage information"
     )
-    parser.add_argument(
-        "--system", 
-        help="System prompt to use (chat mode only)"
-    )
-    parser.add_argument(
-        "--stop", 
-        nargs="*", 
-        help="Stop sequences for completion mode"
-    )
-    parser.add_argument(
-        "--echo", 
-        action="store_true", 
-        help="Echo the prompt in the completion response (default for completion mode)"
-    )
-    parser.add_argument(
-        "--no-echo", 
-        action="store_true", 
-        help="Don't echo the prompt in the completion response"
-    )
-    parser.add_argument(
-        "--show-usage", 
-        action="store_true", 
-        help="Show token usage information"
-    )
-    
+
     # HuggingFace generation parameters
     parser.add_argument(
         "--repetition-penalty",
         type=float,
-        help="Repetition penalty (e.g., 1.1 to reduce repetition)"
+        help="Repetition penalty (e.g., 1.1 to reduce repetition)",
     )
     parser.add_argument(
-        "--no-repeat-ngram-size",
-        type=int,
-        help="Size of n-grams to avoid repeating"
+        "--no-repeat-ngram-size", type=int, help="Size of n-grams to avoid repeating"
+    )
+    parser.add_argument("--top-k", type=int, help="Top-k sampling parameter")
+    parser.add_argument("--num-beams", type=int, help="Number of beams for beam search")
+    parser.add_argument(
+        "--min-length", type=int, help="Minimum length of generated sequence"
     )
     parser.add_argument(
-        "--top-k",
-        type=int,
-        help="Top-k sampling parameter"
+        "--seed", type=int, help="Random seed for reproducible generation"
     )
-    parser.add_argument(
-        "--num-beams",
-        type=int,
-        help="Number of beams for beam search"
-    )
-    parser.add_argument(
-        "--min-length",
-        type=int,
-        help="Minimum length of generated sequence"
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        help="Random seed for reproducible generation"
-    )
-    
+
     # Streaming option
     parser.add_argument(
-        "--stream", 
-        action="store_true", 
-        help="Enable streaming response"
+        "--stream",
+        action="store_true",
+        help="Deprecated: the default is now 'stream' See --no-stream",
     )
-    
+
+    # Streaming option
+    parser.add_argument(
+        "--no-stream", action="store_true", help="Disable streaming response"
+    )
+
     # Utility options
     parser.add_argument(
-        "--health", 
-        action="store_true", 
-        help="Check server health and exit"
+        "--health", action="store_true", help="Check server health and exit"
     )
     parser.add_argument(
-        "--list-models", 
-        action="store_true", 
-        help="List available models and exit"
+        "--list-models", action="store_true", help="List available models and exit"
     )
-    
+
     args = parser.parse_args()
-    
+
+    # Deprecating "stream" argument. The default is now "stream"
+    if args.no_stream:
+        args.stream = False
+    else:
+        args.stream = True
+
     # Load config file if provided
     if args.config:
         config = load_config_from_yaml(args.config)
         args = merge_config_with_args(config, args, parser)
-    
+
     # Handle stdin input for completion mode
     stdin_prompt = None
     if not sys.stdin.isatty():
@@ -541,10 +526,10 @@ def main():
         elif stdin_prompt and args.completion:
             # If both stdin and --completion, prefer stdin
             args.completion = stdin_prompt
-    
+
     # Create client
     client = InferenceClient(args.url)
-    
+
     # Handle utility commands
     if args.health:
         if client.check_server_health():
@@ -553,7 +538,7 @@ def main():
         else:
             print("Server is not responding!")
             sys.exit(1)
-    
+
     if args.list_models:
         models = client.list_models()
         if models:
@@ -563,19 +548,20 @@ def main():
         else:
             print("No models available or server error")
         sys.exit(0)
-    
+
     # Check server health first
     if not client.check_server_health():
         print(f"Error: Cannot connect to server at {args.url}")
         print("Make sure the inference server is running.")
+        print("e.g. forgather inf server -m /path/to/model")
         sys.exit(1)
-    
+
     # Interactive mode
     if args.interactive:
         interactive_mode(client, args)
-    
+
     # Single message mode (chat)
-    elif args.message:
+    if args.message:
         response = client.single_shot(
             args.message,
             system_prompt=args.system,
@@ -584,16 +570,16 @@ def main():
             temperature=args.temperature,
             top_p=args.top_p,
             show_usage=args.show_usage,
-            stream=args.stream
+            stream=args.stream,
         )
         if not args.stream:
             print(response)
-    
+
     # Completion mode
     elif args.completion:
         # Default echo behavior for completion mode (echo unless --no-echo specified)
         echo_enabled = not args.no_echo
-        
+
         response = client.completion(
             args.completion,
             model=args.model,
@@ -609,25 +595,12 @@ def main():
             top_k=args.top_k,
             num_beams=args.num_beams,
             min_length=args.min_length,
-            seed=args.seed
+            seed=args.seed,
         )
         if not args.stream:
             print(response)
-    
-    # Default: show help
     else:
-        parser.print_help()
-        print("\\nExamples:")
-        print("  # Chat completion")
-        print(f"  python {sys.argv[0]} --message 'Hello, how are you?'")
-        print("  # Text completion")
-        print(f"  python {sys.argv[0]} --completion 'Once upon a time'")
-        print("  # Interactive chat mode")
-        print(f"  python {sys.argv[0]} --interactive")
-        print("  # Completion with stop sequences")
-        print(f"  python {sys.argv[0]} --completion 'The quick brown' --stop 'fox' --max-tokens 50")
-        print("  # Check server health")
-        print(f"  python {sys.argv[0]} --health")
+        interactive_mode(client, args)
 
 
 if __name__ == "__main__":

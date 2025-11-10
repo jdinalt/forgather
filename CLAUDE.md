@@ -94,6 +94,35 @@ trainer = Trainer(
 
 The system works with **distributed training** - commands sent to any rank are automatically coordinated across all processes. See `examples/trainer_control/` for a complete working example and `docs/trainers/trainer-control.md` for full documentation.
 
+### Inference
+
+Forgather includes a basic OpenAPI compatible inference server and client.
+
+**Start server**
+
+```bash
+# Load model in directory using AutoModelForCausalLM.from_pretrained()
+# This defaults to bfloat16 on cuda:0
+forgather inf server -m MODEL_PATH
+
+# Load model from latest Forgather checkpoint
+forgather inf server -c -m MODEL_PATH
+```
+**Start client**
+
+```bash
+# Start in interactive (chat) mode
+forgather inf client
+
+# Perform text completion on prompt
+forgather inf client --completion "Once upon a time"
+
+# Get response to single message
+forgather inf client --message "Tell me a story"
+```
+
+Detailed inference instructions are located in 'tools/inference_server/README.md'
+
 ### Examples from Real Projects
 ```bash
 # Working with tiny_llama tutorial project

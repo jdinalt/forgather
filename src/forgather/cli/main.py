@@ -90,6 +90,8 @@ def get_subcommand_registry():
         "control": create_control_parser,
         "model": create_model_parser,
         "project": create_project_parser,
+        "inf": create_inf_parser,
+        "convert": create_convert_parser,
     }
 
 
@@ -694,6 +696,61 @@ def create_model_parser(global_args):
     return parser
 
 
+def create_inf_parser(global_args):
+    """Create parser for inference command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather inf",
+        description="Run inference server or client\n\n"
+        "Usage:\n"
+        "  forgather inf server [args...]  - Start inference server\n"
+        "  forgather inf client [args...]  - Start inference client\n\n"
+        "All arguments after 'server' or 'client' are forwarded to the respective script.",
+        formatter_class=RawTextHelpFormatter,
+        add_help=True,
+    )
+    # Capture subcommand as required positional
+    parser.add_argument(
+        "subcommand",
+        choices=["server", "client"],
+        help="Subcommand: 'server' or 'client'",
+    )
+    # Use REMAINDER to capture all following args (including flags)
+    parser.add_argument(
+        "remainder",
+        nargs=argparse.REMAINDER,
+        help="Arguments to forward to the script",
+    )
+
+    return parser
+
+
+def create_convert_parser(global_args):
+    """Create parser for convert command."""
+    # Note: We use add_help=False because we want --help to be forwarded to the script
+    parser = argparse.ArgumentParser(
+        prog="forgather convert",
+        description="Convert between HuggingFace and Forgather model formats\n\n"
+        "All arguments are forwarded to scripts/convert_llama.py",
+        formatter_class=RawTextHelpFormatter,
+        add_help=False,
+    )
+    # Add a dummy positional to enable REMAINDER to work
+    parser.add_argument(
+        "dummy",
+        nargs="?",
+        default="",
+        help=argparse.SUPPRESS,  # Hide from help
+    )
+    # Use REMAINDER to capture all following args (including flags)
+    parser.add_argument(
+        "remainder",
+        nargs=argparse.REMAINDER,
+        help="Arguments to forward to convert_llama.py",
+    )
+
+    return parser
+
+
 def show_main_help():
     """Show the main help message with available subcommands."""
     print("Forgather CLI")
@@ -728,10 +785,87 @@ def show_main_help():
 
 def parse_args(args=None):
     """Parse arguments with dynamic subcommand handling."""
-    global_args, remaining_args = parse_global_args(args)
+    # Special handling for commands that have flag conflicts with global args
+    # - 'inf' command: --interactive/-i conflicts with global interactive mode
+    # - 'convert' command: -t conflicts with global --config-template
+    args_list = args if args is not None else sys.argv[1:]
 
-    # Handle interactive mode
-    if global_args.interactive:
+    # Track which flags to restore and workarounds needed
+    inf_interactive_workaround = False
+    convert_t_workaround = False
+    convert_original_args = None  # Save original args for convert command
+    removed_flags = []
+
+    # Handle 'inf' command with --interactive/-i
+    if "inf" in args_list:
+        inf_idx = args_list.index("inf")
+        remaining_after_inf = args_list[inf_idx + 1 :]
+        if "--interactive" in remaining_after_inf or "-i" in remaining_after_inf:
+            inf_interactive_workaround = True
+            args_for_global = args_list.copy()
+            if "--interactive" in remaining_after_inf:
+                args_for_global.remove("--interactive")
+                removed_flags.append(
+                    (
+                        "--interactive",
+                        inf_idx + remaining_after_inf.index("--interactive") + 1,
+                    )
+                )
+            if "-i" in remaining_after_inf:
+                args_for_global.remove("-i")
+                removed_flags.append(
+                    ("-i", inf_idx + remaining_after_inf.index("-i") + 1)
+                )
+            args_list = args_for_global
+
+    # Handle 'convert' command with -t
+    # Save original args for convert, then remove -t to prevent global parser from consuming it
+    if "convert" in args_list:
+        convert_idx = args_list.index("convert")
+        remaining_after_convert = args_list[convert_idx + 1 :]
+        # Save the original args after 'convert' for later use
+        convert_original_args = remaining_after_convert.copy()
+        # Check if -t appears after 'convert' (not before, which would be global -t)
+        if "-t" in remaining_after_convert:
+            convert_t_workaround = True
+            args_for_global = args_list.copy()
+            # Find -t after convert and remove it along with its value for global parsing
+            t_idx_in_remaining = remaining_after_convert.index("-t")
+            t_idx_in_full = convert_idx + 1 + t_idx_in_remaining
+            args_for_global.pop(t_idx_in_full)  # Remove -t
+            # Also remove the value after -t if it exists and doesn't start with -
+            if t_idx_in_full < len(args_for_global) and not args_for_global[
+                t_idx_in_full
+            ].startswith("-"):
+                args_for_global.pop(t_idx_in_full)
+            args_list = args_for_global
+
+    # Parse global args with potentially modified args_list
+    global_args, remaining_args = parse_global_args(args_list)
+
+    # Restore removed flags to remaining_args
+    if removed_flags:
+        # Sort by position to restore in correct order
+        removed_flags.sort(key=lambda x: x[1])
+        # Find the subcommand in remaining_args to know where to insert
+        subcommand = None
+        if remaining_args:
+            subcommand = remaining_args[0]
+
+        if subcommand in ["inf", "convert"]:
+            subcommand_idx = remaining_args.index(subcommand)
+            # Insert flags after the subcommand (and after any positional arg for inf)
+            insert_pos = (
+                subcommand_idx + 2
+                if subcommand == "inf" and len(remaining_args) > subcommand_idx + 1
+                else subcommand_idx + 1
+            )
+            for flag, _ in removed_flags:
+                remaining_args.insert(insert_pos, flag)
+                insert_pos += 1
+
+    # Handle interactive mode (but skip if it was the inf command workaround)
+    if global_args.interactive and not inf_interactive_workaround:
         from .interactive import interactive_main
 
         interactive_main(global_args.project_dir)
@@ -760,7 +894,19 @@ def parse_args(args=None):
     subcommand_parser = registry[subcommand](global_args)
 
     try:
-        sub_args = subcommand_parser.parse_args(subcommand_args)
+        # For convert command, just pass all args as remainder without parsing
+        if subcommand == "convert":
+            # Create a minimal namespace with remainder containing all original args
+            sub_args = argparse.Namespace()
+            # Use saved original args if available (when -t was present), otherwise use subcommand_args
+            sub_args.remainder = (
+                convert_original_args
+                if convert_original_args is not None
+                else subcommand_args
+            )
+            sub_args.dummy = ""
+        else:
+            sub_args = subcommand_parser.parse_args(subcommand_args)
     except SystemExit:
         # argparse calls sys.exit on help or error - let it through
         raise
@@ -852,6 +998,14 @@ def main():
                 from .model import model_cmd
 
                 model_cmd(args)
+            case "inf":
+                from .inference import inf_cmd
+
+                inf_cmd(args)
+            case "convert":
+                from .convert import convert_cmd
+
+                convert_cmd(args)
             case _:
                 index_cmd(args)
     except SystemExit:

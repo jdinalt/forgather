@@ -2,7 +2,8 @@
 # This example configuration is for the tiny_llama tutorial.
 
 # Model configuration
-model: "../../examples/tutorials/tiny_llama/output_models/tiny_llama"
+model: "./output_models/tiny_llama/"
+from-checkpoint: True
 device: "cuda:0"
 dtype: "float32"
 
@@ -12,7 +13,7 @@ port: 8000
 log-level: "INFO"
 
 # Chat template - custom narrative template for story-focused models
-chat-template: "../../chat_templates/narrative_chat.jinja"
+chat-template: "../../../chat_templates/narrative_chat.jinja"
 
 # Stop sequences for tiny_llama - it tends to end stories naturally with these
 stop-sequences:

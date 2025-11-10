@@ -274,7 +274,9 @@ def load_state_dict_with_validation(
     return result
 
 
-def create_hf_config_and_model(src_model_config, max_model_length, model_type, new_dtype):
+def create_hf_config_and_model(
+    src_model_config, max_model_length, model_type, new_dtype
+):
     """Create appropriate HF config and model based on detected type"""
     if model_type == "mistral":
         print("Creating HuggingFace Mistral config...")
@@ -354,11 +356,11 @@ def load_additional_tokens(yaml_path):
     if not yaml_path:
         return [], []
 
-    with open(yaml_path, 'r') as f:
+    with open(yaml_path, "r") as f:
         token_config = yaml.safe_load(f)
 
-    special_tokens = token_config.get('special_tokens', [])
-    regular_tokens = token_config.get('regular_tokens', [])
+    special_tokens = token_config.get("special_tokens", [])
+    regular_tokens = token_config.get("regular_tokens", [])
 
     return special_tokens, regular_tokens
 
@@ -375,15 +377,16 @@ def parse_args(args=None):
             "\n"
             "Convert to Mistral: ./convert_llama.py --reverse --model-type mistral --dtype bfloat16 \\\n"
             "  ~/models/fg_mistral ~/models/my_hf_llama"
-        )
+        ),
     )
     parser.add_argument(
         "src_model_path",
-        type=str,
+        type=os.path.expanduser,
         help="Path to source model (HF Llama/Mistral or Forgather model)",
     )
     parser.add_argument(
         "dst_model_path",
+        type=os.path.expanduser,
         help="Output directory",
     )
     parser.add_argument(
@@ -418,7 +421,7 @@ def parse_args(args=None):
     parser.add_argument(
         "-c",
         "--checkpoint-path",
-        type=str,
+        type=os.path.expanduser,
         default=None,
         help="Path to load Forgather checkpoint from (if not specified, will use latest checkpoint in src_model_path)",
     )
@@ -448,13 +451,13 @@ def parse_args(args=None):
     parser.add_argument(
         "-t",
         "--chat-template-path",
-        type=str,
+        type=os.path.expanduser,
         default=None,
         help="Assign chat template at given path to output tokenizer.",
     )
     parser.add_argument(
         "--add-tokens",
-        type=str,
+        type=os.path.expanduser,
         default=None,
         help="Path to YAML file specifying additional tokens to add to vocabulary.",
     )
@@ -620,7 +623,7 @@ def convert_hf_to_forgather(args):
     with ExitStack() as exit_stack:
         if new_dtype:
             exit_stack.enter_context(default_dtype(new_dtype))
-        exit_stack.enter_context(no_init_weights())                     
+        exit_stack.enter_context(no_init_weights())
         model = model_ctor()
     logger.debug(model)
 
@@ -631,17 +634,21 @@ def convert_hf_to_forgather(args):
     # Add PAD token and additional tokens, then resize embeddings if needed
     tokens_to_add = []
     if needs_pad_token:
-        print("No PAD token defined. Adding new PAD token with zero-initialized embedding")
-        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-        tokenizer.padding_side = 'right'
-        tokens_to_add.append(('pad', tokenizer.pad_token_id))
+        print(
+            "No PAD token defined. Adding new PAD token with zero-initialized embedding"
+        )
+        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+        tokenizer.padding_side = "right"
+        tokens_to_add.append(("pad", tokenizer.pad_token_id))
 
     # Add additional tokens from YAML file
     if special_tokens or regular_tokens:
         num_added = 0
         if special_tokens:
             print(f"Adding {len(special_tokens)} special tokens: {special_tokens}")
-            result = tokenizer.add_special_tokens({'additional_special_tokens': special_tokens})
+            result = tokenizer.add_special_tokens(
+                {"additional_special_tokens": special_tokens}
+            )
             num_added += result
         if regular_tokens:
             print(f"Adding {len(regular_tokens)} regular tokens: {regular_tokens}")
@@ -651,7 +658,7 @@ def convert_hf_to_forgather(args):
         # Track which tokens were added for initialization
         for token in special_tokens + regular_tokens:
             token_id = tokenizer.convert_tokens_to_ids(token)
-            tokens_to_add.append(('random', token_id))
+            tokens_to_add.append(("random", token_id))
 
         print(f"Successfully added {num_added} new tokens")
 
@@ -679,7 +686,7 @@ def convert_hf_to_forgather(args):
             new_vocab_size,
             input_embedding.weight.shape[1],
             dtype=embed_dtype,
-            device=embed_device
+            device=embed_device,
         )
         # Copy old embeddings
         with torch.no_grad():
@@ -687,14 +694,18 @@ def convert_hf_to_forgather(args):
 
             # Initialize new token embeddings
             for init_type, token_id in tokens_to_add:
-                if init_type == 'pad':
+                if init_type == "pad":
                     # Zero-initialize PAD token
                     new_input_embedding.weight[token_id].zero_()
                     print(f"Initialized token {token_id} (PAD) with zeros")
-                elif init_type == 'random':
+                elif init_type == "random":
                     # Random initialize with inferred std
-                    new_input_embedding.weight[token_id].normal_(mean=0.0, std=embedding_std)
-                    print(f"Initialized token {token_id} with N(0, {embedding_std:.6f})")
+                    new_input_embedding.weight[token_id].normal_(
+                        mean=0.0, std=embedding_std
+                    )
+                    print(
+                        f"Initialized token {token_id} with N(0, {embedding_std:.6f})"
+                    )
 
         # Replace the embedding layer
         model.causal_lm.input_encoder.embedding = new_input_embedding
@@ -705,7 +716,7 @@ def convert_hf_to_forgather(args):
             new_vocab_size,
             bias=output_decoder.bias is not None,
             dtype=embed_dtype,
-            device=embed_device
+            device=embed_device,
         )
         with torch.no_grad():
             new_output_decoder.weight[:old_vocab_size] = output_decoder.weight
@@ -715,12 +726,14 @@ def convert_hf_to_forgather(args):
             print(f"Inferred output weight initialization std: {output_std:.6f}")
 
             for init_type, token_id in tokens_to_add:
-                if init_type == 'pad':
+                if init_type == "pad":
                     # Zero-initialize PAD token
                     new_output_decoder.weight[token_id].zero_()
-                elif init_type == 'random':
+                elif init_type == "random":
                     # Random initialize with inferred std
-                    new_output_decoder.weight[token_id].normal_(mean=0.0, std=output_std)
+                    new_output_decoder.weight[token_id].normal_(
+                        mean=0.0, std=output_std
+                    )
 
             if new_output_decoder.bias is not None:
                 new_output_decoder.bias[:old_vocab_size] = output_decoder.bias
@@ -831,7 +844,7 @@ def convert_forgather_to_hf(args):
     test_generation_if_requested(hf_model, tokenizer, args)
 
     print(f"Saving HuggingFace {model_type.capitalize()} model...")
-    hf_model.save_pretrained(dst_model_path) # Also saves config
+    hf_model.save_pretrained(dst_model_path)  # Also saves config
     tokenizer.save_pretrained(dst_model_path)
 
 

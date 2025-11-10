@@ -117,7 +117,9 @@ def main():
 
     if torch.distributed.is_initialized():
         if accelerator.is_available():
-            torch.distributed.barrier(device_ids=[torch.accelerator.current_device_index()])
+            torch.distributed.barrier(
+                device_ids=[torch.accelerator.current_device_index()]
+            )
         torch.distributed.destroy_process_group()
 
 
