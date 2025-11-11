@@ -1,5 +1,5 @@
 from typing import Optional, Callable
-from torch import nn, Tensor, FloatTensor
+from torch import nn, FloatTensor
 
 
 # A basic feedforward layer

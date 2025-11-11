@@ -1,5 +1,5 @@
 from typing import Callable, Optional
-from torch import nn, Tensor, FloatTensor
+from torch import nn, FloatTensor
 
 
 # Attention Is All You Need: https://arxiv.org/pdf/1706.03762

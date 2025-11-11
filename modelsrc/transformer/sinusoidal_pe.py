@@ -2,7 +2,7 @@ from typing import Optional
 import math
 
 import torch
-from torch import nn, Tensor, FloatTensor, LongTensor
+from torch import nn, FloatTensor, LongTensor
 
 
 # An implementation of the original transformer sinusoidal positional encoder.

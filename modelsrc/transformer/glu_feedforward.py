@@ -1,6 +1,5 @@
 from typing import Optional, Callable
-import torch
-from torch import nn, FloatTensor, Tensor
+from torch import nn, FloatTensor
 
 
 # GLU Variants Improve Transformer

@@ -1,6 +1,6 @@
 from typing import Optional, Callable
 
-from torch import nn, Tensor, FloatTensor
+from torch import nn, FloatTensor
 
 
 class LayerStack(nn.Module):

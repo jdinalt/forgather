@@ -1,6 +1,6 @@
-from typing import Optional, Callable
+from typing import Callable
 
-from torch import nn, Tensor, FloatTensor
+from torch import nn, FloatTensor
 
 
 class ExplicitLayerStack(nn.Module):

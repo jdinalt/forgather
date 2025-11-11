@@ -1,6 +1,5 @@
 from typing import Callable, Optional
-from torch import nn, Tensor, FloatTensor
-import torch
+from torch import nn, FloatTensor
 
 
 class DeepnetLayer(nn.Module):

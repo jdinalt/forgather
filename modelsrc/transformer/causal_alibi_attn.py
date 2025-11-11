@@ -1,5 +1,5 @@
 import torch
-from torch import nn, Tensor, FloatTensor
+from torch import nn, FloatTensor
 from torch.nn.functional import scaled_dot_product_attention
 import math
 from typing import Optional, Callable

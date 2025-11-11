@@ -6,7 +6,7 @@ https://huggingface.co/docs/transformers/main/attention_interface
 from typing import Callable, Optional, Union
 
 import torch
-from torch import nn, Tensor, FloatTensor
+from torch import nn
 from torch.nn.attention.flex_attention import (
     BlockMask,
     flex_attention,

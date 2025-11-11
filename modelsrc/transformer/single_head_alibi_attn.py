@@ -1,5 +1,5 @@
 import torch
-from torch import nn, Tensor, FloatTensor
+from torch import nn, FloatTensor
 import math
 
 # Attention layer with ALiBi relative positional encoding

@@ -1,6 +1,6 @@
 from typing import Optional, Callable
 
-from torch import nn, Tensor, FloatTensor
+from torch import nn, FloatTensor
 import torch.utils.checkpoint as checkpoint
 
 

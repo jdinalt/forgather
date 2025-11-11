@@ -2,11 +2,9 @@ from typing import Optional, Callable
 from functools import partial
 
 import torch
-from torch import nn, Tensor, LongTensor, FloatTensor
-from torch.nn.attention.flex_attention import BlockMask, create_block_mask
+from torch import nn, FloatTensor
 
 from transformers.cache_utils import DynamicCache, Cache
-from transformers.masking_utils import create_causal_mask
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
@@ -57,7 +55,11 @@ class CasualLM(nn.Module):
         use_cache: Optional[bool] = None,
         return_dict: bool = False,
         **kwargs,
-    ) -> CausalLMOutputWithPast | tuple[FloatTensor, dict[str, FloatTensor]] | FloatTensor:
+    ) -> (
+        CausalLMOutputWithPast
+        | tuple[FloatTensor, dict[str, FloatTensor]]
+        | FloatTensor
+    ):
         """
         args:
             See https://huggingface.co/docs/transformers/main/model_doc/llama
@@ -80,7 +82,7 @@ class CasualLM(nn.Module):
             hidden_states = self.input_encoder(input_ids, position_ids)
 
             # Only create attention_mask internally if not provided externally (for pipeline parallel)
-            if self.use_internal_mask: #and not torch.compiler.is_exporting():
+            if self.use_internal_mask:  # and not torch.compiler.is_exporting():
                 attention_mask = self.attn_mask_fn(
                     input_ids=input_ids,
                     input_embeds=hidden_states,
@@ -111,7 +113,9 @@ class CasualLM(nn.Module):
             loss = self.loss_fn(logits, labels) if labels is not None else None
             # Return type depends on arguments.
             if return_dict:
-                return CausalLMOutputWithPast(loss=loss, logits=logits, past_key_values=past_key_values)
+                return CausalLMOutputWithPast(
+                    loss=loss, logits=logits, past_key_values=past_key_values
+                )
             elif labels is not None:
                 return (
                     loss,
