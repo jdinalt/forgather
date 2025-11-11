@@ -7,7 +7,7 @@ from torch.nn.attention.flex_attention import BlockMask, create_block_mask
 
 from transformers.cache_utils import DynamicCache, Cache
 from transformers.masking_utils import create_causal_mask
-from transformers.modeling_outputs import CausalLMOutput
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
 class CasualLM(nn.Module):
@@ -57,7 +57,7 @@ class CasualLM(nn.Module):
         use_cache: Optional[bool] = None,
         return_dict: bool = False,
         **kwargs,
-    ) -> CausalLMOutput | tuple[FloatTensor, dict[str, FloatTensor]] | FloatTensor:
+    ) -> CausalLMOutputWithPast | tuple[FloatTensor, dict[str, FloatTensor]] | FloatTensor:
         """
         args:
             See https://huggingface.co/docs/transformers/main/model_doc/llama
@@ -111,7 +111,7 @@ class CasualLM(nn.Module):
             loss = self.loss_fn(logits, labels) if labels is not None else None
             # Return type depends on arguments.
             if return_dict:
-                return CausalLMOutput(loss=loss, logits=logits)
+                return CausalLMOutputWithPast(loss=loss, logits=logits, past_key_values=past_key_values)
             elif labels is not None:
                 return (
                     loss,
