@@ -35,6 +35,8 @@ dependencies = [
     "fastapi",
     "openai",
     "huggingface_hub[cli]",
+    "pytest",
+    "black",
 ]
 version = "2024.0.0a1"
 authors = [
