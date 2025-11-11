@@ -8,6 +8,7 @@ from transformers import PreTrainedTokenizerFast
 from tqdm.auto import tqdm
 from datasets import Dataset
 
+
 def normalize_range(
     length, select_range: range | int | float | Sequence | None
 ) -> range:
@@ -64,6 +65,7 @@ def normalize_range(
         raise ValueError(
             f"Unsupported data-type for dataset range: {type(select_range)}"
         )
+
 
 class TokenizerTrainer:
     def __init__(

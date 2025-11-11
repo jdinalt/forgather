@@ -102,10 +102,10 @@ class ForgatherShell(cmd.Cmd):
 
         # Configure readline delimiters to not break on hyphens for better path completion
         # Default delimiters include '-' which breaks completion of filenames like 'test-file'
-        if HAS_READLINE and hasattr(readline, 'get_completer_delims'):
+        if HAS_READLINE and hasattr(readline, "get_completer_delims"):
             original_delims = readline.get_completer_delims()
             # Remove hyphen from delimiters to allow completion of hyphenated filenames
-            new_delims = original_delims.replace('-', '')
+            new_delims = original_delims.replace("-", "")
             readline.set_completer_delims(new_delims)
 
         # Register cleanup function to save history on exit
