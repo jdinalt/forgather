@@ -1,4 +1,5 @@
 from typing import Optional, Callable
+from functools import partial
 
 import torch
 from torch import nn, Tensor, LongTensor, FloatTensor
@@ -21,6 +22,7 @@ class CasualLM(nn.Module):
         output_decoder: Callable,
         layer_stack: Callable,
         init_weights: Callable,
+        attn_mask_fn: Callable,
         config=None,
     ):
         super().__init__()
@@ -29,103 +31,20 @@ class CasualLM(nn.Module):
         self.input_encoder = input_encoder
         self.output_decoder = output_decoder
         self.layer_stack = layer_stack
-        self.default_dtype = torch.get_default_dtype()
         self.use_internal_mask = True
+        self.attn_mask_fn = partial(
+            attn_mask_fn,
+            config=self.config,
+            dtype=torch.get_default_dtype(),
+        )
         init_weights(self)
 
     def extra_repr(self):
         return f"loss_fn={self.loss_fn}"
 
     def get_attn_mask_fn(self):
-        # Don't call internal mask implementation
         self.use_internal_mask = False
-        return self.create_attention_mask
-
-    def create_attention_mask(
-        self,
-        input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-    ):
-        """
-        Create an attention mask for the model using the HuggingFace masking utilities.
-
-        This method is designed to be called externally (e.g., from pipeline parallel code)
-        to pre-compute attention masks that can be passed as extra_kwargs.
-
-        Args:
-            input_ids: Input token IDs (batch_size, seq_length)
-            attention_mask: Optional 2D padding mask (batch_size, seq_length)
-            position_ids: Optional position indices (batch_size, seq_length)
-
-        Returns:
-            The attention mask in the format required by the model's attention implementation
-            (e.g., 4D tensor for eager/sdpa, BlockMask for flex_attention)
-        """
-        return self._create_attention_mask(input_ids, attention_mask, position_ids)
-
-    def _create_attention_mask(
-        self,
-        input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        input_embeds: Optional[torch.Tensor] = None,
-        past_key_values: Optional[Cache] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-    ):
-        assert self.config
-
-        # When using SDPA, if just simple a simple causal attention mask
-        # is required, bypass mask generation. SDPA will then use
-        # the "is_causal" flag, which saves memory and is faster.
-        if (
-            self.config._attn_implementation == "sdpa"
-            and attention_mask is None
-            and past_key_values is None
-            and position_ids is None
-        ):
-            return None
-
-        if input_embeds is None:
-            # Create a dummy input_embeds tensor for shape inference
-            # We only need batch_size and dtype, not actual embeddings
-            batch_size, seq_length = input_ids.shape
-
-            input_embeds = torch.empty(
-                batch_size,
-                seq_length,
-                self.config.hidden_size,
-                device=torch.device("meta"),
-                dtype=self.default_dtype,
-            )
-
-        # Convert to bool mask, if long
-        if (
-            isinstance(attention_mask, torch.Tensor)
-            and attention_mask.dtype == torch.long
-        ):
-            attention_mask = attention_mask.to(dtype=torch.bool)
-
-        if cache_position is None:
-            cache_position = torch.arange(
-                0, input_ids.shape[1], device=input_ids.device
-            )
-
-        # Use HuggingFace's create_causal_mask utility
-        attention_mask = create_causal_mask(
-            config=self.config,
-            input_embeds=input_embeds,
-            attention_mask=attention_mask,
-            cache_position=cache_position,
-            past_key_values=past_key_values,
-            position_ids=position_ids,
-        )
-
-        # debug
-        # print(repr(attention_mask))
-        # print(attention_mask.shape)
-
-        return attention_mask
+        return self.self.attn_mask_fn
 
     def forward(
         self,
@@ -161,8 +80,8 @@ class CasualLM(nn.Module):
             hidden_states = self.input_encoder(input_ids, position_ids)
 
             # Only create attention_mask internally if not provided externally (for pipeline parallel)
-            if self.use_internal_mask and not torch.compiler.is_exporting():
-                attention_mask = self._create_attention_mask(
+            if self.use_internal_mask: #and not torch.compiler.is_exporting():
+                attention_mask = self.attn_mask_fn(
                     input_ids=input_ids,
                     input_embeds=hidden_states,
                     attention_mask=attention_mask,

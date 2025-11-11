@@ -21,20 +21,20 @@
 ## excepting this being a causal LM.
 [model_bits]
     [loss_fn]
-loss_fn: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn
+.define: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn
 
     [layer_norm_factory]
-layer_norm_factory: &layer_norm_factory !partial:torch.nn:LayerNorm@layer_norm_factory
+.define: &layer_norm_factory !partial:torch.nn:LayerNorm@layer_norm_factory
     normalized_shape: !var "hidden_size"
 
     [feedforward_factory]
-feedforward_factory: &feedforward_factory !partial:.feedforward_layer:FeedforwardLayer@feedforward_factory
+.define: &feedforward_factory !partial:.feedforward_layer:FeedforwardLayer@feedforward_factory
     d_model: !var "hidden_size"
     d_feedforward: !var "dim_feedforward"
     dropout: !var "activation_dropout"
 
     [rel_positional_encoder]
-relative_pe: &relative_pe null
+.define: &relative_pe null
 
     [attn_functions]
     -- include "attn_functions/default.yaml"
@@ -43,7 +43,7 @@ relative_pe: &relative_pe null
     -- include "flex_kernel_options/default.yaml"
 
     [attention_factory]
-attention_factory: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
+.define: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
     d_model: !var "hidden_size"
     num_heads: !var "num_attention_heads"
     dropout: !var "attention_dropout"
@@ -52,7 +52,7 @@ attention_factory: &attention_factory !partial:.causal_multihead_attn:CausalMult
     attn_functions: *attn_functions
 
     [layer_factory]
-layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
+.define: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
     feedforward_factory: *feedforward_factory
     attention_factory: *attention_factory
     norm_factory: *layer_norm_factory
@@ -60,24 +60,24 @@ layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
     residual_dropout: !var "residual_dropout"
     
     [layer_stack]
-layer_stack: &layer_stack !factory:.checkpoint_layer_stack:LayerStack@layer_stack
+.define: &layer_stack !factory:.checkpoint_layer_stack:LayerStack@layer_stack
     layer_factory: *layer_factory
     num_hidden_layers: !var "num_hidden_layers"
     enable_checkpoint: !var "enable_activation_checkpoint"
     checkpoint_stride: !var "checkpoint_stride"
 
     [output_decoder]
-output_decoder: &output_decoder !factory:torch.nn:Linear@output_decoder
+.define: &output_decoder !factory:torch.nn:Linear@output_decoder
     - !var "hidden_size"
     - !var "vocab_size"
 
     [positional_encoder]
-positional_encoder: &positional_encoder !factory:.sinusoidal_pe:SinusoidalPE@positional_encoder
+.define: &positional_encoder !factory:.sinusoidal_pe:SinusoidalPE@positional_encoder
     d_model: !var "hidden_size"
     max_sequence_length: !var "max_sequence_length"
 
     [input_encoder]
-input_encoder: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
+.define: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
     d_model: !var "hidden_size"
     vocab_size: !var "vocab_size"
     dropout: !var "embedding_dropout"
@@ -85,16 +85,21 @@ input_encoder: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
     scale_sqrt_d_model: True
 
     [init_weights]
-init_weights: &init_weights !partial:.init_weights:simple_weight_init@init_weights
+.define: &init_weights !partial:.init_weights:simple_weight_init@init_weights
     scale_rsqrt_d_model: True
+
+    [attn_mask_fn]
+.define: &attn_mask_fn !partial:.causal_mask:causal_mask@attn_mask_fn
 
     [model_factory]
 model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
+    config: !var "config"
     loss_fn: *loss_fn
     input_encoder: *input_encoder
     output_decoder: *output_decoder
     layer_stack: *layer_stack
     init_weights: *init_weights
+    attn_mask_fn: *attn_mask_fn
 
 [model_config]
     == super()

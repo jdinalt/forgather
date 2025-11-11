@@ -55,8 +55,7 @@ class DynamicCasualLM(PreTrainedModel, GenerationMixin):
         if attn_implementation:
             config._attn_implementation = attn_implementation
         super().__init__(config)
-        self.causal_lm = self.construct_model(attn_implementation=config._attn_implementation, **config.to_dict())
-        self.causal_lm.config = config
+        self.causal_lm = self.construct_model(config=config, attn_implementation=config._attn_implementation, **config.to_dict())
 
     @staticmethod
     def construct_model(
