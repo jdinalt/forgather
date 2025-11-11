@@ -71,7 +71,9 @@ class PyEncoder(GraphEncoder):
             s += self.name_map[node.identity]
             s += " = "
             if isinstance(node, FactoryNode) or isinstance(node, LambdaNode):
-                s += "partial("
+                empty_args = len(node.kwargs) + len(node.args) == 0
+                if not empty_args:
+                    s += "partial("
             s += self._encode(node) + "\n\n"
             self.defined_ids.add(node.identity)
         return s
@@ -176,18 +178,22 @@ class PyEncoder(GraphEncoder):
 
         in_name_map = type(obj) == FactoryNode and obj.identity in self.name_map
         is_partial = in_name_map or isinstance(obj, LambdaNode)
-        if self.level > 1 and is_partial:
+        empty_args = len(obj.kwargs) + len(obj.args) == 0
+
+        if self.level > 1 and is_partial and not empty_args:
             s += "partial("
 
         s += callable_name
         if is_dynamic:
             s += "()"
         if is_partial:
+            if empty_args:
+                return s
             s += ", "
         else:
             s += "("
 
-        if len(obj.kwargs) + len(obj.args) == 0:
+        if empty_args:
             s += ")"
             return s
         s += "\n"
