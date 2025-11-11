@@ -8,8 +8,62 @@ from transformers import PreTrainedTokenizerFast
 from tqdm.auto import tqdm
 from datasets import Dataset
 
-from .datasets import normalize_range
+def normalize_range(
+    length, select_range: range | int | float | Sequence | None
+) -> range:
+    """
+    Convert various input types to a range
+    Args:
+        length: The length of the dataset.
+        select_range: The range to normalize. Can be:
+            - None: No range, use the full dataset.
+            - int: Use the first 'n' records.
+            - float: Use the first 'n' percent of records.
+            - Sequence: A sequence of two values, interpreted as (start, end).
+            - range: A range object to use directly.
+    Returns:
+        A range object representing the normalized range.
 
+    Examples:
+    ```
+    normalize_range(1000, None) -> range(0, 1000)
+    normalize_range(1000, 0.25) -> range(0, 250)
+    normalize_range(1000, 500) -> range(0, 500)
+    normalize_range(1000, [100, 900]) -> range(100, 900)
+    normalize_range(1000, [100, 0.9]) -> range(100, 900)
+    normalize_range(1000, (1, 1.0, 4)) -> range(1, 1000, 4)
+    normalize_range(1000, range(10, 100)) -> range(10, 100)
+    ```
+    The range values will be constrained [0, length)
+    ```
+    normalize_range(1000, (-10, 2.0)) -> range(0, 1000)
+    ```
+    """
+
+    def normalize_value(value):
+        if isinstance(value, float):
+            value = int(value * length)
+        elif isinstance(value, int):
+            if value < 0:
+                value = length - value
+        else:
+            raise ValueError(
+                f"Unsupported data-type for dataset range value: {type(value)}"
+            )
+        value = max(value, 0)
+        value = min(value, length)
+        return value
+
+    if select_range is None or isinstance(select_range, range):
+        return select_range
+    elif isinstance(select_range, float) or isinstance(select_range, int):
+        return range(normalize_value(select_range))
+    elif isinstance(select_range, Sequence):
+        return range(*tuple(normalize_value(value) for value in select_range))
+    else:
+        raise ValueError(
+            f"Unsupported data-type for dataset range: {type(select_range)}"
+        )
 
 class TokenizerTrainer:
     def __init__(
