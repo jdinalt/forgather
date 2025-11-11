@@ -6,26 +6,54 @@ import sys
 import os
 
 
-def walk_package_modules(mod: ModuleType, level=0) -> Iterable[Tuple[int, ModuleType]]:
+def walk_package_modules(
+    mod: ModuleType, level=0, _visited=None
+) -> Iterable[Tuple[int, ModuleType]]:
     """
     Given a package, walk all referenced sub-modules within the same package
 
     yields Tuple[recursion_depth: int, module: ModuleType]
     """
+    if _visited is None:
+        _visited = set()
+
+    # Avoid infinite recursion
+    if id(mod) in _visited:
+        return
+    _visited.add(id(mod))
+
     yield level, mod
+
     # Is it a package; only packages have a '__path__' attr
     if not hasattr(mod, "__path__"):
         return
-    for value in mod.__dict__.values():
-        # Ignore items which are not modules or which don't have a __package__ attr
-        # Ignore things which don't start with the package prefix
+
+    # Use sys.modules instead of __dict__ to avoid missing modules
+    # that are shadowed by same-named imports (e.g., "from foo import foo")
+    package_prefix = mod.__package__ if mod.__package__ else mod.__name__
+
+    for module_name, module_obj in sys.modules.items():
+        # Skip if not a module or doesn't have required attributes
         if (
-            type(value) != ModuleType
-            or not hasattr(value, "__package__")
-            or not value.__package__.startswith(mod.__package__)
+            type(module_obj) != ModuleType
+            or not hasattr(module_obj, "__package__")
+            or not module_obj.__package__
         ):
             continue
-        yield from walk_package_modules(value, level + 1)
+
+        # Only include direct submodules of this package
+        # e.g., if package is "foo.bar", include "foo.bar.baz" but not "foo.qux"
+        if (
+            module_obj.__package__.startswith(package_prefix + ".")
+            or module_obj.__package__ == package_prefix
+        ):
+            if (
+                module_name.startswith(package_prefix + ".")
+                and module_name != package_prefix
+            ):
+                # Recursively walk subpackages
+                if id(module_obj) not in _visited:
+                    yield from walk_package_modules(module_obj, level + 1, _visited)
 
 
 def parse_module_name_or_path(module_name_or_path: Union[os.PathLike, str]):
