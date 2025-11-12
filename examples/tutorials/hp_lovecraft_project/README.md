@@ -489,14 +489,16 @@ Of such great powers or beings there may be conceivably a survival in terms of l
 Start the inference server
 
 ```bash
-# **From the Forgather directory**
+# Without '-c' the original model weights will be used, prior to finetuning.
 forgather inf server -c -m /home/dinalt/ai_assets/models/fg_mistral
 ```
+
 And test long-context inference, beyond what we trained at (8192 tokens).
 
 ```bash
+# From forgather directory...
 # Start with an open-ended prompt, a title, as seen in dataset. See what happens!
-forgather inf client --temperature 1.0 --stream --completion "$(printf 'The Stranger (1923)\n\n')" --max-tokens 8192 | tee the_stranger.txt
+forgather inf client --temperature 1.0 --completion "The Stranger (1923)" --max-tokens 8192 | tee the_stranger.txt
 ```
 
 This will both stream the output and save it to "lovecraftian.txt."
