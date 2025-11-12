@@ -39,7 +39,7 @@ You will need a 7B Llama-flavored model to train. If you have already gone throu
 MODELS_DIR="~/models" # Change this to where you store your models...
 SRC_MODEL="${MODELS_DIR}/mistral_7b"
 mkdir -p "${MODELS_DIR}"
-huggingface-cli download mistralai/Mistral-7B-v0.1 --local-dir "${SRC_MODEL}" \
+hf download mistralai/Mistral-7B-v0.1 --local-dir "${SRC_MODEL}" \
 --exclude "*.safetensors" "model.safetensors.index.json"
 ```
 
@@ -52,15 +52,13 @@ One of our memory saving strategies, CPU activation offloading, was not working 
 FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
 
 # Convert model to Forgather Llama/Mistral implementation
-forgather convert --dtype bfloat16 --max-length 16384 \
- "${SRC_MODEL}" "${FG_MODEL}"
+forgather convert --dtype bfloat16 --max-length 16384 "${SRC_MODEL}" "${FG_MODEL}"
 ```
 
 ### Convert Model Back to HF Format
 
 ```bash
-forgather convert --reverse --model-type mistral --dtype bfloat16 \
---max-length 32000 "${FG_MODEL}" OUTPUT_MODEL_PATH
+forgather convert --reverse --model-type mistral --dtype bfloat16 --max-length 32000 "${FG_MODEL}" OUTPUT_MODEL_PATH
 ```
 
 ### Syntax Highlighting

@@ -16,7 +16,7 @@ def convert_cmd(args):
         args: Parsed command-line arguments with dummy and remainder attributes
     """
     # Get path to convert_llama.py script
-    script_path = _get_script_path("convert_llama.py")
+    script_path = _get_script_path()
 
     # Build command: python convert_llama.py <forwarded_args>
     cmd_args = [sys.executable, str(script_path)]
@@ -38,12 +38,9 @@ def convert_cmd(args):
     return result.returncode
 
 
-def _get_script_path(script_name):
+def _get_script_path():
     """
     Get the absolute path to the conversion script.
-
-    Args:
-        script_name: Name of the script (e.g., 'convert_llama.py')
 
     Returns:
         Path object pointing to the script
@@ -59,7 +56,7 @@ def _get_script_path(script_name):
     current_file = Path(__file__).resolve()
     forgather_root = current_file.parent.parent.parent.parent
 
-    script_path = forgather_root / "scripts" / script_name
+    script_path = forgather_root / "tools" / "convert_model" / "convert.py"
 
     if not script_path.exists():
         raise FileNotFoundError(

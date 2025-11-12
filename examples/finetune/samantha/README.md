@@ -47,7 +47,7 @@ You should be able to use any 7B Llama flavor, with minimal changes to these ins
 MODELS_DIR="~/models" # Change this to where you store your models...
 SRC_MODEL="${MODELS_DIR}/mistral_7b"
 mkdir -p "${MODELS_DIR}"
-huggingface-cli download mistralai/Mistral-7B-v0.1 --local-dir "${SRC_MODEL}" \
+hf download mistralai/Mistral-7B-v0.1 --local-dir "${SRC_MODEL}" \
 --exclude "*.safetensors" "model.safetensors.index.json"
 ```
 
@@ -58,7 +58,7 @@ This tutorial uses the following directory structure:
 ```
 ~/forgather/                          # Forgather installation
 ├── examples/finetune/samantha/       # Tutorial project (working directory)
-├── scripts/convert_llama.py          # Model conversion script
+├── tools/convert_model/example_additional_tokens.yaml    # Additional tokens config
 └── chat_templates/chatml.jinja       # Chat template
 
 ~/models/                             # Models (you create this)
@@ -75,8 +75,8 @@ This tutorial uses the following directory structure:
 
 **Important paths**:
 - Work from: `examples/finetune/samantha/`
-- Model conversion script: `../../../scripts/convert_llama.py` (relative from tutorial dir)
 - Chat template: `../../../chat_templates/chatml.jinja` (relative from tutorial dir)
+- Token definitions: `../../../tools/convert_model/example_additional_tokens.yaml` (relative from tutorial dir)
 
 ## Configuration Tour (Optional)
 
@@ -372,21 +372,20 @@ To work around this, we have a script for converting Llama-like models to a comp
 You can also do this for single-GPU training. In most cases, it should not be required, but it can reduce peak GPU memory usage a little bit. This step may still be required to use CPU Checkpoint Offloading, as the HF version of the model appears to crash with this option enabled.
 
 ```bash
-# **From the Forgather root directory**
+# **From Samantha directory**
 # Set name for converted model
 FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
 
 # Convert model to Forgather Llama/Mistral implementation
 forgather convert --dtype bfloat16 --max-length 16384 \
--t "chat_templates/chatml_eos.jinja" "${SRC_MODEL}" "${FG_MODEL}" \
---add-tokens "scripts/example_additional_tokens.yaml"
+-t "../../../chat_templates/chatml.jinja" "${SRC_MODEL}" "${FG_MODEL}" \
+--add-tokens "../../../tools/convert_model/example_additional_tokens.yaml"
 ```
 
 To convert the model back to HF format...
 
 ```bash
-forgather convert --reverse --model-type mistral --dtype bfloat16 \
---max-length 32768 "${FG_MODEL}" OUTPUT_MODEL_PATH
+forgather convert --reverse --model-type mistral --dtype bfloat16 --max-length 32768 "${FG_MODEL}" OUTPUT_MODEL_PATH
 ```
 
 ## Single Node Training
