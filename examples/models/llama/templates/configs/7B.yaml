@@ -16,4 +16,4 @@
 tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
     arg0: "TheBloke/Llama-2-7B-GPTQ"
     legacy: False
-    model_max_length: 8196
+    model_max_length: 4096

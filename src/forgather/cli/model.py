@@ -130,6 +130,7 @@ def model_test_cmd(args):
         truncation=True,
         max_length=args.sequence_length,
         padding="max_length",
+        packed_sequences=args.packed,
     )
 
     dataloader = DataLoader(

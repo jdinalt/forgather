@@ -1,0 +1,28 @@
+-- extends "configs/7B.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Mistral 119M"
+    -- set ns.config_description = "A Mistral with 119M parameters"
+    -- set ns.model_name = "119m"
+
+[model_definition]
+    -- include "config.119m.model"
+
+#------------- config.119m.model --------------
+-- extends "config.7b.model"
+
+[model_tokenizer]
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "8k.yaml"
+    pp_debug: False
+
+[model_config]
+    == super()
+    # **117M**
+    hidden_size: 1024
+    dim_feedforward: 3328
+    num_attention_heads: 8
+    num_kv_heads: 2
+    num_hidden_layers: 8

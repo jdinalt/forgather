@@ -1,0 +1,37 @@
+-- extends "models/model_type.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Mistral 7B Instruct"
+    -- set ns.config_description = "As per Mistral-Instruct-v0.2"
+    -- set ns.model_name = "mistral_7b"
+
+[model_definition]
+    -- include "config.7b_instruct.model"
+
+#------------- config.7b_instruct.model --------------
+-- extends "models/transformers/dynamic_llama.yaml"
+
+[model_meta_config]
+    == super()
+    -- set ns.model_name = ns.config_name
+    -- set ns.model_description = ns.config_description
+    -- set ns.model_short_name = "mistral_instruct"
+
+[model_tokenizer]
+tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
+    arg0: "mistralai/Mistral-7B-Instruct-v0.2"
+    legacy: False
+    model_max_length: 32768
+
+[attn_mask_fn]
+.define: &attn_mask_fn !partial:.sliding_window_causal_mask:causal_mask@attn_mask_fn
+
+[model_config]
+    == super()
+    # **Mistral 7B Instruct**
+    dim_feedforward: 14336
+    num_attention_heads: 32
+    num_kv_heads: 8
+    sliding_window: null
+    rope_theta: 1000000.0

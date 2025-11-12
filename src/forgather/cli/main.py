@@ -684,6 +684,12 @@ def create_model_parser(global_args):
         help="Dataset config name",
     )
     test_parser.add_argument(
+        "--packed",
+        action="store_true",
+        help="Enable packed sequences in data collator",
+    )
+
+    test_parser.add_argument(
         "--lr",
         type=float,
         default=1.0e-2,

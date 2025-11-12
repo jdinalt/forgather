@@ -1,0 +1,11 @@
+-- extends 'configs/lovecraft.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Lovecraft 32K"
+    -- set ns.config_description = "Lovecraft with 32K Blocks"
+
+[map_function]
+.define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
+    max_length: 32768
+    stride: 0

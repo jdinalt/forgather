@@ -1,0 +1,28 @@
+-- extends "configs/7B.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Tiny Mistral 4M"
+    -- set ns.config_description = "A tiny Mistral with 4M parameters"
+    -- set ns.model_name = "mistral_4m"
+
+[model_definition]
+    -- include "config.4m.model"
+
+#------------- config.4m.model --------------
+-- extends "config.7b.model"
+
+[model_tokenizer]
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "2k_32k.yaml"
+    pp_debug: False
+
+[model_config]
+    == super()
+     # **Mistral 4M**
+    hidden_size: 256
+    dim_feedforward: 768
+    num_attention_heads: 2
+    num_kv_heads: 1
+    num_hidden_layers: 4
