@@ -75,7 +75,9 @@ class Project:
         """
         Loaded the specified configurtion
 
-        config_name: The name of the configuration to load.
+        Args:
+            config_name: The name of the configuration to load.
+            kwargs: Passed as Jinja2 args
         """
         # Load the pre-processed config and the config graph
         self.config, self.pp_config = self.environment.load(
@@ -91,14 +93,15 @@ class Project:
         """
         Construct and return an instance of the configuration
 
-        make_targets: The output targets to make. By default, this is 'main'
-            If a string, returns the specified target. If an Iterable of str, returns
-            a dictionary of the specified targets. If Iterable, invalid targets will be removed
-            from the returned dictionary.
+        Args:
+            args: The output targets to make. By default, this is 'main'
+                If a string, returns the specified target. If an Iterable of str, returns
+                a dictionary of the specified targets. If Iterable, invalid targets will be removed
+                from the returned dictionary.
 
-            Note: Each call will construct a new set of objects, thus you could end up with duplicates
-            if you call this seperately on different targets.
-        kwargs: Additional keyword-args to pass to the graph constructor.
+                Note: Each call will construct a new set of objects, thus you could end up with duplicates
+                if you call this seperately on different targets.
+            kwargs: Additional keyword-args to pass to the graph constructor.
 
         ```python
         # Construct and return main target

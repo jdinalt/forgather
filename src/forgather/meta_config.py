@@ -32,16 +32,37 @@ PROJECT_META_NAME = "meta.yaml"
 
 @dataclass()
 class MetaConfig:
+    # The path of the project directory
     project_dir: str
+
+    # The name of the meta file
     name: str
+
+    # The name of the current project
     project_name: str
+
+    # The description of the current project
     description: str
+
+    # The path to the meta file
     meta_path: str
+
+    # Paths to search for config templates in
     searchpath: List[str]
+
+    # The value of the system_path from the meta-config
     system_path: str
+
+    # The name of the sub-directory in which leaf configurations are located
     config_prefix: str
+
+    # The default configuration
     default_cfg: str
+
+    # The raw config dictionary
     config_dict: dict
+
+    # The path to the workspace root
     workspace_root: str
 
     def __init__(self, project_dir=".", meta_name=PROJECT_META_NAME):
@@ -150,7 +171,7 @@ class MetaConfig:
     @staticmethod
     def find_workspace_dir(project_dir):
         """
-        Recurisvely search parent directories for Forgather workspace config directory
+        Recursively search parent directories for Forgather workspace config directory
         """
 
         def is_workspace(root_dir):
@@ -176,11 +197,11 @@ class MetaConfig:
         return found_project_dir
 
     @staticmethod
-    def _find_dir(root, match_raget):
+    def _find_dir(root, match_regex):
         root = os.path.abspath(root)
 
         while True:
-            if match_raget(root):
+            if match_regex(root):
                 return root
             parent_dir, _ = os.path.split(root)
             if parent_dir == root:
