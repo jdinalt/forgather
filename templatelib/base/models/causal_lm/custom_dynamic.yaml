@@ -2,14 +2,14 @@
 
 [model_meta_config]
     == super()
-    -- set ns.model_name = "Dynamic Causal Languange Model"
+    -- set ns.model_name = "Dynamic Causal Language Model"
     ## Used to name the generated model file and to set the HF model type.
     -- set ns.model_short_name = "dynamic_causal_lm"
     ## Where to search for model source templates.
     -- set ns.model_template_searchpath = joinpath(ns.forgather_dir, 'modelsrc', 'templates')
     ## The name of the model source template to use
     -- set ns.model_template_name = 'hf_causal.py'
-    -- set ns.model_description = "This model's implemetation modules can be swapped out entirely through the configuraiton."
+    -- set ns.model_description = "This model's implementation modules can be swapped out entirely through the configuration."
     -- set ns.model_cls = 'DynamicCasualLM'
     -- set ns.model_cfg_cls = 'DynamicCausalLMConfig'
     ## path to file containing configuration class; be default, we assume they are the same.

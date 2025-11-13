@@ -16,8 +16,8 @@ from transformers import (
 )
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
-from forgather.config import ConfigEnvironment
-from forgather.latent import Latent
+
+from forgather import Project, MetaConfig
 from forgather.ml.remap_params import remap_state_dict
 from forgather.ml.sharded_checkpoint import (
     save_checkpoint,
@@ -31,53 +31,6 @@ from forgather.ml.no_init_weights import no_init_weights
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
-model_config_template = """
--- extends "models/transformers/dynamic_llama.yaml"
-
--- block model_meta_config
-    == super()
--- endblock model_meta_config
-
--- block model_tokenizer
-tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
-    args:
-        - "{{ tokenizer_path }}"
-    kwargs:
-        legacy: False
-        model_max_length: {{ max_model_length }}
--- endblock model_tokenizer
-
--- block model_config
-    == super()
-
-    # Imported Config
-    attention_dropout: !!float {{ attention_dropout }}
-    hidden_size: {{ hidden_size }}
-    num_attention_heads: {{ num_attention_heads }}
-    num_kv_heads: {{ num_kv_heads }}
-    d_head: {{ d_head }}
-    num_hidden_layers: {{ num_hidden_layers }}
-    dim_feedforward: {{ dim_feedforward }}
-    rope_theta: !!float {{ rope_theta }}
-    rms_norm_eps: !!float {{ rms_norm_eps }}
-    enable_activation_checkpoint: {{ enable_activation_checkpoint }}
--- endblock model_config
-
--- block init_weights
-# We are going to replace these anyway
-init_weights: &init_weights !partial:.init_weights:init_pass []
--- endblock init_weights
-"""
-
-config_template = """
--- set ns = namespace()
--- set ns.forgather_dir = forgather_root
--- set ns.output_dir = model_output_dir
-
-.define: &model_constructor_args {}
--- include "model_config"
-"""
 
 hflamma_to_dllama = [
     (r"lm_head\.", r"causal_lm.output_decoder.", []),
@@ -414,11 +367,6 @@ def parse_args(args=None):
         help="Override max model length of exported model.",
     )
     parser.add_argument(
-        "--enable-checkpoint",
-        action="store_true",
-        help="Enable activation checkpointing.",
-    )
-    parser.add_argument(
         "-c",
         "--checkpoint-path",
         type=os.path.expanduser,
@@ -559,27 +507,26 @@ def convert_hf_to_forgather(args):
     src_state_dict = src_model.state_dict()
     mapped_state_dict = remap_state_dict(src_state_dict, hflamma_to_dllama)
 
-    # Get script directory and make paths relative to it
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    forgather_root = os.path.dirname(script_dir)
-    template_searchpath = [
-        os.path.join(forgather_root, "templatelib/base"),
-        os.path.join(forgather_root, "templatelib/examples"),
-    ]
+    ###################
 
-    env = ConfigEnvironment(searchpath=template_searchpath)
-    template_loader = env.pp_environment.loader
-    template_loader.add_template("model_config", model_config_template)
+    # Find Forgather root directory; assumes that the only workspace below the
+    # script is the Forgather workspace (and directory)
+    forgather_root = MetaConfig.find_workspace_dir(os.path.abspath(__file__))
+
+    # Get target model directory, relative to Forgather directory
+    model_project_dir = os.path.join(forgather_root, "examples/models/llama")
 
     max_model_length = src_model_config.max_position_embeddings
     if args.max_length:
         max_model_length = args.max_length
 
-    pp_config = env.preprocess_from_string(
-        config_template,
-        forgather_root=forgather_root,
-        model_output_dir=dst_model_path,
-        tokenizer_path=src_model_path,
+    # Construct a project without setting the config
+    proj = Project(
+        config_name="",
+        project_dir=model_project_dir,
+        # Model args
+        output_dir=dst_model_path,
+        tokenizer_id_or_path=src_model_path,
         attention_dropout=getattr(src_model_config, "attention_dropout", 0.0),
         max_model_length=max_model_length,
         hidden_size=src_model_config.hidden_size,
@@ -590,14 +537,20 @@ def convert_hf_to_forgather(args):
         dim_feedforward=src_model_config.intermediate_size,
         rope_theta=src_model_config.rope_theta,
         rms_norm_eps=src_model_config.rms_norm_eps,
-        enable_activation_checkpoint=args.enable_checkpoint,
     )
 
-    logger.debug(pp_config)
+    logger.debug(proj.pp_config)
 
-    config = env.load_from_ppstring(pp_config).config
+    proj_meta = proj("meta")
+    config_class = proj_meta["config_class"]
+    if config_class != "type.model":
+        raise TypeError(f"Expected class type.model, found {config_class}")
 
-    tokenizer = Latent.materialize(config, mtargets="tokenizer")
+    # Construct model assets
+    model_config, tokenizer, model_ctor = proj(
+        "pretrained_config", "pretrained_tokenizer", "model"
+    )
+
     logger.debug(tokenizer)
     if args.chat_template_path:
         with open(args.chat_template_path, "r") as f:
@@ -612,12 +565,7 @@ def convert_hf_to_forgather(args):
     # Load additional tokens to add
     special_tokens, regular_tokens = load_additional_tokens(args.add_tokens)
 
-    model_config = Latent.materialize(config, mtargets="model_config")
     logger.info(model_config)
-
-    copy_package_files(dst_model_path, model_config, "ok")
-
-    model_ctor = Latent.materialize(config, mtargets="model")
 
     print("Constructing destination model")
     with ExitStack() as exit_stack:

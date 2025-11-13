@@ -10,7 +10,7 @@
     -- include "config.119m.model"
 
 #------------- config.119m.model --------------
--- extends "config.7b.model"
+-- extends "config.default.model"
 
 [model_tokenizer]
 tokenizer: &tokenizer !call:forgather:from_project
