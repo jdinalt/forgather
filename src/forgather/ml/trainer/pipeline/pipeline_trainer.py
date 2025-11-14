@@ -21,7 +21,7 @@ from ..checkpoint_manager import CheckpointManager, CheckpointConfig
 from ..trainer import (
     Trainer,
     TrainingArguments,
-    optimzer_hook,
+    optimizer_hook,
     rescale_accumulated_loss,
 )
 from ...sharded_checkpoint import (
@@ -572,7 +572,7 @@ class PipelineTrainer(Trainer):
                 for name, p in named_parameters(self.pipeline_modules):
                     if p.requires_grad:
                         hook = partial(
-                            optimzer_hook,
+                            optimizer_hook,
                             self.optimizer,
                             self._total_grad_squared,
                             name,

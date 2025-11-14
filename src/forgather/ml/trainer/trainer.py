@@ -186,7 +186,7 @@ def maybe_cleanup_memory(alloc_threshold):
             torch.cuda.empty_cache()
 
 
-def optimzer_hook(optimizer, total_grad_squared, name, parameter):
+def optimizer_hook(optimizer, total_grad_squared, name, parameter):
     if total_grad_squared is not None:
         total_grad_squared += parameter.grad.square().sum().to(dtype=torch.float32)
         # norm = parameter.grad.square().sum().sqrt()
@@ -500,7 +500,7 @@ class Trainer(BaseTrainer):
                 for name, p in self.model.named_parameters():
                     if p.requires_grad:
                         hook = partial(
-                            optimzer_hook,
+                            optimizer_hook,
                             self.optimizer,
                             self._total_grad_squared,
                             name,
