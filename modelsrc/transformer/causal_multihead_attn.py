@@ -20,6 +20,7 @@ class CausalMultiheadAttn(nn.Module):
         pos_encoder: Optional[Callable] = None,
         bias: bool = False,
         dropout: float = 0.0,
+        qk_norm_factory: Optional[Callable] = None,
     ):
         """
         args:
@@ -72,6 +73,13 @@ class CausalMultiheadAttn(nn.Module):
         # Store dropout probability for SDPA function
         self.dropout_p = dropout
 
+        if qk_norm_factory:
+            self.q_norm = qk_norm_factory()
+            self.k_norm = qk_norm_factory()
+        else:
+            self.q_norm = None
+            self.k_norm = None
+
     def extra_repr(self):
         return (
             f"d_model={self.d_model}, "
@@ -94,7 +102,11 @@ class CausalMultiheadAttn(nn.Module):
 
         # Project to Q, K, V
         query = self.query_linear(qkv)  # [batch, seq_len, d_model]
+        if self.q_norm:
+            query = self.q_norm(query)
         key = self.key_linear(qkv)  # [batch, seq_len, num_kv_heads * d_head]
+        if self.k_norm:
+            key = self.k_norm(key)
         value = self.value_linear(qkv)  # [batch, seq_len, num_kv_heads * d_head]
 
         # Reshape for multi-head attention (before applying relative position embeddings)
