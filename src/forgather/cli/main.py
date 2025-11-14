@@ -646,6 +646,11 @@ def create_model_parser(global_args):
         action="store_true",
         help="Enable gradient checkpointing",
     )
+    parser.add_argument(
+        "--fuse-optim-with-backward",
+        action="store_true",
+        help="Combine backward with optimizer step to save memory",
+    )
 
     subparsers = parser.add_subparsers(
         dest="model_subcommand", help="Model subcommands"

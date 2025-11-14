@@ -1,5 +1,6 @@
 from pprint import pformat
 from contextlib import ExitStack
+from functools import partial
 
 import torch
 from torch.utils.data import DataLoader
@@ -16,6 +17,11 @@ from forgather import from_project
 from forgather.ml.data_collator import DataCollatorForCausalLM
 from forgather.ml.utils import count_parameters
 from forgather.ml.sharded_checkpoint import load_checkpoint
+
+
+def optimizer_hook(optimizer, name, parameter):
+    optimizer.step()
+    optimizer.zero_grad()
 
 
 def load_model(args):
@@ -110,6 +116,16 @@ def model_test_cmd(args):
     print(f"Setting learning-rate={args.lr}")
     optimizer = SGD(model.parameters(), lr=args.lr)
 
+    if args.fuse_optim_with_backward:
+        for name, p in model.named_parameters():
+            if p.requires_grad:
+                hook = partial(
+                    optimizer_hook,
+                    optimizer,
+                    name,
+                )
+                p.register_post_accumulate_grad_hook(hook)
+
     if args.dataset_project:
         dataset = from_project(
             project_dir=args.dataset_project,
@@ -160,7 +176,8 @@ def model_test_cmd(args):
         print(f"step: {i+1}, loss: {loss}, logits.shape: {logits.shape}")
 
         loss.backward()
-        optimizer.step()
+        if not args.fuse_optim_with_backward:
+            optimizer.step()
         optimizer.zero_grad()
 
     print("Test Completed")
