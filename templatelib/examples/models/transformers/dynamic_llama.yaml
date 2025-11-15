@@ -30,6 +30,10 @@
     d_head: !var "d_head"
     max_sequence_length: !var "max_sequence_length"
     rope_theta: !var "rope_theta"
+    rope_scaling: !var "rope_scaling"
+
+    [qk_norm_factory]
+.define: &qk_norm_factory null
 
     [attn_functions]
     -- include "attn_functions/default.yaml"
@@ -46,6 +50,7 @@
     pos_encoder: *relative_pe
     attn_implementation: !var "attn_implementation" # Value from &model_constructor_args
     attn_functions: *attn_functions
+    qk_norm_factory: *qk_norm_factory
 
     [layer_factory]
 .define: &layer_factory !partial:.pre_ln_layer:PreLNLayer@layer_factory
@@ -130,6 +135,7 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
         - "model_max_length"
     dim_feedforward: 11008
     rope_theta: 10000.0
+    rope_scaling: null  # Llama3-style RoPE scaling (null for standard RoPE)
     embedding_dropout: 0.0
     rms_norm_eps: 1.0e-05
     layer_dropout: 0.0

@@ -1,4 +1,5 @@
-from typing import Tuple
+from typing import Tuple, Optional, Dict, Any
+import math
 
 import torch
 from torch import Tensor
@@ -13,8 +14,56 @@ def rotate_half(x: Tensor) -> Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
+def apply_llama3_scaling(inv_freq: Tensor, rope_scaling: Dict[str, Any]) -> Tensor:
+    """
+    Apply Llama3-style frequency scaling with wavelength-based bands.
+
+    Args:
+        inv_freq: Base inverse frequencies tensor
+        rope_scaling: Dict containing:
+            - factor: Overall scaling factor (e.g., 8.0)
+            - low_freq_factor: Scaling factor for low frequency band (e.g., 1.0)
+            - high_freq_factor: Scaling factor for high frequency band (e.g., 4.0)
+            - original_max_position_embeddings: Original context length (e.g., 8192)
+
+    Returns:
+        Scaled inverse frequencies tensor
+    """
+    factor = rope_scaling["factor"]
+    low_freq_factor = rope_scaling["low_freq_factor"]
+    high_freq_factor = rope_scaling["high_freq_factor"]
+    old_context_len = rope_scaling["original_max_position_embeddings"]
+
+    # Compute wavelength boundaries
+    low_freq_wavelen = old_context_len / low_freq_factor
+    high_freq_wavelen = old_context_len / high_freq_factor
+
+    # Convert inverse frequencies to wavelengths
+    wavelen = 2 * math.pi / inv_freq
+
+    # Three-band scaling:
+    # - High freq (wavelen < high_freq_wavelen): unchanged
+    # - Low freq (wavelen > low_freq_wavelen): divide by factor
+    # - Medium freq: smooth interpolation between the two
+
+    inv_freq_llama = torch.where(wavelen > low_freq_wavelen, inv_freq / factor, inv_freq)
+
+    # Compute smooth interpolation factor for medium frequencies
+    smooth_factor = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
+    smoothed_inv_freq = (1 - smooth_factor) * inv_freq_llama / factor + smooth_factor * inv_freq_llama
+
+    # Apply smooth interpolation only to medium frequency band
+    is_medium_freq = ~(wavelen < high_freq_wavelen) * ~(wavelen > low_freq_wavelen)
+    inv_freq_llama = torch.where(is_medium_freq, smoothed_inv_freq, inv_freq_llama)
+
+    return inv_freq_llama
+
+
 def precompute_cos_sin(
-    dim: int, end: int, theta: float = 10000.0
+    dim: int,
+    end: int,
+    theta: float = 10000.0,
+    rope_scaling: Optional[Dict[str, Any]] = None
 ) -> Tuple[Tensor, Tensor]:
     """
     Precompute cosine and sine tensors for RoPE.
@@ -23,12 +72,22 @@ def precompute_cos_sin(
         dim: Dimension of the embedding (typically d_head)
         end: Maximum sequence length
         theta: Base for the geometric progression (default: 10000.0)
+        rope_scaling: Optional dict with scaling parameters for extended context.
+                     Supports 'llama3' type scaling with factor-based wavelength bands.
 
     Returns:
         Tuple of (cos, sin) tensors of shape (end, dim)
     """
-    # Compute inverse frequencies - identical to HF
+    # Compute base inverse frequencies - identical to HF
     inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
+
+    # Apply scaling if specified
+    if rope_scaling is not None:
+        rope_type = rope_scaling.get("rope_type", rope_scaling.get("type", "default"))
+        if rope_type == "llama3":
+            inv_freq = apply_llama3_scaling(inv_freq, rope_scaling)
+        elif rope_type != "default":
+            raise ValueError(f"Unsupported rope_type: {rope_type}. Only 'llama3' is currently supported.")
 
     # Create position indices
     t = torch.arange(end, device=inv_freq.device, dtype=torch.float32)
@@ -56,14 +115,16 @@ class RealRotaryPE(torch.nn.Module):
         d_head: int,
         max_sequence_length: int = 2048,
         rope_theta: float = 10000.0,
+        rope_scaling: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
         self.d_head = d_head
         self.max_sequence_length = max_sequence_length
         self.rope_theta = rope_theta
+        self.rope_scaling = rope_scaling
 
         # Precompute cos/sin tensors once for the entire model
-        cos, sin = precompute_cos_sin(d_head, max_sequence_length, rope_theta)
+        cos, sin = precompute_cos_sin(d_head, max_sequence_length, rope_theta, rope_scaling)
 
         # Note: Use nn.Buffer for buffers, rather than register_buffer(). The later does
         # not work properly with model splitting in torch.distributed.pipelining
@@ -71,7 +132,10 @@ class RealRotaryPE(torch.nn.Module):
         self.sin_cached = torch.nn.Buffer(sin)
 
     def extra_repr(self):
-        return f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, rope_theta={self.rope_theta}"
+        rope_type = "default"
+        if self.rope_scaling:
+            rope_type = self.rope_scaling.get("rope_type", self.rope_scaling.get("type", "default"))
+        return f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, rope_theta={self.rope_theta}, rope_type={rope_type}"
 
     def forward(
         self, q: Tensor, k: Tensor, position_ids: Tensor = None

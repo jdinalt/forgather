@@ -73,9 +73,11 @@ class CausalMultiheadAttn(nn.Module):
         # Store dropout probability for SDPA function
         self.dropout_p = dropout
 
+        # QK normalization (Qwen3-style: per-head normalization over d_head)
+        # Applied after reshaping to [batch, seq, num_heads, d_head]
         if qk_norm_factory:
-            self.q_norm = qk_norm_factory()
-            self.k_norm = qk_norm_factory()
+            self.q_norm = qk_norm_factory(normalized_shape=self.d_head)
+            self.k_norm = qk_norm_factory(normalized_shape=self.d_head)
         else:
             self.q_norm = None
             self.k_norm = None
@@ -102,20 +104,23 @@ class CausalMultiheadAttn(nn.Module):
 
         # Project to Q, K, V
         query = self.query_linear(qkv)  # [batch, seq_len, d_model]
-        if self.q_norm:
-            query = self.q_norm(query)
         key = self.key_linear(qkv)  # [batch, seq_len, num_kv_heads * d_head]
-        if self.k_norm:
-            key = self.k_norm(key)
         value = self.value_linear(qkv)  # [batch, seq_len, num_kv_heads * d_head]
 
-        # Reshape for multi-head attention (before applying relative position embeddings)
+        # Reshape for multi-head attention (before applying normalization and position embeddings)
         # Query: [batch, seq_len, num_heads, d_head]
         query = query.view(batch_size, seq_len, self.num_heads, self.d_head)
 
         # Key/Value: [batch, seq_len, num_kv_heads, d_head]
         key = key.view(batch_size, seq_len, self.num_kv_heads, self.d_head)
         value = value.view(batch_size, seq_len, self.num_kv_heads, self.d_head)
+
+        # Apply QK normalization per-head (Qwen3-style)
+        # Normalizes over the last dimension (d_head) for each head independently
+        if self.q_norm:
+            query = self.q_norm(query)
+        if self.k_norm:
+            key = self.k_norm(key)
 
         # Apply relative positional embeddings to query and key tensors
         if self.pos_encoder:
