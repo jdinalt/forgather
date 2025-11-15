@@ -72,8 +72,7 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
     model_max_length: {{ max_model_length | default(40960) }}
 
 [qk_norm_factory]
-.define: &qk_norm_factory !partial:torch.nn:RMSNorm@[qk_norm_factory
-    normalized_shape: !var "hidden_size"
+.define: &qk_norm_factory !partial:torch.nn:RMSNorm@qk_norm_factory
     eps: !var "rms_norm_eps"
 
 [model_config]
