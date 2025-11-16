@@ -89,8 +89,8 @@ def parse_args(args=None):
     parser.add_argument(
         "--dtype",
         type=str,
-        default="bfloat16",
-        help="Torch output dtype. Default = bfloat16",
+        default=None,
+        help="Torch output dtype. If not specified, uses source model's dtype (or bfloat16 if not available)",
     )
     parser.add_argument(
         "--max-length",

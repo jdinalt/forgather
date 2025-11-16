@@ -145,7 +145,6 @@ class DataCollatorForCausalLM:
         # print(f"{type(features[0])=}")
         # for k in features[0].keys():
         #    print(f"{k=}")
-
         if self.truncation:
             features = self._truncate(features)
         padded_batch = self._pad(features)

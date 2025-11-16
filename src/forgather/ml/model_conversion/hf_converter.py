@@ -188,6 +188,34 @@ class HFConverter(ModelConverter):
         """
         from forgather.ml.construct import torch_dtype
 
+        # Load source model config and validate
+        src_model_config = AutoConfig.from_pretrained(src_model_path)
+        self.validate_source_config(src_model_config, "to_forgather")
+
+        # Auto-detect dtype if not specified
+        if dtype is None:
+            # Try to get dtype from source model config (prefer 'dtype', fall back to 'torch_dtype')
+            if (
+                hasattr(src_model_config, "dtype")
+                and src_model_config.dtype is not None
+            ):
+                dtype = str(src_model_config.dtype).replace("torch.", "")
+                logger.info(f"Auto-detected dtype from source model: {dtype}")
+            elif (
+                hasattr(src_model_config, "torch_dtype")
+                and src_model_config.torch_dtype is not None
+            ):
+                dtype = str(src_model_config.torch_dtype).replace("torch.", "")
+                logger.info(
+                    f"Auto-detected dtype from source model (via deprecated torch_dtype): {dtype}"
+                )
+            else:
+                # Default to bfloat16 if not available
+                dtype = "bfloat16"
+                logger.info(f"No dtype in source model, defaulting to: {dtype}")
+        else:
+            logger.info(f"Using specified dtype: {dtype}")
+
         # Setup dtype
         new_dtype = None
         if dtype:
@@ -197,10 +225,6 @@ class HFConverter(ModelConverter):
         logger.info(f"Source: {src_model_path}")
         logger.info(f"Destination: {dst_model_path}")
         logger.info(f"DType: {new_dtype}")
-
-        # Load source model config and validate
-        src_model_config = AutoConfig.from_pretrained(src_model_path)
-        self.validate_source_config(src_model_config, "to_forgather")
 
         # Capture original HF model type for reverse conversion
         hf_model_type = src_model_config.model_type
@@ -275,10 +299,13 @@ class HFConverter(ModelConverter):
             logger.info(f"Setting tokenizer chat template")
             tokenizer.chat_template = chat_template
 
-        # Store HF model type in config for reverse conversion
+        # Store HF model type and dtype in config for reverse conversion
         # This allows auto-detection of the correct converter for FG->HF conversion
+        # and provides a hint for the expected dtype when loading the model
         model_config.hf_model_type = hf_model_type
+        model_config.dtype = dtype
         logger.info(f"Stored hf_model_type={hf_model_type} in Forgather config")
+        logger.info(f"Stored dtype={dtype} in Forgather config")
 
         # Construct model
         print("Constructing Forgather model...")
@@ -381,15 +408,9 @@ class HFConverter(ModelConverter):
         """
         from forgather.ml.construct import torch_dtype
 
-        # Setup dtype
-        new_dtype = None
-        if dtype:
-            new_dtype = torch_dtype(dtype)
-
         logger.info(f"Converting {self.model_type} model from Forgather to HuggingFace")
         logger.info(f"Source: {src_model_path}")
         logger.info(f"Destination: {dst_model_path}")
-        logger.info(f"DType: {new_dtype}")
 
         # Find checkpoint
         if not checkpoint_path:
@@ -410,6 +431,37 @@ class HFConverter(ModelConverter):
             src_model_path, trust_remote_code=True
         )
         tokenizer = AutoTokenizer.from_pretrained(src_model_path)
+
+        # Auto-detect dtype if not specified
+        if dtype is None:
+            # Try to get dtype from source model config (prefer 'dtype', fall back to 'torch_dtype')
+            if (
+                hasattr(src_model_config, "dtype")
+                and src_model_config.dtype is not None
+            ):
+                dtype = str(src_model_config.dtype).replace("torch.", "")
+                logger.info(f"Auto-detected dtype from source model: {dtype}")
+            elif (
+                hasattr(src_model_config, "torch_dtype")
+                and src_model_config.torch_dtype is not None
+            ):
+                dtype = str(src_model_config.torch_dtype).replace("torch.", "")
+                logger.info(
+                    f"Auto-detected dtype from source model (via deprecated torch_dtype): {dtype}"
+                )
+            else:
+                # Default to bfloat16 if not available
+                dtype = "bfloat16"
+                logger.info(f"No dtype in source model, defaulting to: {dtype}")
+        else:
+            logger.info(f"Using specified dtype: {dtype}")
+
+        # Setup dtype
+        new_dtype = None
+        if dtype:
+            new_dtype = torch_dtype(dtype)
+
+        logger.info(f"DType: {new_dtype}")
 
         # Load Forgather model
         print("Loading Forgather model...")

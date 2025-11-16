@@ -45,7 +45,7 @@ class CasualLM(nn.Module):
 
     def get_attn_mask_fn(self):
         self.use_internal_mask = False
-        return self.self.attn_mask_fn
+        return self.attn_mask_fn
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.input_encoder.get_input_embeddings()
