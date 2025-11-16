@@ -1,7 +1,7 @@
 """Llama model converter for HuggingFace <-> Forgather conversion."""
 
 import os
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 
 from forgather.ml.model_conversion import HFConverter, register_converter
@@ -96,6 +96,43 @@ class LlamaConverter(HFConverter):
                 assert (
                     rope_type == "llama3"
                 ), f"Unsupported rope_scaling type: {rope_type}. Only 'llama3' is supported."
+
+    def create_project_config(
+        self, src_config: Any, max_length: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Create Forgather Project configuration from HuggingFace Llama config.
+
+        Args:
+            src_config: HuggingFace Llama configuration
+            max_length: Optional max sequence length override
+
+        Returns:
+            Dictionary of parameters to pass to Project() constructor
+        """
+        # Determine max model length
+        max_model_length = src_config.max_position_embeddings
+        if max_length:
+            max_model_length = max_length
+
+        # Handle None -> 'null' for YAML config
+        rope_scaling = getattr(src_config, "rope_scaling", None)
+        if rope_scaling is None:
+            rope_scaling = "null"
+
+        return {
+            "attention_dropout": getattr(src_config, "attention_dropout", 0.0),
+            "max_model_length": max_model_length,
+            "hidden_size": src_config.hidden_size,
+            "num_attention_heads": src_config.num_attention_heads,
+            "num_kv_heads": src_config.num_key_value_heads,
+            "d_head": src_config.hidden_size // src_config.num_attention_heads,
+            "num_hidden_layers": src_config.num_hidden_layers,
+            "dim_feedforward": src_config.intermediate_size,
+            "rope_theta": src_config.rope_theta,
+            "rope_scaling": rope_scaling,
+            "tie_word_embeddings": getattr(src_config, "tie_word_embeddings", False),
+            "rms_norm_eps": src_config.rms_norm_eps,
+        }
 
     def create_hf_config(self, src_config: Any, max_length: int = None) -> LlamaConfig:
         """Create HuggingFace Llama config from Forgather config.

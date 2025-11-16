@@ -56,6 +56,20 @@ class HFConverter(ModelConverter):
         """
         raise NotImplementedError("Subclasses must implement get_hf_model_class()")
 
+    def create_project_config(
+        self, src_config: Any, max_length: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Create Forgather Project configuration from HuggingFace config.
+
+        Args:
+            src_config: HuggingFace model configuration
+            max_length: Optional max sequence length override
+
+        Returns:
+            Dictionary of parameters to pass to Project() constructor
+        """
+        raise NotImplementedError("Subclasses must implement create_project_config()")
+
     def create_hf_config(
         self, src_config: Any, max_length: Optional[int] = None
     ) -> Any:
@@ -164,41 +178,18 @@ class HFConverter(ModelConverter):
             mapped_state_dict, "to_forgather", src_model_config, None
         )
 
-        # Determine max length
-        max_model_length = src_model_config.max_position_embeddings
-        if max_length:
-            max_model_length = max_length
-
-        # Handle conversions for None -> 'null' for YAML config
-        rope_scaling = getattr(src_model_config, "rope_scaling", None)
-        if rope_scaling is None:
-            rope_scaling = "null"
-
-        sliding_window = getattr(src_model_config, "sliding_window", None)
-        if sliding_window is None:
-            sliding_window = "null"
-
-        # Create Forgather project
+        # Create Forgather project configuration
         print("Creating Forgather model...")
+
+        # Get model-specific project config from converter
+        config_args = self.create_project_config(src_model_config, max_length)
 
         proj = Project(
             config_name="",
             project_dir=self.model_project_dir,
             output_dir=dst_model_path,
             tokenizer_id_or_path=src_model_path,
-            attention_dropout=getattr(src_model_config, "attention_dropout", 0.0),
-            max_model_length=max_model_length,
-            hidden_size=src_model_config.hidden_size,
-            num_attention_heads=src_model_config.num_attention_heads,
-            num_kv_heads=src_model_config.num_key_value_heads,
-            d_head=src_model_config.hidden_size // src_model_config.num_attention_heads,
-            num_hidden_layers=src_model_config.num_hidden_layers,
-            dim_feedforward=src_model_config.intermediate_size,
-            rope_theta=src_model_config.rope_theta,
-            rope_scaling=rope_scaling,
-            tie_word_embeddings=getattr(src_model_config, "tie_word_embeddings", False),
-            sliding_window=sliding_window,
-            rms_norm_eps=src_model_config.rms_norm_eps,
+            **config_args,
         )
 
         # Dump config for diagnostics

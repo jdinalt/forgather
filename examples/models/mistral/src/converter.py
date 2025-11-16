@@ -1,7 +1,7 @@
 """Mistral model converter for HuggingFace <-> Forgather conversion."""
 
 import os
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
 
 from forgather.ml.model_conversion import HFConverter, register_converter
@@ -85,10 +85,44 @@ class MistralConverter(HFConverter):
             assert (
                 config.hidden_act == "silu"
             ), f"Expected hidden_act 'silu', got '{config.hidden_act}'"
-            assert (
-                config.tie_word_embeddings == False
-            ), "tie_word_embeddings must be False"
             # Mistral models have mlp_bias and attention_bias hardcoded to False
+
+    def create_project_config(
+        self, src_config: Any, max_length: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Create Forgather Project configuration from HuggingFace Mistral config.
+
+        Args:
+            src_config: HuggingFace Mistral configuration
+            max_length: Optional max sequence length override
+
+        Returns:
+            Dictionary of parameters to pass to Project() constructor
+        """
+        # Determine max model length
+        max_model_length = src_config.max_position_embeddings
+        if max_length:
+            max_model_length = max_length
+
+        # Handle None -> 'null' for YAML config
+        sliding_window = getattr(src_config, "sliding_window", None)
+        if sliding_window is None:
+            sliding_window = "null"
+
+        return {
+            "attention_dropout": getattr(src_config, "attention_dropout", 0.0),
+            "max_model_length": max_model_length,
+            "hidden_size": src_config.hidden_size,
+            "num_attention_heads": src_config.num_attention_heads,
+            "num_kv_heads": src_config.num_key_value_heads,
+            "d_head": src_config.hidden_size // src_config.num_attention_heads,
+            "num_hidden_layers": src_config.num_hidden_layers,
+            "dim_feedforward": src_config.intermediate_size,
+            "rope_theta": src_config.rope_theta,
+            "tie_word_embeddings": getattr(src_config, "tie_word_embeddings", False),
+            "sliding_window": sliding_window,
+            "rms_norm_eps": src_config.rms_norm_eps,
+        }
 
     def create_hf_config(
         self, src_config: Any, max_length: int = None
