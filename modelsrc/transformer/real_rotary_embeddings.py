@@ -46,11 +46,17 @@ def apply_llama3_scaling(inv_freq: Tensor, rope_scaling: Dict[str, Any]) -> Tens
     # - Low freq (wavelen > low_freq_wavelen): divide by factor
     # - Medium freq: smooth interpolation between the two
 
-    inv_freq_llama = torch.where(wavelen > low_freq_wavelen, inv_freq / factor, inv_freq)
+    inv_freq_llama = torch.where(
+        wavelen > low_freq_wavelen, inv_freq / factor, inv_freq
+    )
 
     # Compute smooth interpolation factor for medium frequencies
-    smooth_factor = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
-    smoothed_inv_freq = (1 - smooth_factor) * inv_freq_llama / factor + smooth_factor * inv_freq_llama
+    smooth_factor = (old_context_len / wavelen - low_freq_factor) / (
+        high_freq_factor - low_freq_factor
+    )
+    smoothed_inv_freq = (
+        1 - smooth_factor
+    ) * inv_freq_llama / factor + smooth_factor * inv_freq_llama
 
     # Apply smooth interpolation only to medium frequency band
     is_medium_freq = ~(wavelen < high_freq_wavelen) * ~(wavelen > low_freq_wavelen)
@@ -63,7 +69,7 @@ def precompute_cos_sin(
     dim: int,
     end: int,
     theta: float = 10000.0,
-    rope_scaling: Optional[Dict[str, Any]] = None
+    rope_scaling: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Tensor, Tensor]:
     """
     Precompute cosine and sine tensors for RoPE.
@@ -87,7 +93,9 @@ def precompute_cos_sin(
         if rope_type == "llama3":
             inv_freq = apply_llama3_scaling(inv_freq, rope_scaling)
         elif rope_type != "default":
-            raise ValueError(f"Unsupported rope_type: {rope_type}. Only 'llama3' is currently supported.")
+            raise ValueError(
+                f"Unsupported rope_type: {rope_type}. Only 'llama3' is currently supported."
+            )
 
     # Create position indices
     t = torch.arange(end, device=inv_freq.device, dtype=torch.float32)
@@ -124,7 +132,9 @@ class RealRotaryPE(torch.nn.Module):
         self.rope_scaling = rope_scaling
 
         # Precompute cos/sin tensors once for the entire model
-        cos, sin = precompute_cos_sin(d_head, max_sequence_length, rope_theta, rope_scaling)
+        cos, sin = precompute_cos_sin(
+            d_head, max_sequence_length, rope_theta, rope_scaling
+        )
 
         # Note: Use nn.Buffer for buffers, rather than register_buffer(). The later does
         # not work properly with model splitting in torch.distributed.pipelining
@@ -134,7 +144,9 @@ class RealRotaryPE(torch.nn.Module):
     def extra_repr(self):
         rope_type = "default"
         if self.rope_scaling:
-            rope_type = self.rope_scaling.get("rope_type", self.rope_scaling.get("type", "default"))
+            rope_type = self.rope_scaling.get(
+                "rope_type", self.rope_scaling.get("type", "default")
+            )
         return f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, rope_theta={self.rope_theta}, rope_type={rope_type}"
 
     def forward(
