@@ -2,7 +2,7 @@
 
 import os
 from typing import List, Tuple, Dict, Any
-from transformers.models.qwen2 import Qwen2Config, Qwen2ForCausalLM
+from transformers.models.qwen3 import Qwen3Config, Qwen3ForCausalLM
 
 from forgather.ml.model_conversion import HFConverter, register_converter
 from forgather import MetaConfig
@@ -11,11 +11,7 @@ from . import hf_mappings, config_mappings
 
 @register_converter("qwen3")
 class Qwen3Converter(HFConverter):
-    """Converter for Qwen3 models between HuggingFace and Forgather formats.
-
-    Note: Qwen3 uses the same HF model classes as Qwen2 (Qwen2Config, Qwen2ForCausalLM)
-    but with model_type='qwen3' in the config.
-    """
+    """Converter for Qwen3 models between HuggingFace and Forgather formats."""
 
     def __init__(self):
         """Initialize Qwen3 converter."""
@@ -27,11 +23,11 @@ class Qwen3Converter(HFConverter):
 
     def get_hf_config_class(self):
         """Get HuggingFace Qwen2 config class (used for Qwen3)."""
-        return Qwen2Config
+        return Qwen3Config
 
     def get_hf_model_class(self):
         """Get HuggingFace Qwen2 model class (used for Qwen3)."""
-        return Qwen2ForCausalLM
+        return Qwen3ForCausalLM
 
     def get_parameter_mappings(self, direction: str) -> List[Tuple]:
         """Get parameter name mapping rules for Qwen3 models.
@@ -96,7 +92,7 @@ class Qwen3Converter(HFConverter):
             # Qwen3 has attention_bias=True for Q/K/V projections
             # No bias on o_proj (output projection)
 
-    def create_hf_config(self, src_config: Any, max_length: int = None) -> Qwen2Config:
+    def create_hf_config(self, src_config: Any, max_length: int = None) -> Qwen3Config:
         """Create HuggingFace Qwen2 config from Forgather config.
 
         Args:
@@ -104,7 +100,7 @@ class Qwen3Converter(HFConverter):
             max_length: Optional max sequence length override
 
         Returns:
-            Qwen2Config instance configured as Qwen3
+            Qwen3Config instance configured as Qwen3
         """
         # Get base config from parent class
         hf_config = super().create_hf_config(src_config, max_length)
@@ -113,9 +109,9 @@ class Qwen3Converter(HFConverter):
         hf_config.model_type = "qwen3"
 
         # Qwen3 has biases on Q/K/V projections
-        hf_config.attention_bias = True
+        hf_config.attention_bias = False
 
         # No bias on output projection
-        # (This is the default in Qwen2Config, but being explicit)
+        # (This is the default in Qwen3Config, but being explicit)
 
         return hf_config

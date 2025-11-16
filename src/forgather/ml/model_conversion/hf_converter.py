@@ -6,6 +6,7 @@ from contextlib import ExitStack
 from typing import Optional, Dict, Any, Tuple
 import torch
 from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
+from transformers.modeling_utils import no_init_weights as hf_no_init_weights
 
 from forgather import Project, MetaConfig
 from forgather.ml.remap_params import remap_state_dict
@@ -134,6 +135,10 @@ class HFConverter(ModelConverter):
         src_model_config = AutoConfig.from_pretrained(src_model_path)
         self.validate_source_config(src_model_config, "to_forgather")
 
+        # Capture original HF model type for reverse conversion
+        hf_model_type = src_model_config.model_type
+        logger.info(f"Capturing HF model type: {hf_model_type}")
+
         # Load tokenizer
         tokenizer = AutoTokenizer.from_pretrained(src_model_path)
 
@@ -219,16 +224,17 @@ class HFConverter(ModelConverter):
             )
             model_config.vocab_size = src_model_config.vocab_size
 
-        # Preserve tie_word_embeddings from source model
-        if hasattr(src_model_config, "tie_word_embeddings"):
-            model_config.tie_word_embeddings = src_model_config.tie_word_embeddings
-
         # Apply chat template if provided
         if kwargs.get("chat_template_path"):
             with open(kwargs["chat_template_path"], "r") as f:
                 chat_template = f.read()
             logger.info(f"Setting tokenizer chat template")
             tokenizer.chat_template = chat_template
+
+        # Store HF model type in config for reverse conversion
+        # This allows auto-detection of the correct converter for FG->HF conversion
+        model_config.hf_model_type = hf_model_type
+        logger.info(f"Stored hf_model_type={hf_model_type} in Forgather config")
 
         # Construct model
         print("Constructing Forgather model...")
@@ -342,6 +348,8 @@ class HFConverter(ModelConverter):
         if kwargs.get("debug_params"):
             self._print_params(src_model, "Source Forgather model")
 
+        print(f"FG Model: {src_model}")
+
         # Remap state dict
         print("Remapping model weight names to HuggingFace format...")
         src_state_dict = src_model.state_dict()
@@ -366,7 +374,7 @@ class HFConverter(ModelConverter):
             if new_dtype:
                 exit_stack.enter_context(default_dtype(new_dtype))
             exit_stack.enter_context(torch.device("cpu"))
-            exit_stack.enter_context(no_init_weights())
+            exit_stack.enter_context(hf_no_init_weights())
             hf_model_class = self.get_hf_model_class()
             hf_model = hf_model_class(hf_config)
 
@@ -382,6 +390,11 @@ class HFConverter(ModelConverter):
         print("Loading mapped state dictionary...")
         result = hf_model.load_state_dict(mapped_state_dict, strict=False, assign=True)
         print(f"load_state_dict() result: {result}")
+
+        # Retie weights
+        hf_model.tie_weights()
+
+        print(f"HF Model: {hf_model}")
 
         # Validate that unused parameters are only RoPE cached buffers
         if result.unexpected_keys:
@@ -460,6 +473,8 @@ class HFConverter(ModelConverter):
                 f"{dst_label} logits range: "
                 f"[{dst_logits.min().item():.6f}, {dst_logits.max().item():.6f}]"
             )
+            print(f"{src_label} src logits: {src_logits}")
+            print(f"{dst_label} src logits: {dst_logits}")
         else:
             print("Model logits match.")
 

@@ -9,6 +9,7 @@ from .registry import (
     register_converter,
     get_converter,
     list_converters,
+    detect_model_type,
     detect_model_type_from_hf,
     detect_model_type_from_forgather,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "register_converter",
     "get_converter",
     "list_converters",
+    "detect_model_type",
     "detect_model_type_from_hf",
     "detect_model_type_from_forgather",
     "STANDARD_FORGATHER_TO_HF",

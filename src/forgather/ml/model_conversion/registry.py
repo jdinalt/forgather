@@ -86,30 +86,57 @@ def detect_model_type_from_hf(model_path: str) -> str:
     return model_type
 
 
+def detect_model_type(model_path: str) -> Optional[tuple[str, str]]:
+    """Detect model source and type from model directory.
+
+    Args:
+        model_path: Path to model directory (HF or Forgather)
+
+    Returns:
+        Tuple of (source, model_type) where:
+        - source: "forgather" if FG model, "huggingface" if HF model
+        - model_type: HF model type string (e.g., "llama", "mistral", "qwen3")
+        Returns None if detection fails.
+
+    Note:
+        Forgather models are identified by the presence of 'hf_model_type' field,
+        which is stored during HF->FG conversion. HuggingFace models have 'model_type'
+        but not 'hf_model_type'.
+    """
+    from transformers import AutoConfig
+
+    try:
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+
+        # Check for Forgather model (has hf_model_type metadata)
+        if hasattr(config, "hf_model_type"):
+            return ("forgather", config.hf_model_type)
+
+        # Check for HuggingFace model (has model_type but not hf_model_type)
+        if hasattr(config, "model_type"):
+            return ("huggingface", config.model_type)
+
+        # Fallback: Check for forgather-specific metadata
+        if hasattr(config, "forgather_model_type"):
+            return ("forgather", config.forgather_model_type)
+    except Exception:
+        pass
+
+    return None
+
+
 def detect_model_type_from_forgather(model_path: str) -> Optional[str]:
     """Detect model type from Forgather model directory.
+
+    DEPRECATED: Use detect_model_type() instead, which returns both source and type.
 
     Args:
         model_path: Path to Forgather model directory
 
     Returns:
         Model type string if detectable, None otherwise
-
-    Note:
-        This looks for a 'model_type' field in the model's config.
-        If not found, returns None and caller should fall back to user input.
     """
-    from transformers import AutoConfig
-
-    try:
-        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-        # Check if model_type is stored in config
-        if hasattr(config, "model_type"):
-            return config.model_type
-        # Check for forgather-specific metadata
-        if hasattr(config, "forgather_model_type"):
-            return config.forgather_model_type
-    except Exception:
-        pass
-
+    result = detect_model_type(model_path)
+    if result and result[0] == "forgather":
+        return result[1]
     return None

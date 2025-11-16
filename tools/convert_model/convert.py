@@ -8,14 +8,14 @@ import logging
 # Add forgather root to sys.path to enable importing from examples/
 # Find the workspace directory (forgather root)
 from forgather import MetaConfig
+
 forgather_root = MetaConfig.find_workspace_dir(os.path.abspath(__file__))
 if forgather_root not in sys.path:
     sys.path.insert(0, forgather_root)
 
 from forgather.ml.model_conversion import (
     get_converter,
-    detect_model_type_from_hf,
-    detect_model_type_from_forgather,
+    detect_model_type,
     list_converters,
 )
 
@@ -49,21 +49,30 @@ def validate_paths(src_model_path, dst_model_path):
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
         formatter_class=RawTextHelpFormatter,
-        description="Convert between Huggingface Llama/Mistral and Forgather Dynamic Llama models",
+        description="Convert between Huggingface Llama/Mistral/Qwen3 and Forgather Dynamic models",
         epilog=(
             "Typical Usage:\n"
             "\n"
-            "Convert from Llama or Mistral: ./convert_llama.py --dtype bfloat16 --max-length 16384 -t ../chat_templates/chatml_eos.jinja \\\n"
-            "  --add-tokens example_additional_tokens.yaml ~/models/hf_llama ~/models/fg_mistral\n"
+            "Convert HF to Forgather (auto-detected):\n"
+            "  ./convert.py --dtype bfloat16 --max-length 16384 ~/models/hf_llama ~/models/fg_llama\n"
             "\n"
-            "Convert to Mistral: ./convert_llama.py --reverse --model-type mistral --dtype bfloat16 \\\n"
-            "  ~/models/fg_mistral ~/models/my_hf_llama"
+            "Convert Forgather to HF (auto-detected):\n"
+            "  ./convert.py --dtype bfloat16 ~/models/fg_llama ~/models/my_hf_llama\n"
+            "\n"
+            "Force direction with --reverse:\n"
+            "  ./convert.py --reverse --dtype bfloat16 ~/models/fg_mistral ~/models/my_hf_mistral\n"
+            "\n"
+            "Override auto-detected model type:\n"
+            "  ./convert.py --reverse --model-type qwen3 ~/models/fg_qwen ~/models/my_hf_qwen\n"
+            "\n"
+            "Note: Conversion direction is auto-detected from the source model's config.\n"
+            "      Models converted from HF->FG store 'hf_model_type' metadata for auto-detection."
         ),
     )
     parser.add_argument(
         "src_model_path",
         type=os.path.expanduser,
-        help="Path to source model (HF Llama/Mistral/Qwen3 or Forgather model)",
+        help="Path to source model (HF or Forgather - direction auto-detected)",
     )
     parser.add_argument(
         "dst_model_path",
@@ -73,20 +82,20 @@ def parse_args(args=None):
     parser.add_argument(
         "--reverse",
         action="store_true",
-        help="Convert from Forgather Dynamic Llama to HuggingFace Llama/Mistral/Qwen3 (default: HF to Forgather)",
+        help="Force Forgather->HF conversion (optional - direction is auto-detected by default)",
     )
     parser.add_argument(
         "--model-type",
         type=str,
         choices=["llama", "mistral", "qwen3"],
         default="llama",
-        help="Target model type for reverse conversion (default: llama)",
+        help="Override auto-detected model type for FG->HF conversion (default: llama if auto-detection fails)",
     )
     parser.add_argument(
         "--dtype",
         type=str,
-        default=None,
-        help="Torch output dtype",
+        default="bfloat16",
+        help="Torch output dtype. Default = bfloat16",
     )
     parser.add_argument(
         "--max-length",
@@ -142,14 +151,23 @@ def parse_args(args=None):
     return args
 
 
-def convert_hf_to_forgather(args):
-    """Convert HuggingFace Llama/Mistral model to Forgather format using converter plugins."""
-    src_model_path, dst_model_path = validate_paths(args.src_model_path, args.dst_model_path)
+def convert_hf_to_forgather(args, detected_model_type=None):
+    """Convert HuggingFace Llama/Mistral/Qwen3 model to Forgather format using converter plugins."""
+    src_model_path, dst_model_path = validate_paths(
+        args.src_model_path, args.dst_model_path
+    )
 
-    # Auto-detect model type from HuggingFace config
-    print("Detecting model type...")
-    model_type = detect_model_type_from_hf(src_model_path)
-    print(f"Detected model type: {model_type}")
+    # Use detected model type from main() if available
+    if detected_model_type:
+        model_type = detected_model_type
+        print(f"Using detected model type: {model_type}")
+    else:
+        # Fallback: Try to detect from config
+        from forgather.ml.model_conversion import detect_model_type_from_hf
+
+        print("Detecting model type from config...")
+        model_type = detect_model_type_from_hf(src_model_path)
+        print(f"Detected model type: {model_type}")
 
     # Get appropriate converter
     converter_class = get_converter(model_type)
@@ -165,7 +183,9 @@ def convert_hf_to_forgather(args):
     # Note: Vocabulary extension (--add-tokens) is excluded from Phase 1
     # This will be added in Phase 2
     if args.add_tokens:
-        print("Warning: Vocabulary extension (--add-tokens) is not yet supported in the refactored converter.")
+        print(
+            "Warning: Vocabulary extension (--add-tokens) is not yet supported in the refactored converter."
+        )
         print("This feature will be added in Phase 2.")
 
     # Delegate to converter
@@ -174,35 +194,36 @@ def convert_hf_to_forgather(args):
         dst_model_path=dst_model_path,
         dtype=args.dtype,
         max_length=args.max_length,
-        **kwargs
+        **kwargs,
     )
 
 
-def convert_forgather_to_hf(args):
+def convert_forgather_to_hf(args, detected_model_type=None):
     """Convert Forgather model to HuggingFace format using converter plugins."""
-    src_model_path, dst_model_path = validate_paths(args.src_model_path, args.dst_model_path)
+    src_model_path, dst_model_path = validate_paths(
+        args.src_model_path, args.dst_model_path
+    )
 
-    # Try to auto-detect model type from Forgather config
-    print("Detecting model type...")
-    detected_type = detect_model_type_from_forgather(src_model_path)
-
-    # Check if detected type is a supported converter type
-    available_converters = list_converters()
-    model_type = None
-
-    if detected_type and detected_type in available_converters:
-        # Auto-detection successful and supported
-        print(f"Detected model type: {detected_type}")
-        model_type = detected_type
-        if args.model_type != "llama" and args.model_type != detected_type:
-            print(f"Warning: Detected type '{detected_type}' differs from --model-type '{args.model_type}'")
-            print(f"Using detected type: {detected_type}")
+    # Use detected model type from main() if available
+    if detected_model_type:
+        model_type = detected_model_type
+        print(f"Using detected model type: {model_type}")
     else:
-        # Auto-detection failed or returned unsupported type, use user-specified
-        if detected_type:
-            print(f"Detected forgather-specific model type: {detected_type}")
+        # Fallback: Use --model-type
+        print(f"Warning: Could not auto-detect model type from config")
+        print(
+            f"This may indicate the model was not converted from HuggingFace using this tool"
+        )
         print(f"Using --model-type: {args.model_type}")
         model_type = args.model_type
+
+    # Check if model type is supported
+    available_converters = list_converters()
+    if model_type not in available_converters:
+        raise ValueError(
+            f"Model type '{model_type}' is not supported. "
+            f"Available converters: {available_converters}"
+        )
 
     # Get appropriate converter
     converter_class = get_converter(model_type)
@@ -221,7 +242,7 @@ def convert_forgather_to_hf(args):
         dtype=args.dtype,
         max_length=args.max_length,
         checkpoint_path=args.checkpoint_path,
-        **kwargs
+        **kwargs,
     )
 
 
@@ -231,20 +252,58 @@ def main():
     # Show available converters
     logger.info(f"Available model converters: {list_converters()}")
 
-    # Validate arguments
-    if not args.reverse and args.model_type != "llama":
-        print(
-            "Warning: --model-type is only used for reverse conversion (--reverse). Ignoring."
-        )
+    # Auto-detect conversion direction and model type
+    direction = None
+    detected_model_type = None
 
     if args.reverse:
+        # Explicit --reverse flag takes precedence
+        direction = "fg_to_hf"
+        logger.info("Using explicit --reverse flag for FG->HF conversion")
+    else:
+        # Try to auto-detect direction and model type
+        detection_result = detect_model_type(args.src_model_path)
+
+        if detection_result:
+            source, model_type = detection_result
+            detected_model_type = model_type
+
+            if source == "forgather":
+                direction = "fg_to_hf"
+                logger.info(
+                    f"Auto-detected Forgather model with hf_model_type={model_type}"
+                )
+                print(f"Auto-detected Forgather model (original type: {model_type})")
+            else:  # source == "huggingface"
+                direction = "hf_to_fg"
+                logger.info(
+                    f"Auto-detected HuggingFace model with model_type={model_type}"
+                )
+                print(f"Auto-detected HuggingFace model (type: {model_type})")
+        else:
+            # Default to HF->FG if detection fails
+            direction = "hf_to_fg"
+            logger.info(
+                "Could not auto-detect model type, defaulting to HF->FG conversion"
+            )
+            print(
+                "Warning: Could not auto-detect model type, assuming HF->FG conversion"
+            )
+
+    # Validate arguments
+    if direction == "hf_to_fg" and args.model_type != "llama":
         print(
-            f"Converting Forgather model to HuggingFace {args.model_type.capitalize()}"
+            "Warning: --model-type is only used for FG->HF conversion. Ignoring for HF->FG."
         )
-        convert_forgather_to_hf(args)
+
+    if direction == "fg_to_hf":
+        # Use detected model type if available, otherwise use --model-type
+        target_type = detected_model_type if detected_model_type else args.model_type
+        print(f"Converting Forgather model to HuggingFace {target_type.capitalize()}")
+        convert_forgather_to_hf(args, detected_model_type=detected_model_type)
     else:
         print("Converting HuggingFace model to Forgather format")
-        convert_hf_to_forgather(args)
+        convert_hf_to_forgather(args, detected_model_type=detected_model_type)
 
 
 if __name__ == "__main__":

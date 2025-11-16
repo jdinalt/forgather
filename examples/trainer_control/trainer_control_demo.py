@@ -10,10 +10,10 @@ This script demonstrates:
 Usage:
   # Terminal 1: Start training with control enabled
   python examples/trainer_control_demo.py
-  
+
   # Terminal 2: Control the training job
   forgather control list                    # Find your job
-  forgather control status JOB_ID          # Check status  
+  forgather control status JOB_ID          # Check status
   forgather control save JOB_ID            # Save checkpoint
   forgather control stop JOB_ID            # Gracefully stop
 """

@@ -16,7 +16,7 @@
     == super()
     -- set ns.model_name = ns.config_name
     -- set ns.model_description = ns.config_description
-    -- set ns.model_short_name = "llama2"
+    -- set ns.model_short_name = "llama"
 
 [model_tokenizer]
 tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
