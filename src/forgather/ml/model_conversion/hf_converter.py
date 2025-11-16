@@ -5,6 +5,7 @@ import logging
 from contextlib import ExitStack
 from typing import Optional, Dict, Any, Tuple
 import torch
+import yaml
 from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
 from transformers.modeling_utils import no_init_weights as hf_no_init_weights
 
@@ -115,6 +116,58 @@ class HFConverter(ModelConverter):
             config_kwargs["eos_token_id"] = getattr(src_config, "eos_token_id", 2)
 
         return config_class(**config_kwargs)
+
+    def _load_and_add_tokens(
+        self, tokenizer: AutoTokenizer, add_tokens_path: str
+    ) -> Tuple[bool, int]:
+        """Load additional tokens from YAML and add them to tokenizer.
+
+        Args:
+            tokenizer: HuggingFace tokenizer to add tokens to
+            add_tokens_path: Path to YAML file containing tokens to add
+
+        Returns:
+            Tuple of (needs_pad_token, num_added) where:
+            - needs_pad_token: True if PAD token was added
+            - num_added: Total number of tokens added
+
+        YAML format:
+            special_tokens:
+              - "<|im_start|>"
+              - "<|im_end|>"
+            regular_tokens:
+              - "custom_token"
+        """
+        with open(add_tokens_path, "r") as f:
+            token_config = yaml.safe_load(f)
+
+        needs_pad_token = False
+        num_added = 0
+
+        # Add special tokens
+        special_tokens = token_config.get("special_tokens", [])
+        if special_tokens:
+            num_special = tokenizer.add_special_tokens(
+                {"additional_special_tokens": special_tokens}
+            )
+            logger.info(f"Added {num_special} special tokens: {special_tokens}")
+            num_added += num_special
+
+        # Add regular tokens
+        regular_tokens = token_config.get("regular_tokens", [])
+        if regular_tokens:
+            num_regular = tokenizer.add_tokens(regular_tokens)
+            logger.info(f"Added {num_regular} regular tokens: {regular_tokens}")
+            num_added += num_regular
+
+        # Add PAD token if missing
+        if tokenizer.pad_token is None:
+            tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+            logger.info(f"Added PAD token: [PAD] at index {tokenizer.pad_token_id}")
+            needs_pad_token = True
+            num_added += 1
+
+        return needs_pad_token, num_added
 
     def convert_to_forgather(
         self,
@@ -251,6 +304,41 @@ class HFConverter(ModelConverter):
         ):
             print("Tying word embeddings...")
             model.tie_weights()
+
+        # Add tokens and resize embeddings if requested
+        if kwargs.get("add_tokens"):
+            print(f"Adding tokens from: {kwargs['add_tokens']}")
+            needs_pad_token, num_added = self._load_and_add_tokens(
+                tokenizer, kwargs["add_tokens"]
+            )
+
+            if num_added > 0:
+                print(f"Added {num_added} token(s) to vocabulary")
+                new_vocab_size = len(tokenizer)
+                print(
+                    f"Resizing token embeddings from {model_config.vocab_size} to {new_vocab_size}..."
+                )
+
+                # Use HuggingFace's resize_token_embeddings() method
+                # mean_resizing=False uses model's default initialization (normal distribution)
+                model.resize_token_embeddings(new_vocab_size, mean_resizing=False)
+
+                # Zero-initialize PAD token embeddings (matches old behavior)
+                if needs_pad_token:
+                    with torch.no_grad():
+                        pad_id = tokenizer.pad_token_id
+                        print(f"Zero-initializing PAD token at index {pad_id}")
+                        model.get_input_embeddings().weight[pad_id].zero_()
+                        # Only zero output embeddings if not tied
+                        if not model_config.tie_word_embeddings:
+                            model.get_output_embeddings().weight[pad_id].zero_()
+
+                # Update config to reflect new vocabulary size
+                model_config.vocab_size = new_vocab_size
+                model_config.pad_token_id = tokenizer.pad_token_id
+                print(
+                    f"Updated config: vocab_size={new_vocab_size}, pad_token_id={tokenizer.pad_token_id}"
+                )
 
         # Compare logits
         prompt = kwargs.get("prompt", "The old bookstore at the corner of")
@@ -442,11 +530,20 @@ class HFConverter(ModelConverter):
 
         # Handle vocab size mismatch
         if src_logits.shape != dst_logits.shape:
-            min_vocab_size = min(src_logits.shape[-1], dst_logits.shape[-1])
-            print(
-                f"Vocab size mismatch: {src_logits.shape[-1]} vs {dst_logits.shape[-1]}"
-            )
-            print(f"Comparing only first {min_vocab_size} tokens")
+            src_vocab = src_logits.shape[-1]
+            dst_vocab = dst_logits.shape[-1]
+            min_vocab_size = min(src_vocab, dst_vocab)
+
+            print(f"Vocab size mismatch: {src_vocab} vs {dst_vocab}")
+            if dst_vocab > src_vocab:
+                print(f"Destination has {dst_vocab - src_vocab} additional tokens")
+                print(
+                    f"Comparing only original {src_vocab} tokens (new tokens not in source)"
+                )
+            else:
+                print(f"Source has {src_vocab - dst_vocab} additional tokens")
+                print(f"Comparing only first {min_vocab_size} tokens")
+
             src_logits = src_logits[..., :min_vocab_size]
             dst_logits = dst_logits[..., :min_vocab_size]
 

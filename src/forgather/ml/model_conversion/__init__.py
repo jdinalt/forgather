@@ -12,6 +12,7 @@ from .registry import (
     detect_model_type,
     detect_model_type_from_hf,
     detect_model_type_from_forgather,
+    discover_and_register_converters,
 )
 from .hf_converter import HFConverter
 from .standard_mappings import (
@@ -19,6 +20,9 @@ from .standard_mappings import (
     STANDARD_HF_TO_FORGATHER,
     reverse_mapping,
 )
+
+# Also expose discovery module for advanced use
+from . import discovery
 
 __all__ = [
     "ModelConverter",
@@ -29,6 +33,8 @@ __all__ = [
     "detect_model_type",
     "detect_model_type_from_hf",
     "detect_model_type_from_forgather",
+    "discover_and_register_converters",
+    "discovery",
     "STANDARD_FORGATHER_TO_HF",
     "STANDARD_HF_TO_FORGATHER",
     "reverse_mapping",

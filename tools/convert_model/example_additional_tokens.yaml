@@ -3,9 +3,7 @@
 
 # Special tokens (will be added as special tokens)
 special_tokens:
-  - "<|im_start|>system"
-  - "<|im_start|>user"
-  - "<|im_start|>assistant"
+  - "<|im_start|>"
   - "<|im_end|>"
 
 # Regular tokens (will be added as regular tokens)

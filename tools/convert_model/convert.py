@@ -17,13 +17,8 @@ from forgather.ml.model_conversion import (
     get_converter,
     detect_model_type,
     list_converters,
+    discover_and_register_converters,
 )
-
-# Import model converters to register them
-# This ensures they are available in the registry
-import examples.models.llama.src.converter
-import examples.models.mistral.src.converter
-import examples.models.qwen3.src.converter
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -146,6 +141,14 @@ def parse_args(args=None):
         default=None,
         help="Path to YAML file specifying additional tokens to add to vocabulary.",
     )
+    parser.add_argument(
+        "--converter-path",
+        action="append",
+        dest="converter_paths",
+        type=os.path.expanduser,
+        default=[],
+        help="Additional directory path(s) to search for model converters. Can be specified multiple times.",
+    )
 
     args = parser.parse_args(args)
     return args
@@ -178,15 +181,8 @@ def convert_hf_to_forgather(args, detected_model_type=None):
         "debug_params": args.debug_params,
         "prompt": args.prompt,
         "chat_template_path": args.chat_template_path,
+        "add_tokens": args.add_tokens,
     }
-
-    # Note: Vocabulary extension (--add-tokens) is excluded from Phase 1
-    # This will be added in Phase 2
-    if args.add_tokens:
-        print(
-            "Warning: Vocabulary extension (--add-tokens) is not yet supported in the refactored converter."
-        )
-        print("This feature will be added in Phase 2.")
 
     # Delegate to converter
     converter.convert_to_forgather(
@@ -249,8 +245,17 @@ def convert_forgather_to_hf(args, detected_model_type=None):
 def main():
     args = parse_args()
 
+    # Discover and register converters from builtin and custom paths
+    custom_paths = args.converter_paths if args.converter_paths else None
+    discover_and_register_converters(custom_paths, forgather_root)
+
     # Show available converters
-    logger.info(f"Available model converters: {list_converters()}")
+    available_converters = list_converters()
+    logger.info(f"Available model converters: {available_converters}")
+    if not available_converters:
+        print("ERROR: No model converters found!")
+        print("Make sure you're running from the Forgather root directory.")
+        sys.exit(1)
 
     # Auto-detect conversion direction and model type
     direction = None

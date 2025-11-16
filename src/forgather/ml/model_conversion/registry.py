@@ -4,6 +4,11 @@ from typing import Dict, Type, List, Optional
 from .base import ModelConverter
 
 
+# Import discovery functions for convenience
+# Actual implementation is in discovery.py to avoid circular imports
+_discovery_functions = None
+
+
 # Global registry of model converters
 _CONVERTER_REGISTRY: Dict[str, Type[ModelConverter]] = {}
 
@@ -140,3 +145,33 @@ def detect_model_type_from_forgather(model_path: str) -> Optional[str]:
     if result and result[0] == "forgather":
         return result[1]
     return None
+
+
+def discover_and_register_converters(
+    custom_paths: Optional[List[str]] = None, forgather_root: Optional[str] = None
+) -> None:
+    """Discover and register model converters from standard and custom locations.
+
+    This is a convenience function that wraps the discovery module functions.
+    It will:
+    1. Discover builtin converters from examples/models/*/src/converter.py
+    2. Discover converters from custom paths if provided
+
+    Args:
+        custom_paths: Optional list of directory paths to search for converters
+        forgather_root: Optional path to Forgather root directory
+
+    Note:
+        Converters are registered automatically when their modules are imported,
+        so this function only needs to be called once at startup.
+    """
+    global _discovery_functions
+
+    # Lazy import to avoid circular dependencies
+    if _discovery_functions is None:
+        from . import discovery as _discovery_functions
+
+    if custom_paths:
+        _discovery_functions.discover_from_paths(custom_paths, forgather_root)
+    else:
+        _discovery_functions.discover_builtin_converters(forgather_root)
