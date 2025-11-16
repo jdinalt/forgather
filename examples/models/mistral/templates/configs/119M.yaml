@@ -1,10 +1,10 @@
--- extends "configs/7B.yaml"
+-- extends "configs/default.yaml"
 
 [config_metadata]
     == super()
     -- set ns.config_name = "Mistral 119M"
     -- set ns.config_description = "A Mistral with 119M parameters"
-    -- set ns.model_name = "119m"
+    -- set ns.model_name = "mistral_119m"
 
 [model_definition]
     -- include "config.119m.model"
@@ -20,9 +20,9 @@ tokenizer: &tokenizer !call:forgather:from_project
 
 [model_config]
     == super()
-    # **117M**
-    hidden_size: 1024
-    dim_feedforward: 3328
-    num_attention_heads: 8
-    num_kv_heads: 2
-    num_hidden_layers: 8
+    # **119M**
+    hidden_size: {{ hidden_size | default(1024) }}
+    dim_feedforward: {{ dim_feedforward | default(3328) }}
+    num_attention_heads: {{ num_attention_heads | default(8) }}
+    num_hidden_layers: {{ num_hidden_layers | default(8) }}
+    num_kv_heads: {{ num_kv_heads | default(2) }}

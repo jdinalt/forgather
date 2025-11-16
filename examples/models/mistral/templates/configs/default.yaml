@@ -1,0 +1,38 @@
+-- extends "projects/causal_lm_def.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Default Mistral"
+    -- set ns.config_description = "Mistral 7B"
+    -- set ns.model_name = model_name | default("mistral_7b")
+
+[model_definition]
+    -- include "config.default.model"
+
+#------------- config.default.model --------------
+-- extends "models/transformers/dynamic_llama.yaml"
+
+[model_meta_config]
+    == super()
+    -- set ns.model_name = ns.config_name
+    -- set ns.model_description = ns.config_description
+    -- set ns.model_short_name = "mistral"
+
+[model_tokenizer]
+tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
+    arg0: "mistralai/Mistral-7B-v0.1"
+    legacy: False
+    model_max_length: {{ max_model_length | default(32768) }}
+
+[model_config]
+    == super()
+    # **Custom Mistral**
+    hidden_size: {{ hidden_size | default(4096) }}
+    num_attention_heads: {{ num_attention_heads | default(32) }}
+    num_kv_heads: {{ num_kv_heads | default(8) }}
+    d_head: {{ d_head | default(128) }}
+    num_hidden_layers: {{ num_hidden_layers | default(32) }}
+    dim_feedforward: {{ dim_feedforward | default(14336) }}
+    rope_theta: !!float {{ rope_theta | default(10000.0) }}
+    rms_norm_eps: !!float {{ rms_norm_eps | default(1.0e-05) }}
+    sliding_window: {{ sliding_window | default(4096) }}

@@ -2,12 +2,12 @@
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Qwen3"
-    -- set ns.config_description = "Qwen3"
-    -- set ns.model_name = model_name | default("qwen3")
+    -- set ns.config_name = "Causal LM"
+    -- set ns.config_description = "Generic Causal LM Project"
+    -- set ns.model_name = model_name | default("model")
 
 [model_definition]
-    -- include "project.model"
+    ## Define Me!
 
 [dynamic_args]
     == super()
@@ -19,6 +19,10 @@
         names: "--model-name"
         type: "str"
         help: "Model name"
+    tie_word_embeddings: 
+        names: "--tie-word-embeddings"
+        action: "store_true"
+        help: "Tie input and output word embeddings"
     attention_dropout:
         names: "--attention-dropout"
         type: float
@@ -55,35 +59,10 @@
         names: "--rms-norm-eps"
         type: "float"
         help: "RMS Norm eps"
+    rope_scaling:
+        names: "--rope-scaling"
+        help: "RoPE scaling type"
+    sliding_window:
+        names: "--sliding-window"
+        help: "Sliding window size. 'null' for disabled"
 
-#------------- project.model --------------
--- extends "models/transformers/dynamic_llama.yaml"
-
-[model_meta_config]
-    == super()
-    -- set ns.model_name = ns.config_name
-    -- set ns.model_description = ns.config_description
-    -- set ns.model_short_name = "qwen3"
-
-[model_tokenizer]
-tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
-    arg0: "Qwen/Qwen3-8B"
-    legacy: False
-    model_max_length: {{ max_model_length | default(40960) }}
-
-[qk_norm_factory]
-.define: &qk_norm_factory !partial:torch.nn:RMSNorm@qk_norm_factory
-    eps: !var "rms_norm_eps"
-
-[model_config]
-    == super()
-    # **Custom Qwen3**
-    attention_dropout: !!float {{ attention_dropout | default(0.0) }}
-    hidden_size: {{ hidden_size | default(4096) }}
-    num_attention_heads: {{ num_attention_heads | default(32) }}
-    num_kv_heads: {{ num_kv_heads | default(8) }}
-    d_head: {{ d_head | default(128) }}
-    num_hidden_layers: {{ num_hidden_layers | default(36) }}
-    dim_feedforward: {{ dim_feedforward | default(12288) }}
-    rope_theta: !!float {{ rope_theta | default(1000000.0) }}
-    rms_norm_eps: !!float {{ rms_norm_eps | default(1.0e-06) }}

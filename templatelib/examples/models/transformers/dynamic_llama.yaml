@@ -124,29 +124,30 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
 
 [model_config]
     == super()
-    hidden_size: 4096
-    num_attention_heads: 32
+    hidden_size: {{ hidden_size | default(4096) }}
+    num_attention_heads: {{ num_attention_heads | default(32) }}
     # Default to MHA when null
-    num_kv_heads: null
-    d_head: 128 # Must be hidden_size // num_attention_heads
-    num_hidden_layers: 32
+    num_kv_heads: {{ num_kv_heads | default('null') }}
+    d_head: {{ d_head | default(128) }} # Must be hidden_size // num_attention_heads
+    num_hidden_layers: {{ num_hidden_layers | default(32) }}
     max_sequence_length: !singleton:getattr
         - *tokenizer
         - "model_max_length"
-    dim_feedforward: 11008
-    rope_theta: 10000.0
-    rope_scaling: null  # Llama3-style RoPE scaling (null for standard RoPE)
-    embedding_dropout: 0.0
-    rms_norm_eps: 1.0e-05
-    layer_dropout: 0.0
-    residual_dropout: 0.0
-    attention_dropout: 0.0
-    activation_dropout: 0.0
+    dim_feedforward: {{ dim_feedforward | default(11008) }}
+    rope_theta: !!float {{ rope_theta | default(10000.0) }}
+    embedding_dropout: !!float {{ embedding_dropout | default(0.0) }}
+    rms_norm_eps: !!float {{ rms_norm_eps | default(1.0e-05) }}
+    layer_dropout: !!float {{ layer_dropout | default(0.0) }}
+    residual_dropout: !!float {{ residual_dropout | default(0.0) }}
+    attention_dropout: !!float {{ attention_dropout | default(0.0) }}
+    activation_dropout: !!float {{ activation_dropout | default(0.0) }}
     enable_activation_checkpoint: False
-    checkpoint_stride: 1
+    checkpoint_stride: {{ checkpoint_stride | default(1) }}
     compile_flex: True # For debug flex, set to False
     flex_attn_kernel_options: *flex_attn_kernel_options
-    tie_word_embeddings: False
+    tie_word_embeddings: {{ tie_word_embeddings | default(False) }}
+    rope_scaling: {{ rope_scaling | default('null') }}
+    sliding_window: {{ sliding_window | default('null') }}
     
 [model_code_generator]
     == super()

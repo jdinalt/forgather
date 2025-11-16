@@ -1,6 +1,9 @@
 from typing import Optional
 from transformers.cache_utils import Cache
-from transformers.masking_utils import create_causal_mask
+from transformers.masking_utils import (
+    create_causal_mask,
+    create_sliding_window_causal_mask,
+)
 from transformers import PretrainedConfig
 
 import torch
@@ -35,11 +38,14 @@ def causal_mask(
     """
     assert config
 
+    window_size = getattr(config, "window_size", None)
+
     # When using SDPA, if just simple a simple causal attention mask
     # is required, bypass mask generation. SDPA will then use
     # the "is_causal" flag, which saves memory and is faster.
     if (
         config._attn_implementation == "sdpa"
+        and not window_size
         and attention_mask is None
         and past_key_values is None
         and position_ids is None
@@ -67,7 +73,8 @@ def causal_mask(
         cache_position = torch.arange(0, input_ids.shape[1], device=input_ids.device)
 
     # Use HuggingFace's create_causal_mask utility
-    attention_mask = create_causal_mask(
+    mask_fn = create_sliding_window_causal_mask if window_size else create_causal_mask
+    attention_mask = mask_fn(
         config=config,
         input_embeds=input_embeds,
         attention_mask=attention_mask,

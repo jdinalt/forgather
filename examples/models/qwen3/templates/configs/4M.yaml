@@ -1,4 +1,4 @@
--- extends "qwen3.yaml"
+-- extends "configs/default.yaml"
 
 [config_metadata]
     == super()
@@ -20,9 +20,9 @@ tokenizer: &tokenizer !call:forgather:from_project
 
 [model_config]
     == super()
-     # **Mistral 4M**
-    hidden_size: 256
-    dim_feedforward: 768
-    num_attention_heads: 2
-    num_kv_heads: 1
-    num_hidden_layers: 4
+     # **Qwen3 4M**
+    hidden_size: {{ hidden_size | default(256) }}
+    dim_feedforward: {{ dim_feedforward | default(768) }}
+    num_attention_heads: {{ num_attention_heads | default(2) }}
+    num_hidden_layers: {{ num_hidden_layers | default(4) }}
+    num_kv_heads: {{ num_kv_heads | default(1) }}

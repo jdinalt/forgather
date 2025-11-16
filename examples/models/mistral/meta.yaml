@@ -4,5 +4,5 @@
 name: "Mistral"
 description: "Mistral with sliding window attention support"
 config_prefix: "configs"
-default_config: "7B.yaml"
+default_config: "default.yaml"
 << endblock configs

@@ -1,4 +1,4 @@
--- extends "configs/7B.yaml"
+-- extends "configs/default.yaml"
 
 [config_metadata]
     == super()
@@ -21,8 +21,5 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
 [model_config]
     == super()
     # **Mistral 7B Instruct**
-    dim_feedforward: 14336
-    num_attention_heads: 32
-    num_kv_heads: 8
-    sliding_window: null
-    rope_theta: 1000000.0
+    sliding_window: {{ sliding_window | default('null') }}
+    rope_theta: {{ rope_theta | default(1000000.0) }}

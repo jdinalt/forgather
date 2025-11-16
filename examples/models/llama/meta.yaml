@@ -4,5 +4,5 @@
 name: "Dynamic Llama"
 description: "Llama models, in various sizes"
 config_prefix: "configs"
-default_config: "7B.yaml"
+default_config: "default.yaml"
 << endblock configs

@@ -1,16 +1,16 @@
--- extends "models/model_type.yaml"
+-- extends "configs/default.yaml"
 
 [config_metadata]
     == super()
     -- set ns.config_name = "Llama 117M"
     -- set ns.config_description = "A Llama with 117M parameters"
-    -- set ns.model_name = "117m"
+    -- set ns.model_name = "llama_117m"
 
 [model_definition]
     -- include "config.model"
 
 #------------- config.model --------------
--- extends "models/transformers/dynamic_llama.yaml"
+-- extends "config.default.model"
 
 [model_tokenizer]
 tokenizer: &tokenizer !call:forgather:from_project
@@ -20,10 +20,8 @@ tokenizer: &tokenizer !call:forgather:from_project
 
 [model_config]
     == super()
-    # **117M Llama Overrides**
-    hidden_size: 1024
-    dim_feedforward: 2816
-    num_attention_heads: 8
-    num_hidden_layers: 8
-    embedding_dropout: 0.0
-    layer_dropout: 0.0
+    # **4M Overrides**
+    hidden_size: {{ hidden_size | default(1024) }}
+    dim_feedforward: {{ dim_feedforward | default(2816) }}
+    num_attention_heads: {{ num_attention_heads | default(8) }}
+    num_hidden_layers: {{ num_hidden_layers | default(8) }}

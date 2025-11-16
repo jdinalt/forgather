@@ -164,8 +164,18 @@ class HFConverter(ModelConverter):
         if max_length:
             max_model_length = max_length
 
+        # Handle conversions for None -> 'null' for YAML config
+        rope_scaling = getattr(src_model_config, "rope_scaling", None)
+        if rope_scaling is None:
+            rope_scaling = "null"
+
+        sliding_window = getattr(src_model_config, "sliding_window", None)
+        if sliding_window is None:
+            sliding_window = "null"
+
         # Create Forgather project
         print("Creating Forgather model...")
+
         proj = Project(
             config_name="",
             project_dir=self.model_project_dir,
@@ -180,9 +190,14 @@ class HFConverter(ModelConverter):
             num_hidden_layers=src_model_config.num_hidden_layers,
             dim_feedforward=src_model_config.intermediate_size,
             rope_theta=src_model_config.rope_theta,
-            rope_scaling=getattr(src_model_config, "rope_scaling", None),
+            rope_scaling=rope_scaling,
+            tie_word_embeddings=getattr(src_model_config, "tie_word_embeddings", False),
+            sliding_window=sliding_window,
             rms_norm_eps=src_model_config.rms_norm_eps,
         )
+
+        # Dump config for diagnostics
+        print(proj.pp_config)
 
         # Validate project type
         proj_meta = proj("meta")
@@ -204,14 +219,9 @@ class HFConverter(ModelConverter):
             )
             model_config.vocab_size = src_model_config.vocab_size
 
-        # Preserve rope_scaling from source model
-        # The generated config class doesn't automatically persist this field
-        if (
-            hasattr(src_model_config, "rope_scaling")
-            and src_model_config.rope_scaling is not None
-        ):
-            print(f"Setting rope_scaling: {src_model_config.rope_scaling}")
-            model_config.rope_scaling = src_model_config.rope_scaling
+        # Preserve tie_word_embeddings from source model
+        if hasattr(src_model_config, "tie_word_embeddings"):
+            model_config.tie_word_embeddings = src_model_config.tie_word_embeddings
 
         # Apply chat template if provided
         if kwargs.get("chat_template_path"):
@@ -237,6 +247,14 @@ class HFConverter(ModelConverter):
         result = model.load_state_dict(mapped_state_dict, strict=False, assign=True)
         print(f"load_state_dict() result: {result}")
 
+        # Tie weights if needed (must be done after loading state dict)
+        if (
+            hasattr(model_config, "tie_word_embeddings")
+            and model_config.tie_word_embeddings
+        ):
+            print("Tying word embeddings...")
+            model.tie_weights()
+
         # Compare logits
         prompt = kwargs.get("prompt", "The old bookstore at the corner of")
         self._compare_logits(
@@ -247,6 +265,7 @@ class HFConverter(ModelConverter):
         print("Saving Forgather model...")
         model_config.save_pretrained(save_directory=dst_model_path)
         tokenizer.save_pretrained(save_directory=dst_model_path)
+
         save_checkpoint(
             output_dir=dst_model_path,
             module=model,

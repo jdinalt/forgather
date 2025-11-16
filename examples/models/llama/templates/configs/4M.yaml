@@ -1,16 +1,16 @@
--- extends "models/model_type.yaml"
+-- extends "configs/default.yaml"
 
 [config_metadata]
     == super()
     -- set ns.config_name = "Tiny Llama 4M"
     -- set ns.config_description = "A tiny Llama with 4M parameters"
-    -- set ns.model_name = "4m"
+    -- set ns.model_name = "llama_4m"
 
 [model_definition]
     -- include "config.model"
 
 #------------- config.model --------------
--- extends "models/transformers/dynamic_llama.yaml"
+-- extends "config.default.model"
 
 [model_tokenizer]
 tokenizer: &tokenizer !call:forgather:from_project
@@ -21,9 +21,7 @@ tokenizer: &tokenizer !call:forgather:from_project
 [model_config]
     == super()
     # **4M Overrides**
-    hidden_size: 256
-    dim_feedforward: 768
-    num_attention_heads: 2
-    num_hidden_layers: 4
-    embedding_dropout: 0.0
-    layer_dropout: 0.0
+    hidden_size: {{ hidden_size | default(256) }}
+    dim_feedforward: {{ dim_feedforward | default(768) }}
+    num_attention_heads: {{ num_attention_heads | default(2) }}
+    num_hidden_layers: {{ num_hidden_layers | default(4) }}

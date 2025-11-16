@@ -23,7 +23,6 @@ class CasualLM(nn.Module):
         attn_mask_fn: Callable,
         config=None,
     ):
-        print("CasualLM.__init__()")
         super().__init__()
         self.config = config
         self.loss_fn = loss_fn

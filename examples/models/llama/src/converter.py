@@ -85,9 +85,6 @@ class LlamaConverter(HFConverter):
             assert (
                 config.hidden_act == "silu"
             ), f"Expected hidden_act 'silu', got '{config.hidden_act}'"
-            assert (
-                config.tie_word_embeddings == False
-            ), "tie_word_embeddings must be False"
             assert config.mlp_bias == False, "mlp_bias must be False"
             assert config.attention_bias == False, "attention_bias must be False"
 
@@ -120,5 +117,9 @@ class LlamaConverter(HFConverter):
         # Preserve rope_scaling if present
         if hasattr(src_config, "rope_scaling") and src_config.rope_scaling is not None:
             hf_config.rope_scaling = src_config.rope_scaling
+
+        # Preserve tie_word_embeddings if present
+        if hasattr(src_config, "tie_word_embeddings"):
+            hf_config.tie_word_embeddings = src_config.tie_word_embeddings
 
         return hf_config

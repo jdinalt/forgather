@@ -60,12 +60,6 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
         self.model = self.construct_model(config=config, attn_implementation=config._attn_implementation, **config.to_dict())
         self.post_init()
 
-        # post_init() is expected to tie input and output embeddings, if tie_word_embeddings
-        input_embed = self.get_input_embeddings()
-        output_embed = self.get_output_embeddings()
-        if input_embed and output_embed:
-            assert config.tie_word_embeddings == (input_embed.weight is output_embed.weight)
-
     @staticmethod
     def construct_model(
     ## Expands code for constructing model here.
