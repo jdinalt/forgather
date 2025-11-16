@@ -52,13 +52,13 @@ One of our memory saving strategies, CPU activation offloading, was not working 
 FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
 
 # Convert model to Forgather Llama/Mistral implementation
-forgather convert --dtype bfloat16 --max-length 16384 "${SRC_MODEL}" "${FG_MODEL}"
+forgather convert "${SRC_MODEL}" "${FG_MODEL}"
 ```
 
 ### Convert Model Back to HF Format
 
 ```bash
-forgather convert --reverse --model-type mistral --dtype bfloat16 --max-length 32000 "${FG_MODEL}" OUTPUT_MODEL_PATH
+forgather convert "${FG_MODEL}" OUTPUT_MODEL_PATH
 ```
 
 ### Syntax Highlighting

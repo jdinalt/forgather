@@ -377,15 +377,14 @@ You can also do this for single-GPU training. In most cases, it should not be re
 FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
 
 # Convert model to Forgather Llama/Mistral implementation
-forgather convert --dtype bfloat16 --max-length 16384 \
--t "../../../chat_templates/chatml.jinja" "${SRC_MODEL}" "${FG_MODEL}" \
+forgather convert -t "../../../chat_templates/chatml.jinja" "${SRC_MODEL}" "${FG_MODEL}" \
 --add-tokens "../../../tools/convert_model/example_additional_tokens.yaml"
 ```
 
 To convert the model back to HF format...
 
 ```bash
-forgather convert --reverse --model-type mistral --dtype bfloat16 --max-length 32768 "${FG_MODEL}" OUTPUT_MODEL_PATH
+forgather convert "${FG_MODEL}" OUTPUT_MODEL_PATH
 ```
 
 ## Single Node Training
