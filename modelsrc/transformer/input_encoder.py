@@ -65,3 +65,21 @@ class InputEncoder(nn.Module):
         if self.positional_encoder is not None:
             x = self.positional_encoder(x, position_ids=position_ids)
         return self.dropout(x)
+
+    def get_input_embeddings(self) -> nn.Module:
+        return self.embedding
+
+    def set_input_embeddings(self, new_embeddings: nn.Module):
+        self.embedding = new_embeddings
+
+    def resize_position_embeddings(self, new_num_position_embeddings: int):
+        if self.positional_encoder:
+            self.positional_encoder.resize_position_embeddings(
+                new_num_position_embeddings
+            )
+
+    def get_position_embeddings(self):
+        if self.positional_encoder:
+            return self.positional_encoder.get_position_embeddings()
+        else:
+            return None

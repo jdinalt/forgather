@@ -1,6 +1,6 @@
 # See: https://huggingface.co/docs/transformers/custom_models
 # This is a template model, with the details filled-in by the code-generator.
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 from functools import partial
 from torch import nn, Tensor, LongTensor, FloatTensor
@@ -25,8 +25,9 @@ class DynamicCausalLMConfig(PretrainedConfig):
     model_type = model_type
 
 # PreTrainedModel: https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_utils.py
-class DynamicCasualLM(PreTrainedModel, GenerationMixin):
+class DynamicCasualLM(GenerationMixin, PreTrainedModel):
     config_class = DynamicCausalLMConfig
+    base_model_prefix = "model"
     model_type = model_type
     main_input_name = "{{ main_input_name | default('input_ids') }}"
     model_tags = {{ model_tags | default(None) }}
@@ -55,7 +56,15 @@ class DynamicCasualLM(PreTrainedModel, GenerationMixin):
         if attn_implementation:
             config._attn_implementation = attn_implementation
         super().__init__(config)
-        self.causal_lm = self.construct_model(config=config, attn_implementation=config._attn_implementation, **config.to_dict())
+
+        self.model = self.construct_model(config=config, attn_implementation=config._attn_implementation, **config.to_dict())
+        self.post_init()
+
+        # post_init() is expected to tie input and output embeddings, if tie_word_embeddings
+        input_embed = self.get_input_embeddings()
+        output_embed = self.get_output_embeddings()
+        if input_embed and output_embed:
+            assert config.tie_word_embeddings == (input_embed.weight is output_embed.weight)
 
     @staticmethod
     def construct_model(
@@ -75,20 +84,35 @@ class DynamicCasualLM(PreTrainedModel, GenerationMixin):
         **kwargs,
     ):
 
-        return self.causal_lm(
+        return self.model(
             *args,
             **kwargs,
         )
+    
+    def initialize_weights(self):
+        self.model.initialize_weights()
+    
+    def get_attn_mask_fn(self):
+        return self.model.get_attn_mask_fn()
+    
+    # Forward PretrainedModel getter/setters
+    def get_input_embeddings(self) -> nn.Embedding:
+        return self.model.get_input_embeddings()
+    
+    def set_input_embeddings(self, value: nn.Embedding):
+        self.model.set_input_embeddings(value)
+    
+    def get_output_embeddings(self) -> nn.Module:
+        return self.model.get_output_embeddings()
+    
+    def set_output_embeddings(self, new_embedding: nn.Module):
+        self.model.set_output_embeddings(new_embedding)
+    
+    def resize_position_embeddings(self, new_num_position_embeddings: int):
+        self.model.resize_position_embeddings(new_num_position_embeddings)
 
-    def get_attn_mask_fn(self, *args, **kwargs):
-        """
-        Returns a function to create an attention mask for pipeline parallel or other external use.
-
-        This delegates to the underlying CasualLM's create_attention_mask method,
-        which uses HuggingFace's masking utilities to create the appropriate mask
-        format (4D tensor for eager/sdpa, BlockMask for flex_attention).
-        """
-        return self.causal_lm.get_attn_mask_fn(*args, **kwargs)
+    def get_position_embeddings(self) -> Union[nn.Embedding, tuple[nn.Embedding]]:
+        return self.model.get_position_embeddings()
 
 AutoConfig.register(model_type, DynamicCausalLMConfig)
 AutoModelForCausalLM.register(DynamicCausalLMConfig, DynamicCasualLM)

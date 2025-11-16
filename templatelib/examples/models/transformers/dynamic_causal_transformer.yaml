@@ -119,9 +119,11 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     checkpoint_stride: 1
     compile_flex: True # For debug flex, set to False
     flex_attn_kernel_options: *flex_attn_kernel_options
+    tie_word_embeddings: False
 
 [model_code_generator]
     == super()
     supports_gradient_checkpointing: True
     supports_sdpa: True
     supports_flex_attn: True
+    tied_weights_keys: {model.input_encoder.embedding.weight: "model.output_decoder.weight"}

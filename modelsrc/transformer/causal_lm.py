@@ -1,4 +1,4 @@
-from typing import Optional, Callable
+from typing import Optional, Callable, Union
 from functools import partial
 
 import torch
@@ -23,6 +23,7 @@ class CasualLM(nn.Module):
         attn_mask_fn: Callable,
         config=None,
     ):
+        print("CasualLM.__init__()")
         super().__init__()
         self.config = config
         self.loss_fn = loss_fn
@@ -35,7 +36,10 @@ class CasualLM(nn.Module):
             config=self.config,
             dtype=torch.get_default_dtype(),
         )
-        init_weights(self)
+        self.init_weights = init_weights
+
+    def initialize_weights(self):
+        self.init_weights(self)
 
     def extra_repr(self):
         return f"loss_fn={self.loss_fn}"
@@ -43,6 +47,30 @@ class CasualLM(nn.Module):
     def get_attn_mask_fn(self):
         self.use_internal_mask = False
         return self.self.attn_mask_fn
+
+    def get_input_embeddings(self) -> nn.Embedding:
+        return self.input_encoder.get_input_embeddings()
+
+    def set_input_embeddings(self, value: nn.Embedding):
+        self.input_encoder.set_input_embeddings(value)
+
+    def get_output_embeddings(self) -> nn.Module:
+        if isinstance(self.output_decoder, nn.Linear):
+            return self.output_decoder
+        else:
+            return self.output_decoder.get_output_embeddings()
+
+    def set_output_embeddings(self, new_embedding: nn.Module):
+        if isinstance(self.output_decoder, nn.Linear):
+            self.output_decoder = new_embedding
+        else:
+            self.output_decoder.set_output_embeddings(new_embedding)
+
+    def resize_position_embeddings(self, new_num_position_embeddings: int):
+        self.model.resize_position_embeddings(new_num_position_embeddings)
+
+    def get_position_embeddings(self) -> Union[nn.Embedding, tuple[nn.Embedding]]:
+        return self.model.get_position_embeddings()
 
     def forward(
         self,

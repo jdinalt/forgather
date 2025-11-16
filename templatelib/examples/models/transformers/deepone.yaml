@@ -119,9 +119,11 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     activation_dropout: 0.0
     enable_activation_checkpoint: False
     checkpoint_stride: 1
+    tie_word_embeddings: False
 
 [model_code_generator]
     == super()
     # Deepone
     supports_gradient_checkpointing: True
     supports_sdpa: True
+    tied_weights_keys: {model.input_encoder.embedding.weight: "model.output_decoder.weight"}

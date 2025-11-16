@@ -16,11 +16,16 @@ class SinusoidalPE(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.max_sequence_length = max_sequence_length
+        self._initialize_weights()
 
-        weight = torch.zeros(max_sequence_length, d_model)
-        position = torch.arange(0, max_sequence_length, dtype=torch.float).unsqueeze(1)
+    def _initialize_weights(self):
+        weight = torch.zeros(self.max_sequence_length, self.d_model)
+        position = torch.arange(
+            0, self.max_sequence_length, dtype=torch.float
+        ).unsqueeze(1)
         div_term = torch.exp(
-            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+            torch.arange(0, self.d_model, 2).float()
+            * (-math.log(10000.0) / self.d_model)
         )
         weight[:, 0::2] = torch.sin(position * div_term)
         weight[:, 1::2] = torch.cos(position * div_term)
@@ -37,3 +42,10 @@ class SinusoidalPE(nn.Module):
             return x + self.weight[position_ids]
         else:
             return x + self.weight[:seq_length].unsqueeze(0)
+
+    def resize_position_embeddings(self, new_num_position_embeddings: int):
+        self.max_sequence_length = new_num_position_embeddings
+        self._initialize_weights()
+
+    def get_position_embeddings(self):
+        return self.weight
