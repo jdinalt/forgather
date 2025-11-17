@@ -127,6 +127,7 @@ def model_test_cmd(args):
                 p.register_post_accumulate_grad_hook(hook)
 
     if args.dataset_project:
+        print(f"Loading dataset: {args.dataset_project}:{args.dataset_config}")
         dataset = from_project(
             project_dir=args.dataset_project,
             config_template=args.dataset_config,

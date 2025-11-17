@@ -15,11 +15,7 @@ class MistralConverter(HFConverter):
 
     def __init__(self):
         """Initialize Mistral converter."""
-        # Find Forgather root directory
-        forgather_root = MetaConfig.find_workspace_dir(os.path.abspath(__file__))
-        model_project_dir = os.path.join(forgather_root, "examples/models/mistral")
-
-        super().__init__(model_type="mistral", model_project_dir=model_project_dir)
+        super().__init__(model_type="mistral")
 
     def get_hf_config_class(self):
         """Get HuggingFace Mistral config class."""
@@ -86,6 +82,14 @@ class MistralConverter(HFConverter):
                 config.hidden_act == "silu"
             ), f"Expected hidden_act 'silu', got '{config.hidden_act}'"
             # Mistral models have mlp_bias and attention_bias hardcoded to False
+
+    def get_project_info(
+        self,
+    ) -> dict[str, Any]:
+        return dict(
+            project_dir=MetaConfig.find_project_dir(os.path.abspath(__file__)),
+            config_name="",
+        )
 
     def create_project_config(
         self, src_config: Any, max_length: Optional[int] = None

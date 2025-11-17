@@ -7,9 +7,9 @@
     -- set ns.model_name = model_name | default("qwen_8b")
 
 [model_definition]
-    -- include "project.model"
+    -- include "config.default.model"
 
-#------------- project.model --------------
+#------------- config.default.model --------------
 -- extends "models/transformers/dynamic_llama.yaml"
 
 [model_meta_config]
@@ -20,9 +20,7 @@
 
 [model_tokenizer]
 tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
-    arg0: "Qwen/Qwen3-8B"
-    legacy: False
-    model_max_length: {{ max_model_length | default(40960) }}
+    arg0: "{{ tokenizer_id_or_path | default('Qwen/Qwen3-8B') }}"
 
 [qk_norm_factory]
 .define: &qk_norm_factory !partial:torch.nn:RMSNorm@qk_norm_factory
@@ -30,7 +28,7 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
 
 [model_config]
     == super()
-    # **Custom Qwen3**
+    # **Qwen3 Defaults (8B)**
     hidden_size: {{ hidden_size | default(4096) }}
     num_attention_heads: {{ num_attention_heads | default(32) }}
     num_kv_heads: {{ num_kv_heads | default(8) }}
@@ -39,3 +37,4 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
     dim_feedforward: {{ dim_feedforward | default(12288) }}
     rope_theta: !!float {{ rope_theta | default(1000000.0) }}
     rms_norm_eps: !!float {{ rms_norm_eps | default(1.0e-06) }}
+

@@ -2,6 +2,7 @@
 
 import os
 from typing import List, Tuple, Dict, Any, Optional
+
 from transformers.models.qwen3 import Qwen3Config, Qwen3ForCausalLM
 
 from forgather.ml.model_conversion import HFConverter, register_converter
@@ -15,11 +16,7 @@ class Qwen3Converter(HFConverter):
 
     def __init__(self):
         """Initialize Qwen3 converter."""
-        # Find Forgather root directory
-        forgather_root = MetaConfig.find_workspace_dir(os.path.abspath(__file__))
-        model_project_dir = os.path.join(forgather_root, "examples/models/qwen3")
-
-        super().__init__(model_type="qwen3", model_project_dir=model_project_dir)
+        super().__init__(model_type="qwen3")
 
     def get_hf_config_class(self):
         """Get HuggingFace Qwen2 config class (used for Qwen3)."""
@@ -85,6 +82,15 @@ class Qwen3Converter(HFConverter):
             assert (
                 config.hidden_act == "silu"
             ), f"Expected hidden_act 'silu', got '{config.hidden_act}'"
+
+    
+    def get_project_info(
+        self,
+    ) -> dict[str, Any]:
+        return dict(
+            project_dir=MetaConfig.find_project_dir(os.path.abspath(__file__)),
+            config_name="",
+        )
 
     def create_project_config(
         self, src_config: Any, max_length: Optional[int] = None

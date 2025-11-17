@@ -3,11 +3,16 @@
 import os
 import logging
 from contextlib import ExitStack
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, Callable
 import torch
 import yaml
 from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
 from transformers.modeling_utils import no_init_weights as hf_no_init_weights
+from transformers import (
+    PretrainedConfig,
+    PreTrainedModel,
+    PreTrainedTokenizer,
+)
 
 from forgather import Project, MetaConfig
 from forgather.ml.remap_params import remap_state_dict
@@ -31,7 +36,7 @@ class HFConverter(ModelConverter):
     as needed to handle model-specific details.
     """
 
-    def __init__(self, model_type: str, model_project_dir: str):
+    def __init__(self, model_type: str):
         """Initialize HuggingFace converter.
 
         Args:
@@ -39,7 +44,6 @@ class HFConverter(ModelConverter):
             model_project_dir: Path to the model project directory (e.g., "examples/models/llama")
         """
         super().__init__(model_type)
-        self.model_project_dir = model_project_dir
 
     def get_hf_config_class(self):
         """Get HuggingFace config class for this model type.
@@ -56,6 +60,52 @@ class HFConverter(ModelConverter):
             HuggingFace model class (e.g., LlamaForCausalLM)
         """
         raise NotImplementedError("Subclasses must implement get_hf_model_class()")
+
+    def get_project_info(
+        self,
+    ) -> dict[str, Any]:
+        """Get path to project and configuration to use
+
+        Returns:
+            dict(
+                project_dir=PROJECT_DIR,
+                config_name=CONFIG_NAME
+            )
+        """
+        raise NotImplementedError("Subclasses must implement get_project_info()")
+
+    def build_model(
+        self, src_model_path, src_model_config, output_dir, *, max_length=None, **kwargs
+    ) -> Tuple[PretrainedConfig, PreTrainedTokenizer, Callable[[], PreTrainedModel]]:
+        """Build model in output directory and return config, tokenizer, and model ctor
+
+        Args:
+            src_model_dir: Path to source model
+            src_model_config: HuggingFace model configuration
+            max_length: Optional max sequence length override
+            output_dir: Path to where to construct model
+            kwargs: Additional, optional config args. e.g. max_length
+
+        Returns:
+            Tuple of PretrainedConfig, PreTrainedTokenizer, and Callable, returning PreTrainedModel
+        """
+        project_info = self.get_project_info()
+
+        # Translate src config into config args
+        config_args = self.create_project_config(src_model_config, max_length)
+
+        proj = Project(
+            config_name=project_info["config_name"],
+            project_dir=project_info["project_dir"],
+            output_dir=output_dir,
+            tokenizer_id_or_path=src_model_path,
+            **config_args,
+        )
+
+        # Dump config for diagnostics
+        logger.debug(proj.pp_config)
+
+        return proj("pretrained_config", "pretrained_tokenizer", "model")
 
     def create_project_config(
         self, src_config: Any, max_length: Optional[int] = None
@@ -188,6 +238,9 @@ class HFConverter(ModelConverter):
         """
         from forgather.ml.construct import torch_dtype
 
+        src_model_path = os.path.abspath(src_model_path)
+        dst_model_path = os.path.abspath(dst_model_path)
+
         # Load source model config and validate
         src_model_config = AutoConfig.from_pretrained(src_model_path)
         self.validate_source_config(src_model_config, "to_forgather")
@@ -230,22 +283,22 @@ class HFConverter(ModelConverter):
         hf_model_type = src_model_config.model_type
         logger.info(f"Capturing HF model type: {hf_model_type}")
 
-        # Load tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(src_model_path)
-
         # Load source model
-        print("Loading source HuggingFace model...")
+        logger.info("Loading source HuggingFace model...")
         with ExitStack() as exit_stack:
             if new_dtype:
                 exit_stack.enter_context(default_dtype(new_dtype))
             src_model = AutoModelForCausalLM.from_pretrained(src_model_path)
         logger.debug(src_model)
 
+        # Load tokenizer
+        src_tokenizer = AutoTokenizer.from_pretrained(src_model_path)
+
         if kwargs.get("debug_params"):
             self._print_params(src_model, "Source HuggingFace model")
 
         # Remap state dict
-        print("Remapping model weight names...")
+        logger.info("Remapping model weight names...")
         src_state_dict = src_model.state_dict()
         param_mappings = self.get_parameter_mappings("to_forgather")
         mapped_state_dict = remap_state_dict(src_state_dict, param_mappings)
@@ -256,37 +309,20 @@ class HFConverter(ModelConverter):
         )
 
         # Create Forgather project configuration
-        print("Creating Forgather model...")
-
-        # Get model-specific project config from converter
-        config_args = self.create_project_config(src_model_config, max_length)
-
-        proj = Project(
-            config_name="",
-            project_dir=self.model_project_dir,
-            output_dir=dst_model_path,
-            tokenizer_id_or_path=src_model_path,
-            **config_args,
-        )
-
-        # Dump config for diagnostics
-        print(proj.pp_config)
-
-        # Validate project type
-        proj_meta = proj("meta")
-        config_class = proj_meta["config_class"]
-        if config_class != "type.model":
-            raise TypeError(f"Expected class type.model, found {config_class}")
+        logger.info("Creating Forgather model...")
 
         # Get model components
-        model_config, tokenizer, model_ctor = proj(
-            "pretrained_config", "pretrained_tokenizer", "model"
+        model_config, tokenizer, model_ctor = self.build_model(
+            src_model_path,
+            src_model_config,
+            dst_model_path,
+            max_length=max_length,
         )
 
         # Update vocab_size to match source model
         # Some models have different vocab sizes in config vs tokenizer
         if src_model_config.vocab_size != model_config.vocab_size:
-            print(
+            logger.info(
                 f"Adjusting vocab_size from {model_config.vocab_size} "
                 f"to {src_model_config.vocab_size} to match source model"
             )
@@ -308,7 +344,7 @@ class HFConverter(ModelConverter):
         logger.info(f"Stored dtype={dtype} in Forgather config")
 
         # Construct model
-        print("Constructing Forgather model...")
+        logger.info("Constructing Forgather model...")
         with ExitStack() as exit_stack:
             if new_dtype:
                 exit_stack.enter_context(default_dtype(new_dtype))
@@ -320,29 +356,29 @@ class HFConverter(ModelConverter):
             self._print_params(model, "Destination Forgather model")
 
         # Load state dict
-        print("Loading mapped state dictionary...")
+        logger.info("Loading mapped state dictionary...")
         result = model.load_state_dict(mapped_state_dict, strict=False, assign=True)
-        print(f"load_state_dict() result: {result}")
+        logger.debug(f"load_state_dict() result: {result}")
 
         # Tie weights if needed (must be done after loading state dict)
         if (
             hasattr(model_config, "tie_word_embeddings")
             and model_config.tie_word_embeddings
         ):
-            print("Tying word embeddings...")
+            logger.info("Tying word embeddings...")
             model.tie_weights()
 
         # Add tokens and resize embeddings if requested
         if kwargs.get("add_tokens"):
-            print(f"Adding tokens from: {kwargs['add_tokens']}")
+            logger.info(f"Adding tokens from: {kwargs['add_tokens']}")
             needs_pad_token, num_added = self._load_and_add_tokens(
                 tokenizer, kwargs["add_tokens"]
             )
 
             if num_added > 0:
-                print(f"Added {num_added} token(s) to vocabulary")
+                logger.info(f"Added {num_added} token(s) to vocabulary")
                 new_vocab_size = len(tokenizer)
-                print(
+                logger.info(
                     f"Resizing token embeddings from {model_config.vocab_size} to {new_vocab_size}..."
                 )
 
@@ -354,7 +390,7 @@ class HFConverter(ModelConverter):
                 if needs_pad_token:
                     with torch.no_grad():
                         pad_id = tokenizer.pad_token_id
-                        print(f"Zero-initializing PAD token at index {pad_id}")
+                        logger.info(f"Zero-initializing PAD token at index {pad_id}")
                         model.get_input_embeddings().weight[pad_id].zero_()
                         # Only zero output embeddings if not tied
                         if not model_config.tie_word_embeddings:
@@ -363,18 +399,24 @@ class HFConverter(ModelConverter):
                 # Update config to reflect new vocabulary size
                 model_config.vocab_size = new_vocab_size
                 model_config.pad_token_id = tokenizer.pad_token_id
-                print(
+                logger.info(
                     f"Updated config: vocab_size={new_vocab_size}, pad_token_id={tokenizer.pad_token_id}"
                 )
 
         # Compare logits
         prompt = kwargs.get("prompt", "The old bookstore at the corner of")
         self._compare_logits(
-            src_model, model, tokenizer, prompt, "Source HF", "Destination Forgather"
+            src_model,
+            model,
+            src_tokenizer,
+            tokenizer,
+            prompt,
+            "Source HF",
+            "Destination Forgather",
         )
 
         # Save model
-        print("Saving Forgather model...")
+        logger.info("Saving Forgather model...")
         model_config.save_pretrained(save_directory=dst_model_path)
         tokenizer.save_pretrained(save_directory=dst_model_path)
 
@@ -385,7 +427,7 @@ class HFConverter(ModelConverter):
             include_param_sharing=True,
         )
 
-        print(f"Conversion complete: {dst_model_path}")
+        logger.info(f"Conversion complete: {dst_model_path}")
 
     def convert_from_forgather(
         self,
@@ -414,7 +456,7 @@ class HFConverter(ModelConverter):
 
         # Find checkpoint
         if not checkpoint_path:
-            print(f"Finding latest checkpoint in {src_model_path}")
+            logger.info(f"Finding latest checkpoint in {src_model_path}")
             checkpoint_path = find_latest_checkpoint(src_model_path)
             if not checkpoint_path:
                 raise ValueError(
@@ -424,7 +466,7 @@ class HFConverter(ModelConverter):
         elif not os.path.exists(checkpoint_path):
             raise ValueError(f"Checkpoint path {checkpoint_path} does not exist.")
 
-        print(f"Using checkpoint: {checkpoint_path}")
+        logger.info(f"Using checkpoint: {checkpoint_path}")
 
         # Load Forgather model config
         src_model_config = AutoConfig.from_pretrained(
@@ -464,7 +506,7 @@ class HFConverter(ModelConverter):
         logger.info(f"DType: {new_dtype}")
 
         # Load Forgather model
-        print("Loading Forgather model...")
+        logger.info("Loading Forgather model...")
         with ExitStack() as exit_stack:
             if new_dtype:
                 exit_stack.enter_context(default_dtype(new_dtype))
@@ -479,10 +521,10 @@ class HFConverter(ModelConverter):
         if kwargs.get("debug_params"):
             self._print_params(src_model, "Source Forgather model")
 
-        print(f"FG Model: {src_model}")
+        logger.debug(f"FG Model: {src_model}")
 
         # Remap state dict
-        print("Remapping model weight names to HuggingFace format...")
+        logger.info("Remapping model weight names to HuggingFace format...")
         src_state_dict = src_model.state_dict()
         param_mappings = self.get_parameter_mappings("from_forgather")
         mapped_state_dict = remap_state_dict(src_state_dict, param_mappings)
@@ -498,7 +540,7 @@ class HFConverter(ModelConverter):
             max_model_length = max_length
 
         # Create HF config and model
-        print(f"Creating HuggingFace {self.model_type} model...")
+        logger.info(f"Creating HuggingFace {self.model_type} model...")
         hf_config = self.create_hf_config(src_model_config, max_model_length)
 
         with ExitStack() as exit_stack:
@@ -513,19 +555,19 @@ class HFConverter(ModelConverter):
             self._print_params(
                 hf_model, f"Destination HuggingFace {self.model_type} model"
             )
-            print("Mapped parameter names:")
+            logger.info("Mapped parameter names:")
             for name in mapped_state_dict.keys():
-                print(f"  {name}")
+                logger.info(f"  {name}")
 
         # Load state dict
-        print("Loading mapped state dictionary...")
+        logger.info("Loading mapped state dictionary...")
         result = hf_model.load_state_dict(mapped_state_dict, strict=False, assign=True)
-        print(f"load_state_dict() result: {result}")
+        logger.info(f"load_state_dict() result: {result}")
 
         # Retie weights
         hf_model.tie_weights()
 
-        print(f"HF Model: {hf_model}")
+        logger.debug(f"HF Model: {hf_model}")
 
         # Validate that unused parameters are only RoPE cached buffers
         if result.unexpected_keys:
@@ -535,9 +577,11 @@ class HFConverter(ModelConverter):
                 if not (key.endswith(".cos_cached") or key.endswith(".sin_cached"))
             ]
             if non_rope_unexpected:
-                print(f"Warning: Unexpected non-RoPE parameters: {non_rope_unexpected}")
+                logger.warning(
+                    f"Warning: Unexpected non-RoPE parameters: {non_rope_unexpected}"
+                )
             else:
-                print(
+                logger.info(
                     f"As expected, {len(result.unexpected_keys)} RoPE cached buffers "
                     "were not loaded (they will be recomputed)"
                 )
@@ -554,31 +598,32 @@ class HFConverter(ModelConverter):
         )
 
         # Save model
-        print(f"Saving HuggingFace {self.model_type} model...")
+        logger.info(f"Saving HuggingFace {self.model_type} model...")
         hf_model.save_pretrained(dst_model_path)
         tokenizer.save_pretrained(dst_model_path)
 
-        print(f"Conversion complete: {dst_model_path}")
+        logger.info(f"Conversion complete: {dst_model_path}")
 
     def _print_params(self, model, label: str):
         """Print parameter names for debugging."""
-        print(f"{label} parameter names:")
+        logger.info(f"{label} parameter names:")
         for name in model.state_dict().keys():
-            print(f"  {name}")
+            logger.info(f"  {name}")
 
     def _compare_logits(
         self,
         src_model,
         dst_model,
-        tokenizer,
+        src_tokenizer,
+        dst_tokenizer,
         prompt: str,
         src_label: str = "Source",
         dst_label: str = "Destination",
         tolerance: float = 1e-5,
     ):
         """Compare logits between source and destination models."""
-        src_logits = self._test_forward(src_model, tokenizer, prompt)
-        dst_logits = self._test_forward(dst_model, tokenizer, prompt)
+        src_logits = self._test_forward(src_model, src_tokenizer, prompt)
+        dst_logits = self._test_forward(dst_model, dst_tokenizer, prompt)
 
         # Handle vocab size mismatch
         if src_logits.shape != dst_logits.shape:
@@ -586,37 +631,43 @@ class HFConverter(ModelConverter):
             dst_vocab = dst_logits.shape[-1]
             min_vocab_size = min(src_vocab, dst_vocab)
 
-            print(f"Vocab size mismatch: {src_vocab} vs {dst_vocab}")
+            logger.info(f"Vocab size mismatch: {src_vocab} vs {dst_vocab}")
             if dst_vocab > src_vocab:
-                print(f"Destination has {dst_vocab - src_vocab} additional tokens")
-                print(
+                logger.info(
+                    f"Destination has {dst_vocab - src_vocab} additional tokens"
+                )
+                logger.info(
                     f"Comparing only original {src_vocab} tokens (new tokens not in source)"
                 )
             else:
-                print(f"Source has {src_vocab - dst_vocab} additional tokens")
-                print(f"Comparing only first {min_vocab_size} tokens")
+                logger.info(f"Source has {src_vocab - dst_vocab} additional tokens")
+                logger.info(f"Comparing only first {min_vocab_size} tokens")
 
             src_logits = src_logits[..., :min_vocab_size]
             dst_logits = dst_logits[..., :min_vocab_size]
 
         if not torch.allclose(src_logits, dst_logits, atol=tolerance):
-            print("WARNING: Model logits are dissimilar")
-            print(f"{src_label} Model Logits shape: {src_logits.shape}")
-            print(f"{dst_label} Model Logits shape: {dst_logits.shape}")
-            print(f"Max diff: {torch.max(torch.abs(src_logits - dst_logits)).item()}")
-            print(f"Mean diff: {torch.mean(torch.abs(src_logits - dst_logits)).item()}")
-            print(
+            logger.warning("WARNING: Model logits are dissimilar")
+            logger.warning(f"{src_label} Model Logits shape: {src_logits.shape}")
+            logger.warning(f"{dst_label} Model Logits shape: {dst_logits.shape}")
+            logger.warning(
+                f"Max diff: {torch.max(torch.abs(src_logits - dst_logits)).item()}"
+            )
+            logger.warning(
+                f"Mean diff: {torch.mean(torch.abs(src_logits - dst_logits)).item()}"
+            )
+            logger.warning(
                 f"{src_label} logits range: "
                 f"[{src_logits.min().item():.6f}, {src_logits.max().item():.6f}]"
             )
-            print(
+            logger.warning(
                 f"{dst_label} logits range: "
                 f"[{dst_logits.min().item():.6f}, {dst_logits.max().item():.6f}]"
             )
-            print(f"{src_label} src logits: {src_logits}")
-            print(f"{dst_label} src logits: {dst_logits}")
+            logger.info(f"{src_label} src logits: {src_logits}")
+            logger.info(f"{dst_label} src logits: {dst_logits}")
         else:
-            print("Model logits match.")
+            logger.warning("Model logits match.")
 
     def _test_forward(self, model, tokenizer, prompt: str):
         """Run forward pass and return logits."""

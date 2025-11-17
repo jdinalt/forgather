@@ -17,7 +17,6 @@ from forgather.dynamic import walk_package_modules
 from forgather.latent import Undefined
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 @contextmanager
@@ -220,7 +219,7 @@ def build_rule(
                             break
 
             if build_target:
-                logger.info(f"Building target: {target}")
+                logger.debug(f"Building target: {target}")
                 recipe()
         else:
             # Another process built it while we were waiting

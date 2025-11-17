@@ -10,7 +10,7 @@
     -- include "config.4m.model"
 
 #------------- config.4m.model --------------
--- extends "project.model"
+-- extends "config.default.model"
 
 [model_tokenizer]
 tokenizer: &tokenizer !call:forgather:from_project
@@ -26,3 +26,5 @@ tokenizer: &tokenizer !call:forgather:from_project
     num_attention_heads: {{ num_attention_heads | default(2) }}
     num_hidden_layers: {{ num_hidden_layers | default(4) }}
     num_kv_heads: {{ num_kv_heads | default(1) }}
+    rope_theta: !!float {{ rope_theta | default(1000000.0) }}
+    rms_norm_eps: !!float {{ rms_norm_eps | default(1.0e-06) }}

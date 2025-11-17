@@ -20,6 +20,6 @@
 
 [model_tokenizer]
 tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
-    arg0: "{{ tokenizer_id_or_path | default("TheBloke/Llama-2-7B-GPTQ") }}"
+    arg0: "{{ tokenizer_id_or_path | default('TheBloke/Llama-2-7B-GPTQ') }}"
     legacy: False
     model_max_length: {{ max_model_length | default(4096) }}

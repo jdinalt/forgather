@@ -19,7 +19,7 @@
 
 [trainer_args]
     == super()
-
     # **config**
     gradient_checkpointing: True
     fuse_optim_with_backward: True
+    # enable_activation_offloading: True

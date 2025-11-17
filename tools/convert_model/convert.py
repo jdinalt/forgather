@@ -20,7 +20,6 @@ from forgather.ml.model_conversion import (
     discover_and_register_converters,
 )
 
-logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
@@ -149,6 +148,13 @@ def parse_args(args=None):
         default=[],
         help="Additional directory path(s) to search for model converters. Can be specified multiple times.",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="Set logging level (default: INFO)",
+    )
 
     args = parser.parse_args(args)
     return args
@@ -244,6 +250,12 @@ def convert_forgather_to_hf(args, detected_model_type=None):
 
 def main():
     args = parse_args()
+
+    # Configure logging with user-specified level
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format='%(levelname)s:%(name)s:%(message)s'
+    )
 
     # Discover and register converters from builtin and custom paths
     custom_paths = args.converter_paths if args.converter_paths else None

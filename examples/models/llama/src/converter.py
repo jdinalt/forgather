@@ -15,11 +15,7 @@ class LlamaConverter(HFConverter):
 
     def __init__(self):
         """Initialize Llama converter."""
-        # Find Forgather root directory
-        forgather_root = MetaConfig.find_workspace_dir(os.path.abspath(__file__))
-        model_project_dir = os.path.join(forgather_root, "examples/models/llama")
-
-        super().__init__(model_type="llama", model_project_dir=model_project_dir)
+        super().__init__(model_type="llama")
 
     def get_hf_config_class(self):
         """Get HuggingFace Llama config class."""
@@ -97,6 +93,14 @@ class LlamaConverter(HFConverter):
                     rope_type == "llama3"
                 ), f"Unsupported rope_scaling type: {rope_type}. Only 'llama3' is supported."
 
+    def get_project_info(
+        self,
+    ) -> dict[str, Any]:
+        return dict(
+            project_dir=MetaConfig.find_project_dir(os.path.abspath(__file__)),
+            config_name="",
+        )
+    
     def create_project_config(
         self, src_config: Any, max_length: Optional[int] = None
     ) -> Dict[str, Any]:
