@@ -441,6 +441,11 @@ def block_tokenize_fn(
                          shuffle_output=True, seed=42)
     """
     assert min_len >= 1
+    if tokenizer.bos_token_id is None:
+        add_bos = False
+    if tokenizer.eos_token_id is None:
+        add_eos = False
+    
     assert packing_strategy in (
         "greedy",
         "best_fit",

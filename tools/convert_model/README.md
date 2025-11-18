@@ -128,28 +128,86 @@ forgather convert --reverse -c ~/models/fg_llama/checkpoint-1000 ~/models/fg_lla
 ```bash
 --add-tokens YAML_FILE
 ```
-Add custom tokens to the model vocabulary. The YAML file should specify special tokens and/or regular tokens:
+Add custom tokens to the model vocabulary, including named special tokens (BOS, EOS, PAD, UNK) with customizable initialization strategies.
 
-**YAML Format:**
+**YAML Format (New - with named tokens and init strategies):**
 ```yaml
+# Named special tokens (optional)
+bos_token: "<|begin_of_text|>"  # String format uses default init (mean)
+eos_token:                       # Dict format allows custom init
+  token: "<|end_of_text|>"
+  init: "mean"
+pad_token:
+  token: "<|pad|>"
+  init: "zero"
+unk_token: "<|unknown|>"
+
+# Additional special tokens (optional)
 special_tokens:
   - "<|im_start|>"
   - "<|im_end|>"
 
+# Regular tokens (optional)
 regular_tokens:
   - "custom_token_1"
   - "custom_token_2"
 ```
 
+**Old Format (still supported):**
+```yaml
+special_tokens:
+  - "<|im_start|>"
+regular_tokens:
+  - "custom_token_1"
+```
+
+**Named Special Tokens:**
+- `bos_token`: Beginning-of-sequence token (for document packing)
+- `eos_token`: End-of-sequence token
+- `pad_token`: Padding token
+- `unk_token`: Unknown token
+
+These tokens can be set/replaced if missing or if you want to change them.
+
+**Initialization Strategies:**
+- `"zero"`: Initialize embeddings to zero (recommended for PAD)
+- `"mean"`: Initialize to mean of existing embeddings (recommended for BOS/EOS/UNK)
+- Default strategies:
+  - BOS/EOS/UNK tokens: `"mean"`
+  - PAD token: `"zero"`
+
 **Behavior:**
 - Tokens already in the vocabulary are skipped (no duplicates)
-- Missing PAD token is automatically added if needed
+- Named tokens are added with specified initialization strategy
+- Missing PAD token is automatically added if needed (zero-initialized)
 - Model embeddings are resized using HuggingFace's `resize_token_embeddings()`
-- New token embeddings are zero-initialized
 - Config is updated with new vocabulary size
 
-**Example:**
+**Examples:**
+
 ```bash
+# Add BOS token to Qwen3 for document packing
+cat > qwen3_bos.yaml << EOF
+bos_token: "<|begin_of_text|>"
+EOF
+forgather convert --add-tokens qwen3_bos.yaml ~/models/qwen3 ~/models/qwen3_with_bos
+
+# Add custom PAD token with zero initialization
+cat > custom_pad.yaml << EOF
+pad_token:
+  token: "<|padding|>"
+  init: "zero"
+EOF
+forgather convert --add-tokens custom_pad.yaml ~/models/hf_model ~/models/fg_model
+
+# Hybrid: named tokens + additional special tokens
+cat > tokens.yaml << EOF
+bos_token: "<|begin|>"
+eos_token: "<|end|>"
+special_tokens:
+  - "<|im_start|>"
+  - "<|im_end|>"
+EOF
 forgather convert --add-tokens tokens.yaml ~/models/hf_qwen ~/models/fg_qwen
 ```
 

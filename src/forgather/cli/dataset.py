@@ -50,6 +50,7 @@ def dataset_cmd(args):
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
         data += "Tokenizer:\n" + repr(tokenizer) + "\n"
         template_args["tokenizer"] = tokenizer
+        print(f"{tokenizer=}")
 
     split = proj(args.target, **template_args)
 
@@ -88,9 +89,12 @@ def dataset_cmd(args):
             assert tokenizer, "Decoding a tokenized dataset requires the tokenizer"
             for i, example in zip(range(args.examples), split):
                 input_ids = example["input_ids"]
-                n_documents = (
-                    (torch.tensor(input_ids) == tokenizer.bos_token_id).sum().item()
-                )
+                if tokenizer.bos_token_id is not None:
+                    n_documents = (
+                        (torch.tensor(input_ids) == tokenizer.bos_token_id).sum().item()
+                    )
+                else:
+                    n_documents = "no-bos-token"
                 header = f" {i} Tokens: {len(input_ids)}, Documents: {n_documents}, Features: {example.keys()}"
                 data += f"{header:-^80}" + "\n" + tokenizer.decode(input_ids) + "\n"
 

@@ -169,7 +169,7 @@ class HFConverter(ModelConverter):
 
     def _load_and_add_tokens(
         self, tokenizer: AutoTokenizer, add_tokens_path: str
-    ) -> Tuple[bool, int]:
+    ) -> Tuple[bool, int, Dict[int, str]]:
         """Load additional tokens from YAML and add them to tokenizer.
 
         Args:
@@ -177,47 +177,127 @@ class HFConverter(ModelConverter):
             add_tokens_path: Path to YAML file containing tokens to add
 
         Returns:
-            Tuple of (needs_pad_token, num_added) where:
+            Tuple of (needs_pad_token, num_added, token_inits) where:
             - needs_pad_token: True if PAD token was added
             - num_added: Total number of tokens added
+            - token_inits: Dict mapping token IDs to initialization strategy ("zero", "mean")
 
-        YAML format:
+        YAML format (new format with named tokens and init strategies):
+            bos_token: "<|begin_of_text|>"  # String format, uses default init (mean)
+            eos_token:                       # Dict format with init strategy
+              token: "<|end_of_text|>"
+              init: "mean"
+            pad_token:
+              token: "<|pad|>"
+              init: "zero"
+            unk_token: "<|unknown|>"
             special_tokens:
               - "<|im_start|>"
               - "<|im_end|>"
             regular_tokens:
               - "custom_token"
+
+        Old format (still supported):
+            special_tokens:
+              - "<|im_start|>"
+            regular_tokens:
+              - "custom_token"
+
+        Initialization strategies:
+            - "zero": Initialize embeddings to zero
+            - "mean": Initialize to mean of existing token embeddings
+            - Default for BOS/EOS/UNK: "mean"
+            - Default for PAD: "zero"
         """
         with open(add_tokens_path, "r") as f:
             token_config = yaml.safe_load(f)
 
+        # Define set of named special tokens and their default init strategies
+        NAMED_SPECIAL_TOKENS = {"bos_token", "eos_token", "pad_token", "unk_token"}
+        DEFAULT_INIT = {
+            "bos_token": "mean",
+            "eos_token": "mean",
+            "pad_token": "zero",
+            "unk_token": "mean",
+        }
+
         needs_pad_token = False
         num_added = 0
+        token_inits = {}  # Maps token ID to init strategy
 
-        # Add special tokens
+        # Extract named special tokens (bos, eos, pad, unk) with init strategies
+        named_tokens = {}
+        named_token_inits = {}  # Maps token name to init strategy
+
+        for token_name in NAMED_SPECIAL_TOKENS:
+            if token_name in token_config:
+                token_entry = token_config[token_name]
+
+                # Support both string and dict format
+                if isinstance(token_entry, str):
+                    # Simple string format: use token string and default init
+                    token_value = token_entry
+                    init_strategy = DEFAULT_INIT[token_name]
+                elif isinstance(token_entry, dict):
+                    # Dict format: extract token and init strategy
+                    token_value = token_entry.get("token")
+                    if token_value is None:
+                        logger.warning(f"Skipping {token_name}: missing 'token' field")
+                        continue
+                    init_strategy = token_entry.get("init", DEFAULT_INIT[token_name])
+                else:
+                    logger.warning(f"Skipping {token_name}: invalid format")
+                    continue
+
+                old_token = getattr(tokenizer, token_name, None)
+
+                # Log if replacing existing token
+                if old_token is not None:
+                    logger.info(f"Replacing {token_name}: {old_token} -> {token_value} (init: {init_strategy})")
+                else:
+                    logger.info(f"Setting {token_name}: {token_value} (init: {init_strategy})")
+
+                named_tokens[token_name] = token_value
+                named_token_inits[token_name] = init_strategy
+
+        # Add named special tokens
+        if named_tokens:
+            num_named = tokenizer.add_special_tokens(named_tokens)
+            logger.info(f"Added {num_named} named special token(s)")
+            num_added += num_named
+
+            # Map token IDs to init strategies
+            for token_name, init_strategy in named_token_inits.items():
+                token_id = getattr(tokenizer, f"{token_name}_id", None)
+                if token_id is not None:
+                    token_inits[token_id] = init_strategy
+
+        # Add additional special tokens
         special_tokens = token_config.get("special_tokens", [])
         if special_tokens:
             num_special = tokenizer.add_special_tokens(
                 {"additional_special_tokens": special_tokens}
             )
-            logger.info(f"Added {num_special} special tokens: {special_tokens}")
+            logger.info(f"Added {num_special} additional special token(s): {special_tokens}")
             num_added += num_special
 
         # Add regular tokens
         regular_tokens = token_config.get("regular_tokens", [])
         if regular_tokens:
             num_regular = tokenizer.add_tokens(regular_tokens)
-            logger.info(f"Added {num_regular} regular tokens: {regular_tokens}")
+            logger.info(f"Added {num_regular} regular token(s): {regular_tokens}")
             num_added += num_regular
 
-        # Add PAD token if missing
-        if tokenizer.pad_token is None:
+        # Add PAD token if still missing (only if not set via named_tokens)
+        if tokenizer.pad_token is None and "pad_token" not in named_tokens:
             tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-            logger.info(f"Added PAD token: [PAD] at index {tokenizer.pad_token_id}")
+            logger.info(f"Added default PAD token: [PAD] at index {tokenizer.pad_token_id}")
             needs_pad_token = True
             num_added += 1
+            # Default PAD token always uses zero init
+            token_inits[tokenizer.pad_token_id] = "zero"
 
-        return needs_pad_token, num_added
+        return needs_pad_token, num_added, token_inits
 
     def convert_to_forgather(
         self,
@@ -371,7 +451,7 @@ class HFConverter(ModelConverter):
         # Add tokens and resize embeddings if requested
         if kwargs.get("add_tokens"):
             logger.info(f"Adding tokens from: {kwargs['add_tokens']}")
-            needs_pad_token, num_added = self._load_and_add_tokens(
+            needs_pad_token, num_added, token_inits = self._load_and_add_tokens(
                 tokenizer, kwargs["add_tokens"]
             )
 
@@ -382,19 +462,38 @@ class HFConverter(ModelConverter):
                     f"Resizing token embeddings from {model_config.vocab_size} to {new_vocab_size}..."
                 )
 
+                # Get current vocab size before resizing (for mean calculation)
+                old_vocab_size = model_config.vocab_size
+
                 # Use HuggingFace's resize_token_embeddings() method
                 # mean_resizing=False uses model's default initialization (normal distribution)
                 model.resize_token_embeddings(new_vocab_size, mean_resizing=False)
 
-                # Zero-initialize PAD token embeddings (matches old behavior)
-                if needs_pad_token:
+                # Apply custom initialization strategies for added tokens
+                if token_inits:
                     with torch.no_grad():
-                        pad_id = tokenizer.pad_token_id
-                        logger.info(f"Zero-initializing PAD token at index {pad_id}")
-                        model.get_input_embeddings().weight[pad_id].zero_()
-                        # Only zero output embeddings if not tied
-                        if not model_config.tie_word_embeddings:
-                            model.get_output_embeddings().weight[pad_id].zero_()
+                        input_embeddings = model.get_input_embeddings().weight
+                        output_embeddings = (
+                            model.get_output_embeddings().weight
+                            if not model_config.tie_word_embeddings
+                            else None
+                        )
+
+                        for token_id, init_strategy in token_inits.items():
+                            if init_strategy == "zero":
+                                logger.info(f"Zero-initializing token at index {token_id}")
+                                input_embeddings[token_id].zero_()
+                                if output_embeddings is not None:
+                                    output_embeddings[token_id].zero_()
+
+                            elif init_strategy == "mean":
+                                # Initialize to mean of existing (non-added) embeddings
+                                logger.info(f"Mean-initializing token at index {token_id}")
+                                mean_embedding = input_embeddings[:old_vocab_size].mean(dim=0)
+                                input_embeddings[token_id].copy_(mean_embedding)
+                                if output_embeddings is not None:
+                                    mean_output = output_embeddings[:old_vocab_size].mean(dim=0)
+                                    output_embeddings[token_id].copy_(mean_output)
 
                 # Update config to reflect new vocabulary size
                 model_config.vocab_size = new_vocab_size
