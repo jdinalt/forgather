@@ -5,6 +5,7 @@
 /tokenizers
 *.sh
 .forgather_history
+.claude
 forgather.code-workspace
 output_models/
 tmp/
