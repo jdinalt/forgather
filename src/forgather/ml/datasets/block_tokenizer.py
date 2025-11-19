@@ -27,6 +27,10 @@ class InputTokenBlock:
     def __len__(self):
         return self.length
 
+    def is_document_start(self):
+        """Check if we're at the start of a document (haven't read any tokens yet)."""
+        return self.read_index == 0
+
     def read(self, length):
         length = min(self.length, length)
         ids = self.input_ids[self.read_index : self.read_index + length]
@@ -45,6 +49,7 @@ class OutputTokenBlock:
         else:
             self.length = 0
             self.input_ids = []
+        self.document_starts = []  # Track where documents start
 
     def __len__(self):
         return self.length
@@ -55,7 +60,15 @@ class OutputTokenBlock:
     def get_ids(self):
         return self.input_ids
 
+    def get_document_starts(self):
+        """Get starting positions of each document in this block."""
+        return self.document_starts
+
     def append(self, input_block):
+        # Record document start position if this is the beginning of a new document
+        if input_block.is_document_start():
+            self.document_starts.append(self.length)
+
         length = min((self.max_length - self.length), len(input_block))
         input_ids = input_block.read(length)
         self.input_ids += input_ids
@@ -108,6 +121,23 @@ class Bin:
 
     def get_ids(self) -> List[int]:
         return self.input_ids
+
+    def get_document_starts(self) -> List[int]:
+        """
+        Get starting positions of each document in this bin.
+
+        Returns:
+            List of positions where each document starts in the packed sequence.
+        """
+        if not self.documents:
+            return []
+
+        starts = []
+        position = 0
+        for _, tokens_added in self.documents:
+            starts.append(position)
+            position += tokens_added
+        return starts
 
 
 def split_document_optimally(
@@ -201,10 +231,12 @@ def pack_sequences_optimized(
         seed: Random seed for shuffling (None = use system entropy)
 
     Returns:
-        List of packed sequences (each sequence is a list of token IDs)
+        Tuple of (sequences, document_starts) where:
+            - sequences: List of packed sequences (each sequence is a list of token IDs)
+            - document_starts: List of document boundary lists (one per sequence)
     """
     if not documents:
-        return []
+        return [], []
 
     # Sort documents by length (descending) for better packing
     sorted_docs = sorted(documents, key=lambda d: d.length, reverse=True)
@@ -230,20 +262,27 @@ def pack_sequences_optimized(
         else:
             _pack_single_document(doc, bins, max_length, strategy)
 
-    # Extract sequences that meet minimum length requirement
+    # Extract sequences and document boundaries that meet minimum length requirement
     output_sequences = []
+    document_starts = []
     for bin in bins:
         if bin.length >= min_len:
             output_sequences.append(bin.get_ids())
+            document_starts.append(bin.get_document_starts())
 
-    # Shuffle output sequences if requested
+    # Shuffle output sequences if requested (keeping boundaries aligned)
     if shuffle_output and output_sequences:
         import random
 
         rng = random.Random(seed)
-        rng.shuffle(output_sequences)
+        # Shuffle sequences and boundaries together to keep them aligned
+        combined = list(zip(output_sequences, document_starts))
+        rng.shuffle(combined)
+        output_sequences, document_starts = zip(*combined) if combined else ([], [])
+        output_sequences = list(output_sequences)
+        document_starts = list(document_starts)
 
-    return output_sequences
+    return output_sequences, document_starts
 
 
 def _pack_single_document(
@@ -347,7 +386,7 @@ def _block_tokenize_optimized(
         )
 
     # Pack documents using bin-packing algorithm
-    output_sequences = pack_sequences_optimized(
+    output_sequences, document_starts = pack_sequences_optimized(
         documents=documents,
         max_length=max_length,
         min_len=min_len,
@@ -359,7 +398,7 @@ def _block_tokenize_optimized(
         seed=seed,
     )
 
-    return {"input_ids": output_sequences}
+    return {"input_ids": output_sequences, "document_starts": document_starts}
 
 
 def block_tokenize_fn(
@@ -452,9 +491,6 @@ def block_tokenize_fn(
         "first_fit",
     ), f"Invalid packing_strategy: {packing_strategy}"
 
-    # print("Entered block tokenizer")
-    # for key in features:
-    #    print(f"{key=}")
     # If given a regex to truncate at, truncate at the first match.
     if truncate_at is not None:
         input_batch = []
@@ -505,6 +541,7 @@ def block_tokenize_fn(
     # results in most cases (95%+ utilization).
     # A list of strings of tokens of maximum size 'max_length'
     output_batch = []
+    document_starts_batch = []  # Track document boundaries for each output sequence
 
     # A container for accumulating output tokens.
     output_block = OutputTokenBlock(max_length)
@@ -516,7 +553,7 @@ def block_tokenize_fn(
     # - Conditional upon minimum length
     # - Allocates next output block
     # - Transfers 'stride' tokens from end of old block to start of new block.
-    def append_output_batch(output_block, output_batch, stride):
+    def append_output_batch(output_block, output_batch, document_starts_batch, stride):
         stride_tokens = None
         # If the present output block is empty, just return and keep the current one.
         if not len(output_block):
@@ -532,8 +569,9 @@ def block_tokenize_fn(
             if stride != 0:
                 stride_tokens += output_block.get_ids()[-stride:]
 
-            # Append the block to the list of output blocks
+            # Append the block and its document boundaries to output lists
             output_batch.append(output_block.get_ids())
+            document_starts_batch.append(output_block.get_document_starts())
         # else, we discard the output block
 
         # Allocate a new output block, initialized with 'stride' tokens
@@ -545,10 +583,9 @@ def block_tokenize_fn(
         if add_bos:
             record_length += 1
             input_ids = [tokenizer.bos_token_id] + input_ids
-        # print(f"record length {record_length}")
         # If we are not allowed to mix inputs in outputs, get a new output.
         if not packed:
-            output_block = append_output_batch(output_block, output_batch, 0)
+            output_block = append_output_batch(output_block, output_batch, document_starts_batch, 0)
 
         # If the length of the record is less than the minimum, discard it.
         if record_length < min_len:
@@ -575,14 +612,14 @@ def block_tokenize_fn(
             # If we will not being combining the input into multiple outputs.
             if not overflow:
                 # Add to outputs and get next input.
-                output_block = append_output_batch(output_block, output_batch, 0)
+                output_block = append_output_batch(output_block, output_batch, document_starts_batch, 0)
                 break
 
             # If the output block is mostly full, allocate a new output block
             elif output_block.remaining() < min_len:
                 # Add to outputs and continue with present input.
-                output_block = append_output_batch(output_block, output_batch, stride)
+                output_block = append_output_batch(output_block, output_batch, document_starts_batch, stride)
 
     # Append the last output data.
-    append_output_batch(output_block, output_batch, 0)
-    return {"input_ids": output_batch}
+    append_output_batch(output_block, output_batch, document_starts_batch, 0)
+    return {"input_ids": output_batch, "document_starts": document_starts_batch}
