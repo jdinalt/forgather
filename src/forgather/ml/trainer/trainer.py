@@ -77,6 +77,8 @@ class HasBatchSize(Protocol):
 class HasMainInputName(Protocol):
     main_input_name: str
 
+FusedLossFn = Callable[[Tensor, Tensor], Tensor]
+FusedLossFactory = Callable[[torch.nn.Module], FusedLossFn]
 
 def has_gradient_checkpointing_enable(obj: object) -> TypeGuard[ModelWithCheckpointing]:
     return hasattr(obj, "gradient_checkpointing_enable")
@@ -212,7 +214,7 @@ class Trainer(BaseTrainer):
         args: TrainingArguments,
         distributed_env: DistributedEnvInterface,
         optimizer_factory: Optional[Callable[[ParamsT], torch.optim.Optimizer]] = None,
-        # Alernative, for compatibility with transformers.Trainer
+        # Alternative, for compatibility with transformers.Trainer
         optimizer_cls_and_kwargs: Optional[
             Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]
         ] = None,
@@ -220,6 +222,7 @@ class Trainer(BaseTrainer):
         enable_activation_checkpoint_fn: Optional[
             Callable
         ] = enable_hf_activation_checkpointing,
+        fused_loss_factory: Optional[FusedLossFactory] = None,
         **kwargs,
     ):
         assert isinstance(args, TrainingArguments)
@@ -242,6 +245,7 @@ class Trainer(BaseTrainer):
         self.optimizer_factory = optimizer_factory
         self.lr_scheduler_factory = lr_scheduler_factory
         self.enable_activation_checkpoint_fn = enable_activation_checkpoint_fn
+        self.fused_loss_factory = fused_loss_factory
         super().__init__(args=args, **kwargs)
 
     # @override
@@ -318,8 +322,8 @@ class Trainer(BaseTrainer):
                 )
 
         self._init_dataloaders(train_dataset, eval_dataset)
-        self._wrap_loss_fn()
         self._prepare_model()
+        self._wrap_loss_fn()
         if self.args.torch_compile:
             logger.info(
                 f"Compiling model: backend={self.args.torch_compile_backend}, mode={self.args.torch_compile_mode},"
@@ -335,7 +339,7 @@ class Trainer(BaseTrainer):
 
         if self.do_train:
             self._init_optimizer()
-
+        
         self._wrap()
         self.state = self._init_state()
         self.checkpoint_manager = self._init_checkpoint_manager()
@@ -484,6 +488,14 @@ class Trainer(BaseTrainer):
             else:
                 # Enable activation checkpointing for all modules in the pipeline.
                 self.enable_activation_checkpoint_fn(self.dist.rank, self.model)
+        
+        if self.fused_loss_factory:
+            # Very experimental API -- this is certain to change!
+            assert hasattr(self.model, "get_output_embeddings"), "Model does not support get_output_embeddings() for fused_loss_factory()"
+            assert hasattr(self.model, "model"), "Model does not appear to have a wrapped model. required by experimental fused_loss_factory API"
+            assert hasattr(self.model.model, "output_logits"), "Model is missing 'output_logits' flag, required by experimental fused_loss_factory API"
+            self.loss_fn = self.fused_loss_factory(self.model.get_output_embeddings())
+            self.model.model.output_logits = False
 
     def _init_optimizer(self) -> None:
         # _prepare() sub-step 3

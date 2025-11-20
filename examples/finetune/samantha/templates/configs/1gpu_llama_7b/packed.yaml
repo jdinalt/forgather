@@ -40,10 +40,17 @@
     # **config**
     per_device_train_batch_size: 4
     per_device_eval_batch_size: 4
-    logging_steps: 5
+    logging_steps: 2
     eval_steps: 30
     save_steps: 130
     # We need to all the memory we can get for 1 GPU!
     gradient_checkpointing: True
     fuse_optim_with_backward: True
     enable_activation_offloading: True
+
+[trainer_constructor]
+    == super()
+    # **Config**
+    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
+        impl: "liger"
+        chunk_size: 4096

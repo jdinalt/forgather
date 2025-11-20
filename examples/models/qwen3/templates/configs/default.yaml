@@ -21,6 +21,7 @@
 [model_tokenizer]
 tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
     arg0: "{{ tokenizer_id_or_path | default('Qwen/Qwen3-8B') }}"
+    model_max_length: {{ max_model_length | default(32768) }}
 
 [qk_norm_factory]
 .define: &qk_norm_factory !partial:torch.nn:RMSNorm@qk_norm_factory

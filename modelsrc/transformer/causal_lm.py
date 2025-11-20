@@ -36,6 +36,7 @@ class CasualLM(nn.Module):
             dtype=torch.get_default_dtype(),
         )
         self.init_weights = init_weights
+        self.output_logits = True
 
     def initialize_weights(self):
         self.init_weights(self)
@@ -132,7 +133,7 @@ class CasualLM(nn.Module):
                 **kwargs,
             )
 
-        if self.output_decoder:
+        if self.output_decoder and self.output_logits:
             # Convert embeddings to log-probabilities of next token-id
             logits = self.output_decoder(hidden_states)
 
