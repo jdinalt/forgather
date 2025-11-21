@@ -52,5 +52,5 @@
     == super()
     # **Config**
     fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
-        impl: "liger"
+        impl: "cce"
         chunk_size: 4096

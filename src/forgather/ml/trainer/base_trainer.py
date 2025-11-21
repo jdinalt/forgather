@@ -4,6 +4,8 @@ from typing import (
     List,
     Dict,
     Tuple,
+    Iterable,
+    override,
 )
 
 import os
@@ -17,7 +19,6 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
-from torch.utils.data import Dataset
 from torch.distributed.checkpoint.stateful import Stateful
 
 from .trainer_types import (
@@ -29,11 +30,20 @@ from .trainer_types import (
     CheckpointInterface,
     StatefulProvider,
     IntervalStrategy,
+    IterableDatasetT,
+    TrainerCallback,
+    DataCollatorT,
+    LossFunctionT,
+    OptimizerT,
+    LRSchedulerT,
+    PreprocessingClassT,
 )
 
 from .checkpoint_manager import RNGState
 
 logger = logging.getLogger(__name__)
+
+ModelConstructor = Callable[[], torch.nn.Module]
 
 
 @dataclass(kw_only=True)
@@ -145,6 +155,26 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         implementation needing to be filled in.
     """
 
+    model: torch.nn.Module | None
+    args: BaseTrainingArguments
+    data_collator: DataCollatorT
+    train_dataset: IterableDatasetT | None
+    eval_dataset: IterableDatasetT | None
+    processing_class: PreprocessingClassT | None
+    model_init: ModelConstructor | None
+    callbacks: List[TrainerCallback]
+    loss_fn: LossFunctionT
+    train_dataloader: Iterable | None
+    eval_dataloader: Iterable | None
+    optimizer: OptimizerT | None
+    lr_scheduler: LRSchedulerT | None
+    is_local_process_zero: bool
+    is_world_process_zero: bool
+    num_processes: int
+    checkpoint_manager: CheckpointInterface | None
+    state: TrainerState
+    control: TrainerControl
+
     @classmethod
     def default_callbacks(cls):
         """
@@ -156,15 +186,14 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         self,
         args: BaseTrainingArguments,
         model: torch.nn.Module | None = None,
-        data_collator=None,
-        train_dataset=None,
-        eval_dataset=None,
-        processing_class=None,
-        model_init: Optional[Callable[[], torch.nn.Module]] = None,
-        callbacks: List | None = None,
-        # Depreicated; use processing_class
-        tokenizer=None,
-        compute_loss_func: Callable | None = None,
+        *,
+        data_collator: Optional[DataCollatorT] = None,
+        train_dataset: Optional[IterableDatasetT] = None,
+        eval_dataset: Optional[IterableDatasetT] = None,
+        processing_class: Optional[PreprocessingClassT] = None,
+        model_init: Optional[ModelConstructor] = None,
+        callbacks: Optional[List[TrainerCallback]] = None,
+        compute_loss_func: Optional[LossFunctionT] = None,
     ):
         if callbacks is None:
             callbacks = []
@@ -176,10 +205,6 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         assert (
             args.gradient_accumulation_steps > 0
         ), "gradient_accumulation_steps must be > 0"
-
-        # Try to maintain backward compatability for now.
-        if processing_class is None and tokenizer is not None:
-            processing_class = tokenizer
 
         self.model = model
         self.args = args
@@ -254,7 +279,7 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         )
 
     # AbstractBaseTrainer
-    # @override
+    @override
     def train(self, **kwargs) -> TrainOutput:
         """
         The main entry point to start training the model.
@@ -278,9 +303,9 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
             return self._train_loop()
 
     # AbstractBaseTrainer
-    # @override
+    @override
     def evaluate(
-        self, eval_dataset: Optional[Dataset] = None, **kwargs
+        self, eval_dataset: Optional[IterableDatasetT] = None, **kwargs
     ) -> dict[str, float]:
         """
         The main entry point to evaluate the model.
@@ -298,14 +323,14 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
             return self._eval_loop()
 
     # AbstractBaseTrainer
-    # @override
+    @override
     def add_callback(self, callback):
         if isinstance(callback, type):
             callback = callback()
         self.callbacks.append(callback)
 
     # AbstractBaseTrainer
-    # @override
+    @override
     def pop_callback(self, callback):
         if isinstance(callback, type):
             compare = lambda a, b: type(a) == b
@@ -316,7 +341,7 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
                 return self.callbacks.pop(i)
 
     # AbstractBaseTrainer
-    # @override
+    @override
     def remove_callback(self, callback):
         self.pop_callback(callback)
 
@@ -392,7 +417,7 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         return self.model
 
     # AbstractBaseTrainer
-    # @override
+    @override
     def save_model(self, output_dir: Optional[os.PathLike | str] = None) -> None:
         assert self.checkpoint_manager
         self.checkpoint_manager.save_model(
@@ -400,7 +425,7 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         )
 
     # AbstractBaseTrainer
-    # @override
+    @override
     def save_checkpoint(self, checkpoint_path=None) -> None:
         assert self.checkpoint_manager
         self.checkpoint_manager.save_checkpoint(checkpoint_path)
@@ -440,7 +465,7 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         return statefuls
 
     # StatefulProvider
-    # @override
+    @override
     def get_statefuls_for_load(self):
         statefuls = {}
         restore_dataset_state = False
@@ -467,12 +492,12 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         return statefuls
 
     # Stateful
-    # @override
+    @override
     def load_state_dict(self, state_dict):
         self.state.global_step = state_dict["global_step"]
 
     # Stateful
-    # @override
+    @override
     def state_dict(self):
         return {"global_step": self.state.global_step}
 
@@ -488,7 +513,9 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
 
     @abstractmethod
     def _prepare(
-        self, train_dataset: Dataset | None, eval_dataset: Dataset | None
+        self,
+        train_dataset: IterableDatasetT | None,
+        eval_dataset: IterableDatasetT | None,
     ) -> None:
         """
         Prepare for training and/or evaluation

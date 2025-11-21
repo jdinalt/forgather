@@ -253,9 +253,13 @@ class HFConverter(ModelConverter):
 
                 # Log if replacing existing token
                 if old_token is not None:
-                    logger.info(f"Replacing {token_name}: {old_token} -> {token_value} (init: {init_strategy})")
+                    logger.info(
+                        f"Replacing {token_name}: {old_token} -> {token_value} (init: {init_strategy})"
+                    )
                 else:
-                    logger.info(f"Setting {token_name}: {token_value} (init: {init_strategy})")
+                    logger.info(
+                        f"Setting {token_name}: {token_value} (init: {init_strategy})"
+                    )
 
                 named_tokens[token_name] = token_value
                 named_token_inits[token_name] = init_strategy
@@ -278,7 +282,9 @@ class HFConverter(ModelConverter):
             num_special = tokenizer.add_special_tokens(
                 {"additional_special_tokens": special_tokens}
             )
-            logger.info(f"Added {num_special} additional special token(s): {special_tokens}")
+            logger.info(
+                f"Added {num_special} additional special token(s): {special_tokens}"
+            )
             num_added += num_special
 
         # Add regular tokens
@@ -291,7 +297,9 @@ class HFConverter(ModelConverter):
         # Add PAD token if still missing (only if not set via named_tokens)
         if tokenizer.pad_token is None and "pad_token" not in named_tokens:
             tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-            logger.info(f"Added default PAD token: [PAD] at index {tokenizer.pad_token_id}")
+            logger.info(
+                f"Added default PAD token: [PAD] at index {tokenizer.pad_token_id}"
+            )
             needs_pad_token = True
             num_added += 1
             # Default PAD token always uses zero init
@@ -481,18 +489,26 @@ class HFConverter(ModelConverter):
 
                         for token_id, init_strategy in token_inits.items():
                             if init_strategy == "zero":
-                                logger.info(f"Zero-initializing token at index {token_id}")
+                                logger.info(
+                                    f"Zero-initializing token at index {token_id}"
+                                )
                                 input_embeddings[token_id].zero_()
                                 if output_embeddings is not None:
                                     output_embeddings[token_id].zero_()
 
                             elif init_strategy == "mean":
                                 # Initialize to mean of existing (non-added) embeddings
-                                logger.info(f"Mean-initializing token at index {token_id}")
-                                mean_embedding = input_embeddings[:old_vocab_size].mean(dim=0)
+                                logger.info(
+                                    f"Mean-initializing token at index {token_id}"
+                                )
+                                mean_embedding = input_embeddings[:old_vocab_size].mean(
+                                    dim=0
+                                )
                                 input_embeddings[token_id].copy_(mean_embedding)
                                 if output_embeddings is not None:
-                                    mean_output = output_embeddings[:old_vocab_size].mean(dim=0)
+                                    mean_output = output_embeddings[
+                                        :old_vocab_size
+                                    ].mean(dim=0)
                                     output_embeddings[token_id].copy_(mean_output)
 
                 # Update config to reflect new vocabulary size

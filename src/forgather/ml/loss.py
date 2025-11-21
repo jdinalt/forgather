@@ -1,24 +1,28 @@
+from typing import Optional
+import contextlib
+import functools
+
 from torch.nn.functional import cross_entropy
 from torch import Tensor, FloatTensor, LongTensor
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
+
 
 def _causal_loss_fn(logits: FloatTensor, labels: LongTensor) -> FloatTensor:
-        # Shift so that tokens < n predict n
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
+    # Shift so that tokens < n predict n
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
 
-        loss = cross_entropy(
-            shift_logits.view(-1, shift_logits.size(-1)),
-            shift_labels.view(-1),
-            # labels with this value are ignored when computing loss
-            ignore_index=-100,
-            reduction="mean",
-        )
+    loss = cross_entropy(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1),
+        # labels with this value are ignored when computing loss
+        ignore_index=-100,
+        reduction="mean",
+    )
 
-        return loss
+    return loss
 
 
 def _chunked_causal_loss_fn(
@@ -66,7 +70,9 @@ def _chunked_causal_loss_fn(
         return torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
 
     # Step 1: Find global max logit for numerical stability (only over valid tokens)
-    max_logit = torch.full((n_tokens,), float('-inf'), device=logits.device, dtype=logits.dtype)
+    max_logit = torch.full(
+        (n_tokens,), float("-inf"), device=logits.device, dtype=logits.dtype
+    )
 
     for start_idx in range(0, vocab_size, chunk_size):
         end_idx = min(start_idx + chunk_size, vocab_size)
@@ -93,7 +99,9 @@ def _chunked_causal_loss_fn(
         if in_chunk.any():
             # Gather the logits corresponding to the true labels in this chunk
             indices = chunk_labels[in_chunk].unsqueeze(-1)
-            selected_logits = torch.gather(chunk_logits[in_chunk], dim=-1, index=indices).squeeze(-1)
+            selected_logits = torch.gather(
+                chunk_logits[in_chunk], dim=-1, index=indices
+            ).squeeze(-1)
             target_logits[in_chunk] = selected_logits
 
     # Step 3: Compute cross-entropy = -target_logit + log(sum_exp)
@@ -108,6 +116,7 @@ def _chunked_causal_loss_fn(
     loss = valid_losses.mean()
 
     return loss
+
 
 class CausalLoss:
     def __init__(self, compile=False):
@@ -319,7 +328,9 @@ class FusedLinearCrossEntropy(nn.Module):
             max_logit = torch.maximum(max_logit, chunk_max)
 
         # Step 2: Accumulate exp(logits - max) and extract target logits
-        sum_exp = torch.zeros(n_tokens, device=hidden_states.device, dtype=hidden_states.dtype)
+        sum_exp = torch.zeros(
+            n_tokens, device=hidden_states.device, dtype=hidden_states.dtype
+        )
         target_logits = torch.zeros(
             n_tokens, device=hidden_states.device, dtype=hidden_states.dtype
         )
@@ -427,20 +438,24 @@ class LinearCrossEntropyLoss:
         impl: str = "auto",
         chunk_size: int = 4096,
         ignore_index: int = -100,
-        **kwargs
+        compile: bool = False,
+        **kwargs,
     ):
         self.output_embeddings = output_embeddings
         self.requested_impl = impl
         self.chunk_size = chunk_size
         self.ignore_index = ignore_index
+        self.compile = compile
         self.kwargs = kwargs
 
         # Extract weight and bias from output embeddings
         self.weight = output_embeddings.weight
-        self.bias = getattr(output_embeddings, 'bias', None)
+        self.bias = getattr(output_embeddings, "bias", None)
 
         # Select and initialize implementation
         self.actual_impl, self._compute_fn = self._select_implementation(impl)
+        if self.compile:
+            self._compute_fn = torch.compile(self._compute_fn)
 
     def _select_implementation(self, impl: str) -> tuple[str, callable]:
         """
@@ -450,6 +465,7 @@ class LinearCrossEntropyLoss:
             (actual_impl_name, compute_function)
         """
         import logging
+
         logger = logging.getLogger(__name__)
 
         if impl == "auto":
@@ -458,10 +474,14 @@ class LinearCrossEntropyLoss:
             for candidate in ["liger", "cce", "pytorch"]:
                 try:
                     actual_impl, compute_fn = self._select_implementation(candidate)
-                    logger.info(f"LinearCrossEntropyLoss: auto-selected '{actual_impl}' implementation")
+                    logger.info(
+                        f"LinearCrossEntropyLoss: auto-selected '{actual_impl}' implementation"
+                    )
                     return actual_impl, compute_fn
                 except (ImportError, RuntimeError) as e:
-                    logger.debug(f"LinearCrossEntropyLoss: {candidate} not available: {e}")
+                    logger.debug(
+                        f"LinearCrossEntropyLoss: {candidate} not available: {e}"
+                    )
                     continue
 
             raise RuntimeError(
@@ -472,6 +492,7 @@ class LinearCrossEntropyLoss:
         elif impl == "cce":
             try:
                 from cut_cross_entropy import linear_cross_entropy
+
                 logger.info("LinearCrossEntropyLoss: using Apple CCE implementation")
                 return "cce", self._compute_cce
             except ImportError as e:
@@ -483,12 +504,12 @@ class LinearCrossEntropyLoss:
         elif impl == "liger":
             try:
                 from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+
                 logger.info("LinearCrossEntropyLoss: using Liger Kernel implementation")
 
                 # Initialize Liger loss function
                 self._liger_loss = LigerFusedLinearCrossEntropyLoss(
-                    ignore_index=self.ignore_index,
-                    **self.kwargs
+                    ignore_index=self.ignore_index, **self.kwargs
                 )
                 return "liger", self._compute_liger
             except ImportError as e:
@@ -507,7 +528,9 @@ class LinearCrossEntropyLoss:
                 "Must be one of: 'auto', 'cce', 'liger', 'pytorch'"
             )
 
-    def _compute_cce(self, hidden_states: FloatTensor, labels: LongTensor) -> FloatTensor:
+    def _compute_cce(
+        self, hidden_states: FloatTensor, labels: LongTensor
+    ) -> FloatTensor:
         """Use Apple's CCE implementation."""
         from cut_cross_entropy import linear_cross_entropy
 
@@ -520,10 +543,12 @@ class LinearCrossEntropyLoss:
             ignore_index=self.ignore_index,
             impl="cce",  # Use optimized Triton kernels
             reduction="mean",
-            **self.kwargs
+            **self.kwargs,
         )
 
-    def _compute_liger(self, hidden_states: FloatTensor, labels: LongTensor) -> FloatTensor:
+    def _compute_liger(
+        self, hidden_states: FloatTensor, labels: LongTensor
+    ) -> FloatTensor:
         """Use Liger Kernel implementation."""
         # Liger expects: loss_fn(weight, input, target)
         # Shift for causal prediction
@@ -536,7 +561,9 @@ class LinearCrossEntropyLoss:
 
         return self._liger_loss(self.weight, flat_hidden, flat_labels)
 
-    def _compute_pytorch(self, hidden_states: FloatTensor, labels: LongTensor) -> FloatTensor:
+    def _compute_pytorch(
+        self, hidden_states: FloatTensor, labels: LongTensor
+    ) -> FloatTensor:
         """Use pure PyTorch chunked implementation."""
         # Shift for causal prediction
         shift_hidden = hidden_states[..., :-1, :].contiguous()
@@ -548,10 +575,12 @@ class LinearCrossEntropyLoss:
 
         # Use the same chunked cross-entropy logic as FusedLinearCrossEntropy
         return self._fused_linear_cross_entropy_pytorch(
-            flat_hidden, flat_labels,
-            self.weight, self.bias,
+            flat_hidden,
+            flat_labels,
+            self.weight,
+            self.bias,
             chunk_size=self.chunk_size,
-            ignore_index=self.ignore_index
+            ignore_index=self.ignore_index,
         )
 
     def _fused_linear_cross_entropy_pytorch(
@@ -583,12 +612,16 @@ class LinearCrossEntropyLoss:
         n_valid = valid_mask.sum()
 
         if n_valid == 0:
-            return torch.tensor(0.0, device=hidden_states.device, dtype=hidden_states.dtype)
+            return torch.tensor(
+                0.0, device=hidden_states.device, dtype=hidden_states.dtype
+            )
 
         # Step 1: Find max logit across all vocab chunks
         max_logit = torch.full(
-            (n_tokens,), float('-inf'),
-            device=hidden_states.device, dtype=hidden_states.dtype
+            (n_tokens,),
+            float("-inf"),
+            device=hidden_states.device,
+            dtype=hidden_states.dtype,
         )
 
         for start_idx in range(0, vocab_size, chunk_size):
@@ -601,8 +634,12 @@ class LinearCrossEntropyLoss:
             max_logit = torch.maximum(max_logit, chunk_max)
 
         # Step 2: Accumulate exp(logits - max) and extract target logits
-        sum_exp = torch.zeros(n_tokens, device=hidden_states.device, dtype=hidden_states.dtype)
-        target_logits = torch.zeros(n_tokens, device=hidden_states.device, dtype=hidden_states.dtype)
+        sum_exp = torch.zeros(
+            n_tokens, device=hidden_states.device, dtype=hidden_states.dtype
+        )
+        target_logits = torch.zeros(
+            n_tokens, device=hidden_states.device, dtype=hidden_states.dtype
+        )
 
         for start_idx in range(0, vocab_size, chunk_size):
             end_idx = min(start_idx + chunk_size, vocab_size)
@@ -668,5 +705,36 @@ class LinearCrossEntropyLoss:
             f"impl='{self.actual_impl}', "
             f"vocab_size={self.weight.size(0)}, "
             f"hidden_dim={self.weight.size(1)}, "
-            f"chunk_size={self.chunk_size})"
+            f"chunk_size={self.chunk_size}), "
+            f"compile={self.compile})"
         )
+
+
+class RescaleLoss:
+    """Rescales loss by specified factor
+
+    This is adapted from Torch Titan
+    """
+
+    def __init__(self, unwrapped_loss_fn, scale_factor):
+        self.unwrapped_loss_fn = unwrapped_loss_fn
+        self.scale_factor = scale_factor
+        self.skip_rescale = False
+
+        functools.update_wrapper(self, unwrapped_loss_fn, updated=tuple())
+
+    def __call__(self, *args, **kwargs):
+        loss = self.unwrapped_loss_fn(*args, **kwargs)
+        if self.skip_rescale:
+            return loss
+        return loss * self.scale_factor
+
+    @contextlib.contextmanager
+    def no_rescale(self):
+        """Context manager for disabling rescaling"""
+        previous = self.skip_rescale
+        self.skip_rescale = True
+        try:
+            yield
+        finally:
+            self.skip_rescale = previous

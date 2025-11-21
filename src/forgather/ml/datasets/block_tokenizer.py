@@ -484,7 +484,7 @@ def block_tokenize_fn(
         add_bos = False
     if tokenizer.eos_token_id is None:
         add_eos = False
-    
+
     assert packing_strategy in (
         "greedy",
         "best_fit",
@@ -585,7 +585,9 @@ def block_tokenize_fn(
             input_ids = [tokenizer.bos_token_id] + input_ids
         # If we are not allowed to mix inputs in outputs, get a new output.
         if not packed:
-            output_block = append_output_batch(output_block, output_batch, document_starts_batch, 0)
+            output_block = append_output_batch(
+                output_block, output_batch, document_starts_batch, 0
+            )
 
         # If the length of the record is less than the minimum, discard it.
         if record_length < min_len:
@@ -612,13 +614,17 @@ def block_tokenize_fn(
             # If we will not being combining the input into multiple outputs.
             if not overflow:
                 # Add to outputs and get next input.
-                output_block = append_output_batch(output_block, output_batch, document_starts_batch, 0)
+                output_block = append_output_batch(
+                    output_block, output_batch, document_starts_batch, 0
+                )
                 break
 
             # If the output block is mostly full, allocate a new output block
             elif output_block.remaining() < min_len:
                 # Add to outputs and continue with present input.
-                output_block = append_output_batch(output_block, output_batch, document_starts_batch, stride)
+                output_block = append_output_batch(
+                    output_block, output_batch, document_starts_batch, stride
+                )
 
     # Append the last output data.
     append_output_batch(output_block, output_batch, document_starts_batch, 0)

@@ -12,7 +12,7 @@ from typing import (
     Protocol,
     Iterator,
     cast,
-    # override, # PEP-698, introduced in Python 3.12
+    override,
 )
 from collections.abc import Sized
 from functools import partial
@@ -26,24 +26,29 @@ from contextlib import ExitStack
 
 import torch
 from torch import Tensor
-from torch.optim.optimizer import ParamsT
-from torch.utils.data import DataLoader, Dataset
 
 import torchdata.nodes as tn
+from torch.utils.data import DataLoader
 from torchdata.stateful_dataloader import StatefulDataLoader
-from .base_trainer import (
-    BaseTrainer,
-    BaseTrainingArguments,
-    loss_from_outputs,
-    logits_from_outputs,
-    loss_and_logits_from_outputs,
-)
-from .trainer_types import TrainerState as BaseTrainerState
+
 from .trainer_types import (
     TrainOutput,
     IntervalStrategy,
     CheckpointInterface,
+    OptimizerT,
+    LRSchedulerT,
+    OptimizerFactoryT,
+    LRSchedulerFactoryT,
+    FusedLossFactoryT,
+    EnableCheckpointFnT,
+    IterableDatasetT,
 )
+from .base_trainer import (
+    BaseTrainer,
+    BaseTrainingArguments,
+    logits_from_outputs,
+)
+from .trainer_types import TrainerState as BaseTrainerState
 from .callbacks.default_callbacks import (
     ProgressCallback,
     InfoCallback,
@@ -60,6 +65,7 @@ from ..distributed import DistributedEnvInterface
 from ..no_init_weights import no_init_weights
 from forgather.ml.utils import default_dtype
 from forgather.ml.construct import torch_dtype
+from ..loss import RescaleLoss
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +83,6 @@ class HasBatchSize(Protocol):
 class HasMainInputName(Protocol):
     main_input_name: str
 
-FusedLossFn = Callable[[Tensor, Tensor], Tensor]
-FusedLossFactory = Callable[[torch.nn.Module], FusedLossFn]
 
 def has_gradient_checkpointing_enable(obj: object) -> TypeGuard[ModelWithCheckpointing]:
     return hasattr(obj, "gradient_checkpointing_enable")
@@ -160,22 +164,6 @@ def set_train(model: torch.nn.Module, mode: bool):
         model.train(previous_mode)
 
 
-def rescale_accumulated_loss(loss_fn, accumulation_steps):
-    """
-    Scale loss by gradient accumulation steps for proper averaging.
-    Based on TorchTitan's implementation.
-    """
-    import functools
-
-    @functools.wraps(loss_fn)
-    def scaled_loss_fn(*args, **kwargs):
-        loss = loss_fn(*args, **kwargs)
-        post_scaled_loss = loss / accumulation_steps
-        return post_scaled_loss
-
-    return scaled_loss_fn
-
-
 def maybe_cleanup_memory(alloc_threshold):
     """Check if memory usage exceeds threshold"""
     if torch.cuda.is_available():
@@ -204,6 +192,18 @@ class Trainer(BaseTrainer):
     easier to customize.
     """
 
+    args: TrainingArguments
+    dist: DistributedEnvInterface
+    optimizer_factory: OptimizerFactoryT | None
+    lr_scheduler_factory: LRSchedulerFactoryT | None
+    enable_activation_checkpoint_fn: EnableCheckpointFnT
+    fused_loss_factory: FusedLossFactoryT | None
+
+    max_steps: int
+    epoch_train_steps: int
+    do_train: bool
+    do_eval: bool
+
     @classmethod
     def default_callbacks(cls):
         return [ProgressCallback(), InfoCallback()]
@@ -213,16 +213,16 @@ class Trainer(BaseTrainer):
         *,
         args: TrainingArguments,
         distributed_env: DistributedEnvInterface,
-        optimizer_factory: Optional[Callable[[ParamsT], torch.optim.Optimizer]] = None,
+        optimizer_factory: Optional[OptimizerFactoryT] = None,
         # Alternative, for compatibility with transformers.Trainer
         optimizer_cls_and_kwargs: Optional[
-            Tuple[Type[torch.optim.Optimizer], Dict[str, Any]]
+            Tuple[Type[OptimizerT], Dict[str, Any]]
         ] = None,
-        lr_scheduler_factory: Optional[Callable] = None,
+        lr_scheduler_factory: Optional[LRSchedulerFactoryT] = None,
         enable_activation_checkpoint_fn: Optional[
-            Callable
+            EnableCheckpointFnT
         ] = enable_hf_activation_checkpointing,
-        fused_loss_factory: Optional[FusedLossFactory] = None,
+        fused_loss_factory: Optional[FusedLossFactoryT] = None,
         **kwargs,
     ):
         assert isinstance(args, TrainingArguments)
@@ -248,7 +248,7 @@ class Trainer(BaseTrainer):
         self.fused_loss_factory = fused_loss_factory
         super().__init__(args=args, **kwargs)
 
-    # @override
+    @override
     def _post_init(self) -> None:
         assert (self.model is not None) or (
             self.model_init is not None
@@ -296,8 +296,10 @@ class Trainer(BaseTrainer):
         else:
             return dataset
 
-    # @override
-    def _prepare(self, train_dataset: Dataset, eval_dataset: Dataset) -> None:
+    @override
+    def _prepare(
+        self, train_dataset: IterableDatasetT, eval_dataset: IterableDatasetT
+    ) -> None:
         """
         Prepare for training and/or evaluation
         """
@@ -323,7 +325,6 @@ class Trainer(BaseTrainer):
 
         self._init_dataloaders(train_dataset, eval_dataset)
         self._prepare_model()
-        self._wrap_loss_fn()
         if self.args.torch_compile:
             logger.info(
                 f"Compiling model: backend={self.args.torch_compile_backend}, mode={self.args.torch_compile_mode},"
@@ -339,7 +340,7 @@ class Trainer(BaseTrainer):
 
         if self.do_train:
             self._init_optimizer()
-        
+
         self._wrap()
         self.state = self._init_state()
         self.checkpoint_manager = self._init_checkpoint_manager()
@@ -352,17 +353,6 @@ class Trainer(BaseTrainer):
             self.load_checkpoint(checkpoint_path)
 
         self._dispatch_event("on_init_end")
-
-    def _wrap_loss_fn(self):
-        """Wraps loss function hook: e.g. for rescaling"""
-        self.eval_loss_fn = self.loss_fn
-        if self.args.gradient_accumulation_steps > 1:
-            assert self.loss_fn
-            self.train_loss_fn = rescale_accumulated_loss(
-                self.loss_fn, self.args.gradient_accumulation_steps
-            )
-        else:
-            self.train_loss_fn = self.loss_fn
 
     def _wrap(self) -> None:
         """Hook for wrapping object, after they have all be constructed in _prepare()"""
@@ -488,14 +478,44 @@ class Trainer(BaseTrainer):
             else:
                 # Enable activation checkpointing for all modules in the pipeline.
                 self.enable_activation_checkpoint_fn(self.dist.rank, self.model)
-        
+        self.loss_fn = self._get_fused_loss_fn(self.model, self.loss_fn)
+
+        # Rescale loss by gradient accumulation steps.
+        self.loss_fn = RescaleLoss(
+            self.loss_fn, 1 / self.args.gradient_accumulation_steps
+        )
+
+    def _get_fused_loss_fn(self, module: torch.nn.Module, default_loss_fn: Callable):
+        """Experimental API for handling fused classifier-loss-function
+
+        Args:
+            module: The prospective module to enable fused-loss on
+            default_loss_fn: The default loss function, if unsupported
+
+        Returns:
+            The fused loss function or default_loss_fn, if unsupported
+        """
         if self.fused_loss_factory:
             # Very experimental API -- this is certain to change!
-            assert hasattr(self.model, "get_output_embeddings"), "Model does not support get_output_embeddings() for fused_loss_factory()"
-            assert hasattr(self.model, "model"), "Model does not appear to have a wrapped model. required by experimental fused_loss_factory API"
-            assert hasattr(self.model.model, "output_logits"), "Model is missing 'output_logits' flag, required by experimental fused_loss_factory API"
-            self.loss_fn = self.fused_loss_factory(self.model.get_output_embeddings())
-            self.model.model.output_logits = False
+            if not hasattr(module, "get_output_embeddings"):
+                logger.warning(
+                    "Model does not support get_output_embeddings() for fused_loss_factory()"
+                )
+                return default_loss_fn
+            if not hasattr(module, "model"):
+                logger.warning(
+                    "Model does not appear to have a wrapped model. required by experimental fused_loss_factory API"
+                )
+                return default_loss_fn
+            if not hasattr(module.model, "output_logits"):
+                logger.warning(
+                    "Model is missing 'output_logits' flag, required by experimental fused_loss_factory API"
+                )
+                return default_loss_fn
+            module.model.output_logits = False
+            return self.fused_loss_factory(module.get_output_embeddings())
+
+        return default_loss_fn
 
     def _init_optimizer(self) -> None:
         # _prepare() sub-step 3
@@ -658,7 +678,7 @@ class Trainer(BaseTrainer):
         logger.info(f"Loading best model from {self.state.best_model_checkpoint}")
         self.load_checkpoint(self.state.best_model_checkpoint)
 
-    # @override
+    @override
     def _train_loop(self) -> TrainOutput:
         assert isinstance(self.args.logging_strategy, IntervalStrategy)
         assert isinstance(self.args.eval_strategy, IntervalStrategy)
@@ -777,7 +797,7 @@ class Trainer(BaseTrainer):
         self._dispatch_event("on_train_end")
         return TrainOutput(self.state.global_step, metrics)
 
-    # @override
+    @override
     @torch.no_grad()
     def _eval_loop(self) -> Dict[str, float]:
         """
@@ -867,19 +887,15 @@ class Trainer(BaseTrainer):
             self.lr_scheduler.step()
 
         loss = torch.sum(torch.stack(accumulated_losses))
-        loss = self._distributed_loss(loss) * self._loss_post_scaler()
+        loss = self._distributed_loss(loss)
         return loss, total_norm
 
     def _forward_backward_step(
         self, input_dict: dict[str, Tensor], labels: Tensor
     ) -> Tensor:
-        if self.train_loss_fn:
-            outputs = self.model(**input_dict)
-            logits = logits_from_outputs(outputs)
-            loss = self.train_loss_fn(logits, labels)
-        else:
-            outputs = self.model(labels=labels, **input_dict)
-            loss = loss_from_outputs(outputs)
+        outputs = self.model(**input_dict)
+        logits = logits_from_outputs(outputs)
+        loss = self.loss_fn(logits, labels)
         self._backward(loss)
         return loss.detach()
 
@@ -1017,13 +1033,10 @@ class Trainer(BaseTrainer):
         """
         Perform a single batch of predictions
         """
-        if self.eval_loss_fn:
+        with self.loss_fn.no_rescale():
             outputs = self.model(**input_dict)
-            logits = logits_from_outputs(outputs)
-            loss = self.eval_loss_fn(logits, labels)
-        else:
-            outputs = self.model(labels=labels, **input_dict)
-            loss, logits = loss_and_logits_from_outputs(outputs)
+        logits = logits_from_outputs(outputs)
+        loss = self.loss_fn(logits, labels)
 
         loss = self._distributed_loss(loss.detach())
         return {
@@ -1092,7 +1105,3 @@ class Trainer(BaseTrainer):
         This implementaiton only supports a single process, so we just return the input.
         """
         return loss
-
-    def _loss_post_scaler(self) -> float:
-        """Scale logged loss by this value"""
-        return 1.0

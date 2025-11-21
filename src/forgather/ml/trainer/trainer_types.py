@@ -1,5 +1,18 @@
 import os
-from typing import Any, List, Dict, NamedTuple, Optional
+from typing import (
+    Any,
+    List,
+    Dict,
+    Tuple,
+    NamedTuple,
+    Optional,
+    Protocol,
+    Callable,
+    Union,
+    TypeAlias,
+    Iterable,
+)
+
 from abc import ABC, abstractmethod
 from typing import Protocol
 from dataclasses import dataclass, field
@@ -7,15 +20,103 @@ from pprint import pformat
 
 from torch.utils.data import Dataset
 from torch.distributed.checkpoint.stateful import Stateful
+from torch import Tensor, nn
 
 from ..utils import ConversionDescriptor, DiagnosticEnum
 
 OUTPUTDIR_NAME = "tmp_trainer"
 
+ArgsValueType: TypeAlias = Union[
+    Dict[str, "ArgsValueType"],
+    List["ArgsValueType"],
+    Tuple["ArgsValueType"],
+    str,
+    int,
+    float,
+    None,
+]
+
+# The type of 'args' past to a trainer only allows for primitive types
+ArgsType = Dict[str, ArgsValueType]
+
+
+class BaseDataset(Protocol):
+    def __len__(self):
+        pass
+
+    def load_state_dict(self, state_dict: Dict[str, Any]):
+        pass
+
+    def state_dict(self) -> Dict[str, Any]:
+        pass
+
+
+class IterableDatasetT(BaseDataset):
+    def __iter__(self):
+        pass
+
+
+class DatasetT(BaseDataset):
+    def __getitem__(self, key: int):
+        pass
+
+    def __iter__(self):
+        pass
+
 
 class TrainOutput(NamedTuple):
     global_step: int
     metrics: Dict[str, float]
+
+
+class OptimizerT(Protocol):
+    def load_state_dict(self, state_dict: Dict[str, Any]):
+        pass
+
+    def state_dict(self) -> Dict[str, Any]:
+        pass
+
+    def step(self):
+        pass
+
+    def zero_grad(self):
+        pass
+
+
+class LRSchedulerT(Protocol):
+    def load_state_dict(self, state_dict: Dict[str, Any]):
+        pass
+
+    def state_dict(self) -> Dict[str, Any]:
+        pass
+
+    def step(self):
+        pass
+
+    def get_lr(self) -> float:
+        pass
+
+    def get_last_lr(self) -> float:
+        pass
+
+
+DataCollatorT: TypeAlias = Callable[[List[Dict[str, Any]]], Dict[str, Any]]
+
+LossFunctionT: TypeAlias = Callable[[Tensor, Tensor], Tensor]
+
+OptimizerParamsT: TypeAlias = Union[
+    Iterable[Tensor], Iterable[dict[str, Any]], Iterable[tuple[str, Tensor]]
+]
+
+OptimizerFactoryT: TypeAlias = Callable[[OptimizerParamsT], OptimizerT]
+
+LRSchedulerFactoryT: TypeAlias = Callable[[OptimizerT], LRSchedulerT]
+
+FusedLossFactoryT: TypeAlias = Callable[[nn.Module], LossFunctionT]
+
+PreprocessingClassT: TypeAlias = Callable
+
+EnableCheckpointFnT: TypeAlias = Callable[[], None]
 
 
 class IntervalStrategy(DiagnosticEnum):

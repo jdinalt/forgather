@@ -1,6 +1,16 @@
 # https://github.com/pytorch/pytorch/tree/main/torch/distributed/pipelining
 from dataclasses import dataclass
-from typing import Callable, Any, Dict, List, Tuple, Iterable, Optional
+from typing import (
+    Callable,
+    Dict,
+    List,
+    Tuple,
+    Iterable,
+    Any,
+    Protocol,
+    TypeAlias,
+    override,
+)
 import logging
 import math
 import copy
@@ -16,29 +26,34 @@ from torch.distributed.pipelining import ScheduleGPipe
 from torch.distributed.pipelining.stage import _PipelineStageBase
 from torch.distributed.pipelining.microbatch import split_args_kwargs_into_chunks
 
-from ..trainer_types import CheckpointInterface
+from ..trainer_types import (
+    LossFunctionT,
+    CheckpointInterface,
+)
 from ..checkpoint_manager import CheckpointManager, CheckpointConfig
 from ..trainer import (
     Trainer,
     TrainingArguments,
     optimizer_hook,
-    rescale_accumulated_loss,
 )
 from ...sharded_checkpoint import (
     make_shard_index,
     create_sharing_metadata,
     retie_parameters,
+    SharingMetadataT,
+    ShardIndex,
 )
 from .pipeline_utils import (
-    insert_activation_checkpoints,
     pipeline_stage_indices,
     missing_buffers,
 )
 from .pipeline_fixes import (
     assert_no_duplicate_fqns,
 )
+from .model_splitter import ModelSplitter
 from forgather.ml.utils import default_dtype
 from forgather.ml.construct import torch_dtype
+from forgather.ml.loss import RescaleLoss
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +71,16 @@ log_level_for(
         # Add modules to enable logging on here.
     ],
 )
+
+
+class PipelineSchedulerT(Protocol):
+    def step(self, *args, targets: torch.Tensor | None, losses: list, **kwargs):
+        pass
+
+
+PipelineSchedulerFactorT: TypeAlias = Callable[
+    [int, int, LossFunctionT, bool], PipelineSchedulerT
+]
 
 
 @dataclass(kw_only=True)
@@ -78,12 +103,27 @@ class PipelineTrainingArguments(TrainingArguments):
 
 
 class PipelineTrainer(Trainer):
+
+    args: PipelineTrainingArguments
+    model_splitter: ModelSplitter
+    pipe_schedule_factory: PipelineSchedulerFactorT
+    pp_group: Any
+    n_pipeline_stages: int
+    scheduler: PipelineSchedulerT | None
+    pipeline_modules: List[Module] | None
+    sharing_metadata: SharingMetadataT | None
+    shard_index: ShardIndex | None
+    stage_indices: None
+    pp_has_last_stage: bool
+    pp_has_first_stage: bool
+    attention_mask_creator: Callable
+
     def __init__(
         self,
         *,
         args: PipelineTrainingArguments,
-        model_splitter: "ModelSplitter",  # Required: function to split model into pipeline stages
-        pipe_schedule_factory: Callable = ScheduleGPipe,
+        model_splitter: ModelSplitter,  # Required: function to split model into pipeline stages
+        pipe_schedule_factory: PipelineSchedulerT = ScheduleGPipe,
         **kwargs,
     ):
         assert isinstance(args, PipelineTrainingArguments)
@@ -92,12 +132,12 @@ class PipelineTrainer(Trainer):
         self.pipe_schedule_factory = pipe_schedule_factory
         super().__init__(args=args, **kwargs)
 
-    # @override
+    @override
     def _is_pipeline_parallel(self) -> bool:
         """Pipeline parallelism doesn't increase effective batch size"""
         return True
 
-    # @override
+    @override
     def _post_init(self) -> None:
         if self.args.debug_pipeline:
             logger.setLevel(logging.DEBUG)
@@ -143,7 +183,7 @@ class PipelineTrainer(Trainer):
                         f"B {self.dist.rank} {name} : device {p.device}, dtype {p.dtype}"
                     )
 
-    # @override
+    @override
     def _prepare_model(self):
         # Reset -- this trainer always resets everything.
         self.scheduler = None
@@ -152,6 +192,8 @@ class PipelineTrainer(Trainer):
         self.optimizer = None
         self.lr_scheduler = None
         self.sharing_metadata = None
+
+        assert self.train_dataloader or self.eval_dataloader
 
         # Construct model instance on the "meta" device; parameters have meta-data, but no actual data.
         # This allows us to construct a "huge" model, without having to have the memory for it.
@@ -173,6 +215,11 @@ class PipelineTrainer(Trainer):
         stage_indices = pipeline_stage_indices(
             self.dist.world_size, self.n_pipeline_stages, style=self.args.pp_stage_type
         )
+
+        last_stage_index = self.n_pipeline_stages - 1
+        self.stage_indices = stage_indices[self.dist.rank]
+        self.pp_has_last_stage = last_stage_index in self.stage_indices
+        self.pp_has_first_stage = 0 in self.stage_indices
 
         # Split model into pipeline segments.
         if self.dist.rank == 0:
@@ -236,6 +283,19 @@ class PipelineTrainer(Trainer):
             param_sharing_metadata=self.sharing_metadata,
         )
 
+        # Only the last state needs to compute loss
+        # TODO: Placing this here is not going to work for the auto-splitter. That will require more work...
+        if self.pp_has_last_stage:
+            self.loss_fn = self._get_fused_loss_fn(pipeline_modules[-1], self.loss_fn)
+
+        # Loss needs to be scaled by the number of micro-batches
+        self.loss_fn = RescaleLoss(self.loss_fn, 1 / self.args.n_microbatches)
+
+        # Only the outer wrapper will be disabled for eval
+        self.loss_fn = RescaleLoss(
+            self.loss_fn, 1 / self.args.gradient_accumulation_steps
+        )
+
         # Note: scale_grads=True, the default, causes the pipeline to rescale the gradients by the number of microbatches
         # We handle this by applying this factor directly to the loss function, above. Without doing so,
         # gradient accumulation does not work properly, as the complete accumulated gradient is rescaled
@@ -243,7 +303,7 @@ class PipelineTrainer(Trainer):
         self.scheduler = self.pipe_schedule_factory(
             stages_arg,
             self.args.n_microbatches,
-            loss_fn=self.train_loss_fn,
+            loss_fn=self.loss_fn,
             scale_grads=False,
         )
 
@@ -259,31 +319,15 @@ class PipelineTrainer(Trainer):
                     self.enable_activation_checkpoint_fn(self.dist.rank, mod)
 
         self.pipeline_modules = pipeline_modules
-        self.stage_indices = stage_indices[self.dist.rank]
 
-        # Identify the rank of the last stage, as they need to broadcast the loss.
-        last_stage_index = self.n_pipeline_stages - 1
         for rank in range(len(stage_indices)):
             if last_stage_index in stage_indices[rank]:
                 self.pp_last_stage_rank = rank
                 break
 
-        # To simplify things...
-        self.pp_has_last_stage = last_stage_index in self.stage_indices
-        self.pp_has_first_stage = 0 in self.stage_indices
-
         # We keep the original model on the meta-device. This model is obviously not functional, but
         # some trainer callbacks may wish to dump the layout.
         self.model = model
-
-    # @override
-    def _wrap_loss_fn(self):
-        assert self.loss_fn
-        # Rescale by product of accumulation-steps and n_mircobatches
-        self.train_loss_fn = rescale_accumulated_loss(
-            self.loss_fn,
-            self.args.gradient_accumulation_steps * self.args.n_microbatches,
-        )
 
     def _construct_model(self, device):
         # Construct model on device
@@ -297,7 +341,7 @@ class PipelineTrainer(Trainer):
             model = self.model_init()
         return model
 
-    # @override
+    @override
     def _compile_model(self):
         assert self.pipeline_modules
         for mod in self.pipeline_modules:
@@ -461,7 +505,7 @@ class PipelineTrainer(Trainer):
 
         distributed.barrier()
 
-    # @override
+    @override
     def _dataloader_iter(
         self, dataloader: Iterable[Dict[str, Tensor]]
     ) -> Iterable[Dict[str, Tensor]]:
@@ -519,7 +563,7 @@ class PipelineTrainer(Trainer):
                     req.wait()
                 yield copy.copy(batch)
 
-    # @override
+    @override
     def _forward_backward_step(
         self, input_dict: dict[str, Tensor], labels: Tensor
     ) -> Tensor:
@@ -544,12 +588,12 @@ class PipelineTrainer(Trainer):
 
         if self.pp_has_last_stage:
             assert losses
-            mean_loss = torch.stack([x.detach().float() for x in losses]).mean()
+            mean_loss = torch.stack([x.detach().float() for x in losses]).sum()
         else:
             mean_loss = torch.tensor(0.0, device=self.dist.device, dtype=torch.float32)
         return mean_loss
 
-    # @override
+    @override
     def _init_optimizer(self):
         if self.optimizer is None:
             # Build a named-parameter generator for all of our modules
@@ -584,7 +628,7 @@ class PipelineTrainer(Trainer):
                 optimizer=self.optimizer,
             )
 
-    # @override
+    @override
     def _prediction_step(
         self, input_dict: dict[str, Tensor], labels: Tensor
     ) -> Dict[str, Tensor | None]:
@@ -605,18 +649,16 @@ class PipelineTrainer(Trainer):
 
         targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)
         assert self.scheduler
-        if self.pp_has_first_stage:
-            self.scheduler.eval(*inputs, **extra_kwargs)
-        else:
-            self.scheduler.eval(**extra_kwargs, target=targets, losses=losses)
+        with self.loss_fn.no_rescale():
+            if self.pp_has_first_stage:
+                self.scheduler.eval(*inputs, **extra_kwargs)
+            else:
+                self.scheduler.eval(**extra_kwargs, target=targets, losses=losses)
 
         # Compute loss on last stage
         if self.pp_has_last_stage:
             assert losses
-            mean_loss = (
-                torch.stack([x.detach().float() for x in losses]).sum()
-                * self.args.gradient_accumulation_steps
-            )
+            mean_loss = torch.stack([x.detach().float() for x in losses]).sum()
         else:
             mean_loss = torch.tensor(0.0, device=self.dist.device, dtype=torch.float32)
 
@@ -627,11 +669,7 @@ class PipelineTrainer(Trainer):
             "labels": None,
         }
 
-    # @override
-    def _loss_post_scaler(self):
-        return float(self.args.n_microbatches)
-
-    # @override
+    @override
     def _init_checkpoint_manager(self) -> CheckpointInterface:
         cp_config = CheckpointConfig(
             output_dir=self.args.output_dir,
@@ -667,7 +705,7 @@ class PipelineTrainer(Trainer):
             total_norm **= 1.0 / norm_type
         return total_norm
 
-    # @override
+    @override
     def _clip_grad_norm(self, max_grad_norm, norm_type=2.0) -> Tensor:
         # If fused optimizer, we can't clip, but we can compute the value,
         # which we do from the tensor callacks

@@ -5,7 +5,7 @@ import glob
 import shutil
 from pprint import pp
 import logging
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Set, Optional, TypeAlias
 from collections import defaultdict
 from dataclasses import dataclass
 import gc
@@ -107,6 +107,8 @@ SAFE_WEIGHTS_INDEX_NAME = "model.safetensors.index.json"
 SAFE_WEIGHTS_NAME = "model.safetensors"
 
 ShardIndex = Dict[str, Dict[str, str]]
+
+SharingMetadataT: TypeAlias = List[List[str]]
 
 
 def id_to_fqn(module: nn.Module) -> Dict[int, Set[str]]:

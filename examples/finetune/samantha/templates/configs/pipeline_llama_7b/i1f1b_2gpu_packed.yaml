@@ -27,7 +27,7 @@
 
 [optimizer]
     == super()
-    lr: 6.0e-6
+    lr: 4.0e-6
 
 [lr_scheduler]
     == super()
@@ -54,8 +54,12 @@
     per_device_eval_batch_size: 8
     gradient_checkpointing: True
     fuse_optim_with_backward: True
+    #enable_activation_offloading: True
     
 [trainer_constructor]
     == super()
-    # Config Overrides
+    # **Config**
     pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleInterleaved1F1B
+    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
+        impl: "cce"
+        chunk_size: 4096

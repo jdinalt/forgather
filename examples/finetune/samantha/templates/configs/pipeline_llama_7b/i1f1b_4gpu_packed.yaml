@@ -24,7 +24,7 @@
 
 [optimizer]
     == super()
-    lr: 6.0e-6
+    lr: 4.0e-6
 
 [lr_scheduler]
     == super()
@@ -51,9 +51,12 @@
     save_steps: 65
     gradient_checkpointing: True
     fuse_optim_with_backward: True
-    #enable_activation_offloading: True
+    # enable_activation_offloading: True
     
 [trainer_constructor]
     == super()
     # Config Overrides
     pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleInterleaved1F1B
+    compute_loss_func: !singleton:forgather.ml.loss:ChunkedCausalLoss
+        chunk_size: 4096
+        compile: False
