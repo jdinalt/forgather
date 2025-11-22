@@ -68,7 +68,8 @@ def list_project(project_dir, debug=False):
     project_description = meta_config.get("description", "No Description")
     print(f"{project_name} : {project_description}")
     env = get_env(meta, project_dir)
-    for config_name, path in meta.find_templates(meta.config_prefix):
+    config_names = [name for name, _ in meta.find_templates(meta.config_prefix)]
+    for config_name in sorted(config_names):
         try:
             config, pp_config = get_config(meta, env, config_name)
             config_meta = Latent.materialize(config.meta)
