@@ -140,6 +140,7 @@ eos_token:                       # Dict format allows custom init
 pad_token:
   token: "<|pad|>"
   init: "zero"
+  if_missing: true               # Only add if not already set
 unk_token: "<|unknown|>"
 
 # Additional special tokens (optional)
@@ -176,10 +177,24 @@ These tokens can be set/replaced if missing or if you want to change them.
   - BOS/EOS/UNK tokens: `"mean"`
   - PAD token: `"zero"`
 
+**if_missing Flag:**
+- When set to `true`, only adds/sets the token if it doesn't already exist
+- Useful for ensuring a token exists without forcing replacement
+- Example: `if_missing: true` for PAD token adds it only if missing
+
+**Token Reassignment:**
+- When replacing an existing token with a different value (e.g., changing `[PAD]` to `<|PAD|>`):
+  - If the new token already exists in vocabulary, just reassigns the special token pointer
+  - Otherwise, adds the new token and updates the special token pointer
+- Properly handles the transition without creating duplicate tokens
+
+**Default Behavior:**
+- By default, the converter adds a missing PAD token (`[PAD]`) with zero initialization
+- Use `--skip-default-tokens` to disable this automatic behavior
+- Custom `--add-tokens` configuration overrides the default
+
 **Behavior:**
-- Tokens already in the vocabulary are skipped (no duplicates)
-- Named tokens are added with specified initialization strategy
-- Missing PAD token is automatically added if needed (zero-initialized)
+- Named tokens are added/replaced with specified initialization strategy
 - Model embeddings are resized using HuggingFace's `resize_token_embeddings()`
 - Config is updated with new vocabulary size
 
@@ -209,6 +224,23 @@ special_tokens:
   - "<|im_end|>"
 EOF
 forgather convert --add-tokens tokens.yaml ~/models/hf_qwen ~/models/fg_qwen
+
+# Replace existing PAD token with a different one
+cat > replace_pad.yaml << EOF
+pad_token: "<|pad|>"  # Will replace [PAD] if it exists
+EOF
+forgather convert --add-tokens replace_pad.yaml ~/models/hf_model ~/models/fg_model
+
+# Add PAD token only if missing (using if_missing flag)
+cat > pad_if_missing.yaml << EOF
+pad_token:
+  token: "<|pad|>"
+  if_missing: true  # Only add if not already set
+EOF
+forgather convert --add-tokens pad_if_missing.yaml ~/models/hf_model ~/models/fg_model
+
+# Skip default PAD token addition for complete vocabulary control
+forgather convert --skip-default-tokens ~/models/hf_model ~/models/fg_model
 ```
 
 ### Testing and Debugging

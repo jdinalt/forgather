@@ -177,6 +177,7 @@ class ChunkedCausalLoss:
     def __call__(self, logits: FloatTensor, labels: LongTensor) -> FloatTensor:
         return self.loss_fn(logits, labels)
 
+
 class LinearCrossEntropyLoss:
     """
     General wrapper for fused linear + cross-entropy implementations.

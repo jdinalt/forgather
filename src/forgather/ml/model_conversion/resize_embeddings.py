@@ -12,6 +12,16 @@ from transformers import PreTrainedTokenizerBase, PretrainedConfig, PreTrainedMo
 
 logger = logging.getLogger(__name__)
 
+# Default token configuration for handling missing PAD tokens
+DEFAULT_TOKEN_CONFIG = {
+    "pad_token": {
+        "token": "[PAD]",
+        "init": "zero",
+        "if_missing": True,
+    }
+}
+
+
 def add_tokens_to_tokenizer(
     tokenizer: PreTrainedTokenizerBase, path_or_config: str | Dict
 ) -> Tuple[int, Dict[int, str]]:
@@ -19,7 +29,7 @@ def add_tokens_to_tokenizer(
 
     Args:
         tokenizer: HuggingFace tokenizer to add tokens to
-        add_tokens_path: Path to YAML file containing tokens to add
+        path_or_config: Path to YAML file or config dict containing tokens to add
 
     Returns:
         Tuple of (num_added, token_inits) where:
@@ -34,6 +44,7 @@ def add_tokens_to_tokenizer(
         pad_token:
             token: "<|pad|>"
             init: "zero"
+            if_missing: true             # Only add if not already set
         unk_token: "<|unknown|>"
         special_tokens:
             - "<|im_start|>"
@@ -52,6 +63,10 @@ def add_tokens_to_tokenizer(
         - "mean": Initialize to mean of existing token embeddings
         - Default for BOS/EOS/UNK: "mean"
         - Default for PAD: "zero"
+
+    if_missing flag:
+        - When true, only add/set the token if it doesn't already exist
+        - Useful for ensuring a token exists without forcing replacement
     """
     if isinstance(path_or_config, str):
         with open(path_or_config, "r") as f:
@@ -85,31 +100,63 @@ def add_tokens_to_tokenizer(
                 # Simple string format: use token string and default init
                 token_value = token_entry
                 init_strategy = DEFAULT_INIT[token_name]
+                if_missing = False
             elif isinstance(token_entry, dict):
-                # Dict format: extract token and init strategy
+                # Dict format: extract token, init strategy, and if_missing flag
                 token_value = token_entry.get("token")
                 if token_value is None:
                     logger.warning(f"Skipping {token_name}: missing 'token' field")
                     continue
                 init_strategy = token_entry.get("init", DEFAULT_INIT[token_name])
+                if_missing = token_entry.get("if_missing", False)
             else:
                 logger.warning(f"Skipping {token_name}: invalid format")
                 continue
 
             old_token = getattr(tokenizer, token_name, None)
 
-            # Log if replacing existing token
-            if old_token is not None:
+            # Check if_missing flag
+            if if_missing and old_token is not None:
                 logger.info(
-                    f"Replacing {token_name}: {old_token} -> {token_value} (init: {init_strategy})"
+                    f"Skipping {token_name}: already set to {old_token} (if_missing=true)"
                 )
-            else:
+                continue
+
+            # Handle token reassignment by removing old token from vocab if different
+            if old_token is not None and old_token != token_value:
+                # Get the old token ID before reassignment
+                old_token_id = getattr(tokenizer, f"{token_name}_id", None)
+
+                logger.info(
+                    f"Replacing {token_name}: {old_token} (ID {old_token_id}) -> {token_value} (init: {init_strategy})"
+                )
+
+                # Check if the new token already exists in vocabulary
+                new_token_id = tokenizer.convert_tokens_to_ids(token_value)
+                if (
+                    new_token_id != tokenizer.unk_token_id
+                    or token_value in tokenizer.get_vocab()
+                ):
+                    # Token already exists, just reassign the special token pointer
+                    logger.info(
+                        f"Token {token_value} already exists at ID {new_token_id}, reassigning {token_name} pointer"
+                    )
+                    named_tokens[token_name] = token_value
+                    # No new token added, but we still need to apply init strategy to existing token
+                    token_inits[new_token_id] = init_strategy
+                else:
+                    # New token needs to be added
+                    named_tokens[token_name] = token_value
+                    named_token_inits[token_name] = init_strategy
+            elif old_token is None:
                 logger.info(
                     f"Setting {token_name}: {token_value} (init: {init_strategy})"
                 )
-
-            named_tokens[token_name] = token_value
-            named_token_inits[token_name] = init_strategy
+                named_tokens[token_name] = token_value
+                named_token_inits[token_name] = init_strategy
+            else:
+                # Token already set to the same value
+                logger.info(f"Token {token_name} already set to {token_value}")
 
     # Add named special tokens
     if named_tokens:
@@ -141,27 +188,17 @@ def add_tokens_to_tokenizer(
         logger.info(f"Added {num_regular} regular token(s): {regular_tokens}")
         num_added += num_regular
 
-    # Add PAD token if still missing (only if not set via named_tokens)
-    if tokenizer.pad_token is None and "pad_token" not in named_tokens:
-        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-        logger.info(
-            f"Added default PAD token: [PAD] at index {tokenizer.pad_token_id}"
-        )
-        num_added += 1
-        # Default PAD token always uses zero init
-        token_inits[tokenizer.pad_token_id] = "zero"
-
     return num_added, token_inits
+
 
 def resize_word_embeddings(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
     token_inits: Optional[Dict[int, str]],
 ):
-    """Resize input and output embeddings to match tokenizer vocab size, with optional custom init
-    """
+    """Resize input and output embeddings to match tokenizer vocab size, with optional custom init"""
     new_vocab_size = len(tokenizer)
-    
+
     # Use HuggingFace's resize_token_embeddings() method
     model.resize_token_embeddings(new_vocab_size, mean_resizing=True)
 
@@ -175,21 +212,22 @@ def resize_word_embeddings(
             for token_id, init_strategy in token_inits.items():
                 match init_strategy:
                     case "zero":
-                        logger.info(
-                            f"Zero-initializing token at index {token_id}"
-                        )
+                        logger.info(f"Zero-initializing token at index {token_id}")
                         input_embeddings[token_id].zero_()
                         if not tied_embeddings:
                             output_embeddings[token_id].zero_()
                     case "mean":
                         pass
                     case _:
-                        logger.warning(f"Init strategy {init_strategy} is not supported.")
-                
+                        logger.warning(
+                            f"Init strategy {init_strategy} is not supported."
+                        )
 
-def update_config_from_tokenizer(model_config: PretrainedConfig, tokenizer: PreTrainedTokenizerBase):
-    """Update model_config tokenizer meta-data from tokenizer
-    """
+
+def update_config_from_tokenizer(
+    model_config: PretrainedConfig, tokenizer: PreTrainedTokenizerBase
+):
+    """Update model_config tokenizer meta-data from tokenizer"""
     special_token_ids = [
         "bos_token_id",
         "pad_token_id",
@@ -202,7 +240,7 @@ def update_config_from_tokenizer(model_config: PretrainedConfig, tokenizer: PreT
         if token_id is not None:
             logger.info(f"Setting {token_id_name} to {token_id}")
             setattr(model_config, token_id_name, token_id)
-    
+
     # Get current vocab size before resizing (for mean calculation)
     old_vocab_size = model_config.vocab_size
     new_vocab_size = len(tokenizer)

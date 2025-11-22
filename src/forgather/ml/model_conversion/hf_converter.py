@@ -27,6 +27,7 @@ from .resize_embeddings import (
     add_tokens_to_tokenizer,
     resize_word_embeddings,
     update_config_from_tokenizer,
+    DEFAULT_TOKEN_CONFIG,
 )
 
 logger = logging.getLogger(__name__)
@@ -321,16 +322,24 @@ class HFConverter(ModelConverter):
             model.tie_weights()
 
         # Add tokens and resize embeddings if requested
-        if kwargs.get("add_tokens"):
-            logger.info(f"Adding tokens from: {kwargs['add_tokens']}")
-            num_added, token_inits = add_tokens_to_tokenizer(
-                tokenizer, kwargs["add_tokens"]
-            )
+        # Use default config if no explicit add_tokens provided (unless skip_default_tokens is set)
+        token_config = kwargs.get("add_tokens")
+        if token_config is None and not kwargs.get("skip_default_tokens", False):
+            logger.info("Using default token configuration (adding missing PAD token)")
+            token_config = DEFAULT_TOKEN_CONFIG
+
+        if token_config is not None:
+            if isinstance(token_config, str):
+                logger.info(f"Adding tokens from: {token_config}")
+            else:
+                logger.info("Adding tokens from provided configuration")
+
+            num_added, token_inits = add_tokens_to_tokenizer(tokenizer, token_config)
 
             if num_added > 0:
                 logger.info(f"Added {num_added} token(s) to vocabulary")
                 resize_word_embeddings(model, tokenizer, token_inits)
-            resize_word_embeddings
+
             update_config_from_tokenizer(model_config, tokenizer)
 
         # Compare logits

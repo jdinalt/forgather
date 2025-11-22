@@ -92,6 +92,7 @@ def get_subcommand_registry():
         "project": create_project_parser,
         "inf": create_inf_parser,
         "convert": create_convert_parser,
+        "update-vocab": create_update_vocab_parser,
     }
 
 
@@ -762,6 +763,33 @@ def create_convert_parser(global_args):
     return parser
 
 
+def create_update_vocab_parser(global_args):
+    """Create parser for update-vocab command."""
+    # Note: We use add_help=False because we want --help to be forwarded to the script
+    parser = argparse.ArgumentParser(
+        prog="forgather update-vocab",
+        description="Update vocabulary of HuggingFace or Forgather models\n\n"
+        "All arguments are forwarded to tools/update_vocab/update_vocab.py",
+        formatter_class=RawTextHelpFormatter,
+        add_help=False,
+    )
+    # Add a dummy positional to enable REMAINDER to work
+    parser.add_argument(
+        "dummy",
+        nargs="?",
+        default="",
+        help=argparse.SUPPRESS,  # Hide from help
+    )
+    # Use REMAINDER to capture all following args (including flags)
+    parser.add_argument(
+        "remainder",
+        nargs=argparse.REMAINDER,
+        help="Arguments to forward to update_vocab.py",
+    )
+
+    return parser
+
+
 def show_main_help():
     """Show the main help message with available subcommands."""
     print("Forgather CLI")
@@ -905,16 +933,19 @@ def parse_args(args=None):
     subcommand_parser = registry[subcommand](global_args)
 
     try:
-        # For convert command, just pass all args as remainder without parsing
-        if subcommand == "convert":
+        # For convert and update-vocab commands, just pass all args as remainder without parsing
+        if subcommand in ["convert", "update-vocab"]:
             # Create a minimal namespace with remainder containing all original args
             sub_args = argparse.Namespace()
             # Use saved original args if available (when -t was present), otherwise use subcommand_args
-            sub_args.remainder = (
-                convert_original_args
-                if convert_original_args is not None
-                else subcommand_args
-            )
+            if subcommand == "convert":
+                sub_args.remainder = (
+                    convert_original_args
+                    if convert_original_args is not None
+                    else subcommand_args
+                )
+            else:
+                sub_args.remainder = subcommand_args
             sub_args.dummy = ""
         else:
             sub_args = subcommand_parser.parse_args(subcommand_args)
@@ -1017,6 +1048,10 @@ def main():
                 from .convert import convert_cmd
 
                 convert_cmd(args)
+            case "update-vocab":
+                from .update_vocab import update_vocab_cmd
+
+                update_vocab_cmd(args)
             case _:
                 index_cmd(args)
     except SystemExit:

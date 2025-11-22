@@ -141,6 +141,11 @@ def parse_args(args=None):
         help="Path to YAML file specifying additional tokens to add to vocabulary.",
     )
     parser.add_argument(
+        "--skip-default-tokens",
+        action="store_true",
+        help="Skip default token handling (e.g., adding missing PAD token). Use this if you want complete control over vocabulary.",
+    )
+    parser.add_argument(
         "--converter-path",
         action="append",
         dest="converter_paths",
@@ -188,6 +193,7 @@ def convert_hf_to_forgather(args, detected_model_type=None):
         "prompt": args.prompt,
         "chat_template_path": args.chat_template_path,
         "add_tokens": args.add_tokens,
+        "skip_default_tokens": args.skip_default_tokens,
     }
 
     # Delegate to converter
@@ -254,7 +260,7 @@ def main():
     # Configure logging with user-specified level
     logging.basicConfig(
         level=getattr(logging, args.log_level),
-        format='%(levelname)s:%(name)s:%(message)s'
+        format="%(levelname)s:%(name)s:%(message)s",
     )
 
     # Discover and register converters from builtin and custom paths
