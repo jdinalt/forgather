@@ -148,6 +148,11 @@ class TrainingArguments(BaseTrainingArguments):
     # https://docs.pytorch.org/tutorials/intermediate/optimizer_step_in_backward_tutorial.html
     fuse_optim_with_backward: bool = False
 
+    # The step at which to start collecting speed metrics
+    # We default to 1, to remove the effects from torch.compile().
+    # Set this to 0 to include all steps or > 0 for compile warmup time.
+    speed_metrics_start_step: int = 1
+
 
 @contextmanager
 def set_train(model: torch.nn.Module, mode: bool):
@@ -708,7 +713,8 @@ class Trainer(BaseTrainer):
         # Just to be sure...
         self.optimizer.zero_grad()
 
-        start_time = time.time()
+        start_time = None
+        train_steps = 0
         self._dispatch_event("on_train_begin")
 
         # Holds loss and grad-norm samples between logs steps
@@ -763,6 +769,11 @@ class Trainer(BaseTrainer):
                     # Periodic GC
                     maybe_cleanup_memory(self.args.gc_threshold)
 
+                    train_steps += 1
+                    # maybe delay start of metrics recording for torch.compile()
+                    if train_steps == self.args.speed_metrics_start_step:
+                        start_time = time.time()
+
                 self._dispatch_event("on_epoch_end")
                 if self.control.should_epoch_stop:
                     break
@@ -792,7 +803,9 @@ class Trainer(BaseTrainer):
             logger.info(f'Loading best model "{self.state.best_model_checkpoint}"')
             self.load_best_model()
 
-        metrics = self._end_train_loop(start_time)
+        metrics = self._end_train_loop(
+            start_time, train_steps - self.args.speed_metrics_start_step
+        )
         self.log(metrics)
         self._dispatch_event("on_train_end")
         return TrainOutput(self.state.global_step, metrics)
@@ -976,13 +989,18 @@ class Trainer(BaseTrainer):
                 max_eval_steps=max_eval_steps,
             )
 
-    def _end_train_loop(self, start_time: float) -> dict[str, int | float]:
-        runtime = time.time() - start_time
+    def _end_train_loop(
+        self, start_time: float, train_steps: int
+    ) -> dict[str, int | float]:
+        if start_time:
+            runtime = time.time() - start_time
+        else:
+            runtime = None
         # Calculate effective batch size including gradient accumulation
         effective_batch_size = self._calculate_effective_batch_size()
-        total_train_samples = effective_batch_size * self.max_steps
+        total_train_samples = effective_batch_size * train_steps
         metrics = self._speed_metrics(
-            "train", runtime, total_train_samples, self.max_steps
+            "train", runtime, total_train_samples, train_steps
         )
         metrics["epoch"] = self.state.epoch
         metrics["effective_batch_size"] = effective_batch_size
@@ -1048,12 +1066,18 @@ class Trainer(BaseTrainer):
     def _speed_metrics(
         self, prefix: str, runtime: float, samples: int, steps: int
     ) -> dict[str, int | float]:
+        if runtime is not None and steps > 0:
+            samples_per_second = round(samples / runtime, 3)
+            steps_per_second = round(steps / runtime, 3)
+        else:
+            samples_per_second = float("nan")
+            steps_per_second = float("nan")
         metrics = {
             f"{prefix}_runtime": runtime,
             f"{prefix}_samples": samples,
             "step": steps,
-            f"{prefix}_samples_per_second": round(samples / runtime, 3),
-            f"{prefix}_steps_per_second": round(steps / runtime, 3),
+            f"{prefix}_samples_per_second": samples_per_second,
+            f"{prefix}_steps_per_second": steps_per_second,
         }
         return metrics
 
