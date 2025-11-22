@@ -1,6 +1,7 @@
 """
 Test shuffle_output parameter to verify output sequences are randomized.
 """
+
 from datasets import Dataset
 from transformers import AutoTokenizer
 from forgather.ml.datasets import block_tokenize_fn
@@ -69,8 +70,9 @@ def test_shuffle_output():
     # Check if sequences are identical
     identical = all(
         seq1 == seq2
-        for seq1, seq2 in zip(result_no_shuffle_1["input_ids"][:5],
-                               result_no_shuffle_2["input_ids"][:5])
+        for seq1, seq2 in zip(
+            result_no_shuffle_1["input_ids"][:5], result_no_shuffle_2["input_ids"][:5]
+        )
     )
 
     print(f"   First 5 sequences identical: {identical}")
@@ -131,8 +133,9 @@ def test_shuffle_output():
     # With same seed, shuffled results should be identical
     identical_shuffled = all(
         seq1 == seq2
-        for seq1, seq2 in zip(result_shuffle_seed1["input_ids"][:5],
-                               result_shuffle_seed2["input_ids"][:5])
+        for seq1, seq2 in zip(
+            result_shuffle_seed1["input_ids"][:5], result_shuffle_seed2["input_ids"][:5]
+        )
     )
 
     print(f"   First 5 sequences identical: {identical_shuffled}")
@@ -147,8 +150,10 @@ def test_shuffle_output():
     # Compare non-shuffled vs shuffled
     different_order = any(
         seq1 != seq2
-        for seq1, seq2 in zip(result_no_shuffle_1["input_ids"][:10],
-                               result_shuffle_seed1["input_ids"][:10])
+        for seq1, seq2 in zip(
+            result_no_shuffle_1["input_ids"][:10],
+            result_shuffle_seed1["input_ids"][:10],
+        )
     )
 
     print(f"   Order changed by shuffling: {different_order}")
@@ -178,12 +183,18 @@ def test_shuffle_output():
 
     different_seeds_different_order = any(
         seq1 != seq2
-        for seq1, seq2 in zip(result_shuffle_seed1["input_ids"][:10],
-                               result_shuffle_seed99["input_ids"][:10])
+        for seq1, seq2 in zip(
+            result_shuffle_seed1["input_ids"][:10],
+            result_shuffle_seed99["input_ids"][:10],
+        )
     )
 
-    print(f"   Different seeds produce different orders: {different_seeds_different_order}")
-    assert different_seeds_different_order, "Different seeds should produce different orders"
+    print(
+        f"   Different seeds produce different orders: {different_seeds_different_order}"
+    )
+    assert (
+        different_seeds_different_order
+    ), "Different seeds should produce different orders"
 
     # Test 5: Analyze length distribution before and after shuffle
     print("\n5. Analyzing length distribution...")
@@ -199,10 +210,16 @@ def test_shuffle_output():
     distributions_match = lengths_no_shuffle_sorted == lengths_shuffled_sorted
 
     print(f"   Length distributions match: {distributions_match}")
-    print(f"   No shuffle - avg length: {sum(lengths_no_shuffle)/len(lengths_no_shuffle):.1f}")
-    print(f"   Shuffled   - avg length: {sum(lengths_shuffled)/len(lengths_shuffled):.1f}")
+    print(
+        f"   No shuffle - avg length: {sum(lengths_no_shuffle)/len(lengths_no_shuffle):.1f}"
+    )
+    print(
+        f"   Shuffled   - avg length: {sum(lengths_shuffled)/len(lengths_shuffled):.1f}"
+    )
 
-    assert distributions_match, "Shuffling should preserve the distribution, just reorder"
+    assert (
+        distributions_match
+    ), "Shuffling should preserve the distribution, just reorder"
 
     print("\n" + "=" * 80)
     print("All shuffle tests passed!")

@@ -5,6 +5,7 @@ Tests the new explicit document boundary tracking system that allows
 packed sequences to work with tokenizers that don't have BOS/EOS tokens
 (e.g., Qwen3).
 """
+
 import torch
 from transformers import PreTrainedTokenizerFast
 from tokenizers import Tokenizer, models, pre_tokenizers
@@ -94,7 +95,11 @@ def test_pack_sequences_optimized_returns_boundaries():
 
     # Document boundaries should match the packed order
     assert len(document_starts) == 1
-    assert document_starts[0] == [0, 3, 6], f"Expected [0, 3, 6], got {document_starts[0]}"
+    assert document_starts[0] == [
+        0,
+        3,
+        6,
+    ], f"Expected [0, 3, 6], got {document_starts[0]}"
 
 
 def test_output_token_block_tracks_boundaries():
@@ -220,7 +225,10 @@ def test_data_collator_with_boundaries():
 
     # Create collator with packed_sequences enabled
     collator = DataCollatorForCausalLM(
-        tokenizer=tokenizer, packed_sequences=True, padding="longest", return_tensors="pt"
+        tokenizer=tokenizer,
+        packed_sequences=True,
+        padding="longest",
+        return_tensors="pt",
     )
 
     # Create features with document_starts
@@ -274,7 +282,10 @@ def test_data_collator_explicit_disable():
 
     # Explicitly disable packed sequences
     collator = DataCollatorForCausalLM(
-        tokenizer=tokenizer, packed_sequences=False, padding="longest", return_tensors="pt"
+        tokenizer=tokenizer,
+        packed_sequences=False,
+        padding="longest",
+        return_tensors="pt",
     )
 
     # Create features with document_starts
@@ -299,7 +310,10 @@ def test_data_collator_fallback_to_token_based():
     tokenizer.add_special_tokens({"pad_token": "[PAD]", "eos_token": "[EOS]"})
 
     collator = DataCollatorForCausalLM(
-        tokenizer=tokenizer, packed_sequences=True, padding="longest", return_tensors="pt"
+        tokenizer=tokenizer,
+        packed_sequences=True,
+        padding="longest",
+        return_tensors="pt",
     )
 
     # Create features WITHOUT document_starts (should fall back to EOS detection)

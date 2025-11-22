@@ -34,9 +34,7 @@ class TestCausalLoss(unittest.TestCase):
         logits = torch.randn(
             batch_size, seq_len, vocab_size, dtype=dtype, device=self.device
         )
-        labels = torch.randint(
-            0, vocab_size, (batch_size, seq_len), device=self.device
-        )
+        labels = torch.randint(0, vocab_size, (batch_size, seq_len), device=self.device)
         return logits, labels
 
     def test_chunked_matches_standard_small_vocab(self):
@@ -284,10 +282,13 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
     def _create_test_model(self, hidden_dim=256, vocab_size=1000):
         """Create a simple output embeddings layer for testing."""
         import torch.nn as nn
+
         output_layer = nn.Linear(hidden_dim, vocab_size, bias=True, device=self.device)
         return output_layer
 
-    def _create_test_data(self, batch_size=2, seq_len=16, hidden_dim=256, vocab_size=1000):
+    def _create_test_data(
+        self, batch_size=2, seq_len=16, hidden_dim=256, vocab_size=1000
+    ):
         """Create test data for fused loss testing."""
         hidden_states = torch.randn(
             batch_size, seq_len, hidden_dim, dtype=torch.float32, device=self.device
@@ -304,7 +305,7 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
 
         self.assertEqual(loss_fn.actual_impl, "pytorch")
         self.assertIsNotNone(loss_fn.weight)
-        self.assertTrue(hasattr(loss_fn, 'forward_logits'))
+        self.assertTrue(hasattr(loss_fn, "forward_logits"))
 
     def test_pytorch_backend_forward(self):
         """Test forward pass with pytorch backend."""
@@ -329,7 +330,9 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
         from forgather.ml.loss import LinearCrossEntropyLoss, CausalLoss
 
         hidden_dim, vocab_size = 128, 500
-        output_layer = self._create_test_model(hidden_dim=hidden_dim, vocab_size=vocab_size)
+        output_layer = self._create_test_model(
+            hidden_dim=hidden_dim, vocab_size=vocab_size
+        )
 
         hidden_states, labels = self._create_test_data(
             batch_size=2, seq_len=16, hidden_dim=hidden_dim, vocab_size=vocab_size
@@ -341,7 +344,9 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
         loss_standard = standard_loss_fn(logits, labels)
 
         # Fused approach: hidden states → loss directly
-        fused_loss_fn = LinearCrossEntropyLoss(output_layer, impl="pytorch", chunk_size=128)
+        fused_loss_fn = LinearCrossEntropyLoss(
+            output_layer, impl="pytorch", chunk_size=128
+        )
         loss_fused = fused_loss_fn(hidden_states, labels)
 
         # Should match within numerical precision
@@ -349,7 +354,7 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
             loss_standard.item(),
             loss_fused.item(),
             places=5,
-            msg="Fused loss should match standard loss"
+            msg="Fused loss should match standard loss",
         )
 
     def test_forward_logits_inference_mode(self):
@@ -357,7 +362,9 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
         from forgather.ml.loss import LinearCrossEntropyLoss
 
         hidden_dim, vocab_size = 128, 500
-        output_layer = self._create_test_model(hidden_dim=hidden_dim, vocab_size=vocab_size)
+        output_layer = self._create_test_model(
+            hidden_dim=hidden_dim, vocab_size=vocab_size
+        )
         loss_fn = LinearCrossEntropyLoss(output_layer, impl="pytorch")
 
         hidden_states, _ = self._create_test_data(
@@ -375,7 +382,9 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
         from forgather.ml.loss import LinearCrossEntropyLoss
 
         hidden_dim, vocab_size = 128, 500
-        output_layer = self._create_test_model(hidden_dim=hidden_dim, vocab_size=vocab_size)
+        output_layer = self._create_test_model(
+            hidden_dim=hidden_dim, vocab_size=vocab_size
+        )
         loss_fn = LinearCrossEntropyLoss(output_layer, impl="pytorch", chunk_size=128)
 
         hidden_states, labels = self._create_test_data(
@@ -447,7 +456,9 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
 
         # Qwen3-like dimensions
         hidden_dim, vocab_size = 2048, 151936
-        output_layer = self._create_test_model(hidden_dim=hidden_dim, vocab_size=vocab_size)
+        output_layer = self._create_test_model(
+            hidden_dim=hidden_dim, vocab_size=vocab_size
+        )
         loss_fn = LinearCrossEntropyLoss(output_layer, impl="pytorch", chunk_size=4096)
 
         # Smaller batch for memory constraints

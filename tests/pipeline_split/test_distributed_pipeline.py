@@ -30,13 +30,21 @@ from torch.nn.attention.flex_attention import BlockMask
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 
 from forgather import from_project
-from forgather.ml.sharded_checkpoint import load_checkpoint, create_sharing_metadata, retie_parameters
+from forgather.ml.sharded_checkpoint import (
+    load_checkpoint,
+    create_sharing_metadata,
+    retie_parameters,
+)
 from forgather.ml.data_collator import DataCollatorForCausalLM
 from forgather.ml.loss import CausalLoss
 from forgather.ml.utils import default_dtype
 from forgather.ml.construct import torch_dtype
 
-from forgather.ml.trainer.pipeline.pipeline_split_utils import generate_llm_fqn_per_model_part, split_model
+from forgather.ml.trainer.pipeline.pipeline_split_utils import (
+    generate_llm_fqn_per_model_part,
+    split_model,
+)
+
 
 def init_distributed():
     """Initialize distributed process group."""
@@ -55,18 +63,16 @@ def init_distributed():
 
 
 def load_model_and_config(
-        model_path: str,
-        attn_implementation: str,
-    ):
+    model_path: str,
+    attn_implementation: str,
+):
     """Load config, model_ctor, and tokenizer."""
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    
-    config = AutoConfig.from_pretrained(
-        model_path, trust_remote_code=True
-    )
+
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 
     model_ctor = partial(
         AutoModelForCausalLM.from_config,
@@ -79,12 +85,12 @@ def load_model_and_config(
 
 
 def load_dataset(
-        dataset_project,
-        dataset_config,
-        tokenizer,
-        batch_size,
-        sequence_length,
-    ):
+    dataset_project,
+    dataset_config,
+    tokenizer,
+    batch_size,
+    sequence_length,
+):
     """Load dataset with configurable batch size."""
     dataset = from_project(
         project_dir=dataset_project,
@@ -138,9 +144,7 @@ def create_pipeline_stage(
     with ExitStack() as exit_stack:
         exit_stack.enter_context(torch.device("meta"))
         if args.dtype:
-            exit_stack.enter_context(
-                default_dtype(dtype)
-            )
+            exit_stack.enter_context(default_dtype(dtype))
         meta_model = model_ctor()
 
     # Get sharing metadata
@@ -168,19 +172,16 @@ def create_pipeline_stage(
 
     if gradient_checkpointing:
         stage_model.gradient_checkpointing_enable()
-    
+
     print(f"Model for stage index {stage_index}\n{stage_model}")
 
     # Create PipelineStage
     pipeline_stage = PipelineStage(
-        stage_model,
-        stage_index,
-        num_stages,
-        device,
-        group=pp_group
+        stage_model, stage_index, num_stages, device, group=pp_group
     )
 
     return pipeline_stage, module_names
+
 
 @record
 def main(args):
@@ -203,8 +204,7 @@ def main(args):
 
     # Load model and data
     model_ctor, config, tokenizer = load_model_and_config(
-        model_path=args.model_path,
-        attn_implementation=args.attn_implementation
+        model_path=args.model_path, attn_implementation=args.attn_implementation
     )
     num_layers = config.num_hidden_layers
 
@@ -245,7 +245,7 @@ def main(args):
     batch = next(iter(dataloader))
     input_ids = batch["input_ids"].to(device)
     labels = batch["labels"].to(device)
-    
+
     if rank == 0:
         print(f"\nTest batch shape: {input_ids.shape}")
 
@@ -288,9 +288,7 @@ def main(args):
     # Run pipeline (following TorchTitan pattern exactly)
     try:
         # Prepare targets and losses for last stage
-        targets, losses = (
-            (labels, []) if rank == num_stages - 1 else (None, None)
-        )
+        targets, losses = (labels, []) if rank == num_stages - 1 else (None, None)
 
         if rank == 0:
             # First stage: pass input_ids plus extra_kwargs, target, losses
@@ -321,6 +319,7 @@ def main(args):
         print(f"Rank {rank}: ✗ Error during pipeline execution:")
         print(f"Rank {rank}: {type(e).__name__}: {e}")
         import traceback
+
         traceback.print_exc()
         dist.barrier()
         dist.destroy_process_group()
@@ -338,6 +337,7 @@ def main(args):
     dist.destroy_process_group()
     return 0
 
+
 def parse_args():
     parser = argparse.ArgumentParser(
         formatter_class=RawTextHelpFormatter,
@@ -347,7 +347,7 @@ def parse_args():
             "  torchrun --standalone --nproc_per_node N_STAGES test_distributed_pipeline.py ARGS"
         ),
     )
-    
+
     parser.add_argument(
         "-m",
         "--model-path",
@@ -415,6 +415,7 @@ def parse_args():
     )
 
     return parser.parse_args()
+
 
 if __name__ == "__main__":
     args = parse_args()

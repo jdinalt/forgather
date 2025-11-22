@@ -20,19 +20,22 @@ import sys
 import os
 
 # Add forgather to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from forgather.ml.loss import CausalLoss, ChunkedCausalLoss, FusedLinearCrossEntropy
 
 # Try to import Apple's Cut Cross-Entropy
 try:
     from cut_cross_entropy import linear_cross_entropy
+
     HAS_CCE = True
 except ImportError:
     HAS_CCE = False
     linear_cross_entropy = None
     print("Note: cut-cross-entropy not installed. Install with:")
-    print('  pip install "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"')
+    print(
+        '  pip install "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"'
+    )
     print()
 
 
@@ -42,7 +45,9 @@ def print_memory(label: str):
         allocated = torch.cuda.memory_allocated() / 1024**3
         reserved = torch.cuda.memory_reserved() / 1024**3
         max_allocated = torch.cuda.max_memory_allocated() / 1024**3
-        print(f"{label:40s} | Allocated: {allocated:6.3f} GB | Reserved: {reserved:6.3f} GB | Peak: {max_allocated:6.3f} GB")
+        print(
+            f"{label:40s} | Allocated: {allocated:6.3f} GB | Reserved: {reserved:6.3f} GB | Peak: {max_allocated:6.3f} GB"
+        )
 
 
 def reset_memory():
@@ -66,14 +71,16 @@ def profile_standard_approach(
 
     Simulates pipeline parallel with overlapped forward/backward.
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("STANDARD APPROACH: Linear → Logits → Loss")
-    print("="*80)
+    print("=" * 80)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Create model components
-    output_layer = nn.Linear(hidden_dim, vocab_size, bias=False, dtype=dtype, device=device)
+    output_layer = nn.Linear(
+        hidden_dim, vocab_size, bias=False, dtype=dtype, device=device
+    )
     loss_fn = CausalLoss()
 
     reset_memory()
@@ -92,7 +99,14 @@ def profile_standard_approach(
         print(f"\nMicrobatch {mb_idx + 1}/{n_microbatches}:")
 
         # Forward pass
-        hidden_states = torch.randn(batch_size, seq_len, hidden_dim, dtype=dtype, device=device, requires_grad=True)
+        hidden_states = torch.randn(
+            batch_size,
+            seq_len,
+            hidden_dim,
+            dtype=dtype,
+            device=device,
+            requires_grad=True,
+        )
         labels = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
 
         print_memory(f"  After creating inputs")
@@ -140,11 +154,13 @@ def profile_standard_approach(
         torch.cuda.empty_cache()
         print_memory(f"  After freeing (alive={len(alive_activations)} mbs)")
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print_memory("FINAL PEAK")
-    print("="*80 + "\n")
+    print("=" * 80 + "\n")
 
-    return torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
+    return (
+        torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
+    )
 
 
 def profile_chunked_loss_approach(
@@ -159,13 +175,17 @@ def profile_chunked_loss_approach(
     """
     Profile memory with chunked loss (but still materializing full logits).
     """
-    print("\n" + "="*80)
-    print(f"CHUNKED LOSS APPROACH: Linear → Logits → ChunkedLoss (chunk_size={chunk_size})")
-    print("="*80)
+    print("\n" + "=" * 80)
+    print(
+        f"CHUNKED LOSS APPROACH: Linear → Logits → ChunkedLoss (chunk_size={chunk_size})"
+    )
+    print("=" * 80)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    output_layer = nn.Linear(hidden_dim, vocab_size, bias=False, dtype=dtype, device=device)
+    output_layer = nn.Linear(
+        hidden_dim, vocab_size, bias=False, dtype=dtype, device=device
+    )
     loss_fn = ChunkedCausalLoss(chunk_size=chunk_size)
 
     reset_memory()
@@ -174,7 +194,14 @@ def profile_chunked_loss_approach(
     alive_activations = []
 
     for mb_idx in range(n_microbatches):
-        hidden_states = torch.randn(batch_size, seq_len, hidden_dim, dtype=dtype, device=device, requires_grad=True)
+        hidden_states = torch.randn(
+            batch_size,
+            seq_len,
+            hidden_dim,
+            dtype=dtype,
+            device=device,
+            requires_grad=True,
+        )
         labels = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
 
         logits = output_layer(hidden_states)
@@ -196,7 +223,9 @@ def profile_chunked_loss_approach(
 
     print_memory("FINAL PEAK")
 
-    return torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
+    return (
+        torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
+    )
 
 
 def profile_fused_approach(
@@ -213,9 +242,11 @@ def profile_fused_approach(
 
     This simulates what would happen if we could avoid materializing logits entirely.
     """
-    print("\n" + "="*80)
-    print(f"FUSED APPROACH: FusedLinearCrossEntropy (chunk_size={chunk_size}, NO LOGITS!)")
-    print("="*80)
+    print("\n" + "=" * 80)
+    print(
+        f"FUSED APPROACH: FusedLinearCrossEntropy (chunk_size={chunk_size}, NO LOGITS!)"
+    )
+    print("=" * 80)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -229,7 +260,14 @@ def profile_fused_approach(
     alive_activations = []
 
     for mb_idx in range(n_microbatches):
-        hidden_states = torch.randn(batch_size, seq_len, hidden_dim, dtype=dtype, device=device, requires_grad=True)
+        hidden_states = torch.randn(
+            batch_size,
+            seq_len,
+            hidden_dim,
+            dtype=dtype,
+            device=device,
+            requires_grad=True,
+        )
         labels = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
 
         # Fused layer computes loss directly without materializing logits!
@@ -251,7 +289,9 @@ def profile_fused_approach(
 
     print_memory("FINAL PEAK")
 
-    return torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
+    return (
+        torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
+    )
 
 
 def profile_apple_cce_approach(
@@ -266,14 +306,14 @@ def profile_apple_cce_approach(
     Profile memory with Apple's Cut Cross-Entropy (optimized Triton kernels).
     """
     if not HAS_CCE:
-        print("\n" + "="*80)
+        print("\n" + "=" * 80)
         print("APPLE CCE APPROACH: Skipped (not installed)")
-        print("="*80)
+        print("=" * 80)
         return 0
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("APPLE CCE APPROACH: linear_cross_entropy (Triton kernels)")
-    print("="*80)
+    print("=" * 80)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -289,7 +329,12 @@ def profile_apple_cce_approach(
 
     for mb_idx in range(n_microbatches):
         hidden_states = torch.randn(
-            batch_size, seq_len, hidden_dim, dtype=dtype, device=device, requires_grad=True
+            batch_size,
+            seq_len,
+            hidden_dim,
+            dtype=dtype,
+            device=device,
+            requires_grad=True,
         )
         labels = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
 
@@ -298,9 +343,9 @@ def profile_apple_cce_approach(
         loss = linear_cross_entropy(
             hidden_states,  # e
             output_weight,  # c
-            labels,         # targets
-            shift=1,        # Automatic causal shifting
-            reduction="mean"
+            labels,  # targets
+            shift=1,  # Automatic causal shifting
+            reduction="mean",
         )
 
         alive_activations.append((hidden_states, loss))
@@ -319,7 +364,9 @@ def profile_apple_cce_approach(
 
     print_memory("FINAL PEAK")
 
-    return torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
+    return (
+        torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0
+    )
 
 
 def main():
@@ -339,9 +386,9 @@ def main():
         "dtype": torch.bfloat16,
     }
 
-    print("="*80)
+    print("=" * 80)
     print("MEMORY PROFILING: Large Vocabulary Output Layer")
-    print("="*80)
+    print("=" * 80)
     print("\nConfiguration (matching Qwen3 1.7B last pipeline stage):")
     print(f"  Batch size per microbatch: {config['batch_size']}")
     print(f"  Sequence length: {config['seq_len']}")
@@ -352,9 +399,13 @@ def main():
     print()
 
     # Theoretical calculation
-    logits_size = config['batch_size'] * config['seq_len'] * config['vocab_size'] * 2 / 1024**3
-    hidden_size = config['batch_size'] * config['seq_len'] * config['hidden_dim'] * 2 / 1024**3
-    weight_size = config['hidden_dim'] * config['vocab_size'] * 2 / 1024**3
+    logits_size = (
+        config["batch_size"] * config["seq_len"] * config["vocab_size"] * 2 / 1024**3
+    )
+    hidden_size = (
+        config["batch_size"] * config["seq_len"] * config["hidden_dim"] * 2 / 1024**3
+    )
+    weight_size = config["hidden_dim"] * config["vocab_size"] * 2 / 1024**3
 
     print("Theoretical memory per microbatch:")
     print(f"  Hidden states: {hidden_size:.3f} GB")
@@ -366,58 +417,68 @@ def main():
     # Run experiments
     results = {}
 
-    print("\n" + "#"*80)
+    print("\n" + "#" * 80)
     print("# EXPERIMENT 1: Standard Approach")
-    print("#"*80)
-    results['standard'] = profile_standard_approach(**config)
+    print("#" * 80)
+    results["standard"] = profile_standard_approach(**config)
 
-    print("\n" + "#"*80)
+    print("\n" + "#" * 80)
     print("# EXPERIMENT 2: Chunked Loss (still materializes logits)")
-    print("#"*80)
-    results['chunked_loss'] = profile_chunked_loss_approach(**config, chunk_size=4096)
+    print("#" * 80)
+    results["chunked_loss"] = profile_chunked_loss_approach(**config, chunk_size=4096)
 
-    print("\n" + "#"*80)
+    print("\n" + "#" * 80)
     print("# EXPERIMENT 3: Fused Approach (no logits materialization)")
-    print("#"*80)
-    results['fused'] = profile_fused_approach(**config, chunk_size=4096)
+    print("#" * 80)
+    results["fused"] = profile_fused_approach(**config, chunk_size=4096)
 
-    print("\n" + "#"*80)
+    print("\n" + "#" * 80)
     print("# EXPERIMENT 4: Apple CCE (Triton-optimized kernels)")
-    print("#"*80)
-    results['apple_cce'] = profile_apple_cce_approach(**config)
+    print("#" * 80)
+    results["apple_cce"] = profile_apple_cce_approach(**config)
 
     # Summary
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("SUMMARY")
-    print("="*80)
+    print("=" * 80)
     print(f"\nPeak memory usage:")
     print(f"  Standard approach:        {results['standard']:6.3f} GB")
     print(f"  Chunked loss:             {results['chunked_loss']:6.3f} GB")
     print(f"  Fused approach:           {results['fused']:6.3f} GB")
-    if HAS_CCE and results['apple_cce'] > 0:
+    if HAS_CCE and results["apple_cce"] > 0:
         print(f"  Apple CCE:                {results['apple_cce']:6.3f} GB")
     print()
     print(f"Memory savings:")
-    print(f"  Chunked loss vs standard: {results['standard'] - results['chunked_loss']:6.3f} GB ({(results['standard'] - results['chunked_loss'])/results['standard']*100:.1f}%)")
-    print(f"  Fused vs standard:        {results['standard'] - results['fused']:6.3f} GB ({(results['standard'] - results['fused'])/results['standard']*100:.1f}%)")
-    if HAS_CCE and results['apple_cce'] > 0:
-        print(f"  Apple CCE vs standard:    {results['standard'] - results['apple_cce']:6.3f} GB ({(results['standard'] - results['apple_cce'])/results['standard']*100:.1f}%)")
+    print(
+        f"  Chunked loss vs standard: {results['standard'] - results['chunked_loss']:6.3f} GB ({(results['standard'] - results['chunked_loss'])/results['standard']*100:.1f}%)"
+    )
+    print(
+        f"  Fused vs standard:        {results['standard'] - results['fused']:6.3f} GB ({(results['standard'] - results['fused'])/results['standard']*100:.1f}%)"
+    )
+    if HAS_CCE and results["apple_cce"] > 0:
+        print(
+            f"  Apple CCE vs standard:    {results['standard'] - results['apple_cce']:6.3f} GB ({(results['standard'] - results['apple_cce'])/results['standard']*100:.1f}%)"
+        )
     print()
 
     print("Interpretation:")
-    if results['chunked_loss'] < results['standard'] * 0.95:
+    if results["chunked_loss"] < results["standard"] * 0.95:
         print("  ✓ Chunked loss provides meaningful memory savings")
     else:
-        print("  ✗ Chunked loss does NOT provide meaningful savings (logits still materialized)")
+        print(
+            "  ✗ Chunked loss does NOT provide meaningful savings (logits still materialized)"
+        )
 
-    if results['fused'] < results['standard'] * 0.7:
+    if results["fused"] < results["standard"] * 0.7:
         print("  ✓ Fused approach provides significant memory savings")
     else:
         print("  ~ Fused approach provides moderate savings")
 
-    if HAS_CCE and results['apple_cce'] > 0:
-        if results['apple_cce'] < results['standard'] * 0.7:
-            print("  ✓ Apple CCE provides significant memory savings (production-ready!)")
+    if HAS_CCE and results["apple_cce"] > 0:
+        if results["apple_cce"] < results["standard"] * 0.7:
+            print(
+                "  ✓ Apple CCE provides significant memory savings (production-ready!)"
+            )
         else:
             print("  ~ Apple CCE provides moderate savings")
 

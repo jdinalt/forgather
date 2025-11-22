@@ -4,6 +4,7 @@ Test document packing with real Qwen3 tokenizer to verify the solution works.
 This test demonstrates that the explicit document boundary tracking allows
 packed sequences to work with Qwen3 models that lack BOS tokens.
 """
+
 import os
 import torch
 from transformers import AutoTokenizer
@@ -136,13 +137,17 @@ def test_qwen3_collator_with_boundaries():
     print(f"\nPosition IDs:\n{batch['position_ids']}")
 
     # Verify position IDs were auto-generated and reset at document boundaries
-    assert "position_ids" in batch, "Position IDs should be auto-generated from document_starts"
+    assert (
+        "position_ids" in batch
+    ), "Position IDs should be auto-generated from document_starts"
     pos_ids = batch["position_ids"]
     assert pos_ids[0, 0] == 0, "First document should start at position 0"
     assert pos_ids[0, 3] == 0, "Second document should reset to position 0"
     assert pos_ids[1, 0] == 0, "First document in second sequence should start at 0"
 
-    print("\nAuto-detection successful! Position IDs correctly reset at document boundaries!")
+    print(
+        "\nAuto-detection successful! Position IDs correctly reset at document boundaries!"
+    )
 
 
 if __name__ == "__main__":

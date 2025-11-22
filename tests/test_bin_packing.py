@@ -1,6 +1,7 @@
 """
 Unit tests for bin-packing algorithms in block_tokenizer.
 """
+
 from forgather.ml.datasets.block_tokenizer import (
     Document,
     Bin,
@@ -62,7 +63,9 @@ def test_split_document_no_split_needed():
 
 def test_split_document_simple_split():
     """Test split_document_optimally with simple split."""
-    doc = Document(input_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], length=10, original_index=0)
+    doc = Document(
+        input_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], length=10, original_index=0
+    )
     chunks = split_document_optimally(doc, max_length=5, stride=0)
 
     assert len(chunks) == 2
@@ -88,7 +91,9 @@ def test_split_document_with_stride():
 
 def test_split_document_with_bos():
     """Test split_document_optimally with BOS token."""
-    doc = Document(input_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], length=10, original_index=0)
+    doc = Document(
+        input_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], length=10, original_index=0
+    )
     chunks = split_document_optimally(doc, max_length=5, stride=0, bos_token_id=999)
 
     # First chunk: [1, 2, 3, 4, 5] (no BOS)
@@ -258,10 +263,10 @@ def test_pack_sequences_best_fit_vs_first_fit():
     """Compare best_fit vs first_fit packing efficiency."""
     # Create documents that demonstrate difference between strategies
     documents = [
-        Document([1]*7, 7, 0),   # 7 tokens
-        Document([2]*3, 3, 1),   # 3 tokens
-        Document([3]*3, 3, 2),   # 3 tokens
-        Document([4]*5, 5, 3),   # 5 tokens
+        Document([1] * 7, 7, 0),  # 7 tokens
+        Document([2] * 3, 3, 1),  # 3 tokens
+        Document([3] * 3, 3, 2),  # 3 tokens
+        Document([4] * 5, 5, 3),  # 5 tokens
     ]
 
     best_fit_seqs = pack_sequences_optimized(
@@ -283,8 +288,12 @@ def test_pack_sequences_best_fit_vs_first_fit():
     )
 
     # Both should pack into 2 bins, but potentially with different arrangements
-    print(f"Best fit sequences: {len(best_fit_seqs)}, sizes: {[len(s) for s in best_fit_seqs]}")
-    print(f"First fit sequences: {len(first_fit_seqs)}, sizes: {[len(s) for s in first_fit_seqs]}")
+    print(
+        f"Best fit sequences: {len(best_fit_seqs)}, sizes: {[len(s) for s in best_fit_seqs]}"
+    )
+    print(
+        f"First fit sequences: {len(first_fit_seqs)}, sizes: {[len(s) for s in first_fit_seqs]}"
+    )
 
     # Both should achieve same number of bins for this case
     assert len(best_fit_seqs) == len(first_fit_seqs)

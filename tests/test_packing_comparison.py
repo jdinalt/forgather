@@ -4,6 +4,7 @@ Integration test comparing greedy vs optimized packing strategies.
 Tests the full block_tokenize_fn with different packing strategies to measure
 improvements in packing efficiency.
 """
+
 import random
 from datasets import Dataset
 from transformers import AutoTokenizer
@@ -63,7 +64,7 @@ def analyze_packing(result, max_length, strategy_name):
 
     # Calculate standard deviation
     variance = sum((size - avg_block_size) ** 2 for size in block_sizes) / num_blocks
-    std_dev = variance ** 0.5
+    std_dev = variance**0.5
 
     return {
         "strategy": strategy_name,
@@ -145,7 +146,9 @@ def print_comparison(results):
 
     if greedy_blocks > 0:
         best_fit_improvement = ((greedy_blocks - best_fit_blocks) / greedy_blocks) * 100
-        first_fit_improvement = ((greedy_blocks - first_fit_blocks) / greedy_blocks) * 100
+        first_fit_improvement = (
+            (greedy_blocks - first_fit_blocks) / greedy_blocks
+        ) * 100
 
         print("\nIMPROVEMENTS OVER GREEDY:")
         print(f"  Best Fit:  {best_fit_improvement:>6.1f}% fewer blocks")
@@ -247,7 +250,9 @@ def test_small_batches():
         )
 
         stats = analyze_packing(result, max_length, "greedy")
-        print(f"{batch_size:>15d} {stats['num_blocks']:>15d} {stats['utilization_pct']:>15.1f}")
+        print(
+            f"{batch_size:>15d} {stats['num_blocks']:>15d} {stats['utilization_pct']:>15.1f}"
+        )
 
     print("\nNote: Smaller batch sizes result in more blocks due to")
     print("      partial sequences at end of each batch.")

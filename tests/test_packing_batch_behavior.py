@@ -6,6 +6,7 @@ This test explores:
 2. Quantifying data loss with different batch sizes
 3. Understanding when the map function is called and with what data
 """
+
 from datasets import Dataset
 from transformers import AutoTokenizer
 from forgather.ml.datasets import block_tokenize_fn
@@ -16,15 +17,17 @@ def test_batch_boundary_behavior():
 
     # Create a small dataset with known sizes
     # Assuming ~5 tokens per word, create documents of specific lengths
-    dataset = Dataset.from_dict({
-        "text": [
-            "Short doc",  # ~2 tokens
-            "Medium length document with some more words here",  # ~10 tokens
-            "A longer document with quite a bit more content to make it bigger and test splitting behavior",  # ~18 tokens
-            "Another short one",  # ~3 tokens
-            "Final medium document with reasonable length",  # ~7 tokens
-        ]
-    })
+    dataset = Dataset.from_dict(
+        {
+            "text": [
+                "Short doc",  # ~2 tokens
+                "Medium length document with some more words here",  # ~10 tokens
+                "A longer document with quite a bit more content to make it bigger and test splitting behavior",  # ~18 tokens
+                "Another short one",  # ~3 tokens
+                "Final medium document with reasonable length",  # ~7 tokens
+            ]
+        }
+    )
 
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
@@ -65,9 +68,9 @@ def test_batch_boundary_behavior():
         return result
 
     # Test with different batch sizes
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("TEST 1: Batch size = 2")
-    print("="*80)
+    print("=" * 80)
     call_count = 0
     batch_sizes = []
     total_input_docs = 0
@@ -87,9 +90,9 @@ def test_batch_boundary_behavior():
     print(f"  Total output blocks: {total_output_blocks}")
     print(f"  Final dataset size: {len(result1)}")
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("TEST 2: Batch size = 5 (entire dataset)")
-    print("="*80)
+    print("=" * 80)
     call_count = 0
     batch_sizes = []
     total_input_docs = 0
@@ -109,9 +112,9 @@ def test_batch_boundary_behavior():
     print(f"  Total output blocks: {total_output_blocks}")
     print(f"  Final dataset size: {len(result2)}")
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("TEST 3: Batch size = 1000 (larger than dataset)")
-    print("="*80)
+    print("=" * 80)
     call_count = 0
     batch_sizes = []
     total_input_docs = 0
@@ -132,18 +135,22 @@ def test_batch_boundary_behavior():
     print(f"  Final dataset size: {len(result3)}")
 
     # Compare results
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("COMPARISON")
-    print("="*80)
+    print("=" * 80)
     print(f"Batch size 2 produced {len(result1)} blocks")
     print(f"Batch size 5 produced {len(result2)} blocks")
     print(f"Batch size 1000 produced {len(result3)} blocks")
 
     if len(result2) != len(result3):
-        print("\nWARNING: Different batch sizes produce different numbers of output blocks!")
+        print(
+            "\nWARNING: Different batch sizes produce different numbers of output blocks!"
+        )
         print("This indicates data loss at batch boundaries.")
     else:
-        print("\nBatch sizes 5 and 1000 produce same output (both process full dataset in one batch)")
+        print(
+            "\nBatch sizes 5 and 1000 produce same output (both process full dataset in one batch)"
+        )
 
 
 def test_packing_efficiency():
@@ -151,6 +158,7 @@ def test_packing_efficiency():
 
     # Create dataset with variable-length documents
     import random
+
     random.seed(42)
 
     # Generate documents of various lengths
@@ -197,9 +205,9 @@ def test_packing_efficiency():
     avg_block_size = total_tokens / num_blocks if num_blocks > 0 else 0
     utilization = avg_block_size / max_length * 100
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("PACKING EFFICIENCY ANALYSIS")
-    print("="*80)
+    print("=" * 80)
     print(f"Input documents: {num_docs}")
     print(f"Document length distribution: {sorted(set(doc_lengths))}")
     print(f"Max block length: {max_length}")
