@@ -202,6 +202,7 @@ def convert_hf_to_forgather(args, detected_model_type=None):
         dst_model_path=dst_model_path,
         dtype=args.dtype,
         max_length=args.max_length,
+        test_device=args.device,
         **kwargs,
     )
 
@@ -250,6 +251,7 @@ def convert_forgather_to_hf(args, detected_model_type=None):
         dtype=args.dtype,
         max_length=args.max_length,
         checkpoint_path=args.checkpoint_path,
+        test_device=args.device,
         **kwargs,
     )
 

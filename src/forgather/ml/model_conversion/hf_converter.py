@@ -178,6 +178,7 @@ class HFConverter(ModelConverter):
         dst_model_path: str,
         dtype: Optional[str] = None,
         max_length: Optional[int] = None,
+        test_device: Optional[str] = None,
         **kwargs,
     ) -> None:
         """Convert HuggingFace model to Forgather format.
@@ -352,6 +353,7 @@ class HFConverter(ModelConverter):
             prompt,
             "Source HF",
             "Destination Forgather",
+            test_device=test_device,
         )
 
         # Save model
@@ -375,6 +377,7 @@ class HFConverter(ModelConverter):
         dtype: Optional[str] = None,
         max_length: Optional[int] = None,
         checkpoint_path: Optional[str] = None,
+        test_device: Optional[str] = None,
         **kwargs,
     ) -> None:
         """Convert Forgather model to HuggingFace format.
@@ -534,6 +537,7 @@ class HFConverter(ModelConverter):
             prompt,
             "Source Forgather",
             f"Destination HuggingFace {self.model_type}",
+            test_device=test_device,
         )
 
         # Save model
@@ -559,10 +563,11 @@ class HFConverter(ModelConverter):
         src_label: str = "Source",
         dst_label: str = "Destination",
         tolerance: float = 1e-5,
+        test_device: Optional[str] = None,
     ):
         """Compare logits between source and destination models."""
-        src_logits = self._test_forward(src_model, src_tokenizer, prompt)
-        dst_logits = self._test_forward(dst_model, dst_tokenizer, prompt)
+        src_logits = self._test_forward(src_model, src_tokenizer, prompt, test_device)
+        dst_logits = self._test_forward(dst_model, dst_tokenizer, prompt, test_device)
 
         # Handle vocab size mismatch
         if src_logits.shape != dst_logits.shape:
@@ -608,9 +613,15 @@ class HFConverter(ModelConverter):
         else:
             logger.warning("Model logits match.")
 
-    def _test_forward(self, model, tokenizer, prompt: str):
+    def _test_forward(
+        self, model, tokenizer, prompt: str, test_device: Optional[str] = None
+    ):
         """Run forward pass and return logits."""
-        model.to("cpu")
+        if test_device:
+            device = torch.device(test_device)
+        else:
+            device = torch.device("cpu")
+        model.to(device)
         model.eval()
 
         tokenizer_outputs = tokenizer(
@@ -622,8 +633,9 @@ class HFConverter(ModelConverter):
         )
 
         with torch.inference_mode():
-            input_ids = tokenizer_outputs["input_ids"].to("cpu")
+            input_ids = tokenizer_outputs["input_ids"].to(device)
             outputs = model(input_ids, return_dict=True)
             logits = outputs.logits
 
-        return logits
+        model.to("cpu")
+        return logits.to("cpu")
