@@ -160,18 +160,19 @@ def model_test_cmd(args):
     for i, batch in enumerate(dataloader):
         if i == args.steps:
             break
-        
+
         if args.device == "meta":
-            batch = {key: torch.empty_like(value, device="meta") for key, value in batch.items()}
+            batch = {
+                key: torch.empty_like(value, device="meta")
+                for key, value in batch.items()
+            }
         else:
             batch = {key: value.to(device=args.device) for key, value in batch.items()}
 
         if i == 0:
             print(f"{batch.keys()=}")
 
-        loss, logits = model(
-            **batch
-        )
+        loss, logits = model(**batch)
         print(f"step: {i+1}, loss: {loss}, logits.shape: {logits.shape}")
 
         loss.backward()
