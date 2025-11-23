@@ -757,6 +757,8 @@ class Trainer(BaseTrainer):
                         periodic_save,
                     )
 
+                    train_steps += 1
+
                     # Check for early stop condition
                     if (
                         self.control.should_training_stop
@@ -769,7 +771,6 @@ class Trainer(BaseTrainer):
                     # Periodic GC
                     maybe_cleanup_memory(self.args.gc_threshold)
 
-                    train_steps += 1
                     # maybe delay start of metrics recording for torch.compile()
                     if train_steps == self.args.speed_metrics_start_step:
                         start_time = time.time()
