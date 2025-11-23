@@ -1,0 +1,50 @@
+-- extends 'samantha.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Samantha Llama3 1B"
+    -- set ns.config_description = "Train a 1B Llama3 on 1 GPU with a context of 1300"
+    -- set ns.log_name = log_name | default('1gpu_default')
+
+
+[trainer_definition]
+    -- include 'config.trainer_config'
+
+[datacollator]
+    == super()
+    # This should be long enough for all examples in Samantha, with the Llama3.2 1B tokenizer
+    max_length: 1300
+
+[optimizer]
+## While there is sufficient memory for AdamW, it actually performs worse than Adafactor.
+## optimizer: &optimizer !partial:torch.optim:AdamW
+optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
+    lr: !!float {{ lr | default(1.6e-5) }}
+    weight_decay: 0.001
+
+[lr_scheduler]
+    == super()
+    warmup_steps: {{ warmup_steps | default(50) }}
+
+#-------------------- config.trainer_config --------------------
+-- extends 'project.trainer'
+
+[trainer_args]
+    == super()
+    # **config**
+    per_device_train_batch_size: 16
+    per_device_eval_batch_size: 16
+    logging_steps: 10
+    eval_steps: 50
+    save_steps: 170
+    max_eval_steps: 50
+    gradient_checkpointing: True
+    #fuse_optim_with_backward: True
+    #enable_activation_offloading: True
+    #detect_anomaly: True
+    #activation_memory_budget: 0.5
+    torch_compile: True
+    #torch_compile_dynamic: False
+    gc_threshold: 0.9
+    speed_metrics_start_step: 1
+    num_train_epochs: {{ epochs | default(2)}}

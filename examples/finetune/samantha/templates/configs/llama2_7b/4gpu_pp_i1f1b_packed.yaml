@@ -1,5 +1,4 @@
--- extends '-- extends 'samantha_packed.yaml'
-.yaml'
+-- extends 'samantha_packed.yaml'
 
 [config_metadata]
     == super()

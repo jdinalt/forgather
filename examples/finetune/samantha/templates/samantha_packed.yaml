@@ -36,3 +36,4 @@
 [trainer_args]
     == super()
     # **samantha packed**
+    gc_threshold: 0.9

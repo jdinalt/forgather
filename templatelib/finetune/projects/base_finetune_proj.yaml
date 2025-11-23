@@ -172,9 +172,11 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
         help: "Save common checkpoint files on each node"
     chat_template:
         names: [ "--chat-template", "-C" ]
+        type: "path"
         help: "Path to the chat template to use"
-    chat_template:
+    log_name:
         names: [ "--log-name" ]
+        type: "str"
         help: "The name of the output log"
     lr:
         names: [ "--lr" ]
@@ -184,10 +186,6 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
         names: [ "--warmup-steps" ]
         type: "int"
         help: "The number of warmup steps to use"
-    epochs:
-        names: [ "--epochs" ]
-        type: "int"
-        help: "The number of train epochs"
 
 #-------------------- finetune.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'
