@@ -1,6 +1,12 @@
 # Example configuration for adding additional tokens during model conversion
 # Usage: scripts/convert_llama.py --add-tokens scripts/example_additional_tokens.yaml ...
 
+# Add pad token, if not present
+pad_token:
+  token: "<|pad|>"
+  init: "zero"
+  if_missing: true             # Only add if not already set
+
 # Special tokens (will be added as special tokens)
 special_tokens:
   - "<|im_start|>"
