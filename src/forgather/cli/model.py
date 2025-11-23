@@ -160,19 +160,17 @@ def model_test_cmd(args):
     for i, batch in enumerate(dataloader):
         if i == args.steps:
             break
-        input_ids = batch["input_ids"]
-        labels = batch["labels"]
-
+        
         if args.device == "meta":
-            input_ids = torch.empty_like(input_ids, device="meta")
-            labels = torch.empty_like(labels, device="meta")
+            batch = {key: torch.empty_like(value, device="meta") for key, value in batch.items()}
         else:
-            input_ids = input_ids.to(device=args.device)
-            labels = labels.to(device=args.device)
+            batch = {key: value.to(device=args.device) for key, value in batch.items()}
+
+        if i == 0:
+            print(f"{batch.keys()=}")
 
         loss, logits = model(
-            input_ids=input_ids,
-            labels=labels,
+            **batch
         )
         print(f"step: {i+1}, loss: {loss}, logits.shape: {logits.shape}")
 
