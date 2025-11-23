@@ -82,16 +82,19 @@ def dataset_cmd(args):
                 output_file=histogram_path,
             )
 
+    print(f"{split=}")
+
     if args.examples:
         print(f"Printing {args.examples} examples from the dataset:")
         if args.tokenized:
             assert tokenizer, "Decoding a tokenized dataset requires the tokenizer"
             for i, example in zip(range(args.examples), split):
                 input_ids = example["input_ids"]
-
+                document_starts = example.get("document_starts", None)
                 # Use explicit document boundaries if available (preferred)
-                if "document_starts" in example:
-                    n_documents = len(example["document_starts"])
+                if document_starts:
+                    n_documents = len(document_starts)
+                    print(f"Document Starts: {document_starts}")
                 # Fall back to counting EOS tokens (legacy, less reliable)
                 elif tokenizer.eos_token_id is not None:
                     n_documents = (
