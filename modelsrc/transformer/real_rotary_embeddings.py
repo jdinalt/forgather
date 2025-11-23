@@ -1,8 +1,12 @@
 from typing import Tuple, Optional, Dict, Any
 import math
 
+import logging
+
 import torch
 from torch import Tensor
+
+logger = logging.getLogger(__name__)
 
 """ Real-valued RoPE implementation (vs. complex) """
 
@@ -124,6 +128,7 @@ class RealRotaryPE(torch.nn.Module):
         max_sequence_length: int = 2048,
         rope_theta: float = 10000.0,
         rope_scaling: Optional[Dict[str, Any]] = None,
+        use_liger: bool = False,
     ):
         super().__init__()
         self.d_head = d_head
@@ -140,6 +145,20 @@ class RealRotaryPE(torch.nn.Module):
         # not work properly with model splitting in torch.distributed.pipelining
         self.cos_cached = torch.nn.Buffer(cos)
         self.sin_cached = torch.nn.Buffer(sin)
+        self.liger_kernel = None
+
+        if use_liger:
+            try:
+                from liger_kernel.ops.rope import LigerRopeFunction
+
+                self.liger_kernel = LigerRopeFunction.apply
+
+            except ImportError as e:
+                logger.info(
+                    "liger-kernel not installed. Install with:\n"
+                    "  pip install liger-kernel\n"
+                    "Using eager RoPE implementation as fallback"
+                )
 
     def extra_repr(self):
         rope_type = "default"
@@ -147,7 +166,10 @@ class RealRotaryPE(torch.nn.Module):
             rope_type = self.rope_scaling.get(
                 "rope_type", self.rope_scaling.get("type", "default")
             )
-        return f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, rope_theta={self.rope_theta}, rope_type={rope_type}"
+        return (
+            f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, "
+            f"rope_theta={self.rope_theta}, rope_type={rope_type}, liger_kernel={self.liger_kernel is not None}"
+        )
 
     def forward(
         self, q: Tensor, k: Tensor, position_ids: Tensor = None
@@ -164,6 +186,11 @@ class RealRotaryPE(torch.nn.Module):
         Returns:
             Tuple of (rotated_q, rotated_k) tensors with same shapes as input
         """
+        if self.liger_kernel and q.is_cuda:
+            return self.liger_kernel(
+                q, k, self.cos_cached, self.sin_cached, position_ids
+            )
+
         seq_len = q.shape[1]
         assert seq_len == k.shape[1]
 
