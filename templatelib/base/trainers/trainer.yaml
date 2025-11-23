@@ -10,6 +10,9 @@
 [trainer_constructor]
     == super()
     # **Trainer**
+    # If supported, use fused-causal-cross-entropy
+    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
+    # else, fallback to basic causal-cross-entropy
     compute_loss_func: !singleton:forgather.ml.loss:CausalLoss
     distributed_env: *distributed_env
     optimizer_factory: *optimizer
