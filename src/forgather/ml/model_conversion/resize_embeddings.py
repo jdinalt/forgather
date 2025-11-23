@@ -122,32 +122,38 @@ def add_tokens_to_tokenizer(
                 )
                 continue
 
-            # Handle token reassignment by removing old token from vocab if different
+            # Handle token reassignment when old token exists but differs from new value
             if old_token is not None and old_token != token_value:
                 # Get the old token ID before reassignment
                 old_token_id = getattr(tokenizer, f"{token_name}_id", None)
 
-                logger.info(
-                    f"Replacing {token_name}: {old_token} (ID {old_token_id}) -> {token_value} (init: {init_strategy})"
-                )
-
                 # Check if the new token already exists in vocabulary
-                new_token_id = tokenizer.convert_tokens_to_ids(token_value)
-                if (
-                    new_token_id != tokenizer.unk_token_id
-                    or token_value in tokenizer.get_vocab()
-                ):
+                vocab = tokenizer.get_vocab()
+                if token_value in vocab:
                     # Token already exists, just reassign the special token pointer
+                    new_token_id = vocab[token_value]
                     logger.info(
-                        f"Token {token_value} already exists at ID {new_token_id}, reassigning {token_name} pointer"
+                        f"Reassigning {token_name}: {old_token} (ID {old_token_id}) -> {token_value} (ID {new_token_id}, already exists)"
                     )
                     named_tokens[token_name] = token_value
                     # No new token added, but we still need to apply init strategy to existing token
                     token_inits[new_token_id] = init_strategy
                 else:
-                    # New token needs to be added
+                    # New token doesn't exist in vocabulary
+                    # We need to add it as a new token
+                    # To preserve the semantics, we'll copy the embedding from the old token
+                    logger.info(
+                        f"Replacing {token_name}: {old_token} (ID {old_token_id}) -> {token_value} (will be added as new token)"
+                    )
+                    logger.info(
+                        f"New token embedding will be copied from old token at ID {old_token_id}"
+                    )
+
+                    # Add the new token
                     named_tokens[token_name] = token_value
-                    named_token_inits[token_name] = init_strategy
+                    named_token_inits[token_name] = (
+                        f"copy:{old_token_id}"  # Special init strategy
+                    )
             elif old_token is None:
                 logger.info(
                     f"Setting {token_name}: {token_value} (init: {init_strategy})"
@@ -170,23 +176,51 @@ def add_tokens_to_tokenizer(
             if token_id is not None:
                 token_inits[token_id] = init_strategy
 
-    # Add additional special tokens
+    # Add additional special tokens (check if they already exist first)
     special_tokens = token_config.get("special_tokens", [])
     if special_tokens:
-        num_special = tokenizer.add_special_tokens(
-            {"additional_special_tokens": special_tokens}
+        # Get existing additional_special_tokens to avoid duplicates
+        existing_special_tokens = set(
+            getattr(tokenizer, "additional_special_tokens", [])
         )
-        logger.info(
-            f"Added {num_special} additional special token(s): {special_tokens}"
-        )
-        num_added += num_special
 
-    # Add regular tokens
+        # Filter out tokens that already exist
+        new_special_tokens = [
+            token for token in special_tokens if token not in existing_special_tokens
+        ]
+
+        if new_special_tokens:
+            num_special = tokenizer.add_special_tokens(
+                {"additional_special_tokens": new_special_tokens}
+            )
+            logger.info(
+                f"Added {num_special} additional special token(s): {new_special_tokens}"
+            )
+            num_added += num_special
+        else:
+            logger.info(
+                f"Skipping additional special tokens: all {len(special_tokens)} token(s) already exist"
+            )
+
+    # Add regular tokens (check if they already exist first)
     regular_tokens = token_config.get("regular_tokens", [])
     if regular_tokens:
-        num_regular = tokenizer.add_tokens(regular_tokens)
-        logger.info(f"Added {num_regular} regular token(s): {regular_tokens}")
-        num_added += num_regular
+        # Get existing vocab to avoid duplicates
+        existing_vocab = tokenizer.get_vocab()
+
+        # Filter out tokens that already exist
+        new_regular_tokens = [
+            token for token in regular_tokens if token not in existing_vocab
+        ]
+
+        if new_regular_tokens:
+            num_regular = tokenizer.add_tokens(new_regular_tokens)
+            logger.info(f"Added {num_regular} regular token(s): {new_regular_tokens}")
+            num_added += num_regular
+        else:
+            logger.info(
+                f"Skipping regular tokens: all {len(regular_tokens)} token(s) already exist"
+            )
 
     return num_added, token_inits
 
@@ -210,24 +244,40 @@ def resize_word_embeddings(
 
             tied_embeddings = input_embeddings is output_embeddings
             for token_id, init_strategy in token_inits.items():
-                match init_strategy:
-                    case "zero":
-                        logger.info(f"Zero-initializing token at index {token_id}")
-                        input_embeddings[token_id].zero_()
-                        if not tied_embeddings:
-                            output_embeddings[token_id].zero_()
-                    case "mean":
-                        pass
-                    case _:
-                        logger.warning(
-                            f"Init strategy {init_strategy} is not supported."
-                        )
+                if init_strategy == "zero":
+                    logger.info(f"Zero-initializing token at index {token_id}")
+                    input_embeddings[token_id].zero_()
+                    if not tied_embeddings:
+                        output_embeddings[token_id].zero_()
+                elif init_strategy == "mean":
+                    # Mean initialization is handled by resize_token_embeddings with mean_resizing=True
+                    pass
+                elif init_strategy.startswith("copy:"):
+                    # Copy embedding from another token
+                    source_id = int(init_strategy.split(":", 1)[1])
+                    logger.info(
+                        f"Copying embedding from token ID {source_id} to {token_id}"
+                    )
+                    input_embeddings[token_id].copy_(input_embeddings[source_id])
+                    if not tied_embeddings:
+                        output_embeddings[token_id].copy_(output_embeddings[source_id])
+                else:
+                    logger.warning(f"Init strategy {init_strategy} is not supported.")
 
 
 def update_config_from_tokenizer(
-    model_config: PretrainedConfig, tokenizer: PreTrainedTokenizerBase
+    model_config: PretrainedConfig,
+    tokenizer: PreTrainedTokenizerBase,
+    *,
+    update_vocab_size: bool = False,
 ):
-    """Update model_config tokenizer meta-data from tokenizer"""
+    """Update model_config tokenizer meta-data from tokenizer
+
+    Args:
+        model_config: Model configuration to update
+        tokenizer: Tokenizer to read metadata from
+        update_vocab_size: If True, update vocab_size to match tokenizer (only use when embeddings were resized)
+    """
     special_token_ids = [
         "bos_token_id",
         "pad_token_id",
@@ -241,13 +291,15 @@ def update_config_from_tokenizer(
             logger.info(f"Setting {token_id_name} to {token_id}")
             setattr(model_config, token_id_name, token_id)
 
-    # Get current vocab size before resizing (for mean calculation)
-    old_vocab_size = model_config.vocab_size
-    new_vocab_size = len(tokenizer)
+    # Update vocab size only if explicitly requested (i.e., when embeddings were actually resized)
+    # This prevents corrupting the config when there's a pre-existing mismatch between
+    # model vocab_size and tokenizer vocab size
+    if update_vocab_size:
+        old_vocab_size = model_config.vocab_size
+        new_vocab_size = len(tokenizer)
 
-    # Update config to reflect new vocabulary size
-    if old_vocab_size != new_vocab_size:
-        model_config.vocab_size = new_vocab_size
-        logger.info(
-            f"Updated config vocab sie from {old_vocab_size} to {new_vocab_size}"
-        )
+        if old_vocab_size != new_vocab_size:
+            model_config.vocab_size = new_vocab_size
+            logger.info(
+                f"Updated config vocab size from {old_vocab_size} to {new_vocab_size}"
+            )

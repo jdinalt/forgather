@@ -7,10 +7,12 @@ pad_token:
   init: "zero"
   if_missing: true             # Only add if not already set
 
+# Add or replace EOS token.
+eos_token: "<|im_end|>"
+
 # Special tokens (will be added as special tokens)
 special_tokens:
   - "<|im_start|>"
-  - "<|im_end|>"
 
 # Regular tokens (will be added as regular tokens)
 #regular_tokens:

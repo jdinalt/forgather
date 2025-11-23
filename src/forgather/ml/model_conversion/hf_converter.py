@@ -340,8 +340,15 @@ class HFConverter(ModelConverter):
             if num_added > 0:
                 logger.info(f"Added {num_added} token(s) to vocabulary")
                 resize_word_embeddings(model, tokenizer, token_inits)
-
-            update_config_from_tokenizer(model_config, tokenizer)
+                # Update vocab size only when embeddings were actually resized
+                update_config_from_tokenizer(
+                    model_config, tokenizer, update_vocab_size=True
+                )
+            else:
+                # Still update special token IDs even if no tokens were added
+                update_config_from_tokenizer(
+                    model_config, tokenizer, update_vocab_size=False
+                )
 
         # Compare logits
         prompt = kwargs.get("prompt", "The old bookstore at the corner of")
