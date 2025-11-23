@@ -24,7 +24,7 @@ class Adafactor(Optimizer):
         relative_step: bool = False,
         torch_compile: bool = False,
         bf16_stochastic_round: bool = False,
-        use_triton: bool = False,
+        use_triton: bool = True,
     ):
         self.compile = torch_compile
         self.use_triton = use_triton
@@ -93,7 +93,7 @@ class Adafactor(Optimizer):
                     )
 
                     # Route to Triton or PyTorch implementation
-                    if self.use_triton:
+                    if self.use_triton and grad.is_cuda:
                         # Use Triton kernels for memory-efficient implementation
                         if state["col"] is None:
                             # 1D case

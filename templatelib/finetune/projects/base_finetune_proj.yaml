@@ -15,7 +15,7 @@
     -- set ns.trainer_class = 'trainers/trainer.yaml'
     -- set ns.trust_remote_code = True
     -- set ns.model_name = 'default_model'
-    -- set ns.log_name = 'log'
+    -- set ns.log_name = log_name | default('log')
     
     ## memory debugging
     -- set ns.debug_memory_detials = False
@@ -106,7 +106,7 @@ data_collator: &data_collator !call:forgather.ml.data_collator:DataCollatorForCa
 ## - Linear warmup + cosine annealing + constant + exponential decay
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
     # Linear warmup steps
-    warmup_steps: 200
+    warmup_steps: {{ warmup_steps | default(200) }}
 
     # If 0, training will warmup to the lr specified in the optimizer and hold until checkpoint_step.
     # If > 0, training will warmup to the lr specified in the optimizer, followed by 
@@ -129,14 +129,13 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 ## Add a default memory efficient optimizer
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
-    lr: 5.0e-6
+    lr: !!float {{ lr | default(5.0e-6) }}
     weight_decay: 0.001
-    use_triton: True
 
 [dynamic_args]
     == super()
-    train_epochs:
-        names: "--train-epochs"
+    epochs:
+        names: "--epochs"
         type: "int"
         help: "Set the number of epochs to train for"
     log_peak_memory:
@@ -174,6 +173,21 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     chat_template:
         names: [ "--chat-template", "-C" ]
         help: "Path to the chat template to use"
+    chat_template:
+        names: [ "--log-name" ]
+        help: "The name of the output log"
+    lr:
+        names: [ "--lr" ]
+        type: "float"
+        help: "Learning rate"
+    warmup_steps:
+        names: [ "--warmup-steps" ]
+        type: "int"
+        help: "The number of warmup steps to use"
+    epochs:
+        names: [ "--epochs" ]
+        type: "int"
+        help: "The number of train epochs"
 
 #-------------------- finetune.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'
@@ -210,7 +224,7 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     eval_steps: 100
     eval_strategy: "steps"
     max_eval_steps: -1
-    num_train_epochs: {{ train_epochs | default(1) }}
+    num_train_epochs: {{ epochs | default(1) }}
     dataloader_num_workers: 1
     float32_matmul_precision: "high"
     default_dtype: bfloat16

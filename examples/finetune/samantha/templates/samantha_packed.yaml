@@ -1,0 +1,38 @@
+-- extends 'samantha.yaml'
+
+## Packed format packs multiple examples into each 4096 token sequence
+## This increases the effective batch size, thus we rescale various 
+## parameters to approximate the baseline "1300" sequence length config.
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Samantha Finetune Packed"
+    -- set ns.config_description = "Train a model on the Samantha dataset using packed examples"
+    -- set ns.default_dataset_config = "samantha-packed.yaml"
+    -- set ns.packed_sequence_length = 4096
+
+[trainer_definition]
+    -- include 'samantha_packed.trainer'
+
+[datasets_preprocessor_args]
+# Overrides for forgather.ml.datasets:block_tokenize_fn
+.define: &datasets_preprocessor_args !dict
+    max_length: {{ ns.packed_sequence_length }}
+
+[datacollator]
+    == super()
+    max_length: {{ ns.packed_sequence_length }}
+    # Most examples will be near the target; pad the rest, for static shape. This speeds up compile
+    # and reduces memory churn.
+    padding: "max_length"
+
+[model_constructor_args]
+    == super()
+    # Packed examples should use flex_attention
+    attn_implementation: "{{ attn_implementation | default('flex_attention') }}"
+
+#-------------------- samantha_packed.trainer --------------------
+-- extends "project.trainer"
+
+[trainer_args]
+    == super()
+    # **samantha packed**

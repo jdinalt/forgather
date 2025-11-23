@@ -1,0 +1,47 @@
+-- extends 'samantha_packed.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Samantha Llama3 1B Packed"
+    -- set ns.config_description = "Train with 4096 token context on single GPU, 24 GBs"
+    -- set ns.log_name = log_name | default('1gpu_4096_packed')
+
+[trainer_definition]
+    -- include 'config.trainer_config'
+
+[optimizer]
+    == super()
+    lr: !!float {{ lr | default(8.0e-6) }}
+
+[lr_scheduler]
+    == super()
+    warmup_steps: {{ warmup_steps | default(4) }}
+
+#-------------------- config.trainer_config --------------------
+-- extends 'samantha_packed.trainer'
+
+[trainer_args]
+    == super()
+
+    # **config**
+    per_device_train_batch_size: 16
+    per_device_eval_batch_size: 16
+    logging_steps: 2
+    eval_steps: 10
+    save_steps: 50
+    # We need to all the memory we can get for 1 GPU!
+    gradient_checkpointing: True
+    fuse_optim_with_backward: True
+    #enable_activation_offloading: True
+    #detect_anomaly: True
+    #activation_memory_budget: 0.05
+    #torch_compile: True
+    torch_compile_dynamic: False
+    gc_threshold: 0.9
+    num_train_epochs: {{ epochs | default(1) }}
+
+[trainer_constructor]
+    == super()
+    # **Config**
+    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
+        impl: "cce"

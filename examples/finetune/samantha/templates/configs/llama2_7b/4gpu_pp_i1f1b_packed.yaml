@@ -1,26 +1,15 @@
--- extends 'samantha.yaml'
+-- extends '-- extends 'samantha_packed.yaml'
+.yaml'
 
 [config_metadata]
     == super()
     -- set ns.config_name = "Samantha Llama 7B i1F1B Pipe x4 Packed"
     -- set ns.config_description = "Samantha Llama 7B i1F1B Pipe x4 with packed sequences"
-    -- set ns.log_name = "i1f1b_4gpu_packed"
+    -- set ns.log_name = log_name | default('i1f1b_4gpu_packed')
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
-    -- set ns.default_dataset_config = "samantha-packed.yaml"
 
 [trainer_definition]
     -- include 'config.trainer_config'
-
-[datasets_preprocessor_args]
-# Overrides for forgather.ml.datasets:block_tokenize_fn
-.define: &datasets_preprocessor_args !dict
-    max_length: 4096
-
-[datacollator]
-    == super()
-    packed_sequences: True
-    padding: "max_length" # Required for pipeline
-    max_length: 4096
 
 [optimizer]
     == super()
@@ -31,7 +20,7 @@
     warmup_steps: 15
 
 #-------------------- config.trainer_config --------------------
--- extends 'project.trainer'
+-- extends 'samantha_packed.trainer'
 
 [trainer_meta_config]
     == super()
@@ -57,6 +46,3 @@
     == super()
     # Config Overrides
     pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleInterleaved1F1B
-    compute_loss_func: !singleton:forgather.ml.loss:ChunkedCausalLoss
-        chunk_size: 4096
-        compile: False

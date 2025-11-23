@@ -1,4 +1,4 @@
--- extends 'samantha.yaml'
+-- extends 'samantha_packed.yaml'
 
 ## Packed format packs multiple examples into each 4096 token sequence
 ## This increases the effective batch size, thus we rescale various 
@@ -7,21 +7,10 @@
     == super()
     -- set ns.config_name = "Samantha Llama7B Packed"
     -- set ns.config_description = "Train with 4096 token context on single GPU, 24 GBs"
-    -- set ns.log_name = "1gpu_4096_packed"
-    -- set ns.default_dataset_config = "samantha-packed.yaml"
+    -- set ns.log_name = log_name | default('1gpu_4096_packed')
 
 [trainer_definition]
     -- include 'config.trainer_config'
-
-[datasets_preprocessor_args]
-# Overrides for forgather.ml.datasets:block_tokenize_fn
-.define: &datasets_preprocessor_args !dict
-    max_length: 4096
-
-[datacollator]
-    == super()
-    packed_sequences: True
-    max_length: 4096
 
 [optimizer]
     == super()
@@ -31,12 +20,11 @@
     == super()
     warmup_steps: 30
 
-#-------------------- config.trainer_config --------------------
+#-------------------- samantha_packed.trainer_config --------------------
 -- extends 'project.trainer'
 
 [trainer_args]
     == super()
-
     # **config**
     per_device_train_batch_size: 4
     per_device_eval_batch_size: 4
@@ -47,10 +35,3 @@
     gradient_checkpointing: True
     fuse_optim_with_backward: True
     enable_activation_offloading: True
-
-[trainer_constructor]
-    == super()
-    # **Config**
-    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
-        impl: "cce"
-        chunk_size: 4096

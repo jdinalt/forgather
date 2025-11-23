@@ -1,4 +1,4 @@
--- extends 'samantha_packed.yaml'
+-- extends 'samantha.yaml'
 
 ## Packed format packs multiple examples into each 4096 token sequence
 ## This increases the effective batch size, thus we rescale various 
@@ -7,11 +7,23 @@
     == super()
     -- set ns.config_name = "Samantha Llama 7B i1F1B Pipe x2 Packed"
     -- set ns.config_description = "Samantha Llama 7B i1F1B Pipe x2 with packed sequences"
-    -- set ns.log_name = log_name | default('i1f1b_2gpu_packed')
+    -- set ns.log_name = "i1f1b_2gpu_packed"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
+    -- set ns.default_dataset_config = "samantha-packed.yaml"
 
 [trainer_definition]
     -- include 'config.trainer_config'
+
+[datasets_preprocessor_args]
+# Overrides for forgather.ml.datasets:block_tokenize_fn
+.define: &datasets_preprocessor_args !dict
+    max_length: 4096
+
+[datacollator]
+    == super()
+    packed_sequences: True
+    padding: "max_length" # Required for pipeline
+    max_length: 4096
 
 [optimizer]
     == super()
@@ -22,7 +34,7 @@
     warmup_steps: 15
 
 #-------------------- config.trainer_config --------------------
--- extends 'samantha_packed.trainer'
+-- extends 'project.trainer'
 
 [trainer_meta_config]
     == super()
@@ -40,11 +52,16 @@
     ## With sequence packing, the effective batch size is ~3.15 times the baseline
     per_device_train_batch_size: 8
     per_device_eval_batch_size: 8
-    gradient_checkpointing: True
-    fuse_optim_with_backward: True
+    #gradient_checkpointing: True
+    #fuse_optim_with_backward: True
     #enable_activation_offloading: True
+    detect_anomaly: True
+    torch_compile: True
+    
     
 [trainer_constructor]
     == super()
     # **Config**
     pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleInterleaved1F1B
+    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
+        impl: "cce"

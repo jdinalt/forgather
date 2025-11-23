@@ -12,7 +12,7 @@
 
 [datacollator]
     == super()
-    max_length: 512
+    max_length: 1300
 
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'

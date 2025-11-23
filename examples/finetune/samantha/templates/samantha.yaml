@@ -3,19 +3,21 @@
 [config_metadata]
     == super()
     -- set ns.config_name = "Samantha Finetune"
-    -- set ns.config_description = "Undefined"
-    -- set ns.log_name = "default"
+    -- set ns.config_description = "Train a model on the Samantha dataset"
     -- set ns.default_dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI')
     -- set ns.default_dataset_config = "samantha.yaml"
 
+[trainer_definition]
+    -- include 'project.trainer'
+
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
-    lr: 4.0e-6
+    lr: !!float {{ lr | default(4.0e-6) }}
     weight_decay: 0.001
 
 [lr_scheduler]
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
-    warmup_steps: 50
+    warmup_steps: {{ warmup_steps | default(50) }}
     cooldown_steps: 0 # Use constant learning-rate, after warmup
 
 #-------------------- project.trainer --------------------
