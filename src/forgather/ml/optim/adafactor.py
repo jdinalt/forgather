@@ -24,8 +24,26 @@ class Adafactor(Optimizer):
         relative_step: bool = False,
         torch_compile: bool = False,
         bf16_stochastic_round: bool = False,
+        use_triton: bool = False,
     ):
         self.compile = torch_compile
+        self.use_triton = use_triton
+
+        # Import Triton kernels if needed
+        if use_triton:
+            assert (
+                bf16_stochastic_round == False and relative_step == False
+            ), "bf16_stochastic_round and relative_step are not supported by Adafactor tritan kernel. Set use_triton = False"
+            try:
+                from . import adafactor_triton
+
+                self.triton_module = adafactor_triton
+            except ImportError as e:
+                raise ImportError(
+                    "Triton is required for use_triton=True. "
+                    "Please install it with: pip install triton"
+                ) from e
+
         defaults = dict(
             lr=lr,
             betas=betas,
@@ -69,27 +87,64 @@ class Adafactor(Optimizer):
                     beta1, beta2 = group["betas"]
                     eps1, eps2 = group["eps"]
 
-                    args = [
-                        p,
-                        grad,
-                        state["step"],
-                        state["row"],
-                        state["col"],
-                        group["lr"],
-                        beta1,
-                        beta2,
-                        group["decay_rate"],
-                        group["clip_threshold"],
-                        eps1,
-                        eps2,
-                        group["weight_decay"],
-                        group["relative_step"],
-                        group["bf16_stochastic_round"],
-                    ]
-                    if self.compile:
-                        torch.compile(_adafactor, fullgraph=True, dynamic=False)(*args)
+                    # Compute decay parameter for beta2
+                    beta2t = (1.0 - state["step"] ** group["decay_rate"]).clamp(
+                        max=beta2
+                    )
+
+                    # Route to Triton or PyTorch implementation
+                    if self.use_triton:
+                        # Use Triton kernels for memory-efficient implementation
+                        if state["col"] is None:
+                            # 1D case
+                            self.triton_module.adafactor_step_1d_triton(
+                                p,
+                                grad,
+                                state["row"],
+                                beta2t,
+                                eps1,
+                                group["lr"],
+                                group["weight_decay"],
+                                group["clip_threshold"],
+                            )
+                        else:
+                            # 2D case
+                            self.triton_module.adafactor_step_2d_triton(
+                                p,
+                                grad,
+                                state["row"],
+                                state["col"],
+                                beta2t,
+                                eps1,
+                                group["lr"],
+                                group["weight_decay"],
+                                group["clip_threshold"],
+                            )
                     else:
-                        _adafactor(*args)
+                        # Use standard PyTorch implementation
+                        args = [
+                            p,
+                            grad,
+                            state["step"],
+                            state["row"],
+                            state["col"],
+                            group["lr"],
+                            beta1,
+                            beta2,
+                            group["decay_rate"],
+                            group["clip_threshold"],
+                            eps1,
+                            eps2,
+                            group["weight_decay"],
+                            group["relative_step"],
+                            group["bf16_stochastic_round"],
+                        ]
+                        if self.compile:
+                            torch.compile(_adafactor, fullgraph=True, dynamic=False)(
+                                *args
+                            )
+                        else:
+                            _adafactor(*args)
 
         return loss
 

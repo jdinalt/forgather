@@ -37,6 +37,9 @@ dependencies = [
     "huggingface_hub[cli]",
     "pytest",
     "black",
+    "cut-cross-entropy",
+    "liger-kernel",
+    "triton",
 ]
 version = "2024.0.0a1"
 authors = [

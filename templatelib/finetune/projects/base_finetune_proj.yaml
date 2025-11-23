@@ -131,6 +131,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     lr: 5.0e-6
     weight_decay: 0.001
+    use_triton: True
 
 [dynamic_args]
     == super()
