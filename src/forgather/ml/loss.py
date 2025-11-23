@@ -273,9 +273,9 @@ class LinearCrossEntropyLoss:
         logger = logging.getLogger(__name__)
 
         if impl == "auto":
-            # Try implementations in order: Liger → CCE → PyTorch
-            # Liger first because it has better framework integration
-            for candidate in ["liger", "cce", "pytorch"]:
+            # Try implementations in order: CCE → Liger → PyTorch
+            # CCE because it's almost as fast as Liger, but works with validation.
+            for candidate in ["cce", "liger", "pytorch"]:
                 try:
                     actual_impl, compute_fn = self._select_implementation(candidate)
                     logger.info(
