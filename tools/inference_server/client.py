@@ -8,6 +8,7 @@ from argparse import RawTextHelpFormatter
 import sys
 from typing import List, Dict, Any, Optional, Union
 import os
+from pathlib import Path
 
 try:
     from openai import OpenAI
@@ -342,52 +343,19 @@ def interactive_mode(client: InferenceClient, args: argparse.Namespace):
             break
 
 
-def load_config_from_yaml(config_path: str) -> Dict[str, Any]:
-    """Load configuration from YAML file."""
-    try:
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-        print(f"Loaded configuration from: {config_path}")
-        return config or {}
-    except Exception as e:
-        print(f"Error: Failed to load configuration from {config_path}: {e}")
-        sys.exit(1)
+# Support both module and standalone execution
+if __name__ == "__main__" and __package__ is None:
+    # Running as standalone script - add parent directory to path
+    script_dir = Path(__file__).resolve().parent
+    parent_dir = script_dir.parent
+    if str(parent_dir) not in sys.path:
+        sys.path.insert(0, str(parent_dir))
 
-
-def merge_config_with_args(
-    config: Dict[str, Any], args: argparse.Namespace, parser: argparse.ArgumentParser
-) -> argparse.Namespace:
-    """Merge YAML config with command line arguments, with CLI args taking precedence."""
-    # Convert config keys to match argument names (replace - with _)
-    normalized_config = {}
-    for key, value in config.items():
-        normalized_key = key.replace("-", "_")
-        normalized_config[normalized_key] = value
-
-    # Get default values from parser to detect which args were actually set
-    defaults = {}
-    for action in parser._actions:
-        if action.dest != "help" and action.dest != "config":
-            defaults[action.dest] = action.default
-
-    # For each config value, set it if the argument uses the default value
-    for key, value in normalized_config.items():
-        if hasattr(args, key):
-            current_value = getattr(args, key)
-            default_value = defaults.get(key)
-
-            # Only override if the current value is the default (wasn't explicitly set)
-            if current_value == default_value:
-                if key == "stop" and isinstance(value, list):
-                    # Handle stop sequences list
-                    setattr(args, key, value)
-                elif key in ["echo", "no_echo"] and isinstance(value, bool):
-                    # Handle boolean flags correctly
-                    setattr(args, key, value)
-                else:
-                    setattr(args, key, value)
-
-    return args
+    # Import as if we're a package
+    from inference_server.config import load_config_from_yaml, merge_config_with_args
+else:
+    # Running as module - use relative imports
+    from .config import load_config_from_yaml, merge_config_with_args
 
 
 def main():
@@ -512,7 +480,7 @@ def main():
 
     # Load config file if provided
     if args.config:
-        config = load_config_from_yaml(args.config)
+        config = load_config_from_yaml(args.config, use_logging=False)
         args = merge_config_with_args(config, args, parser)
 
     # Handle stdin input for completion mode
