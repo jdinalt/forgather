@@ -156,3 +156,23 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     supports_sdpa: True
     supports_flex_attn: True
     tied_weights_keys: {model.input_encoder.embedding.weight: "model.output_decoder.weight"}
+
+    # vLLM Support
+    tp_plan:
+        "model.layer_stack.layers.*.attention.query_linear": "colwise"
+        "model.layer_stack.layers.*.attention.key_linear": "colwise"
+        "model.layer_stack.layers.*.attention.value_linear": "colwise"
+        "model.layer_stack.layers.*.attention.output_linear": "rowwise"
+        "model.layer_stack.layers.*.feedforward.gate_proj": "colwise"
+        "model.layer_stack.layers.*.feedforward.up_proj": "colwise"
+        "model.layer_stack.layers.*.feedforward.down_proj": "rowwise"
+    pp_plan:
+        "model.input_encoder":
+            - ["input_ids"]
+            - ["hidden_states"]
+        "model.layer_stack":
+            - ["hidden_states", "attention_mask"]
+            - ["hidden_states"]
+        "model.output_decoder":
+            - ["hidden_states"]
+            - ["logits"]

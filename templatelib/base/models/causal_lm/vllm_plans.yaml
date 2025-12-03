@@ -1,0 +1,76 @@
+## vLLM Pipeline and Tensor Parallel Plans for CausalLM Architecture
+##
+## This file serves as a REFERENCE template showing the vLLM configuration structure
+## for models using Forgather's CausalLM architecture. These plans enable distributed
+## inference with vLLM using tensor parallelism and pipeline parallelism.
+##
+## Usage:
+##   Copy these configurations into your model's [model_code_generator] section.
+##   See examples/models/transformers/dynamic_llama.yaml for a complete example.
+##
+##   Example:
+##     [model_code_generator]
+##         == super()
+##         # vLLM Support
+##         tp_plan:
+##             "model.layer_stack.layers.*.attention.query_linear": "colwise"
+##             ...
+##         pp_plan:
+##             "model.input_encoder": [["input_ids"], ["hidden_states"]]
+##             ...
+##
+## Customization:
+##   - Modify layer name patterns to match your model's structure
+##   - Adjust no_split_modules for your layer type (PreLNLayer, PostLNLayer, etc.)
+##   - Extend tp_plan for custom layers
+
+## Modules that should not be split during distributed inference
+## Default: PreLNLayer (standard Forgather transformer block)
+no_split_modules: ["PreLNLayer"]
+
+## Tensor Parallel Plan for vLLM
+## Maps layer FQN patterns to parallelism styles: "colwise" or "rowwise"
+##
+## Column-wise parallel: Splits weight matrix along output dimension
+##   - Query, Key, Value projections (independent heads)
+##   - Gate and Up projections (independent experts/features)
+##
+## Row-wise parallel: Splits weight matrix along input dimension
+##   - Output projections (combines parallel outputs)
+##   - Down projections (reduces from expanded dimension)
+##
+## These patterns match Forgather's default CausalLM layer naming:
+##   model.layer_stack.layers.{N}.attention.{query,key,value,output}_linear
+##   model.layer_stack.layers.{N}.feedforward.{gate,up,down}_proj
+tp_plan:
+    # Attention layers
+    "model.layer_stack.layers.*.attention.query_linear": "colwise"
+    "model.layer_stack.layers.*.attention.key_linear": "colwise"
+    "model.layer_stack.layers.*.attention.value_linear": "colwise"
+    "model.layer_stack.layers.*.attention.output_linear": "rowwise"
+
+    # Feedforward layers (SwiGLU / GLU variants)
+    "model.layer_stack.layers.*.feedforward.gate_proj": "colwise"
+    "model.layer_stack.layers.*.feedforward.up_proj": "colwise"
+    "model.layer_stack.layers.*.feedforward.down_proj": "rowwise"
+
+## Pipeline Parallel Plan for vLLM
+## Maps module names to (input_names, output_names) specifications
+##
+## vLLM distributes the model across pipeline stages based on this plan.
+## Only direct child modules of the model need to be specified.
+##
+## For Forgather's CausalLM architecture:
+##   - input_encoder: Embeds input_ids -> hidden_states
+##   - layer_stack: Processes hidden_states through transformer layers
+##   - output_decoder: Projects hidden_states -> logits
+pp_plan:
+    "model.input_encoder":
+        - ["input_ids"]
+        - ["hidden_states"]
+    "model.layer_stack":
+        - ["hidden_states", "attention_mask"]
+        - ["hidden_states"]
+    "model.output_decoder":
+        - ["hidden_states"]
+        - ["logits"]

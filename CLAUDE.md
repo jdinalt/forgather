@@ -123,6 +123,70 @@ forgather inf client --message "Tell me a story"
 
 Detailed inference instructions are located in 'tools/inference_server/README.md'
 
+### vLLM Distributed Inference
+
+Forgather models support distributed inference with [vLLM](https://docs.vllm.ai/) for high-throughput serving with tensor and pipeline parallelism.
+
+**Validate vLLM Support**
+
+```python
+from forgather.ml.model_conversion import validate_vllm_plans, print_model_structure
+from transformers import AutoModelForCausalLM
+
+# Load trained model
+model = AutoModelForCausalLM.from_pretrained("output_models/my_model")
+
+# Print model structure
+print_model_structure(model, max_depth=4)
+
+# Validate vLLM plans
+if hasattr(model, '_tp_plan') and model._tp_plan:
+    is_valid = validate_vllm_plans(model, tp_plan=model._tp_plan, pp_plan=model._pp_plan, strict=True)
+```
+
+**Deploy with vLLM**
+
+```bash
+# Single-GPU inference
+vllm serve output_models/my_model --trust-remote-code
+
+# Tensor parallel (4 GPUs)
+vllm serve output_models/my_model --trust-remote-code --tensor-parallel-size 4
+
+# Tensor + Pipeline parallel (8 GPUs: 2 PP stages, 4 TP per stage)
+vllm serve output_models/my_model \
+    --trust-remote-code \
+    --tensor-parallel-size 4 \
+    --pipeline-parallel-size 2 \
+    --dtype bfloat16 \
+    --max-model-len 8192
+```
+
+**Adding vLLM Support to Custom Models**
+
+Most transformer models (Llama, DeepOne, etc.) include vLLM support by default. For custom models, add vLLM plans to the `[model_code_generator]` section:
+
+```yaml
+# In your model configuration
+[model_code_generator]
+    == super()
+
+    # vLLM Support
+    tp_plan:
+        "model.layer_stack.layers.*.attention.query_linear": "colwise"
+        "model.layer_stack.layers.*.attention.key_linear": "colwise"
+        "model.layer_stack.layers.*.attention.value_linear": "colwise"
+        "model.layer_stack.layers.*.attention.output_linear": "rowwise"
+        # ... additional layers
+    pp_plan:
+        "model.input_encoder": [["input_ids"], ["hidden_states"]]
+        "model.layer_stack": [["hidden_states", "attention_mask"], ["hidden_states"]]
+        "model.output_decoder": [["hidden_states"], ["logits"]]
+```
+
+See `templatelib/base/models/causal_lm/vllm_plans.yaml` for the complete reference template.
+For detailed information, see `docs/inference/vllm_integration.md`
+
 ### Examples from Real Projects
 ```bash
 # Working with tiny_llama tutorial project

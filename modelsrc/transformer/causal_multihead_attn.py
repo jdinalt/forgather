@@ -3,6 +3,7 @@ from torch import nn, FloatTensor
 from typing import Callable, Optional
 import math
 
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
 class CausalMultiheadAttn(nn.Module):
     """
@@ -45,9 +46,8 @@ class CausalMultiheadAttn(nn.Module):
         if attn_functions and attn_implementation in attn_functions:
             self.attn_fn = attn_functions[attn_implementation]
         else:
-            raise ValueError(
-                f"attn_implementation implementation {attn_implementation} is unsupported"
-            )
+            # Fallback to HF registry
+            self.attn_fn = ALL_ATTENTION_FUNCTIONS[attn_implementation]
 
         assert d_model % num_heads == 0, "d_model must be evenly divisible by num_heads"
         assert (
