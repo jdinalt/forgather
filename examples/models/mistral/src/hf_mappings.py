@@ -4,10 +4,10 @@
 # Mistral uses the same parameter naming convention as Llama
 # Format: List of (pattern, replacement, [children]) tuples for recursive regex substitution
 HF_TO_FORGATHER = [
-    (r"lm_head\.", r"model.output_decoder.", []),
+    (r"lm_head\.", r"causal_lm.output_decoder.", []),
     (
-        r"model\.",
-        r"model.",
+        r"causal_lm\.",
+        r"causal_lm.",
         [
             (r"embed_tokens\.", r"input_encoder.embedding.", []),
             (r"norm\.", r"layer_stack.layer_norm.", []),
@@ -36,10 +36,10 @@ HF_TO_FORGATHER = [
 
 # Forgather Dynamic Llama to HuggingFace Mistral parameter name mappings
 FORGATHER_TO_HF = [
-    (r"model\.output_decoder\.", r"lm_head.", []),
+    (r"causal_lm\.output_decoder\.", r"lm_head.", []),
     (
-        r"model\.",
-        r"model.",
+        r"causal_lm\.",
+        r"causal_lm.",
         [
             (r"input_encoder\.embedding\.", r"embed_tokens.", []),
             (r"layer_stack\.layer_norm\.", r"norm.", []),

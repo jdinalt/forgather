@@ -69,7 +69,7 @@
     checkpoint_stride: !var "checkpoint_stride"
 
     [output_decoder]
-.define: &output_decoder !factory:torch.nn:Linear@output_decoder
+.define: &output_decoder !partial:torch.nn:Linear@output_decoder
     in_features: !var "hidden_size"
     out_features: !var "vocab_size"
     bias: False
@@ -97,7 +97,7 @@
         - [ 'embedding\.weight', "init_embeddings" ]
         - [ 'up_proj|query_linear|key_linear|value_linear', "trunc_normal_magic" ]
         - [ 'gate_proj|down_proj|output_linear', "trunc_normal" ]
-        - [ 'output_decoder', "init_output_layer" ]
+        - [ 'lm_head', "init_output_layer" ]
     init_f_map:
         pass: !partial:.init_weights:init_pass
         zeros: !partial:torch.nn.init:zeros_ []
@@ -113,14 +113,15 @@
 .define: &attn_mask_fn !partial:.causal_mask:causal_mask@attn_mask_fn
 
     [model_factory]
-model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
-    config: !var "config"
+model_factory: &model_factory !dict@model_factory
+    causal_model: !partial:.causal_lm:CasualLM
+        config: !var "config"
+        input_encoder: *input_encoder
+        layer_stack: *layer_stack
+        init_weights: *init_weights
+        attn_mask_fn: *attn_mask_fn
+    lm_head: *output_decoder
     loss_fn: *loss_fn
-    input_encoder: *input_encoder
-    output_decoder: *output_decoder
-    layer_stack: *layer_stack
-    init_weights: *init_weights
-    attn_mask_fn: *attn_mask_fn
 
 [model_config]
     == super()
@@ -155,24 +156,25 @@ model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
     supports_gradient_checkpointing: True
     supports_sdpa: True
     supports_flex_attn: True
-    tied_weights_keys: {model.input_encoder.embedding.weight: "model.output_decoder.weight"}
+    supports_attention_backend: True
+    tied_weights_keys: {causal_lm.input_encoder.embedding.weight: "lm_head.weight"}
 
     # vLLM Support
     tp_plan:
-        "model.layer_stack.layers.*.attention.query_linear": "colwise"
-        "model.layer_stack.layers.*.attention.key_linear": "colwise"
-        "model.layer_stack.layers.*.attention.value_linear": "colwise"
-        "model.layer_stack.layers.*.attention.output_linear": "rowwise"
-        "model.layer_stack.layers.*.feedforward.gate_proj": "colwise"
-        "model.layer_stack.layers.*.feedforward.up_proj": "colwise"
-        "model.layer_stack.layers.*.feedforward.down_proj": "rowwise"
+        "causal_lm.layer_stack.layers.*.attention.query_linear": "colwise"
+        "causal_lm.layer_stack.layers.*.attention.key_linear": "colwise"
+        "causal_lm.layer_stack.layers.*.attention.value_linear": "colwise"
+        "causal_lm.layer_stack.layers.*.attention.output_linear": "rowwise"
+        "causal_lm.layer_stack.layers.*.feedforward.gate_proj": "colwise"
+        "causal_lm.layer_stack.layers.*.feedforward.up_proj": "colwise"
+        "causal_lm.layer_stack.layers.*.feedforward.down_proj": "rowwise"
     pp_plan:
-        "model.input_encoder":
+        "causal_lm.input_encoder":
             - ["input_ids"]
             - ["hidden_states"]
-        "model.layer_stack":
+        "causal_lm.layer_stack":
             - ["hidden_states", "attention_mask"]
             - ["hidden_states"]
-        "model.output_decoder":
+        "lm_head":
             - ["hidden_states"]
             - ["logits"]

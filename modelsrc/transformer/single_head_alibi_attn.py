@@ -27,6 +27,7 @@ class SingleHeadAlibiAttn(nn.Module):
         dropout: float = 0.0,
         slope_init: float = 0.5,
         trainable_alibi: bool = False,
+        **kwargs,
     ):
         super().__init__()
         self.d_model = d_model

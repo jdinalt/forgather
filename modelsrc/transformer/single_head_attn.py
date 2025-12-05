@@ -14,6 +14,7 @@ class SingleHeadAttn(nn.Module):
         *,
         bias: bool = True,
         dropout: float = 0.0,
+        **kwargs,
     ):
         super().__init__()
         self.d_model = d_model

@@ -7,7 +7,7 @@ class CausalLoss:
         return f"{type(self).__name__}()"
 
     @staticmethod
-    def __call__(logits: FloatTensor, labels: LongTensor) -> FloatTensor:
+    def __call__(logits: FloatTensor, labels: LongTensor, **kwargs) -> FloatTensor:
         # Shift so that tokens < n predict n
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()

@@ -12,6 +12,7 @@ class GLUFeedforwardLayer(nn.Module):
         *,
         activation_factory: Optional[Callable] = lambda: nn.SiLU(),
         dropout: Optional[float] = 0.1,
+        **kwargs,
     ):
         super().__init__()
         self.d_model = d_model

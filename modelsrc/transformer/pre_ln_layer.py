@@ -13,10 +13,11 @@ class PreLNLayer(nn.Module):
         norm_factory: Callable,
         dropout: Optional[float] = 0.1,
         residual_dropout: Optional[float] = 0.0,
+        **kwargs,
     ):
         super().__init__()
-        self.feedforward = feedforward_factory()
-        self.attention = attention_factory()
+        self.feedforward = feedforward_factory(**kwargs)
+        self.attention = attention_factory(**kwargs)
         self.norm1 = norm_factory()
         self.norm2 = norm_factory()
         if dropout == 0.0:

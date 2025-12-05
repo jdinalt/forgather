@@ -13,6 +13,7 @@ class FeedforwardLayer(nn.Module):
         activation_factory: Optional[Callable] = lambda: nn.ReLU(),
         dropout: Optional[float] = 0.0,
         bias: Optional[bool] = True,
+        **kwargs,
     ):
         super().__init__()
         self.d_model = d_model

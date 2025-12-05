@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, Iterable
 import math
 
 import logging
@@ -170,6 +170,14 @@ class RealRotaryPE(torch.nn.Module):
             f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, "
             f"rope_theta={self.rope_theta}, rope_type={rope_type}, liger_kernel={self.liger_kernel is not None}"
         )
+
+    def load_weights(self, weights: Iterable[tuple[str, Tensor]]) -> Iterable[str]:
+        """Hack for vllm. We don't need to load these weights!
+        And for "reasons," vLLM has never heard of loading buffers from the weights dictionary. WTF!?
+        And probably best that it does not try, as these are tied accross all layers...
+        TODO: Revisit
+        """
+        return [ name for name, _ in weights]
 
     def forward(
         self, q: Tensor, k: Tensor, position_ids: Tensor = None

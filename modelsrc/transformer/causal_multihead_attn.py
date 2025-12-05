@@ -22,6 +22,8 @@ class CausalMultiheadAttn(nn.Module):
         bias: bool = False,
         dropout: float = 0.0,
         qk_norm_factory: Optional[Callable] = None,
+        layer_idx: int,
+        **kwargs,
     ):
         """
         args:
@@ -40,6 +42,7 @@ class CausalMultiheadAttn(nn.Module):
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads or num_heads  # Default to MHA
         self.pos_encoder = pos_encoder
+        self.layer_idx = layer_idx
 
         self.attn_implementation = attn_implementation
 
@@ -94,7 +97,6 @@ class CausalMultiheadAttn(nn.Module):
     def forward(
         self,
         qkv: FloatTensor,
-        layer_index: int,
         attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional["DynamicCache"] = None,
         position_ids: Optional[torch.LongTensor] = None,
@@ -133,7 +135,7 @@ class CausalMultiheadAttn(nn.Module):
 
         # Apply KV Cache
         if past_key_values is not None:
-            key, value = past_key_values.update(key, value, layer_index)
+            key, value = past_key_values.update(key, value, self.layer_idx)
         attended_values, attn_weights = self.attn_fn(
             module=self,
             query=query,

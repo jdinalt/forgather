@@ -52,7 +52,7 @@ class LayerStack(nn.Module):
 
         self.layers = nn.ModuleDict()
         for layer_idx in range(num_hidden_layers):
-            self.layers[str(layer_idx)] = layer_factory()
+            self.layers[str(layer_idx)] = layer_factory(layer_idx=layer_idx)
 
         self.layer_norm = None
         if post_norm_factory is not None:
@@ -73,16 +73,15 @@ class LayerStack(nn.Module):
                     hidden_states = checkpoint.checkpoint(
                         layer,
                         hidden_states,
-                        layer_index=i,
                         **kwargs,
                         **self.checkpoint_kwargs,
                     )
                 else:
-                    hidden_states = layer(hidden_states, layer_index=i, **kwargs)
+                    hidden_states = layer(hidden_states, **kwargs)
         else:
             for i, layer in self.layers.items():
                 i = int(i)
-                hidden_states = layer(hidden_states, layer_index=i, **kwargs)
+                hidden_states = layer(hidden_states, **kwargs)
 
         if self.layer_norm:
             hidden_states = self.layer_norm(hidden_states)

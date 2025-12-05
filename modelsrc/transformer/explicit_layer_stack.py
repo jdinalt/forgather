@@ -13,9 +13,10 @@ class ExplicitLayerStack(nn.Module):
     def __init__(
         self,
         factory_list: list[Callable],
+        **kwargs,
     ):
         super().__init__()
-        self.layers = nn.ModuleList([factory() for factory in factory_list])
+        self.layers = nn.ModuleList([factory(**kwargs) for factory in factory_list])
 
     def forward(
         self,

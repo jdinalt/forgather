@@ -43,6 +43,7 @@ class CausalAlibiAttn(nn.Module):
         dropout: float = 0.0,
         trainable_alibi: bool = False,
         alt_alibi_init: bool = False,
+        **kwargs,
     ):
         super().__init__()
         self.d_model = d_model

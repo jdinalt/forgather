@@ -64,3 +64,5 @@ model_code_writer: &model_code_writer !singleton:forgather.ml.construct:write_fi
     == super()
     # Add dependency on code generator
     code_generator: *model_code_writer
+    architectures:
+        - "DynamicCasualLM"
