@@ -3,6 +3,7 @@ import datetime
 import time
 import re
 import getpass
+import yaml
 from contextlib import contextmanager
 
 from jinja2 import FileSystemLoader, StrictUndefined, Undefined
@@ -250,6 +251,67 @@ def debug_pp(debug):
         LineStatementProcessor.pp_verbose = pp_verbose
 
 
+def toyaml(obj, default_value=Undefined):
+    """
+    Convert Python data structures to YAML-compatible string representation.
+
+    Handles the following Python types:
+    - dict: Converted to YAML mapping
+    - list: Converted to YAML sequence
+    - str: Converted to YAML string (quoted if necessary)
+    - None: Converted to YAML null
+    - int: Converted to YAML integer
+    - float: Converted to YAML float with explicit type tag
+    - bool: Converted to YAML boolean
+
+    This filter ensures that Python values injected into Jinja2 templates
+    will render as valid YAML that can be parsed correctly.
+
+    Examples:
+        {{ my_dict | to_yaml }}
+        {{ my_list | to_yaml }}
+        {{ my_value | to_yaml }}
+
+    Args:
+        obj: Python object to convert to YAML string
+        default_value: An optional default, if the variable Jinja is undefined. This will raise if a default
+            is not provided and the variable is undefined.
+
+    Returns:
+        str: YAML-compatible string representation
+    """
+    if isinstance(obj, Undefined):
+        if default_value is Undefined:
+            return obj.fail(
+                "A required variable was undefined and no default was provided."
+            )
+        obj = default_value
+
+    # Short circuit, if simple type -- it's faster
+    if isinstance(obj, int | bool):
+        return str(obj)
+    elif obj is None:
+        return "null"
+
+    # Use PyYAML's safe dump with sensible defaults for inline rendering
+    # default_flow_style=True produces inline JSON-like style which is more compact
+    # and easier to embed in templates
+    yaml_str = yaml.safe_dump(
+        obj,
+        default_flow_style=True,
+        allow_unicode=True,
+        width=float("inf"),  # Don't wrap lines
+    ).strip()
+
+    # Remove the trailing newline and '...' document end marker if present
+    if yaml_str.endswith("\n..."):
+        yaml_str = yaml_str[:-4]
+    elif yaml_str.endswith("..."):
+        yaml_str = yaml_str[:-3]
+
+    return yaml_str
+
+
 class PPEnvironment(SandboxedEnvironment):
     TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
     FILE_TIME_FORMAT = "%Y-%m-%dT%H-%M-%S"
@@ -287,6 +349,11 @@ class PPEnvironment(SandboxedEnvironment):
         "site_config_dir": site_config_dir,
     }
 
+    default_filters = {
+        # Convert Python data structures to YAML-compatible strings
+        "toyaml": toyaml,
+    }
+
     def __init__(
         self,
         *args,
@@ -318,3 +385,4 @@ class PPEnvironment(SandboxedEnvironment):
         )
 
         self.globals |= self.default_globals
+        self.filters |= self.default_filters

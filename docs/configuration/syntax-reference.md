@@ -197,6 +197,48 @@ The following functions from https://pypi.org/project/platformdirs/
 - site_data_dir()
 - site_config_dir()
 
+#### Jinja2 Filters
+
+**toyaml**
+
+The 'toyaml' filter converts Jinja2 variables into YAML compatible syntax, with an optional default value. If no default is specified and 
+the variable is undefined, it will raise an error.
+
+As an example, consider the following definition:
+
+```yaml
+...
+    rope_scaling: {{ rope_scaling | toyaml(None) }}
+```
+
+If 'rope_scaling' is defined in Python as:
+
+```python
+rope_scaling = {
+    "factor": 32.0,
+    "high_freq_factor": 4.0,
+    "low_freq_factor": 1.0,
+    "original_max_position_embeddings": 8192,
+    "rope_type": "llama3",
+}
+
+rendered_template = template.render(rope_scaling=rope_scaling)
+```
+
+The rendered output will be:
+
+```yaml
+    rope_scaling: {factor: 32.0, high_freq_factor: 4.0, low_freq_factor: 1.0, original_max_position_embeddings: 8192, rope_type: llama3}
+```
+
+The same template, if `rope_scaling` is `Undefined`, will render as:
+
+```yaml
+    rope_scaling: null
+```
+
+Note that this correctly translated `None` to "null"
+
 ---
 #### Custom File Loader
 
