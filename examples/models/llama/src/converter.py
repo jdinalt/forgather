@@ -1,7 +1,7 @@
 """Llama model converter for HuggingFace <-> Forgather conversion."""
 
 import os
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any, Optional, override
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 
 from forgather.ml.model_conversion import HFConverter, register_converter
@@ -17,14 +17,17 @@ class LlamaConverter(HFConverter):
         """Initialize Llama converter."""
         super().__init__(model_type="llama")
 
+    @override
     def get_hf_config_class(self):
         """Get HuggingFace Llama config class."""
         return LlamaConfig
 
+    @override
     def get_hf_model_class(self):
         """Get HuggingFace Llama model class."""
         return LlamaForCausalLM
 
+    @override
     def get_parameter_mappings(self, direction: str) -> List[Tuple]:
         """Get parameter name mapping rules for Llama models.
 
@@ -44,6 +47,7 @@ class LlamaConverter(HFConverter):
                 "Must be 'to_forgather' or 'from_forgather'"
             )
 
+    @override
     def get_config_field_mapping(self, direction: str) -> Dict[str, str]:
         """Get configuration field mappings for Llama models.
 
@@ -63,6 +67,7 @@ class LlamaConverter(HFConverter):
                 "Must be 'to_forgather' or 'from_forgather'"
             )
 
+    @override
     def validate_source_config(self, config: Any, direction: str) -> None:
         """Validate source Llama model configuration.
 
@@ -93,6 +98,7 @@ class LlamaConverter(HFConverter):
                     rope_type == "llama3"
                 ), f"Unsupported rope_scaling type: {rope_type}. Only 'llama3' is supported."
 
+    @override
     def get_project_info(
         self,
     ) -> dict[str, Any]:
@@ -100,44 +106,8 @@ class LlamaConverter(HFConverter):
             project_dir=MetaConfig.find_project_dir(os.path.abspath(__file__)),
             config_name="",
         )
-    
-    def create_project_config(
-        self, src_config: Any, max_length: Optional[int] = None
-    ) -> Dict[str, Any]:
-        """Create Forgather Project configuration from HuggingFace Llama config.
 
-        Args:
-            src_config: HuggingFace Llama configuration
-            max_length: Optional max sequence length override
-
-        Returns:
-            Dictionary of parameters to pass to Project() constructor
-        """
-        # Determine max model length
-        max_model_length = src_config.max_position_embeddings
-        if max_length:
-            max_model_length = max_length
-
-        # Handle None -> 'null' for YAML config
-        rope_scaling = getattr(src_config, "rope_scaling", None)
-        if rope_scaling is None:
-            rope_scaling = "null"
-
-        return {
-            "attention_dropout": getattr(src_config, "attention_dropout", 0.0),
-            "max_model_length": max_model_length,
-            "hidden_size": src_config.hidden_size,
-            "num_attention_heads": src_config.num_attention_heads,
-            "num_kv_heads": src_config.num_key_value_heads,
-            "d_head": src_config.hidden_size // src_config.num_attention_heads,
-            "num_hidden_layers": src_config.num_hidden_layers,
-            "dim_feedforward": src_config.intermediate_size,
-            "rope_theta": src_config.rope_theta,
-            "rope_scaling": rope_scaling,
-            "tie_word_embeddings": getattr(src_config, "tie_word_embeddings", False),
-            "rms_norm_eps": src_config.rms_norm_eps,
-        }
-
+    @override
     def create_hf_config(self, src_config: Any, max_length: int = None) -> LlamaConfig:
         """Create HuggingFace Llama config from Forgather config.
 
@@ -154,13 +124,5 @@ class LlamaConverter(HFConverter):
         # Add Llama-specific fields
         hf_config.mlp_bias = False
         hf_config.attention_bias = False
-
-        # Preserve rope_scaling if present
-        if hasattr(src_config, "rope_scaling") and src_config.rope_scaling is not None:
-            hf_config.rope_scaling = src_config.rope_scaling
-
-        # Preserve tie_word_embeddings if present
-        if hasattr(src_config, "tie_word_embeddings"):
-            hf_config.tie_word_embeddings = src_config.tie_word_embeddings
 
         return hf_config

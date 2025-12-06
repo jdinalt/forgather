@@ -3,7 +3,8 @@
 import os
 import logging
 from contextlib import ExitStack
-from typing import Optional, Dict, Any, Tuple, Callable
+from typing import Optional, Dict, Any, Tuple, Callable, override
+from abc import abstractmethod
 import torch
 from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
 from transformers.modeling_utils import no_init_weights as hf_no_init_weights
@@ -50,6 +51,7 @@ class HFConverter(ModelConverter):
         """
         super().__init__(model_type)
 
+    @abstractmethod
     def get_hf_config_class(self):
         """Get HuggingFace config class for this model type.
 
@@ -58,6 +60,7 @@ class HFConverter(ModelConverter):
         """
         raise NotImplementedError("Subclasses must implement get_hf_config_class()")
 
+    @abstractmethod
     def get_hf_model_class(self):
         """Get HuggingFace model class for this model type.
 
@@ -66,6 +69,7 @@ class HFConverter(ModelConverter):
         """
         raise NotImplementedError("Subclasses must implement get_hf_model_class()")
 
+    @abstractmethod
     def get_project_info(
         self,
     ) -> dict[str, Any]:
@@ -99,6 +103,11 @@ class HFConverter(ModelConverter):
         # Translate src config into config args
         config_args = self.create_project_config(src_model_config, max_length)
 
+        # For YAML args, we need to translate None to 'null'
+        for key, value in config_args.items():
+            if value is None:
+                config_args[key] = "null"
+
         proj = Project(
             config_name=project_info["config_name"],
             project_dir=project_info["project_dir"],
@@ -124,7 +133,18 @@ class HFConverter(ModelConverter):
         Returns:
             Dictionary of parameters to pass to Project() constructor
         """
-        raise NotImplementedError("Subclasses must implement create_project_config()")
+        field_mapping = self.get_config_field_mapping("to_forgather")
+        # Build config kwargs from field mapping
+        config_kwargs = {}
+        for hf_field, fg_field in field_mapping.items():
+            if hasattr(src_config, hf_field):
+                config_kwargs[fg_field] = getattr(src_config, hf_field)
+
+        # Optional override of max_position_embeddings
+        if "max_position_embeddings" in config_kwargs and max_length:
+            config_kwargs["max_position_embeddings"] = max_length
+
+        return config_kwargs
 
     def create_hf_config(
         self, src_config: Any, max_length: Optional[int] = None
@@ -141,34 +161,15 @@ class HFConverter(ModelConverter):
         config_class = self.get_hf_config_class()
         field_mapping = self.get_config_field_mapping("from_forgather")
 
-        max_model_length = src_config.max_sequence_length
-        if max_length:
-            max_model_length = max_length
-
         # Build config kwargs from field mapping
         config_kwargs = {}
         for fg_field, hf_field in field_mapping.items():
             if hasattr(src_config, fg_field):
                 config_kwargs[hf_field] = getattr(src_config, fg_field)
 
-        # Add max_position_embeddings
-        config_kwargs["max_position_embeddings"] = max_model_length
-
-        # Add common defaults that may not be in field mapping
-        if "attention_dropout" not in config_kwargs:
-            config_kwargs["attention_dropout"] = getattr(
-                src_config, "attention_dropout", 0.0
-            )
-        if "hidden_act" not in config_kwargs:
-            config_kwargs["hidden_act"] = "silu"
-        if "tie_word_embeddings" not in config_kwargs:
-            config_kwargs["tie_word_embeddings"] = False
-        if "pad_token_id" not in config_kwargs:
-            config_kwargs["pad_token_id"] = getattr(src_config, "pad_token_id", None)
-        if "bos_token_id" not in config_kwargs:
-            config_kwargs["bos_token_id"] = getattr(src_config, "bos_token_id", 1)
-        if "eos_token_id" not in config_kwargs:
-            config_kwargs["eos_token_id"] = getattr(src_config, "eos_token_id", 2)
+        # Optional override of max_position_embeddings
+        if "max_position_embeddings" in config_kwargs and max_length:
+            config_kwargs["max_position_embeddings"] = max_length
 
         return config_class(**config_kwargs)
 
@@ -349,6 +350,20 @@ class HFConverter(ModelConverter):
                 update_config_from_tokenizer(
                     model_config, tokenizer, update_vocab_size=False
                 )
+
+        # Merge eos token set
+        if hasattr(src_model_config, "eos_token_id") and hasattr(
+            model_config, "eos_token_id"
+        ):
+            eos_set = set()
+            eos_set.add(model_config.eos_token_id)
+            if isinstance(src_model_config.eos_token_id, list):
+                for id in src_model_config.eos_token_id:
+                    eos_set.add(id)
+            else:
+                eos_set.add(src_model_config.eos_token_id)
+            if len(eos_set) > 1:
+                model_config.eos_token_id = [id for id in eos_set]
 
         # Compare logits
         prompt = kwargs.get("prompt", "The old bookstore at the corner of")
