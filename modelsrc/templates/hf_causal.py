@@ -168,7 +168,7 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
             return self.lm_head.get_output_embeddings()
 
     def set_output_embeddings(self, new_embedding: nn.Module):
-        if not self.lm_head or isinstance(self.output_decoder, nn.Linear):
+        if not self.lm_head or isinstance(self.lm_head, nn.Linear):
             self.lm_head = new_embedding
         else:
             self.lm_head.set_output_embeddings(new_embedding)

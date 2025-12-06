@@ -5,13 +5,7 @@ from forgather.ml.model_conversion import (
     STANDARD_HF_TO_FORGATHER,
 )
 
-# Mistral extends standard mappings with sliding_window support
-FORGATHER_TO_HF = {
-    **STANDARD_FORGATHER_TO_HF,
-    "sliding_window": "sliding_window",  # Mistral-specific
-}
+# Llama uses all standard mappings with no model-specific fields
+FORGATHER_TO_HF = STANDARD_FORGATHER_TO_HF.copy()
 
-HF_TO_FORGATHER = {
-    **STANDARD_HF_TO_FORGATHER,
-    "sliding_window": "sliding_window",  # Mistral-specific
-}
+HF_TO_FORGATHER = STANDARD_HF_TO_FORGATHER.copy()

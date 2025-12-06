@@ -1,7 +1,7 @@
 """Llama model converter for HuggingFace <-> Forgather conversion."""
 
 import os
-from typing import List, Tuple, Dict, Any, Optional, override
+from typing import List, Tuple, Dict, Any, override
 from transformers.models.llama import LlamaConfig, LlamaForCausalLM
 
 from forgather.ml.model_conversion import HFConverter, register_converter

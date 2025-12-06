@@ -21,8 +21,9 @@ tokenizer: &tokenizer !call:forgather:from_project
 [model_config]
     == super()
     # **119M**
-    hidden_size: {{ hidden_size | default(1024) }}
-    dim_feedforward: {{ dim_feedforward | default(3328) }}
-    num_attention_heads: {{ num_attention_heads | default(8) }}
-    num_hidden_layers: {{ num_hidden_layers | default(8) }}
-    num_kv_heads: {{ num_kv_heads | default(2) }}
+    hidden_size: {{ hidden_size | toyaml(1024) }}
+    intermediate_size: {{ intermediate_size | toyaml(3328) }}
+    num_attention_heads: {{ num_attention_heads | toyaml(8) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(8) }}
+    num_key_value_heads: {{ num_key_value_heads | toyaml(2) }}
+    sliding_window: {{ sliding_window | toyaml(4096) }}
