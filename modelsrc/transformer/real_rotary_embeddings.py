@@ -124,21 +124,22 @@ class RealRotaryPE(torch.nn.Module):
 
     def __init__(
         self,
-        d_head: int,
+        hidden_size: int,
+        num_attention_heads: int,
         max_sequence_length: int = 2048,
         rope_theta: float = 10000.0,
         rope_scaling: Optional[Dict[str, Any]] = None,
         use_liger: bool = False,
     ):
         super().__init__()
-        self.d_head = d_head
+        self.d_head = hidden_size // num_attention_heads
         self.max_sequence_length = max_sequence_length
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
 
         # Precompute cos/sin tensors once for the entire model
         cos, sin = precompute_cos_sin(
-            d_head, max_sequence_length, rope_theta, rope_scaling
+            self.d_head, max_sequence_length, rope_theta, rope_scaling
         )
 
         # Note: Use nn.Buffer for buffers, rather than register_buffer(). The later does
@@ -177,7 +178,7 @@ class RealRotaryPE(torch.nn.Module):
         And probably best that it does not try, as these are tied accross all layers...
         TODO: Revisit
         """
-        return [ name for name, _ in weights]
+        return [name for name, _ in weights]
 
     def forward(
         self, q: Tensor, k: Tensor, position_ids: Tensor = None

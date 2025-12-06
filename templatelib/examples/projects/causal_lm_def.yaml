@@ -35,20 +35,16 @@
         names: --num-attention-heads"
         type: "int"
         help: "Number of query heads (and KV heads, if otherwise unspecified)"
-    num_kv_heads:
-        names: "--num-kv-heads"
+    num_key_value_heads:
+        names: "--num-key-value-heads"
         type: "int"
         help: "Number of Key/Value heads"
-    d_head:
-        names: "--d-head"
-        type: "int"
-        help: "Head dimension"
     num_hidden_layers:
         names: "--num-hidden-layers"
         type: "int"
         help: "Number of hidden layers"
-    dim_feedforward:
-        names: "--dim-feedforward"
+    intermediate_size:
+        names: "--intermediate-size"
         type: "int"
         help: "Feedforward dimension"
     rope_theta:

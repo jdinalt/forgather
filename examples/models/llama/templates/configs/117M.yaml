@@ -21,7 +21,7 @@ tokenizer: &tokenizer !call:forgather:from_project
 [model_config]
     == super()
     # **4M Overrides**
-    hidden_size: {{ hidden_size | default(1024) }}
-    dim_feedforward: {{ dim_feedforward | default(2816) }}
-    num_attention_heads: {{ num_attention_heads | default(8) }}
-    num_hidden_layers: {{ num_hidden_layers | default(8) }}
+    hidden_size: {{ hidden_size | toyaml(1024) }}
+    intermediate_size: {{ intermediate_size | toyaml(2816) }}
+    num_attention_heads: {{ num_attention_heads | toyaml(8) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(8) }}
