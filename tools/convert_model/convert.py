@@ -117,6 +117,11 @@ def parse_args(args=None):
         help="Test model generation with prompt",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Don't save output model",
+    )
+    parser.add_argument(
         "--prompt",
         type=str,
         default="The old bookstore at the corner of Elm Street had always held secrets, but today, something unusual caught Emma's eye.",
@@ -203,6 +208,7 @@ def convert_hf_to_forgather(args, detected_model_type=None):
         dtype=args.dtype,
         max_length=args.max_length,
         test_device=args.device,
+        dry_run=args.dry_run,
         **kwargs,
     )
 
@@ -252,6 +258,7 @@ def convert_forgather_to_hf(args, detected_model_type=None):
         max_length=args.max_length,
         checkpoint_path=args.checkpoint_path,
         test_device=args.device,
+        dry_run=args.dry_run,
         **kwargs,
     )
 

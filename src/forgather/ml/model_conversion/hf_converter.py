@@ -3,6 +3,7 @@
 import os
 import logging
 from contextlib import ExitStack
+import shutil
 from typing import Optional, Dict, Any, Tuple, Callable, override
 from abc import abstractmethod
 import torch
@@ -180,6 +181,7 @@ class HFConverter(ModelConverter):
         dtype: Optional[str] = None,
         max_length: Optional[int] = None,
         test_device: Optional[str] = None,
+        dry_run: bool = False,
         **kwargs,
     ) -> None:
         """Convert HuggingFace model to Forgather format.
@@ -378,19 +380,23 @@ class HFConverter(ModelConverter):
             test_device=test_device,
         )
 
-        # Save model
-        logger.info("Saving Forgather model...")
-        model_config.save_pretrained(save_directory=dst_model_path)
-        tokenizer.save_pretrained(save_directory=dst_model_path)
+        if not dry_run:
+            # Save model
+            logger.info("Saving Forgather model...")
+            model_config.save_pretrained(save_directory=dst_model_path)
+            tokenizer.save_pretrained(save_directory=dst_model_path)
 
-        save_checkpoint(
-            output_dir=dst_model_path,
-            module=model,
-            safetensors=False,
-            include_param_sharing=True,
-        )
+            save_checkpoint(
+                output_dir=dst_model_path,
+                module=model,
+                safetensors=False,
+                include_param_sharing=True,
+            )
 
-        logger.info(f"Conversion complete: {dst_model_path}")
+            logger.info(f"Conversion complete: {dst_model_path}")
+        else:
+            print(model_config)
+            shutil.rmtree(dst_model_path)
 
     def convert_from_forgather(
         self,
@@ -400,6 +406,7 @@ class HFConverter(ModelConverter):
         max_length: Optional[int] = None,
         checkpoint_path: Optional[str] = None,
         test_device: Optional[str] = None,
+        dry_run: bool = False,
         **kwargs,
     ) -> None:
         """Convert Forgather model to HuggingFace format.
@@ -562,12 +569,15 @@ class HFConverter(ModelConverter):
             test_device=test_device,
         )
 
-        # Save model
-        logger.info(f"Saving HuggingFace {self.model_type} model...")
-        hf_model.save_pretrained(dst_model_path)
-        tokenizer.save_pretrained(dst_model_path)
+        if not dry_run:
+            # Save model
+            logger.info(f"Saving HuggingFace {self.model_type} model...")
+            hf_model.save_pretrained(dst_model_path)
+            tokenizer.save_pretrained(dst_model_path)
 
-        logger.info(f"Conversion complete: {dst_model_path}")
+            logger.info(f"Conversion complete: {dst_model_path}")
+        else:
+            print(hf_config)
 
     def _print_params(self, model, label: str):
         """Print parameter names for debugging."""
