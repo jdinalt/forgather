@@ -46,7 +46,7 @@
 .define: &feedforward_factory !partial:{{ns.model_src}}feedforward_layer.py:FeedforwardLayer@feedforward_factory
     activation_factory: *activation_factory
     d_model: !var "hidden_size"
-    d_feedforward: !var "dim_feedforward"
+    d_feedforward: !var "intermediate_size"
 << endblock feedforward_factory
 
 
