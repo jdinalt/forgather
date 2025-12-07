@@ -30,7 +30,7 @@
     [feedforward_factory]
 .define: &feedforward_factory !partial:.feedforward_layer:FeedforwardLayer@feedforward_factory
     d_model: !var "hidden_size"
-    d_feedforward: !var "dim_feedforward"
+    d_feedforward: !var "intermediate_size"
     dropout: !var "activation_dropout"
 
     [rel_positional_encoder]
@@ -67,14 +67,14 @@
     checkpoint_stride: !var "checkpoint_stride"
 
     [output_decoder]
-.define: &output_decoder !factory:torch.nn:Linear@output_decoder
+.define: &output_decoder !partial:torch.nn:Linear@output_decoder
     - !var "hidden_size"
     - !var "vocab_size"
 
     [positional_encoder]
 .define: &positional_encoder !factory:.sinusoidal_pe:SinusoidalPE@positional_encoder
     d_model: !var "hidden_size"
-    max_sequence_length: !var "max_sequence_length"
+    max_sequence_length: !var "max_position_embeddings"
 
     [input_encoder]
 .define: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
@@ -92,34 +92,35 @@
 .define: &attn_mask_fn !partial:.causal_mask:causal_mask@attn_mask_fn
 
     [model_factory]
-model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
-    config: !var "config"
+model_factory: &model_factory !dict@model_factory
+    causal_model: !partial:.causal_lm:CasualLM
+        config: !var "config"
+        input_encoder: *input_encoder
+        layer_stack: *layer_stack
+        init_weights: *init_weights
+        attn_mask_fn: *attn_mask_fn
+    lm_head: *output_decoder
     loss_fn: *loss_fn
-    input_encoder: *input_encoder
-    output_decoder: *output_decoder
-    layer_stack: *layer_stack
-    init_weights: *init_weights
-    attn_mask_fn: *attn_mask_fn
 
 [model_config]
     == super()
-    hidden_size: 512
-    num_attention_heads: 8
-    num_hidden_layers: 6
-    max_sequence_length: !singleton:getattr
+    hidden_size: {{ hidden_size | toyaml(512) }}
+    num_attention_heads: {{ num_attention_heads | toyaml(8) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(6) }}
+    max_position_embeddings: !singleton:getattr
         - *tokenizer
         - "model_max_length"
-    dim_feedforward: 2048
-    embedding_dropout: 0.10
-    layer_dropout: 0.10
-    residual_dropout: 0.0
-    attention_dropout: 0.0
-    activation_dropout: 0.0
+    intermediate_size: {{ intermediate_size | toyaml(2048) }}
+    embedding_dropout: {{ embedding_dropout | toyaml(0.10) }}
+    layer_dropout: {{ layer_dropout | toyaml(0.10) }}
+    residual_dropout: {{ residual_dropout | toyaml(0.0) }}
+    attention_dropout: {{ attention_dropout | toyaml(0.0) }}
+    activation_dropout: {{ hiactivation_dropoutdden_size | toyaml(0.0) }}
     enable_activation_checkpoint: False
     checkpoint_stride: 1
     compile_flex: True # For debug flex, set to False
     flex_attn_kernel_options: *flex_attn_kernel_options
-    tie_word_embeddings: False
+    tie_word_embeddings: {{ tie_word_embeddings | toyaml(False) }}
 
 [model_code_generator]
     == super()

@@ -21,7 +21,7 @@
     [feedforward_factory]
 .define: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
     d_model: !var "hidden_size"
-    d_feedforward: !var "dim_feedforward"
+    d_feedforward: !var "intermediate_size"
     activation_factory: !partial:torch.nn.ReLU []
     dropout: !var "activation_dropout"
     
@@ -55,7 +55,7 @@
     checkpoint_stride: !var "checkpoint_stride"
 
     [output_decoder]
-.define: &output_decoder !factory:torch.nn:Linear@output_decoder
+.define: &output_decoder !partial:torch.nn:Linear@output_decoder
     in_features: !var "hidden_size"
     out_features: !var "vocab_size"
     bias: False
@@ -93,33 +93,34 @@
 .define: &attn_mask_fn !partial:.causal_mask:causal_mask@attn_mask_fn
 
     [model_factory]
-model_factory: &model_factory !factory:.causal_lm:CasualLM@model_factory
-    config: !var "config"
+model_factory: &model_factory !dict@model_factory
+    causal_model: !partial:.causal_lm:CasualLM
+        config: !var "config"
+        input_encoder: *input_encoder
+        layer_stack: *layer_stack
+        init_weights: *init_weights
+        attn_mask_fn: *attn_mask_fn
+    lm_head: *output_decoder
     loss_fn: *loss_fn
-    input_encoder: *input_encoder
-    output_decoder: *output_decoder
-    layer_stack: *layer_stack
-    init_weights: *init_weights
-    attn_mask_fn: *attn_mask_fn
 
 [model_config]
     == super()
-    hidden_size: 2048
-    num_attention_heads: 16
-    num_hidden_layers: 32
-    max_sequence_length: !singleton:getattr
+    hidden_size: {{ hidden_size | toyaml(2048) }}
+    num_attention_heads: {{ num_attention_heads | toyaml(16) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(32) }}
+    max_position_embeddings: !singleton:getattr
         - *tokenizer
         - "model_max_length"
-    dim_feedforward: 5376
-    embedding_dropout: 0.0
-    rms_norm_eps: 1.0e-06
-    layer_dropout: 0.0
-    residual_dropout: 0.0
-    attention_dropout: 0.0
-    activation_dropout: 0.0
+    intermediate_size: {{ intermediate_size | toyaml(5376) }}
+    embedding_dropout: {{ embedding_dropout | toyaml(0.0) }}
+    rms_norm_eps: {{ rms_norm_eps | toyaml(1.0e-06) }}
+    layer_dropout: {{ layer_dropout | toyaml(0.0) }}
+    residual_dropout: {{ residual_dropout | toyaml(0.0) }}
+    attention_dropout: {{ attention_dropout | toyaml(0.0) }}
+    activation_dropout: {{ activation_dropout | toyaml(0.0) }}
     enable_activation_checkpoint: False
     checkpoint_stride: 1
-    tie_word_embeddings: False
+    tie_word_embeddings: {{ tie_word_embeddings | toyaml(False) }}
 
 [model_code_generator]
     == super()

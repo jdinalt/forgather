@@ -22,7 +22,7 @@ tokenizer: &tokenizer !call:forgather:from_project
     == super()
     # **117M Deepone Overrides**
     hidden_size: 1024
-    dim_feedforward: 2816
+    intermediate_size: 2816
     num_attention_heads: 8
     num_hidden_layers: 8
     embedding_dropout: 0.0
