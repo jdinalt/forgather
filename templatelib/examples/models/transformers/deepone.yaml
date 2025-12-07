@@ -127,7 +127,8 @@ model_factory: &model_factory !dict@model_factory
     # Deepone
     supports_gradient_checkpointing: True
     supports_sdpa: True
-    tied_weights_keys: {model.input_encoder.embedding.weight: "model.output_decoder.weight"}
+    supports_attention_backend: False
+    tied_weights_keys: {causal_lm.input_encoder.embedding.weight: "lm_head.weight"}
 
     # vLLM Support
     tp_plan:
