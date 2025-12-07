@@ -163,7 +163,7 @@ def split_model(model: nn.Module, module_names: List[str]) -> None:
 
     # Handle output_decoder
     if "output_decoder" not in modules_to_keep:
-        causal_lm.output_decoder = None
+        model.lm_head = None
 
     # Handle layer_stack - this is more complex
     if causal_lm.layer_stack is not None:

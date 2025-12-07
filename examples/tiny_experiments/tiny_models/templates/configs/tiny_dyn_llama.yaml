@@ -5,12 +5,6 @@
     -- set ns.config_name = "Tiny Dynamic Llama"
     -- set ns.config_description = "A tiny dynamic llama model"
     -- set ns.model_name = "tiny_dllama"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'llama')
+    -- set ns.model_project_config = "4M.yaml"
 -- endblock config_metadata
-
-
--- block construct_new_model
-    -- include 'experiment.model_config'
--- endblock construct_new_model
-
-#-------------------- experiment.model_config --------------------
--- extends 'models/tiny/tiny_dyn_llama.yaml'

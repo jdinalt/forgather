@@ -5,12 +5,6 @@
     -- set ns.config_name = "Tiny Causal"
     -- set ns.config_description = "A tiny causal transformer."
     -- set ns.model_name = "tiny_causal"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'causal_lm')
+    -- set ns.model_project_config = "4M.yaml"
 -- endblock config_metadata
-
-
--- block construct_new_model
-    -- include 'experiment.model_config'
--- endblock construct_new_model
-
-#-------------------- experiment.model_config --------------------
--- extends 'models/tiny/tiny_causal.yaml'

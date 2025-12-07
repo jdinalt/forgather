@@ -5,12 +5,6 @@
     -- set ns.config_name = "Tiny Deep One"
     -- set ns.config_description = "A tiny Deep One model."
     -- set ns.model_name = "tiny_deepone"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'deepone')
+    -- set ns.model_project_config = "4M.yaml"
 -- endblock config_metadata
-
-
--- block construct_new_model
-    -- include 'experiment.model_config'
--- endblock construct_new_model
-
-#-------------------- experiment.model_config --------------------
--- extends 'models/tiny/tiny_deepone.yaml'

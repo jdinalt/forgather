@@ -1,8 +1,8 @@
-from typing import Optional
+from typing import Optional, Iterable
 import math
 
 import torch
-from torch import nn, FloatTensor, LongTensor
+from torch import nn, FloatTensor, LongTensor, Tensor
 
 
 # An implementation of the original transformer sinusoidal positional encoder.
@@ -33,6 +33,14 @@ class SinusoidalPE(nn.Module):
 
     def extra_repr(self):
         return f"d_model={self.d_model}, max_sequence_length={self.max_sequence_length}"
+
+    def load_weights(self, weights: Iterable[tuple[str, Tensor]]) -> Iterable[str]:
+        """Hack for vllm. We don't need to load these weights!
+        And for "reasons," vLLM has never heard of loading buffers from the weights dictionary. WTF!?
+        And probably best that it does not try, as these are tied accross all layers...
+        TODO: Revisit
+        """
+        return [name for name, _ in weights]
 
     def forward(
         self, x: FloatTensor, *, position_ids: Optional[LongTensor] = None

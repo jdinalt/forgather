@@ -28,8 +28,8 @@
     -- set ns.dataset_config = dataset_config | default("tinystories-abridged.yaml")
   
     ## The model project to import
-    -- set ns.model_project_dir = joinpath(workspace_root, 'models')
-    -- set ns.model_project_config = "tiny.yaml"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'causal_lm')
+    -- set ns.model_project_config = "4M.yaml"
     -- set ns.debug_model_project = False
 
 [pre_model_setup]
@@ -119,6 +119,8 @@ optimizer: &optimizer !partial:torch:optim.AdamW
     save_steps: 10000
     num_train_epochs: 1
     dataloader_num_workers: 1
+    # Safetensors can't handle tied parameters/buffers, so fallback to PyTorch format.
+    save_safetensors: False
 
 #-------------------- tiny.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'

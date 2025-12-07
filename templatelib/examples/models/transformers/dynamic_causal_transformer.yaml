@@ -68,8 +68,10 @@
 
     [output_decoder]
 .define: &output_decoder !partial:torch.nn:Linear@output_decoder
-    - !var "hidden_size"
-    - !var "vocab_size"
+    in_features: !var "hidden_size"
+    out_features: !var "vocab_size"
+    bias: False
+
 
     [positional_encoder]
 .define: &positional_encoder !factory:.sinusoidal_pe:SinusoidalPE@positional_encoder
@@ -132,21 +134,21 @@ model_factory: &model_factory !dict@model_factory
 
     # vLLM Support
     tp_plan:
-        "model.layer_stack.layers.*.attention.query_linear": "colwise"
-        "model.layer_stack.layers.*.attention.key_linear": "colwise"
-        "model.layer_stack.layers.*.attention.value_linear": "colwise"
-        "model.layer_stack.layers.*.attention.output_linear": "rowwise"
-        "model.layer_stack.layers.*.feedforward.gate_proj": "colwise"
-        "model.layer_stack.layers.*.feedforward.up_proj": "colwise"
-        "model.layer_stack.layers.*.feedforward.down_proj": "rowwise"
+        "causal_lm.layer_stack.layers.*.attention.query_linear": "colwise"
+        "causal_lm.layer_stack.layers.*.attention.key_linear": "colwise"
+        "causal_lm.layer_stack.layers.*.attention.value_linear": "colwise"
+        "causal_lm.layer_stack.layers.*.attention.output_linear": "rowwise"
+        "causal_lm.layer_stack.layers.*.feedforward.gate_proj": "colwise"
+        "causal_lm.layer_stack.layers.*.feedforward.up_proj": "colwise"
+        "causal_lm.layer_stack.layers.*.feedforward.down_proj": "rowwise"
     pp_plan:
-        "model.input_encoder":
+        "causal_lm.input_encoder":
             - ["input_ids"]
             - ["hidden_states"]
-        "model.layer_stack":
+        "causal_lm.layer_stack":
             - ["hidden_states", "attention_mask"]
             - ["hidden_states"]
-        "model.output_decoder":
+        "causal_lm.output_decoder":
             - ["hidden_states"]
             - ["logits"]
     # PostLNLayer for this model
