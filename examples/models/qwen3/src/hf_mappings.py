@@ -4,10 +4,10 @@
 # Qwen3 has additional q_norm, k_norm, and biases on Q/K/V projections
 # Format: List of (pattern, replacement, [children]) tuples for recursive regex substitution
 HF_TO_FORGATHER = [
-    (r"lm_head\.", r"model.output_decoder.", []),
+    (r"lm_head\.", r"lm_head.", []),
     (
         r"model\.",
-        r"model.",
+        r"causal_lm.",
         [
             (r"embed_tokens\.", r"input_encoder.embedding.", []),
             (r"norm\.", r"layer_stack.layer_norm.", []),
@@ -28,7 +28,6 @@ HF_TO_FORGATHER = [
                             (r"o_proj\.", r"output_linear.", []),
                             (r"q_norm\.", r"q_norm.", []),
                             (r"k_norm\.", r"k_norm.", []),
-                            # Skip rotary_emb.inv_freq - it's not used
                         ],
                     ),
                     (r"mlp\.", r"feedforward.", []),
@@ -42,9 +41,9 @@ HF_TO_FORGATHER = [
 
 # Forgather Dynamic Llama to HuggingFace Qwen3 parameter name mappings
 FORGATHER_TO_HF = [
-    (r"model\.output_decoder\.", r"lm_head.", []),
+    (r"lm_head\.", r"lm_head.", []),
     (
-        r"model\.",
+        r"causal_lm\.",
         r"model.",
         [
             (r"input_encoder\.embedding\.", r"embed_tokens.", []),

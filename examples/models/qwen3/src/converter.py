@@ -1,7 +1,7 @@
 """Qwen3 model converter for HuggingFace <-> Forgather conversion."""
 
 import os
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any, override
 
 from transformers.models.qwen3 import Qwen3Config, Qwen3ForCausalLM
 
@@ -18,14 +18,17 @@ class Qwen3Converter(HFConverter):
         """Initialize Qwen3 converter."""
         super().__init__(model_type="qwen3")
 
+    @override
     def get_hf_config_class(self):
         """Get HuggingFace Qwen2 config class (used for Qwen3)."""
         return Qwen3Config
 
+    @override
     def get_hf_model_class(self):
         """Get HuggingFace Qwen2 model class (used for Qwen3)."""
         return Qwen3ForCausalLM
 
+    @override
     def get_parameter_mappings(self, direction: str) -> List[Tuple]:
         """Get parameter name mapping rules for Qwen3 models.
 
@@ -45,6 +48,7 @@ class Qwen3Converter(HFConverter):
                 "Must be 'to_forgather' or 'from_forgather'"
             )
 
+    @override
     def get_config_field_mapping(self, direction: str) -> Dict[str, str]:
         """Get configuration field mappings for Qwen3 models.
 
@@ -64,6 +68,7 @@ class Qwen3Converter(HFConverter):
                 "Must be 'to_forgather' or 'from_forgather'"
             )
 
+    @override
     def validate_source_config(self, config: Any, direction: str) -> None:
         """Validate source Qwen3 model configuration.
 
@@ -83,7 +88,7 @@ class Qwen3Converter(HFConverter):
                 config.hidden_act == "silu"
             ), f"Expected hidden_act 'silu', got '{config.hidden_act}'"
 
-    
+    @override
     def get_project_info(
         self,
     ) -> dict[str, Any]:
@@ -91,37 +96,6 @@ class Qwen3Converter(HFConverter):
             project_dir=MetaConfig.find_project_dir(os.path.abspath(__file__)),
             config_name="",
         )
-
-    def create_project_config(
-        self, src_config: Any, max_length: Optional[int] = None
-    ) -> Dict[str, Any]:
-        """Create Forgather Project configuration from HuggingFace Qwen3 config.
-
-        Args:
-            src_config: HuggingFace Qwen3 configuration
-            max_length: Optional max sequence length override
-
-        Returns:
-            Dictionary of parameters to pass to Project() constructor
-        """
-        # Determine max model length
-        max_model_length = src_config.max_position_embeddings
-        if max_length:
-            max_model_length = max_length
-
-        return {
-            "attention_dropout": getattr(src_config, "attention_dropout", 0.0),
-            "max_model_length": max_model_length,
-            "hidden_size": src_config.hidden_size,
-            "num_attention_heads": src_config.num_attention_heads,
-            "num_kv_heads": src_config.num_key_value_heads,
-            "d_head": src_config.hidden_size // src_config.num_attention_heads,
-            "num_hidden_layers": src_config.num_hidden_layers,
-            "dim_feedforward": src_config.intermediate_size,
-            "rope_theta": src_config.rope_theta,
-            "tie_word_embeddings": getattr(src_config, "tie_word_embeddings", False),
-            "rms_norm_eps": src_config.rms_norm_eps,
-        }
 
     def create_hf_config(self, src_config: Any, max_length: int = None) -> Qwen3Config:
         """Create HuggingFace Qwen2 config from Forgather config.

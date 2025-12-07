@@ -20,8 +20,8 @@
 
 [model_tokenizer]
 tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
-    arg0: "{{ tokenizer_id_or_path | default('Qwen/Qwen3-8B') }}"
-    model_max_length: {{ max_model_length | default(32768) }}
+    arg0: {{ tokenizer_id_or_path | toyaml('Qwen/Qwen3-8B') }}
+    model_max_length: {{ max_model_length | toyaml(32768) }}
 
 [qk_norm_factory]
 .define: &qk_norm_factory !partial:torch.nn:RMSNorm@qk_norm_factory
@@ -30,12 +30,11 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
 [model_config]
     == super()
     # **Qwen3 Defaults (8B)**
-    hidden_size: {{ hidden_size | default(4096) }}
-    num_attention_heads: {{ num_attention_heads | default(32) }}
-    num_kv_heads: {{ num_kv_heads | default(8) }}
-    d_head: {{ d_head | default(128) }}
-    num_hidden_layers: {{ num_hidden_layers | default(36) }}
-    dim_feedforward: {{ dim_feedforward | default(12288) }}
-    rope_theta: !!float {{ rope_theta | default(1000000.0) }}
-    rms_norm_eps: !!float {{ rms_norm_eps | default(1.0e-06) }}
+    hidden_size: {{ hidden_size | toyaml(4096) }}
+    num_attention_heads: {{ num_attention_heads | toyaml(32) }}
+    num_key_value_heads: {{ num_key_value_heads | toyaml(8) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(36) }}
+    intermediate_size: {{ intermediate_size | toyaml(12288) }}
+    rope_theta: {{ rope_theta | toyaml(1000000.0) }}
+    rms_norm_eps: {{ rms_norm_eps | toyaml(1.0e-06) }}
 
