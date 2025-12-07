@@ -104,11 +104,6 @@ class HFConverter(ModelConverter):
         # Translate src config into config args
         config_args = self.create_project_config(src_model_config, max_length)
 
-        # For YAML args, we need to translate None to 'null'
-        for key, value in config_args.items():
-            if value is None:
-                config_args[key] = "null"
-
         proj = Project(
             config_name=project_info["config_name"],
             project_dir=project_info["project_dir"],
