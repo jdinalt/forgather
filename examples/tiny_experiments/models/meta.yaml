@@ -1,8 +1,0 @@
--- extends "meta_defaults.yaml"
-
--- block configs
-name: "models"
-description: "Tiny Models Collection"
-config_prefix: "configs"
-default_config: "tiny.yaml"
-<< endblock configs

@@ -26,6 +26,8 @@ from .dynamic_args import (
 
 from .utils import add_output_arg, add_editor_arg
 
+path_type = lambda x: os.path.normpath(os.path.expanduser(x))
+
 
 def parse_global_args(args=None):
     """Parse global arguments and return global args + remaining args for subcommand."""
@@ -93,6 +95,7 @@ def get_subcommand_registry():
         "inf": create_inf_parser,
         "convert": create_convert_parser,
         "update-vocab": create_update_vocab_parser,
+        "checkpoint": create_checkpoint_parser,
     }
 
 
@@ -240,6 +243,45 @@ def create_pp_parser(global_args):
     add_output_arg(parser)
     add_editor_arg(parser)
     parse_dynamic_args(parser, global_args)
+    return parser
+
+
+def create_checkpoint_parser(global_args):
+    """Create parser for checkpoint command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather cp",
+        description="Checkpoint tools",
+        formatter_class=RawTextHelpFormatter,
+    )
+
+    parse_dynamic_args(parser, global_args)
+
+    subparsers = parser.add_subparsers(
+        dest="cp_subcommand", help="Checkpoint subcommands"
+    )
+
+    # cp project subcommand
+    link_parser = subparsers.add_parser(
+        "link",
+        help="Add synlinks to latest checkpoint to output directory ",
+        formatter_class=RawTextHelpFormatter,
+    )
+    link_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Just show what the command would do, without doing it.",
+    )
+    link_parser.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Force overwrite, if existing.",
+    )
+    link_parser.add_argument(
+        "--output-path",
+        type=path_type,
+        help="Just show the generated commandline, without actually executing it.",
+    )
     return parser
 
 
@@ -403,8 +445,6 @@ def create_dataset_parser(global_args):
 
 
 def create_ws_parser(global_args):
-    path_type = lambda x: os.path.normpath(os.path.expanduser(x))
-
     """Create parser for workspace command."""
     parser = argparse.ArgumentParser(
         prog="forgather ws",
@@ -1009,6 +1049,10 @@ def main():
                 trefs_cmd(args)
             case "pp":
                 pp_cmd(args)
+            case "checkpoint":
+                from .checkpoint import checkpoint_cmd
+
+                checkpoint_cmd(args)
             case "tb":
                 tb_cmd(args)
             case "code":
