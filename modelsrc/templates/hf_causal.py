@@ -124,7 +124,7 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
         if self.is_base_model:
             return outputs
         # Normal, CausalLM outputs (logits, loss)
-        elif self.output_logits:
+        elif self.output_logits and self.lm_head:
             hidden_states = outputs.last_hidden_state
             slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
             logits = self.lm_head(hidden_states[:, slice_indices, :])
@@ -153,7 +153,7 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
         self.causal_lm.initialize_weights()
     
     def get_attn_mask_fn(self):
-        return self.modcausal_lmel.get_attn_mask_fn()
+        return self.causal_lm.get_attn_mask_fn()
     
     def get_input_embeddings(self) -> nn.Embedding:
         return self.causal_lm.get_input_embeddings()

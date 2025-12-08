@@ -152,7 +152,7 @@ def split_model(model: nn.Module, module_names: List[str]) -> None:
         split_model(model, ["input_encoder", "layer_stack.layers.0", "layer_stack.layers.1"])
     """
     # Access the actual CasualLM model
-    causal_lm = model.model
+    causal_lm = model.causal_lm
 
     # Create a set of modules to keep for faster lookup
     modules_to_keep = set(module_names)
