@@ -11,4 +11,4 @@ This allows for direct comparison of model architectures.
 - Tiny HF GPT2 -- A Huggingface GPT2 model
 - Tiny Deepone -- This is a post-layer-norm model, using Deepnet initialization and ALiBI relative positional encoding
 - Tiny Forgather Qwen3 -- A Forgather Qwen3 model
-- Tiny Mistral -- A tiny Mistral model. This is essential the same as Llama, but uses sliding-window attention
+- Tiny Mistral -- A tiny Mistral model. This is essential the same as Llama, but uses sliding-window attention and GQA
