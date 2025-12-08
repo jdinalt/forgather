@@ -1,0 +1,19 @@
+-- extends "configs/4M.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Tiny Pipeline Llama"
+    -- set ns.config_description = "A tiny llama for testing pipeline parallel"
+    -- set ns.model_name = "tiny_pipeline_llama"
+
+[model_definition]
+    -- include "config.tiny_pipeline_llama.model"
+
+#------------- config.tiny_pipeline_llama.model --------------
+-- extends "config.4m.model"
+
+
+[model_config]
+    == super()
+    # **Tiney Pipeline Llama**
+    num_hidden_layers: 8

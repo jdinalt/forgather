@@ -1,0 +1,10 @@
+-- extends "meta_defaults.yaml"
+[searchdir_project]
+    == super()
+    - "{{ joinpath(ns.forgather_dir, 'examples/models/causal_lm/templates') }}"
+
+[configs]
+name: "causal"
+description: "Vanilla causal models"
+config_prefix: "configs"
+default_config: "pipeline_model.yaml"
