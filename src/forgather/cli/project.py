@@ -77,12 +77,11 @@ def project_create_cmd(args):
 
     meta_template = """-- extends "meta_defaults.yaml"
 
--- block configs
+[configs]
 name: "{{ project_name }}"
 description: "{{ project_description }}"
 config_prefix: "{{ config_prefix }}"
 default_config: "{{ default_config }}"
-<< endblock configs
 """
 
     # Render templates with whitespace control
