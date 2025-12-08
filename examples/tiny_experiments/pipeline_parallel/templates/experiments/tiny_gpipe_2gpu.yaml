@@ -6,12 +6,10 @@
     -- set ns.config_description = "Quick pipeline test for debug"
     -- set ns.log_name = "tiny_gpipe_2gpu"
     -- set ns.model_name = "tiny_pipeline"
+    -- set ns.model_project_config = "tiny_pipeline_model.yaml"
 
 [trainer_definition]
     -- include 'experiment.trainer_config'
-
-[construct_new_model]
-    -- include 'models/tiny_pipeline_model.yaml'
 
 #-------------------- experiment.trainer_config --------------------
 -- extends 'base_pipeline_project.trainer_config'

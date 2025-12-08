@@ -9,9 +9,8 @@
     -- set ns.config_description = "Tiny Llama on 3 GPUs -- baseline test"
     -- set ns.log_name = "tiny_llama_gpipe_3gpu"
     -- set ns.model_name = "tiny_llama"
-
-[construct_new_model]
-    -- include 'models/llama_pipeline_model.yaml'
+    -- set ns.model_project_dir = joinpath(project_dir, 'models/llama')
+    -- set ns.model_project_config = "tiny_pipeline_llama.yaml"
 
 [trainer_definition]
     -- include 'experiment.llama_trainer_config'

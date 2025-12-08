@@ -19,9 +19,6 @@
 [trainer_definition]
     -- include 'base_pipeline_project.trainer_config'
 
-[load_model]
-    -- include 'models/causal_lm/from_pretrained_config.yaml'
-
 #-------------------- base_pipeline_project.trainer_config --------------------
 -- extends 'project.trainer_config'
 

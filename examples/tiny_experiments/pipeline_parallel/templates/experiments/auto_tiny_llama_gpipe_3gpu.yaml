@@ -31,6 +31,7 @@
     -- set ns.log_name = "auto_tiny_llama_gpipe_3gpu"
     # Change default to auto-split
     -- set ns.trainer_class = 'trainers/auto_pipeline_trainer.yaml'
+    -- set ns.model_project_config = "tiny_pipeline_model.yaml"
 
 [trainer_definition]
     -- include 'auto.llama_trainer_config'

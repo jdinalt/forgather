@@ -10,9 +10,6 @@
 [trainer_definition]
     -- include 'experiment.checkpoint_test_trainer_config'
 
-[construct_new_model]
-    -- include 'models/tiny_pipeline_model.yaml'
-
 #-------------------- experiment.checkpoint_test_trainer_config --------------------
 -- extends 'base_pipeline_project.trainer_config'
 

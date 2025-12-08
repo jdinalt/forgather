@@ -5,15 +5,14 @@
     == super()
     -- set ns.model_name = "test_model"
     -- set ns.dataset_config = "tinystories-iter.yaml"
+    -- set ns.model_project_dir = joinpath(project_dir, 'models/causal')
+    -- set ns.model_project_config = "pipeline_model.yaml"
 
 [trainer_definition]
     -- include 'project.trainer_config'
 
 [trainer_callbacks]
     -- include 'project.callbacks'
-
-[construct_new_model]
-    -- include 'models/med_pipeline_model.yaml'
 
 [datacollator]
 # Pipeline Parallel requires constant input tensor shapes. Use the datacollator to
