@@ -2,9 +2,9 @@
 
 -- block config_metadata
     == super()
-    -- set ns.config_name = "Tiny GPT2"
-    -- set ns.config_description = "A tiny GPT2 model."
-    -- set ns.model_name = "tiny_gpt2"
+    -- set ns.config_name = "Tiny HF GPT2"
+    -- set ns.config_description = "A tiny Huggingface GPT2 model."
+    -- set ns.model_name = "tiny_hf_gpt2"
 -- endblock config_metadata
 
 

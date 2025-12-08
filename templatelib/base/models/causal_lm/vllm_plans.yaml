@@ -44,15 +44,15 @@ no_split_modules: ["PreLNLayer"]
 ##   model.layer_stack.layers.{N}.feedforward.{gate,up,down}_proj
 tp_plan:
     # Attention layers
-    "model.layer_stack.layers.*.attention.query_linear": "colwise"
-    "model.layer_stack.layers.*.attention.key_linear": "colwise"
-    "model.layer_stack.layers.*.attention.value_linear": "colwise"
-    "model.layer_stack.layers.*.attention.output_linear": "rowwise"
+    "causal_lm.layer_stack.layers.*.attention.query_linear": "colwise"
+    "causal_lm.layer_stack.layers.*.attention.key_linear": "colwise"
+    "causal_lm.layer_stack.layers.*.attention.value_linear": "colwise"
+    "causal_lm.layer_stack.layers.*.attention.output_linear": "rowwise"
 
     # Feedforward layers (SwiGLU / GLU variants)
-    "model.layer_stack.layers.*.feedforward.gate_proj": "colwise"
-    "model.layer_stack.layers.*.feedforward.up_proj": "colwise"
-    "model.layer_stack.layers.*.feedforward.down_proj": "rowwise"
+    "causal_lm.layer_stack.layers.*.feedforward.gate_proj": "colwise"
+    "causal_lm.layer_stack.layers.*.feedforward.up_proj": "colwise"
+    "causal_lm.layer_stack.layers.*.feedforward.down_proj": "rowwise"
 
 ## Pipeline Parallel Plan for vLLM
 ## Maps module names to (input_names, output_names) specifications
@@ -71,6 +71,6 @@ pp_plan:
     "model.layer_stack":
         - ["hidden_states", "attention_mask"]
         - ["hidden_states"]
-    "model.output_decoder":
+    "lm_head":
         - ["hidden_states"]
         - ["logits"]

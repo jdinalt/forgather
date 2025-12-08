@@ -12,6 +12,7 @@
 
 [model_config]
     == super()
+    # **Tiny Llama**
     hidden_size: 256
     intermediate_size: 1024
     num_attention_heads: 2

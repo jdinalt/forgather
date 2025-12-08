@@ -2,9 +2,9 @@
 
 -- block config_metadata
     == super()
-    -- set ns.config_name = "Tiny Dynamic Llama"
-    -- set ns.config_description = "A tiny dynamic llama model"
-    -- set ns.model_name = "tiny_dllama"
+    -- set ns.config_name = "Tiny Forgather Llama"
+    -- set ns.config_description = "A tiny Forgather llama model"
+    -- set ns.model_name = "tiny_fg_llama"
     -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'llama')
     -- set ns.model_project_config = "4M.yaml"
 -- endblock config_metadata

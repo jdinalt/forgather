@@ -1,0 +1,44 @@
+## Given a PretrainedConfig class, construct a new PretrainedModel of that
+## class and save the config and tokenizer in the output directory
+-- extends 'models/base_language_model.yaml'
+
+[model_meta_config]
+    == super()
+    -- set ns.model_name = "HF Language Model"
+    -- set ns.model_description = "A newly initialized HF language model"
+    -- set ns.model_source = ""
+##  -- set ns.model_config_cls = '<model configuration cls>'
+
+[model_header]
+    == super()
+# ns.model_source = "{{ ns.model_source  }}"
+# ns.model_config_cls = "{{ ns.model_config_cls }}"
+
+[model_tokenizer]
+.define: &tokenizer !call:transformers:AutoTokenizer.from_pretrained
+    ## arg0: "tokenizer_path_or_id"
+
+[model_config]
+model_config: &model_config !call:{{ ns.model_config_cls }}
+    vocab_size: !call:len [ *tokenizer ]
+
+[model_constructor]
+# This saves both the config and tokenizer to the output directory
+pretrained_config: &pretrained_config !singleton:forgather.ml.construct:build_rule
+    target: "{{ joinpath(ns.output_dir, 'config.json') }}"
+    recipe: !partial:forgather.ml.construct:dependency_list
+        # Construct and save pretrained config to output_dir
+        - !singleton:call [ !singleton:getattr [ *model_config, "save_pretrained"], "{{ ns.output_dir }}" ]
+        # Construct and save pretrained tokenizer to output_dir
+        - !singleton:call [ !singleton:getattr [ *tokenizer, "save_pretrained"], "{{ ns.output_dir }}" ]
+    loader: !partial:transformers:AutoConfig.from_pretrained
+        arg0: "{{ ns.output_dir }}"
+
+# Callable, which constructs model instance from config in output_dir
+model: &model !partial:transformers:AutoModelForCausalLM.from_config
+    arg0: *pretrained_config
+    ## latent_args defers binding until constructed, then merges the resulting dictionary
+    ## This allows us to, optionally, pass in a dictionary or default to model_constructor_args
+    latent_args: !var
+        name: "model_constructor_args"
+        default: *model_constructor_args

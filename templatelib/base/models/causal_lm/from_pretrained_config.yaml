@@ -1,7 +1,6 @@
 ## Given an id-or-path, construct a newly initialized model from that config.
-## This can be substituted for "from_pretrained.yaml" to construct a model from
-## a configuration, without loading the weights. This can be useful for 
-## constructing the model on the "meta" device for inspection or for
+## This can be used to construct a model from a configuration, without loading the weights.
+## This can be useful for constructing the model on the "meta" device for inspection or for
 ## customizing how the weights are loaded.
 -- extends 'models/base_language_model.yaml'
 
