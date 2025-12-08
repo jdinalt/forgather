@@ -7,9 +7,9 @@
     -- set ns.model_name = "4m"
 
 [model_definition]
-    -- include "config.model"
+    -- include "config.4M.model"
 
-#------------- config.model --------------
+#------------- config.4M.model --------------
 -- extends "models/transformers/dynamic_causal_transformer.yaml"
 
 [model_tokenizer]

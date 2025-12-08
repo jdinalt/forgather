@@ -7,9 +7,9 @@
     -- set ns.model_name = "llama_4m"
 
 [model_definition]
-    -- include "config.model"
+    -- include "config.4M.model"
 
-#------------- config.model --------------
+#------------- config.4M.model --------------
 -- extends "config.default.model"
 
 [model_tokenizer]

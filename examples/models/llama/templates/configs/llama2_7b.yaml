@@ -8,9 +8,9 @@
     -- set ns.model_name = model_name | default("llama2_7b")
 
 [model_definition]
-    -- include "config.default.model"
+    -- include "config.llam2_7b.model"
 
-#------------- config.default.model --------------
+#------------- config.llam2_7b.model --------------
 -- extends "models/transformers/dynamic_llama.yaml"
 
 [model_meta_config]

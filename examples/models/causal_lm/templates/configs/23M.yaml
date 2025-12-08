@@ -7,9 +7,9 @@
     -- set ns.model_name = "23m"
 
 [model_definition]
-    -- include "config.model"
+    -- include "config.23M.model"
 
-#------------- config.model --------------
+#------------- config.23M.model --------------
 -- extends "models/transformers/dynamic_causal_transformer.yaml"
 
 ## This model does not have a default tokenizer, so add one.
