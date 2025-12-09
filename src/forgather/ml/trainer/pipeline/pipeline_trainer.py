@@ -286,7 +286,9 @@ class PipelineTrainer(Trainer):
         # Only the last state needs to compute loss
         # TODO: Placing this here is not going to work for the auto-splitter. That will require more work...
         if self.pp_has_last_stage:
-            self.loss_fn = self._get_fused_loss_fn(pipeline_modules[-1], self.loss_fn)
+            self.loss_fn = self._maybe_get_fused_loss_fn(
+                pipeline_modules[-1], self.loss_fn
+            )
 
         # Loss needs to be scaled by the number of micro-batches
         self.loss_fn = RescaleLoss(self.loss_fn, 1 / self.args.n_microbatches)
@@ -572,6 +574,9 @@ class PipelineTrainer(Trainer):
         # Create attention mask externally if supported by splitter
         # This follows TorchTitan pattern to avoid pipeline transport issues
         extra_kwargs = {}
+        if self.use_fused_loss:
+            extra_kwargs["return_hidden_states"] = True
+
         if self.attention_mask_creator is not None:
             attention_mask = self.attention_mask_creator(**input_dict)
             extra_kwargs["attention_mask"] = attention_mask
@@ -641,6 +646,8 @@ class PipelineTrainer(Trainer):
         # Create attention mask externally if supported by splitter
         # This follows TorchTitan pattern to avoid pipeline transport issues
         extra_kwargs = {}
+        if self.use_fused_loss:
+            extra_kwargs["return_hidden_states"] = True
         if self.attention_mask_creator is not None:
             attention_mask = self.attention_mask_creator(
                 input_ids=input_dict["input_ids"]

@@ -10,7 +10,7 @@
     -- include "config.tiny_pipeline_llama.model"
 
 #------------- config.tiny_pipeline_llama.model --------------
--- extends "config.4m.model"
+-- extends "config.4M.model"
 
 
 [model_config]

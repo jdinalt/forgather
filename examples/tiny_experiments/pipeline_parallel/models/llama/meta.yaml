@@ -7,4 +7,4 @@
 name: "llama"
 description: "Llama models"
 config_prefix: "configs"
-default_config: "pipeline_llama.yaml"
+default_config: "tiny_pipeline_llama.yaml"

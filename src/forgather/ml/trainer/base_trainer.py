@@ -546,7 +546,7 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
 
 def logits_from_outputs(outputs) -> Tensor:
     if not isinstance(outputs, Tensor):
-        assert hasattr(outputs, "logits")
+        assert hasattr(outputs, "logits"), f"Type is {type(outputs)}"
         return outputs.logits
     return outputs
 

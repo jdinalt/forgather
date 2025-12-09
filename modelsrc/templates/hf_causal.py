@@ -53,10 +53,9 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
     _pp_plan = {{ pp_plan | default(None) }}
     _supports_attention_backend = {{ supports_attention_backend | default(False) }}
     _can_record_outputs = {{ can_record_outputs | default(None) }}
+    can_return_hidden_states = True
 
-    def __init__(self, config: PretrainedConfig, attn_implementation: str=None):
-        if attn_implementation:
-            config._attn_implementation = attn_implementation
+    def __init__(self, config: PretrainedConfig):
         super().__init__(config)
 
         model_dict = self.construct_model(
@@ -70,7 +69,6 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
         import traceback
         stack = traceback.extract_stack()
         self.is_base_model = any('AutoModel.from_config' in str(frame.line) for frame in stack)
-        self.output_logits = True
 
         self.causal_lm = model_dict['causal_model']()
         if not self.is_base_model:
@@ -106,8 +104,29 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         return_dict: bool = None,
+        return_hidden_states: bool = None,
         **kwargs,
     ):
+        """Most arguments are the same as HF Llama
+
+        TODO Details
+
+            Args:
+                return_dict: Return CausalLMOutputWithPast -- see 'Returns'
+                return_hidden_states: Return hidden states. Takes precedence over return_dict
+
+            Returns:
+                This is complex, as we need to support a number of use-cases.
+                - With just input_ids, it returns logits
+                - We can also return CausalLMOutputWithPast, if return_dict
+                - If labels are provided, we return (loss, logits), if not return_dict, else CausalLMOutputWithPast
+                - If constructed with AutoModel.*, as is the case with vLLM, we return BaseModelOutputWithPast
+                - If our head has been deleted, as can be the case for pipeline parallel, we return hidden_states
+                - If we have been explicitly asked for hidden states, as is the case with fusing loss with
+                    logits, we return hidden states. While we would like this to be the same as the vLLM case,
+                    vLLm requires a tuple and Torch PP barfs if a tuple is returned.
+
+        """
 
         outputs: BaseModelOutputWithPast = self.causal_lm(
             input_ids=input_ids,
@@ -124,7 +143,7 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
         if self.is_base_model:
             return outputs
         # Normal, CausalLM outputs (logits, loss)
-        elif self.output_logits and self.lm_head:
+        elif not return_hidden_states and self.lm_head:
             hidden_states = outputs.last_hidden_state
             slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
             logits = self.lm_head(hidden_states[:, slice_indices, :])
@@ -147,7 +166,7 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
                 return logits
         # PP or fused logits and loss
         else:
-            return outputs.hidden_states
+            return outputs[0]
     
     def initialize_weights(self):
         self.causal_lm.initialize_weights()

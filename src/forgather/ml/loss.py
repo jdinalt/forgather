@@ -257,11 +257,11 @@ class LinearCrossEntropyLoss:
         self.bias = getattr(output_embeddings, "bias", None)
 
         # Select and initialize implementation
-        self.actual_impl, self._compute_fn = self._select_implementation(impl)
+        self.actual_impl, self._compute_fn = self._select_implementation(impl, **kwargs)
         if self.compile:
             self._compute_fn = torch.compile(self._compute_fn)
 
-    def _select_implementation(self, impl: str) -> tuple[str, callable]:
+    def _select_implementation(self, impl: str, **kwargs) -> tuple[str, callable]:
         """
         Select and initialize the loss implementation.
 
@@ -273,11 +273,19 @@ class LinearCrossEntropyLoss:
         logger = logging.getLogger(__name__)
 
         if impl == "auto":
-            # Try implementations in order: CCE → Liger → PyTorch
-            # CCE because it's almost as fast as Liger, but works with validation.
-            for candidate in ["cce", "liger", "pytorch"]:
+            if self.bias:
+                # Only pytorch support bias at present
+                candidates = ["pytorch"]
+            else:
+                # Try implementations in order: CCE → Liger → PyTorch
+                # CCE because it's almost as fast as Liger, but works with validation.
+                candidates = ["cce", "liger", "pytorch"]
+
+            for candidate in candidates:
                 try:
-                    actual_impl, compute_fn = self._select_implementation(candidate)
+                    actual_impl, compute_fn = self._select_implementation(
+                        candidate, **kwargs
+                    )
                     logger.info(
                         f"LinearCrossEntropyLoss: auto-selected '{actual_impl}' implementation"
                     )
@@ -294,10 +302,23 @@ class LinearCrossEntropyLoss:
             )
 
         elif impl == "cce":
+            assert not self.bias, "Bias is not supported by CCE v25.1.1"
+
             try:
                 from cut_cross_entropy import linear_cross_entropy
 
-                logger.info("LinearCrossEntropyLoss: using Apple CCE implementation")
+                self.cce_impl = kwargs.get("cce_impl", "cce")
+                if self.cce_impl == "cce" and not (
+                    self.weight.dtype == torch.bfloat16
+                    or self.weight.dtype == torch.float16
+                ):
+                    logger.warning(
+                        "Optimized Cross-Cut-Entropy implementation requires bfloat16 or float16 dtype. Using 'torch_compile'"
+                    )
+                    self.cce_impl = "torch_compile"
+                logger.info(
+                    f"LinearCrossEntropyLoss: using Apple CCE ({self.cce_impl}) implementation"
+                )
                 return "cce", self._compute_cce
             except ImportError as e:
                 raise ImportError(
@@ -306,6 +327,8 @@ class LinearCrossEntropyLoss:
                 ) from e
 
         elif impl == "liger":
+            assert not self.bias, "Liger does not support bias"
+
             try:
                 from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
 
@@ -342,10 +365,11 @@ class LinearCrossEntropyLoss:
             hidden_states,
             self.weight,
             labels,
-            bias=self.bias,
+            # Bias is not supported by v25.1.1
+            # bias=self.bias,
             shift=1,  # Automatic causal shifting
             ignore_index=self.ignore_index,
-            impl="cce",  # Use optimized Triton kernels
+            impl=self.cce_impl,
             reduction="mean",
             **self.kwargs,
         )

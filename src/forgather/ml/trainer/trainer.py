@@ -208,6 +208,7 @@ class Trainer(BaseTrainer):
     epoch_train_steps: int
     do_train: bool
     do_eval: bool
+    use_fused_loss: bool
 
     @classmethod
     def default_callbacks(cls):
@@ -251,6 +252,7 @@ class Trainer(BaseTrainer):
         self.lr_scheduler_factory = lr_scheduler_factory
         self.enable_activation_checkpoint_fn = enable_activation_checkpoint_fn
         self.fused_loss_factory = fused_loss_factory
+        self.use_fused_loss = False
         super().__init__(args=args, **kwargs)
 
     @override
@@ -483,15 +485,21 @@ class Trainer(BaseTrainer):
             else:
                 # Enable activation checkpointing for all modules in the pipeline.
                 self.enable_activation_checkpoint_fn(self.dist.rank, self.model)
-        self.loss_fn = self._get_fused_loss_fn(self.model, self.loss_fn)
+        self.loss_fn = self._maybe_get_fused_loss_fn(self.model, self.loss_fn)
 
         # Rescale loss by gradient accumulation steps.
         self.loss_fn = RescaleLoss(
             self.loss_fn, 1 / self.args.gradient_accumulation_steps
         )
 
-    def _get_fused_loss_fn(self, module: torch.nn.Module, default_loss_fn: Callable):
+    def _maybe_get_fused_loss_fn(
+        self, module: torch.nn.Module, default_loss_fn: Callable
+    ):
         """Experimental API for handling fused classifier-loss-function
+
+        If model supports fused-loss, and fused loss function is returned, sets:
+
+            self.use_fused_loss = True
 
         Args:
             module: The prospective module to enable fused-loss on
@@ -501,25 +509,22 @@ class Trainer(BaseTrainer):
             The fused loss function or default_loss_fn, if unsupported
         """
         if self.fused_loss_factory:
-            # Very experimental API -- this is certain to change!
             if not hasattr(module, "get_output_embeddings"):
                 logger.warning(
                     "Model does not support get_output_embeddings() for fused_loss_factory()"
                 )
                 return default_loss_fn
-            if not hasattr(module, "model"):
+            if not getattr(module, "can_return_hidden_states", False):
                 logger.warning(
-                    "Model does not appear to have a wrapped model. required by experimental fused_loss_factory API"
+                    f"Model does not support 'return_hidden_states' API; fused loss will not be used."
                 )
                 return default_loss_fn
-            if not hasattr(module.model, "output_logits"):
-                logger.warning(
-                    "Model is missing 'output_logits' flag, required by experimental fused_loss_factory API"
-                )
-                return default_loss_fn
-            module.model.output_logits = False
+            logger.info("Enabled fused loss-logits function")
+            self.use_fused_loss = True
             return self.fused_loss_factory(module.get_output_embeddings())
-
+        logger.warning(
+            f"Fused loss factory not provided. Provide a fused-loss factory for enhanced performance."
+        )
         return default_loss_fn
 
     def _init_optimizer(self) -> None:
@@ -907,6 +912,8 @@ class Trainer(BaseTrainer):
     def _forward_backward_step(
         self, input_dict: dict[str, Tensor], labels: Tensor
     ) -> Tensor:
+        if self.use_fused_loss:
+            input_dict["return_hidden_states"] = True
         outputs = self.model(**input_dict)
         logits = logits_from_outputs(outputs)
         loss = self.loss_fn(logits, labels)
@@ -1052,6 +1059,8 @@ class Trainer(BaseTrainer):
         """
         Perform a single batch of predictions
         """
+        if self.use_fused_loss:
+            input_dict["return_hidden_states"] = True
         with self.loss_fn.no_rescale():
             outputs = self.model(**input_dict)
         logits = logits_from_outputs(outputs)

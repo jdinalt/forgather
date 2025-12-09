@@ -246,3 +246,8 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     # Enable all SDPA backends and let PyTorch choose which to use.
     sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
     sdpa_set_priority: False # If list, interpret as priority order
+
+    # If supported, use fused-causal-cross-entropy
+    # else, fallback to basic causal-cross-entropy
+    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
+    
