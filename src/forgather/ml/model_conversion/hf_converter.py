@@ -517,6 +517,11 @@ class HFConverter(ModelConverter):
             hf_model_class = self.get_hf_model_class()
             hf_model = hf_model_class(hf_config)
 
+        # The hf_no_init_weights() context manager disabled tie_weights() in post_init(), so
+        # we need to call it explicitly.
+        if hasattr(hf_model, "tie_weights"):
+            hf_model.tie_weights()
+
         if kwargs.get("debug_params"):
             self._print_params(
                 hf_model, f"Destination HuggingFace {self.model_type} model"
