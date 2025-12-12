@@ -25,6 +25,10 @@ model_type = "{{ model_type }}"
 
 class DynamicCausalLMConfig(PretrainedConfig):
     model_type = model_type
+    keys_to_ignore_at_inference = ["past_key_values"]
+    use_cache = {{ use_cache | default(True) }}
+    base_model_tp_plan = {{ base_model_tp_plan | default(None) }}
+    base_model_pp_plan = {{ base_model_pp_plan | default(None) }}
 
 # PreTrainedModel: https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_utils.py
 class DynamicCasualLM(GenerationMixin, PreTrainedModel):
@@ -48,12 +52,11 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
     _supports_sdpa = {{ supports_sdpa | default(False) }}
     _supports_flex_attn = {{ supports_flex_attn | default(False) }}
     _can_compile_fullgraph = {{ can_compile_fullgraph | default(False) }}
-    _tp_plan = {{ tp_plan | default(None) }}
-    _tp_size = {{ tp_size | default(None) }}
-    _pp_plan = {{ pp_plan | default(None) }}
     _supports_attention_backend = {{ supports_attention_backend | default(False) }}
     _can_record_outputs = {{ can_record_outputs | default(None) }}
     can_return_hidden_states = True
+    _tp_plan = {"lm_head": "colwise_rep"}
+    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
 
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
@@ -127,6 +130,10 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
                     vLLm requires a tuple and Torch PP barfs if a tuple is returned.
 
         """
+
+        # TODO: Allow the default to be True, then uncomment
+        # if return_dict is None:
+        #    return_dict = getattr(self.config, "return_dict", None)
 
         outputs: BaseModelOutputWithPast = self.causal_lm(
             input_ids=input_ids,

@@ -1,9 +1,12 @@
 import torch
+import os
 from torch import nn, FloatTensor
 from typing import Callable, Optional
 import math
+import logging
 
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
 
 class CausalMultiheadAttn(nn.Module):
     """
@@ -62,7 +65,7 @@ class CausalMultiheadAttn(nn.Module):
         self.num_key_value_groups = self.num_heads // self.num_kv_heads
 
         # Query projections for all heads
-        self.query_linear = nn.Linear(d_model, d_model, bias=bias)
+        self.query_linear = nn.Linear(d_model, self.num_heads * self.d_head, bias=bias)
 
         # Key/Value projections for KV heads (potentially fewer than query heads)
         self.key_linear = nn.Linear(d_model, self.num_kv_heads * self.d_head, bias=bias)
@@ -71,7 +74,7 @@ class CausalMultiheadAttn(nn.Module):
         )
 
         # Output projection
-        self.output_linear = nn.Linear(d_model, d_model, bias=bias)
+        self.output_linear = nn.Linear(self.num_heads * self.d_head, d_model, bias=bias)
 
         # Store dropout probability for SDPA function
         self.dropout_p = dropout
@@ -96,26 +99,29 @@ class CausalMultiheadAttn(nn.Module):
 
     def forward(
         self,
-        qkv: FloatTensor,
+        hidden_states: FloatTensor,
         attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional["DynamicCache"] = None,
         position_ids: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> FloatTensor:
-        batch_size, seq_len, d_model = qkv.shape
+        batch_size, seq_len, d_model = hidden_states.shape
+        hidden_shape = (batch_size, seq_len, -1, self.d_head)
 
         # Project to Q, K, V
-        query = self.query_linear(qkv)  # [batch, seq_len, d_model]
-        key = self.key_linear(qkv)  # [batch, seq_len, num_kv_heads * d_head]
-        value = self.value_linear(qkv)  # [batch, seq_len, num_kv_heads * d_head]
+        query = self.query_linear(hidden_states)  # [batch, seq_len, d_model]
+        key = self.key_linear(hidden_states)  # [batch, seq_len, num_kv_heads * d_head]
+        value = self.value_linear(
+            hidden_states
+        )  # [batch, seq_len, num_kv_heads * d_head]
 
         # Reshape for multi-head attention (before applying normalization and position embeddings)
         # Query: [batch, seq_len, num_heads, d_head]
-        query = query.view(batch_size, seq_len, self.num_heads, self.d_head)
+        query = query.view(hidden_shape)
 
         # Key/Value: [batch, seq_len, num_kv_heads, d_head]
-        key = key.view(batch_size, seq_len, self.num_kv_heads, self.d_head)
-        value = value.view(batch_size, seq_len, self.num_kv_heads, self.d_head)
+        key = key.view(hidden_shape)
+        value = value.view(hidden_shape)
 
         # Apply QK normalization per-head (Qwen3-style)
         # Normalizes over the last dimension (d_head) for each head independently
@@ -148,9 +154,7 @@ class CausalMultiheadAttn(nn.Module):
         )
 
         # Note: Attention function implicitly performs attended_values.transpose(1, 2)
-        attended_values = attended_values.reshape(
-            batch_size, seq_len, d_model
-        ).contiguous()
+        attended_values = attended_values.reshape(batch_size, seq_len, -1).contiguous()
 
         # Final output projection
         return self.output_linear(attended_values)

@@ -158,9 +158,10 @@ model_factory: &model_factory !dict@model_factory
     supports_flex_attn: True
     supports_attention_backend: True
     tied_weights_keys: {causal_lm.input_encoder.embedding.weight: "lm_head.weight"}
-
+    no_split_modules: ["PreLNLayer"]
+    
     # vLLM Support
-    tp_plan:
+    base_model_tp_plan:
         "causal_lm.layer_stack.layers.*.attention.query_linear": "colwise"
         "causal_lm.layer_stack.layers.*.attention.key_linear": "colwise"
         "causal_lm.layer_stack.layers.*.attention.value_linear": "colwise"
@@ -168,13 +169,14 @@ model_factory: &model_factory !dict@model_factory
         "causal_lm.layer_stack.layers.*.feedforward.gate_proj": "colwise"
         "causal_lm.layer_stack.layers.*.feedforward.up_proj": "colwise"
         "causal_lm.layer_stack.layers.*.feedforward.down_proj": "rowwise"
-    pp_plan:
+    
+    base_model_pp_plan:
         "causal_lm.input_encoder":
             - ["input_ids"]
             - ["hidden_states"]
-        "causal_lm.layer_stack":
+        "causal_lm.layer_stack.layers":
             - ["hidden_states", "attention_mask"]
             - ["hidden_states"]
-        "lm_head":
+        "causal_lm.layer_stack.layer_norm":
             - ["hidden_states"]
-            - ["logits"]
+            - ["hidden_states"]
