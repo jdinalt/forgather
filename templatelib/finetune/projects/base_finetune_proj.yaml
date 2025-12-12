@@ -237,11 +237,7 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     save_rng_state: True             # Save RNG state with checkpoint
     save_on_each_node: {{ save_on_each_node | default(False) }}
 
-    # We load the model via the newest checkpoint
-    resume_from_checkpoint: {{ resume_from_checkpoint | default(True) }}
-    ## WARNING: If the model has any buffers with "peristent=False," construct the model
-    ## on the "default" device; otherwise, there is no way to initialize these buffers from
-    ## a checkpoint! OTOH, not constructing the model on "meta" is very slow...
+    # Where to construct the model: ["default"|"device"|"meta"]
     construct_model_on: "device"    # Construct model on accelerator device
     # Enable all SDPA backends and let PyTorch choose which to use.
     sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
