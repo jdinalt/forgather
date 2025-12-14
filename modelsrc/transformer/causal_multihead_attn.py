@@ -45,6 +45,8 @@ class CausalMultiheadAttn(nn.Module):
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads or num_heads  # Default to MHA
         self.pos_encoder = pos_encoder
+
+        # Note: A variable with this name is required by vLLM
         self.layer_idx = layer_idx
 
         self.attn_implementation = attn_implementation

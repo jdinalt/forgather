@@ -72,6 +72,7 @@ def apply_llama3_scaling(inv_freq: Tensor, rope_scaling: Dict[str, Any]) -> Tens
 def precompute_cos_sin(
     dim: int,
     end: int,
+    dtype: torch.dtype,
     theta: float = 10000.0,
     rope_scaling: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Tensor, Tensor]:
@@ -111,13 +112,12 @@ def precompute_cos_sin(
     emb = torch.cat((freqs, freqs), dim=-1)
 
     # Compute cos and sin
-    default_dtype = torch.get_default_dtype()
-    cos = emb.cos().to(dtype=default_dtype)
-    sin = emb.sin().to(dtype=default_dtype)
+    cos = emb.cos().to(dtype=dtype)
+    sin = emb.sin().to(dtype=dtype)
     return cos, sin
 
 
-class RealRotaryPE(torch.nn.Module):
+class RealRotaryPE:
     """
     Real-valued RoPE positional encoder module
     """
@@ -131,21 +131,17 @@ class RealRotaryPE(torch.nn.Module):
         rope_scaling: Optional[Dict[str, Any]] = None,
         use_liger: bool = False,
     ):
-        super().__init__()
         self.d_head = hidden_size // num_attention_heads
         self.max_sequence_length = max_sequence_length
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
+        self.dtype = torch.get_default_dtype()
 
         # Precompute cos/sin tensors once for the entire model
-        cos, sin = precompute_cos_sin(
-            self.d_head, max_sequence_length, rope_theta, rope_scaling
+        self.cos_cached, self.sin_cached = precompute_cos_sin(
+            self.d_head, self.max_sequence_length, self.dtype, self.rope_theta, self.rope_scaling,
         )
 
-        # Note: Use nn.Buffer for buffers, rather than register_buffer(). The later does
-        # not work properly with model splitting in torch.distributed.pipelining
-        self.cos_cached = torch.nn.Buffer(cos)
-        self.sin_cached = torch.nn.Buffer(sin)
         self.liger_kernel = None
 
         if use_liger:
@@ -161,7 +157,7 @@ class RealRotaryPE(torch.nn.Module):
                     "Using eager RoPE implementation as fallback"
                 )
 
-    def extra_repr(self):
+    def __repr__(self):
         rope_type = "default"
         if self.rope_scaling:
             rope_type = self.rope_scaling.get(
@@ -171,16 +167,25 @@ class RealRotaryPE(torch.nn.Module):
             f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, "
             f"rope_theta={self.rope_theta}, rope_type={rope_type}, liger_kernel={self.liger_kernel is not None}"
         )
+    
+    def embeddings(self, device: torch.device):
+        if device == self.cos_cached.device:
+            return self.cos_cached, self.sin_cached
+        
+        # If we were on "meta" and have moved to a real device, we need to initialize the embeddings
+        if self.cos_cached.device == torch.device("meta"):
+            with torch.device(device):
+                self.cos_cached, self.sin_cached = precompute_cos_sin(
+                    self.d_head, self.max_sequence_length, self.dtype, self.rope_theta, self.rope_scaling
+                )
+        else:
+            # This can happen when using HF device_map = "auto"
+            self.cos_cached = self.cos_cached.to(device)
+            self.sin_cached = self.sin_cached.to(device)
 
-    def load_weights(self, weights: Iterable[tuple[str, Tensor]]) -> Iterable[str]:
-        """Hack for vllm. We don't need to load these weights!
-        And for "reasons," vLLM has never heard of loading buffers from the weights dictionary. WTF!?
-        And probably best that it does not try, as these are tied accross all layers...
-        TODO: Revisit
-        """
-        return [name for name, _ in weights]
+        return self.cos_cached, self.sin_cached 
 
-    def forward(
+    def __call__(
         self, q: Tensor, k: Tensor, position_ids: Tensor = None
     ) -> Tuple[Tensor, Tensor]:
         """
@@ -195,9 +200,11 @@ class RealRotaryPE(torch.nn.Module):
         Returns:
             Tuple of (rotated_q, rotated_k) tensors with same shapes as input
         """
+        cos_cached, sin_cached = self.embeddings(k.device)
+
         if self.liger_kernel and q.is_cuda:
             return self.liger_kernel(
-                q, k, self.cos_cached, self.sin_cached, position_ids
+                q, k, cos_cached, sin_cached, position_ids
             )
 
         seq_len = q.shape[1]
@@ -206,17 +213,17 @@ class RealRotaryPE(torch.nn.Module):
         if position_ids is None:
             # Default behavior: use sequential positions
             assert (
-                seq_len <= self.cos_cached.shape[0]
-            ), f"seq_len {seq_len} > max_seq_len {self.cos_cached.shape[0]}"
-            cos = self.cos_cached[:seq_len]
-            sin = self.sin_cached[:seq_len]
+                seq_len <= cos_cached.shape[0]
+            ), f"seq_len {seq_len} > max_seq_len {cos_cached.shape[0]}"
+            cos = cos_cached[:seq_len]
+            sin = sin_cached[:seq_len]
             # Reshape cos/sin for broadcasting to match input tensor dimensions
             # Need cos/sin: [1, seq_len, 1, d_head] for broadcasting
             cos = cos.unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1, d_head]
             sin = sin.unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1, d_head]
         else:
-            cos = self.cos_cached[position_ids].unsqueeze(2)
-            sin = self.sin_cached[position_ids].unsqueeze(2)
+            cos = cos_cached[position_ids].unsqueeze(2)
+            sin = sin_cached[position_ids].unsqueeze(2)
 
         q_embed = (q * cos) + (rotate_half(q) * sin)
         k_embed = (k * cos) + (rotate_half(k) * sin)
