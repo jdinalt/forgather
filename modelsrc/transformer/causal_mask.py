@@ -70,7 +70,14 @@ def causal_mask(
         attention_mask = attention_mask.to(dtype=torch.bool)
 
     if cache_position is None:
-        cache_position = torch.arange(0, input_ids.shape[1], device=input_ids.device)
+        if input_ids is None:
+            device = input_embeds.device
+            seq_length = input_embeds.shape[1]
+        else:
+            device = input_ids.device
+            seq_length = input_ids.shape[1]
+
+        cache_position = torch.arange(0, seq_length, device=device)
 
     # Use HuggingFace's create_causal_mask utility
     mask_fn = create_sliding_window_causal_mask if window_size else create_causal_mask

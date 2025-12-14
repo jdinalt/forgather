@@ -144,11 +144,8 @@ model_factory: &model_factory !dict@model_factory
         "causal_lm.input_encoder":
             - ["input_ids"]
             - ["hidden_states"]
-        "causal_lm.layer_stack":
+        "causal_lm.layer_stack.layers":
             - ["hidden_states", "attention_mask"]
             - ["hidden_states"]
-        "causal_lm.output_decoder":
-            - ["hidden_states"]
-            - ["logits"]
     
     

@@ -81,7 +81,7 @@ class CasualLM(nn.Module):
                     position_ids = cache_position.unsqueeze(0)
 
             # Convert input_ids to embeddings and add positional information.
-            if not inputs_embeds:
+            if inputs_embeds is None:
                 hidden_states = self.input_encoder(input_ids, position_ids)
             else:
                 hidden_states = inputs_embeds
