@@ -1,8 +1,0 @@
--- extends "meta_defaults.yaml"
-
--- block configs
-name: "Attention Mechanisms Testing"
-description: "Comprehensive testing of different attention implementations including standard, ALiBi, RoPE, GQA, and eager SDPA variants"
-config_prefix: "experiments"
-default_config: "multihead.yaml"
-<< endblock configs

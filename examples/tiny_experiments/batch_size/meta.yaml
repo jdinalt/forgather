@@ -1,8 +1,0 @@
--- extends "meta_defaults.yaml"
-
--- block configs
-name: "Batch Size"
-description: "Compare impact of altering the batch size"
-config_prefix: "configs"
-default_config: "default.yaml"
-<< endblock configs
