@@ -84,7 +84,9 @@ def flex_attention_forward(
     if kwargs.get("dropout", 0.0) != 0.0:
         raise ValueError("Flex attention does not support dropout")
 
-    assert isinstance(attention_mask, BlockMask)
+    assert isinstance(
+        attention_mask, BlockMask
+    ), f"Expected BlockMask, found {type(attention_mask)}"
 
     num_key_value_groups = query.shape[1] // key.shape[1]
     flex_fn = _compiled_flex_attn if compile_flex else flex_attention

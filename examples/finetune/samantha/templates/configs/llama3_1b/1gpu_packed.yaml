@@ -29,8 +29,8 @@ optimizer: &optimizer !partial:torch.optim:AdamW
     == super()
 
     # **config**
-    per_device_train_batch_size: 16
-    per_device_eval_batch_size: 16
+    per_device_train_batch_size: 12
+    per_device_eval_batch_size: 12
     logging_steps: 2
     eval_steps: 5
     save_steps: 1000

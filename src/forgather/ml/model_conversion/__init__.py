@@ -20,12 +20,6 @@ from .standard_mappings import (
     STANDARD_HF_TO_FORGATHER,
     reverse_mapping,
 )
-from .vllm_validator import (
-    validate_tp_plan,
-    validate_pp_plan,
-    validate_vllm_plans,
-    print_model_structure,
-)
 
 # Also expose discovery module for advanced use
 from . import discovery

@@ -8,89 +8,217 @@ vLLM is a high-throughput inference engine that supports distributed inference t
 - **Tensor Parallelism (TP)**: Splits individual layers across multiple GPUs
 - **Pipeline Parallelism (PP)**: Distributes sequential layers across multiple GPUs
 
-Forgather models generated with proper vLLM configuration can be deployed with vLLM for efficient distributed inference.
+Forgather models generated with [proper vLLM configuration](https://docs.vllm.ai/en/v0.8.4/models/supported_models.html) can be deployed with vLLM for efficient distributed inference.
 
 ## Quick Start
 
+### 1. Install vLLM
+
+vLLM has it's own dependencies, which may conflict with those of Forgather. I would recommend installing it with its own Python virtual environment or even
+in its own container to provide full dependency isolation.
+
+The official instructions for installation can be found [here](https://docs.vllm.ai/en/latest/getting_started/installation/).
+
+These instructions have been tested by directly cloning the [vLLM git repo ](https://github.com/vllm-project/vllm) and [installing from source](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/index.html#build-wheel-from-source).
+
 ### 1. Generate Model with vLLM Support
 
-Most Forgather transformer models (Llama, DeepOne, etc.) now include vLLM support by default. Simply train and export your model as usual:
+Most Forgather transformer models (Llama, Qwen3, etc.) now include vLLM support by default. Simply train and export your model as usual:
 
 ```bash
+# We will use the tiny-models project to demonstrate
+cd examples/tiny_experiments/tiny_models
+
+# Clear old model definitions, to be certain that the models have the latest updates
+rm -rf output_models
+
 # Train model
-forgather -t my_config.yaml train
-
-# The generated model will include vLLM plans automatically
+forgather -t tiny_fg_qwen3.yaml train
 ```
 
-### 2. Validate vLLM Plans
-
-Before deploying to vLLM, validate that the plans match your model structure:
-
-```python
-from forgather.ml.model_conversion import validate_vllm_plans, print_model_structure
-from transformers import AutoModelForCausalLM
-
-# Load your trained model
-model = AutoModelForCausalLM.from_pretrained("output_models/my_model")
-
-# Print model structure to verify layer naming
-print_model_structure(model, max_depth=4)
-
-# Validate vLLM plans
-if hasattr(model, '_tp_plan') and model._tp_plan:
-    is_valid = validate_vllm_plans(
-        model,
-        tp_plan=model._tp_plan,
-        pp_plan=model._pp_plan,
-        strict=True  # Show detailed validation info
-    )
-    if is_valid:
-        print("✓ Model is ready for vLLM deployment")
-    else:
-        print("✗ vLLM plans need adjustment")
-```
-
-### 3. Deploy with vLLM
+The will produce a model definition and checkpoints. vLLM will expect the checkpoints to be in the same directory as the model's source code. You can create appropriate symbolic links to the latest checkpoint like this:
 
 ```bash
-# Tensor parallel only (4 GPUs)
-vllm serve output_models/my_model --tensor-parallel-size 4
+# Create symlinks to latest checkpoint in model directory
+forgather -t tiny_fg_qwen3.yaml checkpoint link
+```
 
-# Tensor + Pipeline parallel (8 GPUs: 2 PP stages, 4 TP per stage)
-vllm serve output_models/my_model \
-    --tensor-parallel-size 4 \
-    --pipeline-parallel-size 2
+Just to be sure that you have a working model, test it with Forgathers inference server first. While not as fast as vLLM, it's much easier to use for a quick model test.
 
-# With additional optimization
-vllm serve output_models/my_model \
-    --tensor-parallel-size 4 \
-    --pipeline-parallel-size 2 \
-    --dtype bfloat16 \
-    --max-model-len 8192 \
-    --enable-chunked-prefill
+```bash
+# Start server
+forgather inf server -m output_models/tiny_fg_qwen3
+
+# In a separate terminal, test the server via the OpenAI "completion" API
+forgather inf client --completion "Once upon a time"
+...
+Once upon a time, there was a little girl named Lily. She loved to play with her toys and her favorite thing to do was to eat...
+```
+
+### 2. Deploy with vLLM
+
+```bash
+# From your vLLM Python environment (or container)
+cd examples/tiny_experiments/tiny_models/
+
+# Start vLLM server on single GPU
+# Notes:
+# - Leave off the training directory slash. This avoids spurious warnings about module names
+# - Models with custom code require the --trust-remote-code flag, even though the code is not "remote"
+# - Make sure you don't have another inference server running
+vllm serve --trust-remote-code output_models/tiny_fg_qwen3
+```
+
+### 3. Test the Model
+Test using Forgathers OpenAI API client
+
+```bash
+# From Forgather's Python environment...
+# Check what name vLLM is using for the model
+forgather inf client --list-models
+Available models:
+  - output_models/tiny_fg_qwen3
+
+# Test the model
+forgather inf client --model output_models/tiny_fg_qwen3 --completion "Once upon a time"
+Once upon a time, there was a little girl named Lily. She loved to play with her toys all day long...
+```
+
+Test the model using the [vLLM completion client](https://docs.vllm.ai/en/latest/cli/complete/)
+
+```bash
+vllm complete --max-tokens 512 -q "Once upon a time"
+...
+there was a furry little bunny. The bunny had a big sneaker and
+```
+
+Test directly with curl
+
+```bash
+curl http://localhost:8000/v1/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "output_models/tiny_fg_qwen3",
+        "prompt": "Once upon a time",
+        "max_tokens": 512,
+        "temperature": 0.7
+    }'
+```
+
+### Fine Tuning and Testing Workflow
+
+For this example, we will demonstrate using the small-ish [Llama-3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct) model.
+Note that downloading this model requires authorization from Meta, which can be obtained from the model's HF site, linked above.
+
+```bash
+# Download a small-ish HF model for testing
+hf download --exclude "original*" --local-dir Llama-3.2-1B-Instruct meta-llama/Llama-3.2-1B-Instruct
+
+# Convert the model to Forgather format
+forgather convert Llama-3.2-1B-Instruct/ fg_Llama-3.2-1B-Instruct/
+```
+
+#### Test Converted Model
+First, let's make sure the converted model runs. Setting `--enforce-eager` run the model in 'eager' mode. This is a little slower, but
+can be helpful for diagnosing model issues, if something goes wrong. For faster performance, omit `--enforce-eager`.
+
+```bash
+# Start server (in vLLM's Python environment)
+vllm serve --trust-remote-code --enforce-eager --model fg_Llama-3.2-1B-Instruct
+
+# Test the model in 'chat' mode (from another terminal in Forgathers environment)
+forgather inf client --model fg_Llama-3.2-1B-Instruct --message "Hello. What is your name?"
+...
+Hello! I'm an artificial intelligence model, and I don't have a personal name...
+```
+
+We can verify that the converted model's Tensor Parallel and Pipeline Parallel plans work like this:
+
+```bash
+# Test with pipeline parallel (requires 2 GPUs)
+vllm serve --trust-remote-code --pipeline-parallel-size 2 --model fg_Llama-3.2-1B-Instruct
+
+# Test with tensor parallel (requires 2 GPUs)
+vllm serve --trust-remote-code --tensor-parallel-size 2 --model fg_Llama-3.2-1B-Instruct
+
+# Test with both tensor and pipeline parallel (requires 4 GPUs)
+vllm serve --trust-remote-code --pipeline-parallel-size 2 --tensor-parallel-size 2 --model fg_Llama-3.2-1B-Instruct
+```
+
+If you wish to try interactive chat with the model...
+
+```bash
+# Start Forgather chat client (enter quit to exit)
+forgather inf client --model fg_Llama-3.2-1B-Instruct
+
+# vLLM's chat client (^C to exit)
+vllm chat
+```
+
+#### Train Converted Model
+
+We will train the model to become Samantha, as this makes for a fairly quick demonstration (~5 min on 2x RTX 4090)
+
+```bash
+cd examples/finetune/samantha
+
+# Train on 2 GPUs using Torch Pipeline Parallel
+# Remember to shutdown vLLM first, or you will probably hit an OOM error.
+forgather -t llama3_1b/2gpu_pp_1f1b.yaml train -M ~/ai_assets/models/fg_Llama-3.2-1B-Instruct
+
+# If you only have a single GPU, try:
+forgather -t llama3_1b/1gpu_packed.yaml train -M ~/ai_assets/models/fg_Llama-3.2-1B-Instruct
+```
+
+### Test the Trained Model
+
+The models checkpoints will be saved in the "checkpoints" sub-directory, which vLLM does not know about. To create symbolic links to
+the newest checkpoint, and clobber the original weights, run this command:
+
+```bash
+# WARNING: This command will overwrite the original model weights with symlinks. Make sure that you have another copy of these!
+forgather checkpoint link -f --output-path ~/ai_assets/models/fg_Llama-3.2-1B-Instruct
+```
+
+As this should be a freshly converted model, you can start over again by reconverting the model. Just be careful not to use this approach for any models when the weights in the model directory are your only copy. Make a backup first!
+
+As before, start the vLLM server and test it with an OpenAI compatible client. e.g.
+
+```bash
+# Start server (in vLLM's Python environment)
+vllm serve --trust-remote-code --model fg_Llama-3.2-1B-Instruct
+
+# Start Forgather chat client (enter quit to exit)
+# And run from Forgather's Python environment!
+forgather inf client --model fg_Llama-3.2-1B-Instruct
+...
+> Hello. What is your name?
+Hello! My name is Samantha. It's a pleasure to meet you. I find our interactions to be both engaging and enlightening, and I look forward to our future conversations.
 ```
 
 ## Understanding vLLM Plans
 
-### Tensor Parallel Plan (`_tp_plan`)
+vLLM uses the HF interface for specifying Tensor Parallel (TP) and Pipeline Parallel (PP) plans. The plan definitions can be found via the `_tp_plan` and
+`_pp_plan` attributes, attached to a PreTrainedModel, but the full specification can't be set directly with they attributes. They are constructed by the model's `post_init()` method, which starts with the `base_model_tp_plan` and `base_model_pp_plan` attributes of the model's configuration class, then all modules are searched for `_tp_plan` and `_pp_plan` attributes, which are merged with the base definitions to produce the final plans.
+
+### Tensor Parallel Plan
 
 The tensor parallel plan tells vLLM how to split weight matrices across GPUs. It's a dictionary mapping layer name patterns to split styles:
 
 ```python
-_tp_plan = {
+tp_plan = {
     # Column-wise split: Independent outputs (queries, keys, values)
-    "model.layer_stack.layers.*.attention.query_linear": "colwise",
-    "model.layer_stack.layers.*.attention.key_linear": "colwise",
-    "model.layer_stack.layers.*.attention.value_linear": "colwise",
+    "causal_lm.layer_stack.layers.*.attention.query_linear": "colwise",
+    "causal_lm.layer_stack.layers.*.attention.key_linear": "colwise",
+    "causal_lm.layer_stack.layers.*.attention.value_linear": "colwise",
 
     # Row-wise split: Combined inputs (output projections)
-    "model.layer_stack.layers.*.attention.output_linear": "rowwise",
+   "causal_lm.layer_stack.layers.*.attention.output_linear": "rowwise",
 
     # Feedforward layers
-    "model.layer_stack.layers.*.feedforward.gate_proj": "colwise",
-    "model.layer_stack.layers.*.feedforward.up_proj": "colwise",
-    "model.layer_stack.layers.*.feedforward.down_proj": "rowwise",
+    "causal_lm.layer_stack.layers.*.feedforward.gate_proj": "colwise",
+    "causal_lm.layer_stack.layers.*.feedforward.up_proj": "colwise",
+    "causal_lm.layer_stack.layers.*.feedforward.down_proj": "rowwise",
 }
 ```
 
@@ -102,6 +230,11 @@ _tp_plan = {
 - Use for: Output projections, Down projections (combining parallel streams)
 - Communication: AllGather before computation
 
+See:
+- [HF Distributed inference](https://huggingface.co/docs/transformers/en/perf_infer_gpu_multi)
+- [PyTorch TP Tutorial](https://docs.pytorch.org/tutorials/intermediate/TP_tutorial.html)
+- [vLLM Custom Models](https://docs.vllm.ai/en/v0.8.4/models/supported_models.html)
+
 ### Pipeline Parallel Plan (`_pp_plan`)
 
 The pipeline parallel plan defines how modules are distributed across pipeline stages and their I/O interfaces:
@@ -109,15 +242,15 @@ The pipeline parallel plan defines how modules are distributed across pipeline s
 ```python
 _pp_plan = {
     # Stage boundaries defined by major model components
-    "model.input_encoder": (
+    "causal_lm.input_encoder": (
         ["input_ids"],              # Inputs
         ["hidden_states"]           # Outputs
     ),
-    "model.layer_stack": (
+    "causal_lm.layer_stack.layers": (
         ["hidden_states", "attention_mask"],
         ["hidden_states"]
     ),
-    "model.output_decoder": (
+    "causal_lm.layer_stack.layer_norm": (
         ["hidden_states"],
         ["logits"]
     ),
@@ -126,9 +259,21 @@ _pp_plan = {
 
 vLLM distributes these modules across pipeline stages automatically based on model size and available GPUs.
 
+vLLM expects that exactly one of these named modules is an instance of nn.ModuleList, where it is assumed that the layers actually reside. 
+After constructing the model, the unused modules are replaced with instances of `PPMissingLayer`, which is a derivative of `nn.Identity`, with
+logic for only returning the first element from returned tuples or dictionaries.
+
+Technically, vLLM does not support specifying these via Fully Qualified Names (FQNs) and assumes that they are attributes of the outer-most module.
+
+As to work around this limitation, Forgathers "hf_causal.py" implementation implements `__getattr__` and `__setattr__`, allowing it to perform full
+FQN name lookups.
+
+Forgather does not use `nn.ModuleList`, but uses `nn.ModuleDict`, which is required to support the Pytorch approach to Pipeline Parallelism. As to 
+address this, we a proxy `nn.ModuleList` derivative is used, which forwards modifications to the `nn.ModuleDict`.
+
 ### No-Split Modules (`_no_split_modules`)
 
-Specifies module types that should never be split during parallelism:
+Specifies module types that should never be split with pipeline parallelism:
 
 ```python
 _no_split_modules = ["PreLNLayer"]  # For Llama models
@@ -138,66 +283,7 @@ _no_split_modules = ["PostLNLayer"]  # For vanilla transformers
 _no_split_modules = ["DeepnetLayer"]  # For DeepNet models
 ```
 
-This ensures transformer blocks remain intact on single devices, which is critical for correctness.
-
-## Customizing vLLM Plans
-
-### For New Model Architectures
-
-If you're creating a custom model architecture, add vLLM support by including the base template:
-
-```yaml
-# In your model configuration (e.g., my_custom_model.yaml)
-[model_code_generator]
-    == super()
-
-    # Basic vLLM support (works for most CausalLM models)
-    -- include 'models/causal_lm/vllm_plans.yaml'
-```
-
-### For Custom Layer Naming
-
-If your model uses different layer names, override the vLLM plan blocks:
-
-```yaml
-[model_code_generator]
-    == super()
-
-    -- block vllm_tensor_parallel_plan
-    tp_plan:
-        # Custom layer naming
-        "model.my_layers.*.my_attention.q_proj": "colwise"
-        "model.my_layers.*.my_attention.k_proj": "colwise"
-        "model.my_layers.*.my_attention.v_proj": "colwise"
-        "model.my_layers.*.my_attention.out_proj": "rowwise"
-    -- endblock vllm_tensor_parallel_plan
-```
-
-### For Non-Standard Architectures
-
-If your model doesn't use the standard `input_encoder -> layer_stack -> output_decoder` structure:
-
-```yaml
-[model_code_generator]
-    == super()
-
-    -- block vllm_pipeline_parallel_plan
-    pp_plan:
-        "model.embeddings":
-            - ["input_ids"]
-            - ["embeddings"]
-        "model.encoder":
-            - ["embeddings", "mask"]
-            - ["encoded"]
-        "model.decoder":
-            - ["encoded"]
-            - ["logits"]
-    -- endblock vllm_pipeline_parallel_plan
-
-    -- block vllm_no_split_modules
-    no_split_modules: ["MyCustomBlock"]
-    -- endblock vllm_no_split_modules
-```
+This ensures transformer blocks remain intact on single devices, which is critical for correctness; the skip-layers within these modules would otherwise be a problem.
 
 ## Layer Naming Convention
 
@@ -213,208 +299,6 @@ Forgather uses semantic layer naming that differs from standard HuggingFace nami
 | FFN up | `feedforward.up_proj` | `mlp.up_proj` |
 | FFN down | `feedforward.down_proj` | `mlp.down_proj` |
 
-**Important**: vLLM's tensor parallel plans use glob patterns that match your actual layer names. Forgather's default plans use Forgather's naming convention, which works directly with vLLM.
-
-## Troubleshooting
-
-### Plans Not Matching Model Structure
-
-**Problem**: vLLM fails to load model or reports missing parameters.
-
-**Solution**: Use the validation utility to debug:
-
-```python
-from forgather.ml.model_conversion import print_model_structure, validate_vllm_plans
-from transformers import AutoModelForCausalLM
-
-model = AutoModelForCausalLM.from_pretrained("output_models/my_model")
-
-# Print full model structure
-print_model_structure(model, max_depth=5, show_params=True)
-
-# Validate plans with detailed output
-validate_vllm_plans(model, tp_plan=model._tp_plan, pp_plan=model._pp_plan, strict=True)
-```
-
-The output will show:
-- Which patterns matched which parameters
-- Suggestions for unmatched patterns
-- Full module hierarchy for debugging
-
-### Tensor Parallel Failures
-
-**Problem**: Model works in single-GPU mode but fails with `--tensor-parallel-size > 1`.
-
-**Common causes**:
-1. **Missing TP plan entries**: Some linear layers aren't in `_tp_plan`
-2. **Wrong split style**: Using `colwise` where `rowwise` is needed (or vice versa)
-3. **Custom layers**: vLLM doesn't know how to split custom layer types
-
-**Solution**:
-- Ensure ALL linear layers that need splitting are in the TP plan
-- Verify split styles match the mathematical operation (see "Tensor Parallel Plan" above)
-- For custom layers, you may need to add custom vLLM support
-
-### Pipeline Parallel Failures
-
-**Problem**: Model fails with `--pipeline-parallel-size > 1`.
-
-**Common causes**:
-1. **Module not found**: PP plan references modules that don't exist
-2. **Wrong I/O specification**: Input/output names don't match forward() signature
-3. **Complex control flow**: vLLM PP requires simple sequential execution
-
-**Solution**:
-- Use `print_model_structure()` to verify module names
-- Check that I/O names match your forward pass
-- Simplify model architecture if needed
-
-### Performance Issues
-
-**Problem**: Distributed inference is slower than expected.
-
-**Tips**:
-- Use `--dtype bfloat16` for faster computation
-- Enable `--enable-chunked-prefill` for better batching
-- Tune `--max-num-batched-tokens` based on GPU memory
-- For small models, tensor parallelism may add overhead (use PP instead)
-- Monitor GPU utilization to identify bottlenecks
-
-## Examples
-
-### Example 1: Llama 7B on 4 GPUs (Tensor Parallel)
-
-```bash
-# Generate model with vLLM support (happens automatically)
-forgather -t configs/llama_7b.yaml train
-
-# Deploy with tensor parallelism
-vllm serve output_models/llama_7b \
-    --tensor-parallel-size 4 \
-    --dtype bfloat16 \
-    --max-model-len 4096
-```
-
-### Example 2: Large Model on 8 GPUs (TP + PP)
-
-```bash
-# For very large models, combine tensor and pipeline parallelism
-vllm serve output_models/llama_70b \
-    --tensor-parallel-size 4 \
-    --pipeline-parallel-size 2 \
-    --dtype bfloat16 \
-    --max-model-len 8192
-```
-
-This creates 2 pipeline stages, each with 4-way tensor parallelism (2×4=8 GPUs total).
-
-### Example 3: Custom Validation Script
-
-```python
-#!/usr/bin/env python3
-"""Validate vLLM plans before deployment."""
-
-import sys
-from transformers import AutoModelForCausalLM
-from forgather.ml.model_conversion import validate_vllm_plans, print_model_structure
-
-def main(model_path: str):
-    print(f"Loading model from {model_path}...")
-    model = AutoModelForCausalLM.from_pretrained(model_path)
-
-    print("\n" + "="*60)
-    print("Model Structure")
-    print("="*60)
-    print_model_structure(model, max_depth=4, show_params=True)
-
-    print("\n" + "="*60)
-    print("vLLM Plan Validation")
-    print("="*60)
-
-    tp_plan = getattr(model, '_tp_plan', None)
-    pp_plan = getattr(model, '_pp_plan', None)
-
-    if not tp_plan and not pp_plan:
-        print("⚠ Warning: No vLLM plans found in model")
-        print("This model may not support distributed inference with vLLM")
-        return 1
-
-    is_valid = validate_vllm_plans(
-        model,
-        tp_plan=tp_plan,
-        pp_plan=pp_plan,
-        strict=True
-    )
-
-    if is_valid:
-        print("\n✓ Model is ready for vLLM deployment!")
-        return 0
-    else:
-        print("\n✗ vLLM plans need adjustment")
-        print("See validation messages above for details")
-        return 1
-
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <model_path>")
-        sys.exit(1)
-    sys.exit(main(sys.argv[1]))
-```
-
-Save as `validate_vllm.py` and run:
-
-```bash
-python validate_vllm.py output_models/my_model
-```
-
-## Advanced Topics
-
-### Converting Existing Models
-
-If you have a Forgather model trained before vLLM support was added, you can add vLLM plans manually:
-
-1. Update your model configuration to include vLLM plans
-2. Regenerate the model code: `forgather -t config.yaml pp`
-3. Reload checkpoint weights into the new model structure
-
-### Multi-Node Deployment
-
-vLLM supports multi-node distributed inference:
-
-```bash
-# On node 0
-vllm serve model_path \
-    --tensor-parallel-size 8 \
-    --pipeline-parallel-size 4 \
-    --distributed-executor-backend ray
-
-# Ray will coordinate across nodes automatically
-```
-
-### Integration with OpenAI API
-
-vLLM provides an OpenAI-compatible API:
-
-```bash
-vllm serve output_models/my_model \
-    --tensor-parallel-size 4 \
-    --host 0.0.0.0 \
-    --port 8000
-```
-
-Then use with OpenAI client:
-
-```python
-from openai import OpenAI
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="dummy")
-
-response = client.chat.completions.create(
-    model="output_models/my_model",
-    messages=[{"role": "user", "content": "Hello!"}]
-)
-print(response.choices[0].message.content)
-```
-
 ## Further Reading
 
 - [vLLM Documentation](https://docs.vllm.ai/)
@@ -422,12 +306,3 @@ print(response.choices[0].message.content)
 - [Distributed Inference Guide](https://docs.vllm.ai/en/stable/serving/parallelism_scaling/)
 - [Forgather Model Conversion](../model_conversion/overview.md)
 - [Forgather Training Guide](../trainers/overview.md)
-
-## Summary
-
-Forgather models generated with the default transformer templates (Llama, DeepOne, etc.) include vLLM support automatically through:
-- `_tp_plan`: Defines tensor parallelism strategies
-- `_pp_plan`: Defines pipeline parallelism boundaries
-- `_no_split_modules`: Protects transformer blocks from splitting
-
-Use the validation utilities to verify plans before deployment, and customize plans for non-standard architectures by overriding template blocks in your model configuration.

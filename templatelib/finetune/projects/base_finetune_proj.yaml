@@ -237,12 +237,17 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     save_rng_state: True             # Save RNG state with checkpoint
     save_on_each_node: {{ save_on_each_node | default(False) }}
 
+    # Load model from latest checkpoint
+    resume_from_checkpoint: {{ resume_from_checkpoint | default(True) }}
+
     # Where to construct the model: ["default"|"device"|"meta"]
     construct_model_on: "device"    # Construct model on accelerator device
     # Enable all SDPA backends and let PyTorch choose which to use.
     sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
     sdpa_set_priority: False # If list, interpret as priority order
 
+[trainer_constructor]
+    == super()
     # If supported, use fused-causal-cross-entropy
     # else, fallback to basic causal-cross-entropy
     fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss

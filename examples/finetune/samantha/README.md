@@ -38,6 +38,7 @@ Tested Configurations:
 
 ## Setup
 
+### Download a Model
 You will need a model to finetune. For our examples, we will use the base [Mistral-7B-v0.1](https://huggingface.co/mistralai/Mistral-7B-v0.1) model. This is a raw, pretrained, model, which has never been trained to interact in a chat context before. It will not take very long for this model to become "Samantha," who is a pro at interacting with the ChatML dialog format.
 
 You should be able to use any 7B Llama flavor, with minimal changes to these instructions.
@@ -49,6 +50,40 @@ SRC_MODEL="${MODELS_DIR}/mistral_7b"
 mkdir -p "${MODELS_DIR}"
 hf download mistralai/Mistral-7B-v0.1 --local-dir "${SRC_MODEL}" \
 --exclude "*.safetensors" "model.safetensors.index.json"
+```
+
+An alternative model, which has been tested with this tutorial, is [Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct). There are project configurations defined specifically for this model. Downloading this model requires authorization from Meta, which can be obtained from the above linked page.
+
+```bash
+# Download Llama-3.2-1B-Instruct
+hf download --exclude "original*" --local-dir Llama-3.2-1B-Instruct meta-llama/Llama-3.2-1B-Instruct
+```
+
+### Convert the Model
+
+While Forgather's basic Trainer class works with HF models, like the one downloaded above, these models don't work with the Pipeline Parallel Trainer nor do they support fused-cross-entropy, which can significantly reduce peak-memory utilization. In the case of our example model, they also lack a chat-template and adding additional token-definitions. Go ahead and convert the model to Forgather's format.
+
+If you chose to use a native HF model, use either "llama2_7b/1gpu_default.yaml" or "llama3_1b/1gpu_default.yaml," as these don't require any Forgather specific extensions. Just be sure to use a model with an existing chat-template. 
+
+```bash
+# **From Samantha directory**
+# Set name for converted model
+FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
+
+# Convert model to Forgather Llama/Mistral implementation
+# This model 
+forgather convert -t "../../../chat_templates/chatml.jinja" "${SRC_MODEL}" "${FG_MODEL}" \
+--add-tokens "../../../tools/convert_model/example_additional_tokens.yaml"
+
+# For models which already have a chat template, you can skip specifying a chat template and 
+# setting custom tokens. For "meta-llama/Llama-3.2-1B-Instruct" ...
+forgather convert Llama-3.2-1B-Instruct/ fg_Llama-3.2-1B-Instruct/
+```
+
+To convert the model back to HF format...
+
+```bash
+forgather convert "${FG_MODEL}" OUTPUT_MODEL_PATH
 ```
 
 ### Directory Structure Overview
@@ -86,19 +121,30 @@ While not exhaustive, this is a sampling of the configurations used by this proj
 
 **Samantha Project**
 - [samantha.yaml](./templates/samantha.yaml) -- Base project configuration
-  - [1gpu_llama_7b/default.yaml](./templates/configs/1gpu_llama_7b/default.yaml) -- Default configuration: 1 GPU, 512 context
-  - [1gpu_llama_7b/long_context.yaml](./templates/configs/1gpu_llama_7b/long_context.yaml) -- 1 GPU, 4096 context
-  - [1gpu_llama_7b/16gb.yaml](./templates/configs/1gpu_llama_7b/16gb.yaml) -- 1 GPU, 16 GB
-  - [1gpu_llama_7b/packed.yaml](./templates/configs/1gpu_llama_7b/packed.yaml) -- 4096 token packed sequences on a single GPU, 24 GBs
-  - [pipeline_llama_7b/1f1b_2gpu.yaml](./templates/configs/pipeline_llama_7b/1f1b_2gpu.yaml) -- 2 GPU Pipeline
-  - [pipeline_llama_7b/i1f1b_2gpu_packed.yaml](./templates/configs/pipeline_llama_7b/i1f1b_2gpu_packed.yaml) -- 4096 token packed sequences, i1F1B Pipe, 2 GPU
-  - [pipeline_llama_7b/i1f1b_4gpu.yaml](./templates/configs/pipeline_llama_7b/i1f1b_4gpu.yaml) -- 4 GPU Pipeline
-  - [pipeline_llama_7b/i1f1b_4gpu.yaml](./templates/configs/pipeline_llama_7b/zb_4gpu.yaml) -- 4 GPU Pipeline, Zero Bubble V
-  - [pipeline_llama_7b/i1f1b_4gpu.yaml](./templates/configs/pipeline_llama_7b/1f1b_4gpu_float32.yaml) -- 4 GPU Pipeline, float32
-  - [pipeline_llama_7b/1f1b_4gpu_adamw.yaml](./templates/configs/pipeline_llama_7b/1f1b_4gpu_adamw.yaml) -- 4 GPU Pipeline, AdamW
-  - [pipeline_llama_7b/1f1b_4gpu_adamw4bit.yaml](./templates/configs/pipeline_llama_7b/1f1b_4gpu_adamw4bit.yaml) -- 4 GPU Pipeline, AdamW-4bit
 
-  There are a few more experimental configs as well.
+  **7B Single GPU Configurations**
+  - [llama2_7b/1gpu_default.yaml](./templates/configs/llama2_7b/1gpu_default.yaml) -- Conservative setting to train a 7B Llaama model on 1 GPU
+  - [llama2_7b/1gpu_minimum.yaml](./templates/configs/llama2_7b/1gpu_minimum.yaml) -- Train on 16 GB GPU
+  - [llama2_7b/1gpu_packed.yaml](./templates/configs/llama2_7b/1gpu_packed.yaml) -- Train with 4096 token context on single GPU, 24 GBs
+
+  **7B Pipeline Parallel Configurations**
+  - [llama2_7b/2gpu_pp_1f1b.yaml](./templates/configs/llama2_7b/2gpu_pp_1f1b.yaml) -- Train Samantha on 1F1B 2 GPU Pipeline
+  - [llama2_7b/2gpu_pp_i1f1b_packed.yaml](./templates/configs/llama2_7b/2gpu_pp_i1f1b_packed.yaml) -- Samantha Llama 7B i1F1B Pipe x2 with packed sequences
+  - [llama2_7b/4gpu_pp_1f1b.yaml](./templates/configs/llama2_7b/4gpu_pp_1f1b.yaml) -- Train Samantha on 1F!B 4 GPU Pipeline
+  - [llama2_7b/4gpu_pp_1f1b_adamw.yaml](./templates/configs/llama2_7b/4gpu_pp_1f1b_adamw.yaml) -- Train Samantha on 1F1B 4 GPU Pipeline with AdamW
+  - [llama2_7b/4gpu_pp_1f1b_adamw4bit.yaml](./templates/configs/llama2_7b/4gpu_pp_1f1b_adamw4bit.yaml) -- Train Samantha on 1F1B 4 GPU Pipeline with AdamW-4bit
+  - [llama2_7b/4gpu_pp_1f1b_float32.yaml](./templates/configs/llama2_7b/4gpu_pp_1f1b_float32.yaml) -- Train Samantha on 1F1B 4 GPU Pipeline in float32
+  - [llama2_7b/4gpu_pp_i1f1b.yaml](./templates/configs/llama2_7b/4gpu_pp_i1f1b.yaml) -- Samantha Llama 7B i1F1B Pipe x4
+  - [llama2_7b/4gpu_pp_i1f1b_packed.yaml](./templates/configs/) -- Samantha Llama 7B i1F1B Pipe x4 with packed sequences
+  - [llama2_7b/4gpu_pp_zb.yaml](./templates/configs/llama2_7b/4gpu_pp_zb.yaml) -- Train Samantha on ZBVZ 4 GPU Pipeline
+
+  **1B Single GPU Configurations**
+  - [llama3_1b/1gpu_default.yaml](./templates/configs/llama3_1b/1gpu_default.yaml) -- Train a 1B Llama3 on 1 GPU with a context of 1300
+  - [llama3_1b/1gpu_packed.yaml](./templates/configs/llama3_1b/1gpu_packed.yaml) -- Train with 4096 token context on single GPU, 24 GBs
+
+  **1B Pipeline Parallel Configurations**
+  - [llama3_1b/2gpu_pp_1f1b.yaml](./templates/configs/llama3_1b/2gpu_pp_1f1b.yaml) -- Train Samantha on 1F1B 2 GPU Pipeline
+  - [llama3_1b/2gpu_pp_i1f1b.yaml](./templates/configs/llama3_1b/2gpu_pp_i1f1b.yaml) -- Samantha Llama 7B i1F1B Pipe x2 with packed sequences
 
 **Finetune**
 - [projects/base_finetune_proj.yaml](../../../templatelib/finetune/projects/base_finetune_proj.yaml) -- Base Finetune Project
@@ -285,53 +331,34 @@ This is useful if some GPUs are busy or may have issues.
 First, let's run a sanity check to verify if everything is working and that we don't run out of GPU memory.
 
 ```bash
-forgather -t "1gpu_llama_7b/default.yaml" train --save-strategy no --max-steps 10 -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml_eos.jinja"
+forgather -t "llama2_7b/1gpu_default.yaml" train --save-strategy no --max-steps 10 -M "${FG_MODEL}"
 
 # -t 1gpu_llama_7b/default.yaml : Train on a single GPU with conservative settings.
 # --save-strategy no : Don't save checkpoints (for testing)
-# -M "${SRC_MODEL}" : Path to the model to train.
+# -M "${FG_MODEL}" : Path to the model to train.
 # --max-steps 10 : Run a quick test, with only 10 training steps
-# --chat-template ../../../chat_templates/chatml_eos.jinja : Use ChatML chat-template
 ```
 
 The default config is pretty conservative (context length = 512).
 
 Once you have verified that a given config will run, you can train on the full dataset...
 
-```bash
-# SRC_MODEL was defined above, which is the path to the model to train.
-forgather -t CONFIG_TEMPLATE train -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml_eos.jinja"
-```
-
-#### Single GPU, 1300 Context Length
+#### Single GPU, 1300 Context Length, "Safe" settings
 
 ```bash
-# Train with a context length of 1300 on HF model
-forgather -t "1gpu_llama_7b/med_context.yaml" -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml_eos.jinja"
+# Train with a context length of 1300 on FG model
+forgather -t "llama2_7b/1gpu_default.yaml" train -M "${FG_MODEL}"
 
-# Train with a context length of 1300 on Fg model
-# FG_MODEL is defined below, after converting the model format
-forgather -t "1gpu_llama_7b/med_context.yaml" train -M "${FG_MODEL}"
+# Train the Llama-3.1-1B-Instruct model
+forgather -t "llama3_1b/1gpu_default.yaml" train -M "${FG_MODEL}"
+
+# To train a native HF model, without a chat template, use:
+forgather -t "llama2_7b/1gpu_default.yaml" -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml_eos.jinja"
 ```
 
-#### Single GPU, 4096 Context Length
+#### Single GPU, 4096 Packed
 
 We can go further by offloading the activation storage to CPU memory. This allows full training of a 7B parameter model, with a sequence length of 4096, on a 24 GB device!
-
-A sequence length of 1300 covers 90% of the examples in this dataset, so there's not much to be gained with
-a longer sequence length, but this may be useful for other datasets.
-
-**NOTE**
-
-Testing this configuration on the native HF model appears to barf with a device-side assertion. This appears to be related to using CPU checkpoint offloading. It's unclear if it's just this model or a more general issue.
-
-In any case, it works fine if you convert the model to Forgather's native format first. See instructions for multi-GPU training for details on how to do this.
-
-```bash
-# Train with a context length of 4096:
-forgather -t 1gpu_llama_7b/long_context.yaml  -M "${FG_MODEL}"
-```
-#### Single GPU, 4096 Packed
 
 With [sequence packing](../../../docs/datasets/sequence-packing.md), we use "best_fit" packing to optimally pack as many examples as we can within the sequence dimension. This results very little compute wasted on "pad" tokens. We then use the attention mask to prevent cross-example attention.
 
@@ -343,7 +370,7 @@ The attention implementation to use can be specified on the CLI via:
 --attn-implementation {eager,sdpa,flash_attention_2,flex_attention}
 
 # e.g.
-forgather -t "1gpu_llama_7b/packed.yaml" train -M "${FG_MODEL}" --attn-implementation flex_attention
+forgather -t "llama2_7b/1gpu_packed.yaml" train -M "${FG_MODEL}" --attn-implementation flex_attention
 ```
 
 This will also work with "sdpa" and "eager," but they will require significantly more peak memory and compute.
@@ -358,61 +385,47 @@ As above, this does not work with the HF model. Convert it to Forgather's format
 
 ```bash
 # Train on a 16 GB GPU
-forgather -t 1gpu_llama_7b/16gb.yaml train -M "${FG_MODEL}"
+forgather -t llama2_7b/1gpu_minimum.yaml train -M "${FG_MODEL}"
 ```
 
 ## Multi-GPU Setup
 
 For our multi-GPU configurations, we will be using pipeline parallel. This is far more performant on consumer-grade hardware than Fully-Sharded-Data-Parallel (FSDP). Consumer-grade GPUs generally lack a high-speed interconnect (NVLINK). Without this, FSDP, the primary alternative, is painfully slow.
 
-The catch is that we need to split the model into multiple segments. While we have tools for automatic model splitting, the tools don't support all PyTorch features and HF Llama-like models use unsupported features.
-
-To work around this, we have a script for converting Llama-like models to a compatible format (and back again).
-
-You can also do this for single-GPU training. In most cases, it should not be required, but it can reduce peak GPU memory usage a little bit. This step may still be required to use CPU Checkpoint Offloading, as the HF version of the model appears to crash with this option enabled.
-
-```bash
-# **From Samantha directory**
-# Set name for converted model
-FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
-
-# Convert model to Forgather Llama/Mistral implementation
-forgather convert -t "../../../chat_templates/chatml.jinja" "${SRC_MODEL}" "${FG_MODEL}" \
---add-tokens "../../../tools/convert_model/example_additional_tokens.yaml"
-```
-
-To convert the model back to HF format...
-
-```bash
-forgather convert "${FG_MODEL}" OUTPUT_MODEL_PATH
-```
-
 ## Single Node Training
 
 First, check if everything is working, like this:
 
 ```bash
-forgather -t "pipeline_llama_7b/2gpu_1f1b.yaml" train --save-strategy no --max-steps 10 -M "${FG_MODEL}"
+forgather -t "llama2_7b/2gpu_pp_1f1b.yaml" train --save-strategy no --max-steps 10 -M "${FG_MODEL}"
 # Note that we don't need to specify the chat-template, as the conversion tool bakes it into the tokenizer.
 ```
 
 There are quite a few different configurations defined, with different schedulers and numbers of GPUs.
 
-- pipeline_llama_7b/2gpu_1f1b.yaml : Requires the least amount of memory. This is similar to the single-GPU settings, but without activation checkpointing.
-- pipeline_llama_30b/1f1b_4gpu.yaml : As above, but 4 GPUs.
-- pipeline_llama_7b/i1f1b_4gpu.yaml : Faster than 1f1b, but uses more memory
-- pipeline_llama_7b/zb_4gpu.yaml : Zero-bubble scheduler. Fast, but uses more memory. This config does not support validation yet, so you will have to rely on training loss as a guide.
+### Config Naming Conventions
+- llama2_7b : Written for and tested on Llama2 7B models. Llama3-8B may require adjustments for memory.
+- llama3_1b : Written for and tested on Llama3-3.1-1B models.
+- 1gpu : Single GPU Configuration
+- Ngpu : Requires at least N GPUs
+- default : These configurations work with native HF models and are useful for diagnostics, should you run into any issues.
+- packed : Uses packed examples. See description, above.
+- pp_1f1b : 1-Forward-1-Back Pipeline. This requires the least amount of peak memory
+- pp_i1f1b : Interleaved-1-Forward-1-Back Pipeline. Faster than 1f1b, but uses more memory
+- pp_zb : Zero Bubble Pipeline. The fastest, but does not support validation.
+- float32 : With 4 GPUs, you can train a 7B model in full 32-bit precision
+- adamw | adamw4bit: With 4 GPUs, there's enough memory (using bfloat16) to use the AdamW optimizer. Experimentally, this does not offer much benefit over Adafactor, but it is an option.
 
 ## Testing the Finetuned Model
 
 You can test the resulting model using the provided Open-AI compatible inference server and client or with 3rd party tools.
 
+You can also serve the model with vLLM. See [documentation](../../../docs/inference/vllm_integration.md).
+
 ```bash
 # Start inference server (from 'forgather' directory)
 # Change the model path to match your output directory.
-# If the model already has the correct chat-template, you can drop the "-t CHAT_TEMPLATE" arg.
-forgather inf server -t chat_templates/chatml_eos.jinja -T bfloat16 \
--c -m /path/to/fg_model
+forgather inf server -c -m /path/to/fg_model
 
 # Note: -c : This will search for the latest checkpoint, rather than loading the model from the root directory.
 ```
@@ -588,18 +601,18 @@ CWD (NFS share): /mnt/ai_assets/ai_assets/forgather
 
 We have configured a NFS volume, where "/home/dinalt/ai_assets/," on "hal9000" is mounted at "/mnt/ai_assets" on "muthur." Our current working directories on each node correspond to "Path to Forgather," which ensures that the configuration files are identical on both nodes, even if we make changes. The model directory, "fg_mistral," is also shared between the two hosts.
 
-We will have hal9000 host the rendezvous and we will be using the "pipeline_llama_7b/2gpu_1f1b.yaml" config, which is for 2 GPUs.
+We will have hal9000 host the rendezvous and we will be using the "llama2_7b/2gpu_pp_1f1b.yaml" config, which is for 2 GPUs.
 
 Start job on "hal9000"
 ```bash
-NCCL_SOCKET_IFNAME=enp37s0f1 forgather -t pipeline_llama_7b/2gpu_1f1b.yaml -p examples/finetune/samantha/ train \
+NCCL_SOCKET_IFNAME=enp37s0f1 forgather -t llama2_7b/2gpu_pp_1f1b.yaml -p examples/finetune/samantha/ train \
 -M /home/dinalt/ai_assets/models/fg_mistral -- --nnodes 2 --nproc-per-node 1 --rdzv-backend c10d \
 --rdzv-endpoint hal9000:29400 --rdzv-id 1 --rdzv-conf "is_host=true"
 ```
 
 Start job on "muthur"
 ```bash
-NCCL_SOCKET_IFNAME=eno1 forgather -t pipeline_llama_7b/2gpu_1f1b.yaml -p examples/finetune/samantha/ train \
+NCCL_SOCKET_IFNAME=eno1 forgather -t llama2_7b/2gpu_pp_1f1b.yaml -p examples/finetune/samantha/ train \
 -M /home/dinalt/ai_assets/models/fg_mistral -- --nnodes 2 --nproc-per-node 1 --rdzv-backend c10d \
 --rdzv-endpoint hal9000:29400 --rdzv-id 1
 ```
