@@ -12,11 +12,8 @@
 
 
 [optimizer]
-optimizer: &optimizer !partial:torch.optim:AdamW
+    == super()
     lr: !!float {{ lr | default(1.0e-4) }}
-    weight_decay: 0.001
- ##   == super()
- ##   lr: !!float {{ lr | default(8.0e-6) }}
 
 [lr_scheduler]
     == super()

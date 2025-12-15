@@ -12,6 +12,11 @@ Forgather is a configuration-driven ML framework that uses template inheritance 
 - **Templates Library** - Extensive templates library for tokenizers, models, trainers, datasets, etc.
 
 ## News
+- Dec 14 Multiple new features:
+  - Forgather's models now work with [vLLM](https://github.com/vllm-project/vllm), in both Tensor and Pipeline parallel mode. See [documentation](./docs/inference/vllm_integration.md).
+  - Added support for [fused-linear-causal-loss](https://arxiv.org/abs/2411.09009), which significantly reduces peak memory requirements for training models with large vocabularies. [example usage](./examples/finetune/samantha/templates/configs/llama3_1b/1gpu_packed.yaml). We support the following implementations: [Liger](https://github.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/transformers/fused_linear_cross_entropy.py), [CCE](https://github.com/apple/ml-cross-entropy/tree/main), PyTorch compiled
+  - Added a Triton implementation of [Forgather's Adafactor Optimizer](./src/forgather/ml/optim/adafactor_triton.py). This reduces peak memory further and speeds up training.
+  - Enabled support for loading models with `device_map="auto"`, which allows our inference server to shard models across multiple GPUs.
 - Nov 17, Completed a major overhaul of the [model conversion tool](./tools/convert_model/README.md) and added support for Mistral, Qwen3 models, and Llama models with RoPE scaling and tied word embeddings.
 - Nov 9, **[OpenAssistant Dataset](./examples/datasets/OpenAssistant/README.md)** - High-quality example demonstrating how to build custom datasets that dynamically generate examples on-the-fly. Features quality-weighted sampling from conversation trees, sequence packing, multi-language support, and deterministic generation. Includes complete Python examples and extensive documentation. There is also a [demo finetune project](./examples/finetune/openassistant/README.md).
 - Nov 4, Added support for [packed sequences](docs/datasets/sequence-packing.md) and [Flex Attention](https://pytorch.org/blog/flexattention/). Updating [Samantha tutorial](./examples/finetune/samantha/README.md) to demonstrate. Models now support KV cache.

@@ -235,7 +235,7 @@ See:
 - [PyTorch TP Tutorial](https://docs.pytorch.org/tutorials/intermediate/TP_tutorial.html)
 - [vLLM Custom Models](https://docs.vllm.ai/en/v0.8.4/models/supported_models.html)
 
-### Pipeline Parallel Plan (`_pp_plan`)
+### Pipeline Parallel Plan
 
 The pipeline parallel plan defines how modules are distributed across pipeline stages and their I/O interfaces:
 
