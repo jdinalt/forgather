@@ -418,9 +418,10 @@ There are quite a few different configurations defined, with different scheduler
 
 ## Testing the Finetuned Model
 
-You can test the resulting model using the provided Open-AI compatible inference server and client or with 3rd party tools.
+You can test the resulting model using the provided Open-AI compatible inference server and client or with 3rd party tools, like vLLM.
 
-You can also serve the model with vLLM. See [documentation](../../../docs/inference/vllm_integration.md).
+ - [Forgather Inference Server Documentation](../../../tools/inference_server/README.md)
+ - [vLLM Documentation](../../../docs/inference/vllm_integration.md).
 
 ```bash
 # Start inference server (from 'forgather' directory)
