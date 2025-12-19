@@ -86,7 +86,7 @@ class CompletionGenerationStrategy(GenerationStrategy):
         self.service.logger.log_stop_strings(request_id, stop_strings)
 
         # Generate
-        with torch.no_grad():
+        with torch.inference_mode():
             outputs = self.service.model.generate(
                 input_ids,
                 generation_config=generation_config,

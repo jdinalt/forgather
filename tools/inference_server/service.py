@@ -4,7 +4,9 @@ Inference service core - model loading and infrastructure.
 
 import logging
 import os
-from typing import List, Optional, Set, Union
+from dataclasses import dataclass
+from typing import List, Optional, Set, Union, Callable, Any
+import logging
 import torch
 from transformers import (
     AutoTokenizer,
@@ -77,6 +79,7 @@ class InferenceService:
         chat_template_path: Optional[str] = None,
         dtype: Optional[str] = None,
         stop_sequences: Optional[List[str]] = None,
+        compile_args: Optional[dict[str, Any]] = None,
     ) -> None:
         """
         Initialize inference service.
@@ -111,6 +114,7 @@ class InferenceService:
         self.model = None
         self.default_generation_config = None
         self.jinja_env = Environment(loader=BaseLoader())
+        self.compile_args = compile_args
 
         # Load model and setup
         self.load_model()
@@ -185,6 +189,20 @@ class InferenceService:
 
             if self.device != "auto" and torch.cuda.is_available():
                 self.model = self.model.to(self.device)
+
+        self.model.eval()
+
+        if self.compile_args is not None:
+            if self.compile_args.get("backend", "") == "tensorrt":
+                try:
+                    import torch_tensorrt
+                except Exception as e:
+                    logging.warning(
+                        "torch_tensor module not available; falling back to default."
+                    )
+                    self.compile_args.pop("backend")
+
+            self.model.compile(**self.compile_args)
 
         # Load generation config from model directory if available
         self._load_generation_config()

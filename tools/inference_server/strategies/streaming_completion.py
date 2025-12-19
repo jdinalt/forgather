@@ -6,7 +6,10 @@ import time
 import uuid
 from threading import Thread
 from typing import Iterator
+
+import torch
 from transformers import TextIteratorStreamer
+
 from .base import GenerationStrategy
 from ..models.completion import (
     CompletionStreamResponse,
@@ -70,10 +73,12 @@ class StreamingCompletionStrategy(GenerationStrategy):
                 "output_scores": False,
             }
 
+            def generate():
+                with torch.inference_mode():
+                    self.service.model.generate(**generation_kwargs)
+
             # Start generation in background thread
-            thread = Thread(
-                target=self.service.model.generate, kwargs=generation_kwargs
-            )
+            thread = Thread(target=generate)
             thread.start()
 
             # Stream tokens

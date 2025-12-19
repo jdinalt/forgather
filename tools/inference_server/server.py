@@ -6,6 +6,7 @@ OpenAI API-compatible inference server for HuggingFace models.
 import argparse
 from argparse import RawTextHelpFormatter
 import logging
+import yaml
 import os
 import sys
 from pathlib import Path
@@ -31,8 +32,14 @@ else:
 import uvicorn
 
 
+def json_type(data):
+    try:
+        return yaml.safe_load(data)
+    except yaml.YAMLError as e:
+        raise argparse.ArgumentTypeError(f"Invalid YAML: {e}")
+
+
 def main():
-    print("Hello")
     parser = argparse.ArgumentParser(
         formatter_class=RawTextHelpFormatter,
         description="OpenAI API-compatible inference server",
@@ -86,6 +93,17 @@ def main():
         help="Logging level (DEBUG, INFO, WARNING, ERROR)",
     )
     parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="Use torch.compile on model, else eager",
+    )
+    parser.add_argument(
+        "--compile-args",
+        default=None,
+        type=json_type,
+        help="YAML encoded torch compile-args. See: https://docs.pytorch.org/docs/stable/generated/torch.compile.html",
+    )
+    parser.add_argument(
         "-c",
         "--from-checkpoint",
         nargs="?",
@@ -126,6 +144,14 @@ def main():
     if isinstance(args.from_checkpoint, str):
         args.from_checkpoint = os.path.expanduser(args.from_checkpoint)
 
+    compile_args = None
+    if args.compile:
+        if args.compile_args is not None:
+            compile_args = args.compile_args
+        else:
+            compile_args = {}
+        logging.info(f"Compile Args: {compile_args}")
+
     # Create inference service
     service = InferenceService(
         model_path=args.model,
@@ -135,6 +161,7 @@ def main():
         chat_template_path=getattr(args, "chat_template", None),
         dtype=args.dtype,
         stop_sequences=args.stop_sequences,
+        compile_args=compile_args,
     )
 
     # Create FastAPI app and set service
