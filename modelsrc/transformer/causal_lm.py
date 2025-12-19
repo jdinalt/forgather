@@ -87,7 +87,7 @@ class CasualLM(nn.Module):
                 hidden_states = inputs_embeds
 
             # Only create attention_mask internally if not provided externally (for pipeline parallel)
-            if self.use_internal_mask and not torch.compiler.is_exporting():
+            if self.use_internal_mask: # and not torch.compiler.is_exporting():
                 attention_mask = self.attn_mask_fn(
                     input_ids=input_ids,
                     input_embeds=hidden_states,

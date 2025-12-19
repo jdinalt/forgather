@@ -36,7 +36,7 @@ def causal_mask(
         The attention mask in the format required by the model's attention implementation
         (e.g., 4D tensor for eager/sdpa, BlockMask for flex_attention)
     """
-    assert config
+    assert config is not None
 
     window_size = getattr(config, "window_size", None)
 

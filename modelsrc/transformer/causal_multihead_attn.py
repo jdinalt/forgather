@@ -1,3 +1,4 @@
+from typing import Any
 import torch
 import os
 from torch import nn, FloatTensor
@@ -20,6 +21,7 @@ class CausalMultiheadAttn(nn.Module):
         *,
         attn_implementation: str,
         attn_functions: Optional[dict[str, Callable]],
+        config: Any = None,
         num_kv_heads: Optional[int] = None,
         pos_encoder: Optional[Callable] = None,
         bias: bool = False,
@@ -45,6 +47,11 @@ class CausalMultiheadAttn(nn.Module):
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads or num_heads  # Default to MHA
         self.pos_encoder = pos_encoder
+
+        # TODO: Temporary hack for flash-attention-2. Do this right!
+        if attn_implementation == "flash_attention_2":
+            self.is_causal = True
+        self.config = config
 
         # Note: A variable with this name is required by vLLM
         self.layer_idx = layer_idx
@@ -152,6 +159,7 @@ class CausalMultiheadAttn(nn.Module):
             attention_mask=attention_mask,
             dropout=(self.dropout_p if self.training else 0.0),
             scaling=self.scale,
+            config=self.config,
             **kwargs,
         )
 
