@@ -117,7 +117,7 @@ def precompute_cos_sin(
     return cos, sin
 
 
-class RealRotaryPE:
+class RotaryPE:
     """
     Real-valued RoPE positional encoder module
     """

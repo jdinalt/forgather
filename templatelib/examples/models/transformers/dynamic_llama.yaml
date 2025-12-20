@@ -26,7 +26,7 @@
     dropout: !var "activation_dropout"
 
     [rel_positional_encoder]
-.define: &relative_pe !singleton:.real_rotary_embeddings:RealRotaryPE@relative_pe
+.define: &relative_pe !singleton:.rotary_embeddings:RotaryPE@relative_pe
     hidden_size: !var "hidden_size"
     num_attention_heads: !var "num_attention_heads"
     max_sequence_length: !var "max_position_embeddings"
