@@ -7,6 +7,7 @@ from torch import nn, FloatTensor
 from transformers.cache_utils import DynamicCache, Cache
 from transformers.modeling_outputs import BaseModelOutputWithPast
 
+
 class CasualLM(nn.Module):
     """
     A causal language model with a HF compatible "forward" method and KV cache support
@@ -87,7 +88,7 @@ class CasualLM(nn.Module):
                 hidden_states = inputs_embeds
 
             # Only create attention_mask internally if not provided externally (for pipeline parallel)
-            if self.use_internal_mask: # and not torch.compiler.is_exporting():
+            if self.use_internal_mask:  # and not torch.compiler.is_exporting():
                 attention_mask = self.attn_mask_fn(
                     input_ids=input_ids,
                     input_embeds=hidden_states,
@@ -107,6 +108,7 @@ class CasualLM(nn.Module):
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
+                cache_position=cache_position,
                 **kwargs,
             )
 

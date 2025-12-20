@@ -110,7 +110,8 @@ class CausalMultiheadAttn(nn.Module):
         self,
         hidden_states: FloatTensor,
         attention_mask: Optional[torch.Tensor] = None,
-        past_key_values: Optional["DynamicCache"] = None,
+        past_key_values: Optional["Cache"] = None,
+        cache_position: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> FloatTensor:
@@ -150,7 +151,10 @@ class CausalMultiheadAttn(nn.Module):
 
         # Apply KV Cache
         if past_key_values is not None:
-            key, value = past_key_values.update(key, value, self.layer_idx)
+            cache_kwargs = {"cache_position": cache_position}
+            key, value = past_key_values.update(
+                key, value, self.layer_idx, cache_kwargs
+            )
         attended_values, attn_weights = self.attn_fn(
             module=self,
             query=query,
