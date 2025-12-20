@@ -120,6 +120,11 @@ def precompute_cos_sin(
 class RotaryPE:
     """
     Real-valued RoPE positional encoder module
+
+    Supports two computation strategies:
+    - Cached (cache_embeddings=True): Precompute cos/sin for all positions once
+    - On-demand (cache_embeddings=False): Compute cos/sin on each forward pass
+      The on-demand strategy is better for torch.compile() and torch.export()
     """
 
     def __init__(
@@ -130,17 +135,26 @@ class RotaryPE:
         rope_theta: float = 10000.0,
         rope_scaling: Optional[Dict[str, Any]] = None,
         use_liger: bool = False,
+        cache_embeddings: bool = False,
     ):
         self.d_head = hidden_size // num_attention_heads
         self.max_sequence_length = max_sequence_length
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
         self.dtype = torch.get_default_dtype()
+        self.cache_embeddings = cache_embeddings
 
-        # Precompute cos/sin tensors once for the entire model
-        self.cos_cached, self.sin_cached = precompute_cos_sin(
-            self.d_head, self.max_sequence_length, self.dtype, self.rope_theta, self.rope_scaling,
-        )
+        # OLD STRATEGY: Precompute cos/sin tensors once for the entire model
+        # Currently disabled by default (cache_embeddings=False)
+        # This can cause issues with torch.compile() and torch.export()
+        if self.cache_embeddings:
+            self.cos_cached, self.sin_cached = precompute_cos_sin(
+                self.d_head, self.max_sequence_length, self.dtype, self.rope_theta, self.rope_scaling,
+            )
+        else:
+            # Store None to indicate we're using on-demand computation
+            self.cos_cached = None
+            self.sin_cached = None
 
         self.liger_kernel = None
 
@@ -165,13 +179,92 @@ class RotaryPE:
             )
         return (
             f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, "
-            f"rope_theta={self.rope_theta}, rope_type={rope_type}, liger_kernel={self.liger_kernel is not None}"
+            f"rope_theta={self.rope_theta}, rope_type={rope_type}, "
+            f"cache_embeddings={self.cache_embeddings}, liger_kernel={self.liger_kernel is not None}"
         )
-    
+
+    def compute_embeddings_on_demand(
+        self, position_ids: Tensor, device: torch.device, dtype: torch.dtype
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        NEW STRATEGY: Compute cos/sin embeddings on-demand for specific positions.
+
+        This avoids caching large tensors and allows torch.compile() to potentially:
+        1. Recognize constant computations across layers
+        2. Optimize or cache the computation automatically
+        3. Better support torch.export() which struggles with cached state
+
+        This implementation is optimized for torch.compile() by:
+        - Using only tensor operations (no Python dicts or list comprehensions)
+        - Computing embeddings directly for requested positions
+        - Allowing the compiler to recognize and optimize repeated constant computations
+
+        For inference with KV caching, position_ids often contains a single index
+        (the current token position), making computation very efficient.
+
+        Args:
+            position_ids: Position indices tensor of shape (batch_size, seq_len) or (1, seq_len)
+            device: Device to compute on
+            dtype: Data type for the output tensors
+
+        Returns:
+            Tuple of (cos, sin) tensors of shape (batch_size, seq_len, d_head)
+        """
+        # Compute base inverse frequencies - shape: (d_head // 2,)
+        inv_freq = 1.0 / (
+            self.rope_theta ** (torch.arange(0, self.d_head, 2, device=device, dtype=torch.float32) / self.d_head)
+        )
+
+        # Apply scaling if specified
+        if self.rope_scaling is not None:
+            rope_type = self.rope_scaling.get("rope_type", self.rope_scaling.get("type", "default"))
+            if rope_type == "llama3":
+                inv_freq = apply_llama3_scaling(inv_freq, self.rope_scaling)
+            elif rope_type != "default":
+                raise ValueError(
+                    f"Unsupported rope_type: {rope_type}. Only 'llama3' is currently supported."
+                )
+
+        # Ensure position_ids is 2D: (batch_size, seq_len)
+        if position_ids.dim() == 1:
+            position_ids = position_ids.unsqueeze(0)
+
+        # Convert position_ids to float for outer product
+        # Shape: (batch_size, seq_len)
+        position_ids_float = position_ids.float()
+
+        # For each position in position_ids, compute frequencies
+        # We need to handle batched position_ids properly
+        # Reshape for batch processing: (batch_size * seq_len,)
+        batch_size, seq_len = position_ids.shape
+        positions_flat = position_ids_float.reshape(-1)
+
+        # Compute frequencies for all positions: (batch_size * seq_len, d_head // 2)
+        freqs = torch.outer(positions_flat, inv_freq)
+
+        # Duplicate frequencies to match full dimension: (batch_size * seq_len, d_head)
+        emb = torch.cat((freqs, freqs), dim=-1)
+
+        # Compute cos and sin, then reshape back to (batch_size, seq_len, d_head)
+        cos = emb.cos().to(dtype=dtype).reshape(batch_size, seq_len, self.d_head)
+        sin = emb.sin().to(dtype=dtype).reshape(batch_size, seq_len, self.d_head)
+
+        return cos, sin
+
     def embeddings(self, device: torch.device):
+        """
+        OLD STRATEGY: Get cached embeddings, handling device movement.
+        Only used when cache_embeddings=True.
+        """
+        if not self.cache_embeddings:
+            raise RuntimeError(
+                "embeddings() method should not be called when cache_embeddings=False. "
+                "Use compute_embeddings_on_demand() instead."
+            )
+
         if device == self.cos_cached.device:
             return self.cos_cached, self.sin_cached
-        
+
         # If we were on "meta" and have moved to a real device, we need to initialize the embeddings
         if self.cos_cached.device == torch.device("meta"):
             with torch.device(device):
@@ -194,21 +287,42 @@ class RotaryPE:
         Args:
             q: Query tensor of shape (batch_size, seq_len, num_heads, d_head)
             k: Key tensor of shape (batch_size, seq_len, num_heads, d_head)
-            position_ids: Position indices tensor of shape (1, seq_len).
+            position_ids: Position indices tensor of shape (1, seq_len) or (batch_size, seq_len).
                          If None, uses sequential positions [0, 1, 2, ..., seq_len-1]
 
         Returns:
             Tuple of (rotated_q, rotated_k) tensors with same shapes as input
         """
+        seq_len = q.shape[1]
+        batch_size = q.shape[0]
+        assert seq_len == k.shape[1]
+
+        # NEW STRATEGY: Compute embeddings on-demand
+        if not self.cache_embeddings:
+            # Create position_ids if not provided
+            if position_ids is None:
+                position_ids = torch.arange(seq_len, device=q.device, dtype=torch.long).unsqueeze(0)
+
+            # Compute cos/sin for the specific positions needed
+            cos, sin = self.compute_embeddings_on_demand(position_ids, q.device, q.dtype)
+
+            # Reshape for broadcasting: [batch_size, seq_len, 1, d_head]
+            # cos/sin from compute_embeddings_on_demand are [batch_size, seq_len, d_head]
+            cos = cos.unsqueeze(2)  # [batch_size, seq_len, 1, d_head]
+            sin = sin.unsqueeze(2)  # [batch_size, seq_len, 1, d_head]
+
+            # Apply rotation
+            q_embed = (q * cos) + (rotate_half(q) * sin)
+            k_embed = (k * cos) + (rotate_half(k) * sin)
+            return q_embed, k_embed
+
+        # OLD STRATEGY: Use cached embeddings
         cos_cached, sin_cached = self.embeddings(k.device)
 
         if self.liger_kernel and q.is_cuda:
             return self.liger_kernel(
                 q, k, cos_cached, sin_cached, position_ids
             )
-
-        seq_len = q.shape[1]
-        assert seq_len == k.shape[1]
 
         if position_ids is None:
             # Default behavior: use sequential positions
