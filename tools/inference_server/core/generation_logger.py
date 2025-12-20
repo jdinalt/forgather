@@ -161,6 +161,7 @@ class GenerationLogger:
         completion_tokens: int,
         generation_time_seconds: float,
         tokens_per_second: float,
+        peak_memory: Optional[int] = None,
     ) -> None:
         """
         Log token generation rate diagnostics.
@@ -171,8 +172,13 @@ class GenerationLogger:
             generation_time_seconds: Time taken for generation in seconds
             tokens_per_second: Calculated generation rate
         """
-        self.logger.info(
+        perf_string = (
             f"[{request_id}] Generation performance: "
             f"{completion_tokens} tokens in {generation_time_seconds:.3f}s "
             f"({tokens_per_second:.2f} tokens/sec)"
         )
+
+        if peak_memory is not None:
+            perf_string += f" {peak_memory / 1024**3:.3f} GiB Peak"
+
+        self.logger.info(perf_string)

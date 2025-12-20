@@ -49,9 +49,10 @@ class StreamingStrategy(GenerationStrategy):
             self.service.logger.log_prompt(request_id, prompt)
 
             # 4. Tokenize input
+            device = self.service.tokenizer_wrapper.get_device()
             inputs = self.service.tokenizer(
                 prompt, return_tensors="pt", return_token_type_ids=False
-            ).to(self.service.tokenizer_wrapper.get_device())
+            ).to(device)
             input_ids = inputs["input_ids"]
             prompt_tokens = len(input_ids[0])
 
@@ -71,6 +72,10 @@ class StreamingStrategy(GenerationStrategy):
                 "return_dict_in_generate": True,
                 "output_scores": False,
             }
+
+            # Track CUDA memory usage, if CUDA device.
+            if device.type == "cuda":
+                torch.cuda.reset_peak_memory_stats(device=device)
 
             # 8. Start generation in background thread
             def generate_fn():
@@ -119,7 +124,6 @@ class StreamingStrategy(GenerationStrategy):
                     yield chunk
 
             generation_end = time.perf_counter()
-
             # 11. Calculate timing and rate
             total_time = generation_end - generation_start
             generated_token_ids = self.service.tokenizer.encode(
@@ -129,6 +133,12 @@ class StreamingStrategy(GenerationStrategy):
             tokens_per_second = (
                 completion_tokens / total_time if total_time > 0 else 0.0
             )
+
+            # Get peak memory
+            if device.type == "cuda":
+                peak_memory = torch.cuda.max_memory_allocated()
+            else:
+                peak_memory = None
 
             # 12. Log output details
             self.service.logger.log_generated_tokens(request_id, generated_token_ids)
@@ -156,6 +166,7 @@ class StreamingStrategy(GenerationStrategy):
                 completion_tokens,
                 total_time,
                 tokens_per_second,
+                peak_memory,
             )
 
             # 15. Check for stop sequence

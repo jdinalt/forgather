@@ -60,21 +60,34 @@ class NonStreamingStrategy(GenerationStrategy):
         self.service.logger.log_stop_strings(request_id, stop_strings)
 
         # 8. Generate tokens with timing
-        generation_start = time.perf_counter()
-        with torch.inference_mode():
-            # Only pass stop_strings if not empty
-            generation_kwargs = {
-                "input_ids": input_ids,
-                "generation_config": generation_config,
-                "return_dict_in_generate": True,
-                "output_scores": False,
-                "tokenizer": self.service.tokenizer,
-            }
-            if stop_strings:
-                generation_kwargs["stop_strings"] = stop_strings
+        # Track CUDA memory usage, if CUDA device.
+        device = self.service.tokenizer_wrapper.get_device()
 
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device=device)
+
+        generation_start = time.perf_counter()
+
+        # Only pass stop_strings if not empty
+        generation_kwargs = {
+            "input_ids": input_ids,
+            "generation_config": generation_config,
+            "return_dict_in_generate": True,
+            "output_scores": False,
+            "tokenizer": self.service.tokenizer,
+        }
+        if stop_strings:
+            generation_kwargs["stop_strings"] = stop_strings
+
+        with torch.inference_mode():
             outputs = self.service.model.generate(**generation_kwargs)
         generation_end = time.perf_counter()
+
+        # Get peak memory
+        if device.type == "cuda":
+            peak_memory = torch.cuda.max_memory_allocated()
+        else:
+            peak_memory = None
 
         # 9. Extract generated tokens
         generated_tokens = outputs.sequences[0][prompt_tokens:]
@@ -133,6 +146,7 @@ class NonStreamingStrategy(GenerationStrategy):
             completion_tokens,
             total_time,
             tokens_per_second,
+            peak_memory,
         )
 
         # 17. Build and return response (hook method)
