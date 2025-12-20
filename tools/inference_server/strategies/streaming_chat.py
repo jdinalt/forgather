@@ -6,7 +6,10 @@ import time
 import uuid
 from threading import Thread
 from typing import Iterator
+
 from transformers import TextIteratorStreamer
+import torch
+
 from .base import GenerationStrategy
 from ..models.chat import (
     ChatCompletionStreamResponse,
@@ -84,10 +87,12 @@ class StreamingChatStrategy(GenerationStrategy):
                 "output_scores": False,
             }
 
+            def generate():
+                with torch.inference_mode():
+                    self.service.model.generate(**generation_kwargs)
+            
             # Start generation in background thread
-            thread = Thread(
-                target=self.service.model.generate, kwargs=generation_kwargs
-            )
+            thread = Thread(target=generate)
             thread.start()
 
             # Send initial chunk with role

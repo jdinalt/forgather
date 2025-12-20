@@ -80,6 +80,7 @@ class InferenceService:
         dtype: Optional[str] = None,
         stop_sequences: Optional[List[str]] = None,
         compile_args: Optional[dict[str, Any]] = None,
+        cache_implementation: Optional[str] = None,
     ) -> None:
         """
         Initialize inference service.
@@ -115,6 +116,7 @@ class InferenceService:
         self.default_generation_config = None
         self.jinja_env = Environment(loader=BaseLoader())
         self.compile_args = compile_args
+        self.cache_implementation = cache_implementation
 
         # Load model and setup
         self.load_model()
@@ -132,6 +134,9 @@ class InferenceService:
     def load_model(self):
         """Load model and tokenizer from directory."""
         self.logger.logger.info(f"Loading model from directory {self.model_path}")
+
+        # This can speed up float32 ops on newer GPUs
+        torch.set_float32_matmul_precision("high")
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_path, trust_remote_code=True
@@ -342,10 +347,19 @@ class InferenceService:
         generation_config.temperature = request.temperature
         generation_config.top_p = request.top_p
         generation_config.do_sample = request.temperature > 0
-        generation_config.pad_token_id = self.tokenizer.pad_token_id
-        generation_config.eos_token_id = self.tokenizer.eos_token_id
+        if not hasattr(generation_config, "pad_token_id"):
+            generation_config.pad_token_id = self.tokenizer.pad_token_id
+
+        if not hasattr(generation_config, "eos_token_id"):
+            generation_config.eos_token_id = self.tokenizer.eos_token_id
+
+        if not hasattr(generation_config, "bos_token_id"):
+            generation_config.bos_token_id = self.tokenizer.bos_token_id
+
         generation_config.return_dict_in_generate = True
         generation_config.output_scores = False
+        if self.cache_implementation is not None:
+            generation_config.cache_implementation = self.cache_implementation
 
         # Set early_stopping properly - only use with beam search (num_beams > 1)
         early_stopping_value = getattr(request, "early_stopping", None)

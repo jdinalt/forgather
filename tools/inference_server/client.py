@@ -200,6 +200,7 @@ class InferenceClient:
                 "num_beams": num_beams,
                 "min_length": min_length,
                 "seed": seed,
+                "do_sample": temperature != 0.0,
             }
 
             # Only add non-None values to extra_body

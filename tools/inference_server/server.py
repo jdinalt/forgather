@@ -104,6 +104,11 @@ def main():
         help="YAML encoded torch compile-args. See: https://docs.pytorch.org/docs/stable/generated/torch.compile.html",
     )
     parser.add_argument(
+        "--cache-implementation",
+        default=None,
+        help="HF cache implementation See: https://huggingface.co/docs/transformers/en/kv_cache",
+    )
+    parser.add_argument(
         "-c",
         "--from-checkpoint",
         nargs="?",
@@ -162,6 +167,7 @@ def main():
         dtype=args.dtype,
         stop_sequences=args.stop_sequences,
         compile_args=compile_args,
+        cache_implementation=args.cache_implementation,
     )
 
     # Create FastAPI app and set service
