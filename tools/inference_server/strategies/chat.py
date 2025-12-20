@@ -3,133 +3,61 @@ Non-streaming chat completion generation strategy.
 """
 
 import time
-import uuid
 import torch
-from .base import GenerationStrategy
+from .non_streaming_base import NonStreamingStrategy
 from ..models.chat import (
     ChatCompletionResponse,
     ChatCompletionChoice,
     ChatMessage,
     ChatCompletionUsage,
+    ChatCompletionRequest,
 )
 
 
-class ChatGenerationStrategy(GenerationStrategy):
+class ChatGenerationStrategy(NonStreamingStrategy):
     """Generates non-streaming chat completions."""
 
-    def generate(self, request):
-        """
-        Generate a chat completion response.
+    def _get_request_id_prefix(self) -> str:
+        """Return chat completion request ID prefix."""
+        return "chatcmpl-"
 
-        Args:
-            request: ChatCompletionRequest instance
-
-        Returns:
-            ChatCompletionResponse instance
-        """
-        # Generate request ID
-        request_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-
-        # Log request
-        self.service.logger.log_request(
-            request_id=request_id,
-            request_type="chat completion",
-            model=request.model,
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            top_p=request.top_p,
-            messages_count=len(request.messages),
-        )
-
-        # Log messages
+    def _prepare_prompt(self, request: ChatCompletionRequest, request_id: str) -> str:
+        """Format messages using chat template."""
+        # Log messages first
         self.service.logger.log_messages(request_id, request.messages)
+        # Format using chat template
+        return self.service.format_messages(request.messages)
 
-        # Format messages using chat template
-        prompt = self.service.format_messages(request.messages)
-        self.service.logger.log_prompt(request_id, prompt)
+    def _get_stop_sequences(self, request: ChatCompletionRequest) -> list:
+        """Get stop sequences (use server defaults for chat)."""
+        return self.service.stop_sequences.copy()
 
-        # Tokenize and move to device
-        tokenize_result = self.service.tokenizer_wrapper.tokenize_and_move_to_device(
+    def _tokenize_input(self, prompt: str, request: ChatCompletionRequest) -> dict:
+        """Tokenize chat prompt with no max_length."""
+        return self.service.tokenizer_wrapper.tokenize_and_move_to_device(
             prompt,
             max_length=None,  # No max_length for chat
         )
-        input_ids = tokenize_result["input_ids"]
-        prompt_tokens = tokenize_result["prompt_tokens"]
 
-        # Log input tokens
-        input_token_ids = input_ids[0].tolist()
-        self.service.logger.log_input_tokens(request_id, input_token_ids)
+    def _process_response_text(
+        self,
+        generated_tokens: torch.Tensor,
+        request: ChatCompletionRequest,
+        original_prompt: str,
+    ) -> str:
+        """Decode generated tokens (no special processing for chat)."""
+        return self.service.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
-        # Build generation configuration
-        generation_config = self.service._build_generation_config(request)
-        self.service.logger.log_generation_config(request_id, generation_config)
-
-        # Prepare stop sequences
-        stop_strings = self.service.stop_sequences.copy()
-        self.service.logger.log_stop_strings(request_id, stop_strings)
-
-        # Generate
-        with torch.inference_mode():
-            outputs = self.service.model.generate(
-                input_ids,
-                generation_config=generation_config,
-                return_dict_in_generate=True,
-                output_scores=False,
-                stop_strings=stop_strings,
-                tokenizer=self.service.tokenizer,
-            )
-
-        generated_tokens = outputs.sequences[0][prompt_tokens:]
-        generated_token_ids = generated_tokens.tolist()
-
-        # Log raw generated output
-        raw_generated_text = self.service.tokenizer.decode(
-            generated_token_ids, skip_special_tokens=False
-        )
-        self.service.logger.log_generated_tokens(request_id, generated_token_ids)
-
-        # Process stop sequences
-        (
-            generated_token_ids,
-            generated_tokens,
-            stopped_by_sequence,
-            stop_sequence_found,
-        ) = self.service.stop_processor.process(
-            raw_generated_text,
-            generated_token_ids,
-            generated_tokens,
-            self.service.stop_sequences,
-        )
-
-        # Determine finish reason
-        finish_reason = self.service.finish_detector.determine_finish_reason(
-            generated_token_ids,
-            request.max_tokens,
-            stopped_by_sequence,
-        )
-
-        # Log stop sequence if triggered
-        if stopped_by_sequence:
-            self.service.logger.log_stop_sequence_triggered(
-                request_id, stop_sequence_found
-            )
-
-        # Decode final response
-        response_text = self.service.tokenizer.decode(
-            generated_tokens, skip_special_tokens=True
-        )
-        completion_tokens = len(generated_tokens)
-
-        # Log response
-        self.service.logger.log_response(
-            request_id,
-            response_text,
-            finish_reason,
-            prompt_tokens,
-            completion_tokens,
-        )
-
-        # Build response
+    def _build_response(
+        self,
+        request_id: str,
+        request: ChatCompletionRequest,
+        response_text: str,
+        finish_reason: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+    ) -> ChatCompletionResponse:
+        """Build ChatCompletionResponse object."""
         return ChatCompletionResponse(
             id=request_id,
             created=int(time.time()),

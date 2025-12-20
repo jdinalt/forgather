@@ -154,3 +154,25 @@ class GenerationLogger:
             self.logger.info(
                 f"[{request_id}] Message {i}: role={msg.role}, content={repr(msg.content)}"
             )
+
+    def log_generation_rate(
+        self,
+        request_id: str,
+        completion_tokens: int,
+        generation_time_seconds: float,
+        tokens_per_second: float,
+    ) -> None:
+        """
+        Log token generation rate diagnostics.
+
+        Args:
+            request_id: Request identifier
+            completion_tokens: Number of tokens generated
+            generation_time_seconds: Time taken for generation in seconds
+            tokens_per_second: Calculated generation rate
+        """
+        self.logger.info(
+            f"[{request_id}] Generation performance: "
+            f"{completion_tokens} tokens in {generation_time_seconds:.3f}s "
+            f"({tokens_per_second:.2f} tokens/sec)"
+        )

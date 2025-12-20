@@ -3,55 +3,36 @@ Non-streaming text completion generation strategy.
 """
 
 import time
-import uuid
 import torch
 from fastapi import HTTPException
-from .base import GenerationStrategy
+from .non_streaming_base import NonStreamingStrategy
 from ..models.completion import (
     CompletionResponse,
     CompletionChoice,
     ChatCompletionUsage,
+    CompletionRequest,
 )
 
 
-class CompletionGenerationStrategy(GenerationStrategy):
+class CompletionGenerationStrategy(NonStreamingStrategy):
     """Generates non-streaming text completions."""
 
-    def generate(self, request):
-        """
-        Generate a text completion response.
+    def _get_request_id_prefix(self) -> str:
+        """Return completion request ID prefix."""
+        return "cmpl-"
 
-        Args:
-            request: CompletionRequest instance
-
-        Returns:
-            CompletionResponse instance
-        """
-        # Handle single prompt vs list of prompts
+    def _prepare_prompt(self, request: CompletionRequest, request_id: str) -> str:
+        """Handle single prompt vs list of prompts."""
         if isinstance(request.prompt, list):
             if len(request.prompt) != 1:
                 raise HTTPException(
                     status_code=400, detail="Multiple prompts not supported yet"
                 )
-            prompt = request.prompt[0]
-        else:
-            prompt = request.prompt
+            return request.prompt[0]
+        return request.prompt
 
-        # Generate request ID
-        request_id = f"cmpl-{uuid.uuid4().hex[:8]}"
-
-        # Log request
-        self.service.logger.log_request(
-            request_id=request_id,
-            request_type="completion",
-            model=request.model,
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            top_p=request.top_p,
-            prompt_length=len(prompt),
-        )
-        self.service.logger.log_prompt(request_id, prompt)
-
+    def _get_stop_sequences(self, request: CompletionRequest) -> list:
+        """Get stop sequences (merge request and server defaults)."""
         # Parse stop sequences from request
         request_stop_sequences = []
         if request.stop:
@@ -61,96 +42,42 @@ class CompletionGenerationStrategy(GenerationStrategy):
                 request_stop_sequences = request.stop
 
         # Combine with server stop sequences and filter out empty strings
-        all_stop_sequences = [
-            s for s in (self.service.stop_sequences + request_stop_sequences) if s
-        ]
+        return [s for s in (self.service.stop_sequences + request_stop_sequences) if s]
 
-        # Tokenize and move to device
-        tokenize_result = self.service.tokenizer_wrapper.tokenize_and_move_to_device(
+    def _tokenize_input(self, prompt: str, request: CompletionRequest) -> dict:
+        """Tokenize completion prompt with max_length=2048."""
+        return self.service.tokenizer_wrapper.tokenize_and_move_to_device(
             prompt,
             max_length=2048,
         )
-        input_ids = tokenize_result["input_ids"]
-        prompt_tokens = tokenize_result["prompt_tokens"]
 
-        # Log input tokens
-        input_token_ids = input_ids[0].tolist()
-        self.service.logger.log_input_tokens(request_id, input_token_ids)
-
-        # Build generation configuration
-        generation_config = self.service._build_generation_config(request)
-        self.service.logger.log_generation_config(request_id, generation_config)
-
-        # Prepare stop sequences
-        stop_strings = all_stop_sequences.copy()
-        self.service.logger.log_stop_strings(request_id, stop_strings)
-
-        # Generate
-        with torch.inference_mode():
-            outputs = self.service.model.generate(
-                input_ids,
-                generation_config=generation_config,
-                return_dict_in_generate=True,
-                output_scores=False,
-                stop_strings=stop_strings,
-                tokenizer=self.service.tokenizer,
-            )
-
-        generated_tokens = outputs.sequences[0][prompt_tokens:]
-        generated_token_ids = generated_tokens.tolist()
-
-        # Log raw generated output
-        generated_text_with_special = self.service.tokenizer.decode(
-            generated_token_ids, skip_special_tokens=False
-        )
-        self.service.logger.log_generated_tokens(request_id, generated_token_ids)
-
-        # Process stop sequences
-        (
-            generated_token_ids,
-            generated_tokens,
-            stopped_by_sequence,
-            stop_sequence_found,
-        ) = self.service.stop_processor.process(
-            generated_text_with_special,
-            generated_token_ids,
-            generated_tokens,
-            all_stop_sequences,
-        )
-
-        # Determine finish reason
-        finish_reason = self.service.finish_detector.determine_finish_reason(
-            generated_token_ids,
-            request.max_tokens,
-            stopped_by_sequence,
-        )
-
-        # Log stop sequence if triggered
-        if stopped_by_sequence:
-            self.service.logger.log_stop_sequence_triggered(
-                request_id, stop_sequence_found
-            )
-
-        # Decode final response
+    def _process_response_text(
+        self,
+        generated_tokens: torch.Tensor,
+        request: CompletionRequest,
+        original_prompt: str,
+    ) -> str:
+        """Decode generated tokens and handle echo parameter."""
         response_text = self.service.tokenizer.decode(
             generated_tokens, skip_special_tokens=True
         )
-        completion_tokens = len(generated_tokens)
 
         # Handle echo parameter (include original prompt in response)
         if request.echo:
-            response_text = prompt + response_text
+            response_text = original_prompt + response_text
 
-        # Log response
-        self.service.logger.log_response(
-            request_id,
-            response_text,
-            finish_reason,
-            prompt_tokens,
-            completion_tokens,
-        )
+        return response_text
 
-        # Build response
+    def _build_response(
+        self,
+        request_id: str,
+        request: CompletionRequest,
+        response_text: str,
+        finish_reason: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+    ) -> CompletionResponse:
+        """Build CompletionResponse object."""
         return CompletionResponse(
             id=request_id,
             created=int(time.time()),
