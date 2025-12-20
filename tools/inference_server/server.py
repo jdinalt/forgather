@@ -106,7 +106,12 @@ def main():
     parser.add_argument(
         "--cache-implementation",
         default=None,
-        help="HF cache implementation See: https://huggingface.co/docs/transformers/en/kv_cache",
+        help="HF cache implementation See: https://huggingface.co/docs/transformers/en/kv_cache.",
+    )
+    parser.add_argument(
+        "--disable-kv-cache",
+        action="store_true",
+        help="Set 'use_cache' to False in generation config.",
     )
     parser.add_argument(
         "-c",
@@ -157,6 +162,11 @@ def main():
             compile_args = {}
         logging.info(f"Compile Args: {compile_args}")
 
+    if args.disable_kv_cache:
+        use_cache = False
+    else:
+        use_cache = None
+
     # Create inference service
     service = InferenceService(
         model_path=args.model,
@@ -168,6 +178,7 @@ def main():
         stop_sequences=args.stop_sequences,
         compile_args=compile_args,
         cache_implementation=args.cache_implementation,
+        use_cache=use_cache,
     )
 
     # Create FastAPI app and set service

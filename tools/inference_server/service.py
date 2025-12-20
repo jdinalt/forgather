@@ -81,6 +81,7 @@ class InferenceService:
         stop_sequences: Optional[List[str]] = None,
         compile_args: Optional[dict[str, Any]] = None,
         cache_implementation: Optional[str] = None,
+        use_cache: Optional[bool] = None,
     ) -> None:
         """
         Initialize inference service.
@@ -117,6 +118,7 @@ class InferenceService:
         self.jinja_env = Environment(loader=BaseLoader())
         self.compile_args = compile_args
         self.cache_implementation = cache_implementation
+        self.use_cache = use_cache
 
         # Load model and setup
         self.load_model()
@@ -394,6 +396,9 @@ class InferenceService:
         if hasattr(request, "seed") and request.seed is not None:
             # Set random seed for reproducibility
             torch.manual_seed(request.seed)
+
+        if self.use_cache is not None:
+            generation_config.use_cache = self.use_cache
 
         # If using beam search, adjust sampling and early_stopping
         if generation_config.num_beams and generation_config.num_beams > 1:
