@@ -69,66 +69,27 @@ def apply_llama3_scaling(inv_freq: Tensor, rope_scaling: Dict[str, Any]) -> Tens
     return inv_freq_llama
 
 
-def precompute_cos_sin(
-    dim: int,
-    end: int,
-    dtype: torch.dtype,
-    theta: float = 10000.0,
-    rope_scaling: Optional[Dict[str, Any]] = None,
-) -> Tuple[Tensor, Tensor]:
-    """
-    Precompute cosine and sine tensors for RoPE.
-
-    Args:
-        dim: Dimension of the embedding (typically d_head)
-        end: Maximum sequence length
-        theta: Base for the geometric progression (default: 10000.0)
-        rope_scaling: Optional dict with scaling parameters for extended context.
-                     Supports 'llama3' type scaling with factor-based wavelength bands.
-
-    Returns:
-        Tuple of (cos, sin) tensors of shape (end, dim)
-    """
-    # Compute base inverse frequencies - identical to HF
-    inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
-
-    # Apply scaling if specified
-    if rope_scaling is not None:
-        rope_type = rope_scaling.get("rope_type", rope_scaling.get("type", "default"))
-        if rope_type == "llama3":
-            inv_freq = apply_llama3_scaling(inv_freq, rope_scaling)
-        elif rope_type != "default":
-            raise ValueError(
-                f"Unsupported rope_type: {rope_type}. Only 'llama3' is currently supported."
-            )
-
-    # Create position indices
-    t = torch.arange(end, device=inv_freq.device, dtype=torch.float32)
-
-    # Compute frequencies for each position
-    freqs = torch.outer(t, inv_freq)
-
-    # Duplicate frequencies to match full dimension
-    emb = torch.cat((freqs, freqs), dim=-1)
-
-    # Compute cos and sin
-    cos = emb.cos().to(dtype=dtype)
-    sin = emb.sin().to(dtype=dtype)
-    return cos, sin
-
-
 class RotaryPE:
     """
     Real-valued RoPE positional encoder module
 
     Supports two computation strategies:
-    - Cached (cache_embeddings=True): Precompute cos/sin for all positions once
-    - On-demand (cache_embeddings=False, default): Compute cos/sin on each forward pass
-      The on-demand strategy is better for torch.compile() and torch.export()
+    - Cached (cache_embeddings=True, default): Precompute cos/sin for all positions once.
+      Best performance for dynamic KV cache scenarios. Caches inverse frequencies
+      to avoid recomputation on device movements.
+    - On-demand (cache_embeddings=False): Compute cos/sin on each forward pass.
+      Supports torch.export() which struggles with cached state. When combined with
+      compile_on_demand=True (default), provides reasonable performance through
+      kernel fusion, though still ~15% slower than cached for dynamic KV cache.
 
-    When using on-demand computation, compile_on_demand=True (default) applies
-    torch.compile() to the computation function for ~50% performance improvement
-    in dynamic KV cache scenarios without requiring full model compilation.
+    Performance (Llama 1B, dynamic KV cache, 512 token generation):
+    - cache_embeddings=True: ~135 tok/s (recommended default)
+    - cache_embeddings=False, compile_on_demand=True: ~115 tok/s
+    - cache_embeddings=False, compile_on_demand=False: ~92 tok/s
+
+    Note: With static KV cache, both strategies perform equally (~160 tok/s).
+
+    For complex-valued RoPE (experimental), see complex_rotary_embeddings.py
     """
 
     def __init__(
@@ -139,7 +100,7 @@ class RotaryPE:
         rope_theta: float = 10000.0,
         rope_scaling: Optional[Dict[str, Any]] = None,
         use_liger: bool = False,
-        cache_embeddings: bool = False,
+        cache_embeddings: bool = True,
         compile_on_demand: bool = True,
     ):
         self.d_head = hidden_size // num_attention_heads
@@ -150,16 +111,16 @@ class RotaryPE:
         self.cache_embeddings = cache_embeddings
         self.compile_on_demand = compile_on_demand
 
-        # Precompute cos/sin tensors once for the entire model
-        # Currently disabled by default (cache_embeddings=False)
-        # This can cause issues with torch.compile() and torch.export()
+        # Cache inv_freq to avoid recomputation on device movements
+        # Stored as instance variable (not buffer) to avoid library issues
+        self._inv_freq_cached = None
         if self.cache_embeddings:
-            self.cos_cached, self.sin_cached = precompute_cos_sin(
-                self.d_head,
-                self.max_sequence_length,
-                self.dtype,
-                self.rope_theta,
-                self.rope_scaling,
+            self._inv_freq_cached = self._compute_inv_freq()
+
+        # Precompute cos/sin tensors once for the entire model
+        if self.cache_embeddings:
+            self.cos_cached, self.sin_cached = self._precompute_with_cached_inv_freq(
+                self.max_sequence_length, self.dtype
             )
         else:
             # Store None to indicate we're using on-demand computation
@@ -201,6 +162,69 @@ class RotaryPE:
             f"cache_embeddings={self.cache_embeddings}, compile_on_demand={self.compile_on_demand}, "
             f"liger_kernel={self.liger_kernel is not None}"
         )
+
+    def _compute_inv_freq(self) -> Tensor:
+        """
+        Compute inverse frequencies once and cache them.
+        This avoids recomputing inv_freq on device movements.
+
+        Returns:
+            Inverse frequencies tensor of shape (d_head // 2,)
+        """
+        # Compute base inverse frequencies
+        inv_freq = 1.0 / (
+            self.rope_theta ** (torch.arange(0, self.d_head, 2).float() / self.d_head)
+        )
+
+        # Apply scaling if specified
+        if self.rope_scaling is not None:
+            rope_type = self.rope_scaling.get(
+                "rope_type", self.rope_scaling.get("type", "default")
+            )
+            if rope_type == "llama3":
+                inv_freq = apply_llama3_scaling(inv_freq, self.rope_scaling)
+            elif rope_type != "default":
+                raise ValueError(
+                    f"Unsupported rope_type: {rope_type}. Only 'llama3' is currently supported."
+                )
+
+        return inv_freq
+
+    def _precompute_with_cached_inv_freq(
+        self, max_len: int, dtype: torch.dtype
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Precompute cos/sin using cached inv_freq.
+        This reuses the inv_freq computation across device movements.
+
+        Args:
+            max_len: Maximum sequence length
+            dtype: Data type for output tensors
+
+        Returns:
+            Tuple of (cos, sin) tensors of shape (max_len, d_head)
+        """
+        # Get cached inv_freq, moving to the correct device if needed
+        inv_freq = self._inv_freq_cached
+        if inv_freq.device == torch.device("meta"):
+            # Need to initialize on a real device
+            inv_freq = self._compute_inv_freq()
+            self._inv_freq_cached = inv_freq
+
+        # Create position indices
+        t = torch.arange(max_len, device=inv_freq.device, dtype=torch.float32)
+
+        # Compute frequencies for each position
+        freqs = torch.outer(t, inv_freq)
+
+        # Duplicate frequencies to match full dimension
+        emb = torch.cat((freqs, freqs), dim=-1)
+
+        # Compute cos and sin
+        cos = emb.cos().to(dtype=dtype)
+        sin = emb.sin().to(dtype=dtype)
+
+        return cos, sin
 
     def _compute_embeddings_core(
         self, position_ids: Tensor, device: torch.device, dtype: torch.dtype
@@ -317,12 +341,11 @@ class RotaryPE:
         # If we were on "meta" and have moved to a real device, we need to initialize the embeddings
         if self.cos_cached.device == torch.device("meta"):
             with torch.device(device):
-                self.cos_cached, self.sin_cached = precompute_cos_sin(
-                    self.d_head,
-                    self.max_sequence_length,
-                    self.dtype,
-                    self.rope_theta,
-                    self.rope_scaling,
+                # Use cached inv_freq to avoid recomputing
+                self.cos_cached, self.sin_cached = (
+                    self._precompute_with_cached_inv_freq(
+                        self.max_sequence_length, self.dtype
+                    )
                 )
         else:
             # This can happen when using HF device_map = "auto"
