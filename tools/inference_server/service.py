@@ -360,8 +360,6 @@ class InferenceService:
 
         generation_config.return_dict_in_generate = True
         generation_config.output_scores = False
-        if self.cache_implementation is not None:
-            generation_config.cache_implementation = self.cache_implementation
 
         # Set early_stopping properly - only use with beam search (num_beams > 1)
         early_stopping_value = getattr(request, "early_stopping", None)
@@ -399,6 +397,9 @@ class InferenceService:
 
         if self.use_cache is not None:
             generation_config.use_cache = self.use_cache
+
+        if self.cache_implementation is not None:
+            generation_config.cache_implementation = self.cache_implementation
 
         # If using beam search, adjust sampling and early_stopping
         if generation_config.num_beams and generation_config.num_beams > 1:
