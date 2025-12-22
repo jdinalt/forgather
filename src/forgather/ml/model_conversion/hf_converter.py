@@ -320,6 +320,9 @@ class HFConverter(ModelConverter):
             logger.info("Tying word embeddings...")
             model.tie_weights()
 
+        # Copy generation config
+        self._copy_generation_config(src_model_path, dst_model_path)
+
         # Add tokens and resize embeddings if requested
         # Use default config if no explicit add_tokens provided (unless skip_default_tokens is set)
         token_config = kwargs.get("add_tokens")
@@ -540,6 +543,9 @@ class HFConverter(ModelConverter):
 
         logger.debug(f"HF Model: {hf_model}")
 
+        # Copy generation config
+        self._copy_generation_config(src_model_path, dst_model_path)
+
         # Validate that unused parameters are only RoPE cached buffers
         if result.unexpected_keys:
             non_rope_unexpected = [
@@ -578,6 +584,17 @@ class HFConverter(ModelConverter):
             logger.info(f"Conversion complete: {dst_model_path}")
         else:
             print(hf_config)
+
+    @staticmethod
+    def _copy_generation_config(src_model_path: str, dst_model_path):
+        config_name = "generation_config.json"
+        src_config_path = os.path.join(src_model_path, config_name)
+        if os.path.isfile(src_config_path):
+            dst_config_path = os.path.join(dst_model_path, config_name)
+            logger.info(
+                f"Copy generation config from {src_config_path} to {dst_config_path}"
+            )
+            shutil.copyfile(src_config_path, dst_config_path)
 
     def _print_params(self, model, label: str):
         """Print parameter names for debugging."""

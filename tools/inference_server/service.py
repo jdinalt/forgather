@@ -217,7 +217,7 @@ class InferenceService:
         self.logger.logger.info(
             f"Model loaded successfully on device: {self.model.device} with dtype: {self.dtype}"
         )
-        self.logger.logger.info(self.model)
+        self.logger.logger.debug(self.model)
 
     def _load_generation_config(self):
         """Load generation config from model directory if available."""
@@ -248,6 +248,16 @@ class InferenceService:
         self.logger.logger.info(
             f"Final default generation config: {self.default_generation_config}"
         )
+        if (
+            self.default_generation_config.temperature != 0.0
+            and self.default_generation_config.top_p != 0.0
+        ):
+            self.logger.logger.warning(
+                f"Both temperature ({self.default_generation_config.temperature}) and top_p "
+                f"({self.default_generation_config.top_p}) are set != 1 in generation config. "
+                "It is recommend to set only one of these to != 1. "
+                "See: https://platform.openai.com/docs/api-reference/completions/create"
+            )
 
     def _resolve_dtype(self, dtype_str: Optional[str]) -> torch.dtype:
         """Resolve dtype string to torch.dtype with intelligent defaults."""
@@ -346,9 +356,14 @@ class InferenceService:
 
         # Core parameters
         generation_config.max_new_tokens = max_tokens
-        generation_config.temperature = request.temperature
-        generation_config.top_p = request.top_p
-        generation_config.do_sample = request.temperature > 0
+        if request.temperature is not None:
+            generation_config.temperature = request.temperature
+
+        if request.top_p is not None:
+            generation_config.top_p = request.top_p
+        generation_config.do_sample = (
+            request.temperature is None or request.temperature > 0
+        )
         if not hasattr(generation_config, "pad_token_id"):
             generation_config.pad_token_id = self.tokenizer.pad_token_id
 

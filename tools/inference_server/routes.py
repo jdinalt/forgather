@@ -4,6 +4,7 @@ FastAPI route handlers for inference server.
 
 import time
 from typing import Optional
+import traceback
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -63,6 +64,7 @@ def create_app() -> FastAPI:
                 strategy = ChatGenerationStrategy(inference_service)
                 return strategy.generate(request)
         except Exception as e:
+            traceback.print_exception(e)
             raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
     @app.post("/v1/completions")
@@ -86,6 +88,7 @@ def create_app() -> FastAPI:
                 strategy = CompletionGenerationStrategy(inference_service)
                 return strategy.generate(request)
         except Exception as e:
+            traceback.print_exception(e)
             raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
     @app.get("/health")

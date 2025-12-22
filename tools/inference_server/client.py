@@ -58,8 +58,8 @@ class InferenceClient:
         self,
         model: str = "inference-server",
         max_tokens: int = 512,
-        temperature: float = 0.7,
-        top_p: float = 1.0,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
         stream: bool = False,
     ) -> str:
         """Get a completion from the server."""
@@ -96,8 +96,8 @@ class InferenceClient:
         system_prompt: Optional[str] = None,
         model: str = "inference-server",
         max_tokens: int = 512,
-        temperature: float = 0.7,
-        top_p: float = 1.0,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
         show_usage: bool = False,
         stream: bool = False,
     ) -> str:
@@ -159,11 +159,11 @@ class InferenceClient:
         self,
         prompt: str,
         model: str = "inference-server",
-        max_tokens: int = 16,
-        temperature: float = 1.0,
-        top_p: float = 1.0,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
         stop: Optional[Union[str, List[str]]] = None,
-        echo: bool = False,
+        echo: Optional[bool] = None,
         show_usage: bool = False,
         stream: bool = False,
         repetition_penalty: Optional[float] = None,
@@ -189,9 +189,11 @@ class InferenceClient:
                 "stream": stream,
             }
 
+            # Filter out None values
+            params = {k: v for k, v in params.items() if v is not None}
+
             # Build HuggingFace parameters for extra_body
-            extra_body = {}
-            hf_params = {
+            extra_body = {
                 "repetition_penalty": repetition_penalty,
                 "length_penalty": length_penalty,
                 "no_repeat_ngram_size": no_repeat_ngram_size,
@@ -200,13 +202,12 @@ class InferenceClient:
                 "num_beams": num_beams,
                 "min_length": min_length,
                 "seed": seed,
-                "do_sample": temperature != 0.0,
             }
 
-            # Only add non-None values to extra_body
-            for key, value in hf_params.items():
-                if value is not None:
-                    extra_body[key] = value
+            # Filter out None values
+            extra_body = {k: v for k, v in extra_body.items() if v is not None}
+
+            print(f"{params=}, {extra_body=}")
 
             # Add extra_body if we have any HF parameters
             if extra_body:
@@ -402,11 +403,11 @@ def main():
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.7,
-        help="Sampling temperature (default: 0.7)",
+        default=None,
+        help="Sampling temperature (default: None)",
     )
     parser.add_argument(
-        "--top-p", type=float, default=1.0, help="Top-p sampling (default: 1.0)"
+        "--top-p", type=float, default=None, help="Top-p sampling (default: None)"
     )
 
     # Mode options

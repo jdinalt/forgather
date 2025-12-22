@@ -12,15 +12,15 @@ class CompletionRequest(BaseModel):
     model: str
     prompt: Union[str, List[str]]
     max_tokens: Optional[int] = 16
-    temperature: Optional[float] = 1.0
-    top_p: Optional[float] = 1.0
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
     n: Optional[int] = 1
     stream: Optional[bool] = False
     logprobs: Optional[int] = None
     echo: Optional[bool] = False
     stop: Optional[Union[str, List[str]]] = None
-    presence_penalty: Optional[float] = 0.0
-    frequency_penalty: Optional[float] = 0.0
+    presence_penalty: Optional[float] = None
+    frequency_penalty: Optional[float] = None
     best_of: Optional[int] = 1
     logit_bias: Optional[Dict[str, float]] = None
     user: Optional[str] = None

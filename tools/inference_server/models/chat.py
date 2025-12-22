@@ -15,8 +15,8 @@ class ChatCompletionRequest(BaseModel):
     model: str
     messages: List[ChatMessage]
     max_tokens: Optional[int] = 512
-    temperature: Optional[float] = 0.7
-    top_p: Optional[float] = 1.0
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
     stream: Optional[bool] = False
 
     # Additional HuggingFace generation parameters
