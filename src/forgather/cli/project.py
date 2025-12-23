@@ -41,7 +41,8 @@ def project_cmd(args):
 def project_create_cmd(args):
     """Create a new forgather project in the workspace."""
     import os
-    from jinja2 import Environment, BaseLoader
+
+    from jinja2 import BaseLoader, Environment
 
     # Determine project directory name
     if args.project_dir_name:

@@ -1,11 +1,11 @@
-from typing import Any, Callable, Iterable, Optional, Dict
-import os
 import math
-
+import os
 from pprint import pformat
+from typing import Any, Callable, Dict, Iterable, Optional
+
 from torch.utils.tensorboard import SummaryWriter
 
-from ...utils import format_train_info, format_mapping
+from ...utils import format_mapping, format_train_info
 from ..trainer_types import TrainerCallback
 
 

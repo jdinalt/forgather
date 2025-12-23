@@ -1,8 +1,9 @@
-from typing import List, Tuple, Callable, Dict
-import re
 import math
-from torch import nn, Tensor
+import re
+from typing import Callable, Dict, List, Tuple
+
 import torch
+from torch import Tensor, nn
 
 
 # https://arxiv.org/pdf/2407.17465

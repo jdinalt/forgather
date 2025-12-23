@@ -1,6 +1,6 @@
 from typing import Optional
 
-from torch import nn, Tensor, FloatTensor, LongTensor
+from torch import FloatTensor, LongTensor, Tensor, nn
 
 
 class NullPE(nn.Module):

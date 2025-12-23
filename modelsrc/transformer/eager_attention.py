@@ -9,10 +9,11 @@ The implementation follows the same signature as torch.nn.functional.scaled_dot_
 for compatibility with injectable attention systems.
 """
 
-import torch
-from torch import Tensor
 import math
 from typing import Optional
+
+import torch
+from torch import Tensor
 
 
 def eager_scaled_dot_product_attention(

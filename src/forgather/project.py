@@ -1,11 +1,11 @@
-from typing import Callable, List, Any, Optional, Iterable
-from dataclasses import dataclass, field
 import os
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterable, List, Optional
 
-from forgather.meta_config import MetaConfig, preprocessor_globals
 from forgather.config import ConfigEnvironment
-from forgather.latent import Latent
 from forgather.dotdict import DotDict
+from forgather.latent import Latent
+from forgather.meta_config import MetaConfig, preprocessor_globals
 
 
 @dataclass()

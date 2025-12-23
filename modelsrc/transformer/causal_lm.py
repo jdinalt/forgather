@@ -1,10 +1,9 @@
-from typing import Optional, Callable, Union
 from functools import partial
+from typing import Callable, Optional, Union
 
 import torch
-from torch import nn, FloatTensor
-
-from transformers.cache_utils import DynamicCache, Cache
+from torch import FloatTensor, nn
+from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import BaseModelOutputWithPast
 
 

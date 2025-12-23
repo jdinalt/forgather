@@ -1,11 +1,11 @@
 import math
-from typing import Callable, Iterable, Tuple
-from abc import ABC
 import re
+from abc import ABC
+from typing import Callable, Iterable, Tuple
 
 import torch
 import torch.nn.functional as F
-from torch import nn, Tensor
+from torch import Tensor, nn
 from torch.optim import Optimizer
 
 

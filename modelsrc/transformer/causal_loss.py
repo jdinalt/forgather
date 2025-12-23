@@ -1,5 +1,5 @@
-from torch.nn.functional import cross_entropy
 from torch import FloatTensor, LongTensor
+from torch.nn.functional import cross_entropy
 
 
 class CausalLoss:

@@ -15,7 +15,8 @@ def ws_cmd(args):
 def ws_create_cmd(args):
     """Initialize a new forgather workspace."""
     import os
-    from jinja2 import Environment, BaseLoader
+
+    from jinja2 import BaseLoader, Environment
 
     # Determine project directory name
     if args.workspace_dir:

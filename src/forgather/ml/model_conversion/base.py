@@ -1,7 +1,8 @@
 """Abstract base class for model converters."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Any, Dict, List, Optional, Tuple
+
 import torch
 
 

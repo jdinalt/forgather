@@ -11,9 +11,9 @@ Packing strategies:
 - first_fit: First-Fit Decreasing for fast packing with good utilization
 """
 
-from typing import Optional, Any, Dict, List, Tuple
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 from transformers import PreTrainedTokenizerFast
 

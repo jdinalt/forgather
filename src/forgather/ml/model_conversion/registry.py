@@ -1,8 +1,8 @@
 """Registry for model converters."""
 
-from typing import Dict, Type, List, Optional
-from .base import ModelConverter
+from typing import Dict, List, Optional, Type
 
+from .base import ModelConverter
 
 # Import discovery functions for convenience
 # Actual implementation is in discovery.py to avoid circular imports

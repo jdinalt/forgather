@@ -1,14 +1,10 @@
-from typing import Any
-import re
 import bisect
+import re
+from typing import Any
 
 import yaml
 
-from .latent import (
-    VarNode,
-    CallableNode,
-    SingletonNode,
-)
+from .latent import CallableNode, SingletonNode, VarNode
 
 
 def split_tag_idenity(tag_suffix):

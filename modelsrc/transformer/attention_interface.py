@@ -9,10 +9,9 @@ import torch
 from torch import nn
 from torch.nn.attention.flex_attention import (
     BlockMask,
-    flex_attention,
     FlexKernelOptions,
+    flex_attention,
 )
-
 from torch.nn.functional import scaled_dot_product_attention
 
 

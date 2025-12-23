@@ -1,29 +1,26 @@
 # See: https://huggingface.co/docs/transformers/custom_models
 # This is a template model, with the details filled-in by the code-generator.
+from functools import partial
 from typing import Optional, Tuple
 
-from functools import partial
-from torch import nn, Tensor, LongTensor, FloatTensor
 import torch
+from torch import FloatTensor, LongTensor, Tensor, nn
+from transformers import (AutoConfig, AutoModelForCausalLM, GenerationMixin,
+                          PretrainedConfig, PreTrainedModel)
 from transformers.modeling_outputs import CausalLMOutput
-from transformers import (
-    PreTrainedModel,
-    PretrainedConfig,
-    AutoConfig,
-    AutoModelForCausalLM,
-    GenerationMixin,
-)
 
 -- for module, name in imports:
-from {{ module }} import {{ name }}
+from {{module}} import {{ name }}
+
 -- endfor
 
 ## Modified for example to perform relative imports
 -- if dynamic_imports|length
-from importlib.util import spec_from_file_location, module_from_spec
 import os
 import sys
 from functools import partial
+from importlib.util import module_from_spec, spec_from_file_location
+
 
 # Import a dynamic module.
 def dynimport(module, name, searchpath):

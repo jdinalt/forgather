@@ -1,16 +1,16 @@
-from typing import Any, Callable, Tuple, Optional, Hashable, List, Final
-from itertools import chain
-import sys
+import logging
 import os
+import sys
 from abc import ABCMeta
 from functools import partial
-import logging
+from itertools import chain
+from typing import Any, Callable, Final, Hashable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
 
 from .dynamic import dynamic_import, get_builtin
-from .utils import track_depth, add_exception_notes
+from .utils import add_exception_notes, track_depth
 
 
 class UndefinedType:

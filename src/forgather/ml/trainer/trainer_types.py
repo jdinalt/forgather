@@ -1,26 +1,24 @@
 import os
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from pprint import pformat
 from typing import (
     Any,
-    List,
+    Callable,
     Dict,
-    Tuple,
+    Iterable,
+    List,
     NamedTuple,
     Optional,
     Protocol,
-    Callable,
-    Union,
+    Tuple,
     TypeAlias,
-    Iterable,
+    Union,
 )
 
-from abc import ABC, abstractmethod
-from typing import Protocol
-from dataclasses import dataclass, field
-from pprint import pformat
-
-from torch.utils.data import Dataset
-from torch.distributed.checkpoint.stateful import Stateful
 from torch import Tensor, nn
+from torch.distributed.checkpoint.stateful import Stateful
+from torch.utils.data import Dataset
 
 from ..utils import ConversionDescriptor, DiagnosticEnum
 

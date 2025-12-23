@@ -1,20 +1,20 @@
-import os
 import datetime
-import time
-import re
 import getpass
-import yaml
+import os
+import re
+import time
 from contextlib import contextmanager
 
+import yaml
 from jinja2 import FileSystemLoader, StrictUndefined, Undefined
 from jinja2.ext import Extension
 from jinja2.sandbox import SandboxedEnvironment
 from platformdirs import (
-    user_data_dir,
+    site_config_dir,
+    site_data_dir,
     user_cache_dir,
     user_config_dir,
-    site_data_dir,
-    site_config_dir,
+    user_data_dir,
 )
 
 from .utils import format_line_numbers

@@ -5,10 +5,10 @@ model converter modules from various locations, eliminating the need for
 hardcoded imports in the conversion scripts.
 """
 
+import importlib.util
+import logging
 import os
 import sys
-import logging
-import importlib.util
 from pathlib import Path
 from typing import List, Optional
 

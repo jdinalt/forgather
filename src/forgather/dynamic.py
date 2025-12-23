@@ -1,9 +1,9 @@
-from typing import Any, Callable, Iterable, Optional, Union, List, Type, Tuple
+import importlib
+import os
+import sys
 from collections.abc import Iterable
 from types import ModuleType
-import importlib
-import sys
-import os
+from typing import Any, Callable, Iterable, List, Optional, Tuple, Type, Union
 
 
 def walk_package_modules(

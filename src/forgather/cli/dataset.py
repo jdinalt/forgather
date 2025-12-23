@@ -1,13 +1,13 @@
-import os
 import argparse
+import os
 from argparse import RawTextHelpFormatter
 
 import torch
 from transformers import AutoTokenizer
 
+from forgather import Project
 from forgather.config import ConfigEnvironment
 from forgather.ml.datasets import plot_token_length_histogram
-from forgather import Project
 
 from .dynamic_args import get_dynamic_args
 from .utils import write_output, write_output_or_edit

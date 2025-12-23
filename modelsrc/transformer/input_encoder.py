@@ -1,6 +1,7 @@
-from typing import Callable, Optional
-from torch import nn, LongTensor, FloatTensor
 import math
+from typing import Callable, Optional
+
+from torch import FloatTensor, LongTensor, nn
 
 
 class InputEncoder(nn.Module):

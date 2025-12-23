@@ -1,13 +1,14 @@
-from contextlib import contextmanager
-import os
-from typing import Protocol, Callable
-from abc import abstractmethod
-import torch
-from torch import distributed, accelerator
 import logging
-from functools import partial
-from torch._C._distributed_c10d import Work
+import os
+from abc import abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
+from typing import Callable, Protocol
+
+import torch
+from torch import accelerator, distributed
+from torch._C._distributed_c10d import Work
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

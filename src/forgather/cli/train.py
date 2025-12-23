@@ -2,10 +2,9 @@ import os
 import subprocess
 
 from forgather.latent import Latent
+
 from .dynamic_args import get_dynamic_args
-from .utils import (
-    BaseCommand,
-)
+from .utils import BaseCommand
 
 
 def train_cmd(args):

@@ -1,8 +1,10 @@
-import jinja2
 import logging
 import os
-from forgather.ml.distributed import main_process_first
+
+import jinja2
+
 from forgather.ml.datasets import to_iterable_dataset_with_length
+from forgather.ml.distributed import main_process_first
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)

@@ -1,9 +1,10 @@
-from typing import List
 import os
+from typing import List
 
-from transformers import GenerationConfig, StoppingCriteria
-from torch.utils.tensorboard import SummaryWriter
 import torch
+from torch.utils.tensorboard import SummaryWriter
+from transformers import GenerationConfig, StoppingCriteria
+
 from ...utils import format_train_info
 from ..trainer_types import TrainerCallback
 

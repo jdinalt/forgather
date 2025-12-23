@@ -1,30 +1,25 @@
 """Main CLI controller and argument parsing."""
 
 import argparse
-from argparse import RawTextHelpFormatter
 import logging
 import os
 import sys
+from argparse import RawTextHelpFormatter
 
 from .commands import (
+    code_cmd,
+    construct_cmd,
+    graph_cmd,
     index_cmd,
     ls_cmd,
     meta_cmd,
-    targets_cmd,
-    template_list,
-    graph_cmd,
     pp_cmd,
+    targets_cmd,
     tb_cmd,
-    code_cmd,
-    construct_cmd,
+    template_list,
 )
-
-from .dynamic_args import (
-    parse_dynamic_args,
-    partition_args,
-)
-
-from .utils import add_output_arg, add_editor_arg
+from .dynamic_args import parse_dynamic_args, partition_args
+from .utils import add_editor_arg, add_output_arg
 
 path_type = lambda x: os.path.normpath(os.path.expanduser(x))
 

@@ -1,22 +1,20 @@
-from typing import Callable
 from logging import Logger
+from typing import Callable
 
 import torch
+from datasets.distributed import split_dataset_by_node
 from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import IterableDataset
-
-from datasets.distributed import split_dataset_by_node
-
+from torchtitan.components.dataloader import ParallelAwareDataloader
 from torchtitan.components.ft import FTManager
+from torchtitan.components.lr_scheduler import LRSchedulersContainer
+from torchtitan.components.optimizer import OptimizersContainer
+from torchtitan.components.tokenizer import BaseTokenizer
+from torchtitan.config import JobConfig
+from torchtitan.config import LRScheduler as LRSchedulerConfig
 from torchtitan.config import Optimizer as OptimizerConfig
 from torchtitan.distributed import ParallelDims
-from torchtitan.components.optimizer import OptimizersContainer
-from torchtitan.components.lr_scheduler import LRSchedulersContainer
-from torchtitan.config import LRScheduler as LRSchedulerConfig
-from torchtitan.components.tokenizer import BaseTokenizer
-from torchtitan.components.dataloader import ParallelAwareDataloader
-from torchtitan.config import JobConfig
 
 LossFunction = Callable[..., torch.Tensor]
 

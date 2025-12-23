@@ -1,8 +1,9 @@
 import types
-from typing import Callable
-from pprint import pformat
-from enum import Enum
 from contextlib import contextmanager
+from enum import Enum
+from pprint import pformat
+from typing import Callable
+
 import torch
 
 

@@ -1,26 +1,26 @@
-from typing import Any, Dict, Iterable, List
+import datetime
 import logging
 import os
-import datetime
-from dataclasses import dataclass
 import traceback
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List
 
 import torch
 from torch.distributed.checkpoint.stateful import Stateful
 
+from forgather.ml.distributed import DistributedEnvInterface, get_barrier_fn
 from forgather.ml.sharded_checkpoint import (
-    load_checkpoint,
     find_latest_checkpoint,
-    next_checkpoint_path,
-    maybe_delete_oldest_checkpoint,
-    make_shard_index,
-    save_sharded_checkpoint,
-    save_shard_index,
     index_file_name,
+    load_checkpoint,
+    make_shard_index,
+    maybe_delete_oldest_checkpoint,
+    next_checkpoint_path,
+    save_shard_index,
+    save_sharded_checkpoint,
     validate_checkpoint,
 )
 
-from forgather.ml.distributed import DistributedEnvInterface, get_barrier_fn
 from .trainer_types import CheckpointInterface, StatefulProvider
 
 logger = logging.getLogger(__name__)

@@ -1,53 +1,41 @@
-from typing import (
-    Any,
-    Callable,
-    List,
-    Dict,
-    Set,
-    Iterator,
-    Iterable,
-    Tuple,
-)
-from collections.abc import Sequence, Mapping
 import os
 import sys
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from pprint import pformat
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Set, Tuple
 
-from yaml import SafeLoader
 from jinja2 import Environment, meta
 from platformdirs import user_config_dir
-
+from yaml import SafeLoader
 
 from .latent import (
-    Latent,
-    Node,
     CallableNode,
-    VarNode,
     FactoryNode,
-    SingletonNode,
     LambdaNode,
+    Latent,
     MetaNode,
+    Node,
+    SingletonNode,
+    VarNode,
 )
-
 from .preprocess import PPEnvironment
+from .utils import (
+    AutoName,
+    add_exception_notes,
+    format_line_numbers,
+    indent_block,
+    track_depth,
+)
 from .yaml_utils import (
     CallableConstructor,
+    dict_constructor,
+    dlist_constructor,
+    list_constructor,
     load_depth_first,
     tuple_constructor,
-    list_constructor,
-    dlist_constructor,
     var_constructor,
-    dict_constructor,
-)
-
-from .utils import (
-    format_line_numbers,
-    add_exception_notes,
-    AutoName,
-    track_depth,
-    indent_block,
 )
 
 

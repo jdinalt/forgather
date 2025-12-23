@@ -1,35 +1,39 @@
 """Base HuggingFace model converter implementation."""
 
-import os
 import logging
-from contextlib import ExitStack
+import os
 import shutil
-from typing import Optional, Dict, Any, Tuple, Callable, override
 from abc import abstractmethod
+from contextlib import ExitStack
+from typing import Any, Callable, Dict, Optional, Tuple, override
+
 import torch
-from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
-from transformers.modeling_utils import no_init_weights as hf_no_init_weights
 from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
     PretrainedConfig,
     PreTrainedModel,
     PreTrainedTokenizer,
 )
+from transformers.modeling_utils import no_init_weights as hf_no_init_weights
 
-from forgather import Project, MetaConfig
+from forgather import MetaConfig, Project
+from forgather.ml.no_init_weights import no_init_weights
 from forgather.ml.remap_params import remap_state_dict
 from forgather.ml.sharded_checkpoint import (
-    save_checkpoint,
-    load_checkpoint,
     find_latest_checkpoint,
+    load_checkpoint,
+    save_checkpoint,
 )
 from forgather.ml.utils import default_dtype
-from forgather.ml.no_init_weights import no_init_weights
+
 from .base import ModelConverter
 from .resize_embeddings import (
+    DEFAULT_TOKEN_CONFIG,
     add_tokens_to_tokenizer,
     resize_word_embeddings,
     update_config_from_tokenizer,
-    DEFAULT_TOKEN_CONFIG,
 )
 
 logger = logging.getLogger(__name__)

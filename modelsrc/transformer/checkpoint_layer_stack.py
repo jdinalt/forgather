@@ -1,7 +1,7 @@
-from typing import Optional, Callable
+from typing import Callable, Optional
 
-from torch import nn, FloatTensor
 import torch.utils.checkpoint as checkpoint
+from torch import FloatTensor, nn
 
 
 class LayerStack(nn.Module):

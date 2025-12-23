@@ -1,10 +1,10 @@
-from typing import Any, List
-from dataclasses import dataclass, field
 import os
-from importlib.metadata import version
 import platform
+from dataclasses import dataclass, field
+from importlib.metadata import version
+from typing import Any, List
 
-from .config import ConfigEnvironment, ConfigDict
+from .config import ConfigDict, ConfigEnvironment
 from .preprocess import forgather_config_dir
 
 

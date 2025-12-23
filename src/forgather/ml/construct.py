@@ -1,20 +1,21 @@
-from typing import Callable, List, Any, Optional
-from types import NoneType
+import fcntl
+import filecmp
+import logging
 import os
 import shutil
 import sys
-import filecmp
-import logging
-import fcntl
 import time
 from contextlib import contextmanager
+from types import NoneType
+from typing import Any, Callable, List, Optional
 
-from .distributed import main_process_first
-from forgather.meta_config import MetaConfig
-from forgather.project import Project
 from forgather.config import ConfigEnvironment
 from forgather.dynamic import walk_package_modules
 from forgather.latent import Undefined
+from forgather.meta_config import MetaConfig
+from forgather.project import Project
+
+from .distributed import main_process_first
 
 logger = logging.getLogger(__name__)
 

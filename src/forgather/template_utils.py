@@ -1,9 +1,10 @@
-from typing import Iterable, Tuple, Dict, List
-from types import NoneType
-from forgather.preprocess import split_templates, preprocess
-from collections import defaultdict
 import re
+from collections import defaultdict
 from pprint import pp
+from types import NoneType
+from typing import Dict, Iterable, List, Tuple
+
+from forgather.preprocess import preprocess, split_templates
 
 TemplateName = str  # Template name in template namespace
 TemplateFilePath = str  # Path in file-system to template file

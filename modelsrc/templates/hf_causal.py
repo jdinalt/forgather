@@ -2,25 +2,21 @@
 # This is a template model, with the details filled-in by the code-generator.
 # If you are looking at the post-processed template, it is best not to edit it
 # directly, but to regenerate it with the Forgather code generator.
-from typing import Optional, Tuple, Union, Any
-
 from functools import partial
-from torch import nn, Tensor, LongTensor, FloatTensor
+from typing import Any, Optional, Tuple, Union
+
 import torch
-from transformers import (
-    PreTrainedModel,
-    PretrainedConfig,
-    AutoConfig,
-    AutoModel,
-    AutoModelForCausalLM,
-    GenerationMixin,
-)
+from torch import FloatTensor, LongTensor, Tensor, nn
+from transformers import (AutoConfig, AutoModel, AutoModelForCausalLM,
+                          GenerationMixin, PretrainedConfig, PreTrainedModel)
 from transformers.cache_utils import Cache
-from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutputWithPast
+from transformers.modeling_outputs import (BaseModelOutputWithPast,
+                                           CausalLMOutputWithPast)
 
 # Begin auto-generated imports
 -- for module, name in imports:
-from {{ module }} import {{ name }}
+from {{module}} import {{ name }}
+
 -- endfor
 # End auto-generated imports
 

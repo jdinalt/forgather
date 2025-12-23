@@ -1,24 +1,24 @@
 import os
 import subprocess
-from pprint import pformat
 import traceback
+from pprint import pformat
 
-from forgather.project import Project
-from forgather.config import fconfig
 from forgather.codegen import generate_code
-from forgather.yaml_encoder import to_yaml
+from forgather.config import fconfig
 from forgather.latent import Latent
-from forgather.preprocess import debug_pp
 from forgather.meta_config import MetaConfig
+from forgather.preprocess import debug_pp
+from forgather.project import Project
+from forgather.yaml_encoder import to_yaml
 
 from .dynamic_args import get_dynamic_args
 from .utils import (
-    write_output_or_edit,
-    should_use_absolute_paths,
-    set_default_template,
-    get_env,
-    get_config,
     BaseCommand,
+    get_config,
+    get_env,
+    set_default_template,
+    should_use_absolute_paths,
+    write_output_or_edit,
 )
 
 """Command Implementations"""

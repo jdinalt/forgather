@@ -1,6 +1,7 @@
-import torch
-from torch import nn, FloatTensor
 import math
+
+import torch
+from torch import FloatTensor, nn
 
 # Attention layer with ALiBi relative positional encoding
 # TRAIN SHORT, TEST LONG: ATTENTION WITH LINEAR BIASES ENABLES INPUT LENGTH EXTRAPOLATION

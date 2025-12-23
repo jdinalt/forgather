@@ -7,9 +7,8 @@
 import copy
 from typing import Any, Callable, Iterator
 
-from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 from torch.distributed.checkpoint.stateful import Stateful
-
+from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 from torchtitan.components.optimizer import OptimizersContainer
 
 

@@ -10,19 +10,18 @@ This approach works for models with deletable layers (like CasualLM)
 and supports external attention mask creation.
 """
 
-from typing import List, Tuple, Optional, Callable
 import copy
 import logging
+from typing import Callable, List, Optional, Tuple
+
 import torch
-from torch.nn import Module
 from torch.distributed.pipelining import PipelineStage
 from torch.distributed.pipelining.stage import _PipelineStageBase
+from torch.nn import Module
 
-from .pipeline_split_utils import (
-    generate_llm_fqn_per_model_part,
-    split_model as split_model_fn,
-)
 from .model_splitter import ModelSplitter
+from .pipeline_split_utils import generate_llm_fqn_per_model_part
+from .pipeline_split_utils import split_model as split_model_fn
 
 logger = logging.getLogger(__name__)
 

@@ -1,11 +1,11 @@
-from typing import Any
-from collections import defaultdict
-from types import NoneType
-from enum import Enum
-from abc import ABCMeta, abstractmethod
 import re
+from abc import ABCMeta, abstractmethod
+from collections import defaultdict
+from enum import Enum
+from types import NoneType
+from typing import Any
 
-from .latent import Latent, VarNode, CallableNode, MetaNode, prune_node_type
+from .latent import CallableNode, Latent, MetaNode, VarNode, prune_node_type
 from .utils import AutoName, track_depth
 
 

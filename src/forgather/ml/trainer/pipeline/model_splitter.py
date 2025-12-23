@@ -5,11 +5,11 @@ A ModelSplitter is a callable that splits a model into pipeline stages.
 It can be implemented as either a function or a class with __call__.
 """
 
-from typing import Callable, Optional, Tuple, List, TypeAlias
-import torch
-from torch.nn import Module
-from torch.distributed.pipelining.stage import _PipelineStageBase
+from typing import Callable, List, Optional, Tuple, TypeAlias
 
+import torch
+from torch.distributed.pipelining.stage import _PipelineStageBase
+from torch.nn import Module
 
 # Type alias for the model splitter callable signature
 #

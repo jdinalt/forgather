@@ -11,7 +11,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
+from typing import Any, Dict, List, Optional, Union
 
 try:
     import requests

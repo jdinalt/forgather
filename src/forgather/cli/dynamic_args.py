@@ -1,9 +1,10 @@
 def parse_dynamic_args(parser, global_args):
     if global_args.no_dyn:
         return
-    from forgather import Project, MetaConfig
-    import traceback
     import os
+    import traceback
+
+    from forgather import MetaConfig, Project
 
     def _convert_type_string(type_str):
         """Convert type string to appropriate callable for argparse.

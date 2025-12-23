@@ -3,7 +3,7 @@ from typing import Callable, Iterable, Tuple
 
 import torch
 import torch.nn.functional as F
-from torch import nn, Tensor
+from torch import Tensor, nn
 from torch.optim import Optimizer
 
 

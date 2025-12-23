@@ -1,17 +1,17 @@
 # A light-weight replacement for the HF Trainer class
-from typing import Any, Callable, Iterable, Optional, List, Dict
-from tqdm.auto import tqdm
-import os
 import datetime
+import os
 from pprint import pformat
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from ...utils import format_train_info, format_mapping
+from tqdm.auto import tqdm
 
+from ...utils import format_mapping, format_train_info
 from ..trainer_types import (
     MinimalTrainingArguments,
-    TrainerState,
-    TrainerControl,
     TrainerCallback,
+    TrainerControl,
+    TrainerState,
 )
 
 

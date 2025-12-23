@@ -1,11 +1,8 @@
 import os
 
 import forgather.nb.notebooks as nb
-from .utils import (
-    write_output_or_edit,
-    should_use_absolute_paths,
-    BaseCommand,
-)
+
+from .utils import BaseCommand, should_use_absolute_paths, write_output_or_edit
 
 
 def trefs_cmd(args):
@@ -214,9 +211,9 @@ def render_template_hierarchy_dot(environment, template_path):
 
 def render_template_hierarchy_svg(environment, template_path):
     """Render template hierarchy as SVG using Graphviz"""
+    import shutil
     import subprocess
     import tempfile
-    import shutil
 
     # Check if dot command is available
     if not shutil.which("dot"):

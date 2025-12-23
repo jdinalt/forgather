@@ -1,6 +1,7 @@
-import torch
-from torch import nn, FloatTensor
 import math
+
+import torch
+from torch import FloatTensor, nn
 
 
 class SingleHeadAttn(nn.Module):

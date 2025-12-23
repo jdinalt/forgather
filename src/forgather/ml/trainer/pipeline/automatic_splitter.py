@@ -5,16 +5,17 @@ This is the original splitting method that uses PyTorch's build_pipeline
 to automatically trace the model and split at specified points.
 """
 
-from typing import Dict, Any, List, Tuple, Optional, Callable
 import logging
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
 import torch
-from torch.nn import Module
 from torch.distributed.pipelining import SplitPoint
 from torch.distributed.pipelining import pipeline as build_pipeline
 from torch.distributed.pipelining.stage import _PipelineStageBase
+from torch.nn import Module
 
-from .pipeline_fixes import apply_pipeline_buffer_fix, remove_vestigial_modules
 from .model_splitter import ModelSplitter
+from .pipeline_fixes import apply_pipeline_buffer_fix, remove_vestigial_modules
 
 logger = logging.getLogger(__name__)
 

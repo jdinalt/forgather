@@ -1,12 +1,14 @@
 """Mistral model converter for HuggingFace <-> Forgather conversion."""
 
 import os
-from typing import List, Tuple, Dict, Any, Optional, override
+from typing import Any, Dict, List, Optional, Tuple, override
+
 from transformers.models.mistral import MistralConfig, MistralForCausalLM
 
-from forgather.ml.model_conversion import HFConverter, register_converter
 from forgather import MetaConfig
-from . import hf_mappings, config_mappings
+from forgather.ml.model_conversion import HFConverter, register_converter
+
+from . import config_mappings, hf_mappings
 
 
 @register_converter("mistral")

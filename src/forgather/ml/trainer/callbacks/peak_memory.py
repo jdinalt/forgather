@@ -1,16 +1,17 @@
-import os
-import torch
-from pprint import pformat
 import logging
+import os
+from pprint import pformat
+
+import torch
 import torch.distributed as dist
 
+from ...utils import format_mapping
 from ..trainer_types import (
     MinimalTrainingArguments,
-    TrainerState,
-    TrainerControl,
     TrainerCallback,
+    TrainerControl,
+    TrainerState,
 )
-from ...utils import format_mapping
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

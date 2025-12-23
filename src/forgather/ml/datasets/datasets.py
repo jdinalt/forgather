@@ -1,13 +1,14 @@
-from typing import Optional, Literal
-from types import NoneType
 import logging
 from collections.abc import Sequence
+from types import NoneType
+from typing import Literal, Optional
 
 import torch
-from torch.utils.data import IterableDataset, Dataset
-from datasets import IterableDataset as HFIterableDataset
-from datasets import Dataset as HFDataset
 from datasets.distributed import split_dataset_by_node
+from torch.utils.data import Dataset, IterableDataset
+
+from datasets import Dataset as HFDataset
+from datasets import IterableDataset as HFIterableDataset
 
 from ..distributed import main_process_first
 
@@ -301,9 +302,10 @@ def plot_token_length_histogram(
         min: Minimum length for the histogram (optional).
         max: Maximum length for the histogram (optional).
     """
+    from itertools import islice
+
     import matplotlib.pyplot as plt
     import numpy as np
-    from itertools import islice
 
     # Suppress matplotlib warnings about missing fonts
     logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)

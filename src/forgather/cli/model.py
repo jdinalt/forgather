@@ -1,22 +1,20 @@
-from pprint import pformat
 from contextlib import ExitStack
 from functools import partial
+from pprint import pformat
 
 import torch
-from torch.utils.data import DataLoader
 from torch.optim import SGD
-from torch.utils.data import IterableDataset
+from torch.utils.data import DataLoader, IterableDataset
 
-from forgather import Project
+from forgather import Project, from_project
+from forgather.ml.construct import torch_dtype
+from forgather.ml.data_collator import DataCollatorForCausalLM
+from forgather.ml.no_init_weights import no_init_weights
+from forgather.ml.sharded_checkpoint import load_checkpoint
+from forgather.ml.utils import count_parameters, default_dtype
+
 from .dynamic_args import get_dynamic_args
 from .utils import write_output_or_edit
-from forgather.ml.no_init_weights import no_init_weights
-from forgather.ml.utils import default_dtype
-from forgather.ml.construct import torch_dtype
-from forgather import from_project
-from forgather.ml.data_collator import DataCollatorForCausalLM
-from forgather.ml.utils import count_parameters
-from forgather.ml.sharded_checkpoint import load_checkpoint
 
 
 def optimizer_hook(optimizer, name, parameter):

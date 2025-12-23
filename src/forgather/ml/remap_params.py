@@ -1,8 +1,7 @@
 import re
-from typing import Tuple, List, Dict
+from typing import Dict, Iterable, List, Tuple
 
 from torch import Tensor
-from typing import Tuple, List, Dict, Iterable
 
 PSubList = Iterable["PSub"]  # Recursive list of regex parameter name subsitutions
 PFqn = str  # Parameter Fully Qualified Name

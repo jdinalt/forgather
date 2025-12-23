@@ -2,15 +2,15 @@ from typing import Any
 
 from .graph_encoder import GraphEncoder
 from .latent import (
-    Latent,
-    Undefined,
-    Node,
-    VarNode,
     CallableNode,
     FactoryNode,
-    SingletonNode,
-    MetaNode,
     LambdaNode,
+    Latent,
+    MetaNode,
+    Node,
+    SingletonNode,
+    Undefined,
+    VarNode,
 )
 from .utils import track_depth
 

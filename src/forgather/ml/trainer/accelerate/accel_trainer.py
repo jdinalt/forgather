@@ -1,14 +1,14 @@
 # A subclass of Trainer, which adds support for the Acclerate library.
-from typing import Optional, Dict
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
+from typing import Dict, Optional
 
 import torch
-from torch import Tensor
 from accelerate import Accelerator
+from torch import Tensor
 
-from ..trainer_types import TrainerState
 from ..trainer import Trainer, TrainingArguments
+from ..trainer_types import TrainerState
 
 logger = logging.getLogger(__name__)
 

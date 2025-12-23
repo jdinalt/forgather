@@ -1,12 +1,12 @@
 from typing import Optional
+
+import torch
+from transformers import PretrainedConfig
 from transformers.cache_utils import Cache
 from transformers.masking_utils import (
     create_causal_mask,
     create_sliding_window_causal_mask,
 )
-from transformers import PretrainedConfig
-
-import torch
 
 
 def causal_mask(

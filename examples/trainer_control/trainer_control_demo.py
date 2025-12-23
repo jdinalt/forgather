@@ -18,10 +18,10 @@ Usage:
   forgather control stop JOB_ID            # Gracefully stop
 """
 
-import sys
 import os
-import time
 import platform
+import sys
+import time
 
 # Add forgather to path if needed (when running from source)
 try:
@@ -35,11 +35,11 @@ except ImportError:
 
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 
-from forgather.ml.trainer.trainer import Trainer, TrainingArguments
-from forgather.ml.trainer.callbacks import TrainerControlCallback, JsonLogger
 from forgather.ml.distributed import DistributedEnvironment
+from forgather.ml.trainer.callbacks import JsonLogger, TrainerControlCallback
+from forgather.ml.trainer.trainer import Trainer, TrainingArguments
 
 
 class DemoDataset(Dataset):

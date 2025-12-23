@@ -1,28 +1,28 @@
 import os
 from dataclasses import fields
-from typing import Iterator, Tuple, Any
 from pprint import pformat
+from typing import Any, Iterator, Tuple
 
 from IPython import display as ds
 
-from forgather.latent import Latent, CallableNode
+from forgather.codegen import generate_code
+from forgather.config import ConfigEnvironment
 from forgather.dynamic import (
-    parse_module_name_or_path,
-    parse_dynamic_import_spec,
     import_dynamic_module,
+    parse_dynamic_import_spec,
+    parse_module_name_or_path,
     walk_package_modules,
 )
-from forgather.meta_config import preprocessor_globals, MetaConfig
-from forgather.config import ConfigEnvironment
-from forgather.codegen import generate_code
-from forgather.yaml_encoder import to_yaml
+from forgather.latent import CallableNode, Latent
+from forgather.meta_config import MetaConfig, preprocessor_globals
 from forgather.ml.utils import count_parameters
 from forgather.template_utils import (
-    get_extends_graph,
-    template_extends_iter,
-    template_data_iter,
     extends_graph_iter,
+    get_extends_graph,
+    template_data_iter,
+    template_extends_iter,
 )
+from forgather.yaml_encoder import to_yaml
 
 
 def display_md(md: str):
@@ -258,6 +258,7 @@ def make_train_script(
         i.e. If you wish to only CUDA 0 and 1, then "0,1"
     """
     import stat
+
     from forgather.meta_config import MetaConfig
 
     prev_cwd = os.getcwd()

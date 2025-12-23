@@ -115,9 +115,10 @@ def control_cmd(args):
                 return 0
 
             # Find dead jobs
-            import psutil
             import shutil
             from pathlib import Path
+
+            import psutil
 
             dead_jobs = []
 

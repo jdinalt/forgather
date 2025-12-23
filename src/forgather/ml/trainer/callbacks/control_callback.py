@@ -13,9 +13,9 @@ import signal
 import socket
 import threading
 import time
-from pathlib import Path
-from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 try:
     import aiohttp
@@ -30,9 +30,9 @@ import torch.distributed as dist
 
 from ..trainer_types import (
     MinimalTrainingArguments,
-    TrainerState,
-    TrainerControl,
     TrainerCallback,
+    TrainerControl,
+    TrainerState,
 )
 
 logger = logging.getLogger(__name__)

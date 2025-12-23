@@ -1,6 +1,7 @@
-from forgather.ml.sharded_checkpoint import create_pretrained_symlinks
-from .dynamic_args import get_dynamic_args
 from forgather import Project
+from forgather.ml.sharded_checkpoint import create_pretrained_symlinks
+
+from .dynamic_args import get_dynamic_args
 
 
 def checkpoint_cmd(args):

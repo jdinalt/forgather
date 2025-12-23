@@ -5,19 +5,19 @@
 # LICENSE file in the root directory of this source tree.
 # source: https://github.com/pytorch/torchtitan/
 
-from typing import Generator, Protocol, Callable
+from typing import Callable, Generator, Protocol
 
 from torch.distributed.pipelining.schedules import _PipelineSchedule
 from torchtitan.components.dataloader import BaseDataLoader
 from torchtitan.components.loss import LossFunction
 from torchtitan.components.metrics import MetricsProcessor
 from torchtitan.components.tokenizer import BaseTokenizer
+from torchtitan.components.validate import BaseValidator
+from torchtitan.components.validate import Validator as TitanValidator
 from torchtitan.config import JobConfig
 from torchtitan.datasets.hf_datasets import build_hf_validation_dataloader
 from torchtitan.distributed import ParallelDims
 from torchtitan.tools.logging import logger
-from torchtitan.components.validate import Validator as TitanValidator
-from torchtitan.components.validate import BaseValidator
 
 
 class ValidatorFactory(Protocol):

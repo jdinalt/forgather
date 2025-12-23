@@ -1,45 +1,35 @@
-from typing import (
-    Callable,
-    Optional,
-    List,
-    Dict,
-    Tuple,
-    Iterable,
-    override,
-)
-
+import logging
 import os
 import platform
 import time
 from abc import abstractmethod
 from contextlib import ExitStack
-import logging
 from dataclasses import dataclass
+from typing import Callable, Dict, Iterable, List, Optional, Tuple, override
 
 import torch
 from torch import Tensor
-from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.distributed.checkpoint.stateful import Stateful
-
-from .trainer_types import (
-    ExtensibleTrainer,
-    MinimalTrainingArguments,
-    TrainerState,
-    TrainOutput,
-    TrainerControl,
-    CheckpointInterface,
-    StatefulProvider,
-    IntervalStrategy,
-    IterableDatasetT,
-    TrainerCallback,
-    DataCollatorT,
-    LossFunctionT,
-    OptimizerT,
-    LRSchedulerT,
-    PreprocessingClassT,
-)
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from .checkpoint_manager import RNGState
+from .trainer_types import (
+    CheckpointInterface,
+    DataCollatorT,
+    ExtensibleTrainer,
+    IntervalStrategy,
+    IterableDatasetT,
+    LossFunctionT,
+    LRSchedulerT,
+    MinimalTrainingArguments,
+    OptimizerT,
+    PreprocessingClassT,
+    StatefulProvider,
+    TrainerCallback,
+    TrainerControl,
+    TrainerState,
+    TrainOutput,
+)
 
 logger = logging.getLogger(__name__)
 

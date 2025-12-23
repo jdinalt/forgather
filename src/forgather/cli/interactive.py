@@ -1,19 +1,22 @@
 """Interactive CLI shell with tab completion for forgather."""
 
-import cmd
-import shlex
-import sys
-import os
-import subprocess
-import shutil
-from typing import List, Optional
-import traceback
-import signal
 import atexit
+import cmd
+import os
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import traceback
+from typing import List, Optional
 
 from forgather.meta_config import MetaConfig
+
 from .commands import get_env
-from .main import get_subcommand_registry, parse_args, main as cli_main
+from .main import get_subcommand_registry
+from .main import main as cli_main
+from .main import parse_args
 
 try:
     import readline
@@ -234,7 +237,8 @@ class ForgatherShell(cmd.Cmd):
         """Get list of available targets."""
         try:
             from forgather.meta_config import MetaConfig
-            from .commands import get_env, get_config, set_default_template
+
+            from .commands import get_config, get_env, set_default_template
 
             # Use similar logic to targets_cmd
             meta = MetaConfig(self.project_dir)

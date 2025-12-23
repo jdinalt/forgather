@@ -5,14 +5,15 @@ This script provides comprehensive monitoring of tensor allocations and system m
 """
 
 import gc
+import logging
 import os
-import psutil
-import torch
 import tracemalloc
 import weakref
 from collections import defaultdict
 from typing import Dict, List, Set
-import logging
+
+import psutil
+import torch
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

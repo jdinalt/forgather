@@ -1,6 +1,6 @@
-from typing import Dict, List, Any, Tuple, Optional
 import copy
 import logging
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from torch import Tensor

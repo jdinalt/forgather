@@ -1,12 +1,15 @@
-from typing import Any
-from dataclasses import dataclass, field
 import logging
+from dataclasses import dataclass, field
+from typing import Any
 
 from torch.distributed.elastic.multiprocessing.errors import record
 
-from forgather.ml.distributed import DistributedEnvInterface, from_env
-from forgather.ml.distributed import main_process_first
 from forgather.dotdict import DotDict
+from forgather.ml.distributed import (
+    DistributedEnvInterface,
+    from_env,
+    main_process_first,
+)
 from forgather.project import Project
 
 logger = logging.getLogger(__name__)

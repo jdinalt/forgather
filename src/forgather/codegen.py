@@ -1,17 +1,17 @@
-from typing import List, Any, Optional
 import os
+from typing import Any, List, Optional
 
-from .preprocess import PPEnvironment
 from .graph_encoder import GraphEncoder, NamePolicy
 from .latent import (
-    Latent,
-    Undefined,
-    VarNode,
     CallableNode,
     FactoryNode,
-    MetaNode,
     LambdaNode,
+    Latent,
+    MetaNode,
+    Undefined,
+    VarNode,
 )
+from .preprocess import PPEnvironment
 from .utils import track_depth
 
 

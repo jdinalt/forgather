@@ -1,14 +1,9 @@
-from typing import (
-    Dict,
-    Tuple,
-    List,
-    Optional,
-)
 import logging
-import yaml
-import torch
+from typing import Dict, List, Optional, Tuple
 
-from transformers import PreTrainedTokenizerBase, PretrainedConfig, PreTrainedModel
+import torch
+import yaml
+from transformers import PretrainedConfig, PreTrainedModel, PreTrainedTokenizerBase
 
 logger = logging.getLogger(__name__)
 

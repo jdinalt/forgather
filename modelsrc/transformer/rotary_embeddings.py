@@ -1,7 +1,6 @@
-from typing import Tuple, Optional, Dict, Any, Iterable
-import math
-
 import logging
+import math
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import torch
 from torch import Tensor

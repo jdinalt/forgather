@@ -1,59 +1,47 @@
 # https://github.com/pytorch/pytorch/tree/main/torch/distributed/pipelining
+import copy
+import logging
+import math
+from contextlib import ExitStack
 from dataclasses import dataclass
+from functools import partial
 from typing import (
+    Any,
     Callable,
     Dict,
-    List,
-    Tuple,
     Iterable,
-    Any,
+    List,
     Protocol,
+    Tuple,
     TypeAlias,
     override,
 )
-import logging
-import math
-import copy
-from functools import partial
-from contextlib import ExitStack
 
 import torch
-from torch.nn import Module
-from torch import Tensor
-from torch import distributed
 import torch.distributed as dist
+from torch import Tensor, distributed
 from torch.distributed.pipelining import ScheduleGPipe
-from torch.distributed.pipelining.stage import _PipelineStageBase
 from torch.distributed.pipelining.microbatch import split_args_kwargs_into_chunks
+from torch.distributed.pipelining.stage import _PipelineStageBase
+from torch.nn import Module
 
-from ..trainer_types import (
-    LossFunctionT,
-    CheckpointInterface,
-)
-from ..checkpoint_manager import CheckpointManager, CheckpointConfig
-from ..trainer import (
-    Trainer,
-    TrainingArguments,
-    optimizer_hook,
-)
-from ...sharded_checkpoint import (
-    make_shard_index,
-    create_sharing_metadata,
-    retie_parameters,
-    SharingMetadataT,
-    ShardIndex,
-)
-from .pipeline_utils import (
-    pipeline_stage_indices,
-    missing_buffers,
-)
-from .pipeline_fixes import (
-    assert_no_duplicate_fqns,
-)
-from .model_splitter import ModelSplitter
-from forgather.ml.utils import default_dtype
 from forgather.ml.construct import torch_dtype
 from forgather.ml.loss import RescaleLoss
+from forgather.ml.utils import default_dtype
+
+from ...sharded_checkpoint import (
+    ShardIndex,
+    SharingMetadataT,
+    create_sharing_metadata,
+    make_shard_index,
+    retie_parameters,
+)
+from ..checkpoint_manager import CheckpointConfig, CheckpointManager
+from ..trainer import Trainer, TrainingArguments, optimizer_hook
+from ..trainer_types import CheckpointInterface, LossFunctionT
+from .model_splitter import ModelSplitter
+from .pipeline_fixes import assert_no_duplicate_fqns
+from .pipeline_utils import missing_buffers, pipeline_stage_indices
 
 logger = logging.getLogger(__name__)
 

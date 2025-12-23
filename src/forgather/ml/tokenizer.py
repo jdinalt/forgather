@@ -1,12 +1,13 @@
-from typing import Dict, List
-import time
 import os
+import time
 from collections.abc import Sequence
+from typing import Dict, List
 
-from tokenizers import Tokenizer
-from transformers import PreTrainedTokenizerFast
 from tqdm.auto import tqdm
+from transformers import PreTrainedTokenizerFast
+
 from datasets import Dataset
+from tokenizers import Tokenizer
 
 
 def normalize_range(

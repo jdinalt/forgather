@@ -1,71 +1,62 @@
 # A light-weight Trainer with an API close enough to "transformers.Trainer"
 # to act as a stand-in for basic use-cases.
+import gc
+import logging
+import os
+import time
+from collections.abc import Sized
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
+from functools import partial
 from typing import (
-    TypeGuard,
     Any,
-    Dict,
     Callable,
+    Dict,
     Iterable,
-    Tuple,
-    Optional,
-    Type,
-    Protocol,
     Iterator,
+    Optional,
+    Protocol,
+    Tuple,
+    Type,
+    TypeGuard,
     cast,
     override,
 )
-from collections.abc import Sized
-from functools import partial
-from dataclasses import dataclass
-from contextlib import contextmanager
-import time
-import os
-import logging
-import gc
-from contextlib import ExitStack
 
 import torch
-from torch import Tensor
-
 import torchdata.nodes as tn
+from torch import Tensor
 from torch.utils.data import DataLoader
 from torchdata.stateful_dataloader import StatefulDataLoader
 
-from .trainer_types import (
-    TrainOutput,
-    IntervalStrategy,
-    CheckpointInterface,
-    OptimizerT,
-    LRSchedulerT,
-    OptimizerFactoryT,
-    LRSchedulerFactoryT,
-    FusedLossFactoryT,
-    EnableCheckpointFnT,
-    IterableDatasetT,
-)
-from .base_trainer import (
-    BaseTrainer,
-    BaseTrainingArguments,
-    logits_from_outputs,
-)
-from .trainer_types import TrainerState as BaseTrainerState
-from .callbacks.default_callbacks import (
-    ProgressCallback,
-    InfoCallback,
-)
-from .periodic_function import PeriodicFunction
+from forgather.ml.construct import torch_dtype
+from forgather.ml.utils import default_dtype
+
+from ..distributed import DistributedEnvInterface
+from ..loss import RescaleLoss
+from ..no_init_weights import no_init_weights
 from ..sharded_checkpoint import (
     create_sharing_metadata,
     retie_parameters,
     save_checkpoint_metrics,
 )
-
-from .checkpoint_manager import CheckpointManager, CheckpointConfig
-from ..distributed import DistributedEnvInterface
-from ..no_init_weights import no_init_weights
-from forgather.ml.utils import default_dtype
-from forgather.ml.construct import torch_dtype
-from ..loss import RescaleLoss
+from .base_trainer import BaseTrainer, BaseTrainingArguments, logits_from_outputs
+from .callbacks.default_callbacks import InfoCallback, ProgressCallback
+from .checkpoint_manager import CheckpointConfig, CheckpointManager
+from .periodic_function import PeriodicFunction
+from .trainer_types import (
+    CheckpointInterface,
+    EnableCheckpointFnT,
+    FusedLossFactoryT,
+    IntervalStrategy,
+    IterableDatasetT,
+    LRSchedulerFactoryT,
+    LRSchedulerT,
+    OptimizerFactoryT,
+    OptimizerT,
+)
+from .trainer_types import TrainerState as BaseTrainerState
+from .trainer_types import TrainOutput
 
 logger = logging.getLogger(__name__)
 

@@ -21,10 +21,11 @@ At some point, when I have the time, I would like to write a clean version of th
 model splitter, which works correctly. I have a prototype, but have other priorities.
 """
 
-import torch
 import logging
-from typing import Dict, List, Set, Tuple, Optional, Any
 from collections import defaultdict
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+import torch
 
 logger = logging.getLogger(__name__)
 

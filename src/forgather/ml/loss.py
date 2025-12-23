@@ -1,12 +1,12 @@
-from typing import Optional
 import contextlib
 import functools
+from typing import Optional
 
-from torch.nn.functional import cross_entropy
-from torch import Tensor, FloatTensor, LongTensor
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import FloatTensor, LongTensor, Tensor
+from torch.nn.functional import cross_entropy
 
 
 def _causal_loss_fn(logits: FloatTensor, labels: LongTensor) -> FloatTensor:

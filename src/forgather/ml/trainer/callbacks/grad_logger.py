@@ -1,10 +1,10 @@
-from typing import Any, Callable, Iterable, Optional, Dict
-import os
 import math
+import os
 import re
+from pprint import pformat
+from typing import Any, Callable, Dict, Iterable, Optional
 
 import torch
-from pprint import pformat
 from torch.utils.tensorboard import SummaryWriter
 
 from ..trainer_types import TrainerCallback

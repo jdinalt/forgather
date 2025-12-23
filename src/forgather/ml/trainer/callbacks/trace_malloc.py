@@ -1,17 +1,18 @@
-import tracemalloc
-import os
-import torch
-import psutil
-from pprint import pformat
 import logging
+import os
+import tracemalloc
+from pprint import pformat
+
+import psutil
+import torch
 import torch.distributed as dist
 
 from ...memory_monitor import get_memory_monitor
 from ..trainer_types import (
     MinimalTrainingArguments,
-    TrainerState,
-    TrainerControl,
     TrainerCallback,
+    TrainerControl,
+    TrainerState,
 )
 
 logger = logging.getLogger(__name__)

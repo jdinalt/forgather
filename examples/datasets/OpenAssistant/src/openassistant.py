@@ -7,21 +7,21 @@ by randomly sampling paths through trees with quality-weighted branching.
 
 import gzip
 import json
-import random
 import logging
+import random
 import zlib
+from collections import Counter
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from collections import Counter
-from dataclasses import dataclass, field, asdict
 
-from datasets import DatasetInfo, Features, Value
-import numpy as np
 import jinja2.sandbox
+import numpy as np
 from datasets.dataset_dict import IterableDatasetDict
 from datasets.io.generator import GeneratorDatasetInputStream
-from datasets import DatasetInfo, Features, Value
 from huggingface_hub import hf_hub_download
+
+from datasets import DatasetInfo, Features, Value
 
 logger = logging.getLogger(__name__)
 

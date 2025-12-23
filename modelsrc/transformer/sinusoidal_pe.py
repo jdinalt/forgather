@@ -1,8 +1,8 @@
-from typing import Optional, Iterable
 import math
+from typing import Iterable, Optional
 
 import torch
-from torch import nn, FloatTensor, LongTensor, Tensor
+from torch import FloatTensor, LongTensor, Tensor, nn
 
 
 # An implementation of the original transformer sinusoidal positional encoder.
