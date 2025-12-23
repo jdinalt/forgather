@@ -4,11 +4,11 @@ CLI client for interacting with the HuggingFace OpenAI API-compatible inference 
 """
 
 import argparse
-from argparse import RawTextHelpFormatter
-import sys
-from typing import List, Dict, Any, Optional, Union
 import os
+import sys
+from argparse import RawTextHelpFormatter
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 try:
     from openai import OpenAI
@@ -206,8 +206,6 @@ class InferenceClient:
 
             # Filter out None values
             extra_body = {k: v for k, v in extra_body.items() if v is not None}
-
-            print(f"{params=}, {extra_body=}")
 
             # Add extra_body if we have any HF parameters
             if extra_body:

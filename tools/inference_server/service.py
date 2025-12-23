@@ -5,29 +5,29 @@ Inference service core - model loading and infrastructure.
 import logging
 import os
 from dataclasses import dataclass
-from typing import List, Optional, Set, Union, Callable, Any
-import logging
-import torch
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    GenerationConfig,
-    AutoConfig,
-)
-from jinja2 import Environment, BaseLoader, TemplateError
+from typing import Any, Callable, List, Optional, Set, Union
 
-from forgather.ml.no_init_weights import no_init_weights
-from forgather.ml.utils import default_dtype
-from forgather.ml.sharded_checkpoint import load_checkpoint, find_latest_checkpoint
+import torch
+from jinja2 import BaseLoader, Environment, TemplateError
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    GenerationConfig,
+)
+
 from forgather.ml.construct import torch_dtype
+from forgather.ml.no_init_weights import no_init_weights
+from forgather.ml.sharded_checkpoint import find_latest_checkpoint, load_checkpoint
+from forgather.ml.utils import default_dtype
 
 from .core import (
-    StopSequenceProcessor,
     FinishReasonDetector,
-    TokenizerWrapper,
     GenerationLogger,
+    StopSequenceProcessor,
+    TokenizerWrapper,
 )
-from .models.chat import ChatMessage, ChatCompletionRequest
+from .models.chat import ChatCompletionRequest, ChatMessage
 from .models.completion import CompletionRequest
 
 
@@ -364,13 +364,22 @@ class InferenceService:
         generation_config.do_sample = (
             request.temperature is None or request.temperature > 0
         )
-        if not hasattr(generation_config, "pad_token_id"):
+        if (
+            not hasattr(generation_config, "pad_token_id")
+            or generation_config.pad_token_id is None
+        ):
             generation_config.pad_token_id = self.tokenizer.pad_token_id
 
-        if not hasattr(generation_config, "eos_token_id"):
+        if (
+            not hasattr(generation_config, "eos_token_id")
+            or generation_config.eos_token_id is None
+        ):
             generation_config.eos_token_id = self.tokenizer.eos_token_id
 
-        if not hasattr(generation_config, "bos_token_id"):
+        if (
+            not hasattr(generation_config, "bos_token_id")
+            or generation_config.bos_token_id is None
+        ):
             generation_config.bos_token_id = self.tokenizer.bos_token_id
 
         generation_config.return_dict_in_generate = True
