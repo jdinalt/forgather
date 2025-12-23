@@ -1,0 +1,11 @@
+-- extends "meta_defaults.yaml"
+[searchdir_project]
+    == super()
+    ## Join search directory with base "llama" project
+    - "{{ joinpath(ns.forgather_dir, 'examples/models/llama/templates') }}"
+
+[configs]
+name: "llama"
+description: "Llama models"
+config_prefix: "configs"
+default_config: "post_layer_norm.yaml"

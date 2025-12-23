@@ -16,12 +16,12 @@
     ## Set predefined model project to import
     -- set ns.model_project_dir = joinpath(ns.forgather_dir, "examples", 'models', "llama")
     
-    ## Select 4 million parameter Llama model
-    ## Others definitions: 117M.yaml, 7B.yaml
+    ## Select 4M parameter Llama model
     -- set ns.model_project_config = "4M.yaml"
 
 [datasets_preprocessor_args]
 tokenizer_args: &tokenizer_args !dict
+    ## Keep sequence length short for faster training
     truncation: True
     max_length: 512
 
@@ -64,11 +64,6 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     ## Limit maximum sequence length 512 tokens, at the data-collator level.
     truncation: True
     max_length: 512
-
-#-------------------- project.model_config --------------------
--- extends "models/tiny_dynamic_llama.yaml"
-## Project can override values here...
-
 
 #-------------------- project.trainer_config --------------------
 -- extends 'trainers/trainer.yaml'

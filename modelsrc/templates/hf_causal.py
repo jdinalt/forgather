@@ -16,7 +16,6 @@ from transformers.modeling_outputs import (BaseModelOutputWithPast,
 # Begin auto-generated imports
 -- for module, name in imports:
 from {{module}} import {{ name }}
-
 -- endfor
 # End auto-generated imports
 

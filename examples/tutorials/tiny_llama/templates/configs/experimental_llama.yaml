@@ -6,22 +6,10 @@
     -- set ns.config_description = "Try a Post-Norm Llama model"
     -- set ns.model_name = "exp_llama"
 
-[construct_new_model]
-    -- include 'experiment.model_config'
+    ## Search for model in our "custom_models" directory
+    -- set ns.model_project_dir = joinpath(project_dir, 'custom_models/llama')
 
-#-------------------- experiment.model_config --------------------
--- extends "models/tiny_dynamic_llama.yaml"
+    ## Select the config to use from the model project
+    -- set ns.model_project_config = "post_layer_norm.yaml"
 
-[layer_factory]
-# Experiment: Switch from PreLayerNorm to PostLayerNorm
-layer_factory: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
-    feedforward_factory: *feedforward_factory
-    attention_factory: *attention_factory
-    norm_factory: *layer_norm_factory
-    dropout: !var "layer_dropout"
-    residual_dropout: !var "residual_dropout"
-
-[layer_stack]
-    == super()
-    # Experiment; disable norm at last step
-    post_norm_factory: null
+    ## That's it! For model details, see the 'custom_models' directory
