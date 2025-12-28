@@ -11,3 +11,8 @@
 
     [callback_list]
 trainer_callbacks: &trainer_callbacks !dlist:@trainer_callbacks
+    progress_callback: !singleton:forgather.ml.trainer.callbacks:ProgressCallback
+        use_tqdm: null # Optional[bool] : Use TQDM, Auto, if unspecified
+        output_stream: "stdout" #Literal["stderr", "stdout"]
+    info_callback: !singleton:forgather.ml.trainer.callbacks:InfoCallback
+        verbose: False

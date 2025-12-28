@@ -5,7 +5,8 @@ from typing import Any, Callable, Dict, Iterable, Optional
 
 from torch.utils.tensorboard import SummaryWriter
 
-from ...utils import format_mapping, format_train_info
+from forgather.ml.trainer.logging import format_mapping, format_train_info
+
 from ..trainer_types import TrainerCallback
 
 

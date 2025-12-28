@@ -2,7 +2,8 @@ import datetime
 import json
 import os
 
-from ...utils import format_train_info
+from forgather.ml.trainer.logging import format_train_info
+
 from ..trainer_types import (
     MinimalTrainingArguments,
     TrainerCallback,

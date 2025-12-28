@@ -5,7 +5,8 @@ from pprint import pformat
 import torch
 import torch.distributed as dist
 
-from ...utils import format_mapping
+from forgather.ml.trainer.logging import format_mapping
+
 from ..trainer_types import (
     MinimalTrainingArguments,
     TrainerCallback,

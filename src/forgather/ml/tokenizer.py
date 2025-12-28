@@ -7,6 +7,7 @@ from tqdm.auto import tqdm
 from transformers import PreTrainedTokenizerFast
 
 from datasets import Dataset
+from forgather.ml.trainer.logging import get_env_type
 from tokenizers import Tokenizer
 
 
@@ -116,16 +117,24 @@ class TokenizerTrainer:
         print(f"steps: {steps}")
         print(f"Dataset: {self.train_dataset}")
 
-        def batch_iterator():
-            train_progress_bar = tqdm(
-                total=steps, dynamic_ncols=True, desc="Training Tokenizer"
-            )
-            try:
+        if get_env_type() != "file":
+
+            def batch_iterator():
+                train_progress_bar = tqdm(
+                    total=steps, dynamic_ncols=True, desc="Training Tokenizer"
+                )
+                try:
+                    for i in range(0, total_samples, batch_size):
+                        yield self.train_dataset[i : i + batch_size][self.feature]
+                        train_progress_bar.update()
+                finally:
+                    train_progress_bar.close()
+
+        else:
+
+            def batch_iterator():
                 for i in range(0, total_samples, batch_size):
                     yield self.train_dataset[i : i + batch_size][self.feature]
-                    train_progress_bar.update()
-            finally:
-                train_progress_bar.close()
 
         start_time = time.time()
 

@@ -185,9 +185,6 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         callbacks: Optional[List[TrainerCallback]] = None,
         compute_loss_func: Optional[LossFunctionT] = None,
     ):
-        if callbacks is None:
-            callbacks = []
-
         assert (
             model or model_init
         ), "Either a model or a model constructor must be specified"
@@ -203,8 +200,10 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         self.eval_dataset = eval_dataset
         self.processing_class = processing_class
         self.model_init = model_init
-        self.callbacks = self.default_callbacks()
-        self.callbacks.extend(callbacks)
+        if callbacks is None:
+            self.callbacks = self.default_callbacks()
+        else:
+            self.callbacks = callbacks
         self.loss_fn = compute_loss_func
 
         # Init attributes

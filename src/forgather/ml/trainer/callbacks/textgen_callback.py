@@ -5,7 +5,8 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from transformers import GenerationConfig, StoppingCriteria
 
-from ...utils import format_train_info
+from forgather.ml.trainer.logging import format_train_info
+
 from ..trainer_types import TrainerCallback
 
 
