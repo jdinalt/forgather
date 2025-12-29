@@ -1,3 +1,3 @@
 ## Optimizers
 
-Test harness for optimizer implementations.
+Test harness for comparing optimizer implementations.

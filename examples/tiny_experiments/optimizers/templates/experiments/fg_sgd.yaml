@@ -1,0 +1,11 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "FG SGD"
+    -- set ns.config_description = "Forgather SGD Implementation"
+    -- set ns.log_name = "fg_sgd"
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim.sgd:SGD
+    lr: {{ ns.sgd_lr | toyaml }}

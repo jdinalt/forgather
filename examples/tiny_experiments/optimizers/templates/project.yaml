@@ -1,38 +1,38 @@
 -- extends 'projects/tiny.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.create_new_model = False
     -- set ns.save_model = False
     -- set ns.model_name = "tiny_causal"
--- endblock config_metadata
 
--- block trainer_definition
+    ## Use a bigger model, to reduce impact of execution latency
+    -- set ns.model_project_config = "117M.yaml"
+    -- set ns.adam_lr = 5.0e-4
+    -- set ns.adafactor_lr = 5.0e-4
+    -- set ns.sgd_lr = 1.0e0
+    -- set ns.apollo_lr = 5.0e-4
+
+[trainer_definition]
     -- include 'project.trainer_config'
--- endblock trainer_definition
 
 
--- block trainer_callbacks
+[trainer_callbacks]
     -- include 'project.callbacks'
-<< endblock trainer_callbacks
-
--- block lr_scheduler
-    ##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
-# https://arxiv.org/html/2503.02844v1
-lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
-    warmup_steps: 5000
-    cooldown_steps: 50000
-    constant_lr: 1.0e-4
-<< endblock lr_scheduler
 
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
 
-
--- block trainer_args
+[trainer_args]
     == super()
     # project overrides
--- endblock trainer_args
+    logging_steps: 50
+    eval_steps: 200
+    default_dtype: bfloat16
 
 #-------------------- project.callbacks --------------------
 -- extends 'tiny.callbacks'
+
+[callback_list]
+    == super()
+    text_gen_callback: null # Disable text gen

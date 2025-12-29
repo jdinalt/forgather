@@ -1,14 +1,11 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Torch AdamW"
     -- set ns.config_description = "Torch AdamW; the baseline control"
     -- set ns.log_name = "adamw"
--- endblock config_metadata
 
--- block optimizer
+[optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW
-    lr: 1.0e-3
-
-<< endblock optimizer
+    lr: {{ ns.adam_lr | toyaml }}

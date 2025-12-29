@@ -1,16 +1,13 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "HF Adafactor"
     -- set ns.config_description = "HF Adafactor"
     -- set ns.log_name = "hf_adafactor"
--- endblock config_metadata
 
--- block optimizer
+[optimizer]
 optimizer: &optimizer !partial:transformers:Adafactor
-    lr: 1.0e-3
+    lr: {{ ns.adafactor_lr | toyaml }}
     scale_parameter: False
     relative_step: False
-
-<< endblock optimizer

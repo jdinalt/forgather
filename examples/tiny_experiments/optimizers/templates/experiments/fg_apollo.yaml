@@ -1,0 +1,34 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "FG Apollo"
+    -- set ns.config_description = "Forgather Apollo implementation"
+    -- set ns.log_name = "apollo_r64"
+
+[optimizer]
+    [projector_factory]
+.define: &projector_factory !partial:forgather.ml.optim.subspace_proj:RandProjector
+    init: "normal"
+    update_steps: 200
+    lazy: True
+
+    [apollo]
+.define: &apollo !partial:forgather.ml.optim.apollo:Apollo
+    lr: {{ ns.apollo_lr | toyaml }}
+    rank: 64
+    mini: False
+    projector_factory: *projector_factory
+
+    [optimizer_]
+optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
+    ## Protype optimizer does not handle non-projected params yet, so we
+    ## map these to torch-Adam.
+    optimizer_map:
+        - [ "bias", "default" ]
+        - [ "output_decoder|input_encoder|feedforward|attention", "apollo" ]
+        - [ ".*", "default" ]
+    factories:
+        apollo: *apollo
+        default: !partial:torch:optim.Adam
+            lr: {{ ns.adam_lr | toyaml }}

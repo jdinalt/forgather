@@ -1,0 +1,12 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "FG Adafactor Eager"
+    -- set ns.config_description = "Forgather Adafactor Implementation w/o Triton"
+    -- set ns.log_name = "fg_adafactor_eager"
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
+    lr: {{ ns.adafactor_lr | toyaml }}
+    use_triton: False

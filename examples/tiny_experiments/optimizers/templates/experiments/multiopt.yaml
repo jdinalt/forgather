@@ -1,15 +1,13 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "multiopt"
-    -- set ns.config_description = ""
+    -- set ns.config_description = "Demonstrates using multiple optimizers"
     -- set ns.log_name = "multiopt"
--- endblock config_metadata
 
-## TODO: Fix me -- path is wrong
--- block optimizer
-optimizer: &optimizer !partial:./src/multiopt.py:make_re_multiopt
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
     optimizer_map:
         - [ "bias", "default" ]
         # output_decoder : ++
@@ -21,9 +19,7 @@ optimizer: &optimizer !partial:./src/multiopt.py:make_re_multiopt
         - [ "output_decoder|input_encoder|feedforward|attention", "adam" ]
         - [ ".*", "default" ]
     factories:
-        default: !lambda:./src/sgd.py:SGD
-            lr: 1.0e-1
-        adam: !lambda:./src/adam.py:Adam
-            lr: 1.0e-3
-
-<< endblock optimizer
+        default: !partial:forgather.ml.optim.sgd:SGD
+            lr: {{ ns.sgd_lr | toyaml }}
+        adam: !partial:forgather.ml.optim.adamw:AdamW
+            lr: {{ ns.adam_lr | toyaml }}

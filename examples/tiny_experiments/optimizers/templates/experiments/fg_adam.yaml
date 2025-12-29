@@ -1,0 +1,11 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "FG Adam"
+    -- set ns.config_description = "Forgather Adam Implementation"
+    -- set ns.log_name = "fg_adam"
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim.adamw:AdamW
+    lr: {{ ns.adam_lr | toyaml }}

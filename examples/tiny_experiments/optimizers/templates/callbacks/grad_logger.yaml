@@ -1,6 +1,6 @@
 -- extends 'tiny.callbacks'
 
--- block callback_list
+[callback_list]
     == super()
     grad_logger: !singleton:forgather.ml.train.callbacks.grad_logger:GradLogger
         ## output_decoder|input_encoder|feedforward|attention
@@ -8,4 +8,3 @@
         neg_re: 'bias'
         pos_re: 'output_decoder|input_encoder|feedforward|attention'
         log_steps: 200
-<< endblock callback_list

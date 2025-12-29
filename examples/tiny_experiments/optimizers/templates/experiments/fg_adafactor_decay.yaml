@@ -1,0 +1,12 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "FG AdafactorW"
+    -- set ns.config_description = "Forgather Adafactor Implementation"
+    -- set ns.log_name = "fg_adafactorw"
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
+    lr: {{ ns.adafactor_lr | toyaml }}
+    weight_decay: 0.01

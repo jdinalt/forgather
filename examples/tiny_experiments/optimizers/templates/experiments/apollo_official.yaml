@@ -1,18 +1,17 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Official Apollo"
     -- set ns.config_description = "Test offical Apollo implementation; requires source code."
     -- set ns.log_name = "apollo_official"
--- endblock config_metadata
 
--- block optimizer
+[optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.opt_utils:make_grouped_optimizer
     # This assumes that the Apollo source can be found at this path -- not part of Forgather!
     opt_ctor: !partial:./src/apollo/apollo.py:AdamW
     opt_kwargs:
-        lr: 1.0e-2
+        lr: {{ ns.apollo_lr | toyaml }}
         disable_nl: False
     group_map:
         - [ "bias", "default" ]
@@ -28,4 +27,3 @@ optimizer: &optimizer !partial:forgather.ml.optim.opt_utils:make_grouped_optimiz
             scale: 1.0
             proj_type: "std"
             ##seed: 0
-<< endblock optimizer
