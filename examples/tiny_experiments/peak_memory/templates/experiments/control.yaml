@@ -1,17 +1,8 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Control"
     -- set ns.config_description = "Baseline 32bit model"
     -- set ns.model_name = "control"
     -- set ns.log_name = "control"
--- endblock config_metadata
-
-
--- block construct_new_model
-    -- include 'experiment.model'
--- endblock construct_new_model
-
-#-------------------- experiment.model --------------------
--- extends 'project.model'
