@@ -1,6 +1,6 @@
 -- extends 'projects/tiny.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     ## Overrides
     -- set ns.config_name = "Compare Trainers"
@@ -9,48 +9,32 @@
     -- set ns.save_model = False
     ## Defines
     -- set ns.trainer_class = 'trainers/trainer.yaml'
--- endblock config_metadata
 
-
--- block trainer_definition
+[trainer_definition]
     -- include 'project.trainer_config'
--- endblock trainer_definition
 
-
--- block construct_new_model
-    -- include 'project.model_config'
--- endblock construct_new_model
-
-
--- block trainer_callbacks
+[trainer_callbacks]
     ## Go back to basic loggers, as we may be interesting in comparing the relative speed of the trainers.
     -- include 'callbacks/loggers.yaml'
-<< endblock trainer_callbacks
 
-
--- block lr_scheduler
+[lr_scheduler]
 # HF Trainer does not support LR Scheduler factories. We must specify in trainer_args
 lr_scheduler: &lr_scheduler ~
-<< endblock lr_scheduler
 
-
--- block optimizer
+[optimizer]
 # This would work with the HF trainer, if not for a bug, where they try to get the class name from the callable object.
 # TODO: File bug report and propose PR to resolve.
 optimizer: &optimizer ~
-<< endblock optimizer
 
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
 
--- block trainer_meta_config
+[trainer_meta_config]
     == super()
     ## Disable DDP training, when supported
     -- set ns.nproc_per_node = 1
-<< endblock trainer_meta_config
 
-
--- block trainer_args
+[trainer_args]
     == super()
     # HF Trainer compat. LR scheduler args.
     lr_scheduler_type: "linear"
@@ -61,7 +45,3 @@ optimizer: &optimizer ~
 
     # Grad norm is disabled by default in our trainer. Set value to enable it in all trainers.
     max_grad_norm: 1.0
--- endblock trainer_args
-
-#-------------------- project.model_config --------------------
--- extends 'models/tiny/tiny_causal.yaml'

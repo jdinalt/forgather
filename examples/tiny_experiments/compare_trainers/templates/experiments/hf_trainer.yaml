@@ -1,6 +1,6 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "HF Trainer"
     -- set ns.config_description = "Train with transformers.Trainer implementation"
@@ -8,12 +8,44 @@
 
     ## Set trainer
     -- set ns.trainer_class = 'trainers/hf_trainer.yaml'
--- endblock config_metadata
 
--- block trainer_definition
+[trainer_definition]
     -- include 'hf_trainer.trainer_config'
--- endblock trainer_definition
+
+[trainer_callbacks]
+    -- include 'hf_trainer.callbacks'
 
 #-------------------- hf_trainer.trainer_config --------------------
 -- extends 'project.trainer_config'
-## Stub, for extension
+
+[trainer_constructor]
+    == super()
+    # TODO: REVISIT
+    # This is a workaround for a recent HF breakage. Transformers incorrectly
+    # infers the number of arguments for model_init, via signature inspection, and
+    # passes an additional 'trial' positional arg. The workaround is to instead
+    # call the model's constructor ourselves and pass it via the 'model' argument.
+    #
+    # The issue is how they determine the number of arguments, which is via
+    # `transformers.trainer_utils.number_of_arguments()` This call correctly handles
+    # partial functions, but our 'partial' functions are actually of class 'Latent'
+    #
+    # A Latent is a lazy-partial. It behaves like a partial, but defers construction of
+    # the arguments to the partial until it is actually called. A real partial would 
+    # require materializing concrete arguments, even if never called -- we try to avoid that.
+    #
+    # It's unclear what the least-bad-solution to this problem is at present.
+    model_init: null
+    model: !singleton:call [ *model_preprocessor ]
+
+#-------------------- hf_trainer.callbacks --------------------
+-- extends 'tiny.callbacks'
+
+[callback_list]
+    == super()
+    # The HF Trainer automatically includes its own version of these callbacks.
+    # Delete them, as to avoid double-logging
+    # Note: It is possible to remove the HF defaults, via Trainer.pop_callback(), via a
+    # configuration, but the implementation is a bit obtuse. Deleting our callbacks is easier.
+    progress_callback: null
+    info_callback: null

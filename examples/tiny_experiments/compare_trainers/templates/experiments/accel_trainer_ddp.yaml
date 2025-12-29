@@ -1,24 +1,21 @@
 -- extends 'experiments/accel_trainer.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Accelerate Trainer DDP"
     -- set ns.config_description = "Train with forgather.trainer.accelerate.AccelTrainer implementation, with DDP"
     -- set ns.log_name = "accel_trainer"
--- endblock config_metadata
 
 
--- block trainer_definition
+[trainer_definition]
     -- include 'accel_trainer_ddp.trainer_config'
--- endblock trainer_definition
 
 #-------------------- accel_trainer_ddp.trainer_config --------------------
 -- extends 'accel_trainer.trainer_config'
 
--- block trainer_meta_config
+[trainer_meta_config]
     == super()
 
     # **accel_trainer_ddp.trainer_config**
     # Enable DDP training, when supported
     -- set ns.nproc_per_node = "gpu"
-<< endblock trainer_meta_config

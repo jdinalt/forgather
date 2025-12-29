@@ -1,6 +1,6 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Default Trainer"
     -- set ns.config_description = "Train with forgather.ml.trainer.Trainer implementation"
@@ -8,18 +8,14 @@
 
     ## Set trainer; this is a variable defined in 'projects/tiny.yaml'
     -- set ns.trainer_class = 'trainers/trainer.yaml'
--- endblock config_metadata
 
-
--- block trainer_definition
+[trainer_definition]
     -- include 'trainer.trainer_config'
--- endblock trainer_definition
 
 #-------------------- trainer.trainer_config --------------------
 -- extends 'project.trainer_config'
 
--- block trainer_args
+[trainer_args]
     == super()
     # Not supported by HF trainer.
     float32_matmul_precision: "high"
--- endblock trainer_args

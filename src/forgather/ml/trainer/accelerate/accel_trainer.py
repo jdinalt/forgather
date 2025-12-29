@@ -1,7 +1,7 @@
 # A subclass of Trainer, which adds support for the Acclerate library.
 import logging
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, override
 
 import torch
 from accelerate import Accelerator
@@ -65,13 +65,13 @@ class AccelTrainer(Trainer):
         self.is_world_process_zero = self.accelerator.is_main_process
         self.num_processes = self.accelerator.num_processes
 
-    # @override
+    @override
     def _wrap_loss_fn(self):
         # Accelerate scales loss internaly
         self.train_loss_fn = self.loss_fn
         self.eval_loss_fn = self.loss_fn
 
-    # @override
+    @override
     def _wrap(
         self,
     ) -> None:
@@ -101,11 +101,11 @@ class AccelTrainer(Trainer):
         if self.train_dataloader is not None:
             self._update_training_steps()
 
-    # @override
+    @override
     def _loss_post_scaler(self):
         return 1.0 / self.args.gradient_accumulation_steps
 
-    # @override
+    @override
     def _distributed_loss(self, loss: Tensor) -> Tensor:
         """
         Reduces loss accross processes
@@ -114,7 +114,7 @@ class AccelTrainer(Trainer):
         assert isinstance(reduced_loss, Tensor)
         return reduced_loss
 
-    # @override
+    @override
     def _prepare_batch(
         self, batch: Dict[str, Tensor]
     ) -> tuple[Dict[str, Tensor], Tensor]:
@@ -122,7 +122,7 @@ class AccelTrainer(Trainer):
         labels = batch.pop("labels")
         return (batch, labels)
 
-    # @override
+    @override
     def _init_state(self) -> TrainerState:
         """
         Modifies parent state by setting process rank info
@@ -137,17 +137,19 @@ class AccelTrainer(Trainer):
             state.train_batch_size = self.args.per_device_train_batch_size
         return state
 
-    # @override
+    @override
     def unwrapped_model(self) -> torch.nn.Module:
         assert self.model
         return self.accelerator.unwrap_model(self.model)
 
-    # @override
-    def _end_train_loop(self, start_time: float) -> dict[str, int | float]:
+    @override
+    def _end_train_loop(
+        self, start_time: float, train_steps: int
+    ) -> dict[str, int | float]:
         self.accelerator.end_training()
-        return super()._end_train_loop(start_time)
+        return super()._end_train_loop(start_time, train_steps)
 
-    # @override
+    @override
     def _clip_grad_norm(
         self, max_grad_norm: float | None, norm_type: float = 2.0
     ) -> Optional[Tensor]:
@@ -168,7 +170,7 @@ class AccelTrainer(Trainer):
 
         return total_norm
 
-    # @override
+    @override
     def _backward(self, loss: Tensor) -> None:
         """
         Use Accelerate's backward method which handles gradient scaling and accumulation.
@@ -177,6 +179,6 @@ class AccelTrainer(Trainer):
         # The _train_step_with_accumulation method uses accelerator.backward directly
         self.accelerator.backward(loss)
 
-    # @override
+    @override
     def _should_sync_gradients(self) -> bool:
         return self.accelerator.sync_gradients
