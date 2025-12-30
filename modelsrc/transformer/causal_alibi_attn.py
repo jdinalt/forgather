@@ -44,6 +44,7 @@ class CausalAlibiAttn(nn.Module):
         dropout: float = 0.0,
         trainable_alibi: bool = False,
         alt_alibi_init: bool = False,
+        layer_idx: int,
         **kwargs,
     ):
         super().__init__()
@@ -53,6 +54,7 @@ class CausalAlibiAttn(nn.Module):
         self.sdpa_function = sdpa_function
         self.trainable_alibi = trainable_alibi
         self.alt_alibi_init = alt_alibi_init
+        self.layer_idx = layer_idx
 
         assert d_model % num_heads == 0, "d_model must be evenly divisible by num_heads"
         assert (
@@ -110,13 +112,23 @@ class CausalAlibiAttn(nn.Module):
             f"trainable_alibi={self.trainable_alibi}, alt_alibi_init={self.alt_alibi_init}"
         )
 
-    def forward(self, qkv: FloatTensor, **kwargs) -> FloatTensor:
-        batch_size, seq_len, d_model = qkv.shape
+    def forward(
+        self,
+        hidden_states: FloatTensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        past_key_values: Optional["Cache"] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        **kwargs,
+    ) -> FloatTensor:
+        batch_size, seq_len, d_model = hidden_states.shape
 
         # Project to Q, K, V
-        query = self.query_linear(qkv)  # [batch, seq_len, d_model]
-        key = self.key_linear(qkv)  # [batch, seq_len, num_kv_heads * d_head]
-        value = self.value_linear(qkv)  # [batch, seq_len, num_kv_heads * d_head]
+        query = self.query_linear(hidden_states)  # [batch, seq_len, d_model]
+        key = self.key_linear(hidden_states)  # [batch, seq_len, num_kv_heads * d_head]
+        value = self.value_linear(
+            hidden_states
+        )  # [batch, seq_len, num_kv_heads * d_head]
 
         # Reshape for multi-head attention
         # Query: [batch, seq_len, num_heads, d_head] -> [batch, num_heads, seq_len, d_head]
@@ -132,20 +144,29 @@ class CausalAlibiAttn(nn.Module):
             batch_size, seq_len, self.num_kv_heads, self.d_head
         ).transpose(1, 2)
 
+        if past_key_values is not None:
+            cache_kwargs = {"cache_position": cache_position}
+            key, value = past_key_values.update(
+                key, value, self.layer_idx, cache_kwargs
+            )
+
+        kv_len = key.shape[2]
+
         # Create ALiBi attention mask
         # ALiBi applies linear biases based on relative positions between tokens
         attn_bias = alibi_biases(
-            seq_len, seq_len, device=query.device, dtype=query.dtype
+            seq_len, kv_len, device=query.device, dtype=query.dtype
         )
         # Scale biases by learnable slopes (one per head)
         attn_bias = attn_bias * self.alibi_slopes.view(-1, 1, 1)
 
-        # Apply causal mask to ALiBi biases
-        # Only allow attention to current and previous positions
-        causal_mask = torch.tril(
-            torch.ones(seq_len, seq_len, dtype=torch.bool, device=query.device)
-        )
-        attn_bias.masked_fill_(causal_mask.logical_not(), float("-inf"))
+        if seq_len > 1:
+            # Apply causal mask to ALiBi biases
+            # Only allow attention to current and previous positions
+            causal_mask = torch.tril(
+                torch.ones(seq_len, kv_len, dtype=torch.bool, device=query.device)
+            )
+            attn_bias.masked_fill_(causal_mask.logical_not(), float("-inf"))
 
         # Apply scaled dot product attention with ALiBi biases as attention mask
         # Use enable_gqa=True to let PyTorch handle GQA automatically
