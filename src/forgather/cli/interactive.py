@@ -42,7 +42,6 @@ class ForgatherShell(cmd.Cmd):
             project_found = False
 
         self.current_template = None
-        self._cached_templates = None
         self._cached_commands = None
 
         # Setup command history
@@ -211,15 +210,11 @@ class ForgatherShell(cmd.Cmd):
 
     def _get_available_templates(self) -> List[str]:
         """Get list of available template names."""
-        if self._cached_templates is not None:
-            return self._cached_templates
-
         try:
             meta = MetaConfig(self.project_dir)
             templates = []
             for config_name, path in meta.find_templates(meta.config_prefix):
                 templates.append(config_name)
-            self._cached_templates = templates
             return templates
         except Exception:
             return []
@@ -278,7 +273,6 @@ class ForgatherShell(cmd.Cmd):
 
     def _invalidate_cache(self):
         """Invalidate cached template and command lists."""
-        self._cached_templates = None
         self._cached_commands = None
         # Note: targets are not cached as they depend on current template
 
