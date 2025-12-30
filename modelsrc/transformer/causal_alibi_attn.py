@@ -1,5 +1,5 @@
 import math
-from typing import Callable, Optional
+from typing import Any, Optional
 
 import torch
 from torch import FloatTensor, nn
@@ -10,7 +10,9 @@ from torch.nn.functional import scaled_dot_product_attention
 # https://arxiv.org/pdf/2108.12409.pdf
 
 
-def alibi_biases(query_len: int, key_len: int, device, dtype):
+def alibi_biases(
+    query_len: int, key_len: int, alibi_slopes: torch.Tensor, device, dtype
+):
     """Generate ALiBi relative position biases.
 
     ALiBi applies linear biases to attention scores based on relative positions.
@@ -21,7 +23,68 @@ def alibi_biases(query_len: int, key_len: int, device, dtype):
     """
     x = torch.arange(key_len, device=device, dtype=dtype)[None, :]
     y = torch.arange(query_len, device=device, dtype=dtype)[:, None]
-    return x - y
+    return alibi_slopes.view(-1, 1, 1) * (x - y)
+
+
+def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """
+    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
+    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
+    """
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, num_key_value_heads, n_rep, slen, head_dim
+    )
+    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+
+
+def eager_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
+    # Additional args
+    scaling: float,
+    dropout: float = 0.0,
+    alibi_slopes: Optional[torch.Tensor] = None,
+    **kwargs,
+):
+    num_key_value_groups = query.shape[1] // key.shape[1]
+    key_states = repeat_kv(key, num_key_value_groups)
+    value_states = repeat_kv(value, num_key_value_groups)
+
+    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+
+    if alibi_slopes is not None:
+        q_len = query.shape[-2]
+        kv_len = key.shape[-2]
+        attn_bias = alibi_biases(
+            q_len, kv_len, alibi_slopes, device=query.device, dtype=query.dtype
+        )
+        attn_weights = attn_weights + attn_bias
+
+    if attention_mask is not None:
+        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+        attn_weights = attn_weights + causal_mask
+
+    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
+        query.dtype
+    )
+    attn_weights = nn.functional.dropout(
+        attn_weights, p=dropout, training=module.training
+    )
+    attn_output = torch.matmul(attn_weights, value_states)
+    attn_output = attn_output.transpose(1, 2).contiguous()
+
+    return attn_output, attn_weights
+
+
+attn_functions = {
+    "eager": eager_attention_forward,
+}
 
 
 class CausalAlibiAttn(nn.Module):
@@ -38,8 +101,10 @@ class CausalAlibiAttn(nn.Module):
         d_model: int,
         num_heads: int,
         *,
+        attn_implementation: str,
         num_kv_heads: Optional[int] = None,  # GQA support
-        sdpa_function: Callable = scaled_dot_product_attention,
+        # attn_functions: Optional[dict[str, Callable]],
+        config: Any = None,
         bias: bool = True,
         dropout: float = 0.0,
         trainable_alibi: bool = False,
@@ -51,10 +116,13 @@ class CausalAlibiAttn(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads or num_heads  # Default to MHA
-        self.sdpa_function = sdpa_function
         self.trainable_alibi = trainable_alibi
         self.alt_alibi_init = alt_alibi_init
         self.layer_idx = layer_idx
+        self.config = config
+        self.attn_implementation = attn_implementation
+
+        self.attn_fn = attn_functions[attn_implementation]
 
         assert d_model % num_heads == 0, "d_model must be evenly divisible by num_heads"
         assert (
@@ -150,42 +218,21 @@ class CausalAlibiAttn(nn.Module):
                 key, value, self.layer_idx, cache_kwargs
             )
 
-        kv_len = key.shape[2]
-
-        # Create ALiBi attention mask
-        # ALiBi applies linear biases based on relative positions between tokens
-        attn_bias = alibi_biases(
-            seq_len, kv_len, device=query.device, dtype=query.dtype
-        )
-        # Scale biases by learnable slopes (one per head)
-        attn_bias = attn_bias * self.alibi_slopes.view(-1, 1, 1)
-
-        if seq_len > 1:
-            # Apply causal mask to ALiBi biases
-            # Only allow attention to current and previous positions
-            causal_mask = torch.tril(
-                torch.ones(seq_len, kv_len, dtype=torch.bool, device=query.device)
-            )
-            attn_bias.masked_fill_(causal_mask.logical_not(), float("-inf"))
-
-        # Apply scaled dot product attention with ALiBi biases as attention mask
-        # Use enable_gqa=True to let PyTorch handle GQA automatically
-        # Set is_causal=False since we handle causal masking in the ALiBi bias
-        attended_values = self.sdpa_function(
-            query,
-            key,
-            value,
-            attn_mask=attn_bias,
-            dropout_p=(self.dropout_p if self.training else 0.0),
-            is_causal=False,  # We handle causal masking in ALiBi bias
-            scale=self.scale,
-            enable_gqa=(self.num_kv_heads < self.num_heads),
+        attended_values, attn_weights = self.attn_fn(
+            module=self,
+            query=query,
+            key=key,
+            value=value,
+            attention_mask=attention_mask,
+            dropout=(self.dropout_p if self.training else 0.0),
+            scaling=self.scale,
+            config=self.config,
+            alibi_slopes=self.alibi_slopes,
+            **kwargs,
         )
 
-        # Reshape back to [batch, seq_len, d_model]
-        attended_values = attended_values.transpose(1, 2).reshape(
-            batch_size, seq_len, d_model
-        )
+        # Note: Attention function implicitly performs attended_values.transpose(1, 2)
+        attended_values = attended_values.reshape(batch_size, seq_len, -1).contiguous()
 
         # Final output projection
         return self.output_linear(attended_values)

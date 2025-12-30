@@ -11,7 +11,7 @@
 
 [model_bits]
     [loss_fn]
-.define: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn []
+.define: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn
 
     [layer_norm_factory]
 .define: &layer_norm_factory !partial:torch.nn:RMSNorm@layer_norm_factory
@@ -22,7 +22,7 @@
 .define: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
     d_model: !var "hidden_size"
     d_feedforward: !var "intermediate_size"
-    activation_factory: !partial:torch.nn.ReLU []
+    activation_factory: !partial:torch.nn.ReLU
     dropout: !var "activation_dropout"
     
     [attention_factory]
@@ -31,7 +31,7 @@
     num_heads: !var "num_attention_heads"
     dropout: !var "attention_dropout"
     bias: False
-    sdpa_function: !partial:torch.nn.functional:scaled_dot_product_attention []
+    attn_implementation: !var "attn_implementation" # Value from &model_constructor_args
     # Make the ALiBi biases trainable weights
     trainable_alibi: True
     # Use alternative initialization for better trainable slope behavior
@@ -81,10 +81,10 @@
         - [ 'attention|output_decoder', "linear" ]
     init_f_map:
         pass: !partial:.init_weights:init_pass
-        zeros: !partial:torch.nn.init:zeros_ []
+        zeros: !partial:torch.nn.init:zeros_
         embedding: !partial:.init_weights:init_embeddings
             padding_index: !var "pad_token_id"
-        linear: !partial:torch.nn.init:xavier_uniform_ []
+        linear: !partial:torch.nn.init:xavier_uniform_
         deepnet: !partial:torch.nn.init:xavier_uniform_
             gain: !call:.deepnet:deepnet_beta [ !var "num_hidden_layers", 0 ]
     debug: False
