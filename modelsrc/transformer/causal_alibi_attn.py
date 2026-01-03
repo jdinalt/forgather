@@ -1,90 +1,14 @@
 import math
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import torch
 from torch import FloatTensor, nn
-from torch.nn.functional import scaled_dot_product_attention
 
-# Attention layer with ALiBi relative positional encoding
-# TRAIN SHORT, TEST LONG: ATTENTION WITH LINEAR BIASES ENABLES INPUT LENGTH EXTRAPOLATION
-# https://arxiv.org/pdf/2108.12409.pdf
-
-
-def alibi_biases(
-    query_len: int, key_len: int, alibi_slopes: torch.Tensor, device, dtype
-):
-    """Generate ALiBi relative position biases.
-
-    ALiBi applies linear biases to attention scores based on relative positions.
-    This allows models to extrapolate to longer sequences than seen during training.
-
-    Returns:
-        Tensor of shape (query_len, key_len) with relative position differences
-    """
-    x = torch.arange(key_len, device=device, dtype=dtype)[None, :]
-    y = torch.arange(query_len, device=device, dtype=dtype)[:, None]
-    return alibi_slopes.view(-1, 1, 1) * (x - y)
-
-
-def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """
-    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
-    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
-    """
-    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
-    if n_rep == 1:
-        return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(
-        batch, num_key_value_heads, n_rep, slen, head_dim
-    )
-    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
-
-
-def eager_attention_forward(
-    module: nn.Module,
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attention_mask: Optional[torch.Tensor],
-    # Additional args
-    scaling: float,
-    dropout: float = 0.0,
-    alibi_slopes: Optional[torch.Tensor] = None,
-    **kwargs,
-):
-    num_key_value_groups = query.shape[1] // key.shape[1]
-    key_states = repeat_kv(key, num_key_value_groups)
-    value_states = repeat_kv(value, num_key_value_groups)
-
-    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
-
-    if alibi_slopes is not None:
-        q_len = query.shape[-2]
-        kv_len = key.shape[-2]
-        attn_bias = alibi_biases(
-            q_len, kv_len, alibi_slopes, device=query.device, dtype=query.dtype
-        )
-        attn_weights = attn_weights + attn_bias
-
-    if attention_mask is not None:
-        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-        attn_weights = attn_weights + causal_mask
-
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
-        query.dtype
-    )
-    attn_weights = nn.functional.dropout(
-        attn_weights, p=dropout, training=module.training
-    )
-    attn_output = torch.matmul(attn_weights, value_states)
-    attn_output = attn_output.transpose(1, 2).contiguous()
-
-    return attn_output, attn_weights
-
-
-attn_functions = {
-    "eager": eager_attention_forward,
-}
+"""
+Attention layer with ALiBi relative positional encoding
+TRAIN SHORT, TEST LONG: ATTENTION WITH LINEAR BIASES ENABLES INPUT LENGTH EXTRAPOLATION
+https://arxiv.org/pdf/2108.12409.pdf
+"""
 
 
 class CausalAlibiAttn(nn.Module):
@@ -102,9 +26,9 @@ class CausalAlibiAttn(nn.Module):
         num_heads: int,
         *,
         attn_implementation: str,
-        num_kv_heads: Optional[int] = None,  # GQA support
-        # attn_functions: Optional[dict[str, Callable]],
+        attn_functions: dict[str, Callable],
         config: Any = None,
+        num_kv_heads: Optional[int] = None,
         bias: bool = True,
         dropout: float = 0.0,
         trainable_alibi: bool = False,
@@ -122,6 +46,12 @@ class CausalAlibiAttn(nn.Module):
         self.config = config
         self.attn_implementation = attn_implementation
 
+        assert attn_functions is not None, "A dict of attention functions is required"
+        if attn_implementation not in attn_functions:
+            raise ValueError(
+                "ALiBi attention only supports the following types: "
+                f"{attn_functions.keys()}"
+            )
         self.attn_fn = attn_functions[attn_implementation]
 
         assert d_model % num_heads == 0, "d_model must be evenly divisible by num_heads"
@@ -152,10 +82,7 @@ class CausalAlibiAttn(nn.Module):
             # Alternative initialization: high half slopes shift towards 1.0+, low half approach zero
             # This can work better with trainable slopes in some cases
             alibi_slopes = 1.0 / torch.logspace(
-                1,
-                8,
-                self.num_heads,
-                base=2,
+                1, 8, self.num_heads, base=2, dtype=torch.float32
             )
             # Zero out the lower half of slopes (position-agnostic heads)
             alibi_slopes.masked_fill_(
@@ -168,7 +95,7 @@ class CausalAlibiAttn(nn.Module):
             # Original ALiBi slope distribution from the paper
             # Creates exponentially decreasing slopes: 1/2^0, 1/2^1, ..., 1/2^7
             alibi_slopes = 1.0 / torch.logspace(
-                0, 7, self.num_heads, base=2, dtype=torch.float
+                0, 7, self.num_heads, base=2, dtype=torch.float32
             )
 
         self.alibi_slopes = nn.Parameter(alibi_slopes)

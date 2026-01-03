@@ -50,6 +50,7 @@
     pos_encoder: *relative_pe
     attn_implementation: !var "attn_implementation" # Value from &model_constructor_args
     attn_functions: *attn_functions
+    config: !var "config"
 
     [layer_factory]
 .define: &layer_factory !partial:.post_ln_layer:PostLNLayer@layer_factory
@@ -129,6 +130,7 @@ model_factory: &model_factory !dict@model_factory
     supports_gradient_checkpointing: True
     supports_sdpa: True
     supports_flex_attn: True
+    supports_flash_attn: True
     supports_attention_backend: True
     tied_weights_keys: {causal_lm.input_encoder.embedding.weight: "lm_head.weight"}
     no_split_modules: ["PostLNLayer"]

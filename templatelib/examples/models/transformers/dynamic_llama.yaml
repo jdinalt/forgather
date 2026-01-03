@@ -157,8 +157,8 @@ model_factory: &model_factory !dict@model_factory
     supports_gradient_checkpointing: True
     supports_sdpa: True
     supports_flex_attn: True
-    supports_attention_backend: True
     supports_flash_attn: True
+    supports_attention_backend: True
     tied_weights_keys: {causal_lm.input_encoder.embedding.weight: "lm_head.weight"}
     no_split_modules: ["PreLNLayer"]
     

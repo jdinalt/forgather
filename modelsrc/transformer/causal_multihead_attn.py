@@ -1,6 +1,4 @@
-import logging
 import math
-import os
 from typing import Any, Callable, Optional
 
 import torch
@@ -19,7 +17,7 @@ class CausalMultiheadAttn(nn.Module):
         num_heads: int,
         *,
         attn_implementation: str,
-        attn_functions: Optional[dict[str, Callable]],
+        attn_functions: Optional[dict[str, Callable]] = None,
         config: Any = None,
         num_kv_heads: Optional[int] = None,
         pos_encoder: Optional[Callable] = None,
