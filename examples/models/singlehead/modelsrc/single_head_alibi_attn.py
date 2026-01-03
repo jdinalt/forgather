@@ -24,10 +24,11 @@ class SingleHeadAlibiAttn(nn.Module):
         self,
         d_model: int,
         *,
-        bias: bool = True,
+        bias: bool = False,
         dropout: float = 0.0,
         slope_init: float = 0.5,
-        trainable_alibi: bool = False,
+        trainable_alibi: bool = True,
+        layer_idx: int,
         **kwargs,
     ):
         super().__init__()
@@ -35,12 +36,13 @@ class SingleHeadAlibiAttn(nn.Module):
         self.slope_init = slope_init
         self.trainable_alibi = trainable_alibi
         self.bias = bias
+        self.layer_idx = layer_idx
 
         # We scale the attention scores by the inverse-square-root of the head dimension
         # this shifts the temerature of softmax.
         self.dot_product_scale = 1.0 / math.sqrt(self.d_model)
 
-        # tl;dr When an attention layer has only one head, the origianl four matrices can
+        # When an attention layer has only one head, the original four matrices can
         # be represented with only two matrices, as the math works out the same.
         # See: https://transformer-circuits.pub/2021/framework/index.html#splitting-attention-head-terms-into-circuits
         self.query_key_linear = nn.Linear(self.d_model, self.d_model, bias=self.bias)
@@ -77,16 +79,15 @@ class SingleHeadAlibiAttn(nn.Module):
             * self.alibi_slope
         )
 
-        # Mask future positions from the past
-        causal_mask = torch.triu(
-            torch.full((seq_len, seq_len), True, device=x.device), diagonal=1
-        )
-        scores.masked_fill_(causal_mask, float("-inf"))
-        del causal_mask
+        if seq_len > 1:
+            # Mask future positions from the past
+            causal_mask = torch.tril(
+                torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device)
+            )
+            scores = torch.where(causal_mask, scores, float("-inf"))
 
         # Calculate the attention weights; avoid NANs that might emerge from zeros in softmax's denominator
         attention_weights = torch.softmax(scores, dim=-1)
-        del scores
 
         # Apply dropout
         attention_weights = self.dropout(attention_weights)

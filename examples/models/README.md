@@ -178,6 +178,10 @@ options:
 
 ## Model Definitions
 
+### Single Head
+
+[A simple custom model example](./single_head/README.md)
+
 ### Causal LM
 
 [A plain vanilla decoder only transformer](./causal_lm/README.md)
@@ -188,4 +192,4 @@ options:
 
 ### Deepone
 
-[A mysterious model of unknown origin](./deepone/README.md)
+[A mysterious model of unknown origin](./deepone/README.md) -- A custom Deepnet ALiBi transformer

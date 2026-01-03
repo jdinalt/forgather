@@ -11,7 +11,7 @@
 
 [model_bits]
     [loss_fn]
-.define: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn []
+.define: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn
 
     [layer_norm_factory]
 .define: &layer_norm_factory !partial:torch.nn:RMSNorm@layer_norm_factory
@@ -22,7 +22,7 @@
 .define: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
     d_model: !var "hidden_size"
     d_feedforward: !var "intermediate_size"
-    activation_factory: !partial:torch.nn.SiLU []
+    activation_factory: !partial:torch.nn.SiLU
     dropout: !var "activation_dropout"
 
     [rel_positional_encoder]
@@ -104,9 +104,9 @@
         - [ 'lm_head', "init_output_layer" ]
     init_f_map:
         pass: !partial:.init_weights:init_pass
-        zeros: !partial:torch.nn.init:zeros_ []
-        init_embeddings: !partial:.llama_init:init_embeddings []
-        trunc_normal_magic: !partial:.llama_init:trunc_normal_magic []
+        zeros: !partial:torch.nn.init:zeros_
+        init_embeddings: !partial:.llama_init:init_embeddings
+        trunc_normal_magic: !partial:.llama_init:trunc_normal_magic
         trunc_normal: !partial:.llama_init:trunc_normal
             std: !call:.llama_init:llama_std [ !var "num_hidden_layers" ]
         init_output_layer: !partial:.llama_init:init_output_layer { d_model: !var "hidden_size" }

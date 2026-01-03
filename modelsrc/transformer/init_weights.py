@@ -10,7 +10,7 @@ from torch import Tensor, nn
 @torch.no_grad()
 def simple_weight_init(
     model: nn.Module,
-    scale_rsqrt_d_model: bool = True,
+    scale_rsqrt_d_model: bool = False,
 ) -> None:
     """
     Simple and reasonable init for LLMs

@@ -1,16 +1,13 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Tiny HF LLama"
     -- set ns.config_description = "A tiny Huggingface llama model."
     -- set ns.model_name = "tiny_hf_llama"
--- endblock config_metadata
 
-
--- block construct_new_model
+[construct_new_model]
     -- include 'experiment.model_config'
--- endblock construct_new_model
 
 #-------------------- experiment.model_config --------------------
 -- extends 'models/tiny/tiny_llama.yaml'

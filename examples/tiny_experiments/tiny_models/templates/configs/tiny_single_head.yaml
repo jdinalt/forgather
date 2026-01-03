@@ -1,0 +1,13 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Tiny Single Head"
+    -- set ns.config_description = "A single-headed ALiBi transformer"
+    -- set ns.model_name = "tiny_singlehead"
+    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'singlehead')
+    -- set ns.model_project_config = "4M.yaml"
+
+[model_constructor_args]
+    == super()
+    attn_implementation: "eager"

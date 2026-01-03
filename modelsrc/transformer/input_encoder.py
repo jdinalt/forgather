@@ -29,7 +29,7 @@ class InputEncoder(nn.Module):
         positional_encoder: Optional[Callable] = None,
         embedding: Optional[Callable] = None,
         scale: float = 1.0,
-        scale_sqrt_d_model: bool = True,
+        scale_sqrt_d_model: bool = False,
     ):
         super().__init__()
         self.d_model = d_model

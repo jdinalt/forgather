@@ -1,0 +1,128 @@
+-- extends "models/model_type.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Singlehead"
+    -- set ns.config_description = "A simple ALiBi transformer with a single head"
+    -- set ns.model_name = model_name | default("model")
+
+[model_constructor_args]
+    == super()
+    attn_implementation: "eager"
+
+[model_definition]
+    -- include "project.model"
+
+[dynamic_args]
+    == super()
+    attn_implementation: null
+    output_dir:
+        names: "--output-dir"
+        type: "path"
+        help: "Model output directory"
+    model_name:
+        names: "--model-name"
+        type: "str"
+        help: "Model name"
+    hidden_size:
+        names: "--hidden-size"
+        type: "int"
+        help: "Model hidden dimension size (d_model)"
+    num_hidden_layers:
+        names: "--num-hidden-layers"
+        type: "int"
+        help: "Number of hidden layers"
+    intermediate_size:
+        names: "--intermediate-size"
+        type: "int"
+        help: "Feedforward dimension"
+
+#------------- project.model --------------
+-- extends 'models/causal_lm/custom_dynamic.yaml'
+
+[model_meta_config]
+    == super()
+    -- set ns.model_name = ns.config_name
+    -- set ns.model_description = ns.config_description
+    -- set ns.model_short_name = "singlehead"
+
+[model_submodule_searchpath]
+    - "{{ joinpath(project_dir, "modelsrc") }}"
+    == super()
+
+[model_tokenizer]
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "8k.yaml"
+
+[model_bits]
+    [loss_fn]
+.define: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn
+
+    [layer_norm_factory]
+.define: &layer_norm_factory !partial:torch.nn:RMSNorm@layer_norm_factory
+    normalized_shape: !var "hidden_size"
+
+     [feedforward_factory]
+.define: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
+    d_model: !var "hidden_size"
+    d_feedforward: !var "intermediate_size"
+    activation_factory: !partial:torch.nn.ReLU
+
+    [attention_factory]
+.define: &attention_factory !partial:.single_head_alibi_attn:SingleHeadAlibiAttn@attention_factory
+    d_model: !var "hidden_size"
+
+    [layer_factory]
+.define: &layer_factory !partial:.pre_ln_layer:PreLNLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+    
+    [layer_stack]
+.define: &layer_stack !factory:.checkpoint_layer_stack:LayerStack@layer_stack
+    layer_factory: *layer_factory
+    num_hidden_layers: !var "num_hidden_layers"
+    post_norm_factory: *layer_norm_factory
+
+    [output_decoder]
+.define: &output_decoder !partial:torch.nn:Linear@output_decoder
+    in_features: !var "hidden_size"
+    out_features: !var "vocab_size"
+    bias: False
+
+    [input_encoder]
+.define: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
+    d_model: !var "hidden_size"
+    vocab_size: !var "vocab_size"
+    scale_sqrt_d_model: True
+
+    [init_weights]
+.define: &init_weights !partial:.init_weights:simple_weight_init@init_weights
+    scale_rsqrt_d_model: True
+
+    [attn_mask_fn]
+.define: &attn_mask_fn !partial:.causal_mask:causal_mask@attn_mask_fn
+
+    [model_factory]
+.define: &model_factory !dict@model_factory
+    causal_model: !partial:.causal_lm:CasualLM
+        config: !var "config"
+        input_encoder: *input_encoder
+        layer_stack: *layer_stack
+        init_weights: *init_weights
+        attn_mask_fn: *attn_mask_fn
+    lm_head: *output_decoder
+    loss_fn: *loss_fn
+
+[model_config]
+    == super()
+    hidden_size: {{ hidden_size | toyaml(256) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(6) }}
+    intermediate_size: {{ intermediate_size | toyaml(384) }}
+    tie_word_embeddings: True
+
+[model_code_generator]
+    == super()
+    supports_gradient_checkpointing: True
+    tied_weights_keys: {causal_lm.input_encoder.embedding.weight: "lm_head.weight"}

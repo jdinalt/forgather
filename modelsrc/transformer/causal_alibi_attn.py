@@ -106,7 +106,8 @@ class CausalAlibiAttn(nn.Module):
     def extra_repr(self):
         return (
             f"d_model={self.d_model}, num_heads={self.num_heads}, num_kv_heads={self.num_kv_heads}, "
-            f"trainable_alibi={self.trainable_alibi}, alt_alibi_init={self.alt_alibi_init}"
+            f"trainable_alibi={self.trainable_alibi}, alt_alibi_init={self.alt_alibi_init}, "
+            f"attn_implementation={self.attn_implementation}, sliding_window={self.sliding_window}"
         )
 
     def forward(
