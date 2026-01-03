@@ -64,3 +64,6 @@ test = [
 
 [project.scripts]
 forgather = "forgather.cli:main"
+
+[tool.isort]
+profile = "black"
