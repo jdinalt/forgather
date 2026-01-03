@@ -218,7 +218,7 @@ def flash_attn_2_forward(
     dropout: float = 0.0,
     scaling: Optional[float] = None,
     alibi_slopes: Optional[torch.Tensor] = None,
-    config: Any = None,
+    sliding_window: Optional[int] = None,
     **kwargs,
 ) -> tuple[torch.Tensor, None]:
     """
@@ -234,11 +234,10 @@ def flash_attn_2_forward(
         flash_attn_func is not None
     ), "Flash attn 2 is not installed. See: https://github.com/Dao-AILab/flash-attention/tree/main"
 
-    window_size = getattr(config, "window_size", None)
-    if window_size is None:
+    if sliding_window is None:
         window_size = (-1, -1)
     else:
-        window_size = (window_size, 0)
+        window_size = (sliding_window, 0)
 
     """
     Note that Flash Attn 2 expects:

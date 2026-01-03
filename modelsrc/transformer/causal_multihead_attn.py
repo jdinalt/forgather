@@ -25,6 +25,7 @@ class CausalMultiheadAttn(nn.Module):
         dropout: float = 0.0,
         qk_norm_factory: Optional[Callable] = None,
         layer_idx: int,
+        sliding_window: Optional[int] = None,
         **kwargs,
     ):
         """
@@ -49,6 +50,7 @@ class CausalMultiheadAttn(nn.Module):
         if attn_implementation == "flash_attention_2":
             self.is_causal = True
         self.config = config
+        self.sliding_window = sliding_window
 
         # Note: A variable with this name is required by vLLM
         self.layer_idx = layer_idx
@@ -161,6 +163,7 @@ class CausalMultiheadAttn(nn.Module):
             dropout=(self.dropout_p if self.training else 0.0),
             scaling=self.scale,
             config=self.config,
+            sliding_window=self.sliding_window,
             **kwargs,
         )
 

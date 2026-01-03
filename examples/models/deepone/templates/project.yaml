@@ -2,8 +2,8 @@
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Causal LM"
-    -- set ns.config_description = "Generic Causal LM Project"
+    -- set ns.config_name = "Deepone LM"
+    -- set ns.config_description = "Generic Deepone LM Project"
     -- set ns.model_name = model_name | default("model")
 
 [model_definition]
@@ -47,17 +47,10 @@
         names: "--intermediate-size"
         type: "int"
         help: "Feedforward dimension"
-    rope_theta:
-        names: "--rope-theta"
-        type: "float"
-        help: "RoPE Theta"
     rms_norm_eps:
         names: "--rms-norm-eps"
         type: "float"
         help: "RMS Norm eps"
-    rope_scaling:
-        names: "--rope-scaling"
-        help: "RoPE scaling type"
     sliding_window:
         names: "--sliding-window"
         type: "int"

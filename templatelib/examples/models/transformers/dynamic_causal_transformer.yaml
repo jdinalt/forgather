@@ -37,7 +37,14 @@
 .define: &relative_pe null
 
     [attn_functions]
-    -- include "attn_functions/default.yaml"
+.define: &attn_functions !dict
+    eager: !partial:.attention_interface:eager_attention_forward
+    flex_attention: !partial:.attention_interface:flex_attention_forward
+        kernel_options: !var "flex_attn_kernel_options"
+        compile_flex: !var "compile_flex"
+    sdpa: !partial:.attention_interface:sdpa_attention_forward
+        is_causal: True
+    flash_attention_2: !partial:.attention_interface:flash_attn_2_forward
 
     [flex_attn_kernel_options]
     -- include "flex_kernel_options/default.yaml"

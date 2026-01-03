@@ -25,20 +25,10 @@
     activation_factory: !partial:torch.nn.ReLU
     dropout: !var "activation_dropout"
 
-    [flex_attn_kernel_options]
-.define: &flex_attn_kernel_options !dict
-    BLOCK_M: 32
-    BLOCK_N: 32
-    BLOCK_M1: 16
-    BLOCK_N1: 32
-    BLOCK_M2: 32
-    BLOCK_N2: 16
-
     [attn_functions]
 .define: &attn_functions !dict
     eager: !partial:.attention_interface:eager_attention_forward
     flex_attention: !partial:.attention_interface:flex_attention_forward
-        kernel_options: *flex_attn_kernel_options
     sdpa: !partial:.attention_interface:sdpa_attention_forward
     flash_attention_2: !partial:.attention_interface:flash_attn_2_forward
 
@@ -50,6 +40,7 @@
     bias: False
     attn_implementation: !var "attn_implementation" # Value from &model_constructor_args
     attn_functions: *attn_functions
+    sliding_window: !var "sliding_window"
     # Make the ALiBi biases trainable weights
     trainable_alibi: True
     # Use alternative initialization for better trainable slope behavior
@@ -139,6 +130,7 @@ model_factory: &model_factory !dict@model_factory
     enable_activation_checkpoint: False
     checkpoint_stride: 1
     tie_word_embeddings: {{ tie_word_embeddings | toyaml(False) }}
+    sliding_window: {{ sliding_window | toyaml(4096) }}
 
 [model_code_generator]
     == super()

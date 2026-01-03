@@ -1,4 +1,4 @@
--- extends "models/model_type.yaml"
+-- extends "project.yaml"
 
 [config_metadata]
     == super()

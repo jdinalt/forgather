@@ -34,6 +34,7 @@ class CausalAlibiAttn(nn.Module):
         trainable_alibi: bool = False,
         alt_alibi_init: bool = False,
         layer_idx: int,
+        sliding_window: Optional[int] = None,
         **kwargs,
     ):
         super().__init__()
@@ -45,6 +46,7 @@ class CausalAlibiAttn(nn.Module):
         self.layer_idx = layer_idx
         self.config = config
         self.attn_implementation = attn_implementation
+        self.sliding_window = sliding_window
 
         assert attn_functions is not None, "A dict of attention functions is required"
         if attn_implementation not in attn_functions:
@@ -155,6 +157,7 @@ class CausalAlibiAttn(nn.Module):
             scaling=self.scale,
             config=self.config,
             alibi_slopes=self.alibi_slopes,
+            sliding_window=self.sliding_window,
             **kwargs,
         )
 

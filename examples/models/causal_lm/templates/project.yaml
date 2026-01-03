@@ -3,7 +3,7 @@
 [config_metadata]
     == super()
     -- set ns.config_name = "Causal LM"
-    -- set ns.config_description = "Generic Causal LM Project"
+    -- set ns.config_description = "Causal LM Project"
     -- set ns.model_name = model_name | default("model")
 
 [model_definition]
@@ -35,10 +35,6 @@
         names: --num-attention-heads"
         type: "int"
         help: "Number of query heads (and KV heads, if otherwise unspecified)"
-    num_key_value_heads:
-        names: "--num-key-value-heads"
-        type: "int"
-        help: "Number of Key/Value heads"
     num_hidden_layers:
         names: "--num-hidden-layers"
         type: "int"
@@ -47,19 +43,3 @@
         names: "--intermediate-size"
         type: "int"
         help: "Feedforward dimension"
-    rope_theta:
-        names: "--rope-theta"
-        type: "float"
-        help: "RoPE Theta"
-    rms_norm_eps:
-        names: "--rms-norm-eps"
-        type: "float"
-        help: "RMS Norm eps"
-    rope_scaling:
-        names: "--rope-scaling"
-        help: "RoPE scaling type"
-    sliding_window:
-        names: "--sliding-window"
-        type: "int"
-        help: "Sliding window size. 'null' for disabled"
-
