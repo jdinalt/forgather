@@ -1,16 +1,17 @@
 import logging
 from collections.abc import Sequence
 from types import NoneType
-from typing import Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 import torch
 from datasets.distributed import split_dataset_by_node
 from torch.utils.data import Dataset, IterableDataset
+from transformers import PreTrainedTokenizerBase
 
 from datasets import Dataset as HFDataset
 from datasets import IterableDataset as HFIterableDataset
 
-from ..distributed import main_process_first
+from ..distributed import DistributedEnvInterface, main_process_first
 
 
 class IterableDatasetWithLength(IterableDataset):
@@ -140,7 +141,13 @@ def normalize_range(
         )
 
 
-def default_tokenize_map_fn(element, tokenizer, feature, **kwargs):
+def default_tokenize_map_fn(
+    batch: dict[str, str],
+    tokenizer: PreTrainedTokenizerBase,
+    feature: str,
+    add_eos: bool = False,
+    **kwargs,
+) -> dict[str, Any]:
     """
     Default map function for tokenizing a dataset element.
     Args:
@@ -151,8 +158,13 @@ def default_tokenize_map_fn(element, tokenizer, feature, **kwargs):
     Returns:
         A dictionary with a single key "input_ids" containing the tokenized input.
     """
+    if add_eos:
+        examples = [s + tokenizer.eos_token for s in batch[feature]]
+    else:
+        examples = batch[feature]
+
     outputs = tokenizer(
-        element[feature],
+        examples,
         **kwargs,
     )
     return {"input_ids": outputs["input_ids"]}
@@ -165,20 +177,20 @@ def default_tokenize_map_fn(element, tokenizer, feature, **kwargs):
 @main_process_first()
 def preprocess_dataset(
     dataset: HFDataset | HFIterableDataset | IterableDatasetWithLength,
-    tokenizer,
+    tokenizer: PreTrainedTokenizerBase,
     *,
     select_range: range | int | float | Sequence | NoneType = None,
-    to_iterable=False,
-    feature="text",
-    shuffle=False,
-    num_shards=256,
-    distributed_environment=None,
-    desc="Tokenizing Dataset",
-    seed=42,
-    shuffle_buffer_size=10000,
-    map_fn=default_tokenize_map_fn,
-    map_kwargs=None,
-    fn_kwargs=None,
+    to_iterable: bool = False,
+    feature: str = "text",
+    shuffle: bool = False,
+    num_shards: int = 256,
+    distributed_environment: Optional[DistributedEnvInterface] = None,
+    desc: str = "Tokenizing Dataset",
+    seed: int = 42,
+    shuffle_buffer_size: int = 10000,
+    map_fn: Callable = default_tokenize_map_fn,
+    map_kwargs: Optional[dict[str, Any]] = None,
+    fn_kwargs: Optional[dict[str, Any]] = None,
     dataset_type: Optional[Literal["map"] | Literal["iterable"]] = None,
     dataset_length: Optional[int] = None,
 ):

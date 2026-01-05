@@ -6,6 +6,10 @@
     -- set ns.config_description = "Dataset containing synthetically generated (by GPT-3.5 and GPT-4) short stories that only use a small vocabulary."
     -- set ns.source = "https://arxiv.org/abs/2305.07759"
 
+[map_function]
+.define: &map_function !partial:forgather.ml.datasets:default_tokenize_map_fn
+    add_eos: True
+
 [train_dataset_split]
 train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train_dataset_split
     arg0: "roneneldan/TinyStories"
@@ -24,6 +28,7 @@ test_dataset_split: &test_dataset_split !singleton:datasets:load_dataset@test_da
 [train_dataset]
 train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
     dataset: *train_dataset_split
+    map_fn: *map_function
     tokenizer: *tokenizer
     desc: "Tokenizing train"
     fn_kwargs: !var "preprocess_args"
@@ -31,6 +36,7 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
 [eval_dataset]
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
     dataset: *validation_dataset_split
+    map_fn: *map_function
     tokenizer: *tokenizer
     desc: "Tokenizing validation"
     fn_kwargs: !var "preprocess_args"
@@ -38,6 +44,7 @@ eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@
 [test_dataset]
 test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
     dataset: *test_dataset_split
+    map_fn: *map_function
     tokenizer: *tokenizer
     desc: "Tokenizing test"
     fn_kwargs: !var "preprocess_args"
