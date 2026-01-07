@@ -25,11 +25,19 @@
     activation_factory: !partial:torch.nn.ReLU
     dropout: !var "activation_dropout"
 
+    [flex_attn_kernel_options]
+    -- include "flex_kernel_options/default.yaml"
+
     [attn_functions]
 .define: &attn_functions !dict
+    # The default HF implementations don't support ALiBi attention, while
+    # all of Forgather's implementations do.
     eager: !partial:.attention_interface:eager_attention_forward
     flex_attention: !partial:.attention_interface:flex_attention_forward
+        kernel_options: !var "flex_attn_kernel_options"
     sdpa: !partial:.attention_interface:sdpa_attention_forward
+    # This implementation does not support packed examples or trainable ALIBi
+    # ...but's it's the fastest for inference with ALiBi
     flash_attention_2: !partial:.attention_interface:flash_attn_2_forward
 
     [attention_factory]
@@ -131,6 +139,7 @@ model_factory: &model_factory !dict@model_factory
     checkpoint_stride: 1
     tie_word_embeddings: {{ tie_word_embeddings | toyaml(False) }}
     sliding_window: {{ sliding_window | toyaml(4096) }}
+    flex_attn_kernel_options: *flex_attn_kernel_options
 
 [model_code_generator]
     == super()

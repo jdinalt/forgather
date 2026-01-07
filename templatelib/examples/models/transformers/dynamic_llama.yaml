@@ -36,11 +36,17 @@
     [qk_norm_factory]
 .define: &qk_norm_factory null
 
+    [flex_attn_kernel_options]
+    # The default kernel options don't work properly with some GPUs at present
+    -- include "flex_kernel_options/default.yaml"
+
     [attn_functions]
 .define: &attn_functions !dict
-    ## Interfaces conforming to https://huggingface.co/docs/transformers/main/attention_interface
-    ## Fallback to using ALL_ATTENTION_FUNCTIONS, if not in dict
+    # Interfaces conforming to https://huggingface.co/docs/transformers/main/attention_interface
+    # Fallback to using ALL_ATTENTION_FUNCTIONS, if not in dict
     eager: !partial:.attention_interface:eager_attention_forward
+    flex_attention: !partial:.attention_interface:flex_attention_forward
+        kernel_options: !var "flex_attn_kernel_options"
 
     [attention_factory]
 .define: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
@@ -147,10 +153,10 @@ model_factory: &model_factory !dict@model_factory
     activation_dropout: {{ activation_dropout | toyaml(0.0) }}
     enable_activation_checkpoint: False
     checkpoint_stride: {{ checkpoint_stride | toyaml(1) }}
-    compile_flex: True # For debug flex, set to False
     tie_word_embeddings: {{ tie_word_embeddings | toyaml(False) }}
     rope_scaling: {{ rope_scaling | toyaml(None) }}
     sliding_window: {{ sliding_window | toyaml(None) }}
+    flex_attn_kernel_options: *flex_attn_kernel_options
     
 [model_code_generator]
     == super()

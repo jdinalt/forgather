@@ -36,18 +36,14 @@
     [rel_positional_encoder]
 .define: &relative_pe null
 
+    [flex_attn_kernel_options]
+    -- include "flex_kernel_options/default.yaml"
+
     [attn_functions]
 .define: &attn_functions !dict
     eager: !partial:.attention_interface:eager_attention_forward
     flex_attention: !partial:.attention_interface:flex_attention_forward
         kernel_options: !var "flex_attn_kernel_options"
-        compile_flex: !var "compile_flex"
-    sdpa: !partial:.attention_interface:sdpa_attention_forward
-        is_causal: True
-    flash_attention_2: !partial:.attention_interface:flash_attn_2_forward
-
-    [flex_attn_kernel_options]
-    -- include "flex_kernel_options/default.yaml"
 
     [attention_factory]
 .define: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
@@ -57,6 +53,7 @@
     pos_encoder: *relative_pe
     attn_implementation: !var "attn_implementation" # Value from &model_constructor_args
     attn_functions: *attn_functions
+    # Needed for vLLM attention interface
     config: !var "config"
 
     [layer_factory]
@@ -128,9 +125,8 @@ model_factory: &model_factory !dict@model_factory
     activation_dropout: {{ hiactivation_dropoutdden_size | toyaml(0.0) }}
     enable_activation_checkpoint: False
     checkpoint_stride: 1
-    compile_flex: True # For debug flex, set to False
-    flex_attn_kernel_options: *flex_attn_kernel_options
     tie_word_embeddings: {{ tie_word_embeddings | toyaml(False) }}
+    flex_attn_kernel_options: *flex_attn_kernel_options
 
 [model_code_generator]
     == super()
