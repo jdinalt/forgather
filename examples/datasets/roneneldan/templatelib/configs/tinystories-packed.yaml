@@ -1,0 +1,40 @@
+-- extends "configs/tinystories.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Tinystories Packed"
+    -- set ns.config_description = "Tinystories Packed Sequences"
+
+[train_dataset_split]
+    == super()
+
+[map_function]
+## Note: Values in "preprocess_args" override the defaults specified here.
+.define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
+    max_length: {{ max_length | default(2048)}}
+    overflow: False
+    packed: True
+    shuffle_output: True
+    stride: 0
+    packing_strategy: "best_fit"
+    add_bos: True
+    add_eos: True
+
+[train_dataset]
+train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
+    dataset: *train_dataset_split
+    tokenizer: *tokenizer
+    desc: "Tokenizing train"
+    to_iterable: True
+    map_kwargs:
+        batch_size: 1000
+    num_shards: 1024
+    map_fn: *map_function
+    fn_kwargs: !var { name: "preprocess_args", default: null }
+
+[dynamic_args]
+    == super()
+    max_length:
+        names: "--max-length"
+        type: "int"
+        help: "Maximum length of output sequences."
