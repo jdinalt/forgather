@@ -1,0 +1,112 @@
+-- extends "training_script/causal_lm/causal_lm.yaml"
+
+[config_metadata]
+    == super()
+    ## Overrides
+    -- set ns.config_name = "Pretrain Deepone"
+    -- set ns.config_description = "Pretrain a smallish Deepone model"
+    -- set ns.model_name = "deepone"
+
+    ## The dataset sub-project to use
+    -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, 'examples/datasets/roneneldan'))
+
+    ## The configuration in the dataset sub-project
+    ## Note that this config assumes packed-sequences
+    -- set ns.dataset_config = "tinystories-packed.yaml"
+
+    ## Set predefined model project to import
+    -- set ns.model_project_dir = abspath(joinpath(ns.forgather_dir, "examples/models/deepone/"))
+    -- set ns.model_project_config = "117M.yaml"
+
+[datasets_preprocessor_args]
+.define: &datasets_preprocessor_args !dict
+    truncation: True
+
+[datasets_definition]
+.define: &dataset_dict !call:forgather:from_project
+    project_dir: "{{ ns.dataset_proj }}"
+    config_template: "{{ ns.dataset_config }}"
+    targets: [  "train_dataset", "eval_dataset" ]
+    preprocess_args: *datasets_preprocessor_args
+    tokenizer: *tokenizer
+
+train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
+eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
+
+[construct_new_model]
+.define: &model_dict !call:forgather:from_project
+    project_dir: "{{ ns.model_project_dir }}"
+    config_template: "{{ ns.model_project_config }}"
+    targets: [ "pretrained_tokenizer", "model" ] 
+    pp_kwargs:
+        output_dir: "{{ ns.output_dir }}"
+    model_constructor_args: *model_constructor_args
+
+tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
+model: &model !call:getitem [ *model_dict, 'model' ]
+
+[datacollator]
+data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
+    tokenizer: *tokenizer
+    packed_sequences: True
+    return_tensors: pt
+
+[optimizer]
+optimizer: &optimizer !partial:torch:optim.AdamW
+    lr: 2.0e-4
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+    warmup_steps: 50
+    cooldown_steps: 0 # Use constant learning-rate, after warmup
+
+[trainer_definition]
+    -- include 'project.trainer_config'
+
+[trainer_callbacks]
+    -- include 'project.logger_config'
+
+#-------------------- project.trainer_config --------------------
+-- extends 'trainers/trainer.yaml'
+
+[trainer_args]
+    == super()
+    # **Project**
+    eval_strategy: "steps"
+    save_strategy: "{{ save_strategy | default('steps') }}"
+    save_steps: 50000
+    save_safetensors: False
+    seed: 42
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 8
+    logging_steps: 50
+    eval_steps: 500
+    num_train_epochs: 1
+    dataloader_num_workers: 1
+    float32_matmul_precision: "high"
+    default_dtype: "bfloat16"
+    torch_compile: True
+    torch_compile_dynamic: True
+
+[trainer_constructor]
+    == super()
+    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
+
+#-------------------- project.logger_config --------------------
+-- extends 'callbacks/loggers.yaml'
+
+[callback_list]
+    -- include 'prompts/short_stories.yaml'
+
+    == super()
+-- if attn_implementation | default("") != "flex_attention"
+    ## This adds a text-generationn sample every 'generation_steps'
+    text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
+        summary_writer: *summary_writer
+        prompts: *testprompts
+        generation_config: *generation_config
+        max_new_tokens: 40
+        generation_steps: 5000
+-- endif
+    # Allow remote control of the training process
+    trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
