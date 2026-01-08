@@ -113,10 +113,13 @@ class NonStreamingStrategy(GenerationStrategy):
         )
 
         # 12. Determine finish reason
+        # Pass ignore_eos flag to finish detector
+        ignore_eos = getattr(request, "ignore_eos", False)
         finish_reason = self.service.finish_detector.determine_finish_reason(
             generated_token_ids,
             request.max_tokens,
             stopped_by_sequence,
+            ignore_eos=ignore_eos,
         )
 
         # 13. Log stop sequence if triggered

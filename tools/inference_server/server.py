@@ -106,7 +106,7 @@ def main():
     parser.add_argument(
         "--cache-implementation",
         default=None,
-        help="HF cache implementation See: https://huggingface.co/docs/transformers/en/kv_cache.",
+        help="HF cache implementation e.g. 'dynamic', 'static', etc. See: https://huggingface.co/docs/transformers/en/kv_cache.",
     )
     parser.add_argument(
         "--disable-kv-cache",
@@ -120,6 +120,11 @@ def main():
         const=True,
         default=False,
         help="Load model from specific checkpoint or latest checkpoint",
+    )
+    parser.add_argument(
+        "--ignore-eos",
+        action="store_true",
+        help="Ignore EOS tokens during generation (continue past EOS until max_tokens or stop_sequence)",
     )
 
     args = parser.parse_args()
@@ -179,6 +184,7 @@ def main():
         compile_args=compile_args,
         cache_implementation=args.cache_implementation,
         use_cache=use_cache,
+        ignore_eos=args.ignore_eos,
     )
 
     # Create FastAPI app and set service

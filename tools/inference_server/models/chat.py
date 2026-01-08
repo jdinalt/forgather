@@ -38,6 +38,7 @@ class ChatCompletionRequest(BaseModel):
     eta_cutoff: Optional[float] = None
     guidance_scale: Optional[float] = None
     seed: Optional[int] = None
+    ignore_eos: Optional[bool] = None
 
 
 class ChatCompletionChoice(BaseModel):

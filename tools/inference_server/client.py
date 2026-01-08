@@ -174,6 +174,7 @@ class InferenceClient:
         num_beams: Optional[int] = None,
         min_length: Optional[int] = None,
         seed: Optional[int] = None,
+        ignore_eos: Optional[bool] = None,
     ) -> str:
         """Generate a text completion for the given prompt."""
         try:
@@ -202,6 +203,7 @@ class InferenceClient:
                 "num_beams": num_beams,
                 "min_length": min_length,
                 "seed": seed,
+                "ignore_eos": ignore_eos,
             }
 
             # Filter out None values
@@ -449,6 +451,11 @@ def main():
     parser.add_argument(
         "--seed", type=int, help="Random seed for reproducible generation"
     )
+    parser.add_argument(
+        "--ignore-eos",
+        action="store_true",
+        help="Ignore EOS tokens during generation (continue past EOS until max_tokens or stop_sequence)",
+    )
 
     # Streaming option
     parser.add_argument(
@@ -564,6 +571,7 @@ def main():
             num_beams=args.num_beams,
             min_length=args.min_length,
             seed=args.seed,
+            ignore_eos=args.ignore_eos if args.ignore_eos else None,
         )
         if not args.stream:
             print(response)

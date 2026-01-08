@@ -82,6 +82,7 @@ class InferenceService:
         compile_args: Optional[dict[str, Any]] = None,
         cache_implementation: Optional[str] = None,
         use_cache: Optional[bool] = None,
+        ignore_eos: bool = False,
     ) -> None:
         """
         Initialize inference service.
@@ -94,6 +95,10 @@ class InferenceService:
             chat_template_path: Path to custom chat template file
             dtype: Model dtype (float32, float16, bfloat16, etc.)
             stop_sequences: Custom stop sequences
+            compile_args: Arguments for torch.compile
+            cache_implementation: KV cache implementation
+            use_cache: Whether to use KV cache
+            ignore_eos: Server-level default for ignoring EOS tokens (can be overridden per-request)
 
         Raises:
             ValueError: If invalid device, checkpoint path, or dtype specified
@@ -119,6 +124,7 @@ class InferenceService:
         self.compile_args = compile_args
         self.cache_implementation = cache_implementation
         self.use_cache = use_cache
+        self.ignore_eos = ignore_eos
 
         # Load model and setup
         self.load_model()
@@ -370,11 +376,21 @@ class InferenceService:
         ):
             generation_config.pad_token_id = self.tokenizer.pad_token_id
 
-        if (
-            not hasattr(generation_config, "eos_token_id")
-            or generation_config.eos_token_id is None
-        ):
-            generation_config.eos_token_id = self.tokenizer.eos_token_id
+        # Handle EOS token - conditionally disable if ignore_eos is True
+        # Check request-level ignore_eos, fall back to server-level default
+        request_ignore_eos = getattr(request, "ignore_eos", None)
+        ignore_eos = request_ignore_eos if request_ignore_eos is not None else self.ignore_eos
+        if ignore_eos:
+            # Set to -1 (impossible token ID) to prevent HF from stopping on EOS
+            # Note: Setting to None doesn't work because HuggingFace fills it from model defaults
+            generation_config.eos_token_id = -1
+        else:
+            # Normal behavior: ensure eos_token_id is set
+            if (
+                not hasattr(generation_config, "eos_token_id")
+                or generation_config.eos_token_id is None
+            ):
+                generation_config.eos_token_id = self.tokenizer.eos_token_id
 
         if (
             not hasattr(generation_config, "bos_token_id")
