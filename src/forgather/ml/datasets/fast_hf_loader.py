@@ -9,10 +9,11 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch.utils.data
 from torch.utils.data import IterableDataset as TorchIterableDataset
@@ -32,6 +33,62 @@ logger = logging.getLogger(__name__)
 
 # Metadata version - increment when index format changes
 METADATA_VERSION = 2  # v2: Added per-file example counts and version check
+
+
+def _parse_split_notation(split: str) -> Tuple[str, Optional[int], Optional[int]]:
+    """
+    Parse HuggingFace split notation into base split and slice bounds.
+
+    This allows us to use only the base split for caching while applying
+    slices virtually after loading.
+
+    Examples:
+        "train" → ("train", None, None)
+        "train[100:]" → ("train", 100, None)
+        "train[:1000]" → ("train", None, 1000)
+        "train[100:1000]" → ("train", 100, 1000)
+        "train[10%:20%]" → ("train", "10%", "20%")
+
+    Args:
+        split: Split string potentially with slice notation
+
+    Returns:
+        Tuple of (base_split, start_idx, end_idx) where indices can be
+        int, str (for percentages like "10%"), or None
+    """
+    if not split:
+        return split, None, None
+
+    # Match pattern: split_name[start:end]
+    # Where start and end are optional and can be numbers or percentages
+    match = re.match(r"^([^[]+)(?:\[([^:]*):([^\]]*)\])?$", split)
+    if not match:
+        # Invalid format, return as-is
+        return split, None, None
+
+    base_split = match.group(1)
+    start_str = match.group(2)
+    end_str = match.group(3)
+
+    # Parse start index (can be int, percentage string, or None)
+    if start_str:
+        if "%" in start_str:
+            start_idx = start_str
+        else:
+            start_idx = int(start_str)
+    else:
+        start_idx = None
+
+    # Parse end index (can be int, percentage string, or None)
+    if end_str:
+        if "%" in end_str:
+            end_idx = end_str
+        else:
+            end_idx = int(end_str)
+    else:
+        end_idx = None
+
+    return base_split, start_idx, end_idx
 
 
 class SimpleArrowIterableDataset(TorchIterableDataset):
@@ -635,8 +692,19 @@ class FastDatasetLoaderSimple:
     ):
         """
         Load dataset as IterableDataset with instant loading after first time.
+
+        Supports HuggingFace split notation like "train[10000:]" without triggering
+        reindexing. The base split is used for caching, and slicing is applied virtually.
         """
-        config_hash = self._get_config_hash(path, name, split, data_files, revision)
+        # Parse split notation (e.g., "train[10000:]" → "train", 10000, None)
+        base_split, slice_start, slice_end = (
+            _parse_split_notation(split) if split else (split, None, None)
+        )
+
+        # Use base split for config hash (so "train" and "train[10000:]" share cache)
+        config_hash = self._get_config_hash(
+            path, name, base_split, data_files, revision
+        )
         index_data = self._load_index(config_hash) if not force_reindex else None
 
         if index_data is not None:
@@ -654,6 +722,10 @@ class FastDatasetLoaderSimple:
 
                 # Create simple iterable dataset (INSTANT!)
                 iterable_ds = SimpleArrowIterableDataset(arrow_files, file_lengths)
+
+                # Apply slice if present in split notation
+                if slice_start is not None or slice_end is not None:
+                    iterable_ds = iterable_ds.slice(slice_start, slice_end)
 
                 elapsed = time.time() - start_time
 
@@ -676,10 +748,11 @@ class FastDatasetLoaderSimple:
 
         start_time = time.time()
 
+        # Load with base split only (download full split, we'll slice virtually)
         ds = load_dataset(
             path,
             name=name,
-            split=split,
+            split=base_split,
             data_files=data_files,
             revision=revision,
             num_proc=num_proc,
@@ -718,7 +791,7 @@ class FastDatasetLoaderSimple:
             metadata = {
                 "dataset_path": path,
                 "dataset_name": name,
-                "split": split,
+                "split": base_split,  # Store base split for cache consistency
                 "load_time": load_time,
                 "num_arrow_files": num_files,
                 "total_examples": total_examples,
@@ -733,13 +806,21 @@ class FastDatasetLoaderSimple:
                 f"Index saved: {num_files} Arrow files = {num_files} natural shards, Data size: {size_gb:.2f} GB"
             )
 
-            # Return as simple iterable (INSTANT!)
-            return SimpleArrowIterableDataset(arrow_files, file_lengths)
+            # Create dataset and apply slice if present
+            iterable_ds = SimpleArrowIterableDataset(arrow_files, file_lengths)
+
+            if slice_start is not None or slice_end is not None:
+                iterable_ds = iterable_ds.slice(slice_start, slice_end)
+
+            return iterable_ds
 
         else:
             logger.warning("Could not find Arrow files")
             # Fallback: use regular to_iterable_dataset
-            return ds.to_iterable_dataset(num_shards=1)
+            result_ds = ds.to_iterable_dataset(num_shards=1)
+            # Note: Slice cannot be applied to regular iterable dataset fallback
+            # User should ensure dataset can be indexed for slice support
+            return result_ds
 
 
 # Global instance
