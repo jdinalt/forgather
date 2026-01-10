@@ -981,6 +981,103 @@ def test_native_map_with_operations():
 @pytest.mark.skipif(
     not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
 )
+def test_batched_map_basic():
+    """Test batched map with simple transformation."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:20]"
+    )
+
+    # Simple batched function that adds length field
+    def add_lengths(batch):
+        texts = batch["text"]
+        return {"text": texts, "length": [len(t) for t in texts]}
+
+    # Apply batched map
+    ids_mapped = ids.map(add_lengths, batched=True, batch_size=5)
+
+    # Verify transformation
+    examples = list(ids_mapped)
+    assert len(examples) > 0, "Should have examples"
+    for ex in examples:
+        assert "length" in ex, "Should have length field"
+        assert ex["length"] == len(ex["text"]), "Length should match text length"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_n_to_m():
+    """Test batched map with N->M mapping (filtering/duplication)."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:20]"
+    )
+
+    # Function that filters out empty texts and duplicates non-empty ones
+    def filter_and_duplicate(batch):
+        texts = batch["text"]
+        result_texts = []
+        for text in texts:
+            if text.strip():  # Non-empty
+                result_texts.append(text)
+                result_texts.append(text + " (duplicate)")  # Duplicate it
+        return {"text": result_texts}
+
+    # Apply batched map
+    ids_mapped = ids.map(filter_and_duplicate, batched=True, batch_size=5)
+
+    # Count examples
+    count = sum(1 for _ in ids_mapped)
+    # Should have roughly 2x non-empty examples
+    assert count > 0, "Should have examples after filtering and duplication"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_with_block_tokenize():
+    """Test batched map with block_tokenize_fn (packed sequences)."""
+    from transformers import AutoTokenizer
+
+    from forgather.ml.datasets.block_tokenizer import block_tokenize_fn
+
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:30]"
+    )
+
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+
+    # Apply block tokenization with packing
+    ids_tokenized = ids.map(
+        lambda batch: block_tokenize_fn(
+            batch,
+            tokenizer=tokenizer,
+            feature="text",
+            max_length=128,
+            packed=True,
+            overflow=True,
+            min_len=1,
+        ),
+        batched=True,
+        batch_size=10,
+    )
+
+    # Verify packed sequences
+    examples = []
+    for i, ex in enumerate(ids_tokenized):
+        examples.append(ex)
+        if i >= 10:
+            break
+
+    assert len(examples) > 0, "Should have packed sequences"
+    for ex in examples:
+        assert "input_ids" in ex, "Should have input_ids"
+        assert isinstance(ex["input_ids"], list), "input_ids should be a list"
+        assert len(ex["input_ids"]) <= 128, "Should not exceed max_length"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
 def test_interleave_basic():
     """Test basic round-robin interleaving."""
     ds1 = fast_load_iterable_dataset(

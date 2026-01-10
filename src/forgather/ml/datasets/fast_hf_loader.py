@@ -502,6 +502,91 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
         return final_result
 
+    def _apply_map_to_batch(self, examples, start_idx):
+        """
+        Apply map function to a batch of examples.
+
+        Args:
+            examples: List of example dictionaries
+            start_idx: Starting global index for this batch (for with_indices)
+
+        Returns:
+            List of transformed example dictionaries (may be different length due to filtering)
+        """
+        if self._map_function is None or not examples:
+            return examples
+
+        # Convert list of examples to batch format (dict with list values)
+        # Example: [{"text": "a"}, {"text": "b"}] -> {"text": ["a", "b"]}
+        batch = {}
+        if self._map_input_columns is not None:
+            # Only include specified columns
+            for col in self._map_input_columns:
+                batch[col] = [ex.get(col) for ex in examples]
+        else:
+            # Include all columns
+            all_columns = set()
+            for ex in examples:
+                all_columns.update(ex.keys())
+            for col in all_columns:
+                batch[col] = [ex.get(col) for ex in examples]
+
+        # Apply function
+        fn_kwargs = self._map_fn_kwargs or {}
+        if self._map_with_indices:
+            indices = list(range(start_idx, start_idx + len(examples)))
+            result = self._map_function(batch, indices, **fn_kwargs)
+        else:
+            result = self._map_function(batch, **fn_kwargs)
+
+        # Handle None result (filter all examples)
+        if result is None:
+            return []
+
+        if not isinstance(result, dict):
+            raise ValueError(
+                f"Map function must return a dictionary or None, got {type(result)}"
+            )
+
+        # Convert batch format back to list of examples
+        # Example: {"input_ids": [[1,2], [3,4]]} -> [{"input_ids": [1,2]}, {"input_ids": [3,4]}]
+        result_examples = []
+
+        # Determine number of output examples
+        if result:
+            first_key = next(iter(result.keys()))
+            num_outputs = (
+                len(result[first_key]) if isinstance(result[first_key], list) else 1
+            )
+        else:
+            num_outputs = 0
+
+        for i in range(num_outputs):
+            result_example = {}
+            for col, values in result.items():
+                if isinstance(values, list):
+                    result_example[col] = values[i]
+                else:
+                    # Scalar value, repeat for all examples
+                    result_example[col] = values
+
+            # Merge with original example if within range
+            # (N->M mapping may produce more or fewer examples)
+            if i < len(examples):
+                final_example = examples[i].copy()
+                final_example.update(result_example)
+            else:
+                final_example = result_example
+
+            # Handle remove_columns
+            if self._map_remove_columns is not None:
+                for col in self._map_remove_columns:
+                    final_example.pop(col, None)
+
+            result_examples.append(final_example)
+
+        return result_examples
+
     def _get_files_for_shard(self):
         """Get the Arrow files for this shard."""
         files = self._shuffled_files if self._shuffled_files else self.arrow_files
@@ -574,6 +659,11 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             self._split_end_idx if self._split_end_idx is not None else float("inf")
         )
 
+        # Batch collection for batched map operations
+        if self._map_batched and self._map_function is not None:
+            batch_buffer = []
+            batch_start_idx = None
+
         for file_idx, arrow_file in enumerate(worker_files):
             # Check checkpoint position dynamically (not captured as local var)
             # This allows load_state_dict() to work even if called after __iter__
@@ -631,17 +721,49 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
                 # Apply map function if configured
                 if self._map_function is not None:
-                    example = self._apply_map_to_example(example, current_global_idx)
-                    # If map function returned None, skip this example (filtering)
-                    if example is None:
-                        continue
+                    if self._map_batched:
+                        # Batched mode: collect examples into batch buffer
+                        if batch_start_idx is None:
+                            batch_start_idx = current_global_idx
+                        batch_buffer.append(example)
 
-                yield example
+                        # Process batch when full
+                        if len(batch_buffer) >= self._map_batch_size:
+                            result_examples = self._apply_map_to_batch(
+                                batch_buffer, batch_start_idx
+                            )
+                            for result_example in result_examples:
+                                yield result_example
+                            batch_buffer = []
+                            batch_start_idx = None
+                    else:
+                        # Non-batched mode: apply to individual example
+                        example = self._apply_map_to_example(
+                            example, current_global_idx
+                        )
+                        # If map function returned None, skip this example (filtering)
+                        if example is None:
+                            continue
+                        yield example
+                else:
+                    # No map function, yield as-is
+                    yield example
 
             # After finishing a file, move to next file
             if file_idx >= self._current_file_index:
                 self._current_example_index = 0
                 self._current_file_index = file_idx + 1
+
+        # Process final partial batch if using batched map
+        if (
+            self._map_batched
+            and self._map_function is not None
+            and batch_buffer
+            and not self._map_drop_last_batch
+        ):
+            result_examples = self._apply_map_to_batch(batch_buffer, batch_start_idx)
+            for result_example in result_examples:
+                yield result_example
 
     def __len__(self) -> int:
         """
