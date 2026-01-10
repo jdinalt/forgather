@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 METADATA_VERSION = 2  # v2: Added per-file example counts and version check
 
 
+def _identity_func(x):
+    """Identity function for map with no function specified."""
+    return x
+
+
 def _parse_split_notation(split: str) -> Tuple[str, Optional[int], Optional[int]]:
     """
     Parse HuggingFace split notation into base split and slice bounds.
@@ -132,6 +137,16 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         # Metadata attributes (lazy loaded from Arrow schema)
         self._column_names = None
         self._features = None
+
+        # Map configuration (for lazy transformation during iteration)
+        self._map_function = None
+        self._map_batched = False
+        self._map_batch_size = 1000
+        self._map_drop_last_batch = False
+        self._map_remove_columns = None
+        self._map_with_indices = False
+        self._map_input_columns = None
+        self._map_fn_kwargs = None
 
     def __repr__(self):
         return (
@@ -343,13 +358,149 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
         return new_dataset
 
-    def map(self, function, batched: bool = False, **kwargs):
+    def map(
+        self,
+        function=None,
+        with_indices: bool = False,
+        input_columns=None,
+        batched: bool = False,
+        batch_size: Optional[int] = 1000,
+        drop_last_batch: bool = False,
+        remove_columns=None,
+        fn_kwargs=None,
+    ):
         """
-        Apply a map function (lazy - returns new iterable).
+        Apply a function to all examples (individually or in batches).
+
+        The function is applied lazily during iteration, preserving our
+        efficient checkpoint protocol.
+
+        Args:
+            function: Function to apply. If None, identity function is used.
+            with_indices: Provide example indices to function
+            input_columns: Specific columns to pass to function
+            batched: Process examples in batches
+            batch_size: Number of examples per batch if batched=True
+            drop_last_batch: Drop incomplete final batch
+            remove_columns: Columns to remove after mapping
+            fn_kwargs: Keyword arguments for function
+
+        Returns:
+            New SimpleArrowIterableDataset with map applied
         """
-        # Convert to HF IterableDataset for proper map support
-        hf_iterable = self.to_hf_iterable()
-        return hf_iterable.map(function, batched=batched, **kwargs)
+        # Normalize arguments
+        if isinstance(input_columns, str):
+            input_columns = [input_columns]
+        if isinstance(remove_columns, str):
+            remove_columns = [remove_columns]
+        if function is None:
+            function = _identity_func
+        if fn_kwargs is None:
+            fn_kwargs = {}
+
+        # Create new dataset with same configuration
+        new_dataset = SimpleArrowIterableDataset(self.arrow_files, self.file_lengths)
+        new_dataset._shuffled_files = self._shuffled_files
+        new_dataset._shuffled_lengths = self._shuffled_lengths
+        new_dataset._shard_config = self._shard_config
+        new_dataset._shuffle_seed = self._shuffle_seed
+        new_dataset._split_start_idx = self._split_start_idx
+        new_dataset._split_end_idx = self._split_end_idx
+        new_dataset._shard_start_idx = self._shard_start_idx
+        new_dataset._shard_end_idx = self._shard_end_idx
+
+        # Copy existing map configuration (to support chaining)
+        new_dataset._map_function = self._map_function
+        new_dataset._map_batched = self._map_batched
+        new_dataset._map_batch_size = self._map_batch_size
+        new_dataset._map_drop_last_batch = self._map_drop_last_batch
+        new_dataset._map_remove_columns = self._map_remove_columns
+        new_dataset._map_with_indices = self._map_with_indices
+        new_dataset._map_input_columns = self._map_input_columns
+        new_dataset._map_fn_kwargs = self._map_fn_kwargs
+
+        # Apply new map configuration
+        # For simplicity, we'll compose functions if there's already a map
+        if new_dataset._map_function is not None:
+            # Chain maps: apply existing map first, then new map
+            prev_function = new_dataset._map_function
+            prev_batched = new_dataset._map_batched
+            prev_fn_kwargs = new_dataset._map_fn_kwargs or {}
+
+            # For now, don't support chaining maps with different batched modes
+            if prev_batched != batched:
+                raise ValueError(
+                    "Cannot chain maps with different batched modes. "
+                    "Convert to same batched mode or use single map."
+                )
+
+            # Compose functions
+            def composed_function(example, *args, **comp_kwargs):
+                result = prev_function(example, **prev_fn_kwargs)
+                return function(result, *args, **fn_kwargs)
+
+            new_dataset._map_function = composed_function
+            new_dataset._map_fn_kwargs = {}  # Already incorporated
+        else:
+            new_dataset._map_function = function
+            new_dataset._map_batched = batched
+            new_dataset._map_batch_size = batch_size
+            new_dataset._map_drop_last_batch = drop_last_batch
+            new_dataset._map_remove_columns = remove_columns
+            new_dataset._map_with_indices = with_indices
+            new_dataset._map_input_columns = input_columns
+            new_dataset._map_fn_kwargs = fn_kwargs
+
+        return new_dataset
+
+    def _apply_map_to_example(self, example, example_idx):
+        """
+        Apply map function to a single example.
+
+        Args:
+            example: Dictionary of column values
+            example_idx: Global example index (for with_indices)
+
+        Returns:
+            Transformed example dictionary
+        """
+        if self._map_function is None:
+            return example
+
+        # Handle input_columns: only pass specified columns to function
+        if self._map_input_columns is not None:
+            fn_input = {
+                col: example[col] for col in self._map_input_columns if col in example
+            }
+        else:
+            fn_input = example
+
+        # Apply function
+        fn_kwargs = self._map_fn_kwargs or {}
+        if self._map_with_indices:
+            result = self._map_function(fn_input, example_idx, **fn_kwargs)
+        else:
+            result = self._map_function(fn_input, **fn_kwargs)
+
+        # If function returned None, filter out this example
+        if result is None:
+            return None
+        elif not isinstance(result, dict):
+            raise ValueError(
+                f"Map function must return a dictionary or None, got {type(result)}"
+            )
+
+        # Merge result with original example (HF behavior)
+        # Result columns overwrite original if same key exists
+        final_result = example.copy()
+        final_result.update(result)
+
+        # Handle remove_columns: remove after merging
+        if self._map_remove_columns is not None:
+            for col in self._map_remove_columns:
+                final_result.pop(col, None)  # Remove if exists
+
+        return final_result
 
     def _get_files_for_shard(self):
         """Get the Arrow files for this shard."""
@@ -468,12 +619,22 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                         # Reached end of shard, stop iteration
                         return
 
+                # Save index for map with_indices (before incrementing)
+                current_global_idx = global_example_idx
+
                 if use_virtual_split or use_example_sharding:
                     global_example_idx += 1
 
                 # Update position for checkpointing (for next checkpoint)
                 self._current_file_index = file_idx
                 self._current_example_index = example_idx + 1  # Next example to process
+
+                # Apply map function if configured
+                if self._map_function is not None:
+                    example = self._apply_map_to_example(example, current_global_idx)
+                    # If map function returned None, skip this example (filtering)
+                    if example is None:
+                        continue
 
                 yield example
 

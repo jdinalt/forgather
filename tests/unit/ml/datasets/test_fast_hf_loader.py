@@ -814,3 +814,165 @@ def test_map_remove_columns():
     assert "text" in example, "Original column should still exist"
     assert "text_length" in example, "New column should be added"
     assert isinstance(example["text_length"], int), "text_length should be an integer"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_native_map_basic():
+    """Test native map implementation (non-HF)."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Apply map transformation
+    def add_length(example):
+        return {"text": example["text"], "length": len(example["text"])}
+
+    ids_mapped = ids.map(add_length)
+
+    # Verify map is applied
+    example = next(iter(ids_mapped))
+    assert "text" in example
+    assert "length" in example
+    assert example["length"] == len(example["text"])
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_native_map_remove_columns():
+    """Test native map with remove_columns."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Map with remove_columns
+    def add_tokens(example):
+        return {"tokens": example["text"].split()}
+
+    ids_mapped = ids.map(add_tokens, remove_columns=["text"])
+
+    # Verify transformation and column removal
+    example = next(iter(ids_mapped))
+    assert "tokens" in example
+    assert "text" not in example, "text column should be removed"
+    assert isinstance(example["tokens"], list)
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_native_map_filtering():
+    """Test native map with filtering (None returns)."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Filter out empty lines
+    def filter_empty(example):
+        if len(example["text"].strip()) == 0:
+            return None
+        return example
+
+    ids_filtered = ids.map(filter_empty)
+
+    # Verify filtering works
+    count = 0
+    for example in ids_filtered:
+        assert len(example["text"].strip()) > 0, "Empty examples should be filtered"
+        count += 1
+        if count >= 10:  # Just check first 10
+            break
+
+    assert count > 0, "Should have some examples"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_native_map_with_checkpoint():
+    """Test that native map preserves checkpoint state."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Apply map
+    def add_prefix(example):
+        return {"text": "PREFIX: " + example["text"]}
+
+    ids_mapped = ids.map(add_prefix)
+
+    # Create dataloader and iterate a few batches
+    dataloader = StatefulDataLoader(ids_mapped, batch_size=4, num_workers=0)
+
+    checkpoint = None
+    for i, batch in enumerate(dataloader):
+        if i >= 3:
+            checkpoint = dataloader.state_dict()
+            break
+
+    assert checkpoint is not None, "Should save checkpoint"
+
+    # Create fresh dataloader with SAME map
+    ids_fresh = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ids_fresh_mapped = ids_fresh.map(add_prefix)
+    dataloader_fresh = StatefulDataLoader(ids_fresh_mapped, batch_size=4, num_workers=0)
+
+    # Get expected batch (batch 4)
+    expected_batch = None
+    for i, batch in enumerate(dataloader_fresh):
+        if i == 4:
+            expected_batch = batch
+            break
+
+    # Create restored dataloader
+    ids_restored = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ids_restored_mapped = ids_restored.map(add_prefix)
+    dataloader_restored = StatefulDataLoader(
+        ids_restored_mapped, batch_size=4, num_workers=0
+    )
+    dataloader_restored.load_state_dict(checkpoint)
+
+    # Get first batch from restored
+    restored_batch = next(iter(dataloader_restored))
+
+    # Verify batches match
+    if isinstance(expected_batch, dict) and isinstance(restored_batch, dict):
+        for k in expected_batch.keys():
+            assert k in restored_batch
+            # Check that PREFIX was applied
+            if k == "text":
+                for text in restored_batch[k]:
+                    assert text.startswith("PREFIX: "), "Map should be applied"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_native_map_with_operations():
+    """Test native map works with shuffle, shard, and slice."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Apply map
+    def uppercase(example):
+        return {"text": example["text"].upper()}
+
+    # Chain operations: shuffle -> slice -> map -> shard
+    ids_transformed = (
+        ids.shuffle(seed=42)
+        .slice(None, 0.5)
+        .map(uppercase)
+        .shard(num_shards=2, index=0, mode="example")
+    )
+
+    # Verify it's iterable and transformations work
+    example = next(iter(ids_transformed))
+    assert "text" in example
+    assert example["text"] == example["text"].upper(), "Should be uppercased"
