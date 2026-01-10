@@ -36,13 +36,17 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
     def __init__(self, arrow_files: List[str]):
         self.arrow_files = arrow_files
         self._shuffled_files = None
-        self._shard_config = None  # (num_shards, shard_index)
+        self._shard_config = None  # (num_shards, shard_index, shard_mode)
 
         # Checkpoint state
         self._current_file_index = 0
         self._current_example_index = 0
         self._shuffle_seed = None
         self._total_examples = None  # Cached length
+
+        # Example-level sharding boundaries (global example indices)
+        self._shard_start_idx = None  # Inclusive
+        self._shard_end_idx = None    # Exclusive
 
     def shuffle(self, seed: Optional[int] = None, buffer_size: int = 1000):
         """
@@ -62,14 +66,71 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._shuffled_files = shuffled_files
         return new_dataset
 
-    def shard(self, num_shards: int, index: int):
+    def shard(self, num_shards: int, index: int, mode: str = 'auto'):
         """
         Shard the dataset (for DDP).
-        Each shard gets a subset of Arrow files.
+
+        Args:
+            num_shards: Number of shards to split into
+            index: Index of this shard (0 to num_shards-1)
+            mode: Sharding mode:
+                - 'auto': Use file-level if possible, otherwise example-level
+                - 'file': File-level sharding (each shard gets subset of files)
+                - 'example': Example-level sharding (divide examples evenly)
+
+        File-level sharding:
+            - More efficient (less overhead during iteration)
+            - Requires num_shards <= num_files
+            - Shard i gets files at indices i, i+num_shards, i+2*num_shards, ...
+
+        Example-level sharding:
+            - Works with any num_shards (even > num_files)
+            - Divides total examples evenly across shards
+            - Slightly more overhead during iteration
         """
         new_dataset = SimpleArrowIterableDataset(self.arrow_files)
         new_dataset._shuffled_files = self._shuffled_files
-        new_dataset._shard_config = (num_shards, index)
+        new_dataset._shuffle_seed = self._shuffle_seed
+
+        # Determine sharding mode
+        files = self._shuffled_files if self._shuffled_files else self.arrow_files
+        num_files = len(files)
+
+        if mode == 'auto':
+            # Use file-level if we have enough files, otherwise example-level
+            shard_mode = 'file' if num_shards <= num_files else 'example'
+        else:
+            shard_mode = mode
+
+        if shard_mode == 'file':
+            # File-level sharding
+            if num_shards > num_files:
+                logger.warning(
+                    f"File-level sharding with num_shards={num_shards} > num_files={num_files}. "
+                    f"Some shards will be empty. Consider using mode='example'."
+                )
+            new_dataset._shard_config = (num_shards, index, 'file')
+
+        elif shard_mode == 'example':
+            # Example-level sharding - compute boundaries
+            total_examples = len(self)  # Compute total examples
+            examples_per_shard = total_examples // num_shards
+            remainder = total_examples % num_shards
+
+            # Distribute remainder examples to first 'remainder' shards
+            if index < remainder:
+                shard_start = index * (examples_per_shard + 1)
+                shard_end = shard_start + examples_per_shard + 1
+            else:
+                shard_start = index * examples_per_shard + remainder
+                shard_end = shard_start + examples_per_shard
+
+            new_dataset._shard_config = (num_shards, index, 'example')
+            new_dataset._shard_start_idx = shard_start
+            new_dataset._shard_end_idx = shard_end
+        else:
+            raise ValueError(f"Invalid shard mode: {mode}. Must be 'auto', 'file', or 'example'.")
+
         return new_dataset
 
     def map(self, function, batched: bool = False, **kwargs):
@@ -85,9 +146,15 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         files = self._shuffled_files if self._shuffled_files else self.arrow_files
 
         if self._shard_config:
-            num_shards, shard_index = self._shard_config
-            # Distribute files: shard i gets files i, i+num_shards, i+2*num_shards, ...
-            files = [f for idx, f in enumerate(files) if idx % num_shards == shard_index]
+            shard_mode = self._shard_config[2] if len(self._shard_config) >= 3 else 'file'
+
+            if shard_mode == 'file':
+                num_shards, shard_index = self._shard_config[0], self._shard_config[1]
+                # Distribute files: shard i gets files i, i+num_shards, i+2*num_shards, ...
+                files = [f for idx, f in enumerate(files) if idx % num_shards == shard_index]
+            elif shard_mode == 'example':
+                # Example-level sharding uses all files, filtering happens in __iter__
+                pass
 
         return files
 
@@ -108,6 +175,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         Iterate through Arrow files sequentially.
 
         Supports:
+        - File-level and example-level sharding
         - Multi-worker DataLoader (each worker gets a subset of files)
         - Checkpoint resumption (skips to saved position)
 
@@ -122,14 +190,22 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         worker_id, num_workers = self._get_worker_info()
         files = self._get_files_for_shard()
 
-        # Further shard files among workers
+        # Further shard files among workers (for file-level sharding and multi-worker)
         # Worker i processes files: i, i+num_workers, i+2*num_workers, ...
         worker_files = [f for idx, f in enumerate(files) if idx % num_workers == worker_id]
+
+        # For example-level sharding, track global position
+        global_example_idx = 0
+        use_example_sharding = self._shard_start_idx is not None
 
         for file_idx, arrow_file in enumerate(worker_files):
             # Check checkpoint position dynamically (not captured as local var)
             # This allows load_state_dict() to work even if called after __iter__
             if file_idx < self._current_file_index:
+                # Skip entire file, but track global position for example-level sharding
+                if use_example_sharding:
+                    ds = Dataset.from_file(arrow_file)
+                    global_example_idx += len(ds)
                 continue
 
             # Memory-map Arrow file
@@ -139,7 +215,20 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 # Skip examples before checkpoint (only for resume file)
                 # Check dynamically so load_state_dict() updates are seen
                 if file_idx == self._current_file_index and example_idx < self._current_example_index:
+                    if use_example_sharding:
+                        global_example_idx += 1
                     continue
+
+                # For example-level sharding, check if we're in the shard range
+                if use_example_sharding:
+                    if global_example_idx < self._shard_start_idx:
+                        global_example_idx += 1
+                        continue
+                    if global_example_idx >= self._shard_end_idx:
+                        # Reached end of shard, stop iteration
+                        return
+
+                    global_example_idx += 1
 
                 # Update position for checkpointing (for next checkpoint)
                 self._current_file_index = file_idx
@@ -156,11 +245,20 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Get total number of examples in the dataset.
 
+        For example-level sharding, returns the size of this shard.
+        For file-level sharding, returns the total across assigned files.
+
         Caches the result for efficiency.
         """
         if self._total_examples is not None:
             return self._total_examples
 
+        # For example-level sharding, length is determined by shard boundaries
+        if self._shard_start_idx is not None and self._shard_end_idx is not None:
+            self._total_examples = self._shard_end_idx - self._shard_start_idx
+            return self._total_examples
+
+        # For file-level sharding or no sharding, count examples in assigned files
         files = self._get_files_for_shard()
         total = 0
 
@@ -183,6 +281,8 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             - shard_config: Sharding configuration (if any)
             - arrow_files: List of Arrow file paths
             - shuffled_files: Shuffled file order (if shuffled)
+            - shard_start_idx: Start index for example-level sharding (if any)
+            - shard_end_idx: End index for example-level sharding (if any)
         """
         return {
             "current_file_index": self._current_file_index,
@@ -191,6 +291,8 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             "shard_config": self._shard_config,
             "arrow_files": self.arrow_files,
             "shuffled_files": self._shuffled_files,
+            "shard_start_idx": self._shard_start_idx,
+            "shard_end_idx": self._shard_end_idx,
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]):
@@ -212,6 +314,8 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._shard_config = state_dict.get("shard_config")
         self.arrow_files = state_dict["arrow_files"]
         self._shuffled_files = state_dict.get("shuffled_files")
+        self._shard_start_idx = state_dict.get("shard_start_idx")
+        self._shard_end_idx = state_dict.get("shard_end_idx")
 
         # Reset cached length since configuration might have changed
         self._total_examples = None

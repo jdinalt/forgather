@@ -109,10 +109,11 @@ for step, batch in enumerate(dataloader, start=checkpoint['step']+1):
 - More efficient than example-level shuffling
 - 234 Arrow files = 234 natural shards
 
-✅ **DDP Support**
-- Each rank gets different Arrow files
+✅ **Flexible Sharding for DDP**
+- File-level sharding: Each rank gets different Arrow files (efficient)
+- Example-level sharding: Works even with more ranks than files
+- Auto mode automatically selects the best approach
 - No data duplication across ranks
-- Automatic sharding via `.shard(num_shards, index)`
 
 ✅ **Stateful Checkpointing**
 - Implements `state_dict()`/`load_state_dict()` protocol
@@ -158,6 +159,49 @@ With 234 Arrow files and `num_workers=4`:
 
 Each worker independently tracks its position for checkpointing.
 
+### Flexible Sharding
+
+The dataset supports two sharding modes for DDP training:
+
+**File-Level Sharding (default when num_shards ≤ num_files):**
+- Most efficient - minimal overhead during iteration
+- Each shard gets a subset of Arrow files
+- Shard i gets files at indices i, i+num_shards, i+2*num_shards, ...
+- Example with 8 files and 2 shards:
+  - Shard 0: files 0, 2, 4, 6
+  - Shard 1: files 1, 3, 5, 7
+
+**Example-Level Sharding (used when num_shards > num_files):**
+- Works with any number of shards, even more than files
+- Divides total examples evenly across shards
+- Slightly more overhead during iteration (tracks global position)
+- Example with 1 file (1000 examples) and 2 shards:
+  - Shard 0: examples 0-499
+  - Shard 1: examples 500-999
+
+**Auto Mode (recommended):**
+```python
+# Automatically selects best mode
+ids = ids.shard(num_shards=world_size, index=rank, mode='auto')
+
+# Auto uses file-level if num_shards <= num_files
+# Auto uses example-level if num_shards > num_files
+```
+
+**Explicit Mode Selection:**
+```python
+# Force file-level sharding
+ids = ids.shard(num_shards=2, index=0, mode='file')
+
+# Force example-level sharding
+ids = ids.shard(num_shards=4, index=0, mode='example')
+```
+
+**Use Cases:**
+- Training on 2 GPUs with 1-file dataset → Example-level required
+- Training on 8 GPUs with 234-file dataset → File-level more efficient
+- Auto mode handles both cases automatically
+
 ## Testing
 
 Comprehensive tests verify correctness:
@@ -176,9 +220,11 @@ python test_correct_comparison.py
 All tests pass, confirming:
 - ✅ Instant loading works
 - ✅ Shuffling works
-- ✅ Sharding works
+- ✅ File-level and example-level sharding work
+- ✅ Auto mode selects appropriate sharding
 - ✅ Multi-worker works
 - ✅ Checkpointing works with num_workers=0, 1, 2, etc.
+- ✅ Checkpointing works with both sharding modes
 
 ## API Reference
 
@@ -205,9 +251,12 @@ Iterable dataset with checkpointing support.
 
 **Methods:**
 - `.shuffle(seed=None)`: Shuffle Arrow file order
-- `.shard(num_shards, index)`: Shard for DDP
+- `.shard(num_shards, index, mode='auto')`: Shard for DDP
+  - `mode='auto'`: Auto-select file or example-level sharding
+  - `mode='file'`: File-level sharding (efficient, requires num_shards ≤ num_files)
+  - `mode='example'`: Example-level sharding (works with any num_shards)
 - `.map(function, batched=False)`: Lazy transformations
-- `.__len__()`: Total examples (cached)
+- `.__len__()`: Total examples (cached, accounts for sharding)
 - `.state_dict()`: Get checkpoint state
 - `.load_state_dict(state_dict)`: Restore from checkpoint
 
@@ -251,6 +300,7 @@ See `CHECKPOINT_GUIDE.md` for complete training examples with:
 This implementation provides:
 - 20 minutes → <1 second dataset loading
 - Hours → <1 second checkpoint resumption
+- Flexible sharding (file-level or example-level)
 - Full DDP and multi-worker support
 - Production-ready for long-running training jobs
 - Compatible with standard PyTorch tools

@@ -153,7 +153,8 @@ world_size = dist.get_world_size()
 # Load and shard dataset
 ids = fast_load_iterable_dataset("dataset", "config", split="train")
 ids = ids.shuffle(seed=42)
-ids = ids.shard(num_shards=world_size, index=rank)
+# Auto mode selects file-level or example-level sharding automatically
+ids = ids.shard(num_shards=world_size, index=rank, mode='auto')
 
 # Training loop
 for step, example in enumerate(ids):
@@ -329,7 +330,8 @@ train(resume_from='checkpoints/checkpoint_step_5000.pt')
 Your fast-loading dataset now supports:
 - ✅ Instant loading after first indexing (<1 second)
 - ✅ Shard-level shuffling (234 Arrow files)
-- ✅ DDP training (each rank gets different files)
+- ✅ Flexible sharding (file-level or example-level)
+- ✅ DDP training (works with any number of ranks)
 - ✅ **Stateful checkpoints (efficient mid-epoch resumption)**
 - ✅ StatefulDataLoader compatibility (single and multi-worker)
 - ✅ Full compatibility with `torchdata.stateful_dataloader.StatefulDataLoader`
