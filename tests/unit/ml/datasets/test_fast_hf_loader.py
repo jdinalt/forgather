@@ -683,3 +683,134 @@ def test_split_notation_checkpoint():
     # Should be able to continue iteration
     restored_batch = next(iter(dataloader_restored))
     assert restored_batch is not None, "Should get batch after restore"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_column_names():
+    """Test column_names property."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Should have column_names attribute
+    assert hasattr(ids, "column_names"), "Dataset should have column_names attribute"
+
+    # Should return list of column names
+    column_names = ids.column_names
+    assert isinstance(column_names, list), "column_names should be a list"
+    assert len(column_names) > 0, "column_names should not be empty"
+
+    # Wikitext should have 'text' column
+    assert "text" in column_names, "Wikitext dataset should have 'text' column"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_features():
+    """Test features property."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Should have features attribute
+    assert hasattr(ids, "features"), "Dataset should have features attribute"
+
+    # Features should not be None
+    features = ids.features
+    assert features is not None, "features should not be None"
+
+    # Should have 'text' feature
+    assert "text" in features, "features should contain 'text' key"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_n_shards():
+    """Test n_shards property."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Should have n_shards attribute
+    assert hasattr(ids, "n_shards"), "Dataset should have n_shards attribute"
+
+    # Should return number of Arrow files
+    n_shards = ids.n_shards
+    assert isinstance(n_shards, int), "n_shards should be an integer"
+    assert n_shards > 0, "n_shards should be positive"
+
+    # After shuffling, n_shards should remain the same
+    ids_shuffled = ids.shuffle(seed=42)
+    assert ids_shuffled.n_shards == n_shards, "n_shards should not change after shuffle"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_metadata_with_operations():
+    """Test that metadata properties work with shuffle, shard, and slice."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    original_columns = ids.column_names
+    original_n_shards = ids.n_shards
+
+    # After shuffle
+    ids_shuffled = ids.shuffle(seed=42)
+    assert (
+        ids_shuffled.column_names == original_columns
+    ), "column_names should not change after shuffle"
+    assert (
+        ids_shuffled.n_shards == original_n_shards
+    ), "n_shards should not change after shuffle"
+
+    # After slice
+    ids_sliced = ids.slice(None, 0.5)
+    assert (
+        ids_sliced.column_names == original_columns
+    ), "column_names should not change after slice"
+    assert (
+        ids_sliced.n_shards == original_n_shards
+    ), "n_shards should not change after slice"
+
+    # After shard
+    ids_shard = ids.shard(num_shards=2, index=0, mode="example")
+    assert (
+        ids_shard.column_names == original_columns
+    ), "column_names should not change after shard"
+    # Note: n_shards is the number of Arrow files, not DDP shards, so it doesn't change
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_map_remove_columns():
+    """Test using column_names with map(remove_columns=...)."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Verify column_names is accessible (common pattern in training)
+    assert hasattr(ids, "column_names"), "Should have column_names attribute"
+    assert len(ids.column_names) > 0, "Should have columns"
+
+    # Apply map with remove_columns (common pattern in training)
+    def add_length(example):
+        return {"text_length": len(example["text"])}
+
+    # This should work without errors (common training pattern)
+    ids_mapped = ids.map(add_length)
+
+    # Should still be iterable
+    assert hasattr(ids_mapped, "__iter__"), "Mapped dataset should be iterable"
+
+    # Get first example to verify map worked
+    example = next(iter(ids_mapped))
+    assert "text" in example, "Original column should still exist"
+    assert "text_length" in example, "New column should be added"
+    assert isinstance(example["text_length"], int), "text_length should be an integer"

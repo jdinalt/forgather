@@ -22,6 +22,8 @@ from datasets import Dataset
 from datasets import IterableDataset as HFIterableDataset
 from datasets import load_dataset
 
+from .datasets import IterableDatasetWithLength
+
 try:
     from tqdm import tqdm
 
@@ -126,6 +128,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         # Example-level sharding boundaries (global example indices, after split)
         self._shard_start_idx = None  # Inclusive
         self._shard_end_idx = None  # Exclusive
+
+        # Metadata attributes (lazy loaded from Arrow schema)
+        self._column_names = None
+        self._features = None
 
     def __repr__(self):
         return (
@@ -342,7 +348,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         Apply a map function (lazy - returns new iterable).
         """
         # Convert to HF IterableDataset for proper map support
-        hf_iterable = self._to_hf_iterable()
+        hf_iterable = self.to_hf_iterable()
         return hf_iterable.map(function, batched=batched, **kwargs)
 
     def _get_files_for_shard(self):
@@ -537,6 +543,63 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
         return self._total_examples
 
+    @property
+    def column_names(self) -> List[str]:
+        """
+        Get dataset column names from Arrow schema.
+
+        This is a standard HuggingFace Datasets attribute commonly used
+        for operations like map(remove_columns=dataset.column_names).
+
+        Returns:
+            List of column names (e.g., ['text', 'id', 'meta'])
+        """
+        if self._column_names is None:
+            if not self.arrow_files:
+                return []
+
+            # Load first Arrow file to get schema (fast - only metadata)
+            ds = Dataset.from_file(self.arrow_files[0])
+            self._column_names = ds.column_names
+
+        return self._column_names
+
+    @property
+    def features(self):
+        """
+        Get dataset features (schema with type information).
+
+        This is a standard HuggingFace Datasets attribute that provides
+        detailed schema information including column types, nested structures,
+        and encoding information.
+
+        Returns:
+            DatasetFeatures object describing the schema
+        """
+        if self._features is None:
+            if not self.arrow_files:
+                return None
+
+            # Load first Arrow file to get features (fast - only metadata)
+            ds = Dataset.from_file(self.arrow_files[0])
+            self._features = ds.features
+
+        return self._features
+
+    @property
+    def n_shards(self) -> int:
+        """
+        Number of Arrow file shards in the dataset.
+
+        This reflects the actual number of Arrow files available,
+        accounting for shuffling if applied.
+
+        Returns:
+            Number of shards (Arrow files)
+        """
+        files = self._shuffled_files if self._shuffled_files else self.arrow_files
+        return len(files)
+
     def state_dict(self) -> Dict[str, Any]:
         """
         Get checkpoint state.
@@ -598,14 +661,19 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         # Reset cached length since configuration might have changed
         self._total_examples = None
 
-    def _to_hf_iterable(self):
+    def to_hf_iterable(self):
         """Convert to HuggingFace IterableDataset for full compatibility."""
 
         def gen():
             for example in self:
                 yield example
 
-        return HFIterableDataset.from_generator(gen)
+        # The wrapped length may not represent the true length, which depends upon the implementation
+        # of the map function, but certain APIs, like torch.Dataloader, expect the dataset to have a
+        # __len__(), when their own length is queried.
+        return IterableDatasetWithLength(
+            HFIterableDataset.from_generator(gen), len(self)
+        )
 
 
 class FastDatasetLoaderSimple:
