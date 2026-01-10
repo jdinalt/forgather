@@ -1,9 +1,9 @@
--- extends "configs/smollm-corpus/fast-fineweb-edu-dedup.yaml"
+-- extends "configs/smollm-corpus/fast-cosmopedia-v2.yaml"
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Fast FineWeb-Edu-Dedup Packed"
-    -- set ns.config_description = "Fast FineWeb-Edu-Dedup Packed Sequences"
+    -- set ns.config_name = "Fast Cosmopedia v2 packed"
+    -- set ns.config_description = "Fast Cosmopedia v2 Packed Sequences"
 
 [map_function]
 ## Note: Values in "preprocess_args" override the defaults specified here.

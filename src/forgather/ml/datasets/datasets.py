@@ -193,6 +193,7 @@ def preprocess_dataset(
     fn_kwargs: Optional[dict[str, Any]] = None,
     dataset_type: Optional[Literal["map"] | Literal["iterable"]] = None,
     dataset_length: Optional[int] = None,
+    remove_columns: bool = True,
 ):
     """
     This is a farily generic and flxible dataset preprocessor to quickly get a dataset
@@ -241,11 +242,12 @@ def preprocess_dataset(
     map_kwargs = (
         dict(
             batched=True,
-            remove_columns=dataset.column_names,
             fn_kwargs=fn_kwargs,
         )
         | map_kwargs
     )
+    if remove_columns:
+        map_kwargs["remove_columns"] = dataset.column_names
 
     if select_range is not None:
         select_range = normalize_range(len(dataset), select_range)

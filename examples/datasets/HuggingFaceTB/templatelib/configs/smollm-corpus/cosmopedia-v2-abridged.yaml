@@ -1,9 +1,0 @@
--- extends "configs/smollm-corpus/cosmopedia-v2.yaml"
-
-[config_metadata]
-    == super()
-    -- set ns.config_name = ns.config_name + " Abridged"
-
-[train_dataset_split]
-    == super()
-    split: "train[10000:5000000]"

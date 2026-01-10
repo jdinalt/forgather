@@ -127,6 +127,15 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._shard_start_idx = None  # Inclusive
         self._shard_end_idx = None  # Exclusive
 
+    def __repr__(self):
+        return (
+            "SimpleArrowIterableDataset: "
+            f"arrow_files={len(self.arrow_files)}, "
+            f"examples={len(self)}, "
+            f"current_file_index={self._current_file_index}, "
+            f"current_example_index={self._current_example_index}"
+        )
+
     def shuffle(self, seed: Optional[int] = None, buffer_size: int = 1000):
         """
         Shuffle at the Arrow file level (shard-level shuffling).
