@@ -1,0 +1,484 @@
+"""
+Fast HuggingFace Dataset Loader - Simple Generator Approach
+
+Uses a simple generator that reads Arrow files sequentially.
+No expensive interleave_datasets() calls. Just a simple, fast generator.
+"""
+
+import hashlib
+import json
+import os
+import time
+from pathlib import Path
+from typing import Optional, Union, Dict, Any, List
+from datasets import load_dataset, Dataset
+from datasets import IterableDataset as HFIterableDataset
+from torch.utils.data import IterableDataset as TorchIterableDataset
+import torch.utils.data
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class SimpleArrowIterableDataset(TorchIterableDataset):
+    """
+    Simple IterableDataset wrapper around Arrow files.
+
+    Implements:
+    - Sequential reading of Arrow files
+    - Shard-level shuffling (shuffles file order)
+    - Sharding for DDP
+    - Stateful checkpoint protocol (state_dict/load_state_dict)
+    - Compatible with torch.utils.data.DataLoader
+    - Compatible with torchdata.stateful_dataloader.StatefulDataLoader
+    """
+
+    def __init__(self, arrow_files: List[str]):
+        self.arrow_files = arrow_files
+        self._shuffled_files = None
+        self._shard_config = None  # (num_shards, shard_index)
+
+        # Checkpoint state
+        self._current_file_index = 0
+        self._current_example_index = 0
+        self._shuffle_seed = None
+        self._total_examples = None  # Cached length
+
+    def shuffle(self, seed: Optional[int] = None, buffer_size: int = 1000):
+        """
+        Shuffle at the Arrow file level (shard-level shuffling).
+        """
+        import random
+
+        # Shuffle Arrow file order
+        shuffled_files = self.arrow_files.copy()
+        rng = random.Random(seed)
+        rng.shuffle(shuffled_files)
+
+        # Create new instance with shuffled files
+        new_dataset = SimpleArrowIterableDataset(shuffled_files)
+        new_dataset._shard_config = self._shard_config
+        new_dataset._shuffle_seed = seed
+        new_dataset._shuffled_files = shuffled_files
+        return new_dataset
+
+    def shard(self, num_shards: int, index: int):
+        """
+        Shard the dataset (for DDP).
+        Each shard gets a subset of Arrow files.
+        """
+        new_dataset = SimpleArrowIterableDataset(self.arrow_files)
+        new_dataset._shuffled_files = self._shuffled_files
+        new_dataset._shard_config = (num_shards, index)
+        return new_dataset
+
+    def map(self, function, batched: bool = False, **kwargs):
+        """
+        Apply a map function (lazy - returns new iterable).
+        """
+        # Convert to HF IterableDataset for proper map support
+        hf_iterable = self._to_hf_iterable()
+        return hf_iterable.map(function, batched=batched, **kwargs)
+
+    def _get_files_for_shard(self):
+        """Get the Arrow files for this shard."""
+        files = self._shuffled_files if self._shuffled_files else self.arrow_files
+
+        if self._shard_config:
+            num_shards, shard_index = self._shard_config
+            # Distribute files: shard i gets files i, i+num_shards, i+2*num_shards, ...
+            files = [f for idx, f in enumerate(files) if idx % num_shards == shard_index]
+
+        return files
+
+    @staticmethod
+    def _get_worker_info():
+        # Get worker info for multi-worker DataLoader support
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is not None:
+            worker_id = worker_info.id
+            num_workers = worker_info.num_workers
+        else:
+            worker_id = 0
+            num_workers = 1
+        return worker_id, num_workers
+    
+    def __iter__(self):
+        """
+        Iterate through Arrow files sequentially.
+
+        Supports:
+        - Multi-worker DataLoader (each worker gets a subset of files)
+        - Checkpoint resumption (skips to saved position)
+
+        For StatefulDataLoader compatibility, each worker instance tracks
+        its own position independently.
+
+        IMPORTANT: We check self._current_file_index and self._current_example_index
+        dynamically (not captured in local vars) so that if load_state_dict() is
+        called after __iter__ but before iteration starts, we use the restored values.
+        """
+
+        worker_id, num_workers = self._get_worker_info()
+        files = self._get_files_for_shard()
+
+        # Further shard files among workers
+        # Worker i processes files: i, i+num_workers, i+2*num_workers, ...
+        worker_files = [f for idx, f in enumerate(files) if idx % num_workers == worker_id]
+
+        for file_idx, arrow_file in enumerate(worker_files):
+            # Check checkpoint position dynamically (not captured as local var)
+            # This allows load_state_dict() to work even if called after __iter__
+            if file_idx < self._current_file_index:
+                continue
+
+            # Memory-map Arrow file
+            ds = Dataset.from_file(arrow_file)
+
+            for example_idx, example in enumerate(ds):
+                # Skip examples before checkpoint (only for resume file)
+                # Check dynamically so load_state_dict() updates are seen
+                if file_idx == self._current_file_index and example_idx < self._current_example_index:
+                    continue
+
+                # Update position for checkpointing (for next checkpoint)
+                self._current_file_index = file_idx
+                self._current_example_index = example_idx + 1  # Next example to process
+
+                yield example
+
+            # After finishing a file, move to next file
+            if file_idx >= self._current_file_index:
+                self._current_example_index = 0
+                self._current_file_index = file_idx + 1
+
+    def __len__(self) -> int:
+        """
+        Get total number of examples in the dataset.
+
+        Caches the result for efficiency.
+        """
+        if self._total_examples is not None:
+            return self._total_examples
+
+        files = self._get_files_for_shard()
+        total = 0
+
+        for arrow_file in files:
+            ds = Dataset.from_file(arrow_file)
+            total += len(ds)
+
+        self._total_examples = total
+        return total
+
+    def state_dict(self) -> Dict[str, Any]:
+        """
+        Get checkpoint state.
+
+        Returns:
+            Dictionary containing:
+            - current_file_index: Which Arrow file we're currently in
+            - current_example_index: Which example within that file
+            - shuffle_seed: Random seed used for shuffling (if any)
+            - shard_config: Sharding configuration (if any)
+            - arrow_files: List of Arrow file paths
+            - shuffled_files: Shuffled file order (if shuffled)
+        """
+        return {
+            "current_file_index": self._current_file_index,
+            "current_example_index": self._current_example_index,
+            "shuffle_seed": self._shuffle_seed,
+            "shard_config": self._shard_config,
+            "arrow_files": self.arrow_files,
+            "shuffled_files": self._shuffled_files,
+        }
+
+    def load_state_dict(self, state_dict: Dict[str, Any]):
+        """
+        Restore from checkpoint state.
+
+        Args:
+            state_dict: Dictionary from a previous state_dict() call (per-worker)
+
+        This allows efficient resumption - the iterator will skip to the
+        saved position without having to iterate through all previous examples.
+
+        Note: With multi-worker DataLoader, this is called once per worker with
+        that worker's specific state.
+        """
+        self._current_file_index = state_dict["current_file_index"]
+        self._current_example_index = state_dict["current_example_index"]
+        self._shuffle_seed = state_dict.get("shuffle_seed")
+        self._shard_config = state_dict.get("shard_config")
+        self.arrow_files = state_dict["arrow_files"]
+        self._shuffled_files = state_dict.get("shuffled_files")
+
+        # Reset cached length since configuration might have changed
+        self._total_examples = None
+
+
+    def _to_hf_iterable(self):
+        """Convert to HuggingFace IterableDataset for full compatibility."""
+        def gen():
+            for example in self:
+                yield example
+
+        return HFIterableDataset.from_generator(gen)
+
+
+class FastDatasetLoaderSimple:
+    """
+    Fast dataset loader using simple generator approach.
+    """
+
+    def __init__(self, index_dir: Optional[str] = None):
+        if index_dir is None:
+            index_dir = os.path.expanduser("~/.cache/fast_hf_indexes_simple")
+
+        self.index_dir = Path(index_dir)
+        self.index_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_config_hash(
+        self,
+        path: str,
+        name: Optional[str] = None,
+        split: Optional[str] = None,
+        data_files: Optional[Union[str, list]] = None,
+        revision: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        config = {
+            "path": path,
+            "name": name,
+            "split": split,
+            "data_files": data_files,
+            "revision": revision,
+        }
+        config_str = json.dumps(config, sort_keys=True)
+        return hashlib.sha256(config_str.encode()).hexdigest()[:16]
+
+    def _get_index_file(self, config_hash: str) -> Path:
+        return self.index_dir / f"{config_hash}.json"
+
+    def _get_arrow_files(self, dataset_obj: Dataset) -> Optional[list]:
+        """Get Arrow file paths from dataset."""
+        if hasattr(dataset_obj, 'cache_files') and dataset_obj.cache_files:
+            return [cf['filename'] for cf in dataset_obj.cache_files]
+        if hasattr(dataset_obj, '_data_files') and dataset_obj._data_files:
+            return [df['filename'] for df in dataset_obj._data_files]
+        return None
+
+    def _save_index(self, config_hash: str, arrow_files: list, metadata: Dict[str, Any]):
+        index_data = {
+            "arrow_files": arrow_files,
+            "metadata": metadata,
+            "indexed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        index_file = self._get_index_file(config_hash)
+        with open(index_file, 'w') as f:
+            json.dump(index_data, f, indent=2)
+
+    def _load_index(self, config_hash: str) -> Optional[Dict[str, Any]]:
+        index_file = self._get_index_file(config_hash)
+        if not index_file.exists():
+            return None
+        with open(index_file, 'r') as f:
+            return json.load(f)
+
+    def load_iterable(
+        self,
+        path: str,
+        name: Optional[str] = None,
+        split: Optional[str] = None,
+        data_files: Optional[Union[str, list]] = None,
+        revision: Optional[str] = None,
+        force_reindex: bool = False,
+        num_proc: Optional[int] = None,
+        **load_dataset_kwargs
+    ):
+        """
+        Load dataset as IterableDataset with instant loading after first time.
+        """
+        config_hash = self._get_config_hash(path, name, split, data_files, revision)
+        index_data = self._load_index(config_hash) if not force_reindex else None
+
+        if index_data is not None:
+            # Fast path: create iterable from indexed Arrow files
+            arrow_files = index_data['arrow_files']
+            metadata = index_data['metadata']
+
+            if all(Path(f).exists() for f in arrow_files):
+                start_time = time.time()
+
+                print(f"Dataset: {path}" + (f"/{name}" if name else ""))
+                if split:
+                    print(f"Split: {split}")
+
+                # Create simple iterable dataset (INSTANT!)
+                iterable_ds = SimpleArrowIterableDataset(arrow_files)
+
+                elapsed = time.time() - start_time
+
+                print(f"✓ Loaded as IterableDataset in {elapsed:.3f}s")
+                print(f"  Arrow files: {len(arrow_files)} (natural shards)")
+                print(f"  Use .shuffle(seed=42) for shard-level shuffling")
+                print(f"  Use .shard(num_shards=N, index=i) for DDP")
+                print(f"  Use .map(fn) for lazy transformations")
+                print(f"  (Zero-copy - memory-mapped from HF cache)")
+
+                return iterable_ds
+
+            else:
+                logger.warning("Arrow files missing. Re-indexing...")
+
+        # Slow path: initial load
+        print(f"{'Re-indexing' if index_data else 'First-time indexing'} dataset...")
+        print(f"Dataset: {path}" + (f"/{name}" if name else ""))
+        print(f"This will be slow, but only happens once...")
+
+        start_time = time.time()
+
+        ds = load_dataset(
+            path,
+            name=name,
+            split=split,
+            data_files=data_files,
+            revision=revision,
+            num_proc=num_proc,
+            **load_dataset_kwargs
+        )
+
+        load_time = time.time() - start_time
+        print(f"✓ Dataset loaded in {load_time:.1f}s")
+
+        # Get Arrow files
+        arrow_files = self._get_arrow_files(ds)
+
+        if arrow_files:
+            num_files = len(arrow_files)
+            print(f"✓ Found {num_files} Arrow file(s) in HF cache")
+
+            metadata = {
+                "dataset_path": path,
+                "dataset_name": name,
+                "split": split,
+                "load_time": load_time,
+                "num_arrow_files": num_files,
+            }
+
+            self._save_index(config_hash, arrow_files, metadata)
+
+            print(f"✓ Index saved")
+            print(f"  Next load will be instant!")
+            print(f"  {num_files} Arrow files = {num_files} natural shards")
+
+            total_size = sum(Path(f).stat().st_size for f in arrow_files)
+            size_gb = total_size / (1024**3)
+            print(f"  Data size: {size_gb:.2f} GB")
+
+            # Return as simple iterable (INSTANT!)
+            return SimpleArrowIterableDataset(arrow_files)
+
+        else:
+            logger.warning("Could not find Arrow files")
+            # Fallback: use regular to_iterable_dataset
+            return ds.to_iterable_dataset(num_shards=1)
+
+
+# Global instance
+_default_loader = None
+
+
+def get_default_loader() -> FastDatasetLoaderSimple:
+    global _default_loader
+    if _default_loader is None:
+        _default_loader = FastDatasetLoaderSimple()
+    return _default_loader
+
+
+def fast_load_iterable_dataset(
+    path: str,
+    name: Optional[str] = None,
+    split: Optional[str] = None,
+    data_files: Optional[Union[str, list]] = None,
+    revision: Optional[str] = None,
+    force_reindex: bool = False,
+    num_proc: Optional[int] = None,
+    index_dir: Optional[str] = None,
+    **load_dataset_kwargs
+):
+    """
+    Fast loading as IterableDataset with proper sharding support.
+
+    First call: Slow (indexes Arrow files), subsequent calls: Instant.
+
+    Returns a SimpleArrowIterableDataset that:
+    - Loads instantly (just reads file paths from index)
+    - Supports .shuffle(seed) for shard-level shuffling
+    - Supports .shard(num_shards, index) for DDP
+    - Supports .map(fn) for lazy transformations
+    - Each Arrow file = 1 natural shard
+
+    Example:
+        # Load (instant after first time!)
+        ids = fast_load_iterable_dataset("dataset", "config", split="train")
+
+        # Shard-level shuffling
+        ids = ids.shuffle(seed=42)
+
+        # For DDP
+        ids = ids.shard(num_shards=world_size, index=rank)
+
+        # Lazy map
+        ids = ids.map(tokenize)
+
+        # Iterate
+        for example in ids:
+            pass
+    """
+    if index_dir is not None:
+        loader = FastDatasetLoaderSimple(index_dir=index_dir)
+    else:
+        loader = get_default_loader()
+
+    return loader.load_iterable(
+        path=path,
+        name=name,
+        split=split,
+        data_files=data_files,
+        revision=revision,
+        force_reindex=force_reindex,
+        num_proc=num_proc,
+        **load_dataset_kwargs
+    )
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
+    print("="*80)
+    print("Fast HF Dataset Loader - Simple Generator Approach")
+    print("="*80)
+
+    # Demo
+    print("\nDemo: Instant loading with simple generator")
+
+    ids = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train"
+    )
+
+    print(f"\n✓ Dataset loaded")
+    print(f"\nTesting shuffle...")
+    ids_shuffled = ids.shuffle(seed=42)
+
+    print(f"\nIterating first 3 examples:")
+    for i, example in enumerate(ids_shuffled):
+        if i < 3:
+            print(f"  Example {i}: {example['text'][:60]}...")
+        else:
+            break
+
+    print("\n✓ Simple and fast!")
