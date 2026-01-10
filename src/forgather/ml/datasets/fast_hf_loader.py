@@ -44,7 +44,11 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._shuffle_seed = None
         self._total_examples = None  # Cached length
 
-        # Example-level sharding boundaries (global example indices)
+        # Virtual split boundaries (global example indices, before sharding)
+        self._split_start_idx = None  # Inclusive
+        self._split_end_idx = None    # Exclusive
+
+        # Example-level sharding boundaries (global example indices, after split)
         self._shard_start_idx = None  # Inclusive
         self._shard_end_idx = None    # Exclusive
 
@@ -64,6 +68,99 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._shard_config = self._shard_config
         new_dataset._shuffle_seed = seed
         new_dataset._shuffled_files = shuffled_files
+        new_dataset._split_start_idx = self._split_start_idx
+        new_dataset._split_end_idx = self._split_end_idx
+        return new_dataset
+
+    def slice(self, start=None, end=None):
+        """
+        Create a virtual split by selecting a slice of examples.
+
+        Useful for train/val/test splits without copying data.
+
+        Args:
+            start: Start index (inclusive). Can be:
+                - None: Start from beginning (index 0)
+                - int: Absolute example index
+                - float in (0,1): Percentage of dataset (e.g., 0.8 = 80%)
+                - str: Percentage string (e.g., "80%")
+            end: End index (exclusive). Can be:
+                - None: Go to end of dataset
+                - int: Absolute example index
+                - float in (0,1): Percentage of dataset
+                - str: Percentage string (e.g., "80%")
+
+        Returns:
+            New dataset with virtual split applied
+
+        Examples:
+            >>> # First 80% for training
+            >>> train_ds = ds.slice(None, 0.8)
+            >>> train_ds = ds.slice(None, "80%")
+            >>>
+            >>> # Last 20% for validation
+            >>> val_ds = ds.slice(0.8, None)
+            >>> val_ds = ds.slice("80%", None)
+            >>>
+            >>> # Specific range
+            >>> subset = ds.slice(100, 200)  # Examples 100-199
+            >>> subset = ds.slice(0.1, 0.2)  # 10%-20% of dataset
+        """
+        def parse_index(idx, total):
+            """Convert index to absolute integer."""
+            if idx is None:
+                return None
+            if isinstance(idx, str):
+                # Parse percentage string like "80%"
+                if idx.endswith('%'):
+                    idx = float(idx[:-1]) / 100.0
+                else:
+                    idx = float(idx)
+            if isinstance(idx, float):
+                # Convert percentage to absolute index
+                if not 0 <= idx <= 1:
+                    raise ValueError(f"Percentage must be in range [0, 1], got {idx}")
+                return int(idx * total)
+            if isinstance(idx, int):
+                # Absolute index
+                if idx < 0:
+                    # Support negative indexing
+                    return total + idx
+                return idx
+            raise ValueError(f"Invalid index type: {type(idx)}")
+
+        # Get total examples (before any splitting)
+        # We need the base total, not the current split total
+        if self._split_start_idx is not None or self._split_end_idx is not None:
+            # Already has a split, get the original total
+            # This is tricky - we need to temporarily clear the split
+            temp_dataset = SimpleArrowIterableDataset(self.arrow_files)
+            temp_dataset._shuffled_files = self._shuffled_files
+            total_examples = len(temp_dataset)
+        else:
+            total_examples = len(self)
+
+        # Parse indices
+        start_idx = parse_index(start, total_examples) if start is not None else 0
+        end_idx = parse_index(end, total_examples) if end is not None else total_examples
+
+        # Validate
+        if start_idx < 0 or start_idx > total_examples:
+            raise ValueError(f"Start index {start_idx} out of range [0, {total_examples}]")
+        if end_idx < 0 or end_idx > total_examples:
+            raise ValueError(f"End index {end_idx} out of range [0, {total_examples}]")
+        if start_idx >= end_idx:
+            raise ValueError(f"Start index {start_idx} must be < end index {end_idx}")
+
+        # Create new dataset with split
+        new_dataset = SimpleArrowIterableDataset(self.arrow_files)
+        new_dataset._shuffled_files = self._shuffled_files
+        new_dataset._shuffle_seed = self._shuffle_seed
+        new_dataset._shard_config = self._shard_config
+        new_dataset._split_start_idx = start_idx
+        new_dataset._split_end_idx = end_idx
+
+        # Note: Don't copy old shard boundaries - sharding should happen on the sliced dataset
         return new_dataset
 
     def shard(self, num_shards: int, index: int, mode: str = 'auto'):
@@ -194,16 +291,21 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         # Worker i processes files: i, i+num_workers, i+2*num_workers, ...
         worker_files = [f for idx, f in enumerate(files) if idx % num_workers == worker_id]
 
-        # For example-level sharding, track global position
+        # Track global position for virtual splits and example-level sharding
         global_example_idx = 0
+        use_virtual_split = self._split_start_idx is not None or self._split_end_idx is not None
         use_example_sharding = self._shard_start_idx is not None
+
+        # Get split boundaries (default to full dataset)
+        split_start = self._split_start_idx if self._split_start_idx is not None else 0
+        split_end = self._split_end_idx if self._split_end_idx is not None else float('inf')
 
         for file_idx, arrow_file in enumerate(worker_files):
             # Check checkpoint position dynamically (not captured as local var)
             # This allows load_state_dict() to work even if called after __iter__
             if file_idx < self._current_file_index:
-                # Skip entire file, but track global position for example-level sharding
-                if use_example_sharding:
+                # Skip entire file, but track global position
+                if use_virtual_split or use_example_sharding:
                     ds = Dataset.from_file(arrow_file)
                     global_example_idx += len(ds)
                 continue
@@ -215,19 +317,32 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 # Skip examples before checkpoint (only for resume file)
                 # Check dynamically so load_state_dict() updates are seen
                 if file_idx == self._current_file_index and example_idx < self._current_example_index:
-                    if use_example_sharding:
+                    if use_virtual_split or use_example_sharding:
                         global_example_idx += 1
                     continue
 
-                # For example-level sharding, check if we're in the shard range
-                if use_example_sharding:
-                    if global_example_idx < self._shard_start_idx:
+                # Check virtual split boundaries first
+                if use_virtual_split:
+                    if global_example_idx < split_start:
                         global_example_idx += 1
                         continue
-                    if global_example_idx >= self._shard_end_idx:
+                    if global_example_idx >= split_end:
+                        # Reached end of split, stop iteration
+                        return
+
+                # For example-level sharding, check relative position within split
+                if use_example_sharding:
+                    # Compute position relative to split start
+                    relative_idx = global_example_idx - split_start
+
+                    if relative_idx < self._shard_start_idx:
+                        global_example_idx += 1
+                        continue
+                    if relative_idx >= self._shard_end_idx:
                         # Reached end of shard, stop iteration
                         return
 
+                if use_virtual_split or use_example_sharding:
                     global_example_idx += 1
 
                 # Update position for checkpointing (for next checkpoint)
@@ -245,8 +360,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Get total number of examples in the dataset.
 
-        For example-level sharding, returns the size of this shard.
-        For file-level sharding, returns the total across assigned files.
+        Accounts for virtual splits and sharding:
+        - Virtual split: Returns slice size
+        - Example-level sharding: Returns shard size within split
+        - File-level sharding: Returns total across assigned files within split
 
         Caches the result for efficiency.
         """
@@ -254,11 +371,12 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             return self._total_examples
 
         # For example-level sharding, length is determined by shard boundaries
+        # (which are relative to the split if one exists)
         if self._shard_start_idx is not None and self._shard_end_idx is not None:
             self._total_examples = self._shard_end_idx - self._shard_start_idx
             return self._total_examples
 
-        # For file-level sharding or no sharding, count examples in assigned files
+        # Count examples in assigned files
         files = self._get_files_for_shard()
         total = 0
 
@@ -266,8 +384,15 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             ds = Dataset.from_file(arrow_file)
             total += len(ds)
 
-        self._total_examples = total
-        return total
+        # Apply virtual split if present
+        if self._split_start_idx is not None or self._split_end_idx is not None:
+            split_start = self._split_start_idx if self._split_start_idx is not None else 0
+            split_end = self._split_end_idx if self._split_end_idx is not None else total
+            self._total_examples = split_end - split_start
+        else:
+            self._total_examples = total
+
+        return self._total_examples
 
     def state_dict(self) -> Dict[str, Any]:
         """
@@ -281,6 +406,8 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             - shard_config: Sharding configuration (if any)
             - arrow_files: List of Arrow file paths
             - shuffled_files: Shuffled file order (if shuffled)
+            - split_start_idx: Start index for virtual split (if any)
+            - split_end_idx: End index for virtual split (if any)
             - shard_start_idx: Start index for example-level sharding (if any)
             - shard_end_idx: End index for example-level sharding (if any)
         """
@@ -291,6 +418,8 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             "shard_config": self._shard_config,
             "arrow_files": self.arrow_files,
             "shuffled_files": self._shuffled_files,
+            "split_start_idx": self._split_start_idx,
+            "split_end_idx": self._split_end_idx,
             "shard_start_idx": self._shard_start_idx,
             "shard_end_idx": self._shard_end_idx,
         }
@@ -314,6 +443,8 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._shard_config = state_dict.get("shard_config")
         self.arrow_files = state_dict["arrow_files"]
         self._shuffled_files = state_dict.get("shuffled_files")
+        self._split_start_idx = state_dict.get("split_start_idx")
+        self._split_end_idx = state_dict.get("split_end_idx")
         self._shard_start_idx = state_dict.get("shard_start_idx")
         self._shard_end_idx = state_dict.get("shard_end_idx")
 

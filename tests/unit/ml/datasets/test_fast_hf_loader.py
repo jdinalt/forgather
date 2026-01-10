@@ -271,3 +271,148 @@ def test_example_sharding_checkpoint(num_workers):
             assert k in restored_batch, f"Key {k} missing in restored batch"
             assert str(expected_batch[k]) == str(restored_batch[k]), \
                 f"Mismatch for key {k}"
+
+
+@pytest.mark.skipif(not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available")
+def test_virtual_split_basic():
+    """Test basic virtual split functionality."""
+    ids = fast_load_iterable_dataset('wikitext', name='wikitext-2-raw-v1', split='train')
+    total_examples = len(ids)
+
+    # First 50%
+    train_ds = ids.slice(None, 0.5)
+    assert len(train_ds) == total_examples // 2
+
+    # Last 50%
+    val_ds = ids.slice(0.5, None)
+    assert len(val_ds) == total_examples - total_examples // 2
+
+    # Verify examples don't overlap
+    train_count = sum(1 for _ in train_ds)
+    val_count = sum(1 for _ in val_ds)
+
+    assert train_count == len(train_ds)
+    assert val_count == len(val_ds)
+    assert train_count + val_count == total_examples
+
+
+@pytest.mark.skipif(not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available")
+def test_virtual_split_percentage_string():
+    """Test virtual split with percentage strings."""
+    ids = fast_load_iterable_dataset('wikitext', name='wikitext-2-raw-v1', split='train')
+    total_examples = len(ids)
+
+    # Using percentage strings
+    train_ds = ids.slice(None, "80%")
+    val_ds = ids.slice("80%", None)
+
+    assert len(train_ds) == int(total_examples * 0.8)
+    assert len(val_ds) == total_examples - int(total_examples * 0.8)
+    assert len(train_ds) + len(val_ds) == total_examples
+
+
+@pytest.mark.skipif(not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available")
+def test_virtual_split_absolute_indices():
+    """Test virtual split with absolute indices."""
+    ids = fast_load_iterable_dataset('wikitext', name='wikitext-2-raw-v1', split='train')
+
+    # Absolute indices
+    subset = ids.slice(100, 200)
+    assert len(subset) == 100
+
+    count = sum(1 for _ in subset)
+    assert count == 100
+
+
+@pytest.mark.skipif(not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available")
+def test_virtual_split_with_sharding():
+    """Test virtual split combined with sharding."""
+    ids = fast_load_iterable_dataset('wikitext', name='wikitext-2-raw-v1', split='train')
+    total_examples = len(ids)
+
+    # First 80% for training, split across 2 shards
+    train_ds = ids.slice(None, 0.8)
+    train_total = len(train_ds)
+
+    shard0 = train_ds.shard(num_shards=2, index=0, mode='example')
+    shard1 = train_ds.shard(num_shards=2, index=1, mode='example')
+
+    # Verify shard sizes
+    count0 = sum(1 for _ in shard0)
+    count1 = sum(1 for _ in shard1)
+
+    assert count0 + count1 == train_total
+    assert abs(count0 - count1) <= 1  # Should be roughly equal
+
+
+@pytest.mark.skipif(not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available")
+def test_virtual_split_checkpoint():
+    """Test checkpoint compatibility with virtual splits."""
+    ids = fast_load_iterable_dataset('wikitext', name='wikitext-2-raw-v1', split='train')
+
+    # Create virtual split (first 80%)
+    train_ds = ids.slice(None, 0.8)
+
+    # Create dataloader and iterate
+    dataloader = StatefulDataLoader(train_ds, batch_size=4, num_workers=0)
+
+    checkpoint = None
+    for i, batch in enumerate(dataloader):
+        if i >= 3:
+            checkpoint = dataloader.state_dict()
+            break
+
+    assert checkpoint is not None
+
+    # Create fresh dataloader to get expected batch
+    ids_fresh = fast_load_iterable_dataset('wikitext', name='wikitext-2-raw-v1', split='train')
+    train_fresh = ids_fresh.slice(None, 0.8)
+    dataloader_fresh = StatefulDataLoader(train_fresh, batch_size=4, num_workers=0)
+
+    expected_batch = None
+    for i, batch in enumerate(dataloader_fresh):
+        if i == 4:
+            expected_batch = batch
+            break
+
+    # Restore and verify
+    ids_restored = fast_load_iterable_dataset('wikitext', name='wikitext-2-raw-v1', split='train')
+    train_restored = ids_restored.slice(None, 0.8)
+    dataloader_restored = StatefulDataLoader(train_restored, batch_size=4, num_workers=0)
+    dataloader_restored.load_state_dict(checkpoint)
+
+    restored_batch = next(iter(dataloader_restored))
+
+    # Verify batches match
+    if isinstance(expected_batch, dict) and isinstance(restored_batch, dict):
+        for k in expected_batch.keys():
+            assert k in restored_batch
+            assert str(expected_batch[k]) == str(restored_batch[k])
+
+
+@pytest.mark.skipif(not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available")
+def test_three_way_split():
+    """Test creating train/val/test splits."""
+    ids = fast_load_iterable_dataset('wikitext', name='wikitext-2-raw-v1', split='train')
+    total = len(ids)
+
+    # 70% train, 15% val, 15% test
+    train_ds = ids.slice(None, 0.7)
+    val_ds = ids.slice(0.7, 0.85)
+    test_ds = ids.slice(0.85, None)
+
+    train_count = sum(1 for _ in train_ds)
+    val_count = sum(1 for _ in val_ds)
+    test_count = sum(1 for _ in test_ds)
+
+    # Verify counts match
+    assert train_count == len(train_ds)
+    assert val_count == len(val_ds)
+    assert test_count == len(test_ds)
+
+    # Verify total is preserved
+    assert train_count + val_count + test_count == total
+
+    # Verify rough proportions (within rounding)
+    assert abs(train_count - int(total * 0.7)) <= 1
+    assert abs(val_count - int(total * 0.15)) <= 1

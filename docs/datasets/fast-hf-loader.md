@@ -44,6 +44,39 @@ for example in ids:
     ...
 ```
 
+### Virtual Splits (Train/Val/Test)
+
+Create train/val/test splits without copying data:
+
+```python
+from fast_hf_loader_simple import fast_load_iterable_dataset
+
+# Load full dataset
+ids = fast_load_iterable_dataset("dataset", "config", split="train")
+
+# Create train/val/test splits (70%/15%/15%)
+train_ds = ids.slice(None, 0.7)        # First 70%
+val_ds = ids.slice(0.7, 0.85)          # Next 15%
+test_ds = ids.slice(0.85, None)        # Last 15%
+
+# Or using percentage strings
+train_ds = ids.slice(None, "80%")      # First 80%
+val_ds = ids.slice("80%", None)        # Last 20%
+
+# Or absolute indices
+subset = ids.slice(1000, 2000)         # Examples 1000-1999
+
+# Combine with shuffling and sharding
+train_ds = ids.shuffle(seed=42).slice(None, 0.8)
+train_shard = train_ds.shard(num_shards=world_size, index=rank)
+```
+
+**Benefits:**
+- No data duplication - virtual slicing is zero-copy
+- Works with shuffling and sharding
+- Compatible with checkpoint resumption
+- Flexible indexing: percentages, absolute indices, or percentage strings
+
 ### With StatefulDataLoader Checkpointing
 
 ```python
@@ -108,6 +141,12 @@ for step, batch in enumerate(dataloader, start=checkpoint['step']+1):
 - Shuffles Arrow file order for randomization
 - More efficient than example-level shuffling
 - 234 Arrow files = 234 natural shards
+
+✅ **Virtual Splits**
+- Create train/val/test splits without copying data
+- Support percentage (0.8 or "80%") and absolute indexing
+- Zero-copy slicing for memory efficiency
+- Compatible with shuffling, sharding, and checkpointing
 
 ✅ **Flexible Sharding for DDP**
 - File-level sharding: Each rank gets different Arrow files (efficient)
@@ -220,11 +259,12 @@ python test_correct_comparison.py
 All tests pass, confirming:
 - ✅ Instant loading works
 - ✅ Shuffling works
+- ✅ Virtual splits work (percentage, absolute, train/val/test)
 - ✅ File-level and example-level sharding work
 - ✅ Auto mode selects appropriate sharding
 - ✅ Multi-worker works
 - ✅ Checkpointing works with num_workers=0, 1, 2, etc.
-- ✅ Checkpointing works with both sharding modes
+- ✅ Checkpointing works with both sharding modes and virtual splits
 
 ## API Reference
 
@@ -251,12 +291,16 @@ Iterable dataset with checkpointing support.
 
 **Methods:**
 - `.shuffle(seed=None)`: Shuffle Arrow file order
+- `.slice(start, end)`: Create virtual split (train/val/test)
+  - `start`: Start index - int, float (percentage), string ("80%"), or None
+  - `end`: End index - int, float (percentage), string ("80%"), or None
+  - Returns new dataset with virtual split applied
 - `.shard(num_shards, index, mode='auto')`: Shard for DDP
   - `mode='auto'`: Auto-select file or example-level sharding
   - `mode='file'`: File-level sharding (efficient, requires num_shards ≤ num_files)
   - `mode='example'`: Example-level sharding (works with any num_shards)
 - `.map(function, batched=False)`: Lazy transformations
-- `.__len__()`: Total examples (cached, accounts for sharding)
+- `.__len__()`: Total examples (cached, accounts for splits and sharding)
 - `.state_dict()`: Get checkpoint state
 - `.load_state_dict(state_dict)`: Restore from checkpoint
 
@@ -300,6 +344,7 @@ See `CHECKPOINT_GUIDE.md` for complete training examples with:
 This implementation provides:
 - 20 minutes → <1 second dataset loading
 - Hours → <1 second checkpoint resumption
+- Virtual splits for train/val/test without data copying
 - Flexible sharding (file-level or example-level)
 - Full DDP and multi-worker support
 - Production-ready for long-running training jobs
