@@ -19,6 +19,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Metadata version - increment when index format changes
+METADATA_VERSION = 2  # v2: Added per-file example counts and version check
+
 
 class SimpleArrowIterableDataset(TorchIterableDataset):
     """
@@ -33,9 +36,11 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
     - Compatible with torchdata.stateful_dataloader.StatefulDataLoader
     """
 
-    def __init__(self, arrow_files: List[str]):
+    def __init__(self, arrow_files: List[str], file_lengths: Optional[List[int]] = None):
         self.arrow_files = arrow_files
+        self.file_lengths = file_lengths  # Per-file example counts (if available)
         self._shuffled_files = None
+        self._shuffled_lengths = None  # Parallel to _shuffled_files
         self._shard_config = None  # (num_shards, shard_index, shard_mode)
 
         # Checkpoint state
@@ -58,16 +63,27 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         import random
 
-        # Shuffle Arrow file order
-        shuffled_files = self.arrow_files.copy()
-        rng = random.Random(seed)
-        rng.shuffle(shuffled_files)
+        # Shuffle Arrow file order (and lengths in parallel)
+        if self.file_lengths:
+            # Shuffle files and lengths together
+            paired = list(zip(self.arrow_files, self.file_lengths))
+            rng = random.Random(seed)
+            rng.shuffle(paired)
+            shuffled_files, shuffled_lengths = zip(*paired)
+            shuffled_files = list(shuffled_files)
+            shuffled_lengths = list(shuffled_lengths)
+        else:
+            shuffled_files = self.arrow_files.copy()
+            shuffled_lengths = None
+            rng = random.Random(seed)
+            rng.shuffle(shuffled_files)
 
         # Create new instance with shuffled files
-        new_dataset = SimpleArrowIterableDataset(shuffled_files)
+        new_dataset = SimpleArrowIterableDataset(shuffled_files, shuffled_lengths)
         new_dataset._shard_config = self._shard_config
         new_dataset._shuffle_seed = seed
         new_dataset._shuffled_files = shuffled_files
+        new_dataset._shuffled_lengths = shuffled_lengths
         new_dataset._split_start_idx = self._split_start_idx
         new_dataset._split_end_idx = self._split_end_idx
         return new_dataset
@@ -134,8 +150,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         if self._split_start_idx is not None or self._split_end_idx is not None:
             # Already has a split, get the original total
             # This is tricky - we need to temporarily clear the split
-            temp_dataset = SimpleArrowIterableDataset(self.arrow_files)
+            temp_dataset = SimpleArrowIterableDataset(self.arrow_files, self.file_lengths)
             temp_dataset._shuffled_files = self._shuffled_files
+            temp_dataset._shuffled_lengths = self._shuffled_lengths
             total_examples = len(temp_dataset)
         else:
             total_examples = len(self)
@@ -153,8 +170,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             raise ValueError(f"Start index {start_idx} must be < end index {end_idx}")
 
         # Create new dataset with split
-        new_dataset = SimpleArrowIterableDataset(self.arrow_files)
+        new_dataset = SimpleArrowIterableDataset(self.arrow_files, self.file_lengths)
         new_dataset._shuffled_files = self._shuffled_files
+        new_dataset._shuffled_lengths = self._shuffled_lengths
         new_dataset._shuffle_seed = self._shuffle_seed
         new_dataset._shard_config = self._shard_config
         new_dataset._split_start_idx = start_idx
@@ -185,8 +203,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             - Divides total examples evenly across shards
             - Slightly more overhead during iteration
         """
-        new_dataset = SimpleArrowIterableDataset(self.arrow_files)
+        new_dataset = SimpleArrowIterableDataset(self.arrow_files, self.file_lengths)
         new_dataset._shuffled_files = self._shuffled_files
+        new_dataset._shuffled_lengths = self._shuffled_lengths
         new_dataset._shuffle_seed = self._shuffle_seed
 
         # Determine sharding mode
@@ -378,11 +397,24 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
         # Count examples in assigned files
         files = self._get_files_for_shard()
-        total = 0
 
-        for arrow_file in files:
-            ds = Dataset.from_file(arrow_file)
-            total += len(ds)
+        # Use cached file lengths if available (much faster!)
+        if self.file_lengths is not None:
+            # Get lengths for the files we're using
+            lengths = self._shuffled_lengths if self._shuffled_lengths else self.file_lengths
+
+            # For file-level sharding, sum lengths of assigned files
+            if self._shard_config and self._shard_config[2] == 'file':
+                num_shards, shard_index = self._shard_config[0], self._shard_config[1]
+                total = sum(lengths[idx] for idx in range(len(lengths)) if idx % num_shards == shard_index)
+            else:
+                total = sum(lengths)
+        else:
+            # Fallback: memory-map each file (slower)
+            total = 0
+            for arrow_file in files:
+                ds = Dataset.from_file(arrow_file)
+                total += len(ds)
 
         # Apply virtual split if present
         if self._split_start_idx is not None or self._split_end_idx is not None:
@@ -417,7 +449,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             "shuffle_seed": self._shuffle_seed,
             "shard_config": self._shard_config,
             "arrow_files": self.arrow_files,
+            "file_lengths": self.file_lengths,
             "shuffled_files": self._shuffled_files,
+            "shuffled_lengths": self._shuffled_lengths,
             "split_start_idx": self._split_start_idx,
             "split_end_idx": self._split_end_idx,
             "shard_start_idx": self._shard_start_idx,
@@ -442,7 +476,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._shuffle_seed = state_dict.get("shuffle_seed")
         self._shard_config = state_dict.get("shard_config")
         self.arrow_files = state_dict["arrow_files"]
+        self.file_lengths = state_dict.get("file_lengths")
         self._shuffled_files = state_dict.get("shuffled_files")
+        self._shuffled_lengths = state_dict.get("shuffled_lengths")
         self._split_start_idx = state_dict.get("split_start_idx")
         self._split_end_idx = state_dict.get("split_end_idx")
         self._shard_start_idx = state_dict.get("shard_start_idx")
@@ -503,9 +539,11 @@ class FastDatasetLoaderSimple:
             return [df['filename'] for df in dataset_obj._data_files]
         return None
 
-    def _save_index(self, config_hash: str, arrow_files: list, metadata: Dict[str, Any]):
+    def _save_index(self, config_hash: str, arrow_files: list, file_lengths: list, metadata: Dict[str, Any]):
         index_data = {
+            "version": METADATA_VERSION,
             "arrow_files": arrow_files,
+            "file_lengths": file_lengths,
             "metadata": metadata,
             "indexed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -518,8 +556,20 @@ class FastDatasetLoaderSimple:
         index_file = self._get_index_file(config_hash)
         if not index_file.exists():
             return None
+
         with open(index_file, 'r') as f:
-            return json.load(f)
+            index_data = json.load(f)
+
+        # Check version - force reindex if mismatch
+        stored_version = index_data.get("version", 1)  # Default to v1 if missing
+        if stored_version != METADATA_VERSION:
+            logger.info(
+                f"Index version mismatch (stored: v{stored_version}, current: v{METADATA_VERSION}). "
+                f"Forcing reindex..."
+            )
+            return None
+
+        return index_data
 
     def load_iterable(
         self,
@@ -541,6 +591,7 @@ class FastDatasetLoaderSimple:
         if index_data is not None:
             # Fast path: create iterable from indexed Arrow files
             arrow_files = index_data['arrow_files']
+            file_lengths = index_data.get('file_lengths')  # May be None for old indices
             metadata = index_data['metadata']
 
             if all(Path(f).exists() for f in arrow_files):
@@ -551,7 +602,7 @@ class FastDatasetLoaderSimple:
                     print(f"Split: {split}")
 
                 # Create simple iterable dataset (INSTANT!)
-                iterable_ds = SimpleArrowIterableDataset(arrow_files)
+                iterable_ds = SimpleArrowIterableDataset(arrow_files, file_lengths)
 
                 elapsed = time.time() - start_time
 
@@ -594,15 +645,26 @@ class FastDatasetLoaderSimple:
             num_files = len(arrow_files)
             print(f"✓ Found {num_files} Arrow file(s) in HF cache")
 
+            # Compute per-file example counts
+            print(f"Computing per-file example counts...")
+            file_lengths = []
+            for arrow_file in arrow_files:
+                ds_file = Dataset.from_file(arrow_file)
+                file_lengths.append(len(ds_file))
+
+            total_examples = sum(file_lengths)
+            print(f"✓ Total examples: {total_examples:,}")
+
             metadata = {
                 "dataset_path": path,
                 "dataset_name": name,
                 "split": split,
                 "load_time": load_time,
                 "num_arrow_files": num_files,
+                "total_examples": total_examples,
             }
 
-            self._save_index(config_hash, arrow_files, metadata)
+            self._save_index(config_hash, arrow_files, file_lengths, metadata)
 
             print(f"✓ Index saved")
             print(f"  Next load will be instant!")
@@ -613,7 +675,7 @@ class FastDatasetLoaderSimple:
             print(f"  Data size: {size_gb:.2f} GB")
 
             # Return as simple iterable (INSTANT!)
-            return SimpleArrowIterableDataset(arrow_files)
+            return SimpleArrowIterableDataset(arrow_files, file_lengths)
 
         else:
             logger.warning("Could not find Arrow files")

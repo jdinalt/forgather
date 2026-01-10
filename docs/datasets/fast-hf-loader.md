@@ -20,7 +20,7 @@
 ### Basic Loading
 
 ```python
-from fast_hf_loader_simple import fast_load_iterable_dataset
+from forgather.ml.datasets import fast_load_iterable_dataset
 
 # Load dataset (instant after first time)
 ids = fast_load_iterable_dataset(
@@ -172,14 +172,17 @@ for step, batch in enumerate(dataloader, start=checkpoint['step']+1):
 
 1. Calls `load_dataset()` to load dataset normally
 2. Extracts Arrow file paths from HF cache
-3. Saves file paths to index (~1 KB)
-4. Returns `SimpleArrowIterableDataset`
+3. Computes per-file example counts (for fast `len()` later)
+4. Saves file paths, lengths, and metadata version to index
+5. Returns `SimpleArrowIterableDataset`
 
 ### Instant Loading (Subsequent Loads)
 
-1. Reads Arrow file paths from index
-2. Creates `SimpleArrowIterableDataset` instantly
-3. Memory-maps Arrow files on demand (zero-copy)
+1. Reads index and checks metadata version
+2. If version mismatch, automatically reindexes (ensures compatibility)
+3. Creates `SimpleArrowIterableDataset` with cached file lengths
+4. `len()` uses cached counts - no file access needed!
+5. Memory-maps Arrow files on demand during iteration (zero-copy)
 
 ### Checkpointing
 
@@ -335,7 +338,9 @@ See `CHECKPOINT_GUIDE.md` for complete training examples with:
 ## Architecture
 
 - **No copying**: Memory-maps Arrow files from HF cache
-- **No expensive operations**: Just file path lookups
+- **Cached file lengths**: Per-file example counts cached in index for O(1) `len()`
+- **Metadata versioning**: Automatic reindex when format changes
+- **No expensive operations**: File access only during iteration, not for metadata
 - **Minimal state**: Checkpoint is ~1 KB
 - **Standard protocol**: Compatible with PyTorch ecosystem
 
