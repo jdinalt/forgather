@@ -12,6 +12,7 @@ from .fast_hf_loader import (
     fast_load_iterable_dataset,
     get_default_loader,
 )
+from .interleaved import InterleavedDataset, interleave_datasets
 
 __all__ = [
     "IterableDatasetWithLength",
@@ -25,4 +26,7 @@ __all__ = [
     "FastDatasetLoaderSimple",
     "SimpleArrowIterableDataset",
     "get_default_loader",
+    # Interleaving
+    "interleave_datasets",
+    "InterleavedDataset",
 ]
