@@ -223,6 +223,74 @@ train_dataset: !singleton:forgather.ml.datasets:interleave_datasets
 - Example: `[1, 1]` = 50/50, `[7, 3]` = 70/30
 - Uses seed for reproducibility
 
+**Dynamic Probabilities** (probabilities=callable):
+- Accepts callable function for dynamic weight computation
+- Function called each iteration with current state
+- Enables advanced patterns like curriculum learning and balanced exhaustion
+- Signature: `(step, datasets, examples_per_dataset, exhausted) -> List[float]`
+
+### Dynamic Probability Functions
+
+The `probabilities` parameter can accept a callable function for computing weights dynamically based on training progress.
+
+**Balanced Exhaustion with `balance_remaining_examples`:**
+
+The built-in `balance_remaining_examples` function weights datasets by their estimated remaining examples, encouraging all datasets to finish at approximately the same time:
+
+```python
+from forgather.ml.datasets import interleave_datasets, balance_remaining_examples
+
+# Datasets will be sampled proportionally to remaining examples
+interleaved = interleave_datasets(
+    [ds1, ds2, ds3],
+    probabilities=balance_remaining_examples,
+    seed=42,
+    stopping_strategy="all_exhausted"
+)
+```
+
+**How it works:**
+- Computes remaining examples: `total_length - examples_consumed`
+- Assigns weight proportional to remaining count
+- Dataset with more remaining gets sampled more frequently
+- All datasets finish at approximately the same time
+
+**Curriculum Learning with Custom Functions:**
+
+Create custom probability functions for curriculum learning, where the data distribution changes over training:
+
+```python
+def curriculum_probabilities(step, datasets, examples_per_dataset, exhausted):
+    """Gradually transition from easy (ds0) to hard (ds1) examples."""
+    if step < 10000:
+        # First 10k steps: 80% easy, 20% hard
+        return [0.8, 0.2]
+    elif step < 50000:
+        # Transition period: gradually shift weights
+        progress = (step - 10000) / 40000.0  # 0 to 1
+        easy_weight = 0.8 - 0.6 * progress   # 0.8 → 0.2
+        hard_weight = 0.2 + 0.6 * progress   # 0.2 → 0.8
+        return [easy_weight, hard_weight]
+    else:
+        # After 50k steps: 20% easy, 80% hard
+        return [0.2, 0.8]
+
+interleaved = interleave_datasets(
+    [easy_dataset, hard_dataset],
+    probabilities=curriculum_probabilities,
+    seed=42
+)
+```
+
+**Function Parameters:**
+- `step` (int): Current iteration count (starts at 0)
+- `datasets` (List): List of child datasets (for checking lengths, etc.)
+- `examples_per_dataset` (List[int]): Number of examples consumed from each dataset
+- `exhausted` (List[bool]): Whether each dataset is exhausted
+
+**Function Returns:**
+- `List[float]`: Weights for each dataset (will be normalized automatically)
+
 ### Stopping Strategies
 
 **first_exhausted** (Default - Undersampling):
