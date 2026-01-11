@@ -1,0 +1,55 @@
+-- extends "datasets/dataset_type.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Small LM Interleaved"
+    -- set ns.config_description = "Interleave all Small-LM datasets"
+    -- set ns.main_feature = "text"
+
+[main_body]
+.define: &tokenizer !var "tokenizer"
+
+    [pp_kwargs]
+.define: &pp_kwargs !dict
+
+    [fineweb]
+.define: &fineweb !call:forgather:from_project
+    <<: &dataset_args
+        preprocess_args: !var "preprocess_args"
+        tokenizer: *tokenizer
+        pp_kwargs: *pp_kwargs
+    project_dir: "{{ project_dir }}"
+    config_template: "smollm-corpus/fineweb-edu-dedup.yaml"
+    targets: [ "train_dataset", "eval_dataset", "test_dataset" ]
+
+    [cosmopedia]
+.define: &cosmopedia !call:forgather:from_project
+    <<: *dataset_args
+    project_dir: "{{ project_dir }}"
+    config_template: "smollm-corpus/cosmopedia-v2.yaml"
+    targets: [ "train_dataset", "eval_dataset", "test_dataset" ]
+
+    [train_dataset]
+train_dataset: &train_dataset !singleton:forgather.ml.datasets:interleave_datasets
+    <<: &interleave_args
+        # More accurately, these are weights. Not need to sum to 1.
+        probabilities: [ 1, 1 ]
+        seed: 42
+        stopping_strategy: "first_exhausted"
+    datasets:
+        - !call:getitem [ *fineweb, 'train_dataset' ]
+        - !call:getitem [ *cosmopedia, 'train_dataset' ]
+
+    [eval_dataset]
+eval_dataset: !singleton:forgather.ml.datasets:interleave_datasets
+    <<: *interleave_args
+    datasets:
+        - !call:getitem [ *fineweb, 'eval_dataset' ]
+        - !call:getitem [ *cosmopedia, 'eval_dataset' ]
+
+    [test_dataset]
+test_dataset: !singleton:forgather.ml.datasets:interleave_datasets
+    <<: *interleave_args
+    datasets:
+        - !call:getitem [ *fineweb, 'test_dataset' ]
+        - !call:getitem [ *cosmopedia, 'test_dataset' ]

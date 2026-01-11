@@ -1,0 +1,30 @@
+-- macro map_function(max_length, stride)
+## Note: Values in "preprocess_args" override the defaults specified here.
+.define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
+    max_length: {{ max_length | default(512)}}
+    overflow: True
+    packed: True
+    shuffle_output: True
+    stride: {{ stride | default(0)}}
+    packing_strategy: "best_fit"
+    min_len: 16
+    add_bos: True
+    add_eos: True
+-- endmacro
+
+
+-- macro map_kwargs()
+    batch_size: 4096
+-- endmacro
+
+
+-- macro dynamic_args()
+    max_length:
+        names: "--max-length"
+        type: "int"
+        help: "Maximum length of output sequences."
+    stride:
+        names: "--stride"
+        type: "int"
+        help: "Number of tokens to repeat from previous overflowing example."
+-- endmacro

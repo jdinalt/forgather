@@ -1,0 +1,57 @@
+-- extends "datasets/tokenized_dataset.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "SmallLM Base"
+    -- set ns.config_description = "Base project template for Small LM datasets"
+    -- set ns.source = "https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus"
+    -- set ns.dataset_id = "HuggingFaceTB/smollm-corpus"
+
+    ## Set in configs
+    -- set ns.dataset_name = ""
+
+[map_function]
+.define: &map_function !partial:forgather.ml.datasets:default_tokenize_map_fn
+
+[map_kwargs]
+.define: &map_kwargs !dict
+    batch_size: 32
+
+[train_dataset_split]
+train_dataset_split: &train_dataset_split !singleton:forgather.ml.datasets:fast_load_iterable_dataset
+    <<: &datasets_split_args
+        path: {{ ns.dataset_id }}
+        name: {{ ns.dataset_name  }}
+    split: "train[10000:]"
+
+[validation_dataset_split]
+validation_dataset_split: &validation_dataset_split !singleton:forgather.ml.datasets:fast_load_iterable_dataset
+    <<: *datasets_split_args
+    split: "train[0:1000]"
+
+[test_dataset_split]
+test_dataset_split: &test_dataset_split !singleton:forgather.ml.datasets:fast_load_iterable_dataset
+    <<: *datasets_split_args
+    split: "train[1000:10000]"
+
+[train_dataset]
+train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset
+    <<: &dataset_args
+        tokenizer: *tokenizer
+        map_fn: *map_function
+        fn_kwargs: !var "preprocess_args"
+        map_kwargs: *map_kwargs
+    dataset: *train_dataset_split
+    desc: "Tokenizing train"
+    
+[eval_dataset]
+eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset
+    <<: *dataset_args
+    dataset: *validation_dataset_split
+    desc: "Tokenizing eval"
+
+[test_dataset]
+test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset
+    <<: *dataset_args
+    dataset: *test_dataset_split
+    desc: "Tokenizing test"
