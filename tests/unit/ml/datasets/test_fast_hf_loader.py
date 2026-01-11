@@ -1279,3 +1279,108 @@ def test_interleave_with_map():
     # Check that prefixes are applied
     for ex in examples:
         assert ex["text"].startswith("DS1:") or ex["text"].startswith("DS2:")
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_interleave_dynamic_probabilities():
+    """Test interleaving with dynamic probability function."""
+    from forgather.ml.datasets import balance_remaining_examples
+
+    # Create datasets of different lengths
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:30]"
+    )
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )
+
+    # Use dynamic balancing function
+    combined = interleave_datasets(
+        [ds1, ds2],
+        probabilities=balance_remaining_examples,
+        seed=42,
+        stopping_strategy="first_exhausted",
+    )
+
+    # Collect examples
+    count = sum(1 for _ in combined)
+    assert count > 0, "Should have examples with dynamic probabilities"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_interleave_custom_probability_function():
+    """Test interleaving with custom probability function."""
+
+    # Custom function that increases weight of dataset 0 over time
+    def curriculum_probabilities(step, datasets, examples_per_dataset, exhausted):
+        """Gradually shift from dataset 1 to dataset 0."""
+        # First 50 steps: mostly dataset 1
+        # Next 50 steps: transition period
+        # After 100 steps: mostly dataset 0
+        if step < 50:
+            return [0.1, 0.9]  # 10% ds0, 90% ds1
+        elif step < 100:
+            # Smooth transition
+            progress = (step - 50) / 50.0
+            return [0.1 + 0.8 * progress, 0.9 - 0.8 * progress]
+        else:
+            return [0.9, 0.1]  # 90% ds0, 10% ds1
+
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )
+
+    combined = interleave_datasets(
+        [ds1, ds2],
+        probabilities=curriculum_probabilities,
+        seed=42,
+        stopping_strategy="first_exhausted",
+    )
+
+    # Verify it produces examples
+    count = sum(1 for _ in combined)
+    assert count > 0, "Should have examples with custom probability function"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_balance_remaining_examples_function():
+    """Test the balance_remaining_examples utility function."""
+    from forgather.ml.datasets import balance_remaining_examples
+
+    # Create mock datasets with known lengths
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:50]"
+    )  # 50 examples
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )  # 100 examples
+
+    # Simulate partway through iteration
+    examples_per_dataset = [10, 20]  # Consumed 10 from ds1, 20 from ds2
+    exhausted = [False, False]
+
+    weights = balance_remaining_examples(
+        step=30,
+        datasets=[ds1, ds2],
+        examples_per_dataset=examples_per_dataset,
+        exhausted=exhausted,
+    )
+
+    # ds1: 50 - 10 = 40 remaining
+    # ds2: 100 - 20 = 80 remaining
+    # ds2 should have higher weight (more remaining)
+    assert len(weights) == 2, "Should return 2 weights"
+    assert (
+        weights[1] > weights[0]
+    ), "Dataset with more remaining should have higher weight"
+    assert weights[0] == 40.0, "ds1 weight should be remaining examples"
+    assert weights[1] == 80.0, "ds2 weight should be remaining examples"

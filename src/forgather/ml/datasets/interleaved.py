@@ -5,7 +5,7 @@ Protocol-based implementation that works with any iterable dataset,
 not just HuggingFace datasets. Preserves efficient checkpoint protocol.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from torch.utils.data import IterableDataset as TorchIterableDataset
 
@@ -20,7 +20,11 @@ class InterleavedDataset(TorchIterableDataset):
 
     Args:
         datasets: List of datasets to interleave
-        probabilities: Sampling probabilities for each dataset (None = equal/round-robin)
+        probabilities: Sampling probabilities for each dataset. Can be:
+            - None: Round-robin (equal probability)
+            - List[float]: Static probabilities (normalized automatically)
+            - Callable: Dynamic probabilities function called each iteration
+                        Signature: (step, datasets, examples_per_dataset, exhausted) -> List[float]
         seed: Random seed for reproducible sampling
         stopping_strategy: 'first_exhausted' or 'all_exhausted'
     """
@@ -28,7 +32,7 @@ class InterleavedDataset(TorchIterableDataset):
     def __init__(
         self,
         datasets: List,
-        probabilities: Optional[List[float]] = None,
+        probabilities: Optional[Union[List[float], Callable]] = None,
         seed: Optional[int] = None,
         stopping_strategy: str = "first_exhausted",
     ):
@@ -36,23 +40,32 @@ class InterleavedDataset(TorchIterableDataset):
             raise ValueError("Cannot interleave empty list of datasets")
 
         self.datasets = datasets
-        self.probabilities = probabilities
         self.seed = seed
         self.stopping_strategy = stopping_strategy
 
-        # Validate probabilities
-        if probabilities is not None:
-            if len(probabilities) != len(datasets):
-                raise ValueError(
-                    f"Probabilities length ({len(probabilities)}) must match datasets length ({len(datasets)})"
-                )
-            if not all(p >= 0 for p in probabilities):
-                raise ValueError("All probabilities must be non-negative")
-            prob_sum = sum(probabilities)
-            if prob_sum == 0:
-                raise ValueError("At least one probability must be > 0")
-            # Normalize probabilities
-            self.probabilities = [p / prob_sum for p in probabilities]
+        # Handle probabilities (static list or dynamic callable)
+        self._probabilities_callable = callable(probabilities)
+        if self._probabilities_callable:
+            # Store the callable function
+            self._probabilities_fn = probabilities
+            self.probabilities = None  # Will be computed dynamically
+        else:
+            self._probabilities_fn = None
+            self.probabilities = probabilities
+
+            # Validate static probabilities
+            if probabilities is not None:
+                if len(probabilities) != len(datasets):
+                    raise ValueError(
+                        f"Probabilities length ({len(probabilities)}) must match datasets length ({len(datasets)})"
+                    )
+                if not all(p >= 0 for p in probabilities):
+                    raise ValueError("All probabilities must be non-negative")
+                prob_sum = sum(probabilities)
+                if prob_sum == 0:
+                    raise ValueError("At least one probability must be > 0")
+                # Normalize probabilities
+                self.probabilities = [p / prob_sum for p in probabilities]
 
         # Validate stopping strategy
         if stopping_strategy not in ["first_exhausted", "all_exhausted"]:
@@ -79,14 +92,23 @@ class InterleavedDataset(TorchIterableDataset):
         iterators = [iter(dataset) for dataset in self.datasets]
         exhausted = [False] * len(self.datasets)
 
-        # Setup RNG if using probabilities
-        rng = random.Random(self.seed) if self.probabilities is not None else None
+        # Track examples per dataset (for dynamic probabilities and checkpointing)
+        examples_per_dataset = [0] * len(self.datasets)
+
+        # Setup RNG if using probabilities (static or dynamic)
+        use_probabilities = (
+            self.probabilities is not None or self._probabilities_callable
+        )
+        rng = random.Random(self.seed) if use_probabilities else None
 
         # Track how many examples we've yielded (for checkpoint restoration)
         examples_yielded = 0
 
         # For round-robin, track current index
         current_idx = 0
+
+        # Track iteration step for dynamic probabilities
+        step = 0
 
         while True:
             # Check stopping condition (only for first_exhausted here)
@@ -95,14 +117,30 @@ class InterleavedDataset(TorchIterableDataset):
                     break
 
             # Choose which dataset to sample from
-            if self.probabilities is not None:
+            if use_probabilities:
                 # Probabilistic sampling from non-exhausted datasets
                 available_indices = [i for i, ex in enumerate(exhausted) if not ex]
                 if not available_indices:
                     break
 
+                # Get current probabilities (static or dynamic)
+                if self._probabilities_callable:
+                    # Call dynamic probability function
+                    current_probs = self._probabilities_fn(
+                        step, self.datasets, examples_per_dataset, exhausted
+                    )
+                    # Validate returned probabilities
+                    if len(current_probs) != len(self.datasets):
+                        raise ValueError(
+                            f"Probability function returned {len(current_probs)} values, "
+                            f"expected {len(self.datasets)}"
+                        )
+                else:
+                    # Use static probabilities
+                    current_probs = self.probabilities
+
                 # Compute probabilities for available datasets only
-                available_probs = [self.probabilities[i] for i in available_indices]
+                available_probs = [current_probs[i] for i in available_indices]
                 prob_sum = sum(available_probs)
                 if prob_sum == 0:
                     break
@@ -128,6 +166,8 @@ class InterleavedDataset(TorchIterableDataset):
             try:
                 example = next(iterators[chosen_idx])
                 examples_yielded += 1
+                examples_per_dataset[chosen_idx] += 1
+                step += 1
 
                 # Update checkpoint position
                 self._current_dataset_index = chosen_idx
@@ -250,9 +290,67 @@ class InterleavedDataset(TorchIterableDataset):
                 dataset.load_state_dict(child_state)
 
 
+def balance_remaining_examples(
+    step: int,
+    datasets: List,
+    examples_per_dataset: List[int],
+    exhausted: List[bool],
+) -> List[float]:
+    """
+    Dynamic probability function that weights datasets by estimated remaining examples.
+
+    This encourages all datasets to finish at approximately the same time by
+    giving higher weight to datasets with more remaining examples. Useful for
+    balanced multi-dataset training where you want to consume all data sources
+    proportionally.
+
+    Args:
+        step: Current iteration step (unused, but part of signature)
+        datasets: List of child datasets
+        examples_per_dataset: Number of examples already yielded from each dataset
+        exhausted: Boolean list indicating which datasets are exhausted
+
+    Returns:
+        List of weights (one per dataset) for probabilistic sampling
+
+    Example:
+        >>> interleaved = interleave_datasets(
+        ...     [ds1, ds2, ds3],
+        ...     probabilities=balance_remaining_examples,
+        ...     seed=42
+        ... )
+    """
+    weights = []
+    for i, (dataset, count, is_exhausted) in enumerate(
+        zip(datasets, examples_per_dataset, exhausted)
+    ):
+        if is_exhausted:
+            # Exhausted dataset gets zero weight
+            weights.append(0.0)
+        else:
+            # Estimate remaining examples
+            if hasattr(dataset, "__len__"):
+                try:
+                    total_length = len(dataset)
+                    remaining = max(0, total_length - count)
+                    weights.append(float(remaining))
+                except (TypeError, AttributeError):
+                    # len() failed, use equal weight
+                    weights.append(1.0)
+            else:
+                # No length info, use equal weight
+                weights.append(1.0)
+
+    # Handle case where all weights are 0
+    if sum(weights) == 0:
+        weights = [1.0] * len(weights)
+
+    return weights
+
+
 def interleave_datasets(
     datasets: List,
-    probabilities: Optional[List[float]] = None,
+    probabilities: Optional[Union[List[float], Callable]] = None,
     seed: Optional[int] = None,
     stopping_strategy: str = "first_exhausted",
 ):
@@ -264,7 +362,12 @@ def interleave_datasets(
 
     Args:
         datasets: List of datasets to interleave (any iterable with optional state_dict/load_state_dict)
-        probabilities: Sampling probabilities for each dataset (None = equal/round-robin)
+        probabilities: Sampling probabilities for each dataset. Can be:
+            - None: Round-robin (equal probability)
+            - List[float]: Static probabilities (normalized automatically)
+            - Callable: Dynamic probabilities function called each iteration
+                        Signature: (step, datasets, examples_per_dataset, exhausted) -> List[float]
+                        See balance_remaining_examples() for example implementation
         seed: Random seed for reproducible sampling
         stopping_strategy: 'first_exhausted' or 'all_exhausted'
 
