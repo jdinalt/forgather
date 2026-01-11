@@ -1054,8 +1054,8 @@ class Trainer(BaseTrainer):
             input_dict["return_hidden_states"] = True
         with self.loss_fn.no_rescale():
             outputs = self.model(**input_dict)
-        logits = logits_from_outputs(outputs)
-        loss = self.loss_fn(logits, labels)
+            logits = logits_from_outputs(outputs)
+            loss = self.loss_fn(logits, labels)
 
         loss = self._distributed_loss(loss.detach())
         return {
