@@ -12,7 +12,7 @@
 
     ## The configuration in the dataset sub-project
     ## Note that this config assumes packed-sequences
-    -- set ns.dataset_config = "smollm-corpus/fineweb-edu-packed.yaml"
+    -- set ns.dataset_config = "smollm-corpus/interleaved.yaml"
 
     ## Set predefined model project to import
     -- set ns.model_project_dir = abspath(joinpath(ns.forgather_dir, "examples/models/llama/"))
@@ -28,9 +28,6 @@
     project_dir: "{{ ns.dataset_proj }}"
     config_template: "{{ ns.dataset_config }}"
     targets: [  "train_dataset", "eval_dataset" ]
-    pp_kwargs:
-        # For quick test
-        abridged: {{ abridged | default(False) }}
     preprocess_args: *datasets_preprocessor_args
     tokenizer: *tokenizer
 
@@ -69,13 +66,6 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 
 [trainer_callbacks]
     -- include 'project.logger_config'
-
-[dynamic_args]
-    == super()
-    abridged:
-        names: "--abridged"
-        action: "store_true"
-        help: "'Abridged'  length for faster loading"
 
 #-------------------- project.trainer_config --------------------
 -- extends 'trainers/trainer.yaml'
