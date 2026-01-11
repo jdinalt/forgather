@@ -86,6 +86,8 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     dataloader_num_workers: 1
     float32_matmul_precision: "high"
     default_dtype: "bfloat16"
+    resume_from_checkpoint: True
+    restore_dataset_state: False
 
 #-------------------- project.logger_config --------------------
 -- extends 'callbacks/loggers.yaml'

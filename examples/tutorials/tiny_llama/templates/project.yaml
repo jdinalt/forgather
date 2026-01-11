@@ -89,19 +89,28 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
 ## Add experiment loggers to the callbacks list.
 ## The parent creates a Tensor Board SummaryWriter, which we can use.
 
-[callback_list]
-    -- include 'prompts/tiny_stories.yaml'
-
+[callback_dependencies]
     == super()
-    ## Flex attention does not work with the TextgenCallback at present
--- if attn_implementation | default("") != "flex_attention"
+
+    [generation_config]
+generation_config: &generation_config !dict:@generation_config
+    do_sample: True
+    top_k: 20
+    temperature: 0.7
+    repetition_penalty: 1.15
+
+    [text_gen_callback_args]
+text_gen_callback_args: &text_gen_callback_args
+    summary_writer: *summary_writer
+    prompts: {{ abspath(joinpath(ns.forgather_dir, "prompts/tiny_stories.yaml")) }}
+    generation_config: *generation_config
+    max_new_tokens: 40
+    generation_steps: 2000
+
+[callback_list]
+    == super()
     ## This adds a text-generationn sample every 'generation_steps'
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
-        summary_writer: *summary_writer
-        prompts: *testprompts
-        generation_config: *generation_config
-        max_new_tokens: 40
-        generation_steps: 1000
--- endif
+        <<: *text_gen_callback_args
     # Allow remote control of the training process
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback

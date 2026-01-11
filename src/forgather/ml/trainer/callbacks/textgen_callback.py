@@ -1,7 +1,8 @@
 import os
-from typing import List
+from typing import List, Optional
 
 import torch
+import yaml
 from torch.utils.tensorboard import SummaryWriter
 from transformers import GenerationConfig, StoppingCriteria
 
@@ -62,27 +63,52 @@ class TextgenCallback(TrainerCallback):
     def __init__(
         self,
         summary_writer: SummaryWriter,
-        prompts: List[str],
-        generation_config: GenerationConfig = None,
-        generation_steps: int = None,
+        prompts: List[str] | str,
+        generation_config: Optional[dict] = None,
+        generation_steps: Optional[int] = None,
         max_new_tokens: int = 200,
     ):
+        """
+        Periodically generates and logs text from a set a prompts for subjective model evaluation
+
+        This may only trigger on model evaluation steps, which establishes the minimum interval between generations.
+
+        args:
+            summary_writer: The Tensor Board SummaryWriter to log to.
+            prompts: Either a list of prompts (List[str]) or a path to a YAML file, defining a list of prompts.
+            generation_config: A dictionary with arguments to HF GenerationConfig
+            generation_steps: The number of steps between generations. If None, it defaults to eval_steps
+            max_new_tokens: The maximum new tokens to generate for each prompt.
+        """
         super().__init__()
         self.summary_writer = summary_writer
-        self.prompts = prompts
+        if isinstance(prompts, list):
+            self.prompts = prompts
+        else:
+            if not isinstance(prompts, str):
+                raise ValueError(
+                    f"'prompts' must be List[str] | str, found {type(prompts)}"
+                )
+            with open(prompts, "r") as file:
+                self.prompts = yaml.safe_load(file)
+
+            if not isinstance(self.prompts, list):
+                raise ValueError(
+                    f"From file {prompts}, expected 'prompts' to be a list but found {type(self.prompts)}"
+                )
+
+        for s in self.prompts:
+            if not isinstance(s, str):
+                raise ValueError(
+                    f"Expected all prompts to be strings, but found {type(s)}"
+                )
 
         # To construct GenerationConfig, we need token ids from the model or tokenizer
         # We don't have these here, so defer construction until callback.
-        self.generation_config = None
-        if generation_config is not None and isinstance(
-            self.generation_config, GenerationConfig
-        ):
-            self.generation_config = generation_config
-        elif generation_config is None:
+        if generation_config is None:
             self.gen_config_args = dict(
                 do_sample=True,
                 top_k=20,
-                top_p=0.9,
                 temperature=0.7,
                 repetition_penalty=1.15,
             )
@@ -100,50 +126,45 @@ class TextgenCallback(TrainerCallback):
             return
         self.next_gen_step += self.generation_steps
         text = ""
-        for output in self.generate(args, model, processing_class):
+        for output in self.generate(args.device, model, processing_class):
             text += output + "\n\n---\n\n"
         self.summary_writer.add_text("eval-text", text, global_step=state.global_step)
         self.summary_writer.flush()
 
-    def init_gen_config(self, model):
-        self.generation_config = GenerationConfig(
-            pad_token_id=model.config.pad_token_id,
-            bos_token_id=model.config.bos_token_id,
-            eos_token_id=model.config.eos_token_id,
+    def generate(self, device, model, tokenizer):
+        generation_config = GenerationConfig(
+            eos_token_id=tokenizer.eos_token_id,
+            bos_token_id=tokenizer.bos_token_id,
+            pad_token_id=tokenizer.pad_token_id,
             **self.gen_config_args,
         )
 
-    def generate(self, args, model, processing_class):
-        if self.generation_config is None:
-            self.init_gen_config(model)
-        for prompt in self.prompts:
-            tokenizer_outputs = processing_class(
-                [prompt],
-                truncation=False,
-                return_length=True,
-                return_tensors="pt",
-                return_attention_mask=True,
-            )
+        tokenizer_outputs = tokenizer(
+            self.prompts,
+            truncation=True,
+            padding=True,
+            return_tensors="pt",
+            padding_side="left",
+        )
 
-            lengths = tokenizer_outputs["length"]
-            input_ids = tokenizer_outputs["input_ids"].to(args.device)
-            attention_mask = tokenizer_outputs["attention_mask"].to(args.device)
+        input_ids = tokenizer_outputs["input_ids"].to(device)
 
-            use_cache = getattr(model, "_supports_cache_class", False)
+        with torch.inference_mode():
             outputs = model.generate(
                 input_ids,
-                attention_mask=attention_mask,
-                generation_config=self.generation_config,
-                stopping_criteria=[EosStoppingCriteria(processing_class)],
+                generation_config=generation_config,
+                stopping_criteria=[EosStoppingCriteria(tokenizer)],
                 return_dict_in_generate=True,
-                use_cache=use_cache,
-                past_key_values=None,
+                output_scores=False,
+                tokenizer=tokenizer,
                 max_new_tokens=self.max_new_tokens,
             )
 
-            output_text = processing_class.decode(
-                outputs.sequences[0],
-                skip_special_tokens=True,
-            )
-            s = prompt + " [START] " + output_text[len(prompt) + 1 :]
+        output_text = tokenizer.batch_decode(
+            outputs.sequences,
+            skip_special_tokens=True,
+        )
+
+        for prompt, y in zip(self.prompts, output_text):
+            s = prompt + " [START] " + y[len(prompt) + 1 :]
             yield s

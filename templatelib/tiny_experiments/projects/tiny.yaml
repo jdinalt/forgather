@@ -32,12 +32,6 @@
     -- set ns.model_project_config = "4M.yaml"
     -- set ns.debug_model_project = False
 
-[pre_model_setup]
-    ## Add assets needed for text-gen sampling.
-    ## This adds a set of prompts and text-gen parameters.
-    == super()
-    -- include "prompts/tiny_stories.yaml"
-
 [datasets_preprocessor_args]
 tokenizer_args: &tokenizer_args !dict
     truncation: True
@@ -130,10 +124,17 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 [callback_dependencies]
     == super()
 
+    [generation_config]
+generation_config: &generation_config !dict:@generation_config
+    do_sample: True
+    top_k: 20
+    temperature: 0.7
+    repetition_penalty: 1.15
+
     [text_gen_callback_args]
 text_gen_callback_args: &text_gen_callback_args
     summary_writer: *summary_writer
-    prompts: *testprompts
+    prompts: {{ abspath(joinpath(ns.forgather_dir, "prompts/tiny_stories.yaml")) }}
     generation_config: *generation_config
     max_new_tokens: 40
     generation_steps: 2000
@@ -141,10 +142,8 @@ text_gen_callback_args: &text_gen_callback_args
 ## This adds a text-generationn sample every 'generation_steps'
 [callback_list]
     == super()
-    -- if attn_implementation | default("") != "flex_attention"
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         <<: *text_gen_callback_args
-    -- endif
     peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
         show_details: {{ ns.debug_memory_detials }}
         do_log: {{ log_peak_memory | default(False) }}
