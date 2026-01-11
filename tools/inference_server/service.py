@@ -197,6 +197,7 @@ class InferenceService:
                 self.model_path,
                 dtype=self.dtype,
                 device_map=self.device if self.device != "auto" else "auto",
+                attn_implementation=self.attn_implementation,
                 trust_remote_code=True,
             )
 
@@ -379,7 +380,9 @@ class InferenceService:
         # Handle EOS token - conditionally disable if ignore_eos is True
         # Check request-level ignore_eos, fall back to server-level default
         request_ignore_eos = getattr(request, "ignore_eos", None)
-        ignore_eos = request_ignore_eos if request_ignore_eos is not None else self.ignore_eos
+        ignore_eos = (
+            request_ignore_eos if request_ignore_eos is not None else self.ignore_eos
+        )
         if ignore_eos:
             # Set to -1 (impossible token ID) to prevent HF from stopping on EOS
             # Note: Setting to None doesn't work because HuggingFace fills it from model defaults
