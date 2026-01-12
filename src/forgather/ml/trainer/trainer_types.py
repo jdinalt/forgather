@@ -194,7 +194,7 @@ class MinimalTrainingArguments:
     seed: int = -1
     use_cpu: bool = False
 
-    # Not if HF trainer; number of train-batches in an epoch, when dataset does not support len()
+    # Not in HF trainer; number of train-batches in an epoch, when dataset does not support len()
     # This just becomes a relative value for book-keeping.
     epoch_train_steps: int = 100000
     max_steps: int = -1
