@@ -55,3 +55,7 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
         type: "str"
         choices: [ "eager", "sdpa", "flash_attention_2", "flex_attention" ]
         help: "Attention implementation"
+    verbose_info:
+        names: "--verbose-info"
+        action: "store_true"
+        help: "Display verbose training info on startup"
