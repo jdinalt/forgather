@@ -133,6 +133,10 @@ class ProgressCallback:
             return
         if self.use_tqdm:
             if self.train_progress_bar is not None:
+                # Update steps, if max steps changes
+                if self.train_progress_bar.total != state.max_steps:
+                    self.train_progress_bar.total = state.max_steps
+                    self.train_progress_bar.refresh()
                 self.train_progress_bar.write(
                     format_timestamp() + format_train_log(state, logs)
                 )

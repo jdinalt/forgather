@@ -56,7 +56,9 @@ from .trainer_types import (
     OptimizerT,
 )
 from .trainer_types import TrainerState as BaseTrainerState
-from .trainer_types import TrainOutput
+from .trainer_types import (
+    TrainOutput,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -815,6 +817,7 @@ class Trainer(BaseTrainer):
         """
         with set_train(self.model, False):
             total_loss = torch.zeros(1, device=self.args.device)
+            step = -1
             for step, batch in enumerate(self._dataloader_iter(self.eval_dataloader)):
                 if self.args.max_eval_steps > 0 and step >= self.args.max_eval_steps:
                     break
@@ -824,6 +827,8 @@ class Trainer(BaseTrainer):
                 assert loss is not None
                 total_loss += loss
                 self._dispatch_event("on_prediction_step")
+            assert step >= 0, "The eval dataloader did not yield any examples"
+
             metrics = {"eval_loss": (total_loss / (step + 1)).item()}
             self._dispatch_event("on_evaluate", metrics=metrics)
             return metrics
@@ -941,16 +946,14 @@ class Trainer(BaseTrainer):
         if self.args.max_steps >= 0:
             self.max_steps = min(self.args.max_steps, self.max_steps)
 
+        if self.state is not None:
+            self.state.max_steps = self.max_steps
+
     def _init_state(self) -> TrainerState:
         """
         Init public training state
         This should be retained when saving a checkpoint
         """
-
-        max_eval_steps = min(
-            self.args.max_eval_steps,
-            len(self.eval_dataloader),
-        )
 
         if self.do_train:
             assert has_batch_size(self.train_dataloader)
@@ -968,7 +971,7 @@ class Trainer(BaseTrainer):
                 # Initialize best model tracking
                 best_metric=None,
                 best_model_checkpoint=None,
-                max_eval_steps=max_eval_steps,
+                max_eval_steps=self.args.max_eval_steps,
             )
         else:
             return TrainerState(
@@ -985,7 +988,7 @@ class Trainer(BaseTrainer):
                 # Initialize best model tracking
                 best_metric=None,
                 best_model_checkpoint=None,
-                max_eval_steps=max_eval_steps,
+                max_eval_steps=self.args.max_eval_steps,
             )
 
     def _end_train_loop(
@@ -1083,6 +1086,8 @@ class Trainer(BaseTrainer):
         return metrics
 
     def _log_step(self, loss_log: list[Tensor], total_norm_log: list[Tensor]):
+        self._update_training_steps()
+
         logs = {
             "epoch": self.state.epoch,
         }
