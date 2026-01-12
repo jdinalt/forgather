@@ -35,7 +35,7 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:interleave_datase
         # More accurately, these are weights. Not need to sum to 1.
         probabilities: [ 1, 1 ]
         seed: 42
-        stopping_strategy: "first_exhausted"
+        stopping_strategy: "all_exhausted"
     datasets:
         - !call:getitem [ *fineweb, 'train_dataset' ]
         - !call:getitem [ *cosmopedia, 'train_dataset' ]

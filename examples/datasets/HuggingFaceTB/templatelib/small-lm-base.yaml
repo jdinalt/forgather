@@ -42,16 +42,13 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
         fn_kwargs: !var "preprocess_args"
         map_kwargs: *map_kwargs
     dataset: *train_dataset_split
-    desc: "Tokenizing train"
     
 [eval_dataset]
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset
     <<: *dataset_args
     dataset: *validation_dataset_split
-    desc: "Tokenizing eval"
 
 [test_dataset]
 test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset
     <<: *dataset_args
     dataset: *test_dataset_split
-    desc: "Tokenizing test"
