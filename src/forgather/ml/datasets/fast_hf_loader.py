@@ -711,11 +711,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         worker_id, num_workers = self._get_worker_info()
         files = self._get_files_for_shard()
 
-        # Further shard files among workers (for file-level sharding and multi-worker)
-        # Worker i processes files: i, i+num_workers, i+2*num_workers, ...
-        worker_files = [
-            f for idx, f in enumerate(files) if idx % num_workers == worker_id
-        ]
+        # Use all files - we'll shard at example level, not file level
+        # This ensures consistent results regardless of num_workers
+        worker_files = files
 
         # Reset checkpoint if we've completed a previous full iteration
         # This allows the dataset to be iterated multiple times
@@ -748,6 +746,39 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         split_end = (
             self._split_end_idx if self._split_end_idx is not None else float("inf")
         )
+
+        # Multi-worker sharding: shard at example level (not file level)
+        # Following PyTorch's recommendation for IterableDataset
+        # This ensures consistent results regardless of num_workers
+        # Note: Only enable for num_workers >= 2 (single worker doesn't need sharding)
+        worker_sharding_enabled = False
+        if num_workers >= 2:
+            # Compute total examples to shard (after split/shard filtering)
+            if use_virtual_split:
+                # Operating on a virtual split
+                total_examples = split_end - split_start
+                worker_split_start = split_start
+            elif use_example_sharding:
+                # Operating on an example-level shard
+                total_examples = self._shard_end_idx - self._shard_start_idx
+                worker_split_start = self._shard_start_idx
+            else:
+                # Operating on full dataset - need to compute total length
+                total_examples = self._get_original_length()
+                worker_split_start = 0
+
+            # Compute per-worker range
+            import math
+
+            per_worker = int(math.ceil(total_examples / float(num_workers)))
+            worker_start = worker_split_start + worker_id * per_worker
+            worker_end = min(worker_start + per_worker, worker_split_start + total_examples)
+
+            # Override split boundaries with worker-specific range
+            split_start = worker_start
+            split_end = worker_end
+            use_virtual_split = True  # Enable filtering by these boundaries
+            worker_sharding_enabled = True
 
         # Batch collection for batched map operations
         if self._map_batched and self._map_function is not None:
