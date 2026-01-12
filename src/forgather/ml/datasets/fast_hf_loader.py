@@ -148,6 +148,16 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._map_input_columns = None
         self._map_fn_kwargs = None
 
+        # Length estimation configuration and state
+        self.length_estimate_mode = "dynamic"  # 'static', 'dynamic', or 'exact'
+        self._reset_length_on_iter = False  # Configurable: reset counts each iteration
+        self._original_length = None  # Pre-map length (set lazily)
+        self._input_count = 0  # Examples consumed from source
+        self._output_count = 0  # Examples yielded after map
+        self._cached_exact_length = None  # Exact count after full iteration
+        self._length_invalidated = False  # Flag for operations that invalidate stats
+        self._current_batch_buffer_size = 0  # For batched maps: track pending batch
+
     def __repr__(self):
         return (
             "SimpleArrowIterableDataset: "
@@ -186,6 +196,19 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._shuffled_lengths = shuffled_lengths
         new_dataset._split_start_idx = self._split_start_idx
         new_dataset._split_end_idx = self._split_end_idx
+
+        # Inherit length estimation configuration
+        new_dataset.length_estimate_mode = self.length_estimate_mode
+        new_dataset._reset_length_on_iter = self._reset_length_on_iter
+
+        # Invalidate cached stats but preserve ratio estimate
+        new_dataset._length_invalidated = True
+        # Keep _input_count and _output_count for ratio estimate
+        new_dataset._input_count = self._input_count
+        new_dataset._output_count = self._output_count
+        # Clear exact cache since order changed
+        new_dataset._cached_exact_length = None
+
         return new_dataset
 
     def slice(self, start=None, end=None):
@@ -285,6 +308,16 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._split_start_idx = start_idx
         new_dataset._split_end_idx = end_idx
 
+        # Inherit length estimation configuration
+        new_dataset.length_estimate_mode = self.length_estimate_mode
+        new_dataset._reset_length_on_iter = self._reset_length_on_iter
+        # Don't copy counts - this is a different slice
+        new_dataset._original_length = None
+        new_dataset._input_count = 0
+        new_dataset._output_count = 0
+        new_dataset._cached_exact_length = None
+        new_dataset._length_invalidated = False
+
         # Note: Don't copy old shard boundaries - sharding should happen on the sliced dataset
         return new_dataset
 
@@ -356,6 +389,16 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 f"Invalid shard mode: {mode}. Must be 'auto', 'file', or 'example'."
             )
 
+        # Inherit length estimation configuration
+        new_dataset.length_estimate_mode = self.length_estimate_mode
+        new_dataset._reset_length_on_iter = self._reset_length_on_iter
+        # Don't copy counts - this is a different shard
+        new_dataset._original_length = None
+        new_dataset._input_count = 0
+        new_dataset._output_count = 0
+        new_dataset._cached_exact_length = None
+        new_dataset._length_invalidated = False
+
         return new_dataset
 
     def map(
@@ -418,6 +461,17 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._map_with_indices = self._map_with_indices
         new_dataset._map_input_columns = self._map_input_columns
         new_dataset._map_fn_kwargs = self._map_fn_kwargs
+
+        # Inherit length estimation configuration from parent
+        new_dataset.length_estimate_mode = self.length_estimate_mode
+        new_dataset._reset_length_on_iter = self._reset_length_on_iter
+
+        # Don't inherit counts/stats - those are specific to this dataset instance
+        new_dataset._original_length = None  # Will be computed lazily
+        new_dataset._input_count = 0
+        new_dataset._output_count = 0
+        new_dataset._cached_exact_length = None
+        new_dataset._length_invalidated = False
 
         # Apply new map configuration
         # For simplicity, we'll compose functions if there's already a map
@@ -636,6 +690,23 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         dynamically (not captured in local vars) so that if load_state_dict() is
         called after __iter__ but before iteration starts, we use the restored values.
         """
+        # Reset counts if configured or if stats were invalidated
+        if self._reset_length_on_iter or self._length_invalidated:
+            # Keep ratio estimate as starting point if invalidated
+            if not (
+                self._length_invalidated
+                and self._output_count > 0
+                and self._input_count > 0
+            ):
+                # Reset completely if not preserving ratio
+                self._input_count = 0
+                self._output_count = 0
+            self._cached_exact_length = None
+            self._length_invalidated = False
+
+        # Track starting counts for this iteration
+        start_input_count = self._input_count
+        start_output_count = self._output_count
 
         worker_id, num_workers = self._get_worker_info()
         files = self._get_files_for_shard()
@@ -645,6 +716,25 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         worker_files = [
             f for idx, f in enumerate(files) if idx % num_workers == worker_id
         ]
+
+        # Reset checkpoint if we've completed a previous full iteration
+        # This allows the dataset to be iterated multiple times
+        # Don't reset if we're mid-iteration (for checkpoint restoration)
+        if worker_files and self._current_file_index >= len(worker_files):
+            # We're past all files, must be starting fresh
+            self._current_file_index = 0
+            self._current_example_index = 0
+
+        # Reset counts at the start of each fresh iteration (not during checkpoint restoration)
+        # This ensures counts reflect the current iteration, not cumulative across iterations
+        # Only reset if we're starting from the beginning (not mid-checkpoint)
+        if self._current_file_index == 0 and self._current_example_index == 0:
+            # Starting fresh iteration - reset counts but preserve cached length
+            if self._cached_exact_length is not None:
+                # Have cached length from previous iteration - keep it, reset counts
+                self._input_count = 0
+                self._output_count = 0
+                # Don't reset _cached_exact_length - it persists across iterations
 
         # Track global position for virtual splits and example-level sharding
         global_example_idx = 0
@@ -694,7 +784,13 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                         global_example_idx += 1
                         continue
                     if global_example_idx >= split_end:
-                        # Reached end of split, stop iteration
+                        # Reached end of split, cache and stop iteration
+                        if self.length_estimate_mode in ("dynamic", "exact"):
+                            if self._cached_exact_length is None:
+                                self._cached_exact_length = self._output_count
+                        # Mark iteration as complete for next fresh iteration
+                        self._current_file_index = len(worker_files)
+                        self._current_example_index = 0
                         return
 
                 # For example-level sharding, check relative position within split
@@ -706,7 +802,13 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                         global_example_idx += 1
                         continue
                     if relative_idx >= self._shard_end_idx:
-                        # Reached end of shard, stop iteration
+                        # Reached end of shard, cache and stop iteration
+                        if self.length_estimate_mode in ("dynamic", "exact"):
+                            if self._cached_exact_length is None:
+                                self._cached_exact_length = self._output_count
+                        # Mark iteration as complete for next fresh iteration
+                        self._current_file_index = len(worker_files)
+                        self._current_example_index = 0
                         return
 
                 # Save index for map with_indices (before incrementing)
@@ -727,32 +829,62 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                             batch_start_idx = current_global_idx
                         batch_buffer.append(example)
 
+                        # Track batch buffer size for length estimation
+                        if self.length_estimate_mode in ("dynamic", "exact"):
+                            self._current_batch_buffer_size = len(batch_buffer)
+
                         # Process batch when full
                         if len(batch_buffer) >= self._map_batch_size:
                             result_examples = self._apply_map_to_batch(
                                 batch_buffer, batch_start_idx
                             )
+
+                            # Track counts in dynamic/exact mode
+                            if self.length_estimate_mode in ("dynamic", "exact"):
+                                self._input_count += len(batch_buffer)
+                                self._current_batch_buffer_size = 0  # Reset buffer size
+
+                            # Yield and track output
                             for result_example in result_examples:
+                                if self.length_estimate_mode in ("dynamic", "exact"):
+                                    self._output_count += 1
                                 yield result_example
                             batch_buffer = []
                             batch_start_idx = None
                     else:
                         # Non-batched mode: apply to individual example
+                        # Track input in dynamic/exact mode
+                        if self.length_estimate_mode in ("dynamic", "exact"):
+                            self._input_count += 1
+
                         example = self._apply_map_to_example(
                             example, current_global_idx
                         )
                         # If map function returned None, skip this example (filtering)
                         if example is None:
                             continue
+
+                        # Track output and yield
+                        if self.length_estimate_mode in ("dynamic", "exact"):
+                            self._output_count += 1
                         yield example
                 else:
-                    # No map function, yield as-is
+                    # No map function, input = output
+                    if self.length_estimate_mode in ("dynamic", "exact"):
+                        self._input_count += 1
+                        self._output_count += 1
                     yield example
 
             # After finishing a file, move to next file
             if file_idx >= self._current_file_index:
                 self._current_example_index = 0
                 self._current_file_index = file_idx + 1
+
+                # Cache exact length at file boundaries (in dynamic/exact mode)
+                # Only cache if not already set (preserve across iterations)
+                if self.length_estimate_mode in ("dynamic", "exact"):
+                    if self._cached_exact_length is None:
+                        self._cached_exact_length = self._output_count
 
         # Process final partial batch if using batched map
         if (
@@ -762,28 +894,80 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             and not self._map_drop_last_batch
         ):
             result_examples = self._apply_map_to_batch(batch_buffer, batch_start_idx)
+
+            # Track counts in dynamic/exact mode
+            if self.length_estimate_mode in ("dynamic", "exact"):
+                self._input_count += len(batch_buffer)
+                self._current_batch_buffer_size = 0  # Reset buffer size
+
+            # Track output count and yield
             for result_example in result_examples:
+                if self.length_estimate_mode in ("dynamic", "exact"):
+                    self._output_count += 1
                 yield result_example
+
+        # Cache exact length after complete iteration (in dynamic/exact mode only)
+        # Only cache if not already set (preserve across multiple iterations)
+        if self.length_estimate_mode in ("dynamic", "exact"):
+            if self._cached_exact_length is None:
+                self._cached_exact_length = self._output_count
+            self._current_batch_buffer_size = 0  # Clear buffer tracking
 
     def __len__(self) -> int:
         """
         Get total number of examples in the dataset.
 
+        For mapped datasets with N->M transformations, returns:
+        - Progressive estimate during first iteration (dynamic mode)
+        - Exact cached count after first complete iteration (dynamic mode)
+        - Original pre-map length (static mode)
+        """
+        # Static mode: always return original length
+        if self.length_estimate_mode == "static":
+            return self._get_original_length()
+
+        # Multi-worker synced length: use if available (takes precedence)
+        # This is set by sync_dataset_state_from_dataloader() when aggregating from workers
+        if (
+            hasattr(self, "_synced_cached_length")
+            and self._synced_cached_length is not None
+        ):
+            return self._synced_cached_length
+
+        # Dynamic/exact mode: use cached exact length if available
+        if self._cached_exact_length is not None:
+            return self._cached_exact_length
+
+        # Dynamic mode: estimate from observed ratio
+        # Include pending batch buffer in the calculation for batched maps
+        effective_input = self._input_count + self._current_batch_buffer_size
+        if self._output_count > 0 and effective_input > 0:
+            original = self._get_original_length()
+            ratio = self._output_count / effective_input
+            estimated = int(original * ratio)
+            return estimated
+
+        # No data yet, return original length
+        return self._get_original_length()
+
+    def _get_original_length(self) -> int:
+        """
+        Compute and cache original (pre-map) length.
+
         Accounts for virtual splits and sharding:
         - Virtual split: Returns slice size
         - Example-level sharding: Returns shard size within split
         - File-level sharding: Returns total across assigned files within split
-
-        Caches the result for efficiency.
         """
-        if self._total_examples is not None:
-            return self._total_examples
+        # Lazy computation - only calculate once
+        if self._original_length is not None:
+            return self._original_length
 
         # For example-level sharding, length is determined by shard boundaries
         # (which are relative to the split if one exists)
         if self._shard_start_idx is not None and self._shard_end_idx is not None:
-            self._total_examples = self._shard_end_idx - self._shard_start_idx
-            return self._total_examples
+            self._original_length = self._shard_end_idx - self._shard_start_idx
+            return self._original_length
 
         # Count examples in assigned files
         files = self._get_files_for_shard()
@@ -820,11 +1004,11 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             split_end = (
                 self._split_end_idx if self._split_end_idx is not None else total
             )
-            self._total_examples = split_end - split_start
+            self._original_length = split_end - split_start
         else:
-            self._total_examples = total
+            self._original_length = total
 
-        return self._total_examples
+        return self._original_length
 
     @property
     def column_names(self) -> List[str]:
@@ -899,6 +1083,13 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             - split_end_idx: End index for virtual split (if any)
             - shard_start_idx: Start index for example-level sharding (if any)
             - shard_end_idx: End index for example-level sharding (if any)
+            - length_estimate_mode: Length estimation mode
+            - reset_length_on_iter: Whether to reset counts on iteration
+            - original_length: Cached original (pre-map) length
+            - input_count: Examples consumed so far
+            - output_count: Examples yielded so far
+            - cached_exact_length: Exact count after full iteration
+            - length_invalidated: Whether stats were invalidated
         """
         return {
             "current_file_index": self._current_file_index,
@@ -913,6 +1104,14 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             "split_end_idx": self._split_end_idx,
             "shard_start_idx": self._shard_start_idx,
             "shard_end_idx": self._shard_end_idx,
+            # Length estimation state
+            "length_estimate_mode": self.length_estimate_mode,
+            "reset_length_on_iter": self._reset_length_on_iter,
+            "original_length": self._original_length,
+            "input_count": self._input_count,
+            "output_count": self._output_count,
+            "cached_exact_length": self._cached_exact_length,
+            "length_invalidated": self._length_invalidated,
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]):
@@ -941,8 +1140,63 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._shard_start_idx = state_dict.get("shard_start_idx")
         self._shard_end_idx = state_dict.get("shard_end_idx")
 
-        # Reset cached length since configuration might have changed
-        self._total_examples = None
+        # Restore length estimation state (with defaults for backward compatibility)
+        self.length_estimate_mode = state_dict.get("length_estimate_mode", "dynamic")
+        self._reset_length_on_iter = state_dict.get("reset_length_on_iter", False)
+        self._original_length = state_dict.get("original_length")
+        self._input_count = state_dict.get("input_count", 0)
+        self._output_count = state_dict.get("output_count", 0)
+        self._cached_exact_length = state_dict.get("cached_exact_length")
+        self._length_invalidated = state_dict.get("length_invalidated", False)
+
+    def get_length_stats(self) -> Dict[str, Any]:
+        """
+        Get current length estimation statistics.
+
+        Returns:
+            Dictionary with:
+            - mode: Current estimation mode
+            - original_length: Pre-map length (may be None if not computed)
+            - input_count: Examples consumed so far
+            - output_count: Examples yielded so far
+            - ratio: Current input/output ratio (if data available)
+            - cached_exact: Cached exact length (if available)
+            - current_estimate: What __len__() would return right now
+            - batch_buffer_size: Current pending batch buffer size
+            - checkpoint_position: Current file and example indices
+        """
+        stats = {
+            "mode": self.length_estimate_mode,
+            "original_length": self._original_length,
+            "input_count": self._input_count,
+            "output_count": self._output_count,
+            "cached_exact": self._cached_exact_length,
+            "invalidated": self._length_invalidated,
+            "batch_buffer_size": self._current_batch_buffer_size,
+            "checkpoint_file_idx": self._current_file_index,
+            "checkpoint_example_idx": self._current_example_index,
+            "reset_on_iter": self._reset_length_on_iter,
+        }
+
+        if self._output_count > 0 and self._input_count > 0:
+            stats["ratio"] = self._output_count / self._input_count
+        else:
+            stats["ratio"] = None
+
+        stats["current_estimate"] = len(self)
+
+        return stats
+
+    def set_length_estimate_mode(self, mode: str):
+        """
+        Change length estimation mode.
+
+        Args:
+            mode: 'static', 'dynamic', or 'exact'
+        """
+        if mode not in ("static", "dynamic", "exact"):
+            raise ValueError(f"Invalid mode: {mode}")
+        self.length_estimate_mode = mode
 
     def to_hf_iterable(self):
         """Convert to HuggingFace IterableDataset for full compatibility."""
@@ -1048,6 +1302,8 @@ class FastDatasetLoaderSimple:
         revision: Optional[str] = None,
         force_reindex: bool = False,
         num_proc: Optional[int] = None,
+        length_estimate: str = "dynamic",
+        reset_length_on_iter: bool = False,
         **load_dataset_kwargs,
     ):
         """
@@ -1055,6 +1311,14 @@ class FastDatasetLoaderSimple:
 
         Supports HuggingFace split notation like "train[10000:]" without triggering
         reindexing. The base split is used for caching, and slicing is applied virtually.
+
+        Args:
+            length_estimate: How to estimate length for mapped datasets
+                'static': Never change from original (safest)
+                'dynamic': Progressive estimate, lock after full iteration (default)
+                'exact': Alias for 'dynamic' (kept for clarity)
+            reset_length_on_iter: If True, reset counts on each new iteration.
+                                   If False (default), preserve estimates across iterations.
         """
         # Parse split notation (e.g., "train[10000:]" → "train", 10000, None)
         base_split, slice_start, slice_end = (
@@ -1082,6 +1346,10 @@ class FastDatasetLoaderSimple:
 
                 # Create simple iterable dataset (INSTANT!)
                 iterable_ds = SimpleArrowIterableDataset(arrow_files, file_lengths)
+
+                # Set length estimation configuration
+                iterable_ds.length_estimate_mode = length_estimate
+                iterable_ds._reset_length_on_iter = reset_length_on_iter
 
                 # Apply slice if present in split notation
                 if slice_start is not None or slice_end is not None:
@@ -1169,6 +1437,10 @@ class FastDatasetLoaderSimple:
             # Create dataset and apply slice if present
             iterable_ds = SimpleArrowIterableDataset(arrow_files, file_lengths)
 
+            # Set length estimation configuration
+            iterable_ds.length_estimate_mode = length_estimate
+            iterable_ds._reset_length_on_iter = reset_length_on_iter
+
             if slice_start is not None or slice_end is not None:
                 iterable_ds = iterable_ds.slice(slice_start, slice_end)
 
@@ -1203,6 +1475,8 @@ def fast_load_iterable_dataset(
     force_reindex: bool = False,
     num_proc: Optional[int] = None,
     index_dir: Optional[str] = None,
+    length_estimate: str = "dynamic",
+    reset_length_on_iter: bool = False,
     **load_dataset_kwargs,
 ):
     """
@@ -1216,6 +1490,23 @@ def fast_load_iterable_dataset(
     - Supports .shard(num_shards, index) for DDP
     - Supports .map(fn) for lazy transformations
     - Each Arrow file = 1 natural shard
+
+    Args:
+        path: Path to dataset on HuggingFace Hub or local path
+        name: Dataset configuration name (e.g., "wikitext-2-raw-v1")
+        split: Split to load (e.g., "train", "train[:1000]")
+        data_files: Specific data files to load
+        revision: Dataset revision/version
+        force_reindex: Force rebuilding the Arrow file index
+        num_proc: Number of processes for indexing
+        index_dir: Custom directory for storing index files
+        length_estimate: How to estimate length for mapped datasets
+            'static': Never change from original (safest)
+            'dynamic': Progressive estimate, lock after full iteration (default)
+            'exact': Alias for 'dynamic' (kept for clarity)
+        reset_length_on_iter: If True, reset counts on each new iteration.
+                               If False (default), preserve estimates across iterations.
+        **load_dataset_kwargs: Additional kwargs passed to load_dataset()
 
     Example:
         # Load (instant after first time!)
@@ -1247,5 +1538,7 @@ def fast_load_iterable_dataset(
         revision=revision,
         force_reindex=force_reindex,
         num_proc=num_proc,
+        length_estimate=length_estimate,
+        reset_length_on_iter=reset_length_on_iter,
         **load_dataset_kwargs,
     )

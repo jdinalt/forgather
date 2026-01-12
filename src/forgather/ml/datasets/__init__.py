@@ -1,4 +1,9 @@
 from .block_tokenizer import block_tokenize_fn
+from .dataloader_utils import (
+    LengthSyncCallback,
+    create_length_sync_callback,
+    sync_dataset_state_from_dataloader,
+)
 from .datasets import (
     IterableDatasetWithLength,
     default_tokenize_map_fn,
@@ -34,4 +39,8 @@ __all__ = [
     "interleave_datasets",
     "InterleavedDataset",
     "balance_remaining_examples",
+    # DataLoader utilities
+    "sync_dataset_state_from_dataloader",
+    "create_length_sync_callback",
+    "LengthSyncCallback",
 ]

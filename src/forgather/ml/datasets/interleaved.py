@@ -202,8 +202,9 @@ class InterleavedDataset(TorchIterableDataset):
                 return min(dataset_lengths) * len(self.datasets)
             else:
                 # With probabilities: complex calculation
-                # Approximate as minimum expected samples before first exhaustion
-                min_length = min(dataset_lengths)
+                # Approximate as maximum samples, with balanced datasets
+                # TODO: Improve on this!
+                min_length = sum(dataset_lengths)
                 return min_length
         else:  # all_exhausted
             if self.probabilities is None:

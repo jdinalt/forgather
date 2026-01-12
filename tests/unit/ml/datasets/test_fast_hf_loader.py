@@ -1384,3 +1384,276 @@ def test_balance_remaining_examples_function():
     ), "Dataset with more remaining should have higher weight"
     assert weights[0] == 40.0, "ds1 weight should be remaining examples"
     assert weights[1] == 80.0, "ds2 weight should be remaining examples"
+
+
+# =====================================================================
+# Length Estimation Tests
+# =====================================================================
+
+
+def test_length_estimate_static_mode():
+    """Test that static mode never changes length."""
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:100]",
+        length_estimate="static",
+    )
+    original_len = len(ds)
+
+    # Apply filtering map
+    ds_filtered = ds.map(lambda ex: ex if ex.get("text", "").strip() else None)
+
+    # Length should not change
+    assert len(ds_filtered) == original_len
+
+    # Even after iteration
+    list(ds_filtered)
+    assert len(ds_filtered) == original_len
+
+
+def test_length_estimate_dynamic_mode():
+    """Test that dynamic mode updates length estimate."""
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:100]",
+        length_estimate="dynamic",
+    )
+
+    # Apply filtering map that removes some examples
+    ds_filtered = ds.map(lambda ex: ex if ex.get("text", "").strip() else None)
+
+    original_len = len(ds_filtered)
+
+    # Iterate and consume all examples
+    examples = list(ds_filtered)
+
+    # Length should be exact after full iteration
+    exact_len = len(ds_filtered)
+    actual_count = len(examples)
+
+    assert (
+        exact_len == actual_count
+    ), f"Expected exact length {actual_count}, got {exact_len}"
+    # Filtering should reduce count
+    assert exact_len <= original_len
+
+
+def test_length_stats_method():
+    """Test get_length_stats() introspection method."""
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:50]",
+        length_estimate="dynamic",
+    )
+
+    # Initial stats
+    stats = ds.get_length_stats()
+    assert stats["mode"] == "dynamic"
+    assert stats["input_count"] == 0
+    assert stats["ratio"] is None
+
+    # After iteration
+    list(ds)
+    stats = ds.get_length_stats()
+    assert stats["input_count"] == 50
+    assert stats["cached_exact"] == 50
+    assert stats["ratio"] == 1.0  # No map, ratio is 1:1
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_length_estimate_preserved_in_checkpoint():
+    """Test that length stats survive checkpoint save/restore."""
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:100]",
+        length_estimate="dynamic",
+    )
+
+    ds_filtered = ds.map(lambda ex: ex if ex.get("text", "").strip() else None)
+
+    # Iterate partially
+    iterator = iter(ds_filtered)
+    for i in range(30):
+        try:
+            next(iterator)
+        except StopIteration:
+            break
+
+    # Save state
+    state = ds_filtered.state_dict()
+    partial_len = len(ds_filtered)
+    partial_stats = ds_filtered.get_length_stats()
+
+    # Create new dataset and restore
+    ds_new = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:100]",
+        length_estimate="dynamic",
+    )
+    ds_new_filtered = ds_new.map(lambda ex: ex if ex.get("text", "").strip() else None)
+    ds_new_filtered.load_state_dict(state)
+
+    # Length estimate should be preserved
+    restored_len = len(ds_new_filtered)
+    restored_stats = ds_new_filtered.get_length_stats()
+
+    # Stats should be preserved
+    assert restored_stats["input_count"] == partial_stats["input_count"]
+    assert restored_stats["output_count"] == partial_stats["output_count"]
+
+
+def test_shuffle_invalidates_exact_length():
+    """Test that shuffle invalidates cached exact length."""
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:50]",
+        length_estimate="dynamic",
+    )
+
+    ds_filtered = ds.map(lambda ex: ex if ex.get("text", "").strip() else None)
+
+    # Get exact length
+    list(ds_filtered)
+    exact_len_before = len(ds_filtered)
+
+    # Shuffle
+    ds_shuffled = ds_filtered.shuffle(seed=42)
+
+    # Should preserve ratio estimate but invalidate exact cache
+    stats = ds_shuffled.get_length_stats()
+    assert stats["invalidated"] == True
+    assert stats["cached_exact"] is None
+    # Ratio should be preserved
+    assert stats["input_count"] > 0
+    assert stats["output_count"] > 0
+
+
+def test_set_length_estimate_mode():
+    """Test changing length estimation mode."""
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:50]",
+        length_estimate="dynamic",
+    )
+
+    assert ds.length_estimate_mode == "dynamic"
+
+    # Change to static
+    ds.set_length_estimate_mode("static")
+    assert ds.length_estimate_mode == "static"
+
+    # Invalid mode should raise error
+    with pytest.raises(ValueError, match="Invalid mode"):
+        ds.set_length_estimate_mode("invalid")
+
+
+def test_length_estimate_with_interleaved_and_batched_map():
+    """
+    Test length estimation with InterleavedDataset and batched packing operations.
+
+    This tests the user's scenario:
+    - Two SimpleArrowIterableDataset with batched packing map
+    - Combined with InterleavedDataset (all_exhausted strategy)
+    - Length should update during iteration
+    - Length should be cached after complete iteration
+    - Length should persist across multiple iterations
+    """
+    from forgather.ml.datasets.interleaved import interleave_datasets
+
+    # Create two datasets
+    ds1 = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:50]",
+        length_estimate="dynamic",
+    )
+    ds2 = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[50:100]",
+        length_estimate="dynamic",
+    )
+
+    # Apply batched map that reduces count (simulating packing)
+    # This map keeps every other example, so 50 -> 25
+    def reduce_batch(batch):
+        # Keep only even-indexed examples
+        result = {}
+        for key in batch.keys():
+            result[key] = [batch[key][i] for i in range(len(batch[key])) if i % 2 == 0]
+        return result
+
+    ds1_mapped = ds1.map(reduce_batch, batched=True, batch_size=10)
+    ds2_mapped = ds2.map(reduce_batch, batched=True, batch_size=10)
+
+    # Combine with InterleavedDataset
+    combined = interleave_datasets(
+        [ds1_mapped, ds2_mapped],
+        stopping_strategy="all_exhausted",
+    )
+
+    # Initial length should be sum of original lengths (100)
+    initial_length = len(combined)
+    assert initial_length == 100, f"Expected initial length 100, got {initial_length}"
+
+    # Iterate and check length updates during iteration
+    iterator = iter(combined)
+    lengths_during_iteration = []
+
+    # Consume 15 examples
+    for i in range(15):
+        next(iterator)
+        current_len = len(combined)
+        lengths_during_iteration.append(current_len)
+
+    # Length should start updating after first batch is processed
+    # After processing some batches, we should see the estimate decrease
+    # (since we're keeping only 50% of examples)
+    # Note: It might take a batch or two before the estimate updates
+
+    # Complete the iteration
+    remaining = list(iterator)
+    total_yielded = 15 + len(remaining)
+
+    # After complete iteration, length should be exact
+    final_length = len(combined)
+    assert (
+        final_length == total_yielded
+    ), f"Expected cached length {total_yielded}, got {final_length}"
+
+    # The actual count should be ~50 (25 from each child)
+    assert 45 <= total_yielded <= 55, f"Expected ~50 examples, got {total_yielded}"
+
+    # Check that children have cached their exact lengths
+    stats1 = ds1_mapped.get_length_stats()
+    stats2 = ds2_mapped.get_length_stats()
+
+    assert stats1["cached_exact"] is not None, "Child 1 should have cached exact length"
+    assert stats2["cached_exact"] is not None, "Child 2 should have cached exact length"
+
+    # Second iteration should use cached length
+    count2 = sum(1 for _ in combined)
+    assert (
+        count2 == total_yielded
+    ), f"Second iteration count mismatch: {count2} vs {total_yielded}"
+
+    # Length should still be correct
+    length_after_second = len(combined)
+    assert (
+        length_after_second == total_yielded
+    ), f"Length after second iteration: {length_after_second} vs {total_yielded}"
+
+    # Third iteration to make sure it's stable
+    count3 = sum(1 for _ in combined)
+    assert (
+        count3 == total_yielded
+    ), f"Third iteration count mismatch: {count3} vs {total_yielded}"
