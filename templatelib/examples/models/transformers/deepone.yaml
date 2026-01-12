@@ -138,7 +138,7 @@ model_factory: &model_factory !dict@model_factory
     enable_activation_checkpoint: False
     checkpoint_stride: 1
     tie_word_embeddings: {{ tie_word_embeddings | toyaml(False) }}
-    sliding_window: {{ sliding_window | toyaml(4096) }}
+    sliding_window: {{ sliding_window | toyaml(None) }}
     flex_attn_kernel_options: *flex_attn_kernel_options
 
 [model_code_generator]
