@@ -82,7 +82,7 @@ def init_weights_by_regex(
     init_f_map: Dict[str, Callable],
     debug: bool = False,
 ) -> None:
-    """
+    r"""
     Initialize model weights, where a regular expression is used to select the initialization
 
     regex_list: A list of tuples of (regular_expression, init_function_name)
