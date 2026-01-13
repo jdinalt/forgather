@@ -13,7 +13,6 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 
 def sync_dataset_state_from_dataloader(
     dataloader: StatefulDataLoader,
-    dataset: Any,
     debug: bool = False,
 ) -> None:
     """
@@ -30,7 +29,6 @@ def sync_dataset_state_from_dataloader(
 
     Args:
         dataloader: StatefulDataLoader instance (must have been iterated)
-        dataset: The dataset to update (should be the same as dataloader.dataset)
         debug: If True, print debug information about state structure
 
     Example:
@@ -39,10 +37,11 @@ def sync_dataset_state_from_dataloader(
         ...     train_step(batch)
         >>>
         >>> # Sync state to get updated length
-        >>> sync_dataset_state_from_dataloader(dataloader, dataset)
+        >>> sync_dataset_state_from_dataloader(dataloader)
         >>> print(f"Updated length: {len(dataset)}")
     """
     # Get DataLoader state which includes worker states
+    dataset = dataloader.dataset
     dl_state = dataloader.state_dict()
 
     if debug:
