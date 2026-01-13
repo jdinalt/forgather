@@ -123,15 +123,26 @@ class TrainerState(BaseTrainerState):
 
 @dataclass(kw_only=True)
 class TrainingArguments(BaseTrainingArguments):
+    """
+    Training arguments specific to the simple Trainer implementation.
+
+    Extends BaseTrainingArguments with memory optimization and model construction options.
+    Maintains compatibility with HuggingFace Trainer API where possible.
+    """
+
     # Ratio of reserved to total GPU memory to trigger GC
     # If OOM from fragmentation, lower ratio
     gc_threshold: float = 0.5
 
     # Construct model on meta-device and materialize directly on device
-    # default: Construct model on CPU on move to device; slow, but reliable.
-    # device: Construct model directly on device. This is can faster, but may result in OOM
-    # meta: Construct on meta device and materialize on target device. The resulting model
-    #   is uninitialized and will need to be loaded with a checkpoint.
+    # default: Construct model on CPU and move to device. Safest option, works in all cases.
+    #          Uses no_init_weights() context when loading checkpoint to skip initialization.
+    # device:  Construct model directly on device with initialization. Faster than default
+    #          but may fail when model needs sharding across devices. Use when checkpoint
+    #          doesn't save all buffers (e.g., RoPE).
+    # meta:    Construct on meta device (no memory backing) and materialize as empty tensors
+    #          on target device. Fastest option but requires loading checkpoint since model
+    #          is uninitialized. May have issues with buffers not saved in checkpoint.
     construct_model_on: str = "default"  # "default" | "meta" | "device"
 
     # https://pytorch.org/blog/activation-checkpointing-techniques/
@@ -139,6 +150,9 @@ class TrainingArguments(BaseTrainingArguments):
     activation_memory_budget: float | None = None
 
     # Combine gradient calculation with optimizer step, to save memory.
+    # As each gradient is computed during backward(), it's immediately applied by the
+    # optimizer and freed. Incompatible with max_grad_norm and gradient_accumulation_steps > 1.
+    # Greatest memory savings when combined with gradient checkpointing.
     # https://docs.pytorch.org/tutorials/intermediate/optimizer_step_in_backward_tutorial.html
     fuse_optim_with_backward: bool = False
 
@@ -164,7 +178,15 @@ def set_train(model: torch.nn.Module, mode: bool):
 
 
 def maybe_cleanup_memory(alloc_threshold):
-    """Check if memory usage exceeds threshold"""
+    """
+    Trigger garbage collection and CUDA cache cleanup if memory usage exceeds threshold.
+
+    Helps prevent OOM errors from memory fragmentation during long training runs.
+
+    Args:
+        alloc_threshold: Ratio of reserved to total GPU memory (0.0 to 1.0).
+                        If current usage exceeds this, cleanup is triggered.
+    """
     if torch.cuda.is_available():
         reserved = torch.cuda.memory_reserved()
         max_memory = torch.cuda.get_device_properties(0).total_memory
@@ -176,6 +198,21 @@ def maybe_cleanup_memory(alloc_threshold):
 
 
 def optimizer_hook(optimizer, total_grad_squared, name, parameter):
+    """
+    Hook for fusing optimizer step with backward pass.
+
+    This hook is registered via register_post_accumulate_grad_hook() when
+    fuse_optim_with_backward=True. As each gradient is computed during backward(),
+    it's immediately applied by the optimizer and freed, reducing peak memory usage.
+
+    Greatest memory savings when combined with gradient checkpointing.
+
+    Args:
+        optimizer: The optimizer instance to apply the gradient update
+        total_grad_squared: Accumulator for computing total gradient norm across all parameters
+        name: Parameter name (for debugging)
+        parameter: The parameter whose gradient was just computed
+    """
     if total_grad_squared is not None:
         total_grad_squared += parameter.grad.square().sum().to(dtype=torch.float32)
         # norm = parameter.grad.square().sum().sqrt()
@@ -186,9 +223,31 @@ def optimizer_hook(optimizer, total_grad_squared, name, parameter):
 
 class Trainer(BaseTrainer):
     """
-    This transformer trainer is a simplified version of the HF Trainer class
-    The intent is to hopefully make the workings of such a class more comprehensible and
-    easier to customize.
+    A lightweight, single-device trainer with API close to transformers.Trainer.
+
+    This trainer provides a simplified, more comprehensible implementation of the
+    HuggingFace Trainer, intended as a drop-in replacement for basic use cases.
+
+    Key features:
+    - Compatible with HF Trainer API for basic training workflows
+    - Memory optimizations: fused loss, fused optimizer/backward, activation checkpointing
+    - Flexible model construction: default/meta/device modes for different memory/speed tradeoffs
+    - Full checkpoint management: saves/restores model, optimizer, scheduler, dataset state
+    - Best model tracking via load_best_model_at_end
+
+    For distributed training, see AccelTrainer (data parallel via Accelerate) and
+    PipelineTrainer (pipeline parallelism).
+
+    Basic usage:
+        trainer = Trainer(
+            model=model,
+            args=TrainingArguments(...),
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            optimizer_factory=optimizer_factory,
+            lr_scheduler_factory=lr_scheduler_factory,
+        )
+        trainer.train()
     """
 
     args: TrainingArguments
@@ -356,11 +415,29 @@ class Trainer(BaseTrainer):
         self._dispatch_event("on_init_end")
 
     def _wrap(self) -> None:
-        """Hook for wrapping object, after they have all be constructed in _prepare()"""
+        """
+        Hook for wrapping objects after construction in _prepare().
+
+        Called after dataloaders, model, optimizer, and scheduler are initialized
+        but before training begins. Subclasses use this to wrap objects for
+        distributed training or other runtime modifications.
+
+        Examples:
+        - AccelTrainer: Wraps model/optimizer/dataloaders with Accelerate
+        - PipelineTrainer: Sets up pipeline parallel stage wrapping
+
+        See src/forgather/ml/trainer/accelerate/accel_trainer.py and
+        src/forgather/ml/trainer/pipeline/pipeline_trainer.py for examples.
+        """
         pass
 
     def _compile_model(self):
-        """Compile model hook"""
+        """
+        Compile model using torch.compile().
+
+        Hook for model compilation. Subclasses may override to customize compilation
+        behavior or apply compilation to additional wrapped objects.
+        """
         self.model.compile(
             backend=self.args.torch_compile_backend,
             mode=self.args.torch_compile_mode,
@@ -369,7 +446,17 @@ class Trainer(BaseTrainer):
         )
 
     def _init_checkpoint_manager(self) -> CheckpointInterface:
-        """Init checkpoint manager hook"""
+        """
+        Initialize checkpoint manager hook.
+
+        Creates the CheckpointManager responsible for saving/loading complete training
+        state including model, optimizer, scheduler, dataset state, and RNG state.
+
+        Subclasses may override to provide custom checkpoint management behavior.
+
+        Returns:
+            CheckpointInterface: Initialized checkpoint manager
+        """
         cp_config = CheckpointConfig(
             output_dir=self.args.output_dir,
             save_total_limit=self.args.save_total_limit,
@@ -387,6 +474,16 @@ class Trainer(BaseTrainer):
         return checkpoint_manager
 
     def _init_dataloaders(self, train_dataset, eval_dataset) -> None:
+        """
+        Initialize train and evaluation dataloaders (_prepare() sub-step 1).
+
+        Creates StatefulDataLoader instances that support checkpointing dataset iteration state.
+        Also computes training step counts for scheduling logging/evaluation/checkpointing.
+
+        Args:
+            train_dataset: Training dataset or None for eval-only
+            eval_dataset: Evaluation dataset or None for train-only
+        """
         # _prepare() sub-step 1
         self.max_steps = 0
         self.epoch_train_steps = self.args.epoch_train_steps
@@ -407,6 +504,20 @@ class Trainer(BaseTrainer):
             )
 
     def _prepare_model(self) -> None:
+        """
+        Construct/initialize model and move to device (_prepare() sub-step 2).
+
+        Handles three model construction strategies based on construct_model_on:
+        - default: Safe, works everywhere. Constructs on CPU (with no_init_weights if loading
+                  checkpoint), then moves to device.
+        - meta: Fastest. Constructs on meta device (no memory), materializes empty on device.
+                Requires loading checkpoint. May have issues with non-persistent buffers.
+        - device: Middle ground. Constructs directly on device with initialization. Faster
+                 than default but may fail with model sharding. Good for models with buffers
+                 not saved in checkpoint (e.g., RoPE).
+
+        Also sets up gradient checkpointing if enabled and initializes fused loss if available.
+        """
         # _prepare() sub-step 2
         match self.args.construct_model_on:
             case "default":
@@ -489,10 +600,26 @@ class Trainer(BaseTrainer):
     def _maybe_get_fused_loss_fn(
         self, module: torch.nn.Module, default_loss_fn: Callable
     ):
-        """Experimental API for handling fused classifier-loss-function
+        """
+        Attempt to enable fused loss-logits computation for memory optimization.
+
+        Fused loss combines the final linear layer (computing logits from hidden states)
+        with the cross-entropy loss computation. This avoids materializing the full logits
+        tensor in memory, which is critical for models with large vocabulary sizes where
+        logits can be gigabytes in size.
+
+        For example, with vocab_size=50k, batch_size=8, seq_len=2048:
+        - Unfused: logits tensor is 8 * 2048 * 50000 * 4 bytes = ~3.2 GB
+        - Fused: Only computes logits for one token at a time, dramatically less memory
+
+        Requires:
+        - fused_loss_factory provided to Trainer constructor
+        - Model supports get_output_embeddings() (returns final linear layer)
+        - Model supports return_hidden_states=True (returns hidden states instead of logits)
+
+        See src/forgather/ml/loss.py and docs/fused_loss/ for implementations and details.
 
         If model supports fused-loss, and fused loss function is returned, sets:
-
             self.use_fused_loss = True
 
         Args:
@@ -522,6 +649,13 @@ class Trainer(BaseTrainer):
         return default_loss_fn
 
     def _init_optimizer(self) -> None:
+        """
+        Initialize optimizer and learning rate scheduler (_prepare() sub-step 3).
+
+        Creates optimizer from factory and optionally sets up:
+        - Learning rate scheduler (from factory or HF get_scheduler)
+        - Fused backward/optimizer hooks if fuse_optim_with_backward=True
+        """
         # _prepare() sub-step 3
         if self.optimizer is None:
             assert self.optimizer_factory is not None
@@ -563,8 +697,16 @@ class Trainer(BaseTrainer):
         self, dataloader: Iterable[Dict[str, Tensor]]
     ) -> Iterable[Dict[str, Tensor]]:
         """
-        Get the next batch from the dataloader.
-        This is a generator that yields batches from the dataloader.
+        Iterate over dataloader batches.
+
+        Simple generator wrapper around dataloader iteration. Subclasses may override
+        to add custom batch preprocessing or data transformations.
+
+        Args:
+            dataloader: The dataloader to iterate over
+
+        Yields:
+            Dict[str, Tensor]: Batches from the dataloader
         """
         for batch in dataloader:
             yield batch
@@ -626,7 +768,17 @@ class Trainer(BaseTrainer):
     def _update_best_model(
         self, checkpoint_path: str, metrics: Dict[str, float]
     ) -> None:
-        """Update best model tracking based on current metrics."""
+        """
+        Update best model tracking based on current metrics.
+
+        Compares current metric value against best seen so far using the metric specified
+        in args.metric_for_best_model and comparison direction from args.greater_is_better.
+        Updates state.best_metric and state.best_model_checkpoint if current is better.
+
+        Args:
+            checkpoint_path: Path to checkpoint being evaluated
+            metrics: Dictionary of evaluation metrics from most recent eval
+        """
         if not self.args.load_best_model_at_end:
             return
 
@@ -668,7 +820,12 @@ class Trainer(BaseTrainer):
             logger.info(f"Saving new best model checkpoint to {checkpoint_path}")
 
     def load_best_model(self) -> None:
-        """Load the best model from the best checkpoint."""
+        """
+        Load the best model from the best checkpoint.
+
+        Called at end of training when load_best_model_at_end=True to restore
+        the checkpoint with the best metric value seen during training.
+        """
         if not self.state.best_model_checkpoint:
             logger.warning("No best model checkpoint available to load")
             return
@@ -915,6 +1072,20 @@ class Trainer(BaseTrainer):
     def _forward_backward_step(
         self, input_dict: dict[str, Tensor], labels: Tensor
     ) -> Tensor:
+        """
+        Execute forward pass followed by backward pass.
+
+        Handles both standard and fused loss computation. When fused loss is enabled,
+        requests hidden states instead of logits to avoid materializing the large
+        logits tensor.
+
+        Args:
+            input_dict: Model inputs (input_ids, attention_mask, etc.)
+            labels: Target labels for loss computation
+
+        Returns:
+            Detached loss tensor for logging
+        """
         if self.use_fused_loss:
             input_dict["return_hidden_states"] = True
         outputs = self.model(**input_dict)
@@ -924,18 +1095,43 @@ class Trainer(BaseTrainer):
         return loss.detach()
 
     def _backward(self, loss: Tensor) -> None:
+        """
+        Execute backward pass to compute gradients.
+
+        Subclasses may override to customize backward behavior (e.g., for pipeline parallelism).
+
+        Args:
+            loss: Loss tensor to backpropagate
+        """
         loss.backward()
 
     def _should_sync_gradients(self) -> bool:
+        """
+        Determine if gradients should be synchronized across processes.
+
+        For single-device trainer, always returns True. Distributed trainers override
+        this to return False during gradient accumulation steps (to skip expensive
+        all-reduce until the final accumulation step).
+
+        See AccelTrainer and PipelineTrainer for distributed implementations.
+
+        Returns:
+            True if gradients should be synchronized (always True for single-device)
+        """
         return True
 
     def _update_training_steps(self) -> None:
         """
-        Estimate the training steps from the train data-loader
-        This value can potentially change when wrapping the dataloder, e.g., with Accelerate
-        Should this occur, call this to updatte the step-count and epoch info.
+        Compute training step counts from dataloader length.
 
-        With gradient accumulation, global steps = batch_count // gradient_accumulation_steps
+        Calculates:
+        - epoch_train_steps: Number of batches per epoch
+        - max_steps: Total optimizer updates across all epochs
+
+        With gradient accumulation: global_steps = batch_count // gradient_accumulation_steps
+
+        This may need to be called multiple times if dataloader is wrapped (e.g., by Accelerate)
+        and its length changes. Also synchronizes dataset state to ensure accurate length.
         """
         sync_dataset_state_from_dataloader(self.train_dataloader)
 
@@ -960,8 +1156,20 @@ class Trainer(BaseTrainer):
 
     def _init_state(self) -> TrainerState:
         """
-        Init public training state
-        This should be retained when saving a checkpoint
+        Initialize trainer state for tracking training progress.
+
+        Creates TrainerState with training step counts, batch sizes, and process info.
+        State is saved/restored with checkpoints to resume training accurately.
+
+        Key state fields:
+        - global_step: Total optimizer updates since training start (0-indexed)
+        - raw_epoch: Integer epoch counter, increments at end of each dataset iteration
+        - epoch_start_step: Global step when raw_epoch was last incremented
+        - epoch: Continuous value = raw_epoch + fractional progress through current epoch
+        - best_metric/best_model_checkpoint: Best model tracking for load_best_model_at_end
+
+        Returns:
+            TrainerState: Initialized state object
         """
 
         if self.do_train:
@@ -1019,13 +1227,21 @@ class Trainer(BaseTrainer):
 
     def _calculate_effective_batch_size(self) -> int:
         """
-        Calculate the effective batch size accounting for gradient accumulation and parallelism.
+        Calculate effective batch size accounting for gradient accumulation and parallelism.
 
-        For different parallelism strategies:
-        - Data parallelism (DDP): Multiply by num_processes (different batches per process)
-        - Pipeline parallelism: Don't multiply by num_processes (same batch across stages)
-        - Model parallelism: Don't multiply by num_processes (same batch across shards)
-        - Combined (pipeline + model): Don't multiply by num_processes (same batch)
+        The effective batch size is the total number of examples processed per optimizer update.
+
+        Calculation depends on parallelism strategy:
+        - Data parallelism (DDP): Multiply by num_processes (each process sees different batch)
+        - Pipeline parallelism: Don't multiply (same batch flows through pipeline stages)
+        - Model parallelism: Don't multiply (same batch processed by different model shards)
+        - Combined: Don't multiply (same batch)
+
+        Formula: base_batch = per_device_batch * gradient_accumulation_steps
+                 effective = base_batch * num_processes (only for data parallel)
+
+        Returns:
+            Total number of examples per optimizer update
         """
         base_batch_size = (
             self.state.train_batch_size * self.args.gradient_accumulation_steps
@@ -1049,18 +1265,44 @@ class Trainer(BaseTrainer):
             return self.state.num_processes * base_batch_size
 
     def _is_pipeline_parallel(self) -> bool:
-        """Override in PipelineTrainer to return True"""
+        """
+        Indicate if trainer uses pipeline parallelism.
+
+        Used for effective batch size calculation. Pipeline parallel trainers process
+        the same batch across different pipeline stages, so don't multiply by num_processes.
+
+        Returns:
+            False for single-device Trainer, True in PipelineTrainer
+        """
         return False
 
     def _is_model_parallel(self) -> bool:
-        """Override in model parallel trainers to return True"""
+        """
+        Indicate if trainer uses model parallelism (tensor/expert parallelism).
+
+        Used for effective batch size calculation. Model parallel trainers process
+        the same batch across different model shards, so don't multiply by num_processes.
+
+        Returns:
+            False for single-device Trainer, True in model parallel trainers
+        """
         return False
 
     def _prediction_step(
         self, input_dict: dict[str, Tensor], labels: Tensor
     ) -> Dict[str, Tensor | None]:
         """
-        Perform a single batch of predictions
+        Perform a single evaluation batch forward pass.
+
+        Computes loss without gradient computation (wrapped in @torch.no_grad()).
+        Uses unscaled loss (via loss_fn.no_rescale()) for accurate eval metrics.
+
+        Args:
+            input_dict: Model inputs (input_ids, attention_mask, etc.)
+            labels: Target labels for loss computation
+
+        Returns:
+            Dictionary with 'loss', 'logits', and 'labels' tensors
         """
         if self.use_fused_loss:
             input_dict["return_hidden_states"] = True
@@ -1131,7 +1373,13 @@ class Trainer(BaseTrainer):
         self, batch: Dict[str, Tensor]
     ) -> tuple[Dict[str, Tensor], Tensor]:
         """
-        Move the batch to the device
+        Move batch tensors to target device and extract labels.
+
+        Args:
+            batch: Dictionary of tensors from dataloader, must include 'labels' key
+
+        Returns:
+            Tuple of (input_dict, labels) where labels are separated for loss computation
         """
         batch = {k: v.to(self.args.device) for k, v in batch.items()}
         labels = batch.pop("labels")
@@ -1140,8 +1388,19 @@ class Trainer(BaseTrainer):
 
     def _distributed_loss(self, loss: Tensor) -> Tensor:
         """
-        Gather / reduce loss across all processes
-        This implementaiton only supports a single process, so we just return the input.
+        Reduce loss across all processes for accurate logging.
+
+        Single-device trainer just returns the input. Distributed trainers (AccelTrainer,
+        PipelineTrainer) override this to all-reduce loss values so logging reflects
+        the average loss across all processes/devices.
+
+        See src/forgather/ml/trainer/accelerate/accel_trainer.py for distributed implementation.
+
+        Args:
+            loss: Loss tensor from current process
+
+        Returns:
+            Loss tensor (single-device) or all-reduced loss (distributed)
         """
         return loss
 

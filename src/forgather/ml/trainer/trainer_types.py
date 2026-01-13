@@ -126,64 +126,161 @@ class IntervalStrategy(DiagnosticEnum):
 @dataclass(kw_only=True)
 class TrainerState:
     """
-    Trainer global state to be passed to callbacks.
-    This is the same API as used by the HF Trainer class, for compatibility.
-    Not all values are implemented at present.
-    See: https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_callback.py#
+    Trainer state tracking training progress and configuration.
 
+    Maintains compatibility with HuggingFace Trainer API for easier porting.
+    Passed to callbacks to allow them to inspect and log training progress.
+
+    Key training progress fields:
+    - global_step: Total optimizer updates since start (0-indexed)
+    - raw_epoch: Integer epoch counter (increments at end of each dataset iteration)
+    - epoch_start_step: Global step when current epoch started
+    - epoch: Continuous epoch value = raw_epoch + fractional progress through current epoch
+              Computed as: epoch = raw_epoch + (global_step - epoch_start_step) / epoch_train_steps
+
+    Best model tracking (for load_best_model_at_end):
+    - best_metric: Best metric value seen during training
+    - best_model_checkpoint: Path to checkpoint with best metric
+
+    See: https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_callback.py
     """
 
-    logging_steps: int
-    eval_steps: int
-    train_batch_size: int
-    max_steps: int
-    epoch: float = 0.0
-    global_step: int = 0
-    num_train_epochs: int
-    is_local_process_zero: bool = True
-    is_world_process_zero: bool = True
-    log_history: list[Dict[str, float]] = field(default_factory=lambda: [])
-    save_steps: int = 0
-    best_metric: float | None = None
-    best_model_checkpoint: str | None = None
-    # Unimplemented in Trainer; included for consistency with HF Trainer
-    num_input_tokens_seen: int = 0
-    total_flos: float = 0.0
-    is_hyper_param_search: bool = False
+    logging_steps: int  # How often to log metrics (in steps)
+    eval_steps: int  # How often to run evaluation (in steps)
+    train_batch_size: int  # Per-device training batch size
+    max_steps: int  # Total optimizer updates planned
+    epoch: float = 0.0  # Continuous epoch value (integer + fractional progress)
+    global_step: int = 0  # Total optimizer updates completed (0-indexed)
+    num_train_epochs: int  # Total epochs to train
+    is_local_process_zero: bool = True  # True if rank 0 on this node
+    is_world_process_zero: bool = True  # True if global rank 0
+    log_history: list[Dict[str, float]] = field(
+        default_factory=lambda: []
+    )  # All logged metrics
+    save_steps: int = 0  # How often to save checkpoints (in steps)
+    best_metric: float | None = None  # Best metric value (for load_best_model_at_end)
+    best_model_checkpoint: str | None = None  # Path to best checkpoint
+    # HF compatibility fields (not fully implemented in all trainers)
+    num_input_tokens_seen: int = 0  # Total input tokens processed
+    total_flos: float = 0.0  # Total floating point operations
+    is_hyper_param_search: bool = False  # Whether in hyperparameter search
     stateful_callbacks: List["TrainerCallback"] = field(default_factory=lambda: [])
 
-    # Not in HF state
-    max_eval_steps: int  # The maximum number of eval steps to take
-    epoch_start_step: int = 0  # The global step on which the current epoch started
-    raw_epoch: int = 0  # The raw epoch counter
+    # Forgather extensions (not in HF Trainer)
+    max_eval_steps: int  # Maximum eval steps to run (-1 for unlimited)
+    epoch_start_step: int = 0  # Global step when current epoch started
+    raw_epoch: int = 0  # Integer epoch counter (increments at end of dataset iteration)
 
 
 @dataclass(slots=True)
 class TrainerControl:
     """
-    Controls the execution flow of the Trainer class
-    This is the same API as used by the HF Trainer class, for compatibility.
-    This is only partially implemented at present.
+    Control flags for trainer execution flow.
+
+    Callbacks can return a modified TrainerControl to influence trainer behavior:
+    - Trigger checkpointing: Set should_save = True
+    - Trigger evaluation: Set should_evaluate = True
+    - Trigger logging: Set should_log = True
+    - Stop training gracefully: Set should_training_stop = True
+    - Stop current epoch: Set should_epoch_stop = True
+    - Abort without saving: Set should_abort_without_save = True
+
+    Compatible with HuggingFace Trainer API for easier callback porting.
+
+    Example callback usage:
+        def on_step_end(self, args, state, control, **kwargs):
+            if state.global_step % 1000 == 0:
+                control.should_save = True  # Force checkpoint every 1000 steps
+            return control
     """
 
-    should_training_stop: bool = False
-    should_epoch_stop: bool = False
-    should_save: bool = False
-    should_evaluate: bool = False
-    should_log: bool = False
+    should_training_stop: bool = False  # Stop training loop after current step
+    should_epoch_stop: bool = False  # Stop current epoch after current step
+    should_save: bool = False  # Trigger checkpoint save
+    should_evaluate: bool = False  # Trigger evaluation
+    should_log: bool = False  # Trigger metric logging
 
-    # Forgather extension: abort without saving
-    should_abort_without_save: bool = False
+    # Forgather extension: abort without saving checkpoint
+    should_abort_without_save: bool = False  # Abort training immediately without saving
 
 
 @dataclass(kw_only=True)
 class MinimalTrainingArguments:
     """
-    Stores training arguments, independent of model/dataset/etc.
+    Minimal training configuration compatible with HuggingFace Trainer.
 
-    A sub-set of the TrainingArguments from transformers.TrainingArguments
-    As a minimal sub-set, this should not be "everything-for-everyone."
-    Additional arguments can be added via sub-classing.
+    Provides a subset of transformers.TrainingArguments sufficient for basic training.
+    This is the base configuration class - extend it for additional features rather
+    than adding everything here.
+
+    Args:
+        output_dir: Directory where model predictions and checkpoints are written.
+        logging_dir: TensorBoard log directory. Defaults to output_dir/runs/TIMESTAMP_HOSTNAME.
+        per_device_train_batch_size: Training batch size per device. Global batch size is
+            per_device_train_batch_size * num_devices * gradient_accumulation_steps.
+        per_device_eval_batch_size: Evaluation batch size per device.
+        num_train_epochs: Total training epochs. Can be fractional (e.g., 2.5 trains 2.5 epochs).
+        max_steps: If > 0, total training steps to perform (overrides num_train_epochs).
+        device: Device to use (cuda, cpu, etc.). Auto-detected if None.
+        seed: Random seed for reproducibility. Use with model_init for full reproducibility.
+        use_cpu: Force CPU usage even if CUDA available.
+
+        epoch_train_steps: Fallback epoch length when dataset doesn't support len() (Forgather extension).
+
+        dataloader_num_workers: Number of subprocesses for data loading. 0 = load in main process.
+        dataloader_pin_memory: Pin memory in DataLoader for faster GPU transfer.
+        dataloader_persistent_workers: Keep worker processes alive between epochs (speeds up training, uses more RAM).
+        dataloader_prefetch_factor: Batches prefetched per worker. Defaults to 2 if num_workers > 0.
+        dataloader_drop_last: Drop last incomplete batch if dataset size not divisible by batch size.
+
+        eval_strategy: When to run evaluation: "no", "steps" (every eval_steps), or "epoch".
+        eval_steps: Evaluation frequency in steps (if eval_strategy="steps").
+        eval_delay: Number of epochs/steps to wait before first evaluation.
+
+        logging_strategy: When to log metrics: "no", "steps" (every logging_steps), or "epoch".
+        logging_steps: Logging frequency in steps (if logging_strategy="steps").
+        logging_first_step: Whether to log the very first global_step.
+
+        torch_compile: Compile model using PyTorch 2.0 torch.compile() for speedup.
+        torch_compile_backend: Backend for torch.compile (e.g., "inductor", "aot_eager").
+        torch_compile_mode: Compilation mode: "default", "reduce-overhead", or "max-autotune".
+        torch_compile_dynamic: Allow dynamic shapes in compiled model.
+        torch_compile_full_graph: Force compilation of entire model as single graph.
+
+        max_grad_norm: Maximum gradient norm for gradient clipping (None = no clipping).
+        gradient_accumulation_steps: Accumulate gradients over N steps before optimizer update.
+            Effective batch size = per_device_batch * num_devices * gradient_accumulation_steps.
+
+        save_strategy: Checkpoint save strategy: "no", "steps" (every save_steps), or "epoch".
+        save_steps: Checkpoint save frequency in steps (if save_strategy="steps").
+        save_total_limit: Max checkpoints to keep. Deletes oldest, but keeps best if load_best_model_at_end=True.
+        save_safetensors: Use safetensors format instead of pickle (safer, compatible).
+        save_on_each_node: In multi-node training, save on each node (not just main). Don't use with shared storage.
+        overwrite_output_dir: Overwrite output_dir contents (use to continue from checkpoint in that dir).
+        resume_from_checkpoint: Path to checkpoint to resume from, or True to auto-find latest.
+
+        load_best_model_at_end: Load best checkpoint at end of training (requires save_strategy == eval_strategy).
+        metric_for_best_model: Metric to compare models when load_best_model_at_end=True. Defaults to "loss".
+        greater_is_better: True if higher metric is better. Auto-determined from metric name if None.
+
+        lr_scheduler_type: LR scheduler type: "linear", "cosine", "polynomial", etc.
+        lr_scheduler_kwargs: Additional kwargs passed to LR scheduler.
+        warmup_steps: Linear warmup steps from 0 to learning_rate.
+        learning_rate: Initial learning rate for AdamW optimizer.
+        weight_decay: Weight decay for AdamW (applied to all layers except bias and LayerNorm).
+        adam_beta1: Beta1 hyperparameter for AdamW.
+        adam_beta2: Beta2 hyperparameter for AdamW.
+        adam_epsilon: Epsilon hyperparameter for AdamW.
+
+        gradient_checkpointing: Enable activation checkpointing to trade compute for memory.
+            Note: Pass enable_activation_checkpoint_fn to Trainer constructor to customize behavior.
+
+    For detailed HF Trainer documentation, see:
+    ~/fg/lib/python3.12/site-packages/transformers/training_args.py:214
+
+    Subclasses:
+    - BaseTrainingArguments: Adds checkpoint control and PyTorch optimizations
+    - TrainingArguments: Adds memory optimizations specific to simple Trainer
     """
 
     output_dir: str = OUTPUTDIR_NAME
@@ -257,12 +354,6 @@ class MinimalTrainingArguments:
 
     # Enable gradient checkpointing (a.k.a activation checkpointing) on models which support the HF API
     gradient_checkpointing: bool = False
-    # Note: Our trainer takes a partial function, wrapping an hook to enable activation checkpointing
-    # by default, we use forgather.ml.trainer:enable_hf_activation_checkpointing, which takes an arg,
-    # gradient_checkpointing_kwargs, which is passed to the checkpoint function. If you need to override
-    # the default args, pass the following to the trainer constructor
-    # enable_activation_checkpoint_fn: !partial:forgather.ml.trainer:enable_hf_activation_checkpointing { gradient_checkpointing_kwargs: { ARGS } }
-    # Otherwise, you can pass a custom function.
 
     def __str__(self):
         return pformat(self)
@@ -270,13 +361,19 @@ class MinimalTrainingArguments:
 
 class AbstractBaseTrainer(Protocol):
     """
-    A minimal subset of core "Trainer" methods, based upon the HF Trainer API
+    Minimal trainer interface based on HuggingFace Trainer API.
 
-    We are trying to keep this down to a minimum, as all "Trainers" should not
-    need to need to support every conceivable use-case. That's what class specialization
-    is for!
+    Defines the core methods that any trainer must implement:
+    - train(): Execute training loop
+    - evaluate(): Run evaluation
+    - save_model(): Save model weights
+    - save_checkpoint(): Save complete training state
+    - load_checkpoint(): Restore training state
 
-    A "Trainer," at a minimum, should be able to "train," "evaluate', and "save" models.
+    Kept minimal by design - specialized trainers add additional capabilities
+    through subclassing rather than bloating this interface.
+
+    Based on HF Trainer API for easier porting of existing code.
     """
 
     @abstractmethod
@@ -318,7 +415,19 @@ class AbstractBaseTrainer(Protocol):
 
 class ExtensibleTrainer(AbstractBaseTrainer):
     """
-    A slightly extended abstract Trainer, which supports the TrainerCallback API.
+    Trainer interface extended with callback support.
+
+    Adds callback management methods to AbstractBaseTrainer, enabling
+    extensibility through the TrainerCallback system.
+
+    Callbacks allow hooking into training events (on_step_end, on_epoch_begin, etc.)
+    without modifying trainer code. Common uses:
+    - Custom logging (TensorBoard, wandb, MLflow)
+    - Early stopping based on metrics
+    - Learning rate scheduling
+    - Progress bars and notifications
+
+    Compatible with HuggingFace TrainerCallback API.
     """
 
     @abstractmethod
@@ -348,10 +457,34 @@ class ExtensibleTrainer(AbstractBaseTrainer):
 
 class TrainerCallback(Protocol):
     """
-    Abstract trainer callback for handling various events.
-    This interface is intended to be compatible with the HF Trainer, as to ease porting.
-    Not all callbacks are implemented at present.
-    See: https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_callback.py#
+    Protocol for trainer event callbacks.
+
+    Callbacks receive notifications at key points during training and can modify
+    trainer behavior by returning an updated TrainerControl.
+
+    All methods are optional - implement only the events you need.
+
+    Common event hooks:
+    - on_init_end: After trainer initialization
+    - on_train_begin/on_train_end: Training loop boundaries
+    - on_epoch_begin/on_epoch_end: Epoch boundaries
+    - on_step_begin/on_step_end: Training step boundaries
+    - on_log: After logging metrics (use for TensorBoard, wandb, etc.)
+    - on_evaluate: After evaluation (access metrics via kwargs)
+    - on_save: After checkpoint save
+    - on_optimizer_step: After optimizer update
+
+    Each method receives:
+    - args: Training arguments
+    - state: Current trainer state (global_step, epoch, log_history, etc.)
+    - control: Control flags (can modify to influence trainer)
+    - **kwargs: Additional context (model, metrics, logs, etc.)
+
+    Returns:
+    - None or updated TrainerControl to modify trainer behavior
+
+    Compatible with HuggingFace TrainerCallback for easier porting.
+    See: https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_callback.py
     """
 
     def on_init_end(
@@ -492,16 +625,48 @@ class TrainerCallback(Protocol):
 
 
 class CheckpointInterface(Protocol):
+    """
+    Protocol for checkpoint management.
+
+    Defines interface for saving/loading complete training state (model, optimizer,
+    scheduler, dataset position, RNG state, etc.) and standalone model weights.
+
+    Implementations:
+    - CheckpointManager: Standard implementation in src/forgather/ml/trainer/checkpoint_manager.py
+
+    Key responsibilities:
+    - Save complete training checkpoints with versioning and limits
+    - Load checkpoints for resuming training
+    - Track best checkpoint (for load_best_model_at_end)
+    - Save standalone model weights (HF Trainer compatibility)
+    """
+
     @abstractmethod
     def save_checkpoint(
         self,
         checkpoint_path: str | None = None,
         checkpoint_id: str | None = None,
     ) -> str:
+        """
+        Save complete training checkpoint.
+
+        Args:
+            checkpoint_path: Specific path for checkpoint, or None for auto-generated
+            checkpoint_id: Identifier for checkpoint (e.g., global_step), used if path is None
+
+        Returns:
+            Path to saved checkpoint directory
+        """
         pass
 
     @abstractmethod
     def load_checkpoint(self, checkpoint_path: str | None = None) -> None:
+        """
+        Load checkpoint to resume training.
+
+        Args:
+            checkpoint_path: Path to checkpoint, or None to load latest checkpoint
+        """
         pass
 
     @abstractmethod
@@ -510,22 +675,68 @@ class CheckpointInterface(Protocol):
         output_dir: str | os.PathLike | None = None,
         overwrite_output_dir: bool = False,
     ) -> None:
+        """
+        Save only model weights (not full training state).
+
+        Args:
+            output_dir: Directory to save model, or None for default
+            overwrite_output_dir: Whether to overwrite existing model
+        """
         pass
 
     @abstractmethod
     def set_best_checkpoint(self, best_checkpoint: str) -> None:
+        """
+        Mark a checkpoint as the best model.
+
+        Args:
+            best_checkpoint: Path to checkpoint to mark as best
+        """
         pass
 
     @abstractmethod
     def resolve_checkpoint_path(self, checkpoint_path: str | None) -> str | None:
+        """
+        Resolve checkpoint path (e.g., find latest if path is None).
+
+        Args:
+            checkpoint_path: Explicit path or None for auto-resolution
+
+        Returns:
+            Resolved checkpoint path or None if not found
+        """
         pass
 
 
 class StatefulProvider(Protocol):
+    """
+    Protocol for providing stateful objects for checkpointing.
+
+    Used by checkpoint managers to collect all components that need to be
+    saved/restored during checkpointing (optimizer, scheduler, dataset, etc.).
+
+    Allows flexible control over what gets checkpointed - save/restore operations
+    can request different sets of stateful objects based on configuration.
+    """
+
     @abstractmethod
     def get_statefuls_for_save(self) -> Dict[str, Stateful]:
+        """
+        Get stateful objects to save in checkpoint.
+
+        Returns:
+            Dictionary mapping component names to Stateful objects for saving
+            (e.g., {"optimizer": optimizer, "scheduler": lr_scheduler})
+        """
         pass
 
     @abstractmethod
     def get_statefuls_for_load(self) -> Dict[str, Stateful]:
+        """
+        Get stateful objects to restore from checkpoint.
+
+        Returns:
+            Dictionary mapping component names to Stateful objects for loading
+            (e.g., {"optimizer": optimizer, "scheduler": lr_scheduler})
+        """
         pass

@@ -38,43 +38,65 @@ ModelConstructor = Callable[[], torch.nn.Module]
 
 @dataclass(kw_only=True)
 class BaseTrainingArguments(MinimalTrainingArguments):
-    # These arguments are NOT HF Compatible!
-    # Checkpointing options
-    save_optimizer_state: bool = True
-    save_scheduler_state: bool = True
-    save_dataset_state: bool = True
-    save_rng_state: bool = True
+    """
+    Extended training arguments with checkpoint control and PyTorch optimizations.
 
-    restore_optimizer_state: bool = True
-    restore_scheduler_state: bool = True
-    restore_dataset_state: bool = True
-    restore_rng_state: bool = True
+    Extends MinimalTrainingArguments with fine-grained control over what gets saved/restored
+    in checkpoints, plus PyTorch runtime optimizations.
 
-    # Default torch dtype
+    NOTE: These checkpoint save/restore options are NOT compatible with HF Trainer.
+    Use HF-compatible MinimalTrainingArguments for basic HF compatibility.
+    """
+
+    # Checkpointing options - control what gets saved in checkpoints
+    # These allow fine-grained control over checkpoint size vs resumability tradeoffs
+    save_optimizer_state: bool = True  # Save optimizer state (momentum, etc.)
+    save_scheduler_state: bool = True  # Save LR scheduler state
+    save_dataset_state: bool = True  # Save dataset iteration position
+    save_rng_state: bool = True  # Save random number generator states
+
+    # Control what gets restored from checkpoints
+    restore_optimizer_state: bool = True  # Restore optimizer state
+    restore_scheduler_state: bool = True  # Restore LR scheduler state
+    restore_dataset_state: bool = True  # Restore dataset iteration position
+    restore_rng_state: bool = True  # Restore RNG states for reproducibility
+
+    # Default torch dtype for model construction (e.g., "float32", "bfloat16", "float16")
     default_dtype: str | None = None
 
-    # Limit maximum validaiton/eval steps
+    # Limit maximum validation/eval steps (-1 for unlimited)
     max_eval_steps: int = -1
 
-    # Offload activation tensors to CPU memory -- best combined with some form of activation checkpointing.
+    # Offload activation tensors to CPU memory during backward pass to reduce GPU memory usage.
+    # Best combined with activation checkpointing. Trade GPU memory for CPU memory and bandwidth.
     # https://docs.pytorch.org/tutorials/intermediate/autograd_saved_tensors_hooks_tutorial.html#saving-tensors-to-cpu
     enable_activation_offloading: bool = False
 
-    # Set torch.autograd.set_detect_anomaly
+    # Enable PyTorch anomaly detection for debugging NaN/Inf in gradients.
+    # Adds overhead - only use for debugging.
     # https://docs.pytorch.org/docs/stable/autograd.html#debugging-and-anomaly-detection
     detect_anomaly: bool = False
 
-    # Set SDPA Kernel backend(s)
+    # Set Scaled Dot-Product Attention (SDPA) backend implementation.
+    # Options: "math" (reference), "flash" (Flash Attention), "efficient" (memory-efficient), "cudnn"
+    # Can be a single backend or list for priority order (if sdpa_set_priority=True)
     # https://docs.pytorch.org/docs/stable/generated/torch.nn.attention.sdpa_kernel.html#torch.nn.attention.sdpa_kernel
     sdpa_backend: List[str] | str | None = (
         None  # "math" | "flash" | "efficient" | "cudnn"
     )
-    sdpa_set_priority: bool = False  # If list, interpret as priority order
+    sdpa_set_priority: bool = (
+        False  # If True and sdpa_backend is list, interpret as priority order
+    )
 
-    # Set on NVIDIA Ampere or later GPUs to "high" when training in 32-bit precision for a significant speedup
+    # Set matmul precision for float32 operations on Ampere+ GPUs for speedup.
+    # "highest": Full IEEE precision (slowest)
+    # "high": TF32 precision (~10-20% speedup, minimal accuracy loss)
+    # "medium": More aggressive optimization (faster but may impact accuracy)
     # https://docs.pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html
     float32_matmul_precision: str | None = None  # "highest" | "high" | "medium"
 
+    # Override PyTorch dynamo recompilation limit (default is quite low).
+    # Increase if seeing frequent recompilations with torch.compile().
     dynamo_recompile_limit: int | None = None
 
     def __post_init__(self):
@@ -140,9 +162,28 @@ class BaseTrainingArguments(MinimalTrainingArguments):
 
 class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
     """
-    Implements the common aspects of the ExtensibleTrainer class,
-        but is also an abstract-base-class, with the meat of the "trainer"
-        implementation needing to be filled in.
+    Abstract base class implementing common trainer functionality.
+
+    Provides shared implementation for trainer infrastructure while leaving
+    the core training and evaluation loops abstract for subclasses to implement.
+
+    Key responsibilities:
+    - Callback management and event dispatching
+    - Model and checkpoint save/load coordination
+    - Training state management (global_step, epoch, etc.)
+    - Stateful interface for checkpointing trainer components
+    - Common initialization and configuration handling
+
+    Concrete implementations must define:
+    - _post_init(): Post-initialization hook (device setup, wrapping, etc.)
+    - _prepare(): Setup dataloaders, model, optimizer before training
+    - _train_loop(): The actual training iteration loop
+    - _eval_loop(): The evaluation loop
+
+    HuggingFace API Compatibility:
+    This class maintains API compatibility with transformers.Trainer where possible,
+    making it easier to port existing training code. See MinimalTrainingArguments
+    and BaseTrainingArguments for supported configuration options.
     """
 
     model: torch.nn.Module | None
@@ -168,7 +209,13 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
     @classmethod
     def default_callbacks(cls):
         """
-        Returns a list of default callbacks
+        Return list of default callbacks for this trainer class.
+
+        Subclasses override to provide default callbacks (progress bars, logging, etc.).
+        For example, Trainer adds ProgressCallback and InfoCallback by default.
+
+        Returns:
+            List of callback instances to install by default
         """
         return []
 
@@ -335,6 +382,18 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         self.pop_callback(callback)
 
     def log(self, logs: Dict[str, float]):
+        """
+        Log metrics and dispatch to callbacks.
+
+        Appends metrics to state.log_history and dispatches on_log event to
+        all callbacks. Callbacks can use this to write to TensorBoard, wandb, etc.
+
+        Args:
+            logs: Dictionary of metric name to value (e.g., {"loss": 0.5, "lr": 1e-4})
+
+        Returns:
+            TrainerControl from callbacks (may set flags like should_save, should_evaluate)
+        """
         self.state.log_history.append(logs)
 
         return self._dispatch_event(
@@ -347,7 +406,19 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         backend: List[str | SDPBackend] | str | SDPBackend | None,  # type: ignore[valid-type]
     ) -> List[SDPBackend] | SDPBackend | None:  # type: ignore[valid-type]
         """
-        Normalize various SDPA backend specification types
+        Normalize SDPA backend specifications to SDPBackend enum values.
+
+        Converts string backend names ("math", "flash", "efficient", "cudnn") to
+        PyTorch SDPBackend enum values. Handles both single backends and lists.
+
+        Args:
+            backend: Backend specification as string(s) or SDPBackend enum(s), or None
+
+        Returns:
+            SDPBackend enum value(s) or None if backend is None
+
+        Raises:
+            ValueError: If backend is not a valid type (str/list/SDPBackend/None)
         """
         if backend is None:
             return None
@@ -373,9 +444,29 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
 
     def _dispatch_event(self, event: str, **kwargs):
         """
-        Dispatch event to all callbacks
+        Dispatch event to all registered callbacks.
+
+        Calls the named event handler method on each callback (if defined).
+        Callbacks can return a new TrainerControl to modify trainer behavior
+        (e.g., trigger early stopping, force checkpoint save).
+
+        Common events:
+        - on_init_end: After trainer initialization
+        - on_train_begin/on_train_end: Training loop boundaries
+        - on_epoch_begin/on_epoch_end: Epoch boundaries
+        - on_step_begin/on_step_end: Training step boundaries
+        - on_log: After logging metrics
+        - on_evaluate: After evaluation
+        - on_save: After checkpoint save
+
+        Args:
+            event: Name of callback method to invoke (e.g., "on_train_begin")
+            **kwargs: Additional arguments passed to callback (logs, metrics, etc.)
+
+        Returns:
+            Updated TrainerControl (last non-None return from callbacks)
         """
-        # Dispatch to call backkbacks in list
+        # Dispatch to call callbacks in list
         unwrapped_model = self.unwrapped_model()
         for callback in self.callbacks:
             event_handler = getattr(callback, event, None)
@@ -401,13 +492,38 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         return self.control
 
     def unwrapped_model(self) -> torch.nn.Module:
-        # Gen unwrapped model. e.g., if wrapped with DDP, return the base model
+        """
+        Get the underlying model without any wrappers.
+
+        Returns the base model, unwrapped from any distributed training wrappers
+        (DDP, FSDP, Accelerate, pipeline parallelism, etc.).
+
+        Subclasses that wrap the model override this to return the unwrapped version.
+        For example:
+        - AccelTrainer: Returns accelerator.unwrap_model(self.model)
+        - PipelineTrainer: Returns the unwrapped pipeline stage models
+
+        Returns:
+            The unwrapped base model
+        """
         assert self.model
         return self.model
 
     # AbstractBaseTrainer
     @override
     def save_model(self, output_dir: Optional[os.PathLike | str] = None) -> None:
+        """
+        Save just the model weights and preprocessing class (HF Trainer API compatibility).
+
+        Saves model to output_dir or args.output_dir. This saves ONLY the model weights,
+        not the full training state. For resumable training, use save_checkpoint() instead.
+
+        Note: This method exists primarily for HF Trainer API compatibility. In practice,
+        save_checkpoint() is more useful as it saves complete training state.
+
+        Args:
+            output_dir: Directory to save model, defaults to args.output_dir
+        """
         assert self.checkpoint_manager
         self.checkpoint_manager.save_model(
             output_dir=output_dir, overwrite_output_dir=self.args.overwrite_output_dir
@@ -416,18 +532,64 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
     # AbstractBaseTrainer
     @override
     def save_checkpoint(self, checkpoint_path=None) -> None:
+        """
+        Save complete training checkpoint.
+
+        Saves model, optimizer, scheduler, dataset position, RNG state, and trainer state
+        to a timestamped checkpoint directory under args.output_dir. This allows resuming
+        training from the exact point where it left off.
+
+        Checkpoint contents controlled by args.save_*_state flags:
+        - save_optimizer_state: Optimizer state (momentum buffers, etc.)
+        - save_scheduler_state: LR scheduler state
+        - save_dataset_state: Dataset iteration position
+        - save_rng_state: Random number generator states
+
+        Args:
+            checkpoint_path: Optional specific checkpoint path, otherwise auto-generated
+        """
         assert self.checkpoint_manager
         self.checkpoint_manager.save_checkpoint(checkpoint_path)
 
     # AbstractBaseTrainer
     @override
     def load_checkpoint(self, checkpoint_path=None) -> None:
+        """
+        Load complete training checkpoint to resume training.
+
+        Restores model, optimizer, scheduler, dataset position, RNG state, and trainer state
+        from a saved checkpoint. If checkpoint_path is None, automatically finds the latest
+        checkpoint in args.output_dir.
+
+        What gets restored is controlled by args.restore_*_state flags:
+        - restore_optimizer_state: Restore optimizer state
+        - restore_scheduler_state: Restore LR scheduler state
+        - restore_dataset_state: Restore dataset iteration position
+        - restore_rng_state: Restore RNG states for reproducibility
+
+        Args:
+            checkpoint_path: Path to checkpoint directory, or None for latest checkpoint
+        """
         assert self.checkpoint_manager
         self.checkpoint_manager.load_checkpoint(checkpoint_path)
 
     # StatefulProvider
     @override
     def get_statefuls_for_save(self):
+        """
+        Get dictionary of stateful objects to save in checkpoint.
+
+        Collects trainer components that need to be saved for resumable training.
+        What gets included is controlled by args.save_*_state flags.
+
+        Returns:
+            Dictionary mapping component names to Stateful objects:
+            - "optimizer": Optimizer state (momentum, adaptive rates, etc.)
+            - "scheduler": LR scheduler state (current step, etc.)
+            - "trainer": Trainer state (global_step, epoch, etc.)
+            - "dataset": Dataset/dataloader iteration position
+            - "rng": RNG states (torch, numpy, random module)
+        """
         statefuls = {}
         save_dataset_state = False
 
@@ -456,6 +618,20 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
     # StatefulProvider
     @override
     def get_statefuls_for_load(self):
+        """
+        Get dictionary of stateful objects to restore from checkpoint.
+
+        Collects trainer components that should be loaded from checkpoint for
+        resuming training. What gets included is controlled by args.restore_*_state flags.
+
+        Returns:
+            Dictionary mapping component names to Stateful objects:
+            - "optimizer": Optimizer to restore state into
+            - "scheduler": LR scheduler to restore state into
+            - "trainer": Trainer to restore state into (global_step, epoch, etc.)
+            - "dataset": Dataset/dataloader to restore iteration position
+            - "rng": RNG states to restore for reproducibility
+        """
         statefuls = {}
         restore_dataset_state = False
         if self.args.restore_dataset_state:
@@ -483,6 +659,15 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
     # Stateful
     @override
     def load_state_dict(self, state_dict):
+        """
+        Restore trainer training progress state from checkpoint.
+
+        Implements PyTorch Stateful interface. Restores training step counters
+        and progress tracking to resume training from the correct point.
+
+        Args:
+            state_dict: Dictionary with training state (global_step, epoch, etc.)
+        """
         self.state.global_step = state_dict["global_step"]
         self.state.epoch_start_step = state_dict["epoch_start_step"]
         self.state.raw_epoch = state_dict["raw_epoch"]
@@ -492,6 +677,20 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
     # Stateful
     @override
     def state_dict(self):
+        """
+        Get trainer training progress state for checkpointing.
+
+        Implements PyTorch Stateful interface. Returns training step counters
+        and progress tracking needed to resume training.
+
+        Returns:
+            Dictionary with training state:
+            - global_step: Total optimizer updates since training start
+            - epoch_start_step: Global step when current epoch started
+            - raw_epoch: Integer epoch counter
+            - num_input_tokens_seen: Total tokens processed (for logging)
+            - total_flos: Total floating point operations (for efficiency metrics)
+        """
         return {
             "global_step": self.state.global_step,
             "epoch_start_step": self.state.epoch_start_step,
@@ -503,10 +702,20 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
     @abstractmethod
     def _post_init(self) -> None:
         """
-        This hook is intended to be used for an implementation which needs to wrap the components,
-        load things to devices, etc.
+        Post-initialization hook called at end of __init__.
 
-        For example, Torch DDP and Accelerate.
+        Used by concrete trainer implementations to perform additional setup after
+        basic initialization. Common uses:
+        - Set device if not specified
+        - Validate configuration combinations
+        - Set up data collators
+
+        Distributed trainers may defer some setup to _prepare() where datasets are available.
+
+        Examples:
+        - Trainer: Sets default device, validates args, sets default data_collator
+        - AccelTrainer: Initializes Accelerator instance
+        - PipelineTrainer: Validates pipeline parallelism configuration
         """
         pass
 
@@ -517,33 +726,85 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         eval_dataset: IterableDatasetT | None,
     ) -> None:
         """
-        Prepare for training and/or evaluation
+        Prepare all components for training and/or evaluation.
 
-        The dataloaders shoud be constructed for the provided datasets, which MAY be None.
-        If train_dataset is not None, prepare for training:
-            Init optimizer, lr_schedulr, etc.
+        Called at the start of train() or evaluate() to set up everything needed
+        for the training/eval loop. Both datasets may be None (eval-only or train-only).
 
-        Subclasses of a concrete implementation may use this to 'wrap' objects.
-        e.g. Accelerate or DDP.
+        Typical preparation sequence:
+        1. Create dataloaders from datasets
+        2. Initialize/move model to device(s)
+        3. Set up optimizer and LR scheduler (if training)
+        4. Wrap components for distributed training (DDP, Accelerate, etc.)
+        5. Initialize trainer state
+        6. Create checkpoint manager
+        7. Load checkpoint if resuming
+
+        Subclasses must implement this to handle their specific setup requirements.
+
+        Args:
+            train_dataset: Training dataset or None for eval-only
+            eval_dataset: Evaluation dataset or None for train-only
         """
         pass
 
     @abstractmethod
     def _train_loop(self) -> TrainOutput:
         """
-        The inner training loop
+        Execute the main training loop.
+
+        Implements the core training iteration logic:
+        - Iterate over epochs and batches
+        - Forward/backward passes
+        - Optimizer steps and gradient accumulation
+        - Periodic logging, evaluation, and checkpointing
+        - Callback event dispatching
+        - Early stopping and control flow
+
+        Must be implemented by concrete trainer classes.
+
+        Returns:
+            TrainOutput with final global_step and training metrics
         """
         pass
 
     @abstractmethod
     def _eval_loop(self) -> dict[str, float]:
         """
-        The inner evaluation loop
+        Execute the evaluation loop.
+
+        Implements evaluation logic:
+        - Iterate over evaluation dataset
+        - Forward-only passes (no gradients)
+        - Compute and aggregate metrics
+        - Callback event dispatching
+
+        Must be implemented by concrete trainer classes.
+
+        Returns:
+            Dictionary of evaluation metrics (e.g., {"eval_loss": 0.5})
         """
         pass
 
 
 def logits_from_outputs(outputs) -> Tensor:
+    """
+    Extract logits from model outputs (handles multiple output formats).
+
+    Models may return outputs in different formats:
+    - Tensor: Logits directly
+    - Object with .logits attribute: HF-style ModelOutput
+    - Tuple: (loss, logits) or similar
+
+    Args:
+        outputs: Model forward pass outputs
+
+    Returns:
+        Logits tensor
+
+    Raises:
+        AssertionError: If outputs don't contain logits in expected format
+    """
     if not isinstance(outputs, Tensor):
         assert hasattr(outputs, "logits"), f"Type is {type(outputs)}"
         return outputs.logits
@@ -551,6 +812,22 @@ def logits_from_outputs(outputs) -> Tensor:
 
 
 def loss_from_outputs(outputs) -> Tensor:
+    """
+    Extract loss from model outputs (handles multiple output formats).
+
+    Models may return outputs in different formats:
+    - Tuple: (loss, ...) - loss is first element
+    - Object with .loss attribute: HF-style ModelOutput
+
+    Args:
+        outputs: Model forward pass outputs
+
+    Returns:
+        Loss tensor
+
+    Raises:
+        AssertionError: If outputs don't contain loss in expected format
+    """
     if isinstance(outputs, tuple):
         loss = outputs[0]
         assert isinstance(loss, Tensor)
@@ -560,6 +837,22 @@ def loss_from_outputs(outputs) -> Tensor:
 
 
 def loss_and_logits_from_outputs(outputs) -> Tuple[Tensor, Tensor]:
+    """
+    Extract both loss and logits from model outputs (handles multiple formats).
+
+    Models may return outputs in different formats:
+    - Tuple: (loss, logits)
+    - Object with .loss and .logits attributes: HF-style ModelOutput
+
+    Args:
+        outputs: Model forward pass outputs
+
+    Returns:
+        Tuple of (loss, logits) tensors
+
+    Raises:
+        AssertionError: If outputs don't contain loss and logits in expected format
+    """
     if isinstance(outputs, tuple):
         loss, logits = outputs
         assert isinstance(loss, Tensor) and isinstance(logits, Tensor)
