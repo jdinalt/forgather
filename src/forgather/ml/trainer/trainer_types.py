@@ -152,8 +152,10 @@ class TrainerState:
     is_hyper_param_search: bool = False
     stateful_callbacks: List["TrainerCallback"] = field(default_factory=lambda: [])
 
-    # Not if HF
-    max_eval_steps: int
+    # Not in HF state
+    max_eval_steps: int  # The maximum number of eval steps to take
+    epoch_start_step: int = 0  # The global step on which the current epoch started
+    raw_epoch: int = 0  # The raw epoch counter
 
 
 @dataclass(slots=True)

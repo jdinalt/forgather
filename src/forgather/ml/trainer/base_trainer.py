@@ -420,13 +420,13 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         self.checkpoint_manager.save_checkpoint(checkpoint_path)
 
     # AbstractBaseTrainer
-    # @override
+    @override
     def load_checkpoint(self, checkpoint_path=None) -> None:
         assert self.checkpoint_manager
         self.checkpoint_manager.load_checkpoint(checkpoint_path)
 
     # StatefulProvider
-    # @override
+    @override
     def get_statefuls_for_save(self):
         statefuls = {}
         save_dataset_state = False
@@ -484,11 +484,21 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
     @override
     def load_state_dict(self, state_dict):
         self.state.global_step = state_dict["global_step"]
+        self.state.epoch_start_step = state_dict["epoch_start_step"]
+        self.state.raw_epoch = state_dict["raw_epoch"]
+        self.state.num_input_tokens_seen = state_dict["num_input_tokens_seen"]
+        self.state.total_flos = state_dict["total_flos"]
 
     # Stateful
     @override
     def state_dict(self):
-        return {"global_step": self.state.global_step}
+        return {
+            "global_step": self.state.global_step,
+            "epoch_start_step": self.state.epoch_start_step,
+            "raw_epoch": self.state.raw_epoch,
+            "num_input_tokens_seen": self.state.num_input_tokens_seen,
+            "total_flos": self.state.total_flos,
+        }
 
     @abstractmethod
     def _post_init(self) -> None:

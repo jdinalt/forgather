@@ -30,6 +30,7 @@ from torch.utils.data import DataLoader
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from forgather.ml.construct import torch_dtype
+from forgather.ml.datasets import sync_dataset_state_from_dataloader
 from forgather.ml.utils import default_dtype
 
 from ..distributed import DistributedEnvInterface
@@ -732,6 +733,10 @@ class Trainer(BaseTrainer):
                     try:
                         loss, total_norm = self._train_step(data_iterator)
                     except StopIteration:
+                        self.state.raw_epoch += 1
+                        self.state.epoch_start_step = self.state.global_step
+                        if self.state.raw_epoch >= self.args.num_train_epochs:
+                            self.control.should_epoch_stop = True
                         self._dispatch_event("on_step_end")
                         break
 
@@ -742,8 +747,9 @@ class Trainer(BaseTrainer):
                     self.state.global_step += 1
 
                     # Compute epoch as continuous value from global steps
-                    self.state.epoch = float(self.state.global_step) / float(
-                        self.epoch_train_steps
+                    self.state.epoch = float(self.state.raw_epoch) + (
+                        float(self.state.global_step - self.state.epoch_start_step)
+                        / float(self.epoch_train_steps)
                     )
 
                     self._dispatch_event("on_step_end")
@@ -830,6 +836,7 @@ class Trainer(BaseTrainer):
             assert step >= 0, "The eval dataloader did not yield any examples"
 
             metrics = {"eval_loss": (total_loss / (step + 1)).item()}
+            sync_dataset_state_from_dataloader(self.eval_dataloader)
             self._dispatch_event("on_evaluate", metrics=metrics)
             return metrics
 
@@ -930,6 +937,8 @@ class Trainer(BaseTrainer):
 
         With gradient accumulation, global steps = batch_count // gradient_accumulation_steps
         """
+        sync_dataset_state_from_dataloader(self.train_dataloader)
+
         # The number of training steps in a single epoch (batch processing steps)
         if isinstance(self.train_dataloader, Sized):
             self.epoch_train_steps = len(self.train_dataloader)
@@ -1135,3 +1144,8 @@ class Trainer(BaseTrainer):
         This implementaiton only supports a single process, so we just return the input.
         """
         return loss
+
+    @override
+    def load_checkpoint(self, *args, **kwargs) -> None:
+        super().load_checkpoint(*args, **kwargs)
+        self._update_training_steps()
