@@ -1442,6 +1442,171 @@ class FastDatasetLoaderSimple:
             )
             return None
 
+    def _is_saved_dataset_path(self, path: str) -> bool:
+        """
+        Check if path is a local directory containing a saved dataset.
+
+        Saved datasets (from save_to_disk()) have this structure:
+            path/
+            ├── dataset_dict.json     # {"splits": ["train", ...]}
+            └── train/
+                ├── state.json        # {"_data_files": [...]}
+                ├── dataset_info.json
+                └── data-*.arrow
+
+        Or for single-split datasets:
+            path/
+            ├── state.json
+            ├── dataset_info.json
+            └── data-*.arrow
+        """
+        if not path:
+            return False
+
+        dataset_path = Path(path)
+        if not dataset_path.is_dir():
+            return False
+
+        # Check for multi-split format (dataset_dict.json)
+        if (dataset_path / "dataset_dict.json").exists():
+            return True
+
+        # Check for single-split format (state.json in root)
+        if (dataset_path / "state.json").exists():
+            return True
+
+        return False
+
+    def _load_saved_dataset(
+        self,
+        path: str,
+        split: str,
+        force_reindex: bool = False,
+        length_estimate: str = "dynamic",
+        reset_length_on_iter: bool = False,
+    ) -> Optional["SimpleArrowIterableDataset"]:
+        """
+        Load a saved dataset directly from disk, bypassing load_from_disk().
+
+        Args:
+            path: Path to saved dataset directory
+            split: Split to load (e.g., 'train')
+            force_reindex: Force reindexing even if cached
+            length_estimate: Length estimation mode
+            reset_length_on_iter: Reset length counts on each iteration
+
+        Returns:
+            SimpleArrowIterableDataset if successful, None otherwise
+        """
+        dataset_path = Path(path)
+
+        # Determine split directory
+        dataset_dict_path = dataset_path / "dataset_dict.json"
+        if dataset_dict_path.exists():
+            # Multi-split format
+            with open(dataset_dict_path, "r") as f:
+                dataset_dict = json.load(f)
+
+            available_splits = dataset_dict.get("splits", [])
+            if split not in available_splits:
+                logger.warning(
+                    f"Split '{split}' not found in saved dataset. "
+                    f"Available splits: {available_splits}"
+                )
+                return None
+
+            split_dir = dataset_path / split
+        else:
+            # Single-split format (state.json in root)
+            split_dir = dataset_path
+
+        # Read state.json to get data files
+        state_path = split_dir / "state.json"
+        if not state_path.exists():
+            logger.warning(f"state.json not found in {split_dir}")
+            return None
+
+        with open(state_path, "r") as f:
+            state = json.load(f)
+
+        data_files = state.get("_data_files", [])
+        if not data_files:
+            logger.warning(f"No data files listed in {state_path}")
+            return None
+
+        # Build full paths to Arrow files
+        arrow_files = [
+            str(split_dir / df["filename"])
+            for df in data_files
+            if df.get("filename", "").endswith(".arrow")
+        ]
+
+        if not arrow_files:
+            logger.warning(f"No Arrow files found in {split_dir}")
+            return None
+
+        # Verify files exist
+        missing = [f for f in arrow_files if not Path(f).exists()]
+        if missing:
+            logger.warning(f"Missing Arrow files: {missing[:5]}...")
+            return None
+
+        num_files = len(arrow_files)
+        logger.info(f"Found saved dataset with {num_files} Arrow file(s)")
+
+        # Check for cached index
+        config_hash = self._get_config_hash(path, split=split)
+        if not force_reindex:
+            index_data = self._load_index(config_hash)
+            if index_data is not None:
+                cached_files = index_data.get("arrow_files", [])
+                if cached_files == arrow_files:
+                    logger.info("Loading from cached index")
+                    file_lengths = index_data.get("file_lengths")
+                    iterable_ds = SimpleArrowIterableDataset(arrow_files, file_lengths)
+                    iterable_ds.length_estimate_mode = length_estimate
+                    iterable_ds._reset_length_on_iter = reset_length_on_iter
+                    return iterable_ds
+
+        # Get file lengths - try dataset_info.json first (if it has shard_lengths)
+        file_lengths = self._get_file_lengths_from_metadata(arrow_files, split)
+
+        if file_lengths is None:
+            # Fall back to reading each Arrow file
+            logger.info("Computing per-file example counts...")
+            file_lengths = []
+
+            use_progress = HAS_TQDM and sys.stderr.isatty()
+            iterator = (
+                tqdm(arrow_files, desc="Indexing files", unit="file")
+                if use_progress
+                else arrow_files
+            )
+
+            for arrow_file in iterator:
+                ds_file = Dataset.from_file(arrow_file)
+                file_lengths.append(len(ds_file))
+
+        total_examples = sum(file_lengths)
+        logger.info(f"Total examples: {total_examples:,}")
+
+        # Save index for future use
+        metadata = {
+            "dataset_path": path,
+            "split": split,
+            "source": "saved_dataset",
+            "num_arrow_files": num_files,
+            "total_examples": total_examples,
+        }
+        self._save_index(config_hash, arrow_files, file_lengths, metadata)
+
+        # Create dataset
+        iterable_ds = SimpleArrowIterableDataset(arrow_files, file_lengths)
+        iterable_ds.length_estimate_mode = length_estimate
+        iterable_ds._reset_length_on_iter = reset_length_on_iter
+
+        return iterable_ds
+
     def _save_index(
         self,
         config_hash: str,
@@ -1496,10 +1661,14 @@ class FastDatasetLoaderSimple:
         """
         Load dataset as IterableDataset with instant loading after first time.
 
-        Supports HuggingFace split notation like "train[10000:]" without triggering
-        reindexing. The base split is used for caching, and slicing is applied virtually.
+        Supports both HuggingFace Hub datasets and local saved datasets (from save_to_disk()).
+        For Hub datasets, supports HuggingFace split notation like "train[10000:]" without
+        triggering reindexing.
 
         Args:
+            path: Either a HuggingFace Hub dataset path (e.g., 'allenai/c4')
+                  or a local directory path to a saved dataset
+            split: Split to load (e.g., 'train', 'validation')
             length_estimate: How to estimate length for mapped datasets
                 'static': Never change from original (safest)
                 'dynamic': Progressive estimate, lock after full iteration (default)
@@ -1507,6 +1676,32 @@ class FastDatasetLoaderSimple:
             reset_length_on_iter: If True, reset counts on each new iteration.
                                    If False (default), preserve estimates across iterations.
         """
+        # Check if path is a local saved dataset directory
+        if self._is_saved_dataset_path(path):
+            logger.info(f"Detected saved dataset at: {path}")
+            # Parse split notation for saved datasets too
+            base_split, slice_start, slice_end = (
+                _parse_split_notation(split) if split else (split, None, None)
+            )
+            # Default to 'train' if no split specified
+            effective_split = base_split or "train"
+
+            result = self._load_saved_dataset(
+                path=path,
+                split=effective_split,
+                force_reindex=force_reindex,
+                length_estimate=length_estimate,
+                reset_length_on_iter=reset_length_on_iter,
+            )
+            if result is not None:
+                # Apply slice if present
+                if slice_start is not None or slice_end is not None:
+                    result = result.slice(slice_start, slice_end)
+                return result
+            else:
+                logger.warning("Failed to load saved dataset, falling back to load_from_disk")
+                # Fall through to try load_from_disk via load_dataset
+
         # Parse split notation (e.g., "train[10000:]" → "train", 10000, None)
         base_split, slice_start, slice_end = (
             _parse_split_notation(split) if split else (split, None, None)
@@ -1674,6 +1869,7 @@ def fast_load_iterable_dataset(
     """
     Fast loading as IterableDataset with proper sharding support.
 
+    Supports both HuggingFace Hub datasets and local saved datasets (from save_to_disk()).
     First call: Slow (indexes Arrow files), subsequent calls: Instant.
 
     Returns a SimpleArrowIterableDataset that:
@@ -1684,7 +1880,8 @@ def fast_load_iterable_dataset(
     - Each Arrow file = 1 natural shard
 
     Args:
-        path: Path to dataset on HuggingFace Hub or local path
+        path: Either a HuggingFace Hub dataset path (e.g., 'allenai/c4') or
+              a local directory path to a saved dataset (from save_to_disk())
         name: Dataset configuration name (e.g., "wikitext-2-raw-v1")
         split: Split to load (e.g., "train", "train[:1000]")
         data_files: Specific data files to load
