@@ -1377,6 +1377,71 @@ class FastDatasetLoaderSimple:
             return [df["filename"] for df in dataset_obj._data_files]
         return None
 
+    def _get_file_lengths_from_metadata(
+        self, arrow_files: List[str], split: str
+    ) -> Optional[List[int]]:
+        """
+        Try to extract file lengths from HuggingFace's dataset_info.json.
+
+        This avoids opening each Arrow file individually to read metadata.
+        For datasets with thousands of files, this is significantly faster.
+
+        Args:
+            arrow_files: List of Arrow file paths
+            split: Split name (e.g., 'train', 'validation')
+
+        Returns:
+            List of file lengths if found and validated, None otherwise
+        """
+        if not arrow_files:
+            return None
+
+        try:
+            # All Arrow files should be in the same cache directory
+            cache_dir = Path(arrow_files[0]).parent
+
+            # Look for dataset_info.json in the cache directory
+            dataset_info_path = cache_dir / "dataset_info.json"
+            if not dataset_info_path.exists():
+                return None
+
+            # Parse the metadata file
+            with open(dataset_info_path, "r") as f:
+                dataset_info = json.load(f)
+
+            # Extract shard_lengths for this split
+            splits = dataset_info.get("splits", {})
+            if split not in splits:
+                return None
+
+            shard_lengths = splits[split].get("shard_lengths", [])
+
+            # Validate that the number of shards matches number of Arrow files
+            if len(shard_lengths) != len(arrow_files):
+                logger.warning(
+                    f"Shard count mismatch: dataset_info.json has {len(shard_lengths)} shards, "
+                    f"but found {len(arrow_files)} Arrow files. Falling back to file-by-file indexing."
+                )
+                return None
+
+            # Validate that it's not empty
+            if not shard_lengths:
+                return None
+
+            logger.info(
+                f"Loaded file lengths from dataset_info.json: {len(shard_lengths)} files, "
+                f"{sum(shard_lengths):,} total examples"
+            )
+            return shard_lengths
+
+        except Exception as e:
+            # If anything goes wrong, fall back to reading files individually
+            logger.debug(
+                f"Could not load file lengths from dataset_info.json: {e}. "
+                f"Falling back to file-by-file indexing."
+            )
+            return None
+
     def _save_index(
         self,
         config_hash: str,
@@ -1520,20 +1585,25 @@ class FastDatasetLoaderSimple:
             logger.info(f"Found {num_files} Arrow file(s) in HF cache")
 
             # Compute per-file example counts
-            logger.info("Computing per-file example counts...")
-            file_lengths = []
+            # First try to load from dataset_info.json (fast path for HF datasets)
+            file_lengths = self._get_file_lengths_from_metadata(arrow_files, base_split)
 
-            # Use tqdm progress bar if available and connected to TTY
-            use_progress = HAS_TQDM and sys.stderr.isatty()
-            iterator = (
-                tqdm(arrow_files, desc="Indexing files", unit="file")
-                if use_progress
-                else arrow_files
-            )
+            if file_lengths is None:
+                # Fall back to reading each Arrow file individually
+                logger.info("Computing per-file example counts...")
+                file_lengths = []
 
-            for arrow_file in iterator:
-                ds_file = Dataset.from_file(arrow_file)
-                file_lengths.append(len(ds_file))
+                # Use tqdm progress bar if available and connected to TTY
+                use_progress = HAS_TQDM and sys.stderr.isatty()
+                iterator = (
+                    tqdm(arrow_files, desc="Indexing files", unit="file")
+                    if use_progress
+                    else arrow_files
+                )
+
+                for arrow_file in iterator:
+                    ds_file = Dataset.from_file(arrow_file)
+                    file_lengths.append(len(ds_file))
 
             total_examples = sum(file_lengths)
             logger.info(f"Total examples: {total_examples:,}")
