@@ -170,8 +170,20 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
     def shuffle(self, seed: Optional[int] = None, buffer_size: int = 1000):
         """
         Shuffle at the Arrow file level (shard-level shuffling).
+
+        Args:
+            seed: Random seed for shuffling. If None, generates a random seed.
+                  Storing the seed allows checkpoint/restore to reproduce the shuffle.
+            buffer_size: Unused (kept for API compatibility)
+
+        Returns:
+            New dataset instance with shuffled file order
         """
         import random
+
+        # Generate seed if not provided, so shuffle can be reproduced from checkpoint
+        if seed is None:
+            seed = random.randint(0, 2**31 - 1)
 
         # Shuffle Arrow file order (and lengths in parallel)
         if self.file_lengths:
@@ -191,7 +203,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         # Create new instance with shuffled files
         new_dataset = SimpleArrowIterableDataset(shuffled_files, shuffled_lengths)
         new_dataset._shard_config = self._shard_config
-        new_dataset._shuffle_seed = seed
+        new_dataset._shuffle_seed = seed  # Always set seed for reproducibility
         new_dataset._shuffled_files = shuffled_files
         new_dataset._shuffled_lengths = shuffled_lengths
         new_dataset._split_start_idx = self._split_start_idx
@@ -343,6 +355,13 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             - Divides total examples evenly across shards
             - Slightly more overhead during iteration
         """
+        if index >= num_shards:
+            raise ValueError(
+                f"Shard index ({index}) must be less than num_shards ({num_shards})"
+            )
+        if index < 0:
+            raise ValueError(f"Shard index must be non-negative, got {index}")
+
         new_dataset = SimpleArrowIterableDataset(self.arrow_files, self.file_lengths)
         new_dataset._shuffled_files = self._shuffled_files
         new_dataset._shuffled_lengths = self._shuffled_lengths
@@ -601,6 +620,29 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             raise ValueError(
                 f"Map function must return a dictionary or None, got {type(result)}"
             )
+
+        # Validate batch map result structure
+        if result:
+            # Check that all values are lists of the same length or all scalars
+            list_lengths = []
+            has_scalars = False
+            for col, values in result.items():
+                if isinstance(values, list):
+                    list_lengths.append(len(values))
+                else:
+                    has_scalars = True
+
+            if list_lengths and has_scalars:
+                # Mixed lists and scalars - this is allowed (scalars are broadcast)
+                pass
+            elif list_lengths:
+                # All lists - check they have the same length
+                if len(set(list_lengths)) > 1:
+                    raise ValueError(
+                        f"Batched map function returned lists of different lengths: "
+                        f"{dict(zip(result.keys(), list_lengths))}. "
+                        f"All lists must have the same length."
+                    )
 
         # Convert batch format back to list of examples
         # Example: {"input_ids": [[1,2], [3,4]]} -> [{"input_ids": [1,2]}, {"input_ids": [3,4]}]
@@ -970,11 +1012,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             return self._cached_exact_length
 
         # Dynamic mode: estimate from observed ratio
-        # Include pending batch buffer in the calculation for batched maps
-        effective_input = self._input_count + self._current_batch_buffer_size
-        if self._output_count > 0 and effective_input > 0:
+        if self._output_count > 0 and self._input_count > 0:
             original = self._get_original_length()
-            ratio = self._output_count / effective_input
+            ratio = self._output_count / self._input_count
             estimated = int(original * ratio)
             return estimated
 
@@ -1102,14 +1142,19 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Get checkpoint state.
 
+        For efficiency, this doesn't store the arrow_files list or file_lengths,
+        which can be thousands of entries. Instead, it stores a checksum to verify
+        dataset identity on restore. Similarly, shuffled arrays are reproduced
+        from the shuffle seed rather than stored.
+
         Returns:
             Dictionary containing:
             - current_file_index: Which Arrow file we're currently in
             - current_example_index: Which example within that file
             - shuffle_seed: Random seed used for shuffling (if any)
             - shard_config: Sharding configuration (if any)
-            - arrow_files: List of Arrow file paths
-            - shuffled_files: Shuffled file order (if shuffled)
+            - dataset_fingerprint: Hash of arrow_files for verification
+            - num_files: Number of arrow files (for validation)
             - split_start_idx: Start index for virtual split (if any)
             - split_end_idx: End index for virtual split (if any)
             - shard_start_idx: Start index for example-level sharding (if any)
@@ -1122,15 +1167,22 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             - cached_exact_length: Exact count after full iteration
             - length_invalidated: Whether stats were invalidated
         """
+        import hashlib
+
+        # Create fingerprint of dataset (hash of file paths)
+        # This verifies we're restoring to the same dataset
+        file_list_str = "\n".join(self.arrow_files)
+        fingerprint = hashlib.sha256(file_list_str.encode()).hexdigest()
+
         return {
             "current_file_index": self._current_file_index,
             "current_example_index": self._current_example_index,
             "shuffle_seed": self._shuffle_seed,
             "shard_config": self._shard_config,
-            "arrow_files": self.arrow_files,
-            "file_lengths": self.file_lengths,
-            "shuffled_files": self._shuffled_files,
-            "shuffled_lengths": self._shuffled_lengths,
+            # Instead of storing thousands of file paths, store a checksum
+            "dataset_fingerprint": fingerprint,
+            "num_files": len(self.arrow_files),
+            # No need to store shuffled arrays - we can reproduce from seed
             "split_start_idx": self._split_start_idx,
             "split_end_idx": self._split_end_idx,
             "shard_start_idx": self._shard_start_idx,
@@ -1158,20 +1210,59 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         Note: With multi-worker DataLoader, this is called once per worker with
         that worker's specific state.
         """
+        import hashlib
+        import random
+
         self._current_file_index = state_dict["current_file_index"]
         self._current_example_index = state_dict["current_example_index"]
         self._shuffle_seed = state_dict.get("shuffle_seed")
         self._shard_config = state_dict.get("shard_config")
-        self.arrow_files = state_dict["arrow_files"]
-        self.file_lengths = state_dict.get("file_lengths")
-        self._shuffled_files = state_dict.get("shuffled_files")
-        self._shuffled_lengths = state_dict.get("shuffled_lengths")
+
+        # Verify dataset fingerprint matches
+        file_list_str = "\n".join(self.arrow_files)
+        fingerprint = hashlib.sha256(file_list_str.encode()).hexdigest()
+        saved_fingerprint = state_dict.get("dataset_fingerprint")
+
+        if saved_fingerprint and fingerprint != saved_fingerprint:
+            raise ValueError(
+                f"Dataset fingerprint mismatch! Checkpoint was created with a different dataset. "
+                f"Expected {saved_fingerprint}, got {fingerprint}. "
+                f"This usually means the dataset files have changed."
+            )
+
+        # Verify number of files matches
+        saved_num_files = state_dict.get("num_files")
+        if saved_num_files and len(self.arrow_files) != saved_num_files:
+            raise ValueError(
+                f"Number of files mismatch! Checkpoint has {saved_num_files} files, "
+                f"but current dataset has {len(self.arrow_files)} files."
+            )
+
+        # Reconstruct shuffled arrays from seed if shuffle was used
+        if self._shuffle_seed is not None:
+            if self.file_lengths:
+                # Shuffle files and lengths together
+                paired = list(zip(self.arrow_files, self.file_lengths))
+                rng = random.Random(self._shuffle_seed)
+                rng.shuffle(paired)
+                shuffled_files, shuffled_lengths = zip(*paired)
+                self._shuffled_files = list(shuffled_files)
+                self._shuffled_lengths = list(shuffled_lengths)
+            else:
+                self._shuffled_files = self.arrow_files.copy()
+                self._shuffled_lengths = None
+                rng = random.Random(self._shuffle_seed)
+                rng.shuffle(self._shuffled_files)
+        else:
+            self._shuffled_files = None
+            self._shuffled_lengths = None
+
         self._split_start_idx = state_dict.get("split_start_idx")
         self._split_end_idx = state_dict.get("split_end_idx")
         self._shard_start_idx = state_dict.get("shard_start_idx")
         self._shard_end_idx = state_dict.get("shard_end_idx")
 
-        # Restore length estimation state (with defaults for backward compatibility)
+        # Restore length estimation state
         self.length_estimate_mode = state_dict.get("length_estimate_mode", "dynamic")
         self._reset_length_on_iter = state_dict.get("reset_length_on_iter", False)
         self._original_length = state_dict.get("original_length")
