@@ -102,7 +102,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     save_strategy: "{{ save_strategy | default('steps') }}"
     save_safetensors: False
     save_total_limit: 3
-    save_steps: 50000
+    save_steps: 200
 
     logging_steps: 10
 
