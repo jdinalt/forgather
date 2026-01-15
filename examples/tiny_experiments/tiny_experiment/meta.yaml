@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+[configs]
+name: "Tiny Experiment"
+description: "Test default tiny project settings"
+config_prefix: "configs"
+default_config: "default.yaml"
