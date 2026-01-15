@@ -259,11 +259,16 @@ class DistributedEnvironment(DistributedEnvInterface):
         init_from_env(self)
         logger.info(str(self))
 
-        if torch.cuda.is_available():
+        if torch.accelerator.is_available():
             if self.device_map:
-                self.device = self.device_map[self.rank]
+                torch.accelerator.set_device_index(self.device_map[self.rank])
             else:
-                self.device = f"cuda:{self.local_rank}"
+                torch.accelerator.set_device_index(self.local_rank)
+            acc = torch.accelerator.current_accelerator()
+            if self.backend is None:
+                self.backend = torch.distributed.get_default_backend_for_device(acc)
+            idx = torch.accelerator.current_device_index()
+            self.device = f"{acc.type}:{idx}"
         else:
             self.device = "cpu"
 
@@ -276,18 +281,11 @@ class DistributedEnvironment(DistributedEnvInterface):
             assert (
                 self.world_size == 1
             ), "World size is larger than 1 and torch distributed is not available."
-        self._init_cuda()
         self.barrier_fn = get_barrier_fn()
-
-    def _init_cuda(self):
-        if "cuda" in self.device:
-            torch.cuda.set_device(self.device)
 
     def _init_process_group(self):
         logger.info(f"RANK{self.rank}: init_process_group({self.backend, self.device})")
-        distributed.init_process_group(
-            backend=self.backend, device_id=torch.device(self.device)
-        )
+        distributed.init_process_group(backend=self.backend)
 
     def barrier(self):
         self.barrier_fn()
