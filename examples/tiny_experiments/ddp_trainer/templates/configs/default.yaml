@@ -1,0 +1,21 @@
+-- extends "projects/tiny.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DDP Trainer"
+    -- set ns.config_description = "Compare trainer performance."
+    -- set ns.trainer_class = 'trainers/ddp_trainer.yaml'
+    -- set ns.dataset_config = "tinystories-iter.yaml"
+
+[trainer_definition]
+    -- include 'project.trainer_config'
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'
+
+[trainer_meta_config]
+    == super()
+    -- set ns.nproc_per_node = 2
+
+[trainer_args]
+    == super()

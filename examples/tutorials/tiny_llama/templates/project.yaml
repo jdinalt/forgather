@@ -27,11 +27,29 @@ tokenizer_args: &tokenizer_args !dict
 
 ## Pull dataset loader from template definition
 [datasets_definition]
-    -- include 'datasets/llm_dataset_project.yaml'
+.define: &dataset_dict !call:forgather:from_project
+    project_dir: "{{ ns.dataset_proj }}"
+    config_template: "{{ ns.dataset_config }}"
+    targets: [ "train_dataset", "eval_dataset" ] 
+    preprocess_args: *tokenizer_args
+    tokenizer: *tokenizer
+
+train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
+eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 
 ## Import a model from another Forgather project
 [construct_new_model]
-    -- include "models/causal_lm/import_model_project.yaml"
+.define: &model_dict !call:forgather:from_project
+    project_dir: "{{ ns.model_project_dir }}"
+    config_template: "{{ ns.model_project_config }}"
+    targets: [ "pretrained_tokenizer", "model" ] 
+    pp_kwargs:
+        output_dir: "{{ ns.output_dir }}"
+    pp_debug: {{ ns.debug_model_project | default(False) }}
+    model_constructor_args: *model_constructor_args
+
+tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
+model: &model !call:getitem [ *model_dict, 'model' ]
 
 ## This includes an inline template, defined below.
 ## The need to do this relates to Jinja2 disallowing a template from

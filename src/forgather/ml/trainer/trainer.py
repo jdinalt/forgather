@@ -489,6 +489,15 @@ class Trainer(BaseTrainer):
         )
         return checkpoint_manager
 
+    def _get_dataloader_batch_sizes(self) -> Tuple[int, int]:
+        """
+        Get the train and eval batch sizes for the dataloaders
+        """
+        return (
+            self.args.per_device_train_batch_size,
+            self.args.per_device_eval_batch_size,
+        )
+
     def _init_dataloaders(self, train_dataset, eval_dataset) -> None:
         """
         Initialize train and evaluation dataloaders (_prepare() sub-step 1).
@@ -507,17 +516,17 @@ class Trainer(BaseTrainer):
         self.do_train = train_dataset is not None
         self.do_eval = eval_dataset is not None
 
+        train_batch_size, eval_batch_size = self._get_dataloader_batch_sizes()
+
         if self.do_train:
             self.train_dataloader = self._get_dataloader(
-                train_dataset, self.args.per_device_train_batch_size
+                train_dataset, train_batch_size
             )
 
             self._update_training_steps()
 
         if self.do_eval:
-            self.eval_dataloader = self._get_dataloader(
-                eval_dataset, self.args.per_device_eval_batch_size
-            )
+            self.eval_dataloader = self._get_dataloader(eval_dataset, eval_batch_size)
 
     def _prepare_model(self) -> None:
         """

@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+[configs]
+name: "ddp_trainer"
+description: "Test DDP Trainer"
+config_prefix: "configs"
+default_config: "default.yaml"

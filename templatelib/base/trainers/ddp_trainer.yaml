@@ -1,0 +1,19 @@
+-- extends 'trainers/trainer.yaml'
+[trainer_meta_config]
+    == super()
+    -- set ns.trainer_name = "forgather.ml.trainer.ddp:DDPTrainer"
+    -- set ns.trainer_description = "Basic trainer, with DDP support"
+    -- set ns.nproc_per_node = "gpu"
+    -- set ns.trainer_config_class = "forgather.ml.trainer.ddp:DDPTrainingArguments"
+    -- set ns.trainer_class = "forgather.ml.trainer.ddp:DDPTrainer"
+
+[trainer_dependencies]
+    == super()
+
+[trainer_args]
+    == super()
+    # **DDP**
+
+[trainer_constructor]
+    == super()
+    # **DDP**
