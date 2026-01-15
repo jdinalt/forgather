@@ -237,15 +237,17 @@ class PipelineTrainer(Trainer):
             self.args.is_multistage or self.args.stages_per_rank == 1
         ), "Only multistage schedulers may have more than one stages_per_rank"
 
-        # Calculate total number of pipeline stages
-        self.n_pipeline_stages = self.args.stages_per_rank * self.dist.world_size
-
         # The pipeline requires a fixed shape for the inputs
         self.args.dataloader_drop_last = True
 
+    @override
+    def _init_distributed(self):
         self.is_local_process_zero = self.dist.local_rank == 0
         self.is_world_process_zero = self.dist.rank == 0
         self.num_processes = self.dist.world_size
+
+        # Calculate total number of pipeline stages
+        self.n_pipeline_stages = self.args.stages_per_rank * self.dist.world_size
 
         # Create pipeline parallel process group
         # For now, includes all ranks, but this allows future support for

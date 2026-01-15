@@ -26,6 +26,7 @@ from typing import (
 import torch
 import torchdata.nodes as tn
 from torch import Tensor
+from torch import distributed as dist
 from torch.utils.data import DataLoader
 from torchdata.stateful_dataloader import StatefulDataLoader
 
@@ -330,11 +331,26 @@ class Trainer(BaseTrainer):
         if self.data_collator is None:
             self.data_collator = torch.utils.data.default_collate
 
+        self._init_distributed()
+        self._init_device()
+
+    def _init_distributed(self):
+        """
+        Subclasses are expected to override, if they support distributed training.
+        If distributed training is supported, set the following variables:
+          self.is_local_process_zero
+          self.is_world_process_zero
+          self.num_processes
+        """
+        assert (
+            self.dist.world_size == 1
+        ), "'Trainer' does not support distributed training. See subclasses for implementations which do support it."
+
+    def _init_device(self):
+        """Update / init trainer's device"""
         # If unspecified, set a default device
         if self.args.device is None:
-            self.args.device = (
-                torch.cuda.current_device() if torch.cuda.is_available() else "cpu"
-            )
+            self.args.device = self.dist.device
         # Override for debug.
         if self.args.use_cpu:
             self.args.device = "cpu"

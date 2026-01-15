@@ -5,7 +5,7 @@ from typing import Dict, Optional, override
 
 import torch
 from accelerate import Accelerator
-from torch import Tensor
+from torch import Tensor, accelerator, distributed
 
 from ..trainer import Trainer, TrainingArguments
 from ..trainer_types import TrainerState
@@ -58,16 +58,20 @@ class AccelTrainer(Trainer):
             not self.args.fuse_optim_with_backward
         ), "AccelTrainer does not support option fuse_optim_with_backward"
 
-        # Accel uses a special device target
-        self.args.device = self.accelerator.device
-        # Update process info
+    @override
+    def _init_distributed(self):
         self.is_local_process_zero = self.accelerator.is_local_main_process
         self.is_world_process_zero = self.accelerator.is_main_process
         self.num_processes = self.accelerator.num_processes
 
     @override
+    def _init_device(self):
+        # Accel uses a special device target
+        self.args.device = self.accelerator.device
+
+    @override
     def _wrap_loss_fn(self):
-        # Accelerate scales loss internaly
+        # Accelerate scales loss internally
         self.train_loss_fn = self.loss_fn
         self.eval_loss_fn = self.loss_fn
 
