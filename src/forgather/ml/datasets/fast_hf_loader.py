@@ -22,7 +22,7 @@ from datasets import Dataset
 from datasets import IterableDataset as HFIterableDataset
 from datasets import load_dataset
 
-from .datasets import IterableDatasetWithLength
+from .iterable_with_length import IterableDatasetWithLength
 
 try:
     from tqdm import tqdm
@@ -814,7 +814,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
             per_worker = int(math.ceil(total_examples / float(num_workers)))
             worker_start = worker_split_start + worker_id * per_worker
-            worker_end = min(worker_start + per_worker, worker_split_start + total_examples)
+            worker_end = min(
+                worker_start + per_worker, worker_split_start + total_examples
+            )
 
             # Override split boundaries with worker-specific range
             split_start = worker_start
@@ -1699,7 +1701,9 @@ class FastDatasetLoaderSimple:
                     result = result.slice(slice_start, slice_end)
                 return result
             else:
-                logger.warning("Failed to load saved dataset, falling back to load_from_disk")
+                logger.warning(
+                    "Failed to load saved dataset, falling back to load_from_disk"
+                )
                 # Fall through to try load_from_disk via load_dataset
 
         # Parse split notation (e.g., "train[10000:]" → "train", 10000, None)
