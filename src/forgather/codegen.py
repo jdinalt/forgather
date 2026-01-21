@@ -5,9 +5,9 @@ from .graph_encoder import GraphEncoder, NamePolicy
 from .latent import (
     CallableNode,
     FactoryNode,
-    LambdaNode,
     Latent,
     MetaNode,
+    PartialNode,
     Undefined,
     VarNode,
 )
@@ -70,7 +70,7 @@ class PyEncoder(GraphEncoder):
         for _, node, _ in filter(node_filter, Latent.walk(obj, top_down=False)):
             s += self.name_map[node.identity]
             s += " = "
-            if isinstance(node, FactoryNode) or isinstance(node, LambdaNode):
+            if isinstance(node, FactoryNode) or isinstance(node, PartialNode):
                 empty_args = len(node.kwargs) + len(node.args) == 0
                 if not empty_args:
                     s += "partial("
@@ -177,7 +177,7 @@ class PyEncoder(GraphEncoder):
         s = ""
 
         in_name_map = type(obj) == FactoryNode and obj.identity in self.name_map
-        is_partial = in_name_map or isinstance(obj, LambdaNode)
+        is_partial = in_name_map or isinstance(obj, PartialNode)
         empty_args = len(obj.kwargs) + len(obj.args) == 0
 
         if self.level > 1 and is_partial and not empty_args:

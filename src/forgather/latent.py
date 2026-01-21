@@ -166,7 +166,7 @@ class CallableNode(Node, metaclass=ABCMeta):
 # their type is used to determine how they are processed in a graph.
 class FactoryNode(CallableNode):
     """
-    A FactoryNode generates a new object instance for every occurance in a graph.
+    A FactoryNode generates a new object instance for every occurrence in a graph.
     """
 
     pass
@@ -174,18 +174,16 @@ class FactoryNode(CallableNode):
 
 class SingletonNode(CallableNode):
     """
-    A SingletonNode only generates a single instance of an object. All other occurances
+    A SingletonNode only generates a single instance of an object. All other occurrences
     are references to the same constructed object.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.instance = None
+    instance: Any = None
 
 
 class MetaNode(SingletonNode):
     """
-    When a MetaNode is encountered in a graph, the nodes arguments are not constructed
+    When a MetaNode is encountered in a graph, the argument nodes are not constructed
     before calling the node.
 
     This allows for MetaNode to do things like modifying the graph, before continuing, or
@@ -195,19 +193,16 @@ class MetaNode(SingletonNode):
     pass
 
 
-class LambdaNode(CallableNode):
+class PartialNode(CallableNode):
     """
-    A LambdaNode returns a Callable for constructing the downstream graph, rather than
-    as a constructed object.
+    A PartialNode returns a partial function for constructing the downstream graph, rather than
+    calling and the function directly.
 
-    This can be used construct a Callable object, for example as a factory argument to
-    another object.
-
-    Note: This is very similar to s FactoryNode, with the difference being that s
-    FactoryNode is implicitly called, while a LambdaNode must be explicitly called.
+    As a partial function, additional arguments can be passed into the call, and merged with the base args,
+    at runtime.
     """
 
-    pass
+    instance: Any = None
 
 
 class Materializer:
@@ -216,13 +211,6 @@ class Materializer:
 
         mtargets = kwargs.pop("mtargets", None)
         self.context_vars = kwargs.pop("context_vars", {})
-        # if len(args):
-        #    print(f"args={args}, kwargs={kwargs}")
-        # Merge args with kwargs
-        # for i, arg in enumerate(args):
-        #    key = "arg" + str(i)
-        #    context_vars[key] = arg
-
         self.kwargs = kwargs
         self.args = args
 
@@ -264,34 +252,40 @@ class Materializer:
         elif isinstance(obj, CallableNode):
             try:
                 logger.debug(str(obj))
-                # If not the root-node, stop traversal and return callable.
-                if self.level > 0 and isinstance(obj, LambdaNode):
-                    return partial(obj, context_vars=self.context_vars)
 
-                if isinstance(obj, SingletonNode):
+                if isinstance(obj, SingletonNode | PartialNode):
                     # Have we already constructed this object?
                     if (value := obj.instance) is not None:
-                        logger.debug(f"Found Singleton {str(obj)}")
                         return value
 
                 if isinstance(obj, MetaNode):
+                    # MetaNode's args are not materialized -- and are passed 'as-is' for further transformation
                     value = obj.callable(*obj.args, **obj.kwargs)
                 else:
+                    # Materialize args
                     args = self._materialize(obj.args)
                     kwargs = self._materialize(obj.kwargs)
                     if obj.latent_args is not None:
                         latent_args = self._materialize(obj.latent_args)
                         assert isinstance(latent_args, dict)
                         kwargs |= latent_args
-                    if self.level == 0 and isinstance(obj, LambdaNode):
-                        args = list(args)
-                        args.extend(self.args)
-                        kwargs |= self.kwargs
-                    value = obj.callable(*args, **kwargs)
+                    if isinstance(obj, PartialNode):
+                        if self.level != 0:
+                            value = partial(obj.callable, *args, **kwargs)
+                        else:
+                            # TODO: This is special handling, for the case where the node is at the root of the
+                            # graph. It's unclear if we still need this? Test before removing.
+                            # Merge args with context args
+                            args = list(args)
+                            args.extend(self.args)
+                            kwargs |= self.kwargs
+                            value = obj.callable(*args, **kwargs)
+                    else:
+                        # Construct SingletonNode
+                        value = obj.callable(*args, **kwargs)
 
-                if isinstance(obj, SingletonNode):
+                if isinstance(obj, SingletonNode | PartialNode):
                     # Store object in map to return if called again.
-                    logger.debug(f"Constructed new Singleton {str(obj)}")
                     obj.instance = value
                 return value
             except Exception as e:

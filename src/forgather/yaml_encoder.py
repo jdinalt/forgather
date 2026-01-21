@@ -4,10 +4,10 @@ from .graph_encoder import GraphEncoder
 from .latent import (
     CallableNode,
     FactoryNode,
-    LambdaNode,
     Latent,
     MetaNode,
     Node,
+    PartialNode,
     SingletonNode,
     Undefined,
     VarNode,
@@ -105,7 +105,7 @@ class YamlEncoder(GraphEncoder):
             s += "!meta"
         elif isinstance(obj, SingletonNode):
             s += "!singleton"
-        elif isinstance(obj, LambdaNode):
+        elif isinstance(obj, PartialNode):
             s += "!lambda"
         elif isinstance(obj, FactoryNode):
             s += "!factory"

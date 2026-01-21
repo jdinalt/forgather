@@ -13,10 +13,10 @@ from yaml import SafeLoader
 from .latent import (
     CallableNode,
     FactoryNode,
-    LambdaNode,
     Latent,
     MetaNode,
     Node,
+    PartialNode,
     SingletonNode,
     VarNode,
 )
@@ -128,7 +128,7 @@ def fconfig(obj, sort_items=True, indent_level=2, visited=None):
             return f"var {obj.constructor}={obj.value}\n"
         elif isinstance(obj, SingletonNode):
             s += "singleton "
-        elif isinstance(obj, LambdaNode):
+        elif isinstance(obj, PartialNode):
             s += "lambda "
         elif isinstance(obj, CallableNode):
             s += "callable "
@@ -174,10 +174,10 @@ ConfigLoader.add_multi_constructor("!singleton", CallableConstructor(SingletonNo
 ConfigLoader.add_multi_constructor("!call", CallableConstructor(SingletonNode))
 
 # Depricated
-ConfigLoader.add_multi_constructor("!lambda", CallableConstructor(LambdaNode))
+ConfigLoader.add_multi_constructor("!lambda", CallableConstructor(PartialNode))
 
 
-ConfigLoader.add_multi_constructor("!partial", CallableConstructor(LambdaNode))
+ConfigLoader.add_multi_constructor("!partial", CallableConstructor(PartialNode))
 ConfigLoader.add_multi_constructor("!meta", CallableConstructor(MetaNode))
 ConfigLoader.add_constructor("!var", var_constructor)
 ConfigLoader.add_multi_constructor("!tuple", tuple_constructor)
