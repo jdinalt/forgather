@@ -9,7 +9,10 @@ from datasets import Dataset as HFDataset
 from datasets import IterableDataset as HFIterableDataset
 
 from ..distributed import DistributedEnvInterface, main_process_first
-from .iterable_with_length import IterableDatasetWithLength
+from .iterable_with_length import (
+    IterableDatasetWithLength,
+    to_iterable_dataset_with_length,
+)
 
 
 def normalize_range(
