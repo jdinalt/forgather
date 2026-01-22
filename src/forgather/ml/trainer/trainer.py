@@ -1127,14 +1127,14 @@ class Trainer(BaseTrainer):
         """
         Determine if gradients should be synchronized across processes.
 
-        For single-device trainer, always returns True. Distributed trainers override
-        this to return False during gradient accumulation steps (to skip expensive
-        all-reduce until the final accumulation step).
+        Normally, this just compares the gradient accumulation step against the total
+        accumulation steps.
 
-        See AccelTrainer and PipelineTrainer for distributed implementations.
+        If overridden, as is the case for the Accelerate trainer, an assert verifies that the logic
+        agrees with when gradient synchronization is expected.
 
         Returns:
-            True if gradients should be synchronized (always True for single-device)
+            True if gradients should be synchronized on the current forward-backward step
         """
         return self.gradient_accumulation_step == self.args.gradient_accumulation_steps
 

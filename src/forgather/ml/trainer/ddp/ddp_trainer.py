@@ -17,7 +17,19 @@ logger = logging.getLogger(__name__)
 
 @dataclass(kw_only=True)
 class DDPTrainingArguments(TrainingArguments):
+    # Load and preprocess all batches on rank-0, then dispatch to other ranks
+    # All ranks are sent full batches, as specified by `per_device_train_batch_size`, where
+    # the total effective batch size is per_device_train_batch_size * world_size
+    #
+    # This avoid the need to manually specify how to shard the dataset, at the expense of
+    # adding some non-zero amount of processing latency. This also greatly simplifies dataset
+    # checkpointing, as there is only one global state to keep track of.
+    #
+    # When set to False, care must be taken to ensure that each rank receives different examples.
     dispatch_batches: bool = True
+
+    # These are the same as the arguments to DDP
+    # See: https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html
     ddp_broadcast_buffers: bool = True
     ddp_init_sync: bool = True
     ddp_bucket_cap_mb: Optional[int] = None
@@ -70,6 +82,9 @@ class DDPTrainer(Trainer):
     def _wrap(
         self,
     ) -> None:
+        """
+        Wrap assets for DDP
+        """
         self.model = DDP(
             self.model,
             device_ids=[self.args.device],
@@ -103,6 +118,11 @@ class DDPTrainer(Trainer):
 
     @override
     def unwrapped_model(self) -> torch.nn.Module:
+        """
+        Get and returned the wrapped model
+
+        In the case of DDP, the original model is stored in the model's "module" attribute.
+        """
         assert self.model
         return self.model.module
 
@@ -120,5 +140,10 @@ class DDPTrainer(Trainer):
         *args,
         **kwargs,
     ) -> Tensor:
+        """
+        Skip gradient reduction when not a gradient sync step.
+
+        This is achieved with DDP's "no_sync" context manager.
+        """
         with nullcontext() if self._should_sync_gradients() else self.model.no_sync():
             return super()._forward_backward_step(*args, **kwargs)
