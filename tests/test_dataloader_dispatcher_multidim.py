@@ -24,6 +24,7 @@ Usage:
 import argparse
 import os
 import sys
+from argparse import RawTextHelpFormatter
 
 import torch
 import torch.distributed as dist
@@ -53,7 +54,9 @@ class DummyDataset(Dataset):
                 (self.seq_len,), batch_idx * 1000 + sample_in_batch, dtype=torch.long
             ),
             "labels": torch.full(
-                (self.seq_len,), batch_idx * 1000 + sample_in_batch + 1, dtype=torch.long
+                (self.seq_len,),
+                batch_idx * 1000 + sample_in_batch + 1,
+                dtype=torch.long,
             ),
         }
 
@@ -61,23 +64,35 @@ class DummyDataset(Dataset):
 def collate_fn(batch):
     """Stack samples into a batch tensor."""
     return {
-        "input_ids": torch.stack([b["input_ids"] for b in batch]).reshape(len(batch), -1),
+        "input_ids": torch.stack([b["input_ids"] for b in batch]).reshape(
+            len(batch), -1
+        ),
         "labels": torch.stack([b["labels"] for b in batch]).reshape(len(batch), -1),
     }
 
 
-def init_distributed():
+def init_distributed(backend: str):
     """Initialize distributed process group."""
     rank = int(os.environ["RANK"])
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
 
-    dist.init_process_group(backend="nccl")
+    dist.init_process_group(backend=backend)
 
-    device = torch.device(f"cuda:{local_rank}")
-    torch.cuda.set_device(device)
+    if backend == "gloo":
+        device = torch.device("cpu")
+        device_type = "cpu"
+    else:
+        assert torch.accelerator.is_available()
 
-    return rank, local_rank, world_size, device
+        torch.accelerator.set_device_index(local_rank)
+        acc = torch.accelerator.current_accelerator()
+        acc_backend = dist.get_default_backend_for_device(acc)
+        device_type = acc.type
+        idx = torch.accelerator.current_device_index()
+        device = torch.device(f"{device_type}:{idx}")
+
+    return rank, local_rank, world_size, device, device_type
 
 
 def verify_pure_dp(dispatcher, dp_size, rank, device):
@@ -96,9 +111,7 @@ def verify_pure_dp(dispatcher, dp_size, rank, device):
     )
 
     # Gather all batch IDs to rank 0
-    all_batch_ids = [
-        torch.zeros_like(local_batch_ids) for _ in range(dp_size)
-    ]
+    all_batch_ids = [torch.zeros_like(local_batch_ids) for _ in range(dp_size)]
     dist.all_gather(all_batch_ids, local_batch_ids)
 
     if rank == 0:
@@ -106,10 +119,11 @@ def verify_pure_dp(dispatcher, dp_size, rank, device):
         all_ids = torch.cat(all_batch_ids).tolist()
         unique_ids = set(all_ids)
         assert len(unique_ids) == len(all_ids), (
-            f"DP mode: Expected unique batches, got duplicates. "
-            f"IDs: {all_ids}"
+            f"DP mode: Expected unique batches, got duplicates. " f"IDs: {all_ids}"
         )
-        print(f"[Rank {rank}] Pure DP verified: {len(batches_received)} unique batches per rank")
+        print(
+            f"[Rank {rank}] Pure DP verified: {len(batches_received)} unique batches per rank"
+        )
 
     return True
 
@@ -129,9 +143,7 @@ def verify_pure_mp(dispatcher, mp_size, rank, device):
     )
 
     # Gather all batch IDs to rank 0
-    all_batch_ids = [
-        torch.zeros_like(local_batch_ids) for _ in range(mp_size)
-    ]
+    all_batch_ids = [torch.zeros_like(local_batch_ids) for _ in range(mp_size)]
     dist.all_gather(all_batch_ids, local_batch_ids)
 
     if rank == 0:
@@ -142,7 +154,9 @@ def verify_pure_mp(dispatcher, mp_size, rank, device):
                 f"MP mode: Rank {r} got different batches than rank 0. "
                 f"Rank 0: {reference}, Rank {r}: {batch_ids.tolist()}"
             )
-        print(f"[Rank {rank}] Pure MP verified: all {mp_size} ranks received identical batches")
+        print(
+            f"[Rank {rank}] Pure MP verified: all {mp_size} ranks received identical batches"
+        )
 
     return True
 
@@ -189,9 +203,9 @@ def verify_hybrid(dispatcher, mesh, dp_size, mp_size, rank, device):
             for j in range(i + 1, len(all_dp_ids)):
                 # Check that no two DP groups have the same batches
                 common = set(all_dp_ids[i]) & set(all_dp_ids[j])
-                assert len(common) == 0, (
-                    f"Hybrid mode: DP groups {i} and {j} share batches: {common}"
-                )
+                assert (
+                    len(common) == 0
+                ), f"Hybrid mode: DP groups {i} and {j} share batches: {common}"
 
     if rank == 0:
         print(
@@ -205,7 +219,7 @@ def verify_hybrid(dispatcher, mesh, dp_size, mp_size, rank, device):
 @record
 def main(args):
     """Main test function."""
-    rank, local_rank, world_size, device = init_distributed()
+    rank, local_rank, world_size, device, device_type = init_distributed(args.backend)
 
     dp_size = args.dp
     mp_size = args.mp
@@ -218,12 +232,13 @@ def main(args):
     if rank == 0:
         print("=" * 60)
         print("DataloaderDispatcher Multi-Dimensional Parallelism Test")
+        print(f"Backend: {args.backend}, Device Type: {device_type}")
         print(f"World size: {world_size}, DP size: {dp_size}, MP size: {mp_size}")
         print("=" * 60)
 
     # Create mesh
     mesh = init_device_mesh(
-        "cuda",
+        device_type,
         (dp_size, mp_size),
         mesh_dim_names=("data_parallel", "model_parallel"),
     )
@@ -280,7 +295,9 @@ def main(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Test DataloaderDispatcher multi-dimensional parallelism"
+        formatter_class=RawTextHelpFormatter,
+        description="Test DataloaderDispatcher multi-dimensional parallelism",
+        epilog="Example: torchrun --nproc-per-node 4 --standalone  ./test_dataloader_dispatcher_multidim.py --dp 2 --mp 2 --backend gloo",
     )
     parser.add_argument(
         "--dp",
@@ -311,6 +328,11 @@ def parse_args():
         type=int,
         default=8,
         help="Sequence length",
+    )
+    parser.add_argument(
+        "--backend",
+        default="nccl",
+        help="Torch Distributed backend. e.g. 'nccl', 'gloo'",
     )
     return parser.parse_args()
 
