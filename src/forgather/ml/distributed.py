@@ -159,7 +159,7 @@ def get_barrier_fn(group=None) -> Callable[[], None | Work]:
         group: Optional process group for the barrier. If None, uses the default group (all ranks).
                Pass a specific group to create a barrier for a subset of ranks (e.g., local node only).
     """
-    if distributed.is_available() and accelerator.is_available():
+    if distributed.is_initialized() and accelerator.is_available():
         return partial(
             distributed.barrier,
             device_ids=[torch.accelerator.current_device_index()],
