@@ -1,0 +1,19 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Grad Accumulation"
+    -- set ns.config_description = "Test DDP Trainer with gradient accumulation"
+
+[trainer_definition]
+    -- include 'config.trainer_config'
+
+#-------------------- config.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+[trainer_args]
+    == super()
+    gradient_accumulation_steps: 4
+
+    # Divide by grad accumulation steps for comparison -- this should match the baseline
+    per_device_train_batch_size: 8

@@ -263,6 +263,7 @@ class Trainer(BaseTrainer):
     do_train: bool
     do_eval: bool
     use_fused_loss: bool
+    gradient_accumulation_step: int
 
     @classmethod
     def default_callbacks(cls):
@@ -489,15 +490,6 @@ class Trainer(BaseTrainer):
         )
         return checkpoint_manager
 
-    def _get_dataloader_batch_sizes(self) -> Tuple[int, int]:
-        """
-        Get the train and eval batch sizes for the dataloaders
-        """
-        return (
-            self.args.per_device_train_batch_size,
-            self.args.per_device_eval_batch_size,
-        )
-
     def _init_dataloaders(self, train_dataset, eval_dataset) -> None:
         """
         Initialize train and evaluation dataloaders (_prepare() sub-step 1).
@@ -516,17 +508,17 @@ class Trainer(BaseTrainer):
         self.do_train = train_dataset is not None
         self.do_eval = eval_dataset is not None
 
-        train_batch_size, eval_batch_size = self._get_dataloader_batch_sizes()
-
         if self.do_train:
             self.train_dataloader = self._get_dataloader(
-                train_dataset, train_batch_size
+                train_dataset, self.args.per_device_train_batch_size
             )
 
             self._update_training_steps()
 
         if self.do_eval:
-            self.eval_dataloader = self._get_dataloader(eval_dataset, eval_batch_size)
+            self.eval_dataloader = self._get_dataloader(
+                eval_dataset, self.args.per_device_eval_batch_size
+            )
 
     def _prepare_model(self) -> None:
         """
@@ -1075,7 +1067,8 @@ class Trainer(BaseTrainer):
         """
         accumulated_losses = []
 
-        for _ in range(self.args.gradient_accumulation_steps):
+        for gradient_step in range(self.args.gradient_accumulation_steps):
+            self.gradient_accumulation_step = gradient_step + 1
             input_dict, labels = self._prepare_batch(next(data_iterator))
             loss = self._forward_backward_step(input_dict, labels)
             accumulated_losses.append(loss)
@@ -1143,7 +1136,7 @@ class Trainer(BaseTrainer):
         Returns:
             True if gradients should be synchronized (always True for single-device)
         """
-        return True
+        return self.gradient_accumulation_step == self.args.gradient_accumulation_steps
 
     def _update_training_steps(self) -> None:
         """

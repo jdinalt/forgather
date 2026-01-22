@@ -1,8 +1,7 @@
-# A subclass of Trainer, which adds support for the Acclerate library.
-import itertools
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, override
+from typing import Optional, override
 
 import torch
 from torch import Tensor
@@ -18,14 +17,22 @@ logger = logging.getLogger(__name__)
 
 @dataclass(kw_only=True)
 class DDPTrainingArguments(TrainingArguments):
-    split_batches: bool = True
-    mp_size: int = 1  # Model parallel size for hybrid parallelism
+    dispatch_batches: bool = True
+    ddp_broadcast_buffers: bool = True
+    ddp_init_sync: bool = True
+    ddp_bucket_cap_mb: Optional[int] = None
+    ddp_find_unused_parameters: bool = False
+    ddp_gradient_as_bucket_view: bool = True
+    ddp_static_graph: bool = False
+    ddp_skip_all_reduce_unused_params: bool = False
 
 
 class DDPTrainer(Trainer):
     """
     Modify the base Trainer to use the Accelerate library.
     """
+
+    gradient_accumulation_step: int
 
     def __init__(
         self,
@@ -48,15 +55,9 @@ class DDPTrainer(Trainer):
         self.is_world_process_zero = self.dist.rank == 0
         self.num_processes = self.dist.world_size
 
-        mp_size = self.args.mp_size
-        dp_size = self.dist.world_size // mp_size
-        assert (
-            dp_size * mp_size == self.dist.world_size
-        ), f"world_size ({self.dist.world_size}) must be divisible by mp_size ({mp_size})"
-
         self.mesh = init_device_mesh(
             "cuda",
-            (dp_size, mp_size),
+            (self.dist.world_size, 1),
             mesh_dim_names=("data_parallel", "model_parallel"),
         )
         self.ddp_group = self.mesh.get_group(0)  # data-parallel group
@@ -73,31 +74,32 @@ class DDPTrainer(Trainer):
             self.model,
             device_ids=[self.args.device],
             process_group=self.ddp_group,
-            # broadcast_buffers=True,
-            # init_sync=True,
-            # bucket_cap_mb=None,
-            # find_unused_parameters=False,
-            # gradient_as_bucket_view=True,
-            # static_graph=True,
-            # skip_all_reduce_unused_params=True,
+            broadcast_buffers=self.args.ddp_broadcast_buffers,
+            init_sync=self.args.ddp_init_sync,
+            bucket_cap_mb=self.args.ddp_bucket_cap_mb,
+            find_unused_parameters=self.args.ddp_find_unused_parameters,
+            gradient_as_bucket_view=self.args.ddp_gradient_as_bucket_view,
+            static_graph=self.args.ddp_static_graph,
+            skip_all_reduce_unused_params=self.args.ddp_skip_all_reduce_unused_params,
         )
 
         # TODO:
         # - Fused loss function will probably not work.
 
-        if self.train_dataloader:
-            self.train_dataloader = DataloaderDispatcher(
-                self.train_dataloader,
-                self.mesh,
-                self.args.device,
-            )
+        if self.args.dispatch_batches:
+            if self.train_dataloader:
+                self.train_dataloader = DataloaderDispatcher(
+                    self.train_dataloader,
+                    self.mesh,
+                    self.args.device,
+                )
 
-        if self.eval_dataloader:
-            self.eval_dataloader = DataloaderDispatcher(
-                self.eval_dataloader,
-                self.mesh,
-                self.args.device,
-            )
+            if self.eval_dataloader:
+                self.eval_dataloader = DataloaderDispatcher(
+                    self.eval_dataloader,
+                    self.mesh,
+                    self.args.device,
+                )
 
     @override
     def unwrapped_model(self) -> torch.nn.Module:
@@ -111,3 +113,12 @@ class DDPTrainer(Trainer):
         """
         dist.all_reduce(loss, op=dist.ReduceOp.AVG)
         return loss
+
+    @override
+    def _forward_backward_step(
+        self,
+        *args,
+        **kwargs,
+    ) -> Tensor:
+        with nullcontext() if self._should_sync_gradients() else self.model.no_sync():
+            return super()._forward_backward_step(*args, **kwargs)
