@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass(kw_only=True)
 class DDPTrainingArguments(TrainingArguments):
     split_batches: bool = True
+    mp_size: int = 1  # Model parallel size for hybrid parallelism
 
 
 class DDPTrainer(Trainer):
@@ -47,9 +48,15 @@ class DDPTrainer(Trainer):
         self.is_world_process_zero = self.dist.rank == 0
         self.num_processes = self.dist.world_size
 
+        mp_size = self.args.mp_size
+        dp_size = self.dist.world_size // mp_size
+        assert (
+            dp_size * mp_size == self.dist.world_size
+        ), f"world_size ({self.dist.world_size}) must be divisible by mp_size ({mp_size})"
+
         self.mesh = init_device_mesh(
             "cuda",
-            (self.dist.world_size, 1),
+            (dp_size, mp_size),
             mesh_dim_names=("data_parallel", "model_parallel"),
         )
         self.ddp_group = self.mesh.get_group(0)  # data-parallel group
