@@ -165,7 +165,7 @@ def add_special_tokens(tokenizer, token_map):
 @main_process_first()
 def build_rule(
     target: str | os.PathLike,
-    recipe: Callable,
+    recipe: List[Callable] | Callable,
     loader: Callable,
     prerequisites: List[str | os.PathLike] = [],
 ) -> Any:
@@ -178,14 +178,14 @@ def build_rule(
 
     Args:
         target: Path to the target file/directory to build
-        recipe: Callable that constructs the target
+        recipe: A callable or list of callables to call to construct target
         loader: Callable that loads and returns the constructed target
         prerequisites: List of dependency files to check modification times against
 
     Returns:
         The result of calling loader()
     """
-    assert isinstance(recipe, Callable)
+    assert isinstance(recipe, Callable | list)
     assert isinstance(loader, Callable)
 
     # First check if we need to build based on target existence and dependencies
@@ -221,7 +221,14 @@ def build_rule(
 
             if build_target:
                 logger.debug(f"Building target: {target}")
-                recipe()
+                if isinstance(recipe, Callable):
+                    recipe()
+                else:
+                    for fn in recipe:
+                        assert isinstance(
+                            fn, Callable
+                        ), f"Item in recipe list is not callable {type(fn)=}"
+                        fn()
         else:
             # Another process built it while we were waiting
             logger.debug(f"Target was built by another process: {target}")
