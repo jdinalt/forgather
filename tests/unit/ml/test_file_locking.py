@@ -6,20 +6,20 @@ Tests the new file-locking approach that replaces torch.distributed barriers
 for synchronizing object construction across multiple processes.
 """
 
-import unittest
-import tempfile
 import os
-import time
 import subprocess
 import sys
+import tempfile
 import threading
-from unittest.mock import patch, MagicMock
+import time
+import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from forgather.ml.construct import (
-    file_lock_build,
     build_rule,
     copy_package_files,
+    file_lock_build,
     write_file,
 )
 

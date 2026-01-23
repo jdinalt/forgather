@@ -4,12 +4,13 @@ OpenAI API-compatible inference server for HuggingFace models.
 """
 
 import argparse
-from argparse import RawTextHelpFormatter
 import logging
-import yaml
 import os
 import sys
+from argparse import RawTextHelpFormatter
 from pathlib import Path
+
+import yaml
 
 # Support both module and standalone execution
 if __name__ == "__main__" and __package__ is None:
@@ -21,8 +22,8 @@ if __name__ == "__main__" and __package__ is None:
 
     # Import as if we're a package
     from inference_server.config import load_config_from_yaml, merge_config_with_args
-    from inference_server.service import InferenceService
     from inference_server.routes import create_app, set_inference_service
+    from inference_server.service import InferenceService
 else:
     # Running as module - use relative imports
     from .config import load_config_from_yaml, merge_config_with_args

@@ -10,40 +10,38 @@ Usage:
     torchrun --nnodes 1 --nproc_per_node 2 test_distributed_pipeline.py
     torchrun --nnodes 1 --nproc_per_node 4 test_distributed_pipeline.py
 """
-import sys
-import os
-import copy
 import argparse
-from argparse import RawTextHelpFormatter
+import copy
 import logging
+import os
+import sys
+from argparse import RawTextHelpFormatter
 from contextlib import ExitStack
 from functools import partial
 
 import torch
 import torch.distributed as dist
+from torch.distributed.elastic.multiprocessing.errors import record
 from torch.distributed.pipelining import PipelineStage
 from torch.distributed.pipelining.schedules import ScheduleGPipe
-from torch.utils.data import DataLoader
-from torch.distributed.elastic.multiprocessing.errors import record
 from torch.nn.attention.flex_attention import BlockMask
-
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
+from torch.utils.data import DataLoader
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from forgather import from_project
-from forgather.ml.sharded_checkpoint import (
-    load_checkpoint,
-    create_sharing_metadata,
-    retie_parameters,
-)
+from forgather.ml.construct import torch_dtype
 from forgather.ml.data_collator import DataCollatorForCausalLM
 from forgather.ml.loss import CausalLoss
-from forgather.ml.utils import default_dtype
-from forgather.ml.construct import torch_dtype
-
+from forgather.ml.sharded_checkpoint import (
+    create_sharing_metadata,
+    load_checkpoint,
+    retie_parameters,
+)
 from forgather.ml.trainer.pipeline.pipeline_split_utils import (
     generate_llm_fqn_per_model_part,
     split_model,
 )
+from forgather.ml.utils import default_dtype
 
 
 def init_distributed():

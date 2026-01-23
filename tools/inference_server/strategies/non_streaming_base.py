@@ -5,10 +5,12 @@ Base class for non-streaming generation strategies using Template Method pattern
 import time
 from abc import abstractmethod
 from typing import Union
+
 import torch
-from .base import GenerationStrategy
+
 from ..models.chat import ChatCompletionRequest
 from ..models.completion import CompletionRequest
+from .base import GenerationStrategy
 
 
 class NonStreamingStrategy(GenerationStrategy):

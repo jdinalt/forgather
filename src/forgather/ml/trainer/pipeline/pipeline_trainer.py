@@ -28,7 +28,6 @@ from forgather.ml.construct import torch_dtype
 from forgather.ml.loss import RescaleLoss
 from forgather.ml.utils import default_dtype
 
-from ..dataloader_dispatcher import DataloaderDispatcher
 from ...sharded_checkpoint import (
     ShardIndex,
     SharingMetadataT,
@@ -37,6 +36,7 @@ from ...sharded_checkpoint import (
     retie_parameters,
 )
 from ..checkpoint_manager import CheckpointConfig, CheckpointManager
+from ..dataloader_dispatcher import DataloaderDispatcher
 from ..trainer import Trainer, TrainingArguments, optimizer_hook
 from ..trainer_types import CheckpointInterface, LossFunctionT
 from .model_splitter import ModelSplitter

@@ -13,11 +13,12 @@ Configuration matching Qwen3 1.7B:
 - dtype: bfloat16
 """
 
+import os
+import sys
+
 import torch
 import torch.nn as nn
 from torch import FloatTensor, LongTensor
-import sys
-import os
 
 # Add forgather to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))

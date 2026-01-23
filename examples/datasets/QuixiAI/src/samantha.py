@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import jinja2
-from datasets import Dataset, DatasetDict
 from huggingface_hub import hf_hub_download
 
+from datasets import Dataset, DatasetDict
 from forgather.ml.distributed import main_local_process_first
 
 logger = logging.getLogger(__name__)

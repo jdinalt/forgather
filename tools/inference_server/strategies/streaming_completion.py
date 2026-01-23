@@ -4,14 +4,15 @@ Streaming text completion generation strategy.
 
 import time
 from typing import Iterator, Optional
+
 from transformers import TextIteratorStreamer
 
-from .streaming_base import StreamingStrategy
 from ..models.completion import (
-    CompletionStreamResponse,
-    CompletionStreamChoice,
     CompletionRequest,
+    CompletionStreamChoice,
+    CompletionStreamResponse,
 )
+from .streaming_base import StreamingStrategy
 
 
 class StreamingCompletionStrategy(StreamingStrategy):

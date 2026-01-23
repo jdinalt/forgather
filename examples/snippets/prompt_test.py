@@ -8,6 +8,7 @@ import torch
 import yaml
 from transformers import AutoModel, AutoTokenizer, GenerationConfig
 
+
 def main(args):
     with open(args.prompts_path, "r") as file:
         prompts = yaml.safe_load(file)

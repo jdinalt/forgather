@@ -3,7 +3,7 @@ Base generation strategy abstract class.
 """
 
 from abc import ABC, abstractmethod
-from typing import Union, Iterator, TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterator, Union
 
 if TYPE_CHECKING:
     from ..service import InferenceService

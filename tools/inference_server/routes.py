@@ -3,21 +3,21 @@ FastAPI route handlers for inference server.
 """
 
 import time
-from typing import Optional
 import traceback
+from typing import Optional
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
-from .service import InferenceService
 from .models.chat import ChatCompletionRequest
 from .models.completion import CompletionRequest
+from .service import InferenceService
 from .strategies import (
     ChatGenerationStrategy,
     CompletionGenerationStrategy,
     StreamingChatStrategy,
     StreamingCompletionStrategy,
 )
-
 
 # Global inference service instance
 inference_service: Optional[InferenceService] = None

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
+import argparse
+import logging
 import os
 import sys
-import argparse
 from argparse import RawTextHelpFormatter
-import logging
 
 # Add forgather root to sys.path to enable importing from examples/
 # Find the workspace directory (forgather root)
@@ -14,10 +14,10 @@ if forgather_root not in sys.path:
     sys.path.insert(0, forgather_root)
 
 from forgather.ml.model_conversion import (
-    get_converter,
     detect_model_type,
-    list_converters,
     discover_and_register_converters,
+    get_converter,
+    list_converters,
 )
 
 logger = logging.getLogger(__name__)

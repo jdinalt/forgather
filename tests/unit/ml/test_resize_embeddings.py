@@ -5,17 +5,18 @@ Unit tests for resize_embeddings module in Forgather.
 Tests token addition, vocabulary resizing, and embedding initialization strategies.
 """
 
-import unittest
 import tempfile
-import yaml
-from unittest.mock import Mock, patch, MagicMock
+import unittest
+from unittest.mock import MagicMock, Mock, patch
+
 import torch
+import yaml
 
 from forgather.ml.model_conversion.resize_embeddings import (
+    DEFAULT_TOKEN_CONFIG,
     add_tokens_to_tokenizer,
     resize_word_embeddings,
     update_config_from_tokenizer,
-    DEFAULT_TOKEN_CONFIG,
 )
 
 

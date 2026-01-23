@@ -1,18 +1,18 @@
 """Pydantic models for inference server API."""
 
 from .chat import (
-    ChatMessage,
-    ChatCompletionRequest,
     ChatCompletionChoice,
-    ChatCompletionUsage,
+    ChatCompletionRequest,
     ChatCompletionResponse,
-    ChatCompletionStreamDelta,
     ChatCompletionStreamChoice,
+    ChatCompletionStreamDelta,
     ChatCompletionStreamResponse,
+    ChatCompletionUsage,
+    ChatMessage,
 )
 from .completion import (
-    CompletionRequest,
     CompletionChoice,
+    CompletionRequest,
     CompletionResponse,
     CompletionStreamChoice,
     CompletionStreamResponse,

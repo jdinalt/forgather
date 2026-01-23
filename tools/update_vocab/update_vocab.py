@@ -6,15 +6,15 @@ This tool adds tokens to a model's vocabulary and resizes embeddings accordingly
 Works with both HuggingFace and Forgather models using the same HuggingFace APIs.
 """
 
-import os
-import sys
 import argparse
 import logging
+import os
+import sys
 from argparse import RawTextHelpFormatter
 from contextlib import ExitStack
 
 import torch
-from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 # Add forgather to path
 from forgather import MetaConfig
@@ -24,10 +24,10 @@ if forgather_root not in sys.path:
     sys.path.insert(0, forgather_root)
 
 from forgather.ml.model_conversion.resize_embeddings import (
+    DEFAULT_TOKEN_CONFIG,
     add_tokens_to_tokenizer,
     resize_word_embeddings,
     update_config_from_tokenizer,
-    DEFAULT_TOKEN_CONFIG,
 )
 from forgather.ml.sharded_checkpoint import save_checkpoint
 from forgather.ml.utils import default_dtype

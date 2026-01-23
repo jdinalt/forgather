@@ -2,8 +2,10 @@
 Unit tests for FinishReasonDetector.
 """
 
-import pytest
 from unittest.mock import Mock
+
+import pytest
+
 from ..core.finish_detector import FinishReasonDetector
 
 

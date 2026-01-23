@@ -7,6 +7,7 @@ while using less memory for large vocabulary models.
 """
 
 import unittest
+
 import torch
 from torch import FloatTensor, LongTensor
 
@@ -327,7 +328,7 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
 
     def test_pytorch_backend_matches_standard(self):
         """Test that pytorch backend matches standard loss computation."""
-        from forgather.ml.loss import LinearCrossEntropyLoss, CausalLoss
+        from forgather.ml.loss import CausalLoss, LinearCrossEntropyLoss
 
         hidden_dim, vocab_size = 128, 500
         output_layer = self._create_test_model(

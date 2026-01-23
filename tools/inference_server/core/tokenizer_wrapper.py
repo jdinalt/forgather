@@ -2,9 +2,10 @@
 Tokenization utilities with device placement handling.
 """
 
+from typing import Any, Dict, Optional
+
 import torch
-from typing import Dict, Any, Optional
-from transformers import PreTrainedTokenizer, PreTrainedModel
+from transformers import PreTrainedModel, PreTrainedTokenizer
 
 
 class TokenizerWrapper:

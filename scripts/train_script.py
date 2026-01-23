@@ -4,11 +4,12 @@ import os
 import sys
 from argparse import RawTextHelpFormatter
 
-import datasets
 import torch
 import transformers
 from torch import distributed as dist
 from torch.distributed.elastic.multiprocessing.errors import record
+
+import datasets
 
 logger = logging.getLogger(__name__)
 

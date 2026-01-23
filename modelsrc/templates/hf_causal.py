@@ -7,15 +7,24 @@ from typing import Any, Optional, Tuple, Union
 
 import torch
 from torch import FloatTensor, LongTensor, Tensor, nn
-from transformers import (AutoConfig, AutoModel, AutoModelForCausalLM,
-                          GenerationMixin, PretrainedConfig, PreTrainedModel)
+from transformers import (
+    AutoConfig,
+    AutoModel,
+    AutoModelForCausalLM,
+    GenerationMixin,
+    PretrainedConfig,
+    PreTrainedModel,
+)
 from transformers.cache_utils import Cache
-from transformers.modeling_outputs import (BaseModelOutputWithPast,
-                                           CausalLMOutputWithPast)
+from transformers.modeling_outputs import (
+    BaseModelOutputWithPast,
+    CausalLMOutputWithPast,
+)
 
 # Begin auto-generated imports
 -- for module, name in imports:
 from {{module}} import {{ name }}
+
 -- endfor
 # End auto-generated imports
 

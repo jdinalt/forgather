@@ -2,8 +2,9 @@
 Test shuffle_output parameter to verify output sequences are randomized.
 """
 
-from datasets import Dataset
 from transformers import AutoTokenizer
+
+from datasets import Dataset
 from forgather.ml.datasets import block_tokenize_fn
 
 

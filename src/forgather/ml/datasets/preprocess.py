@@ -2,10 +2,11 @@ from collections.abc import Sequence
 from types import NoneType
 from typing import Any, Callable, Literal, Optional
 
-from datasets import Dataset as HFDataset
-from datasets import IterableDataset as HFIterableDataset
 from datasets.distributed import split_dataset_by_node
 from transformers import PreTrainedTokenizerBase
+
+from datasets import Dataset as HFDataset
+from datasets import IterableDataset as HFIterableDataset
 
 from ..distributed import DistributedEnvInterface, main_local_process_first
 from .iterable_with_length import (

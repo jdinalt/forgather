@@ -6,12 +6,13 @@ import time
 from abc import abstractmethod
 from threading import Thread
 from typing import Iterator, Optional, Union
+
 import torch
 from transformers import TextIteratorStreamer
 
-from .base import GenerationStrategy
 from ..models.chat import ChatCompletionRequest
 from ..models.completion import CompletionRequest
+from .base import GenerationStrategy
 
 
 class StreamingStrategy(GenerationStrategy):

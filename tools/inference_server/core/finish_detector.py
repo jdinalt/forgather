@@ -2,7 +2,8 @@
 Finish reason determination for generation completion.
 """
 
-from typing import List, Set, Optional
+from typing import List, Optional, Set
+
 from transformers import PreTrainedTokenizer
 
 

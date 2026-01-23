@@ -2,14 +2,16 @@
 Performance profiling tests to verify no regression from refactoring.
 """
 
-import pytest
 import time
-import torch
 from unittest.mock import Mock, patch
+
+import pytest
+import torch
+
+from ..models.chat import ChatCompletionRequest, ChatMessage
+from ..models.completion import CompletionRequest
 from ..service import InferenceService
 from ..strategies import ChatGenerationStrategy, CompletionGenerationStrategy
-from ..models.chat import ChatMessage, ChatCompletionRequest
-from ..models.completion import CompletionRequest
 
 
 class TestPerformance:

@@ -3,7 +3,8 @@ Unified logging for generation operations.
 """
 
 import logging
-from typing import List, Optional, Any
+from typing import Any, List, Optional
+
 from transformers import PreTrainedTokenizer
 
 

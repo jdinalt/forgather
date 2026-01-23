@@ -2,17 +2,19 @@
 Integration tests for generation strategies.
 """
 
+from unittest.mock import MagicMock, Mock, patch
+
 import pytest
 import torch
-from unittest.mock import Mock, MagicMock, patch
+
+from ..models.chat import ChatCompletionRequest, ChatMessage
+from ..models.completion import CompletionRequest
 from ..strategies import (
     ChatGenerationStrategy,
     CompletionGenerationStrategy,
     StreamingChatStrategy,
     StreamingCompletionStrategy,
 )
-from ..models.chat import ChatMessage, ChatCompletionRequest
-from ..models.completion import CompletionRequest
 
 
 class TestChatGenerationStrategy:

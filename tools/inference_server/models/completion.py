@@ -2,8 +2,10 @@
 Pydantic models for text completion API.
 """
 
-from typing import List, Optional, Dict, Any, Union
+from typing import Any, Dict, List, Optional, Union
+
 from pydantic import BaseModel
+
 from .chat import ChatCompletionUsage  # Reuse usage model
 
 
