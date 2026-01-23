@@ -81,6 +81,11 @@ class PeakMemory(TrainerCallback):
         self.file_prefix = file_prefix
 
     def on_train_begin(self, args, state, control, **kwargs):
+        # Disable, if not CUDA
+        device = torch.device(args.device)
+        if device.type != "cuda":
+            self.enabled = False
+
         if not self.enabled:
             return
         self.max_allocated = 0
