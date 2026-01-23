@@ -1,14 +1,15 @@
 import logging
 import os
-from abc import abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Protocol
+from typing import Callable, Optional, Protocol
 
 import torch
-from torch import accelerator, distributed
+from torch import accelerator
+from torch import distributed as dist
 from torch._C._distributed_c10d import Work
+from torch.distributed import ProcessGroup
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -16,11 +17,30 @@ logger.setLevel(logging.INFO)
 # Tracks recursion of main_process_first
 mpf_recursion_level = 0
 
-# Cache for local process group
-_local_process_group = None
+# A "gloo" process group, with all local ranks
+_local_process_group: ProcessGroup | None = None
+
+# A "gloo" process group, with all ranks
+_global_process_group: ProcessGroup | None = None
 
 
-def get_local_process_group():
+def get_world_size() -> int:
+    return int(os.environ.get("WORLD_SIZE", "1"))
+
+
+def get_local_world_size() -> int:
+    return int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
+
+
+def get_rank() -> int:
+    return int(os.environ.get("RANK", "0"))
+
+
+def get_local_rank() -> int:
+    return int(os.environ.get("LOCAL_RANK", "0"))
+
+
+def get_local_process_group() -> ProcessGroup | None:
     """
     Get or create a process group containing only ranks on this node.
 
@@ -28,29 +48,35 @@ def get_local_process_group():
     """
     global _local_process_group
 
-    if not distributed.is_available() or not distributed.is_initialized():
+    if (
+        not dist.is_available()
+        or not dist.is_initialized()
+        or get_local_world_size() == 1
+    ):
         return None
 
     if _local_process_group is not None:
         return _local_process_group
 
     # Create local process groups (one per node)
-    world_size = distributed.get_world_size()
-    rank = distributed.get_rank()
-    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
+    world_size = get_world_size()
+    rank = get_rank()
+    local_world_size = get_local_world_size()
 
     # Group ranks by node - assumes ranks are assigned sequentially per node
     # e.g., node0: ranks 0-3, node1: ranks 4-7, etc.
     num_nodes = world_size // local_world_size
 
-    # IMPORTANT: distributed.new_group() is collective - ALL ranks must participate
+    # IMPORTANT: dist.new_group() is collective - ALL ranks must participate
     # in creating ALL groups, even if they're not members
     for node_id in range(num_nodes):
         # Ranks for this node
         node_ranks = list(
             range(node_id * local_world_size, (node_id + 1) * local_world_size)
         )
-        group = distributed.new_group(ranks=node_ranks)
+        group = dist.new_group(
+            ranks=node_ranks, backend="gloo", group_desc="local-gloo"
+        )
 
         # Cache the group if this rank belongs to it
         if rank in node_ranks:
@@ -60,8 +86,27 @@ def get_local_process_group():
     return _local_process_group
 
 
+def get_global_process_group() -> ProcessGroup | None:
+    """
+    Get or create a process group containing all ranks
+
+    Returns None if distributed is not initialized or not available.
+    """
+    global _global_process_group
+
+    if not dist.is_available() or not dist.is_initialized() or get_world_size() == 1:
+        return None
+
+    if _local_process_group is not None:
+        return _global_process_group
+
+    _global_process_group = dist.new_group(backend="gloo", group_desc="global-gloo")
+
+    return _global_process_group
+
+
 @contextmanager
-def main_process_first(dist=None):
+def main_local_process_first():
     """
     Context manager for ensuring that the main process on each node runs first
 
@@ -87,16 +132,19 @@ def main_process_first(dist=None):
     """
     # No-op on recursion or single process
     global mpf_recursion_level
-    if mpf_recursion_level or int(os.environ.get("WORLD_SIZE", "1")) == 1:
+    if mpf_recursion_level or get_world_size() == 1:
         yield
         return
 
     # Use LOCAL_RANK for per-node coordination
-    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    local_rank = get_local_rank()
 
     # Get barrier function - use local process group for node-local coordination
     local_group = get_local_process_group()
-    barrier = get_barrier_fn(group=local_group)
+    if local_group is None:
+        barrier = null_barrier
+    else:
+        barrier = get_barrier_fn(group=local_group)
 
     mpf_recursion_level += 1
     try:
@@ -118,11 +166,12 @@ class DistributedEnvInterface(Protocol):
     master_addr: str
     master_port: int
     device: str
+    device_type: str
 
 
 def init_from_env(dist: DistributedEnvInterface):
     """
-    Init a distributed environment from envrionment variables
+    Init a distributed environment from environment variables
     """
     # Envrionment variables names and types
     ENVIRON_VARS = (
@@ -149,7 +198,12 @@ def init_from_env(dist: DistributedEnvInterface):
             setattr(dist, var_name.lower(), value)
 
 
-def get_barrier_fn(group=None) -> Callable[[], None | Work]:
+def null_barrier(*args, **kwargs) -> None | Work:
+    """A no-op barrier function, for world-size == 1"""
+    return None
+
+
+def get_barrier_fn(group: Optional[ProcessGroup]) -> Callable[[], None | Work]:
     """
     torch.distributed.barrier() complains about not having specified device_ids, if
     called without this argument. It's also not always available, so this returns either
@@ -159,14 +213,23 @@ def get_barrier_fn(group=None) -> Callable[[], None | Work]:
         group: Optional process group for the barrier. If None, uses the default group (all ranks).
                Pass a specific group to create a barrier for a subset of ranks (e.g., local node only).
     """
-    if distributed.is_initialized() and accelerator.is_available():
+    if dist.is_available() and dist.is_initialized() and get_world_size() != 1:
+        if group is None:
+            group = dist.distributed_c10d._get_default_group()
+
+        barrier_kwargs = dict(group=group)
+
+        # Non-gloo backends expect a device index
+        if dist.get_backend(group) != "gloo":
+            barrier_kwargs["device_ids"] = [torch.accelerator.current_device_index()]
+
         return partial(
-            distributed.barrier,
-            device_ids=[torch.accelerator.current_device_index()],
-            group=group,
+            dist.barrier,
+            **barrier_kwargs,
         )
     else:
-        return lambda *args, **kwargs: None
+        assert get_world_size() == 1
+        return null_barrier
 
 
 @dataclass(kw_only=True)
@@ -183,6 +246,7 @@ class StaticDistributedEnvironment(DistributedEnvInterface):
     master_addr: str = "localhost"
     master_port: int = 29501
     device: str = "cpu"
+    device_type: str = "cpu"
 
 
 def from_env(**kwargs):
@@ -229,7 +293,8 @@ class DistributedEnvironment(DistributedEnvInterface):
         backend: str | None = None,
         log_level="INFO",
         device_map=None,
-        always: bool = False,
+        always: bool = True,
+        no_accelerator: bool = False,
     ):
         logger.setLevel(log_level)
         self.rank = rank
@@ -241,6 +306,7 @@ class DistributedEnvironment(DistributedEnvInterface):
         self.backend = backend
         self.always = always
         self.device_map = device_map
+        self.use_accelerator = not no_accelerator
         self._init_distributed()
 
     def __repr__(self):
@@ -259,21 +325,23 @@ class DistributedEnvironment(DistributedEnvInterface):
         init_from_env(self)
         logger.info(str(self))
 
-        if torch.accelerator.is_available():
+        if self.use_accelerator and accelerator.is_available():
             if self.device_map:
-                torch.accelerator.set_device_index(self.device_map[self.rank])
+                accelerator.set_device_index(self.device_map[self.rank])
             else:
-                torch.accelerator.set_device_index(self.local_rank)
-            acc = torch.accelerator.current_accelerator()
+                accelerator.set_device_index(self.local_rank)
+            acc = accelerator.current_accelerator()
             if self.backend is None:
-                self.backend = torch.distributed.get_default_backend_for_device(acc)
-            idx = torch.accelerator.current_device_index()
-            self.device = f"{acc.type}:{idx}"
+                self.backend = dist.get_default_backend_for_device(acc)
+            idx = accelerator.current_device_index()
+            self.device_type = acc.type
+            self.device = f"{self.device_type}:{idx}"
         else:
             self.device = "cpu"
+            self.device_type = "cpu"
 
-        if distributed.is_available() and (self.world_size > 1 or self.always):
-            if not distributed.is_initialized():
+        if dist.is_available() and (self.world_size > 1 or self.always):
+            if not dist.is_initialized():
                 self._init_process_group()
             else:
                 logger.warning("torch distributed has already been initialized")
@@ -281,11 +349,7 @@ class DistributedEnvironment(DistributedEnvInterface):
             assert (
                 self.world_size == 1
             ), "World size is larger than 1 and torch distributed is not available."
-        self.barrier_fn = get_barrier_fn()
 
     def _init_process_group(self):
         logger.info(f"RANK{self.rank}: init_process_group({self.backend, self.device})")
-        distributed.init_process_group(backend=self.backend)
-
-    def barrier(self):
-        self.barrier_fn()
+        dist.init_process_group(backend=self.backend)

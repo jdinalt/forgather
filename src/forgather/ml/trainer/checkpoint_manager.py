@@ -8,7 +8,11 @@ from typing import Any, Dict, Iterable, List
 import torch
 from torch.distributed.checkpoint.stateful import Stateful
 
-from forgather.ml.distributed import DistributedEnvInterface, get_barrier_fn
+from forgather.ml.distributed import (
+    DistributedEnvInterface,
+    get_barrier_fn,
+    get_global_process_group,
+)
 from forgather.ml.sharded_checkpoint import (
     find_latest_checkpoint,
     index_file_name,
@@ -84,7 +88,7 @@ class CheckpointManager(CheckpointInterface):
             )
         self.shard_index = shard_index
         self.best_checkpoint = None
-        self.barrier_fn = get_barrier_fn()
+        self.barrier_fn = get_barrier_fn(get_global_process_group())
 
     def save_checkpoint(
         self,

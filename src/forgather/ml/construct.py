@@ -15,8 +15,6 @@ from forgather.latent import Undefined
 from forgather.meta_config import MetaConfig
 from forgather.project import Project
 
-from .distributed import main_process_first
-
 logger = logging.getLogger(__name__)
 
 
@@ -162,7 +160,6 @@ def add_special_tokens(tokenizer, token_map):
     return tokenizer
 
 
-@main_process_first()
 def build_rule(
     target: str | os.PathLike,
     recipe: List[Callable] | Callable,

@@ -1,0 +1,20 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DDP Trainer 4x CPU"
+    -- set ns.config_description = "Test DDP Trainer with 4 CPU ranks"
+
+[distributed_environment]
+    == super()
+    no_accelerator: True
+
+[trainer_definition]
+    -- include 'config.trainer_config'
+
+#-------------------- config.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+[trainer_meta_config]
+    == super()
+    -- set ns.nproc_per_node = 4

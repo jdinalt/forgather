@@ -640,8 +640,6 @@ class PipelineTrainer(Trainer):
                         logger.debug(f"rank{self.dist.rank}: Receiving {name}")
                     distributed.recv(p, src=0)
 
-        distributed.barrier()
-
     @override
     def _dataloader_iter(
         self, dataloader: Iterable[Dict[str, Tensor]]

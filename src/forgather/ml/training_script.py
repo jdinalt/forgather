@@ -8,7 +8,6 @@ from forgather.dotdict import DotDict
 from forgather.ml.distributed import (
     DistributedEnvInterface,
     from_env,
-    main_process_first,
 )
 from forgather.project import Project
 

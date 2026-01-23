@@ -1,20 +1,16 @@
-import os
 import argparse
-from argparse import RawTextHelpFormatter
-from torch import accelerator
-import sys
-
-from torch.distributed.elastic.multiprocessing.errors import record
 import logging
-import transformers
+import os
+import sys
+from argparse import RawTextHelpFormatter
+
 import datasets
-
 import torch
-
-from forgather.ml.training_script import training_loop
+import transformers
+from torch import distributed as dist
+from torch.distributed.elastic.multiprocessing.errors import record
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 def init_logging(args):
@@ -22,12 +18,26 @@ def init_logging(args):
     rank = int(os.environ.get("RANK", "0"))
     if rank == 0:
         log_level = args.log_level
-        # TODO: Is there a version which takes a string?
-        transformers.utils.logging.set_verbosity_info()
     else:
         log_level = args.secondary_log_level
 
+    # Convert log-level string to numeric value
+    log_level = log_level.upper()
+    numeric_level = getattr(logging, log_level, None)
+    if not isinstance(numeric_level, int):
+        logger.warning(f"Invalid log level: {log_level}. Defaulting to INFO.")
+        numeric_level = logging.INFO
+
+    # Change local local level
     logger.setLevel(log_level)
+
+    # Configure root logger
+    logging.basicConfig(
+        level=numeric_level,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+
     datasets.utils.logging.set_verbosity(log_level)
     transformers.utils.logging.set_verbosity(log_level)
     transformers.utils.logging.enable_default_handler()
@@ -94,6 +104,7 @@ def parse_args(args=None):
 @record
 def main():
     import json
+
     from forgather.project import Project
 
     logging.basicConfig(level=logging.INFO)
@@ -115,12 +126,9 @@ def main():
     training_script = proj()
     training_script.run()
 
-    if torch.distributed.is_initialized():
-        if accelerator.is_available():
-            torch.distributed.barrier(
-                device_ids=[torch.accelerator.current_device_index()]
-            )
-        torch.distributed.destroy_process_group()
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

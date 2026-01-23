@@ -48,6 +48,8 @@
     -- filter trim()
     -- block distributed_environment
 distributed_env: &distributed_env !singleton:forgather.ml.distributed:DistributedEnvironment@distributed_env
+    backend: {{ dist_backend | toyaml("cuda:nccl,cpu:gloo") }}
+    no_accelerator: {{ no_accelerator | toyaml(False) }}
     << endblock distributed_environment
     -- endfilter
 
@@ -151,6 +153,13 @@ lr_scheduler: &lr_scheduler ~
         choices: [ "no", "steps", "epoch" ]
         type: "str"
         help: "When to save checkpoints"
+    no_accelerator:
+        names: "--no-accelerator"
+        action: "store_true"
+        help: "Disable use of accelerator, when available. e.g. 'don't use GPU'"
+    dist_backend:
+        names: "--dist-backend"
+        help: "The name of the torch-distributed backend to use"
 << endblock dynamic_args
 
 -- block meta_output

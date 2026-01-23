@@ -68,7 +68,7 @@ class DDPTrainer(Trainer):
         self.num_processes = self.dist.world_size
 
         self.mesh = init_device_mesh(
-            "cuda",
+            self.dist.device_type,
             (self.dist.world_size, 1),
             mesh_dim_names=("data_parallel", "model_parallel"),
         )
@@ -85,9 +85,10 @@ class DDPTrainer(Trainer):
         """
         Wrap assets for DDP
         """
+
         self.model = DDP(
             self.model,
-            device_ids=[self.args.device],
+            device_ids=[self.args.device] if self.dist.device_type != "cpu" else None,
             process_group=self.ddp_group,
             broadcast_buffers=self.args.ddp_broadcast_buffers,
             init_sync=self.args.ddp_init_sync,
