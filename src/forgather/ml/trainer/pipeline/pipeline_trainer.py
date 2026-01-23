@@ -1,5 +1,4 @@
 # https://github.com/pytorch/pytorch/tree/main/torch/distributed/pipelining
-import copy
 import logging
 import math
 from contextlib import ExitStack
@@ -9,7 +8,6 @@ from typing import (
     Any,
     Callable,
     Dict,
-    Iterable,
     List,
     Protocol,
     Tuple,
@@ -20,6 +18,7 @@ from typing import (
 import torch
 import torch.distributed as dist
 from torch import Tensor, distributed
+from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.pipelining import ScheduleGPipe
 from torch.distributed.pipelining.microbatch import split_args_kwargs_into_chunks
 from torch.distributed.pipelining.stage import _PipelineStageBase
@@ -29,6 +28,7 @@ from forgather.ml.construct import torch_dtype
 from forgather.ml.loss import RescaleLoss
 from forgather.ml.utils import default_dtype
 
+from ..dataloader_dispatcher import DataloaderDispatcher
 from ...sharded_checkpoint import (
     ShardIndex,
     SharingMetadataT,
@@ -249,6 +249,14 @@ class PipelineTrainer(Trainer):
         # Calculate total number of pipeline stages
         self.n_pipeline_stages = self.args.stages_per_rank * self.dist.world_size
 
+        # Create device mesh for pipeline parallel (pure MP - all ranks get same batch)
+        # This mesh is used for batch distribution via DataloaderDispatcher
+        self.mesh = init_device_mesh(
+            self.dist.device_type,
+            (self.dist.world_size,),
+            mesh_dim_names=("pipeline_parallel",),
+        )
+
         # Create pipeline parallel process group
         # For now, includes all ranks, but this allows future support for
         # hybrid parallelism where PP is a subset of ranks
@@ -265,6 +273,35 @@ class PipelineTrainer(Trainer):
                     logger.debug(
                         f"B {self.dist.rank} {name} : device {p.device}, dtype {p.dtype}"
                     )
+
+    @override
+    def _wrap(self) -> None:
+        """
+        Wrap dataloaders for pipeline parallel batch distribution.
+
+        Pipeline parallelism requires all ranks to receive the same batch (pure MP mode),
+        since different stages process different parts of the same batch. Rank 0 loads
+        data and broadcasts to all other ranks.
+
+        Uses DataloaderDispatcher with dp_mesh_dim=None for pure model-parallel mode,
+        which is equivalent to the previous broadcast-based _dataloader_iter approach
+        but with a more unified API consistent with other trainers.
+        """
+        if self.train_dataloader:
+            self.train_dataloader = DataloaderDispatcher(
+                self.train_dataloader,
+                self.mesh,
+                self.dist.device,
+                dp_mesh_dim=None,  # Pure MP: all ranks get same batch
+            )
+
+        if self.eval_dataloader:
+            self.eval_dataloader = DataloaderDispatcher(
+                self.eval_dataloader,
+                self.mesh,
+                self.dist.device,
+                dp_mesh_dim=None,  # Pure MP: all ranks get same batch
+            )
 
     @override
     def _prepare_model(self):
@@ -639,82 +676,6 @@ class PipelineTrainer(Trainer):
                     if self.args.debug_model_init:
                         logger.debug(f"rank{self.dist.rank}: Receiving {name}")
                     distributed.recv(p, src=0)
-
-    @override
-    def _dataloader_iter(
-        self, dataloader: Iterable[Dict[str, Tensor]]
-    ) -> Iterable[Dict[str, Tensor]]:
-        """
-        Broadcast batches from rank 0 to all other ranks for pipeline parallel training.
-
-        Only rank 0 actually loads data from the dataset. It broadcasts each batch to all
-        other ranks. This is more efficient than each rank loading independently because:
-
-        1. Memory efficiency: Avoids Python copy-on-write issues with memory-mapped datasets
-           that would create N copies of the dataset (one per rank) in memory.
-        2. Compute efficiency: Data preprocessing (tokenization, augmentation, etc.) happens
-           once instead of N times.
-        3. Only first stage needs inputs and last stage needs labels - intermediate stages
-           don't need the original batch data.
-
-        Tradeoff: Adds small latency at batch start due to broadcast overhead.
-
-        Protocol:
-        - Rank 0: Broadcasts flag=1, then all batch tensors, then yields batch. At end, broadcasts flag=0.
-        - Other ranks: Receive flag, then receive all tensors into pre-allocated buffers, then yield.
-
-        Args:
-            dataloader: DataLoader (only used by rank 0, other ranks ignore it)
-
-        Yields:
-            Batches with all tensors on device, synchronized across all ranks
-        """
-        if self.dist.rank == 0:
-            for batch in dataloader:
-                # Signal start of new batch
-                distributed.broadcast(torch.tensor(1, device=self.dist.device), src=0)
-                # Send each tensor in the batch
-                for key, value in batch.items():
-                    assert isinstance(value, Tensor), (
-                        f"Batch item {key} is not a Tensor, got {type(value)}. "
-                        "Pipeline parallel requires all batch items to be Tensors."
-                    )
-                    distributed.broadcast(
-                        value.to(device=self.dist.device), src=0, async_op=False
-                    )
-                yield batch
-            # Signal end of dataloader
-            distributed.broadcast(torch.tensor(0, device=self.dist.device), src=0)
-        else:
-            flag = torch.tensor(0, device=self.dist.device)
-            reference_batch = next(iter(dataloader))
-            batch = {}
-            for key, value in reference_batch.items():
-                assert isinstance(value, Tensor), (
-                    f"Batch item {key} is not a Tensor, got {type(value)}. "
-                    "Pipeline parallel requires all batch items to be Tensors."
-                )
-                batch[key] = torch.empty_like(value, device=self.dist.device)
-            reference_batch = None
-
-            while True:
-                # Receive flag asynchronously
-                req_flag = distributed.broadcast(flag, src=0, async_op=True)
-                assert req_flag
-                req_flag.wait()
-                if flag.item() == 0:
-                    break
-
-                # Start async receives for all tensors
-                requests = []
-                for value in batch.values():
-                    req = distributed.broadcast(value, src=0, async_op=True)
-                    requests.append(req)
-
-                # Wait for all tensors to be received before yielding
-                for req in requests:
-                    req.wait()
-                yield copy.copy(batch)
 
     @override
     def _forward_backward_step(

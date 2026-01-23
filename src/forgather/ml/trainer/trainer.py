@@ -12,7 +12,6 @@ from typing import (
     Any,
     Callable,
     Dict,
-    Iterable,
     Iterator,
     Optional,
     Protocol,
@@ -710,24 +709,6 @@ class Trainer(BaseTrainer):
                     scheduler_specific_kwargs=self.args.lr_scheduler_kwargs,
                 )
 
-    def _dataloader_iter(
-        self, dataloader: Iterable[Dict[str, Tensor]]
-    ) -> Iterable[Dict[str, Tensor]]:
-        """
-        Iterate over dataloader batches.
-
-        Simple generator wrapper around dataloader iteration. Subclasses may override
-        to add custom batch preprocessing or data transformations.
-
-        Args:
-            dataloader: The dataloader to iterate over
-
-        Yields:
-            Dict[str, Tensor]: Batches from the dataloader
-        """
-        for batch in dataloader:
-            yield batch
-
     def _maybe_log_save_evaluate(
         self,
         loss_log,
@@ -900,7 +881,7 @@ class Trainer(BaseTrainer):
             while True:
                 self.control.should_epoch_stop = False
                 self._dispatch_event("on_epoch_begin")
-                data_iterator = iter(self._dataloader_iter(self.train_dataloader))
+                data_iterator = iter(self.train_dataloader)
                 while True:
                     self._dispatch_event("on_step_begin")
 
@@ -998,7 +979,7 @@ class Trainer(BaseTrainer):
         with set_train(self.model, False):
             total_loss = torch.zeros(1, device=self.args.device)
             step = -1
-            for step, batch in enumerate(self._dataloader_iter(self.eval_dataloader)):
+            for step, batch in enumerate(self.eval_dataloader):
                 if self.args.max_eval_steps > 0 and step >= self.args.max_eval_steps:
                     break
                 input_dict, labels = self._prepare_batch(batch)
