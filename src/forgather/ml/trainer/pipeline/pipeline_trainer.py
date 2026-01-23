@@ -260,7 +260,7 @@ class PipelineTrainer(Trainer):
         # Create pipeline parallel process group
         # For now, includes all ranks, but this allows future support for
         # hybrid parallelism where PP is a subset of ranks
-        self.pp_group = dist.new_group()
+        self.pp_group = self.mesh.get_group(0)
 
     def _print_modules(self, modules):
         if self.args.debug_model_params:
