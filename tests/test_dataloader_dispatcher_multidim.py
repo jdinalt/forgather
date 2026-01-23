@@ -8,23 +8,26 @@ Tests three modes:
 - Hybrid (dp_size>1, mp_size>1): Different batches across DP groups,
   same batch within each MP group
 
+Supports both 1D and 2D mesh configurations.
+
 Usage:
-    # Pure DP - 4 GPUs (default behavior)
-    torchrun --nproc_per_node 4 test_dataloader_dispatcher_multidim.py --dp 4 --mp 1
+    # 1D Pure DP - 4 ranks
+    torchrun --nproc_per_node 4 test_dataloader_dispatcher_multidim.py --dp 4
 
-    # Pure MP - 4 GPUs
-    torchrun --nproc_per_node 4 test_dataloader_dispatcher_multidim.py --dp 1 --mp 4
+    # 1D Pure MP - 4 ranks
+    torchrun --nproc_per_node 4 test_dataloader_dispatcher_multidim.py --mp 4
 
-    # Hybrid - 6 GPUs: 2 DP groups x 3 MP each
+    # 2D Hybrid - 6 ranks: 2 DP groups x 3 MP each
     torchrun --nproc_per_node 6 test_dataloader_dispatcher_multidim.py --dp 2 --mp 3
 
-    # Hybrid - 6 GPUs: 3 DP groups x 2 MP each
-    torchrun --nproc_per_node 6 test_dataloader_dispatcher_multidim.py --dp 3 --mp 2
+    # 2D with swapped dimensions (dp_mesh_dim=1)
+    torchrun --nproc_per_node 6 test_dataloader_dispatcher_multidim.py --dp 2 --mp 3 --dp-dim 1
 """
 import argparse
 import os
 import sys
 from argparse import RawTextHelpFormatter
+from typing import Optional
 
 import torch
 import torch.distributed as dist
@@ -87,12 +90,71 @@ def init_distributed(backend: str):
 
         torch.accelerator.set_device_index(local_rank)
         acc = torch.accelerator.current_accelerator()
-        acc_backend = dist.get_default_backend_for_device(acc)
         device_type = acc.type
         idx = torch.accelerator.current_device_index()
         device = torch.device(f"{device_type}:{idx}")
 
     return rank, local_rank, world_size, device, device_type
+
+
+def create_mesh_and_dispatcher(
+    dataloader: DataLoader,
+    device: torch.device,
+    device_type: str,
+    dp_size: int,
+    mp_size: int,
+    dp_mesh_dim: Optional[int],
+):
+    """Create mesh and dispatcher based on configuration."""
+    if mp_size == 1 and dp_size > 1:
+        # 1D Pure DP
+        mesh = init_device_mesh(
+            device_type,
+            (dp_size,),
+            mesh_dim_names=("data_parallel",),
+        )
+        dispatcher = DataloaderDispatcher(dataloader, mesh, device, dp_mesh_dim=0)
+        mode = "1D Pure DP"
+    elif dp_size == 1 and mp_size > 1:
+        # 1D Pure MP
+        mesh = init_device_mesh(
+            device_type,
+            (mp_size,),
+            mesh_dim_names=("model_parallel",),
+        )
+        dispatcher = DataloaderDispatcher(dataloader, mesh, device, dp_mesh_dim=None)
+        mode = "1D Pure MP"
+    elif dp_size == 1 and mp_size == 1:
+        # Single rank - use 1D DP mesh
+        mesh = init_device_mesh(
+            device_type,
+            (1,),
+            mesh_dim_names=("data_parallel",),
+        )
+        dispatcher = DataloaderDispatcher(dataloader, mesh, device, dp_mesh_dim=0)
+        mode = "Single rank"
+    else:
+        # 2D Hybrid
+        if dp_mesh_dim is None or dp_mesh_dim == 0:
+            # Default: dim 0 is DP, dim 1 is MP
+            mesh = init_device_mesh(
+                device_type,
+                (dp_size, mp_size),
+                mesh_dim_names=("data_parallel", "model_parallel"),
+            )
+            dispatcher = DataloaderDispatcher(dataloader, mesh, device, dp_mesh_dim=0)
+            mode = "2D Hybrid (dp_dim=0)"
+        else:
+            # Swapped: dim 0 is MP, dim 1 is DP
+            mesh = init_device_mesh(
+                device_type,
+                (mp_size, dp_size),
+                mesh_dim_names=("model_parallel", "data_parallel"),
+            )
+            dispatcher = DataloaderDispatcher(dataloader, mesh, device, dp_mesh_dim=1)
+            mode = "2D Hybrid (dp_dim=1)"
+
+    return mesh, dispatcher, mode
 
 
 def verify_pure_dp(dispatcher, dp_size, rank, device):
@@ -104,7 +166,6 @@ def verify_pure_dp(dispatcher, dp_size, rank, device):
         batches_received.append(batch)
 
     # Each rank should receive different batches
-    # Collect batch identifiers from all ranks
     local_batch_ids = torch.tensor(
         [b["input_ids"][0, 0].item() for b in batches_received],
         device=device,
@@ -118,9 +179,9 @@ def verify_pure_dp(dispatcher, dp_size, rank, device):
         # Verify all batches are unique across ranks
         all_ids = torch.cat(all_batch_ids).tolist()
         unique_ids = set(all_ids)
-        assert len(unique_ids) == len(all_ids), (
-            f"DP mode: Expected unique batches, got duplicates. " f"IDs: {all_ids}"
-        )
+        assert len(unique_ids) == len(
+            all_ids
+        ), f"DP mode: Expected unique batches, got duplicates. IDs: {all_ids}"
         print(
             f"[Rank {rank}] Pure DP verified: {len(batches_received)} unique batches per rank"
         )
@@ -161,12 +222,21 @@ def verify_pure_mp(dispatcher, mp_size, rank, device):
     return True
 
 
-def verify_hybrid(dispatcher, mesh, dp_size, mp_size, rank, device):
+def verify_hybrid(dispatcher, mesh, dp_size, mp_size, rank, device, dp_mesh_dim):
     """Verify hybrid mode: same batch within MP group, different across DP groups."""
     print(f"[Rank {rank}] Testing Hybrid mode (dp_size={dp_size}, mp_size={mp_size})")
 
-    dp_rank = mesh.get_local_rank(0)
-    mp_rank = mesh.get_local_rank(1)
+    # Get ranks based on dp_mesh_dim
+    if dp_mesh_dim == 0:
+        dp_rank = mesh.get_local_rank(0)
+        mp_rank = mesh.get_local_rank(1)
+        dp_group = mesh.get_group(0)
+        mp_group = mesh.get_group(1)
+    else:
+        dp_rank = mesh.get_local_rank(1)
+        mp_rank = mesh.get_local_rank(0)
+        dp_group = mesh.get_group(1)
+        mp_group = mesh.get_group(0)
 
     batches_received = []
     for batch in dispatcher:
@@ -179,7 +249,6 @@ def verify_hybrid(dispatcher, mesh, dp_size, mp_size, rank, device):
     )
 
     # Gather within MP group - should all be identical
-    mp_group = mesh.get_group(1)
     mp_batch_ids = [torch.zeros_like(local_batch_ids) for _ in range(mp_size)]
     dist.all_gather(mp_batch_ids, local_batch_ids, group=mp_group)
 
@@ -192,7 +261,6 @@ def verify_hybrid(dispatcher, mesh, dp_size, mp_size, rank, device):
         )
 
     # Gather across DP groups (only DP leaders)
-    dp_group = mesh.get_group(0)
     if mp_rank == 0:
         dp_batch_ids = [torch.zeros_like(local_batch_ids) for _ in range(dp_size)]
         dist.all_gather(dp_batch_ids, local_batch_ids, group=dp_group)
@@ -229,24 +297,8 @@ def main(args):
         f"world_size ({world_size})"
     )
 
-    if rank == 0:
-        print("=" * 60)
-        print("DataloaderDispatcher Multi-Dimensional Parallelism Test")
-        print(f"Backend: {args.backend}, Device Type: {device_type}")
-        print(f"World size: {world_size}, DP size: {dp_size}, MP size: {mp_size}")
-        print("=" * 60)
-
-    # Create mesh
-    mesh = init_device_mesh(
-        device_type,
-        (dp_size, mp_size),
-        mesh_dim_names=("data_parallel", "model_parallel"),
-    )
-
     # Create dataset and dataloader
-    # Total batches = dp_size * num_batches_per_rank
     num_batches_per_rank = args.num_batches
-    total_samples = dp_size * num_batches_per_rank * args.batch_size
     dataset = DummyDataset(
         num_batches=dp_size * num_batches_per_rank,
         seq_len=args.seq_len,
@@ -259,10 +311,18 @@ def main(args):
         shuffle=False,
     )
 
-    # Create dispatcher
-    dispatcher = DataloaderDispatcher(dataloader, mesh, device)
+    # Create mesh and dispatcher
+    mesh, dispatcher, mode = create_mesh_and_dispatcher(
+        dataloader, device, device_type, dp_size, mp_size, args.dp_dim
+    )
 
     if rank == 0:
+        print("=" * 60)
+        print("DataloaderDispatcher Multi-Dimensional Parallelism Test")
+        print(f"Backend: {args.backend}, Device Type: {device_type}")
+        print(f"World size: {world_size}, DP size: {dp_size}, MP size: {mp_size}")
+        print(f"Mode: {mode}")
+        print("=" * 60)
         print(f"Dataset size: {len(dataset)}, Batches: {len(dataloader)}")
         print(f"Expected batches per rank: {num_batches_per_rank}")
         print()
@@ -274,7 +334,15 @@ def main(args):
         elif dp_size == 1:
             verify_pure_mp(dispatcher, mp_size, rank, device)
         else:
-            verify_hybrid(dispatcher, mesh, dp_size, mp_size, rank, device)
+            verify_hybrid(
+                dispatcher,
+                mesh,
+                dp_size,
+                mp_size,
+                rank,
+                device,
+                args.dp_dim if args.dp_dim is not None else 0,
+            )
 
         dist.barrier()
         if rank == 0:
@@ -297,7 +365,15 @@ def parse_args():
     parser = argparse.ArgumentParser(
         formatter_class=RawTextHelpFormatter,
         description="Test DataloaderDispatcher multi-dimensional parallelism",
-        epilog="Example: torchrun --nproc-per-node 4 --standalone  ./test_dataloader_dispatcher_multidim.py --dp 2 --mp 2 --backend gloo",
+        epilog=(
+            "Examples:\n"
+            "  # 1D Pure DP\n"
+            "  torchrun --nproc_per_node 4 --standalone test.py --dp 4\n"
+            "  # 1D Pure MP\n"
+            "  torchrun --nproc_per_node 4 --standalone test.py --mp 4\n"
+            "  # 2D Hybrid\n"
+            "  torchrun --nproc_per_node 6 --standalone test.py --dp 2 --mp 3\n"
+        ),
     )
     parser.add_argument(
         "--dp",
@@ -310,6 +386,12 @@ def parse_args():
         type=int,
         default=1,
         help="Model parallel size",
+    )
+    parser.add_argument(
+        "--dp-dim",
+        type=int,
+        default=None,
+        help="Which mesh dimension is DP (0 or 1, for 2D mesh). Default: 0",
     )
     parser.add_argument(
         "--num-batches",

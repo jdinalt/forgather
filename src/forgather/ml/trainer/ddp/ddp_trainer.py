@@ -69,8 +69,8 @@ class DDPTrainer(Trainer):
 
         self.mesh = init_device_mesh(
             self.dist.device_type,
-            (self.dist.world_size, 1),
-            mesh_dim_names=("data_parallel", "model_parallel"),
+            (self.dist.world_size,),
+            mesh_dim_names=("data_parallel",),
         )
         self.ddp_group = self.mesh.get_group(0)  # data-parallel group
 

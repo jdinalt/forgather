@@ -3,7 +3,6 @@
 /projects
 /tutorial
 /tokenizers
-*.sh
 .forgather_history
 .claude
 forgather.code-workspace
