@@ -1,29 +1,21 @@
 ## Resume training configuration that loads from the latest checkpoint
 -- extends "project.yaml"
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Resume Training from Checkpoint"
     -- set ns.config_description = "Continue training from the latest checkpoint, restoring optimizer and scheduler state"
-    -- set ns.create_new_model = False
-<< endblock config_metadata
 
--- block trainer_definition
+[trainer_definition]
     -- include 'resume.trainer_config'
--- endblock trainer_definition
 
 #-------------------- resume.trainer_config --------------------
 -- extends 'checkpointing.trainer_config'
 ## Override the trainer config for resume training
 
--- block trainer_args
+[trainer_args]
     == super()
     resume_from_checkpoint: True
-    restore_optimizer_state: True
-    restore_scheduler_state: True
-    restore_rng_state: True
-    restore_dataset_state: true
 
     # Continue for another 500 steps
     max_steps: 1000
-<< endblock trainer_args

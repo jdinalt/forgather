@@ -1,20 +1,18 @@
 ## Project for testing checkpoint functionality
 -- extends "projects/tiny.yaml"
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Checkpoint Testing Project"
     -- set ns.config_description = "Project for testing optimizer and scheduler checkpoint functionality"
-<< endblock config_metadata
 
--- block trainer_definition
+[trainer_definition]
     -- include 'checkpointing.trainer_config'
--- endblock trainer_definition
 
 #-------------------- checkpointing.trainer_config --------------------
 -- extends ns.trainer_class
 
--- block trainer_args
+[trainer_args]
     == super()
     
     # **checkpointing.trainer_config** 
@@ -30,7 +28,7 @@
     save_scheduler_state: true
     save_dataset_state: true
     save_rng_state: true
-    load_best_model_at_end: true
+    #load_best_model_at_end: true
 
     # Small training run for quick testing
     max_steps: {{ max_steps | default(500) }}
@@ -38,4 +36,3 @@
     # Smaller batch size for quick iterations
     per_device_train_batch_size: 8
     per_device_eval_batch_size: 16
-<< endblock trainer_args
