@@ -2,6 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Claude Code Development Notes
+
+**Location**: `.claude_notes/`
+
+This directory contains development notes, implementation summaries, and progress tracking documents created by Claude Code during feature development. These files are useful for:
+- Tracking implementation progress across sessions
+- Documenting design decisions and issues encountered
+- Providing context for future work on related features
+- Keeping detailed records of what was implemented and tested
+
+**Important**: This directory is gitignored and should NOT be merged to main branches. These are working notes, not official documentation.
+
+**Examples**: PHASE1_IMPLEMENTATION_SUMMARY.md, CHECKPOINT_INTEGRATION_SUMMARY.md
+
 ## Development Commands
 
 ### Forgather CLI (forgather) - Primary Interface
@@ -243,6 +257,147 @@ This creates a project directory with:
 ```bash
 pip install -e .
 ```
+
+## Checkpointing
+
+Forgather provides automatic distributed checkpoint coordination for multi-GPU and multi-node training. The system uses explicit state sharing patterns to handle complex parallelism strategies.
+
+### Basic Usage
+
+Enable checkpointing in training arguments:
+
+```python
+args = TrainingArguments(
+    output_dir="output_models/my_model",
+    save_strategy="steps",
+    save_steps=1000,                  # Save every 1000 steps
+    save_total_limit=3,               # Keep only last 3 checkpoints
+    save_optimizer_state=True,        # Save optimizer state
+    save_scheduler_state=True,        # Save LR scheduler state
+    save_dataset_state=True,          # Save dataset position (important!)
+    save_rng_state=True,              # Save RNG state for reproducibility
+)
+
+trainer = Trainer(model=model, args=args, ...)
+trainer.train()  # Checkpoints saved automatically
+```
+
+**Output:**
+```
+output_models/my_model/
+├── checkpoint-1000/
+│   ├── model.safetensors
+│   ├── optimizer_state.pt
+│   ├── scheduler_state.pt
+│   ├── dataset_state.pt
+│   ├── rng_state.pt
+│   └── checkpoint_manifest.json    # Metadata for debugging
+├── checkpoint-2000/
+└── checkpoint-3000/
+```
+
+### Resuming from Checkpoint
+
+```python
+args = TrainingArguments(
+    output_dir="output_models/my_model",
+    resume_from_checkpoint=True,      # Auto-finds latest checkpoint
+    max_steps=5000,
+)
+
+trainer = Trainer(model=model, args=args, ...)
+trainer.train()  # Continues from checkpoint-3000
+```
+
+### Distributed Training Patterns
+
+**Data Parallel (DDP):**
+```python
+from forgather.ml.trainer.ddp import DDPTrainer, DDPTrainingArguments
+
+args = DDPTrainingArguments(
+    dispatch_batches=True,            # Rank 0 loads and dispatches data
+    save_strategy="steps",
+    save_steps=1000,
+)
+
+# Launch with: torchrun --nproc_per_node=4 train.py
+trainer = DDPTrainer(model=model, args=args, ...)
+trainer.train()
+
+# Model/optimizer saved once (REPLICATED - DDP synchronizes)
+# Dataset saved once (GLOBAL - centralized loading)
+# RNG saved per rank (PER_RANK - each rank needs different random numbers)
+```
+
+**Pipeline Parallel:**
+```python
+from forgather.ml.trainer.pipeline import PipelineTrainer
+
+trainer = PipelineTrainer(
+    model_splitter=split_model_into_stages,
+    args=args,
+    ...
+)
+trainer.train()
+
+# Model/optimizer saved per rank (PER_RANK - different pipeline stages)
+# Dataset saved once (GLOBAL - rank 0 loads and broadcasts)
+```
+
+### Checkpoint Manifests
+
+Every checkpoint includes a manifest with complete metadata:
+
+```json
+{
+  "checkpoint_path": "/path/to/checkpoint-1000",
+  "world_size": 4,
+  "timestamp": "2026-01-24T10:30:45",
+  "components": {
+    "model": {
+      "sharing_pattern": "replicated",
+      "ranks": [0],
+      "size_bytes": 445678123
+    },
+    "rng": {
+      "sharing_pattern": "per_rank",
+      "ranks": [0, 1, 2, 3],
+      "size_bytes": 14042
+    }
+  }
+}
+```
+
+Use manifests for debugging checkpoint issues or verifying what was saved.
+
+### Common Issues
+
+**Training hangs during checkpoint save:**
+- Distributed barrier deadlock (fixed in built-in trainers)
+- Ensure all ranks call checkpoint save methods
+
+**Different results after resume:**
+- Enable `save_rng_state=True` and `save_dataset_state=True`
+- Ensures exact reproducibility
+
+**Validation failed for component 'optimizer':**
+- Known issue with AccelerateOptimizer wrapper (validation automatically disabled)
+- Model validation still works correctly
+
+### Documentation
+
+For complete documentation, see:
+- **User Guide**: `docs/checkpointing/user_guide.md` - Practical usage and troubleshooting
+- **Technical Details**: `docs/checkpointing/distributed_checkpoint_abstraction.md` - Architecture and patterns
+- **Migration Guide**: `docs/checkpointing/migration_guide.md` - Implementing custom trainers
+
+**Key Features:**
+- Automatic coordination for multi-GPU/multi-node training
+- Explicit state sharing patterns (GLOBAL, PER_RANK, REPLICATED, PER_GROUP, PER_NODE)
+- Optional replication validation to catch DDP synchronization bugs
+- Complete checkpoint manifests for debugging
+- Backward compatible with old checkpoints
 
 ## Architecture Overview
 

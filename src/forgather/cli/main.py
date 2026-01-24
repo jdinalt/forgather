@@ -277,6 +277,30 @@ def create_checkpoint_parser(global_args):
         type=path_type,
         help="Just show the generated commandline, without actually executing it.",
     )
+
+    # cp inspect subcommand
+    inspect_parser = subparsers.add_parser(
+        "inspect",
+        help="Inspect checkpoint structure and validate integrity",
+        formatter_class=RawTextHelpFormatter,
+    )
+    inspect_parser.add_argument(
+        "checkpoint_path",
+        type=path_type,
+        help="Path to checkpoint directory to inspect",
+    )
+    inspect_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show detailed information including file lists",
+    )
+    inspect_parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate that all expected files exist",
+    )
+
     return parser
 
 

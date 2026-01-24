@@ -35,7 +35,8 @@ from ...sharded_checkpoint import (
     make_shard_index,
     retie_parameters,
 )
-from ..checkpoint_manager import CheckpointConfig, CheckpointManager
+from ..checkpoint_manager import CheckpointConfig, CheckpointManager, RNGState
+from ..checkpoint_types import SharingPattern, StateComponent
 from ..dataloader_dispatcher import DataloaderDispatcher
 from ..trainer import Trainer, TrainingArguments, optimizer_hook
 from ..trainer_types import CheckpointInterface, LossFunctionT
@@ -974,3 +975,121 @@ class PipelineTrainer(Trainer):
         """
         distributed.broadcast(loss, src=self.pp_last_stage_rank)
         return loss
+
+    @override
+    def get_state_components(self) -> List[StateComponent]:
+        """
+        Get state components for pipeline parallel training.
+
+        Pipeline parallelism splits the model across ranks, so model and optimizer
+        are PER_RANK (different pipeline stages on each rank). Scheduler and trainer
+        state are REPLICATED (same across all ranks). Dataset uses GLOBAL pattern
+        because DataloaderDispatcher in pure MP mode (dp_mesh_dim=None) loads on
+        rank 0 and broadcasts to all other ranks.
+
+        Returns:
+            List of StateComponent objects with appropriate sharing patterns
+        """
+        components = []
+
+        # Model - PER_RANK (different pipeline stages per rank)
+        # pipeline_modules contains the stage modules assigned to this rank
+        if self.pipeline_modules:
+            components.append(
+                StateComponent(
+                    key="model",
+                    stateful=self.pipeline_modules,
+                    sharing_pattern=SharingPattern.PER_RANK,
+                )
+            )
+
+        # Optimizer - PER_RANK (optimizes different parameters per rank)
+        # Each rank's optimizer only contains parameters for its pipeline stages
+        if self.args.save_optimizer_state and self.optimizer:
+            components.append(
+                StateComponent(
+                    key="optimizer",
+                    stateful=self.optimizer,
+                    sharing_pattern=SharingPattern.PER_RANK,
+                    required=self.args.save_optimizer_state,
+                )
+            )
+
+        # LR Scheduler - REPLICATED (same schedule across all ranks)
+        # All ranks follow the same learning rate schedule
+        if self.args.save_scheduler_state and self.lr_scheduler:
+            components.append(
+                StateComponent(
+                    key="scheduler",
+                    stateful=self.lr_scheduler,
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    required=self.args.save_scheduler_state,
+                )
+            )
+
+        # Trainer state - REPLICATED (same global step across all ranks)
+        # Training progress is synchronized across all pipeline stages
+        if self.args.save_dataset_state:
+            components.append(
+                StateComponent(
+                    key="trainer",
+                    stateful=self,
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    required=self.args.save_dataset_state,
+                )
+            )
+
+        # Dataset state - GLOBAL (DataloaderDispatcher with pure MP mode)
+        # Rank 0 loads data and broadcasts to all ranks (dp_mesh_dim=None)
+        if self.args.save_dataset_state and hasattr(self.train_dataloader, "state_dict"):
+            components.append(
+                StateComponent(
+                    key="dataset",
+                    stateful=self.train_dataloader,
+                    sharing_pattern=self._get_dataset_sharing_pattern(),
+                    required=False,
+                )
+            )
+
+        # RNG state - PER_RANK (each rank needs different random numbers)
+        # Different dropout patterns, etc. for different pipeline stages
+        if self.args.save_rng_state:
+            components.append(
+                StateComponent(
+                    key="rng",
+                    stateful=RNGState(),
+                    sharing_pattern=SharingPattern.PER_RANK,
+                    required=self.args.save_rng_state,
+                )
+            )
+
+        return components
+
+    @override
+    def _get_dataset_sharing_pattern(self) -> SharingPattern:
+        """
+        Determine dataset sharing pattern for pipeline parallel training.
+
+        PipelineTrainer uses DataloaderDispatcher with dp_mesh_dim=None (pure MP mode).
+        In this configuration, rank 0 loads data and broadcasts to all other ranks,
+        so only one dataloader state exists globally.
+
+        Returns:
+            SharingPattern.GLOBAL - Only rank 0 loads/saves dataset state
+        """
+        # Pure model parallelism: all ranks get same batch from rank 0
+        # See _wrap() method where DataloaderDispatcher is created with dp_mesh_dim=None
+        return SharingPattern.GLOBAL
+
+    @override
+    def get_process_groups(self) -> Dict[str, Any]:
+        """
+        Get named process groups for checkpoint coordination.
+
+        Returns:
+            Dictionary mapping group names to ProcessGroup objects.
+            For pure pipeline parallelism, returns the pp_group.
+        """
+        return {
+            "pp_group": self.pp_group,
+        }

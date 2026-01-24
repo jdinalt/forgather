@@ -715,14 +715,26 @@ class StatefulProvider(Protocol):
     Used by checkpoint managers to collect all components that need to be
     saved/restored during checkpointing (optimizer, scheduler, dataset, etc.).
 
-    Allows flexible control over what gets checkpointed - save/restore operations
-    can request different sets of stateful objects based on configuration.
+    Supports two APIs:
+    1. Legacy API: get_statefuls_for_save/load() - Returns flat dict of Statefuls
+    2. New API: get_state_components() - Returns list of StateComponents with sharing patterns
+
+    The new API enables distributed checkpoint coordination for hybrid parallelism.
+    Implementations should provide both for backward compatibility during migration.
+
+    Migration timeline:
+    - Phase 1 (current): Both APIs supported, legacy is default
+    - Phase 2 (3 months): New API is default, legacy deprecated
+    - Phase 3 (6 months): Legacy API removed
     """
 
+    # Legacy API - Deprecated, use get_state_components() instead
     @abstractmethod
     def get_statefuls_for_save(self) -> Dict[str, Stateful]:
         """
         Get stateful objects to save in checkpoint.
+
+        DEPRECATED: Use get_state_components() for new code.
 
         Returns:
             Dictionary mapping component names to Stateful objects for saving
@@ -735,8 +747,92 @@ class StatefulProvider(Protocol):
         """
         Get stateful objects to restore from checkpoint.
 
+        DEPRECATED: Use get_state_components() for new code.
+
         Returns:
             Dictionary mapping component names to Stateful objects for loading
             (e.g., {"optimizer": optimizer, "scheduler": lr_scheduler})
         """
         pass
+
+    # New API - Preferred for distributed checkpointing
+    def get_state_components(self) -> List["StateComponent"]:  # type: ignore
+        """
+        Get state components with explicit sharing patterns for distributed checkpointing.
+
+        This is the new preferred API for checkpoint coordination. Each StateComponent
+        declares its sharing pattern (GLOBAL, PER_RANK, REPLICATED, etc.), enabling
+        automatic distributed checkpoint coordination without manual rank checks.
+
+        Returns:
+            List of StateComponent objects describing all checkpointable state
+
+        Example implementation for single-GPU trainer:
+            def get_state_components(self):
+                from forgather.ml.trainer.checkpoint_types import StateComponent, SharingPattern
+
+                return [
+                    StateComponent(
+                        key="model",
+                        stateful=self.model,
+                        sharing_pattern=SharingPattern.GLOBAL,
+                    ),
+                    StateComponent(
+                        key="optimizer",
+                        stateful=self.optimizer,
+                        sharing_pattern=SharingPattern.GLOBAL,
+                    ),
+                    StateComponent(
+                        key="scheduler",
+                        stateful=self.lr_scheduler,
+                        sharing_pattern=SharingPattern.GLOBAL,
+                    ),
+                    StateComponent(
+                        key="dataset",
+                        stateful=self.train_dataloader,
+                        sharing_pattern=self._get_dataset_sharing_pattern(),
+                    ),
+                    StateComponent(
+                        key="rng",
+                        stateful=RNGState(),
+                        sharing_pattern=SharingPattern.PER_RANK,
+                    ),
+                ]
+
+        Example for DDP trainer:
+            def get_state_components(self):
+                return [
+                    StateComponent(
+                        key="model",
+                        stateful=self.unwrapped_model(),
+                        sharing_pattern=SharingPattern.REPLICATED,
+                        validate_replication=True,  # Verify DDP synchronization
+                    ),
+                    # ... other components
+                ]
+
+        See: docs/checkpointing/migration_guide.md for full migration guide
+        """
+        # Default implementation returns None to signal use of legacy API
+        # Implementations should override this to provide StateComponents
+        return None  # type: ignore
+
+    def get_process_groups(self) -> Dict[str, Any]:
+        """
+        Get named process groups for PER_GROUP sharing pattern.
+
+        Returns dictionary mapping group names to ProcessGroup objects.
+        Only needed if using PER_GROUP sharing pattern in state components.
+
+        Returns:
+            Dictionary mapping process group names to ProcessGroup objects
+            (e.g., {"dp_group": dp_pg, "pp_group": pp_pg})
+
+        Example:
+            def get_process_groups(self):
+                return {
+                    "dp_group": self.dp_process_group,
+                    "pp_group": self.pp_process_group,
+                }
+        """
+        return {}

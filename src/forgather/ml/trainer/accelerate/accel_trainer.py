@@ -1,12 +1,14 @@
 # A subclass of Trainer, which adds support for the Acclerate library.
 import logging
 from dataclasses import dataclass
-from typing import Dict, Optional, override
+from typing import Dict, List, Optional, override
 
 import torch
 from accelerate import Accelerator
 from torch import Tensor, accelerator, distributed
 
+from ..checkpoint_manager import RNGState
+from ..checkpoint_types import SharingPattern, StateComponent
 from ..trainer import Trainer, TrainingArguments
 from ..trainer_types import TrainerState
 
@@ -145,6 +147,116 @@ class AccelTrainer(Trainer):
     def unwrapped_model(self) -> torch.nn.Module:
         assert self.model
         return self.accelerator.unwrap_model(self.model)
+
+    @override
+    def get_state_components(self) -> List[StateComponent]:
+        """
+        Get state components for Accelerate-based distributed training.
+
+        Accelerate uses DDP for multi-GPU training, which synchronizes model
+        and optimizer state across all ranks. Therefore, we use REPLICATED
+        pattern for these components with validation enabled to catch sync bugs.
+
+        Returns:
+            List of StateComponent objects with REPLICATED patterns for DDP state
+        """
+        components = []
+
+        # Model - REPLICATED in DDP
+        # Accelerate synchronizes model weights across all ranks
+        components.append(
+            StateComponent(
+                key="model",
+                stateful=self.unwrapped_model(),
+                sharing_pattern=SharingPattern.REPLICATED,
+                validate_replication=True,  # Verify DDP synchronization
+                validation_level="tensor",  # Good balance of speed vs accuracy
+            )
+        )
+
+        # Optimizer - REPLICATED in DDP
+        # Accelerate synchronizes optimizer state across all ranks
+        # Note: Validation disabled - AcceleratedOptimizer wrapper may have rank-specific state
+        if self.args.save_optimizer_state:
+            components.append(
+                StateComponent(
+                    key="optimizer",
+                    stateful=self.optimizer,
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    validate_replication=False,  # Disabled: AcceleratedOptimizer has rank-specific state
+                    validation_level="quick",
+                    required=self.args.save_optimizer_state,
+                )
+            )
+
+        # LR Scheduler - REPLICATED
+        # Same schedule across all ranks
+        if self.args.save_scheduler_state:
+            components.append(
+                StateComponent(
+                    key="scheduler",
+                    stateful=self.lr_scheduler,
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    required=self.args.save_scheduler_state,
+                )
+            )
+
+        # Trainer state - REPLICATED
+        # Training progress is synchronized across all ranks
+        if self.args.save_dataset_state:
+            components.append(
+                StateComponent(
+                    key="trainer",
+                    stateful=self,
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    required=self.args.save_dataset_state,
+                )
+            )
+
+        # Dataset state - depends on dataloader configuration
+        # Accelerate can use different data loading strategies
+        if self.args.save_dataset_state and hasattr(self.train_dataloader, "state_dict"):
+            components.append(
+                StateComponent(
+                    key="dataset",
+                    stateful=self.train_dataloader,
+                    sharing_pattern=self._get_dataset_sharing_pattern(),
+                    required=False,
+                )
+            )
+
+        # RNG state - PER_RANK
+        # Each rank needs different random numbers for data augmentation, dropout, etc.
+        if self.args.save_rng_state:
+            components.append(
+                StateComponent(
+                    key="rng",
+                    stateful=RNGState(),
+                    sharing_pattern=SharingPattern.PER_RANK,
+                    required=self.args.save_rng_state,
+                )
+            )
+
+        return components
+
+    @override
+    def _get_dataset_sharing_pattern(self) -> SharingPattern:
+        """
+        Determine dataset sharing pattern for Accelerate training.
+
+        Accelerate can handle data loading in different ways:
+        - split_batches=True: Batches split across GPUs (needs coordination)
+        - split_batches=False: Each GPU gets full batch (independent)
+
+        For now, conservatively use PER_RANK for independent iteration.
+        In future, could detect DataloaderDispatcher and use GLOBAL.
+
+        Returns:
+            SharingPattern for dataset state
+        """
+        # TODO: Could check for DataloaderDispatcher and return GLOBAL
+        # For now, assume independent dataloaders per rank
+        return SharingPattern.PER_RANK
 
     @override
     def _end_train_loop(

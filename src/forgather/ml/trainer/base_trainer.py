@@ -13,6 +13,7 @@ from torch.distributed.checkpoint.stateful import Stateful
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from .checkpoint_manager import RNGState
+from .checkpoint_types import SharingPattern, StateComponent
 from .trainer_types import (
     CheckpointInterface,
     DataCollatorT,
@@ -655,6 +656,126 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
             statefuls[key] = obj
 
         return statefuls
+
+    # StatefulProvider - New Checkpoint API
+    def get_state_components(self) -> List[StateComponent]:
+        """
+        Get state components with explicit sharing patterns for distributed checkpointing.
+
+        This is the new preferred API for checkpoint coordination. Each StateComponent
+        declares its sharing pattern (GLOBAL, PER_RANK, REPLICATED, etc.), enabling
+        automatic distributed checkpoint coordination without manual rank checks.
+
+        For single-GPU trainers, all state is GLOBAL except RNG which is PER_RANK.
+
+        Returns:
+            List of StateComponent objects describing all checkpointable state
+
+        Example:
+            Components for simple trainer:
+            - model: GLOBAL (single GPU, one copy)
+            - optimizer: GLOBAL
+            - scheduler: GLOBAL
+            - trainer: GLOBAL (training progress)
+            - dataset: GLOBAL or PER_RANK (depends on dataloader type)
+            - rng: PER_RANK (each rank needs unique random numbers)
+        """
+        components = []
+
+        # Model - always saved
+        components.append(
+            StateComponent(
+                key="model",
+                stateful=self.model,
+                sharing_pattern=SharingPattern.GLOBAL,
+            )
+        )
+
+        # Optimizer
+        if self.args.save_optimizer_state:
+            components.append(
+                StateComponent(
+                    key="optimizer",
+                    stateful=self.optimizer,
+                    sharing_pattern=SharingPattern.GLOBAL,
+                    required=self.args.save_optimizer_state,
+                )
+            )
+
+        # LR Scheduler
+        if self.args.save_scheduler_state:
+            components.append(
+                StateComponent(
+                    key="scheduler",
+                    stateful=self.lr_scheduler,
+                    sharing_pattern=SharingPattern.GLOBAL,
+                    required=self.args.save_scheduler_state,
+                )
+            )
+
+        # Trainer state (training progress)
+        if self.args.save_dataset_state:  # Note: trainer state saved with dataset flag
+            components.append(
+                StateComponent(
+                    key="trainer",
+                    stateful=self,
+                    sharing_pattern=SharingPattern.GLOBAL,
+                    required=self.args.save_dataset_state,
+                )
+            )
+
+        # Dataset state - pattern depends on dataloader type
+        if self.args.save_dataset_state and hasattr(self.train_dataloader, "state_dict"):
+            components.append(
+                StateComponent(
+                    key="dataset",
+                    stateful=self.train_dataloader,
+                    sharing_pattern=self._get_dataset_sharing_pattern(),
+                    required=False,  # Optional - not all dataloaders are stateful
+                )
+            )
+
+        # RNG state - always PER_RANK
+        if self.args.save_rng_state:
+            components.append(
+                StateComponent(
+                    key="rng",
+                    stateful=RNGState(),
+                    sharing_pattern=SharingPattern.PER_RANK,
+                    required=self.args.save_rng_state,
+                )
+            )
+
+        return components
+
+    def _get_dataset_sharing_pattern(self) -> SharingPattern:
+        """
+        Determine dataset state sharing pattern based on dataloader type.
+
+        The pattern depends on how data is loaded:
+        - DataloaderDispatcher: Centralized loading by rank 0 → GLOBAL
+        - Regular DataLoader: Independent loading per rank → PER_RANK
+
+        For single-GPU trainers, dataset is always GLOBAL.
+
+        Returns:
+            SharingPattern for dataset state
+        """
+        # For single-GPU trainer, dataset is GLOBAL
+        # Subclasses with distributed training should override this method
+        return SharingPattern.GLOBAL
+
+    def get_process_groups(self) -> Dict[str, any]:
+        """
+        Get named process groups for PER_GROUP sharing pattern.
+
+        Single-GPU trainers don't use process groups.
+        Subclasses with distributed training should override this method.
+
+        Returns:
+            Empty dictionary (no process groups in single-GPU training)
+        """
+        return {}
 
     # Stateful
     @override

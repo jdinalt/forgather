@@ -6,6 +6,13 @@ from .trainer_types import (
     TrainerState,
     TrainOutput,
 )
+from .checkpoint_types import (
+    SharingPattern,
+    StateComponent,
+    ComponentManifest,
+    CheckpointManifest,
+)
+from .checkpoint_coordinator import CheckpointCoordinator
 
 __all__ = [
     "Trainer",
@@ -16,4 +23,10 @@ __all__ = [
     "TrainerControl",
     "TrainerCallback",
     "enable_hf_activation_checkpointing",
+    # Checkpoint abstractions
+    "SharingPattern",
+    "StateComponent",
+    "ComponentManifest",
+    "CheckpointManifest",
+    "CheckpointCoordinator",
 ]

@@ -1,7 +1,7 @@
 import logging
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Optional, override
+from typing import Dict, List, Optional, override
 
 import torch
 from torch import Tensor
@@ -9,6 +9,8 @@ from torch import distributed as dist
 from torch.distributed.device_mesh import init_device_mesh
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+from ..checkpoint_manager import RNGState
+from ..checkpoint_types import SharingPattern, StateComponent
 from ..dataloader_dispatcher import DataloaderDispatcher
 from ..trainer import Trainer, TrainingArguments
 
@@ -148,3 +150,131 @@ class DDPTrainer(Trainer):
         """
         with nullcontext() if self._should_sync_gradients() else self.model.no_sync():
             return super()._forward_backward_step(*args, **kwargs)
+
+    @override
+    def get_state_components(self) -> List[StateComponent]:
+        """
+        Get state components for DDP training.
+
+        DDP uses data parallelism where model and optimizer state are replicated
+        across all ranks. DDP automatically synchronizes model weights and gradients,
+        so these components use REPLICATED pattern with validation enabled to catch
+        synchronization bugs.
+
+        Dataset pattern depends on dispatch_batches setting:
+        - dispatch_batches=True: GLOBAL (rank 0 loads and dispatches)
+        - dispatch_batches=False: PER_RANK (each rank has independent dataloader)
+
+        Returns:
+            List of StateComponent objects with REPLICATED patterns for DDP state
+        """
+        components = []
+
+        # Model - REPLICATED in DDP
+        # DDP synchronizes model weights across all ranks
+        components.append(
+            StateComponent(
+                key="model",
+                stateful=self.unwrapped_model(),
+                sharing_pattern=SharingPattern.REPLICATED,
+                validate_replication=True,  # Verify DDP synchronization
+                validation_level="tensor",  # Good balance of speed vs accuracy
+            )
+        )
+
+        # Optimizer - REPLICATED in DDP
+        # DDP synchronizes gradients, so optimizer state should be identical
+        if self.args.save_optimizer_state:
+            components.append(
+                StateComponent(
+                    key="optimizer",
+                    stateful=self.optimizer,
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    validate_replication=True,
+                    validation_level="quick",  # Faster for large optimizers
+                    required=self.args.save_optimizer_state,
+                )
+            )
+
+        # LR Scheduler - REPLICATED
+        # Same schedule across all ranks
+        if self.args.save_scheduler_state:
+            components.append(
+                StateComponent(
+                    key="scheduler",
+                    stateful=self.lr_scheduler,
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    required=self.args.save_scheduler_state,
+                )
+            )
+
+        # Trainer state - REPLICATED
+        # Training progress is synchronized across all ranks
+        if self.args.save_dataset_state:
+            components.append(
+                StateComponent(
+                    key="trainer",
+                    stateful=self,
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    required=self.args.save_dataset_state,
+                )
+            )
+
+        # Dataset state - depends on dispatch_batches setting
+        if self.args.save_dataset_state and hasattr(self.train_dataloader, "state_dict"):
+            components.append(
+                StateComponent(
+                    key="dataset",
+                    stateful=self.train_dataloader,
+                    sharing_pattern=self._get_dataset_sharing_pattern(),
+                    required=False,
+                )
+            )
+
+        # RNG state - PER_RANK
+        # Each rank needs different random numbers for data augmentation, dropout, etc.
+        if self.args.save_rng_state:
+            components.append(
+                StateComponent(
+                    key="rng",
+                    stateful=RNGState(),
+                    sharing_pattern=SharingPattern.PER_RANK,
+                    required=self.args.save_rng_state,
+                )
+            )
+
+        return components
+
+    @override
+    def _get_dataset_sharing_pattern(self) -> SharingPattern:
+        """
+        Determine dataset sharing pattern for DDP training.
+
+        The pattern depends on the dispatch_batches setting:
+        - dispatch_batches=True: Uses DataloaderDispatcher where rank 0 loads
+          data and broadcasts to all ranks (GLOBAL pattern)
+        - dispatch_batches=False: Each rank has independent dataloader iteration
+          (PER_RANK pattern)
+
+        Returns:
+            SharingPattern for dataset state (GLOBAL or PER_RANK)
+        """
+        if self.args.dispatch_batches:
+            # DataloaderDispatcher: rank 0 loads and broadcasts
+            return SharingPattern.GLOBAL
+        else:
+            # Independent dataloaders per rank
+            return SharingPattern.PER_RANK
+
+    @override
+    def get_process_groups(self) -> Dict[str, any]:
+        """
+        Get named process groups for checkpoint coordination.
+
+        Returns:
+            Dictionary mapping group names to ProcessGroup objects.
+            For DDP, returns the data parallel group.
+        """
+        return {
+            "ddp_group": self.ddp_group,
+        }

@@ -25,6 +25,7 @@ from forgather.ml.sharded_checkpoint import (
     validate_checkpoint,
 )
 
+from .checkpoint_coordinator import CheckpointCoordinator
 from .trainer_types import CheckpointInterface, StatefulProvider
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,31 @@ class CheckpointManager(CheckpointInterface):
         self.best_checkpoint = None
         self.barrier_fn = get_barrier_fn(get_global_process_group())
 
+        # Initialize CheckpointCoordinator for state component handling
+        # Try new API first, fall back to old API if not implemented
+        state_components = stateful_provider.get_state_components()
+        if state_components is not None:
+            # Filter out model component - CheckpointManager handles model separately
+            # via sharded checkpoint (which can handle large models efficiently)
+            non_model_components = [
+                comp for comp in state_components if comp.key != "model"
+            ]
+
+            if non_model_components:
+                process_groups = stateful_provider.get_process_groups() or {}
+                self.coordinator = CheckpointCoordinator(
+                    state_components=non_model_components,
+                    process_groups=process_groups,
+                    dist=dist,
+                    output_dir=config.output_dir,
+                )
+            else:
+                # No non-model components to coordinate
+                self.coordinator = None
+        else:
+            # Old API - will use get_statefuls_for_save/load
+            self.coordinator = None
+
     def save_checkpoint(
         self,
         checkpoint_path: str | None = None,
@@ -110,9 +136,20 @@ class CheckpointManager(CheckpointInterface):
             os.makedirs(checkpoint_path, exist_ok=True)
         self._barrier()
 
+        # Save model weights (only on ranks that should save)
         if self._should_save_common():
             self._save_model(checkpoint_path)
+
+        # Save training state
+        # If using CheckpointCoordinator, ALL ranks must call it (has barriers)
+        # If using old API, only saving ranks call it
+        if self.coordinator is not None:
+            # New API: all ranks participate
             self._save_training_state(checkpoint_path)
+        else:
+            # Old API: only saving ranks
+            if self._should_save_common():
+                self._save_training_state(checkpoint_path)
 
         # At most, one process per node should delete excess checkpoints
         if self._should_save_unique():
@@ -266,23 +303,43 @@ class CheckpointManager(CheckpointInterface):
 
     def _save_training_state(self, output_dir: str) -> None:
         """Save all training state components to separate files."""
-        for key, obj in self.stateful_provider.get_statefuls_for_save().items():
-            if obj:
-                try:
-                    self._save_state_dict(key, obj, output_dir)
-                except Exception as e:
-                    logger.error(f"Failed to save {key}\n{e}")
-                    traceback.print_exc()
+        if self.coordinator is not None:
+            # Use new CheckpointCoordinator API
+            # IMPORTANT: ALL ranks must call this (coordinator has barriers)
+            try:
+                self.coordinator.save_checkpoint(output_dir, validate=False)
+            except Exception as e:
+                logger.error(f"Failed to save training state via CheckpointCoordinator\n{e}")
+                traceback.print_exc()
+                raise
+        else:
+            # Fall back to old API
+            for key, obj in self.stateful_provider.get_statefuls_for_save().items():
+                if obj:
+                    try:
+                        self._save_state_dict(key, obj, output_dir)
+                    except Exception as e:
+                        logger.error(f"Failed to save {key}\n{e}")
+                        traceback.print_exc()
 
     def _load_training_state(self, checkpoint_path: str) -> None:
         """Load all training state components from separate files."""
-        for key, obj in self.stateful_provider.get_statefuls_for_load().items():
-            if obj:
-                try:
-                    self._load_state_dict(key, obj, checkpoint_path)
-                except Exception as e:
-                    logger.warning(f"Failed to load {key}\n{e}")
-                    # traceback.print_exc()
+        if self.coordinator is not None:
+            # Use new CheckpointCoordinator API
+            try:
+                self.coordinator.load_checkpoint(checkpoint_path, strict=False)
+            except Exception as e:
+                logger.warning(f"Failed to load training state via CheckpointCoordinator\n{e}")
+                traceback.print_exc()
+        else:
+            # Fall back to old API
+            for key, obj in self.stateful_provider.get_statefuls_for_load().items():
+                if obj:
+                    try:
+                        self._load_state_dict(key, obj, checkpoint_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to load {key}\n{e}")
+                        # traceback.print_exc()
 
 
 class RNGState(Stateful):
