@@ -27,27 +27,22 @@ test_dataset_split: &test_dataset_split !singleton:datasets:load_dataset@test_da
 
 [train_dataset]
 train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
+    <<: &common_args
+        map_fn: *map_function
+        tokenizer: *tokenizer
+        shard_dataset: !var [ "shard_dataset", False ]
+        fn_kwargs: !var "preprocess_args"
     dataset: *train_dataset_split
-    map_fn: *map_function
-    tokenizer: *tokenizer
     desc: "Tokenizing train"
-    shard_dataset: !var [ "shard_dataset", False ]
-    fn_kwargs: !var "preprocess_args"
-
+   
 [eval_dataset]
 eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
+    <<: *common_args
     dataset: *validation_dataset_split
-    map_fn: *map_function
-    tokenizer: *tokenizer
     desc: "Tokenizing validation"
-    shard_dataset: !var [ "shard_dataset", False ]
-    fn_kwargs: !var "preprocess_args"
 
 [test_dataset]
 test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
+    <<: *common_args
     dataset: *test_dataset_split
-    map_fn: *map_function
-    tokenizer: *tokenizer
     desc: "Tokenizing test"
-    shard_dataset: !var [ "shard_dataset", False ]
-    fn_kwargs: !var "preprocess_args"

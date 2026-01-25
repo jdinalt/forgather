@@ -21,15 +21,11 @@
     add_eos: True
 
 [train_dataset]
-train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
-    dataset: *train_dataset_split
-    tokenizer: *tokenizer
-    desc: "Tokenizing train"
+    == super()
     to_iterable: True
     map_kwargs:
         batch_size: 1000
     num_shards: 1024
-    map_fn: *map_function
     fn_kwargs: !var { name: "preprocess_args", default: null }
 
 [dynamic_args]
