@@ -218,28 +218,32 @@ class DataloaderDispatcher:
                 batch_lengths[i, j, 1] = v.shape[1]
 
     def _send_batches_to_dp_ranks(self, batches: List[Dict[str, torch.Tensor]]) -> None:
-        """Send batches to other DP ranks via isend (excluding first batch)."""
-        requests = []
+        """Send batches to other DP ranks via batched isend (excluding first batch)."""
+        p2p_ops = []
         for i, batch in enumerate(batches[1:]):
             for data in batch.values():
-                req = dist.isend(data, group=self._dp_group, group_dst=i + 1)
-                requests.append(req)
-        for req in requests:
-            req.wait()
+                op = dist.P2POp(dist.isend, data, i + 1, group=self._dp_group)
+                p2p_ops.append(op)
+        if p2p_ops:
+            reqs = dist.batch_isend_irecv(p2p_ops)
+            for req in reqs:
+                req.wait()
 
     def _receive_batch_from_coordinator(
         self, meta_data: Dict, shapes: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
-        """Receive batch from coordinator via irecv."""
-        requests = []
+        """Receive batch from coordinator via batched irecv."""
+        p2p_ops = []
         batch = {}
         for key, dtype, shape in zip(meta_data["keys"], meta_data["dtypes"], shapes):
             data = torch.empty(shape[0], shape[1], dtype=dtype, device=self._device)
-            req = dist.irecv(data, group=self._dp_group, group_src=0)
-            requests.append(req)
+            op = dist.P2POp(dist.irecv, data, 0, group=self._dp_group)
+            p2p_ops.append(op)
             batch[key] = data
-        for req in requests:
-            req.wait()
+        if p2p_ops:
+            reqs = dist.batch_isend_irecv(p2p_ops)
+            for req in reqs:
+                req.wait()
         return batch
 
     # -------------------------------------------------------------------------
