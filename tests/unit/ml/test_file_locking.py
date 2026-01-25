@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Unit tests for file-locking functionality in forgather.ml.construct.
+Unit tests for file-locking and build synchronization in forgather.ml.construct.
 
-Tests the new file-locking approach that replaces torch.distributed barriers
-for synchronizing object construction across multiple processes.
+Tests the build synchronization mechanisms:
+- file_lock_build: File-based locking for when torch.distributed isn't available
+- build_sync: Unified context manager that uses barriers or file locking
+- build_rule: High-level build function using build_sync
 """
 
 import os
@@ -18,6 +20,7 @@ from unittest.mock import MagicMock, patch
 
 from forgather.ml.construct import (
     build_rule,
+    build_sync,
     copy_package_files,
     file_lock_build,
     write_file,
@@ -90,6 +93,206 @@ class TestFileLockBuild(unittest.TestCase):
         # We'll test that the timeout parameter is accepted
         with file_lock_build(self.target, timeout=1.0) as should_build:
             self.assertTrue(should_build)
+
+
+class TestBuildSync(unittest.TestCase):
+    """Test the build_sync context manager."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.target = os.path.join(self.tmpdir, "sync_target")
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_build_sync_without_distributed(self):
+        """Test build_sync falls back to file locking when distributed is not available."""
+        # Patch torch.distributed to simulate it not being initialized
+        with patch("forgather.ml.construct._get_dist") as mock_get_dist:
+            mock_dist = MagicMock()
+            mock_dist.is_available.return_value = False
+            mock_get_dist.return_value = mock_dist
+
+            with build_sync(self.target) as should_build:
+                self.assertTrue(should_build)
+                with open(self.target, "w") as f:
+                    f.write("test content")
+
+            self.assertTrue(os.path.exists(self.target))
+
+    def test_build_sync_distributed_not_initialized(self):
+        """Test build_sync falls back to file locking when distributed is not initialized."""
+        with patch("forgather.ml.construct._get_dist") as mock_get_dist:
+            mock_dist = MagicMock()
+            mock_dist.is_available.return_value = True
+            mock_dist.is_initialized.return_value = False
+            mock_get_dist.return_value = mock_dist
+
+            with build_sync(self.target) as should_build:
+                self.assertTrue(should_build)
+                with open(self.target, "w") as f:
+                    f.write("test content")
+
+            self.assertTrue(os.path.exists(self.target))
+
+    def test_build_sync_single_process(self):
+        """Test build_sync with world_size=1 (single process)."""
+        with patch("forgather.ml.construct._get_dist") as mock_get_dist:
+            mock_dist = MagicMock()
+            mock_dist.is_available.return_value = True
+            mock_dist.is_initialized.return_value = True
+            mock_get_dist.return_value = mock_dist
+
+            with patch("forgather.ml.construct.get_world_size", return_value=1):
+                with build_sync(self.target) as should_build:
+                    self.assertTrue(should_build)
+                    with open(self.target, "w") as f:
+                        f.write("test content")
+
+            self.assertTrue(os.path.exists(self.target))
+
+    def test_build_sync_distributed_rank0(self):
+        """Test build_sync with distributed initialized, rank 0 should build."""
+        with patch("forgather.ml.construct._get_dist") as mock_get_dist:
+            mock_dist = MagicMock()
+            mock_dist.is_available.return_value = True
+            mock_dist.is_initialized.return_value = True
+            mock_dist.get_group_rank.return_value = 0
+            mock_get_dist.return_value = mock_dist
+
+            mock_group = MagicMock()
+            mock_barrier = MagicMock()
+
+            with patch("forgather.ml.construct.get_world_size", return_value=4):
+                with patch(
+                    "forgather.ml.construct.get_global_process_group",
+                    return_value=mock_group,
+                ):
+                    with patch(
+                        "forgather.ml.construct.get_barrier_fn",
+                        return_value=mock_barrier,
+                    ):
+                        with patch("forgather.ml.construct.get_rank", return_value=0):
+                            with build_sync(self.target) as should_build:
+                                self.assertTrue(should_build)
+
+                            # Verify barriers were called (once after build, once final)
+                            self.assertEqual(mock_barrier.call_count, 2)
+
+    def test_build_sync_distributed_rank_nonzero(self):
+        """Test build_sync with distributed initialized, non-zero rank should not build."""
+        with patch("forgather.ml.construct._get_dist") as mock_get_dist:
+            mock_dist = MagicMock()
+            mock_dist.is_available.return_value = True
+            mock_dist.is_initialized.return_value = True
+            mock_dist.get_group_rank.return_value = 2  # Non-zero rank
+            mock_get_dist.return_value = mock_dist
+
+            mock_group = MagicMock()
+            mock_barrier = MagicMock()
+
+            with patch("forgather.ml.construct.get_world_size", return_value=4):
+                with patch(
+                    "forgather.ml.construct.get_global_process_group",
+                    return_value=mock_group,
+                ):
+                    with patch(
+                        "forgather.ml.construct.get_barrier_fn",
+                        return_value=mock_barrier,
+                    ):
+                        with patch("forgather.ml.construct.get_rank", return_value=2):
+                            with build_sync(self.target) as should_build:
+                                self.assertFalse(should_build)
+
+                            # Verify barriers were called (once before yield, once final)
+                            self.assertEqual(mock_barrier.call_count, 2)
+
+    def test_build_sync_local_flag(self):
+        """Test build_sync with local=True uses local process group."""
+        with patch("forgather.ml.construct._get_dist") as mock_get_dist:
+            mock_dist = MagicMock()
+            mock_dist.is_available.return_value = True
+            mock_dist.is_initialized.return_value = True
+            mock_dist.get_group_rank.return_value = 0
+            mock_get_dist.return_value = mock_dist
+
+            mock_local_group = MagicMock()
+            mock_global_group = MagicMock()
+            mock_barrier = MagicMock()
+
+            with patch("forgather.ml.construct.get_world_size", return_value=4):
+                with patch(
+                    "forgather.ml.construct.get_local_process_group",
+                    return_value=mock_local_group,
+                ) as mock_get_local:
+                    with patch(
+                        "forgather.ml.construct.get_global_process_group",
+                        return_value=mock_global_group,
+                    ) as mock_get_global:
+                        with patch(
+                            "forgather.ml.construct.get_barrier_fn",
+                            return_value=mock_barrier,
+                        ):
+                            with patch(
+                                "forgather.ml.construct.get_rank", return_value=0
+                            ):
+                                # Test with local=True
+                                with build_sync(
+                                    self.target, local=True
+                                ) as should_build:
+                                    pass
+
+                                # Should use local process group, not global
+                                mock_get_local.assert_called_once()
+                                mock_get_global.assert_not_called()
+
+    def test_build_sync_concurrent_file_locking(self):
+        """Test build_sync with concurrent access when using file locking fallback.
+
+        This test verifies that build_sync properly coordinates multiple threads
+        when falling back to file locking (world_size=1 triggers fallback).
+        """
+        results = []
+        lock = threading.Lock()
+        construction_count = 0
+
+        def worker(worker_id):
+            nonlocal construction_count
+            # Patch get_world_size to return 1, which triggers file locking fallback
+            # (distributed barriers are skipped when world_size=1)
+            with patch("forgather.ml.construct.get_world_size", return_value=1):
+                with build_sync(self.target) as should_build:
+                    if should_build:
+                        with lock:
+                            construction_count += 1
+                        time.sleep(0.1)  # Simulate work
+                        with open(self.target, "w") as f:
+                            f.write(f"Created by worker {worker_id}")
+                    with lock:
+                        results.append((worker_id, should_build))
+
+        # Start multiple threads
+        threads = []
+        for i in range(5):
+            t = threading.Thread(target=worker, args=(i,))
+            threads.append(t)
+            t.start()
+
+        # Wait for all threads
+        for t in threads:
+            t.join()
+
+        # Only one thread should have done construction
+        self.assertEqual(construction_count, 1)
+        self.assertEqual(len(results), 5)  # All threads completed
+
+        # Exactly one thread should have should_build=True
+        build_count = sum(1 for _, should_build in results if should_build)
+        self.assertEqual(build_count, 1)
+
+        self.assertTrue(os.path.exists(self.target))
 
 
 class TestBuildRule(unittest.TestCase):

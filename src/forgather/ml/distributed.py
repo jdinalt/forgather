@@ -34,6 +34,7 @@ from torch._C._distributed_c10d import Work
 from torch.distributed import ProcessGroup
 
 logger = logging.getLogger(__name__)
+# logger.setLevel(logging.DEBUG)
 
 # Tracks recursion depth of main_local_process_first to prevent nested barriers
 mpf_recursion_level = 0
@@ -173,12 +174,27 @@ def get_global_process_group() -> ProcessGroup | None:
     global _global_process_group
 
     if not dist.is_available() or not dist.is_initialized() or get_world_size() == 1:
+        logger.debug(
+            f"[Rank {get_rank()}] get_global_process_group: returning None "
+            f"(available={dist.is_available()}, "
+            f"initialized={dist.is_initialized()}, "
+            f"world_size={get_world_size()})"
+        )
         return None
 
     if _global_process_group is not None:
+        logger.debug(
+            f"[Rank {get_rank()}] get_global_process_group: returning cached group"
+        )
         return _global_process_group
 
+    logger.debug(
+        f"[Rank {get_rank()}] get_global_process_group: creating new gloo group"
+    )
     _global_process_group = dist.new_group(backend="gloo", group_desc="global-gloo")
+    logger.debug(
+        f"[Rank {get_rank()}] get_global_process_group: group created successfully"
+    )
 
     return _global_process_group
 
