@@ -37,6 +37,7 @@ tokenizer_args: &tokenizer_args !dict
     truncation: True
 
 [datasets_definition]
+    [dataset_project]
 .define: &dataset_dict !call:forgather:from_project
     project_dir: "{{ ns.dataset_proj }}"
     config_template: "{{ ns.dataset_config }}"
@@ -44,6 +45,7 @@ tokenizer_args: &tokenizer_args !dict
     preprocess_args: *tokenizer_args
     tokenizer: *tokenizer
 
+    [dataset_splits]
 train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
 eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 

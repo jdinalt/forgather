@@ -1,0 +1,31 @@
+-- extends "project.yaml"
+
+## This configuration tests DDP using a sharded dataset, where the dataset is split
+## into one shard per rank and processed locally on each rank.
+##
+## Note: The default is to perform all dataset processing on rank0 and dispatch batches
+## to the other ranks via torch distributed. In theory, sharding the dataset is more
+## efficient, but it requires support in the dataset definition for this to work.
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Sharded Dataset"
+    -- set ns.config_description = "Split dataset into 1 shard per rank"
+
+[dataset_project]
+    == super()
+    shard_dataset: True
+    # Alternative, explicit configuration
+    #    num_shards: {{ getenv("WORLD_SIZE", "1") | int }}
+    #    index: {{ getenv("RANK", "0") | int }}
+
+[trainer_definition]
+    -- include 'config.trainer_config'
+
+#-------------------- config.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+[trainer_args]
+    == super()
+
+    # We can disable 'dispatch_batches' when we know that the dataset will be sharded.
+    dispatch_batches: False

@@ -31,6 +31,7 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
     map_fn: *map_function
     tokenizer: *tokenizer
     desc: "Tokenizing train"
+    shard_dataset: !var [ "shard_dataset", False ]
     fn_kwargs: !var "preprocess_args"
 
 [eval_dataset]
@@ -39,6 +40,7 @@ eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@
     map_fn: *map_function
     tokenizer: *tokenizer
     desc: "Tokenizing validation"
+    shard_dataset: !var [ "shard_dataset", False ]
     fn_kwargs: !var "preprocess_args"
 
 [test_dataset]
@@ -47,4 +49,5 @@ test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@
     map_fn: *map_function
     tokenizer: *tokenizer
     desc: "Tokenizing test"
+    shard_dataset: !var [ "shard_dataset", False ]
     fn_kwargs: !var "preprocess_args"

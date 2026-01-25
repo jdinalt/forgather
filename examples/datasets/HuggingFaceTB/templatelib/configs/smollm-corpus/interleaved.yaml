@@ -32,7 +32,7 @@
     [train_dataset]
 train_dataset: &train_dataset !singleton:forgather.ml.datasets:interleave_datasets
     <<: &interleave_args
-        # More accurately, these are weights. Not need to sum to 1.
+        # More accurately, these are weights. No need to sum to 1.
         probabilities: [ 1, 1 ]
         seed: 42
         stopping_strategy: "all_exhausted"

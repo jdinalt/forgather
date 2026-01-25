@@ -1,6 +1,8 @@
+import logging
 from collections.abc import Sequence
+from contextlib import nullcontext
 from types import NoneType
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Literal, Optional, Union
 
 from datasets.distributed import split_dataset_by_node
 from transformers import PreTrainedTokenizerBase
@@ -8,11 +10,15 @@ from transformers import PreTrainedTokenizerBase
 from datasets import Dataset as HFDataset
 from datasets import IterableDataset as HFIterableDataset
 
-from ..distributed import DistributedEnvInterface, main_process_first
+from ..distributed import get_rank, get_world_size, main_process_first
+from .fast_hf_loader import SimpleArrowIterableDataset
 from .iterable_with_length import (
     IterableDatasetWithLength,
     to_iterable_dataset_with_length,
 )
+
+logger = logging.getLogger(__name__)
+# logger.setLevel(logging.DEBUG)
 
 
 def normalize_range(
@@ -102,11 +108,6 @@ def default_tokenize_map_fn(
     return {"input_ids": outputs["input_ids"]}
 
 
-# This ensures that the dataset is preprocessed by rank0 and cached before other
-# ranks join in. In the context of Huggingace datasets, the result is that the
-# preprocessed dataset will be cached by rank0 and the cached dataset will be loaded
-# by the other ranks, which avoid potential race conditions and duplicate work.
-@main_process_first()
 def preprocess_dataset(
     dataset: HFDataset | HFIterableDataset | IterableDatasetWithLength,
     tokenizer: PreTrainedTokenizerBase,
@@ -116,7 +117,6 @@ def preprocess_dataset(
     feature: str = "text",
     shuffle: bool = False,
     num_shards: int = 256,
-    distributed_environment: Optional[DistributedEnvInterface] = None,
     desc: str = "Tokenizing Dataset",
     seed: int = 42,
     shuffle_buffer_size: int = 10000,
@@ -126,9 +126,10 @@ def preprocess_dataset(
     dataset_type: Optional[Literal["map"] | Literal["iterable"]] = None,
     dataset_length: Optional[int] = None,
     remove_columns: bool = True,
+    shard_dataset: Optional[Union[bool, dict[str, int]]] = None,
 ):
     """
-    This is a farily generic and flxible dataset preprocessor to quickly get a dataset
+    This is a fairly generic and flexible dataset preprocessor to quickly get a dataset
     up and running for evaluation. For production use, write a custom preprocessor!
 
     Args:
@@ -138,8 +139,7 @@ def preprocess_dataset(
         to_iterable: If True, convert the dataset to an iterable dataset.
         feature: The feature in the dataset to tokenize (default is 'text').
         shuffle: If True, shuffle the dataset before processing.
-        num_shards: Number of shards for the iterable dataset.
-        distributed_environment: Environment for distributed processing.
+        num_shards: Number of shards, when converting map -> iterable dataset.
         desc: Description for the progress bar.
         seed: Random seed for shuffling.
         shuffle_buffer_size: Buffer size for shuffling in iterable datasets.
@@ -149,6 +149,11 @@ def preprocess_dataset(
         parallel_tokenizer: If True, enable parallel tokenization.
         dataset_type: Explicitly specify dataset type
         dataset_length: Set dataset length, when no __len__ is available.
+        shard_dataset: Shard the dataset for distributed training.
+            num_shards: The number of shards to split the dataset into
+            index: The shard index to use
+
+            If bool and True, num_shards defaults to WORLD_SIZE and index to RANK
     Returns:
         The tokenized dataset.
     """
@@ -157,70 +162,110 @@ def preprocess_dataset(
         dataset_type is None or dataset_type == "map" or dataset_type == "iterable"
     ), "dataset_type must be one of None, 'map', or 'iterable'"
 
-    if fn_kwargs is None:
-        fn_kwargs = dict()
+    if shard_dataset is not None:
+        # Set defaults for bool shard_dataset
+        if isinstance(shard_dataset, bool):
+            if shard_dataset:
+                shard_dataset = dict(
+                    num_shards=get_world_size(),
+                    index=get_rank(),
+                )
+            else:
+                shard_dataset = None
 
-    fn_kwargs = (
-        dict(
-            tokenizer=tokenizer,
-            feature=feature,
+    # This ensures that the dataset is preprocessed by rank0 and cached before other
+    # ranks join in. In the context of Huggingface datasets, the result is that the
+    # preprocessed dataset will be cached by rank0 and the cached dataset will be loaded
+    # by the other ranks, which avoid potential race conditions and duplicate work.
+    #
+    # If "shard_dataset" is set, each rank is expected to have its own shard, in which case
+    # we don't want to use main_process_first()
+    with main_process_first() if shard_dataset is None else nullcontext():
+        if fn_kwargs is None:
+            fn_kwargs = dict()
+
+        fn_kwargs = (
+            dict(
+                tokenizer=tokenizer,
+                feature=feature,
+            )
+            | fn_kwargs
         )
-        | fn_kwargs
-    )
 
-    if map_kwargs is None:
-        map_kwargs = dict()
+        if map_kwargs is None:
+            map_kwargs = dict()
 
-    map_kwargs = (
-        dict(
-            batched=True,
-            fn_kwargs=fn_kwargs,
+        map_kwargs = (
+            dict(
+                batched=True,
+                fn_kwargs=fn_kwargs,
+            )
+            | map_kwargs
         )
-        | map_kwargs
-    )
-    if remove_columns:
-        map_kwargs["remove_columns"] = dataset.column_names
+        if remove_columns:
+            map_kwargs["remove_columns"] = dataset.column_names
 
-    if select_range is not None:
-        select_range = normalize_range(len(dataset), select_range)
-        dataset = dataset.select(select_range)
+        if select_range is not None:
+            select_range = normalize_range(len(dataset), select_range)
+            dataset = dataset.select(select_range)
 
-    # Map-style dataset?
-    if (dataset_type and dataset_type == "map") or isinstance(dataset, HFDataset):
-        assert (
-            hasattr(dataset, "__getitem__")
-            and hasattr(dataset, "__len__")
-            and hasattr(dataset, "map")
-            and hasattr(dataset, "shuffle")
-        )
-        if to_iterable:
-            dataset = to_iterable_dataset_with_length(dataset, num_shards=num_shards)
+        if shard_dataset is not None:
+            world_size = shard_dataset["num_shards"]
+            rank = shard_dataset["index"]
+            logger.debug(f"Sharding dataset: num_shards={world_size}, index={rank}")
+            if isinstance(dataset, HFDataset | HFIterableDataset):
+                dataset = split_dataset_by_node(
+                    dataset,
+                    world_size=world_size,
+                    rank=rank,
+                )
+            else:
+                assert hasattr(
+                    dataset, "shard"
+                ), f"Dataset of type {type(dataset)} does not have shard method."
+
+                if not isinstance(dataset, SimpleArrowIterableDataset):
+                    logger.warning(
+                        f"Attempting to shard unknown dataset of type '{type(dataset)}' API may not be compatible..."
+                    )
+                dataset = dataset.shard(
+                    num_shards=world_size,
+                    index=rank,
+                )
+
+        # Map-style dataset?
+        if (dataset_type and dataset_type == "map") or isinstance(dataset, HFDataset):
+            assert (
+                hasattr(dataset, "__getitem__")
+                and hasattr(dataset, "__len__")
+                and hasattr(dataset, "map")
+                and hasattr(dataset, "shuffle")
+            )
+            if to_iterable:
+                dataset = to_iterable_dataset_with_length(
+                    dataset, num_shards=num_shards
+                )
+                if shuffle:
+                    dataset = dataset.shuffle(
+                        buffer_size=shuffle_buffer_size, seed=seed
+                    )
+            else:
+                map_kwargs["desc"] = desc
+                if shuffle:
+                    dataset = dataset.shuffle(seed=seed)
+        else:
+            assert (
+                hasattr(dataset, "__iter__")
+                and hasattr(dataset, "map")
+                and hasattr(dataset, "shuffle")
+            )
+            if not hasattr(dataset, "__len__") and dataset_length:
+                dataset = IterableDatasetWithLength(dataset, dataset_length)
             if shuffle:
                 dataset = dataset.shuffle(buffer_size=shuffle_buffer_size, seed=seed)
-        else:
-            map_kwargs["desc"] = desc
-            if shuffle:
-                dataset = dataset.shuffle(seed=seed)
-    else:
-        assert (
-            hasattr(dataset, "__iter__")
-            and hasattr(dataset, "map")
-            and hasattr(dataset, "shuffle")
-        )
-        if not hasattr(dataset, "__len__") and dataset_length:
-            dataset = IterableDatasetWithLength(dataset, dataset_length)
-        if shuffle:
-            dataset = dataset.shuffle(buffer_size=shuffle_buffer_size, seed=seed)
 
-    if distributed_environment is not None:
-        dataset = split_dataset_by_node(
-            dataset,
-            world_size=distributed_environment.world_size,
-            rank=distributed_environment.rank,
+        tokenized_data = dataset.map(
+            map_fn,
+            **map_kwargs,
         )
-
-    tokenized_data = dataset.map(
-        map_fn,
-        **map_kwargs,
-    )
-    return tokenized_data
+        return tokenized_data
