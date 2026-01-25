@@ -67,8 +67,9 @@ class VarNode(Node):
     def __init__(
         self,
         name: str,
-        _identity: Hashable = None,
         default: Any = Undefined,
+        *,
+        _identity: Hashable = None,
     ):
         super().__init__(name, _identity=_identity)
         self.value = default

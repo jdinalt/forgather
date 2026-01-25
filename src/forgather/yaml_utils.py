@@ -83,10 +83,10 @@ class CallableConstructor:
 def var_constructor(loader, node):
     if isinstance(node, yaml.MappingNode):
         return VarNode(**loader.construct_mapping(node))
-    elif isinstance(node, yaml.ScalarNode):
-        return VarNode(loader.construct_scalar(node))
+    if isinstance(node, yaml.SequenceNode):
+        return VarNode(*loader.construct_sequence(node))
     else:
-        raise TypeError(f"Var nodes may not be sequences. Found {node}")
+        return VarNode(loader.construct_scalar(node))
 
 
 def list_constructor(loader, tag_suffix, node):
