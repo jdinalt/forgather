@@ -57,14 +57,17 @@ class DDPTrainer(Trainer):
         self.args = args  # For type checking hint
         super().__init__(args=args, **kwargs)
 
-    def _post_init(self) -> None:
-        super()._post_init()
-
     @override
     def _init_distributed(self):
         assert (
-            dist.is_initialized()
-        ), "DDP trainer requires that torch.distributed has been initialized."
+            dist.is_available and dist.is_initialized()
+        ) or self.dist.world_size == 1, (
+            "DDP trainer requires that torch.distributed has been initialized."
+        )
+
+        if self.dist.world_size == 1:
+            return super()._init_distributed()
+
         self.is_local_process_zero = self.dist.local_rank == 0
         self.is_world_process_zero = self.dist.rank == 0
         self.num_processes = self.dist.world_size
@@ -77,16 +80,14 @@ class DDPTrainer(Trainer):
         self.ddp_group = self.mesh.get_group(0)  # data-parallel group
 
     @override
-    def _init_device(self):
-        self.args.device = self.dist.device
-
-    @override
     def _wrap(
         self,
     ) -> None:
         """
         Wrap assets for DDP
         """
+        if self.dist.world_size == 1:
+            return super()._wrap()
 
         self.model = DDP(
             self.model,
@@ -126,6 +127,9 @@ class DDPTrainer(Trainer):
 
         In the case of DDP, the original model is stored in the model's "module" attribute.
         """
+        if self.dist.world_size == 1:
+            return super().unwrapped_model()
+
         assert self.model
         return self.model.module
 
@@ -134,6 +138,9 @@ class DDPTrainer(Trainer):
         """
         Reduces loss across processes
         """
+        if self.dist.world_size == 1:
+            return super()._distributed_loss(loss)
+
         dist.all_reduce(loss, op=dist.ReduceOp.AVG)
         return loss
 
@@ -148,6 +155,9 @@ class DDPTrainer(Trainer):
 
         This is achieved with DDP's "no_sync" context manager.
         """
+        if self.dist.world_size == 1:
+            return super()._forward_backward_step(*args, **kwargs)
+
         with nullcontext() if self._should_sync_gradients() else self.model.no_sync():
             return super()._forward_backward_step(*args, **kwargs)
 
@@ -168,6 +178,9 @@ class DDPTrainer(Trainer):
         Returns:
             List of StateComponent objects with REPLICATED patterns for DDP state
         """
+        if self.dist.world_size == 1:
+            return super().get_state_components()
+
         components = []
 
         # Model - REPLICATED in DDP
@@ -221,7 +234,9 @@ class DDPTrainer(Trainer):
             )
 
         # Dataset state - depends on dispatch_batches setting
-        if self.args.save_dataset_state and hasattr(self.train_dataloader, "state_dict"):
+        if self.args.save_dataset_state and hasattr(
+            self.train_dataloader, "state_dict"
+        ):
             components.append(
                 StateComponent(
                     key="dataset",
@@ -259,6 +274,9 @@ class DDPTrainer(Trainer):
         Returns:
             SharingPattern for dataset state (GLOBAL or PER_RANK)
         """
+        if self.dist.world_size == 1:
+            return super()._get_dataset_sharing_pattern()
+
         if self.args.dispatch_batches:
             # DataloaderDispatcher: rank 0 loads and broadcasts
             return SharingPattern.GLOBAL
@@ -275,6 +293,9 @@ class DDPTrainer(Trainer):
             Dictionary mapping group names to ProcessGroup objects.
             For DDP, returns the data parallel group.
         """
+        if self.dist.world_size == 1:
+            return super().get_process_groups()
+
         return {
             "ddp_group": self.ddp_group,
         }
