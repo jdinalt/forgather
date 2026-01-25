@@ -32,6 +32,7 @@ class ValidationLevel(Enum):
     QUICK: Hash-based validation (fast, catches most structural issues)
            - Minimal overhead
            - May miss subtle numerical differences
+           - Device strings normalized for cross-rank comparison
 
     TENSOR: Tensor-level checksums (moderate speed, accurate)
             - Reasonable overhead for most models

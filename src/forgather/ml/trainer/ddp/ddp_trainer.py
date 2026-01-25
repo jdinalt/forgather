@@ -191,7 +191,7 @@ class DDPTrainer(Trainer):
                     stateful=self.optimizer,
                     sharing_pattern=SharingPattern.REPLICATED,
                     validate_replication=True,
-                    validation_level="quick",  # Faster for large optimizers
+                    validation_level="quick",  # Fast hash-based validation
                     required=self.args.save_optimizer_state,
                 )
             )

@@ -342,11 +342,15 @@ def compute_state_hash(state_dict: Dict[str, Any]) -> str:
     - Tensors: Only shape/dtype/device hashed (not actual values)
     - Floats: No precision rounding (may differ across platforms)
     - Dicts: Top-level keys sorted only (not recursive)
+    - Optimizer state: May produce false positives due to serialization
+      differences (int vs Tensor for step counters, dict ordering)
 
     This catches most synchronization bugs (shape changes, device mismatches,
-    structural differences) but may miss subtle numerical differences.
+    structural differences) but may miss subtle numerical differences or
+    produce false positives on complex nested state dicts.
 
-    For critical validation, use ValidationLevel.TENSOR or FULL instead of QUICK.
+    For optimizer validation, use ValidationLevel.TENSOR instead of QUICK.
+    For critical validation of other components, use TENSOR or FULL.
     """
     # Convert state_dict to deterministic string representation
     # Note: Simplified hash for performance - tensors converted to metadata only
@@ -372,11 +376,18 @@ def _state_dict_to_serializable(obj: Any) -> Any:
     elif isinstance(obj, torch.Tensor):
         # For hashing, use tensor metadata (shape, dtype, device) and a sample of values
         # Full tensor comparison would be too expensive
+
+        # Normalize device string to ignore rank-specific device IDs
+        # For REPLICATED state, "cuda:0" and "cuda:1" should hash the same
+        device_str = str(obj.device)
+        if device_str.startswith("cuda:"):
+            device_str = "cuda"  # Normalize cuda:0, cuda:1, etc. to just "cuda"
+
         return {
             "type": "tensor",
             "shape": list(obj.shape),
             "dtype": str(obj.dtype),
-            "device": str(obj.device),
+            "device": device_str,
             # Sample a few values for lightweight validation
             "sample": obj.flatten()[:min(10, obj.numel())].tolist()
             if obj.numel() > 0
