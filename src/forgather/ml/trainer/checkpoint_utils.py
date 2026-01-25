@@ -693,7 +693,9 @@ def validate_replication(
         local_hash = compute_state_hash(state_dict)
 
         # Convert hash to integer for all-gather
-        hash_int = int(local_hash[:16], 16)  # Use first 16 hex chars
+        # Use first 15 hex chars (60 bits) to avoid int64 overflow
+        # (16 hex chars = 64 bits can exceed signed int64 range of 2^63-1)
+        hash_int = int(local_hash[:15], 16)
         all_hashes = all_gather_scalar(hash_int, group)
 
         # Check if all hashes match
