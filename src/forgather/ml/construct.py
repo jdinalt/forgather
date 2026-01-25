@@ -9,10 +9,10 @@ from contextlib import contextmanager
 from types import NoneType
 from typing import Any, Callable, List, Optional
 
-from forgather.config import ConfigEnvironment
 from forgather.dynamic import walk_package_modules
 from forgather.latent import Undefined
 from forgather.meta_config import MetaConfig
+from forgather.ml.distributed import get_global_process_group, main_process_first
 from forgather.project import Project
 
 logger = logging.getLogger(__name__)
@@ -160,6 +160,7 @@ def add_special_tokens(tokenizer, token_map):
     return tokenizer
 
 
+@main_process_first(get_global_process_group())
 def build_rule(
     target: str | os.PathLike,
     recipe: List[Callable] | Callable,

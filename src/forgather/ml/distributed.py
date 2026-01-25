@@ -34,7 +34,6 @@ from torch._C._distributed_c10d import Work
 from torch.distributed import ProcessGroup
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 # Tracks recursion depth of main_local_process_first to prevent nested barriers
 mpf_recursion_level = 0
@@ -185,12 +184,16 @@ def get_global_process_group() -> ProcessGroup | None:
 
 
 @contextmanager
-def main_local_process_first():
+def main_process_first(group: Optional[ProcessGroup] = None):
     """
-    Context manager for ensuring that the main process on each node runs first
+    Context manager for ensuring that the main process (rank0) runs first
 
-    When running with multiple torch-distributed processes, this context manager
-    will execute the context on the main process (local_rank 0) of each node first.
+    By default, this is applied per-node, with local-rank-0 being the 'main_process'
+    and only synchronizing with other ranks on the same node.
+
+    Optionally, a process group can be passed in, in which case 'rank-0' of that
+    process group will run first. For example, to apply this to global-rank-0, use:
+        main_process_first(get_global_process_group())
 
     An example use-case is tokenizing a dataset, where it's not a good use of
     resources to perform this action on all processes, as the work is redundant.
@@ -199,9 +202,11 @@ def main_local_process_first():
     automatically cached. Then, when the remaining processes on that node try to
     tokenize the dataset, the cached dataset is loaded instead.
 
-    In multi-node scenarios, each node's rank 0 process will run first, followed
-    by other ranks on the same node. The barrier is local to each node, so nodes
-    can process independently.
+    If torch.distributed is not available or not initialized, and the world-size is not
+    zero, a warning will be emitted, as this can corrupt data.
+
+    Args:
+        group: The process-group to use. Default is get_local_process_group()
 
     ```
     @main_process_first()
@@ -215,16 +220,25 @@ def main_local_process_first():
         yield
         return
 
-    # Use LOCAL_RANK for per-node coordination
-    local_rank = get_local_rank()
+    if not dist.is_available() or not dist.is_initialized():
+        logger.warning(
+            f"main_process_first() was called with world-size of {get_world_size()}, "
+            "but torch.distributed was not initialized. This can potentially corrupt data!"
+        )
+        yield
+        return
 
     # Get barrier function - use local process group for node-local coordination
-    local_group = get_local_process_group()
-    if local_group is None:
+    if group is None:
+        group = get_local_process_group()
+
+    # If no group, return the null_barrier (a noop function)
+    if group is None:
         barrier = null_barrier
     else:
-        barrier = get_barrier_fn(group=local_group)
+        barrier = get_barrier_fn(group=group)
 
+    local_rank = torch.distributed.get_group_rank(group, get_rank())
     mpf_recursion_level += 1
     try:
         if local_rank != 0:

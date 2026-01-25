@@ -8,7 +8,7 @@ from transformers import PreTrainedTokenizerBase
 from datasets import Dataset as HFDataset
 from datasets import IterableDataset as HFIterableDataset
 
-from ..distributed import DistributedEnvInterface, main_local_process_first
+from ..distributed import DistributedEnvInterface, main_process_first
 from .iterable_with_length import (
     IterableDatasetWithLength,
     to_iterable_dataset_with_length,
@@ -106,7 +106,7 @@ def default_tokenize_map_fn(
 # ranks join in. In the context of Huggingace datasets, the result is that the
 # preprocessed dataset will be cached by rank0 and the cached dataset will be loaded
 # by the other ranks, which avoid potential race conditions and duplicate work.
-@main_local_process_first()
+@main_process_first()
 def preprocess_dataset(
     dataset: HFDataset | HFIterableDataset | IterableDatasetWithLength,
     tokenizer: PreTrainedTokenizerBase,

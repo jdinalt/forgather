@@ -8,7 +8,7 @@ import jinja2
 from huggingface_hub import hf_hub_download
 
 from datasets import Dataset, DatasetDict
-from forgather.ml.distributed import main_local_process_first
+from forgather.ml.distributed import main_process_first
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -51,7 +51,7 @@ def samantha_map_function(
     return {"input_ids": outputs["input_ids"]}
 
 
-@main_local_process_first()
+@main_process_first()
 def preprocess_samantha(
     dataset,
     chat_template=None,
@@ -124,7 +124,7 @@ def preprocess_samantha(
     return dataset
 
 
-@main_local_process_first()
+@main_process_first()
 def load_samantha_dataset_manual(
     cache_dir=None, language="en", repo_id="QuixiAI/samantha-data"
 ):

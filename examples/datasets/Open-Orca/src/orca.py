@@ -4,7 +4,7 @@ import os
 import jinja2
 
 from forgather.ml.datasets import to_iterable_dataset_with_length
-from forgather.ml.distributed import main_local_process_first
+from forgather.ml.distributed import main_process_first
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ def map_function(input_batch, tokenizer, chat_template, template_args, tokenizer
     return {"input_ids": outputs["input_ids"]}
 
 
-@main_local_process_first()
+@main_process_first()
 def preprocess_orca(
     dataset,
     chat_template=None,
