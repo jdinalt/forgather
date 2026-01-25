@@ -2,7 +2,6 @@ import datetime
 import getpass
 import os
 import re
-import time
 from contextlib import contextmanager
 
 import yaml
@@ -335,6 +334,7 @@ class PPEnvironment(SandboxedEnvironment):
         "dirname": os.path.dirname,
         "basename": os.path.basename,
         "splitext": os.path.splitext,
+        "getenv": os.environ.get,
         "repr": repr,
         # Given a module file path, return the module name
         "modname_from_path": lambda path: os.path.splitext(os.path.basename(path))[0],

@@ -184,6 +184,7 @@ A number of globals have been introduced to the Jinja2 environment to assist wit
 - normpath(path) : Normalize a file path; os.path.normpath()
 - abspath(path) : Convert path to absolute path; os.path.abspath()
 - relpath(path) : Convert a path to a relative path; os.path.relpath()
+- getenv(name, default) : Call os.environ.get(name, default)
 - repr(obj) : Get Python representation of object; repr()
 - modname_from_path(module_name) : Given a module file path, return the module name
 - user_home_dir() : Return absolute path of user's home directory  
