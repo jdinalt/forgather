@@ -1,13 +1,13 @@
 -- extends "project.yaml"
 
-## This is essentially the same as 'sharded_dataset.yaml', except using the fast 
-## iterable dataset implementation. Essentially, an integration test of the shard implementation.
+## This is essentially the same as 'sharded_dataset.yaml', except using the 
+## HF iterable dataset implementation. This provides a basis for comparison for sharded_fast_dataset.yaml
 [config_metadata]
     == super()
     -- set ns.config_name = "Sharded Iterable Dataset"
-    -- set ns.config_description = "Use iterable version of Tiny Stories. Split dataset into 1 shard per rank"
+    -- set ns.config_description = "Use HF iterable version of Tiny Stories. Split dataset into 1 shard per rank"
     -- set ns.dataset_config ="tinystories-iter.yaml"
-    -- set ns.log_name = "sharded-iterable"
+    -- set ns.log_name = "sharded_iterable"
 
 [dataset_project]
     == super()
