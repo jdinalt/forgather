@@ -1657,3 +1657,198 @@ def test_length_estimate_with_interleaved_and_batched_map():
     assert (
         count3 == total_yielded
     ), f"Third iteration count mismatch: {count3} vs {total_yielded}"
+
+
+# =====================================================================
+# Batched Map Edge Case Tests (Small Split + Large Batch Size)
+# =====================================================================
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_split_smaller_than_batch_size():
+    """
+    Test batched map when split size is smaller than batch_size.
+
+    This is a regression test for a bug where batched map would silently
+    yield no examples if the split size was smaller than batch_size,
+    because the partial batch at the end was not being flushed.
+    """
+    # Load small split (50 examples)
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:50]"
+    )
+
+    # Apply batched map with batch_size larger than split (1000 > 50)
+    def add_lengths(batch):
+        texts = batch["text"]
+        return {"text": texts, "length": [len(t) for t in texts]}
+
+    ds_mapped = ds.map(add_lengths, batched=True, batch_size=1000)
+
+    # Should yield all 50 examples even though batch never fills up
+    examples = list(ds_mapped)
+    assert len(examples) == 50, f"Expected 50 examples, got {len(examples)}"
+
+    # Verify transformation was applied
+    for ex in examples:
+        assert "length" in ex, "Should have length field"
+        assert ex["length"] == len(ex["text"]), "Length should match"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_virtual_split_smaller_than_batch_size():
+    """
+    Test batched map with virtual split smaller than batch_size.
+
+    Regression test: virtual split boundary should flush pending batch.
+    """
+    # Load dataset and create 500-example virtual split
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ds_split = ds.slice(0, 500)  # 500 examples
+
+    # Apply batched map with batch_size=1000 (larger than split)
+    def add_field(batch):
+        return {**batch, "processed": [True] * len(batch["text"])}
+
+    ds_mapped = ds_split.map(add_field, batched=True, batch_size=1000)
+
+    # Should yield all 500 examples
+    examples = list(ds_mapped)
+    assert len(examples) == 500, f"Expected 500 examples, got {len(examples)}"
+
+    # Verify all were processed
+    for ex in examples:
+        assert ex["processed"] is True
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_example_sharding_smaller_than_batch_size():
+    """
+    Test batched map with example-level shard smaller than batch_size.
+
+    Regression test: shard boundary should flush pending batch.
+    """
+    # Load dataset and create small shard
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:1000]"
+    )
+
+    # Shard into 10 shards (each ~100 examples)
+    ds_shard = ds.shard(num_shards=10, index=0, mode="example")
+
+    # Apply batched map with batch_size=500 (larger than shard)
+    def tokenize_mock(batch):
+        # Mock tokenization that keeps same number of examples
+        return {"text": batch["text"], "tokens": [t.split() for t in batch["text"]]}
+
+    ds_mapped = ds_shard.map(tokenize_mock, batched=True, batch_size=500)
+
+    # Should yield all ~100 examples from this shard
+    examples = list(ds_mapped)
+    expected_count = len(ds_shard)  # ~100
+    assert len(examples) == expected_count, f"Expected {expected_count} examples, got {len(examples)}"
+
+    # Verify transformation
+    for ex in examples:
+        assert "tokens" in ex
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_drop_last_with_small_split():
+    """
+    Test batched map with drop_last_batch=True on small split.
+
+    When split < batch_size and drop_last=True, should yield nothing.
+    """
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:50]"
+    )
+
+    def process(batch):
+        return batch
+
+    ds_mapped = ds.map(process, batched=True, batch_size=1000, drop_last_batch=True)
+
+    # Should yield nothing since we never get a full batch and drop_last=True
+    examples = list(ds_mapped)
+    assert len(examples) == 0, f"Expected 0 examples with drop_last=True, got {len(examples)}"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_split_notation_smaller_than_batch_size():
+    """
+    Test batched map with split notation creating small split.
+
+    This tests the original bug report scenario: validation[:500] with batch_size=1000.
+    """
+    # Load with split notation (500 examples)
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:500]"
+    )
+
+    # Apply batched map with default batch_size (1000 > 500)
+    def tokenize_simple(batch):
+        # Simple batched transformation
+        return {"text": batch["text"], "word_count": [len(t.split()) for t in batch["text"]]}
+
+    ds_mapped = ds.map(tokenize_simple, batched=True, batch_size=1000)
+
+    # Should yield all 500 examples even though batch_size > split size
+    examples = list(ds_mapped)
+    assert len(examples) == 500, f"Expected 500 examples, got {len(examples)}"
+
+    # Verify transformation
+    for ex in examples:
+        assert "word_count" in ex
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_partial_batches_at_boundaries():
+    """
+    Test that partial batches are correctly flushed at multiple boundary types.
+
+    Tests all three boundary types:
+    1. Normal end of iteration
+    2. Virtual split boundary
+    3. Example-level shard boundary
+    """
+    # Test 1: Normal end of iteration
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:47]"  # Not divisible by batch_size
+    )
+    ds1_mapped = ds1.map(lambda b: b, batched=True, batch_size=10)
+    count1 = sum(1 for _ in ds1_mapped)
+    assert count1 == 47, f"Normal end: expected 47, got {count1}"
+
+    # Test 2: Virtual split boundary
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ds2_split = ds2.slice(100, 147)  # 47 examples
+    ds2_mapped = ds2_split.map(lambda b: b, batched=True, batch_size=10)
+    count2 = sum(1 for _ in ds2_mapped)
+    assert count2 == 47, f"Virtual split boundary: expected 47, got {count2}"
+
+    # Test 3: Example-level shard boundary
+    ds3 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:500]"
+    )
+    ds3_shard = ds3.shard(num_shards=10, index=0, mode="example")  # ~50 examples
+    ds3_mapped = ds3_shard.map(lambda b: b, batched=True, batch_size=100)
+    count3 = sum(1 for _ in ds3_mapped)
+    expected3 = len(ds3_shard)
+    assert count3 == expected3, f"Shard boundary: expected {expected3}, got {count3}"

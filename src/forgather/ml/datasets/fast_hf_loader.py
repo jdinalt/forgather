@@ -32,6 +32,7 @@ except ImportError:
     HAS_TQDM = False
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 # Metadata version - increment when index format changes
 METADATA_VERSION = 2  # v2: Added per-file example counts and version check
@@ -716,6 +717,36 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             num_workers = 1
         return worker_id, num_workers
 
+    def _flush_batch_buffer(self, batch_buffer, batch_start_idx):
+        """
+        Process and yield any pending batch buffer.
+
+        This helper is used to flush partial batches before early termination
+        (e.g., when reaching split/shard boundaries).
+
+        Args:
+            batch_buffer: List of pending examples
+            batch_start_idx: Starting index for the batch
+
+        Yields:
+            Processed examples from the batch
+        """
+        if not batch_buffer or self._map_drop_last_batch:
+            return
+
+        result_examples = self._apply_map_to_batch(batch_buffer, batch_start_idx)
+
+        # Track counts in dynamic/exact mode
+        if self.length_estimate_mode in ("dynamic", "exact"):
+            self._input_count += len(batch_buffer)
+            self._current_batch_buffer_size = 0  # Reset buffer size
+
+        # Track output count and yield
+        for result_example in result_examples:
+            if self.length_estimate_mode in ("dynamic", "exact"):
+                self._output_count += 1
+            yield result_example
+
     def __iter__(self):
         """
         Iterate through Arrow files sequentially.
@@ -859,7 +890,18 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                         global_example_idx += 1
                         continue
                     if global_example_idx >= split_end:
-                        # Reached end of split, cache and stop iteration
+                        # Reached end of split - flush any pending batch before stopping
+                        if (
+                            self._map_batched
+                            and self._map_function is not None
+                            and batch_buffer
+                        ):
+                            # Flush pending batch buffer
+                            yield from self._flush_batch_buffer(
+                                batch_buffer, batch_start_idx
+                            )
+
+                        # Cache and stop iteration
                         if self.length_estimate_mode in ("dynamic", "exact"):
                             if self._cached_exact_length is None:
                                 self._cached_exact_length = self._output_count
@@ -877,7 +919,18 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                         global_example_idx += 1
                         continue
                     if relative_idx >= self._shard_end_idx:
-                        # Reached end of shard, cache and stop iteration
+                        # Reached end of shard - flush any pending batch before stopping
+                        if (
+                            self._map_batched
+                            and self._map_function is not None
+                            and batch_buffer
+                        ):
+                            # Flush pending batch buffer
+                            yield from self._flush_batch_buffer(
+                                batch_buffer, batch_start_idx
+                            )
+
+                        # Cache and stop iteration
                         if self.length_estimate_mode in ("dynamic", "exact"):
                             if self._cached_exact_length is None:
                                 self._cached_exact_length = self._output_count
@@ -962,24 +1015,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                         self._cached_exact_length = self._output_count
 
         # Process final partial batch if using batched map
-        if (
-            self._map_batched
-            and self._map_function is not None
-            and batch_buffer
-            and not self._map_drop_last_batch
-        ):
-            result_examples = self._apply_map_to_batch(batch_buffer, batch_start_idx)
-
-            # Track counts in dynamic/exact mode
-            if self.length_estimate_mode in ("dynamic", "exact"):
-                self._input_count += len(batch_buffer)
-                self._current_batch_buffer_size = 0  # Reset buffer size
-
-            # Track output count and yield
-            for result_example in result_examples:
-                if self.length_estimate_mode in ("dynamic", "exact"):
-                    self._output_count += 1
-                yield result_example
+        if self._map_batched and self._map_function is not None and batch_buffer:
+            # Use helper method to flush pending batch
+            yield from self._flush_batch_buffer(batch_buffer, batch_start_idx)
 
         # Cache exact length after complete iteration (in dynamic/exact mode only)
         # Only cache if not already set (preserve across multiple iterations)
