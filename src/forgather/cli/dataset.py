@@ -46,6 +46,15 @@ def dataset_cmd(args):
         preprocess_args=dict(),
     )
 
+    if args.num_shards is not None:
+        print(
+            f"Requesting shard_dataset: num_shards={args.num_shards}, index={args.shard_index}"
+        )
+        template_args["shard_dataset"] = dict(
+            num_shards=args.num_shards,
+            index=args.shard_index,
+        )
+
     if args.tokenizer_path:
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)
         data += "Tokenizer:\n" + repr(tokenizer) + "\n"

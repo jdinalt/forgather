@@ -457,6 +457,17 @@ def create_dataset_parser(global_args):
         action="store_true",
         help="The split is already tokenized",
     )
+    parser.add_argument(
+        "--num-shards",
+        type=int,
+        help="Split the dataset into N shards (for distributed processing)",
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="The shard to select, out of `num-shards` (for distributed processing)",
+    )
     add_output_arg(parser)
     add_editor_arg(parser)
     parse_dynamic_args(parser, global_args)
