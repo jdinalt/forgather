@@ -4,10 +4,10 @@
 ## iterable dataset implementation. Essentially, an integration test of the shard implementation.
 [config_metadata]
     == super()
-    -- set ns.config_name = "Sharded Fast Dataset"
-    -- set ns.config_description = "Use fast-iterable version of Tiny Stories. Split dataset into 1 shard per rank"
-    -- set ns.dataset_config = "fast-iter.yaml"
-    -- set ns.log_name = "sharded_fast"
+    -- set ns.config_name = "Sharded Iterable Dataset"
+    -- set ns.config_description = "Use iterable version of Tiny Stories. Split dataset into 1 shard per rank"
+    -- set ns.dataset_config ="tinystories-iter.yaml"
+    -- set ns.log_name = "sharded-iterable"
 
 [dataset_project]
     == super()
