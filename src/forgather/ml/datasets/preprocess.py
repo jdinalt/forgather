@@ -1,4 +1,5 @@
 import logging
+import re
 from collections.abc import Sequence
 from contextlib import nullcontext
 from types import NoneType
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def normalize_range(
-    length, select_range: range | int | float | Sequence | NoneType
+    length, select_range: range | int | float | str | Sequence | NoneType
 ) -> range:
     """
     Convert various input types to a range
@@ -32,6 +33,7 @@ def normalize_range(
             - None: No range, use the full dataset.
             - int: Use the first 'n' records.
             - float: Use the first 'n' percent of records.
+            - str: Slice notation (e.g., "100:", ":1000", "100:1000", "10%:", ":80%", "10%:80%")
             - Sequence: A sequence of two values, interpreted as (start, end).
             - range: A range object to use directly.
     Returns:
@@ -46,6 +48,12 @@ def normalize_range(
     normalize_range(1000, [100, 0.9]) -> range(100, 900)
     normalize_range(1000, (1, 1.0, 4)) -> range(1, 1000, 4)
     normalize_range(1000, range(10, 100)) -> range(10, 100)
+    normalize_range(1000, "100:") -> range(100, 1000)
+    normalize_range(1000, ":500") -> range(0, 500)
+    normalize_range(1000, "100:500") -> range(100, 500)
+    normalize_range(1000, "10%:") -> range(100, 1000)
+    normalize_range(1000, ":80%") -> range(0, 800)
+    normalize_range(1000, "10%:80%") -> range(100, 800)
     ```
     The range values will be constrained [0, length)
     ```
@@ -54,11 +62,18 @@ def normalize_range(
     """
 
     def normalize_value(value):
-        if isinstance(value, float):
+        if isinstance(value, str):
+            # Handle percentage strings
+            if value.endswith("%"):
+                percent = float(value[:-1]) / 100.0
+                value = int(percent * length)
+            else:
+                value = int(value)
+        elif isinstance(value, float):
             value = int(value * length)
         elif isinstance(value, int):
             if value < 0:
-                value = length - value
+                value = length + value
         else:
             raise ValueError(
                 f"Unsupported data-type for dataset range value: {type(value)}"
@@ -69,6 +84,32 @@ def normalize_range(
 
     if select_range is None or isinstance(select_range, range):
         return select_range
+    elif isinstance(select_range, str):
+        # Parse slice notation string (e.g., "100:", ":1000", "100:1000", "10%:", ":80%")
+        match = re.match(r"^([^:]*)(?::([^:]*))?$", select_range)
+        if not match:
+            raise ValueError(f"Invalid slice notation string: {select_range}")
+
+        start_str = match.group(1)
+        end_str = match.group(2)
+
+        # Parse start index
+        if start_str:
+            start_value = normalize_value(start_str)
+        else:
+            start_value = 0
+
+        # Parse end index
+        if end_str is not None:  # Colon was present
+            if end_str:  # Non-empty end
+                end_value = normalize_value(end_str)
+            else:  # Empty end (e.g., "100:")
+                end_value = length
+        else:  # No colon present - treat as single value for first N
+            # This handles cases like "100" -> first 100 elements
+            return range(normalize_value(start_str))
+
+        return range(start_value, end_value)
     elif isinstance(select_range, float) or isinstance(select_range, int):
         return range(normalize_value(select_range))
     elif isinstance(select_range, Sequence):
@@ -112,7 +153,7 @@ def preprocess_dataset(
     dataset: HFDataset | HFIterableDataset | IterableDatasetWithLength,
     tokenizer: PreTrainedTokenizerBase,
     *,
-    select_range: range | int | float | Sequence | NoneType = None,
+    select_range: range | int | float | str | Sequence | NoneType = None,
     to_iterable: bool = False,
     feature: str = "text",
     shuffle: bool = False,
@@ -136,6 +177,7 @@ def preprocess_dataset(
         dataset: The dataset to preprocess.
         tokenizer: The tokenizer to use for tokenization.
         select_range: Range of records to select from the dataset.
+            Can be int, float, str (slice notation like "10%:80%"), sequence, or range.
         to_iterable: If True, convert the dataset to an iterable dataset.
         feature: The feature in the dataset to tokenize (default is 'text').
         shuffle: If True, shuffle the dataset before processing.
@@ -207,6 +249,9 @@ def preprocess_dataset(
 
         if select_range is not None:
             select_range = normalize_range(len(dataset), select_range)
+            assert hasattr(
+                dataset, "select"
+            ), "This dataset does not appear to support the 'select' API"
             dataset = dataset.select(select_range)
 
         if shard_dataset is not None:

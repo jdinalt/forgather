@@ -54,6 +54,8 @@ def dataset_cmd(args):
             num_shards=args.num_shards,
             index=args.shard_index,
         )
+    if args.select_range is not None:
+        template_args["select_range"] = args.select_range
 
     if args.tokenizer_path:
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path)

@@ -66,6 +66,10 @@ val_ds = ids.slice("80%", None)        # Last 20%
 # Or absolute indices
 subset = ids.slice(1000, 2000)         # Examples 1000-1999
 
+# Or using HuggingFace-style select() with indices
+subset = ids.select(range(1000, 2000)) # Examples 1000-1999
+first_100 = ids.select(range(100))     # First 100 examples
+
 # Combine with shuffling and sharding
 train_ds = ids.shuffle(seed=42).slice(None, 0.8)
 train_shard = train_ds.shard(num_shards=world_size, index=rank)
@@ -294,6 +298,10 @@ Iterable dataset with checkpointing support.
 
 **Methods:**
 - `.shuffle(seed=None)`: Shuffle Arrow file order
+- `.select(indices)`: Select examples by indices (HuggingFace API compatible)
+  - `indices`: Range, list, iterable, ndarray, or Series of integer indices
+  - Supports only contiguous ranges (efficiently translates to `.slice()`)
+  - Example: `ds.select(range(100, 200))` selects examples 100-199
 - `.slice(start, end)`: Create virtual split (train/val/test)
   - `start`: Start index - int, float (percentage), string ("80%"), or None
   - `end`: End index - int, float (percentage), string ("80%"), or None

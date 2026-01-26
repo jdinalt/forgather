@@ -32,7 +32,7 @@ except ImportError:
     HAS_TQDM = False
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+# logger.setLevel(logging.DEBUG)
 
 # Metadata version - increment when index format changes
 METADATA_VERSION = 2  # v2: Added per-file example counts and version check
@@ -223,6 +223,67 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._cached_exact_length = None
 
         return new_dataset
+
+    def select(self, indices):
+        """
+        Select examples by indices, similar to HuggingFace datasets API.
+
+        This is an adapter that translates to the slice() method for contiguous ranges.
+
+        Args:
+            indices: Range, list, iterable, ndarray, or Series of integer indices.
+                     If the indices correspond to a contiguous range, the dataset
+                     is efficiently sliced. Non-contiguous indices are not yet supported.
+
+        Returns:
+            New dataset with selected examples
+
+        Examples:
+            >>> # Select first 100 examples
+            >>> ds.select(range(100))
+            >>> ds.select(list(range(100)))
+            >>>
+            >>> # Select examples 100-200
+            >>> ds.select(range(100, 200))
+
+        Raises:
+            ValueError: If indices are empty
+            NotImplementedError: If non-contiguous indices are provided
+        """
+        # Convert to list if needed (handles range, numpy arrays, pandas Series, etc.)
+        if hasattr(indices, "tolist"):
+            # numpy array or pandas Series
+            indices_list = indices.tolist()
+        elif not isinstance(indices, list):
+            # range, iterator, etc.
+            indices_list = list(indices)
+        else:
+            indices_list = indices
+
+        if not indices_list:
+            raise ValueError("Cannot select from empty indices")
+
+        # Check if indices are contiguous
+        start_idx = indices_list[0]
+        end_idx = indices_list[-1] + 1  # End is exclusive in slice()
+
+        # Verify all indices are present and contiguous
+        if len(indices_list) != (end_idx - start_idx):
+            raise NotImplementedError(
+                "Non-contiguous indices are not yet supported. "
+                "The current implementation only supports contiguous ranges. "
+                "Use dataset.select(range(start, end)) for contiguous selections."
+            )
+
+        # Verify the indices are actually the expected sequence
+        if indices_list != list(range(start_idx, end_idx)):
+            raise NotImplementedError(
+                "Indices are not in sequential order. "
+                "The current implementation only supports contiguous, ordered ranges."
+            )
+
+        # Translate to slice call
+        return self.slice(start_idx, end_idx)
 
     def slice(self, start=None, end=None):
         """

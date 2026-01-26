@@ -468,6 +468,10 @@ def create_dataset_parser(global_args):
         default=0,
         help="The shard to select, out of `num-shards` (for distributed processing)",
     )
+    parser.add_argument(
+        "--select-range",
+        help="Select dataset range. eg. `100:500`, `10%:`, `:0.1`",
+    )
     add_output_arg(parser)
     add_editor_arg(parser)
     parse_dynamic_args(parser, global_args)
