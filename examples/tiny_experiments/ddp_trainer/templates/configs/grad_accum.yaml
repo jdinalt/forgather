@@ -4,6 +4,7 @@
     == super()
     -- set ns.config_name = "Grad Accumulation"
     -- set ns.config_description = "Test DDP Trainer with gradient accumulation"
+    -- set ns.log_name = "grad-accumulation"
 
 [trainer_definition]
     -- include 'config.trainer_config'

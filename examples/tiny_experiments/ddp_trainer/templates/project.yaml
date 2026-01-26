@@ -5,10 +5,14 @@
     -- set ns.config_name = "DDP Trainer"
     -- set ns.config_description = "Minimal DDP Trainer config"
     -- set ns.trainer_class = 'trainers/ddp_trainer.yaml'
-    #-- set ns.dataset_config = "tinystories-iter.yaml"
+    -- set ns.log_name = "ddp_2gpu"
 
 [trainer_definition]
     -- include 'project.trainer_config'
+
+[optimizer]
+    == super()
+    lr: 1.41e-3
 
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'

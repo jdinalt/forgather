@@ -5,6 +5,7 @@
     == super()
     -- set ns.config_name = "DDP Checkpoint Resume"
     -- set ns.config_description = "Resume DDPTrainer training from checkpoint (500->1000 steps)"
+    -- set ns.log_name = "checkpoint"
 
 [trainer_definition]
     -- include 'checkpoint_resume.trainer_config'

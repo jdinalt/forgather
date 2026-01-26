@@ -10,6 +10,7 @@
     == super()
     -- set ns.config_name = "Sharded Dataset"
     -- set ns.config_description = "Split dataset into 1 shard per rank"
+    -- set ns.log_name = "sharded"
 
 [dataset_project]
     == super()

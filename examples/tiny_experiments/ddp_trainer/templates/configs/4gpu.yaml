@@ -4,9 +4,14 @@
     == super()
     -- set ns.config_name = "DDP Trainer 4x"
     -- set ns.config_description = "Test DDP Trainer with 4 GPUs"
+    -- set ns.log_name = "4gpu"
 
 [trainer_definition]
     -- include 'config.trainer_config'
+
+[optimizer]
+    == super()
+    lr: 2.0e-3
 
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer_config'

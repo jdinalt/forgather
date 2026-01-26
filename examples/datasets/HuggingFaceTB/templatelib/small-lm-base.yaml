@@ -12,6 +12,7 @@
 
 [map_function]
 .define: &map_function !partial:forgather.ml.datasets:default_tokenize_map_fn
+    add_eos: True
 
 [map_kwargs]
 .define: &map_kwargs !dict
