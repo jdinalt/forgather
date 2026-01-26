@@ -1,0 +1,27 @@
+-- extends "project.yaml"
+
+## This is essentially the same as 'sharded_dataset.yaml', except using the fast 
+## iterable dataset implementation. Essentially, an integration test of the shard implementation.
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Sharded Fast Dataset"
+    -- set ns.config_description = "Use fast-iterable version of Tiny Stories. Split dataset into 1 shard per rank"
+    -- set ns.dataset_config = dataset_config | default("fast-iter.yaml")
+    -- set ns.log_name = "sharded_fast"
+
+[dataset_project]
+    == super()
+    shard_dataset: True
+    select_range: ":10%"
+
+[trainer_definition]
+    -- include 'config.trainer_config'
+
+#-------------------- config.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+[trainer_args]
+    == super()
+
+    # We can disable 'dispatch_batches' when we know that the dataset will be sharded.
+    dispatch_batches: False
