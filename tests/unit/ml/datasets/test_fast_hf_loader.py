@@ -1707,9 +1707,7 @@ def test_batched_map_virtual_split_smaller_than_batch_size():
     Regression test: virtual split boundary should flush pending batch.
     """
     # Load dataset and create 500-example virtual split
-    ds = fast_load_iterable_dataset(
-        "wikitext", name="wikitext-2-raw-v1", split="train"
-    )
+    ds = fast_load_iterable_dataset("wikitext", name="wikitext-2-raw-v1", split="train")
     ds_split = ds.slice(0, 500)  # 500 examples
 
     # Apply batched map with batch_size=1000 (larger than split)
@@ -1754,7 +1752,9 @@ def test_batched_map_example_sharding_smaller_than_batch_size():
     # Should yield all ~100 examples from this shard
     examples = list(ds_mapped)
     expected_count = len(ds_shard)  # ~100
-    assert len(examples) == expected_count, f"Expected {expected_count} examples, got {len(examples)}"
+    assert (
+        len(examples) == expected_count
+    ), f"Expected {expected_count} examples, got {len(examples)}"
 
     # Verify transformation
     for ex in examples:
@@ -1781,7 +1781,9 @@ def test_batched_map_drop_last_with_small_split():
 
     # Should yield nothing since we never get a full batch and drop_last=True
     examples = list(ds_mapped)
-    assert len(examples) == 0, f"Expected 0 examples with drop_last=True, got {len(examples)}"
+    assert (
+        len(examples) == 0
+    ), f"Expected 0 examples with drop_last=True, got {len(examples)}"
 
 
 @pytest.mark.skipif(
@@ -1801,7 +1803,10 @@ def test_batched_map_split_notation_smaller_than_batch_size():
     # Apply batched map with default batch_size (1000 > 500)
     def tokenize_simple(batch):
         # Simple batched transformation
-        return {"text": batch["text"], "word_count": [len(t.split()) for t in batch["text"]]}
+        return {
+            "text": batch["text"],
+            "word_count": [len(t.split()) for t in batch["text"]],
+        }
 
     ds_mapped = ds.map(tokenize_simple, batched=True, batch_size=1000)
 
@@ -1828,7 +1833,9 @@ def test_batched_map_partial_batches_at_boundaries():
     """
     # Test 1: Normal end of iteration
     ds1 = fast_load_iterable_dataset(
-        "wikitext", name="wikitext-2-raw-v1", split="train[:47]"  # Not divisible by batch_size
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:47]",  # Not divisible by batch_size
     )
     ds1_mapped = ds1.map(lambda b: b, batched=True, batch_size=10)
     count1 = sum(1 for _ in ds1_mapped)
@@ -1852,3 +1859,108 @@ def test_batched_map_partial_batches_at_boundaries():
     count3 = sum(1 for _ in ds3_mapped)
     expected3 = len(ds3_shard)
     assert count3 == expected3, f"Shard boundary: expected {expected3}, got {count3}"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_slice_then_shard_no_overlap():
+    """
+    Test that slice().shard() preserves split boundaries with no overlap.
+
+    This is a critical test for distributed training scenarios where you:
+    1. Create train/val splits via slice()
+    2. Shard each for DDP training
+    3. Must ensure NO contamination between train and val
+
+    Regression test for bug where shard() didn't copy _split_start_idx
+    and _split_end_idx, causing shards to operate on full dataset instead
+    of the sliced portion.
+    """
+    # Load dataset with sufficient examples for clear testing
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Get total size and create reasonable train/val split
+    total_examples = len(ids)
+    split_point = int(total_examples * 0.9)
+
+    # Create train (first 90%) and val (last 10%) splits using absolute indices
+    train_ds = ids.slice(0, split_point)
+    val_ds = ids.slice(split_point, None)
+
+    # Verify split lengths
+    assert len(train_ds) == split_point
+    assert len(val_ds) == total_examples - split_point
+
+    # Shard each for DDP (2 GPUs)
+    train_shard0 = train_ds.shard(num_shards=2, index=0, mode="example")
+    train_shard1 = train_ds.shard(num_shards=2, index=1, mode="example")
+
+    val_shard0 = val_ds.shard(num_shards=2, index=0, mode="example")
+    val_shard1 = val_ds.shard(num_shards=2, index=1, mode="example")
+
+    # Verify shard lengths are reasonable
+    expected_train_per_shard = len(train_ds) // 2
+    expected_val_per_shard = len(val_ds) // 2
+
+    assert abs(len(train_shard0) - expected_train_per_shard) <= 1
+    assert abs(len(train_shard1) - expected_train_per_shard) <= 1
+    assert abs(len(val_shard0) - expected_val_per_shard) <= 1
+    assert abs(len(val_shard1) - expected_val_per_shard) <= 1
+
+    # Count examples in each shard
+    train0_count = sum(1 for _ in train_shard0)
+    train1_count = sum(1 for _ in train_shard1)
+    val0_count = sum(1 for _ in val_shard0)
+    val1_count = sum(1 for _ in val_shard1)
+
+    # Verify total counts match
+    assert train0_count + train1_count == len(train_ds), (
+        f"Train shards should sum to train_ds length: "
+        f"{train0_count} + {train1_count} = {train0_count + train1_count} != {len(train_ds)}"
+    )
+
+    assert val0_count + val1_count == len(val_ds), (
+        f"Val shards should sum to val_ds length: "
+        f"{val0_count} + {val1_count} = {val0_count + val1_count} != {len(val_ds)}"
+    )
+
+    # Verify shards are roughly balanced
+    assert (
+        abs(train0_count - train1_count) <= 1
+    ), f"Train shards should be balanced: {train0_count} vs {train1_count}"
+    assert (
+        abs(val0_count - val1_count) <= 1
+    ), f"Val shards should be balanced: {val0_count} vs {val1_count}"
+
+    # CRITICAL TEST: Verify split boundaries are preserved by checking internal state
+    # If the bug exists, sharded datasets would have lost their split boundaries
+    assert (
+        train_shard0._split_start_idx == 0
+    ), f"Train shard 0 should preserve split_start_idx=0, got {train_shard0._split_start_idx}"
+    assert (
+        train_shard0._split_end_idx == split_point
+    ), f"Train shard 0 should preserve split_end_idx={split_point}, got {train_shard0._split_end_idx}"
+
+    assert (
+        train_shard1._split_start_idx == 0
+    ), f"Train shard 1 should preserve split_start_idx=0, got {train_shard1._split_start_idx}"
+    assert (
+        train_shard1._split_end_idx == split_point
+    ), f"Train shard 1 should preserve split_end_idx={split_point}, got {train_shard1._split_end_idx}"
+
+    assert (
+        val_shard0._split_start_idx == split_point
+    ), f"Val shard 0 should preserve split_start_idx={split_point}, got {val_shard0._split_start_idx}"
+    assert (
+        val_shard0._split_end_idx == total_examples
+    ), f"Val shard 0 should preserve split_end_idx={total_examples}, got {val_shard0._split_end_idx}"
+
+    assert (
+        val_shard1._split_start_idx == split_point
+    ), f"Val shard 1 should preserve split_start_idx={split_point}, got {val_shard1._split_start_idx}"
+    assert (
+        val_shard1._split_end_idx == total_examples
+    ), f"Val shard 1 should preserve split_end_idx={total_examples}, got {val_shard1._split_end_idx}"

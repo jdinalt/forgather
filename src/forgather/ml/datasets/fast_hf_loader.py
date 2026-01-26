@@ -428,6 +428,8 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._shuffled_files = self._shuffled_files
         new_dataset._shuffled_lengths = self._shuffled_lengths
         new_dataset._shuffle_seed = self._shuffle_seed
+        new_dataset._split_start_idx = self._split_start_idx
+        new_dataset._split_end_idx = self._split_end_idx
 
         # Determine sharding mode
         files = self._shuffled_files if self._shuffled_files else self.arrow_files
