@@ -800,14 +800,15 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         result_examples = self._apply_map_to_batch(batch_buffer, batch_start_idx)
 
         # Track counts in dynamic/exact mode
+        # IMPORTANT: Count both inputs and outputs atomically before yielding
+        # to avoid race conditions where counts are temporarily out of sync
         if self.length_estimate_mode in ("dynamic", "exact"):
             self._input_count += len(batch_buffer)
+            self._output_count += len(result_examples)
             self._current_batch_buffer_size = 0  # Reset buffer size
 
-        # Track output count and yield
+        # Yield results
         for result_example in result_examples:
-            if self.length_estimate_mode in ("dynamic", "exact"):
-                self._output_count += 1
             yield result_example
 
     def __iter__(self):
@@ -1031,14 +1032,15 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                             )
 
                             # Track counts in dynamic/exact mode
+                            # IMPORTANT: Count both inputs and outputs atomically before yielding
+                            # to avoid race conditions where counts are temporarily out of sync
                             if self.length_estimate_mode in ("dynamic", "exact"):
                                 self._input_count += len(batch_buffer)
+                                self._output_count += len(result_examples)
                                 self._current_batch_buffer_size = 0  # Reset buffer size
 
-                            # Yield and track output
+                            # Yield results
                             for result_example in result_examples:
-                                if self.length_estimate_mode in ("dynamic", "exact"):
-                                    self._output_count += 1
                                 yield result_example
                             batch_buffer = []
                             batch_start_idx = None
