@@ -257,26 +257,29 @@ def preprocess_dataset(
         if shard_dataset is not None:
             world_size = shard_dataset["num_shards"]
             rank = shard_dataset["index"]
-            logger.debug(f"Sharding dataset: num_shards={world_size}, index={rank}")
-            if isinstance(dataset, HFDataset | HFIterableDataset):
-                dataset = split_dataset_by_node(
-                    dataset,
-                    world_size=world_size,
-                    rank=rank,
-                )
-            else:
-                assert hasattr(
-                    dataset, "shard"
-                ), f"Dataset of type {type(dataset)} does not have shard method."
-
-                if not isinstance(dataset, SimpleArrowIterableDataset):
-                    logger.warning(
-                        f"Attempting to shard unknown dataset of type '{type(dataset)}' API may not be compatible..."
+            
+            # As an optimization, skip sharding output would be the same as the input
+            if world_size > 1:
+                logger.debug(f"Sharding dataset: num_shards={world_size}, index={rank}")
+                if isinstance(dataset, HFDataset | HFIterableDataset):
+                    dataset = split_dataset_by_node(
+                        dataset,
+                        world_size=world_size,
+                        rank=rank,
                     )
-                dataset = dataset.shard(
-                    num_shards=world_size,
-                    index=rank,
-                )
+                else:
+                    assert hasattr(
+                        dataset, "shard"
+                    ), f"Dataset of type {type(dataset)} does not have shard method."
+
+                    if not isinstance(dataset, SimpleArrowIterableDataset):
+                        logger.warning(
+                            f"Attempting to shard unknown dataset of type '{type(dataset)}' API may not be compatible..."
+                        )
+                    dataset = dataset.shard(
+                        num_shards=world_size,
+                        index=rank,
+                    )
 
         # Map-style dataset?
         if (dataset_type and dataset_type == "map") or isinstance(dataset, HFDataset):
