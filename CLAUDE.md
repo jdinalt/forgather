@@ -108,6 +108,48 @@ trainer = Trainer(
 
 The system works with **distributed training** - commands sent to any rank are automatically coordinated across all processes. See `examples/trainer_control/` for a complete working example and `docs/trainers/trainer-control.md` for full documentation.
 
+### Training Log Analysis
+
+Forgather provides powerful tools for analyzing and visualizing training logs through the `forgather logs` command. Training metrics are automatically logged to `trainer_logs.json` files during training.
+
+```bash
+# List available training logs
+forgather logs list
+
+# Generate summary statistics
+forgather logs summary                              # Auto-detect latest log
+forgather logs summary path/to/trainer_logs.json    # Specific log
+forgather logs summary --format json                # JSON output
+forgather logs summary --format one-line            # Compact one-line format
+forgather logs summary --all --format one-line      # All logs in compact table
+forgather logs summary --format md --output report.md
+
+# Generate plots (default: saves to tmp/ directory)
+forgather logs plot                                 # Save to tmp/training_plot.png
+forgather logs plot -e                              # Save and open in editor
+forgather logs plot --loss-curves                   # Loss curves with LR (tmp/loss_curves.png)
+forgather logs plot --output training.png           # Custom output location
+forgather logs plot --metrics "loss,grad_norm"      # Specific metrics
+forgather logs plot --x-axis epoch                  # Plot by epoch
+forgather logs plot --smooth 10                     # Apply smoothing
+forgather logs plot --format svg                    # SVG format (default: png)
+
+# Compare multiple runs
+forgather logs plot --compare run1/trainer_logs.json run2/trainer_logs.json --loss-curves
+```
+
+**Programmatic API:**
+
+```python
+from forgather.ml.analysis import TrainingLog, compute_summary_statistics
+
+log = TrainingLog.from_file("path/to/trainer_logs.json")
+summary = compute_summary_statistics(log)
+print(f"Best loss: {summary['best_loss']} at step {summary['best_loss_step']}")
+```
+
+For complete documentation, see `docs/logs-analysis.md` and `examples/log_analysis_example.py`.
+
 ### Inference
 
 Forgather includes a basic OpenAPI compatible inference server and client.

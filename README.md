@@ -63,6 +63,12 @@ Flex attention also depends upon having a working C compiler and python developm
 sudo apt-get install build-essential python3-dev
 ```
 
+Some of our plotting tools make use of [Graphviz](https://graphviz.org/).
+
+```bash
+sudo apt-get install graphviz  
+```
+
 **2. Try a tutorial project:**
 
 See: [./examples/tutorials/tiny_llama/project_index.ipynb](./examples/tutorials/tiny_llama/project_index.ipynb)
