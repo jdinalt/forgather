@@ -273,14 +273,10 @@ def preprocess_dataset(
                     logger.warning(
                         f"Attempting to shard unknown dataset of type '{type(dataset)}' API may not be compatible..."
                     )
-
-                # Use example-level sharding for SimpleArrowIterableDataset
-                # File-level sharding doesn't work correctly with virtual splits (from select())
-                shard_kwargs = {"num_shards": world_size, "index": rank}
-                if isinstance(dataset, SimpleArrowIterableDataset):
-                    shard_kwargs["mode"] = "example"
-
-                dataset = dataset.shard(**shard_kwargs)
+                dataset = dataset.shard(
+                    num_shards=world_size,
+                    index=rank,
+                )
 
         # Map-style dataset?
         if (dataset_type and dataset_type == "map") or isinstance(dataset, HFDataset):

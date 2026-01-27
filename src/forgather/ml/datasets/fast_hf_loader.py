@@ -436,8 +436,23 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         num_files = len(files)
 
         if mode == "auto":
-            # Use file-level if we have enough files, otherwise example-level
-            shard_mode = "file" if num_shards <= num_files else "example"
+            # Automatically choose the best sharding mode
+            # File-level sharding doesn't work correctly with virtual splits because
+            # split boundaries apply across all files, so each shard would still see
+            # all examples in the split range
+            has_virtual_split = (
+                self._split_start_idx is not None or self._split_end_idx is not None
+            )
+
+            if has_virtual_split:
+                # Must use example-level sharding when split is active
+                shard_mode = "example"
+            elif num_shards <= num_files:
+                # Can use efficient file-level sharding
+                shard_mode = "file"
+            else:
+                # Too many shards for file-level, use example-level
+                shard_mode = "example"
         else:
             shard_mode = mode
 
