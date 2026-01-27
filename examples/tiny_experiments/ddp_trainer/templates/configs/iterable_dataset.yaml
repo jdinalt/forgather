@@ -1,0 +1,14 @@
+-- extends "project.yaml"
+
+## This is essentially the same as 'sharded_dataset.yaml', except using the 
+## HF iterable dataset implementation. This provides a basis for comparison for sharded_fast_dataset.yaml
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Iterable Dataset"
+    -- set ns.config_description = "Use HF iterable version of Tiny Stories."
+    -- set ns.dataset_config ="tinystories-iter.yaml"
+    -- set ns.log_name = "iterable"
+
+[dataset_project]
+    == super()
+    select_range: ":10%"

@@ -4,4 +4,4 @@
 name: "ddp_trainer"
 description: "Test DDP Trainer"
 config_prefix: "configs"
-default_config: "default.yaml"
+default_config: "2gpu.yaml"
