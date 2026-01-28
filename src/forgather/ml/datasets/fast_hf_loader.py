@@ -174,6 +174,148 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             f"current_example_index={self._current_example_index}"
         )
 
+    @staticmethod
+    def _shuffle_files_and_lengths(
+        arrow_files: List[str],
+        file_lengths: Optional[List[int]],
+        seed: int,
+    ) -> Tuple[List[str], Optional[List[int]]]:
+        """
+        Shuffle Arrow files and their lengths together.
+
+        Args:
+            arrow_files: List of Arrow file paths
+            file_lengths: Optional list of example counts per file
+            seed: Random seed for shuffling
+
+        Returns:
+            Tuple of (shuffled_files, shuffled_lengths)
+        """
+        import random
+
+        if file_lengths:
+            # Shuffle files and lengths together
+            paired = list(zip(arrow_files, file_lengths))
+            rng = random.Random(seed)
+            rng.shuffle(paired)
+            shuffled_files, shuffled_lengths = zip(*paired)
+            return list(shuffled_files), list(shuffled_lengths)
+        else:
+            shuffled_files = arrow_files.copy()
+            rng = random.Random(seed)
+            rng.shuffle(shuffled_files)
+            return shuffled_files, None
+
+    def _copy(self, **overrides) -> "SimpleArrowIterableDataset":
+        """
+        Create a copy of this dataset with optional overrides.
+
+        Args:
+            **overrides: Keyword arguments to override specific instance variables.
+                        Use the attribute name without the leading underscore for
+                        private attributes (e.g., shuffle_seed not _shuffle_seed).
+
+        Returns:
+            New SimpleArrowIterableDataset with copied state
+
+        Example:
+            >>> new_ds = ds._copy(shuffle_seed=42, epoch=1)
+        """
+        # Create new instance with same arrow files
+        new_dataset = SimpleArrowIterableDataset(
+            self.arrow_files, self.file_lengths
+        )
+
+        # Copy all instance variables
+        # Checkpoint state
+        new_dataset._current_file_index = overrides.get(
+            "current_file_index", self._current_file_index
+        )
+        new_dataset._current_example_index = overrides.get(
+            "current_example_index", self._current_example_index
+        )
+
+        # Shuffle state
+        new_dataset._shuffled_files = overrides.get(
+            "shuffled_files", self._shuffled_files
+        )
+        new_dataset._shuffled_lengths = overrides.get(
+            "shuffled_lengths", self._shuffled_lengths
+        )
+        new_dataset._shuffle_seed = overrides.get("shuffle_seed", self._shuffle_seed)
+        new_dataset._base_shuffle_seed = overrides.get(
+            "base_shuffle_seed", self._base_shuffle_seed
+        )
+        new_dataset._epoch = overrides.get("epoch", self._epoch)
+        new_dataset._last_iter_epoch = overrides.get(
+            "last_iter_epoch", self._last_iter_epoch
+        )
+        new_dataset._shuffle_buffer_size = overrides.get(
+            "shuffle_buffer_size", self._shuffle_buffer_size
+        )
+
+        # Sharding and splitting
+        new_dataset._shard_config = overrides.get("shard_config", self._shard_config)
+        new_dataset._split_start_idx = overrides.get(
+            "split_start_idx", self._split_start_idx
+        )
+        new_dataset._split_end_idx = overrides.get("split_end_idx", self._split_end_idx)
+        new_dataset._shard_start_idx = overrides.get(
+            "shard_start_idx", self._shard_start_idx
+        )
+        new_dataset._shard_end_idx = overrides.get("shard_end_idx", self._shard_end_idx)
+
+        # Metadata (lazy loaded)
+        new_dataset._column_names = overrides.get("column_names", self._column_names)
+        new_dataset._features = overrides.get("features", self._features)
+        new_dataset._total_examples = overrides.get(
+            "total_examples", self._total_examples
+        )
+
+        # Map configuration
+        new_dataset._map_function = overrides.get("map_function", self._map_function)
+        new_dataset._map_batched = overrides.get("map_batched", self._map_batched)
+        new_dataset._map_batch_size = overrides.get(
+            "map_batch_size", self._map_batch_size
+        )
+        new_dataset._map_drop_last_batch = overrides.get(
+            "map_drop_last_batch", self._map_drop_last_batch
+        )
+        new_dataset._map_remove_columns = overrides.get(
+            "map_remove_columns", self._map_remove_columns
+        )
+        new_dataset._map_with_indices = overrides.get(
+            "map_with_indices", self._map_with_indices
+        )
+        new_dataset._map_input_columns = overrides.get(
+            "map_input_columns", self._map_input_columns
+        )
+        new_dataset._map_fn_kwargs = overrides.get("map_fn_kwargs", self._map_fn_kwargs)
+
+        # Length estimation
+        new_dataset.length_estimate_mode = overrides.get(
+            "length_estimate_mode", self.length_estimate_mode
+        )
+        new_dataset._reset_length_on_iter = overrides.get(
+            "reset_length_on_iter", self._reset_length_on_iter
+        )
+        new_dataset._original_length = overrides.get(
+            "original_length", self._original_length
+        )
+        new_dataset._input_count = overrides.get("input_count", self._input_count)
+        new_dataset._output_count = overrides.get("output_count", self._output_count)
+        new_dataset._cached_exact_length = overrides.get(
+            "cached_exact_length", self._cached_exact_length
+        )
+        new_dataset._length_invalidated = overrides.get(
+            "length_invalidated", self._length_invalidated
+        )
+        new_dataset._current_batch_buffer_size = overrides.get(
+            "current_batch_buffer_size", self._current_batch_buffer_size
+        )
+
+        return new_dataset
+
     def shuffle(self, seed: Optional[int] = None, buffer_size: int = 1000):
         """
         Shuffle at both file and example level.
@@ -206,47 +348,26 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         if buffer_size is None or buffer_size <= 0:
             buffer_size = None  # Disable example-level shuffling
 
-        # Shuffle Arrow file order (and lengths in parallel)
-        if self.file_lengths:
-            # Shuffle files and lengths together
-            paired = list(zip(self.arrow_files, self.file_lengths))
-            rng = random.Random(seed)
-            rng.shuffle(paired)
-            shuffled_files, shuffled_lengths = zip(*paired)
-            shuffled_files = list(shuffled_files)
-            shuffled_lengths = list(shuffled_lengths)
-        else:
-            shuffled_files = self.arrow_files.copy()
-            shuffled_lengths = None
-            rng = random.Random(seed)
-            rng.shuffle(shuffled_files)
+        # Shuffle Arrow file order using static helper
+        shuffled_files, shuffled_lengths = self._shuffle_files_and_lengths(
+            self.arrow_files, self.file_lengths, seed
+        )
 
-        # Create new instance with shuffled files
-        new_dataset = SimpleArrowIterableDataset(shuffled_files, shuffled_lengths)
-        new_dataset._shard_config = self._shard_config
-        new_dataset._shuffle_seed = seed  # Current effective seed
-        new_dataset._base_shuffle_seed = seed  # Store base seed for epoch-based re-shuffling
-        new_dataset._epoch = 0  # Initialize epoch to 0
-        new_dataset._last_iter_epoch = 0  # Mark that files are already shuffled for epoch 0
-        new_dataset._shuffle_buffer_size = buffer_size  # Store buffer size
-        new_dataset._shuffled_files = shuffled_files
-        new_dataset._shuffled_lengths = shuffled_lengths
-        new_dataset._split_start_idx = self._split_start_idx
-        new_dataset._split_end_idx = self._split_end_idx
-
-        # Inherit length estimation configuration
-        new_dataset.length_estimate_mode = self.length_estimate_mode
-        new_dataset._reset_length_on_iter = self._reset_length_on_iter
-
-        # Invalidate cached stats but preserve ratio estimate
-        new_dataset._length_invalidated = True
-        # Keep _input_count and _output_count for ratio estimate
-        new_dataset._input_count = self._input_count
-        new_dataset._output_count = self._output_count
-        # Clear exact cache since order changed
-        new_dataset._cached_exact_length = None
-
-        return new_dataset
+        # Create copy with shuffled state
+        return self._copy(
+            shuffle_seed=seed,  # Current effective seed
+            base_shuffle_seed=seed,  # Store base seed for epoch-based re-shuffling
+            epoch=0,  # Initialize epoch to 0
+            last_iter_epoch=0,  # Mark that files are already shuffled for epoch 0
+            shuffle_buffer_size=buffer_size,
+            shuffled_files=shuffled_files,
+            shuffled_lengths=shuffled_lengths,
+            # Invalidate cached stats but preserve ratio estimate
+            length_invalidated=True,
+            # Keep input/output counts for ratio estimate (inherited via _copy)
+            # Clear exact cache since order changed
+            cached_exact_length=None,
+        )
 
     def set_epoch(self, epoch: int):
         """
@@ -288,24 +409,39 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         Args:
             seed: Random seed for shuffling
         """
-        import random
-
-        if self.file_lengths:
-            # Shuffle files and lengths together
-            paired = list(zip(self.arrow_files, self.file_lengths))
-            rng = random.Random(seed)
-            rng.shuffle(paired)
-            shuffled_files, shuffled_lengths = zip(*paired)
-            self._shuffled_files = list(shuffled_files)
-            self._shuffled_lengths = list(shuffled_lengths)
-        else:
-            self._shuffled_files = self.arrow_files.copy()
-            rng = random.Random(seed)
-            rng.shuffle(self._shuffled_files)
-            self._shuffled_lengths = None
-
+        # Use static helper to shuffle
+        self._shuffled_files, self._shuffled_lengths = self._shuffle_files_and_lengths(
+            self.arrow_files, self.file_lengths, seed
+        )
         # Update current working seed
         self._shuffle_seed = seed
+
+    def _get_effective_seed(self, fallback_seed: Optional[int] = None) -> Optional[int]:
+        """
+        Compute the effective shuffle seed for the current epoch.
+
+        This handles three cases:
+        1. If shuffle() was called: effective_seed = base_seed + epoch
+        2. If shuffle() was not called but epoch > 0: effective_seed = epoch
+        3. Otherwise: use fallback_seed (or None)
+
+        Args:
+            fallback_seed: Seed to use if no base_seed and epoch == 0.
+                          Defaults to None if not provided.
+
+        Returns:
+            Effective seed to use for shuffling, or None for no shuffle
+        """
+        if self._base_shuffle_seed is not None:
+            # shuffle() was called - use base_seed + epoch
+            return self._base_shuffle_seed + self._epoch
+        elif self._epoch > 0:
+            # shuffle() not called, but set_epoch() was called with non-zero epoch
+            # Use epoch itself as seed for deterministic per-epoch shuffling
+            return self._epoch
+        else:
+            # No shuffle() or epoch == 0 - use fallback
+            return fallback_seed
 
     def select(self, indices):
         """
@@ -456,31 +592,19 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         if start_idx >= end_idx:
             raise ValueError(f"Start index {start_idx} must be < end index {end_idx}")
 
-        # Create new dataset with split
-        new_dataset = SimpleArrowIterableDataset(self.arrow_files, self.file_lengths)
-        new_dataset._shuffled_files = self._shuffled_files
-        new_dataset._shuffled_lengths = self._shuffled_lengths
-        new_dataset._shuffle_seed = self._shuffle_seed
-        new_dataset._base_shuffle_seed = self._base_shuffle_seed  # Propagate base seed
-        new_dataset._epoch = self._epoch  # Propagate current epoch
-        new_dataset._last_iter_epoch = None  # Reset for new dataset instance
-        new_dataset._shuffle_buffer_size = self._shuffle_buffer_size
-        new_dataset._shard_config = self._shard_config
-        new_dataset._split_start_idx = start_idx
-        new_dataset._split_end_idx = end_idx
-
-        # Inherit length estimation configuration
-        new_dataset.length_estimate_mode = self.length_estimate_mode
-        new_dataset._reset_length_on_iter = self._reset_length_on_iter
-        # Don't copy counts - this is a different slice
-        new_dataset._original_length = None
-        new_dataset._input_count = 0
-        new_dataset._output_count = 0
-        new_dataset._cached_exact_length = None
-        new_dataset._length_invalidated = False
-
+        # Create copy with updated split boundaries
         # Note: Don't copy old shard boundaries - sharding should happen on the sliced dataset
-        return new_dataset
+        return self._copy(
+            split_start_idx=start_idx,
+            split_end_idx=end_idx,
+            last_iter_epoch=None,  # Reset for new dataset instance
+            # Don't copy counts - this is a different slice
+            original_length=None,
+            input_count=0,
+            output_count=0,
+            cached_exact_length=None,
+            length_invalidated=False,
+        )
 
     def shard(self, num_shards: int, index: int, mode: str = "auto"):
         """
@@ -511,17 +635,6 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         if index < 0:
             raise ValueError(f"Shard index must be non-negative, got {index}")
 
-        new_dataset = SimpleArrowIterableDataset(self.arrow_files, self.file_lengths)
-        new_dataset._shuffled_files = self._shuffled_files
-        new_dataset._shuffled_lengths = self._shuffled_lengths
-        new_dataset._shuffle_seed = self._shuffle_seed
-        new_dataset._base_shuffle_seed = self._base_shuffle_seed  # Propagate base seed
-        new_dataset._epoch = self._epoch  # Propagate current epoch
-        new_dataset._last_iter_epoch = None  # Reset for new dataset instance
-        new_dataset._shuffle_buffer_size = self._shuffle_buffer_size
-        new_dataset._split_start_idx = self._split_start_idx
-        new_dataset._split_end_idx = self._split_end_idx
-
         # Determine sharding mode
         files = self._shuffled_files if self._shuffled_files else self.arrow_files
         num_files = len(files)
@@ -547,6 +660,17 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         else:
             shard_mode = mode
 
+        # Prepare override kwargs based on sharding mode
+        copy_kwargs = {
+            "last_iter_epoch": None,  # Reset for new dataset instance
+            # Don't copy counts - this is a different shard
+            "original_length": None,
+            "input_count": 0,
+            "output_count": 0,
+            "cached_exact_length": None,
+            "length_invalidated": False,
+        }
+
         if shard_mode == "file":
             # File-level sharding
             if num_shards > num_files:
@@ -554,7 +678,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                     f"File-level sharding with num_shards={num_shards} > num_files={num_files}. "
                     f"Some shards will be empty. Consider using mode='example'."
                 )
-            new_dataset._shard_config = (num_shards, index, "file")
+            copy_kwargs["shard_config"] = (num_shards, index, "file")
 
         elif shard_mode == "example":
             # Example-level sharding - compute boundaries
@@ -570,25 +694,15 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 shard_start = index * examples_per_shard + remainder
                 shard_end = shard_start + examples_per_shard
 
-            new_dataset._shard_config = (num_shards, index, "example")
-            new_dataset._shard_start_idx = shard_start
-            new_dataset._shard_end_idx = shard_end
+            copy_kwargs["shard_config"] = (num_shards, index, "example")
+            copy_kwargs["shard_start_idx"] = shard_start
+            copy_kwargs["shard_end_idx"] = shard_end
         else:
             raise ValueError(
                 f"Invalid shard mode: {mode}. Must be 'auto', 'file', or 'example'."
             )
 
-        # Inherit length estimation configuration
-        new_dataset.length_estimate_mode = self.length_estimate_mode
-        new_dataset._reset_length_on_iter = self._reset_length_on_iter
-        # Don't copy counts - this is a different shard
-        new_dataset._original_length = None
-        new_dataset._input_count = 0
-        new_dataset._output_count = 0
-        new_dataset._cached_exact_length = None
-        new_dataset._length_invalidated = False
-
-        return new_dataset
+        return self._copy(**copy_kwargs)
 
     def map(
         self,
@@ -630,49 +744,23 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         if fn_kwargs is None:
             fn_kwargs = {}
 
-        # Create new dataset with same configuration
-        new_dataset = SimpleArrowIterableDataset(self.arrow_files, self.file_lengths)
-        new_dataset._shuffled_files = self._shuffled_files
-        new_dataset._shuffled_lengths = self._shuffled_lengths
-        new_dataset._shard_config = self._shard_config
-        new_dataset._shuffle_seed = self._shuffle_seed
-        new_dataset._base_shuffle_seed = self._base_shuffle_seed  # Propagate base seed
-        new_dataset._epoch = self._epoch  # Propagate current epoch
-        new_dataset._last_iter_epoch = None  # Reset for new dataset instance
-        new_dataset._shuffle_buffer_size = self._shuffle_buffer_size
-        new_dataset._split_start_idx = self._split_start_idx
-        new_dataset._split_end_idx = self._split_end_idx
-        new_dataset._shard_start_idx = self._shard_start_idx
-        new_dataset._shard_end_idx = self._shard_end_idx
+        # Prepare copy kwargs with common settings
+        copy_kwargs = {
+            "last_iter_epoch": None,  # Reset for new dataset instance
+            # Don't inherit counts/stats - those are specific to this dataset instance
+            "original_length": None,
+            "input_count": 0,
+            "output_count": 0,
+            "cached_exact_length": None,
+            "length_invalidated": False,
+        }
 
-        # Copy existing map configuration (to support chaining)
-        new_dataset._map_function = self._map_function
-        new_dataset._map_batched = self._map_batched
-        new_dataset._map_batch_size = self._map_batch_size
-        new_dataset._map_drop_last_batch = self._map_drop_last_batch
-        new_dataset._map_remove_columns = self._map_remove_columns
-        new_dataset._map_with_indices = self._map_with_indices
-        new_dataset._map_input_columns = self._map_input_columns
-        new_dataset._map_fn_kwargs = self._map_fn_kwargs
-
-        # Inherit length estimation configuration from parent
-        new_dataset.length_estimate_mode = self.length_estimate_mode
-        new_dataset._reset_length_on_iter = self._reset_length_on_iter
-
-        # Don't inherit counts/stats - those are specific to this dataset instance
-        new_dataset._original_length = None  # Will be computed lazily
-        new_dataset._input_count = 0
-        new_dataset._output_count = 0
-        new_dataset._cached_exact_length = None
-        new_dataset._length_invalidated = False
-
-        # Apply new map configuration
-        # For simplicity, we'll compose functions if there's already a map
-        if new_dataset._map_function is not None:
+        # Handle function composition if there's already a map
+        if self._map_function is not None:
             # Chain maps: apply existing map first, then new map
-            prev_function = new_dataset._map_function
-            prev_batched = new_dataset._map_batched
-            prev_fn_kwargs = new_dataset._map_fn_kwargs or {}
+            prev_function = self._map_function
+            prev_batched = self._map_batched
+            prev_fn_kwargs = self._map_fn_kwargs or {}
 
             # For now, don't support chaining maps with different batched modes
             if prev_batched != batched:
@@ -686,19 +774,20 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 result = prev_function(example, **prev_fn_kwargs)
                 return function(result, *args, **fn_kwargs)
 
-            new_dataset._map_function = composed_function
-            new_dataset._map_fn_kwargs = {}  # Already incorporated
+            copy_kwargs["map_function"] = composed_function
+            copy_kwargs["map_fn_kwargs"] = {}  # Already incorporated
         else:
-            new_dataset._map_function = function
-            new_dataset._map_batched = batched
-            new_dataset._map_batch_size = batch_size
-            new_dataset._map_drop_last_batch = drop_last_batch
-            new_dataset._map_remove_columns = remove_columns
-            new_dataset._map_with_indices = with_indices
-            new_dataset._map_input_columns = input_columns
-            new_dataset._map_fn_kwargs = fn_kwargs
+            # First map operation
+            copy_kwargs["map_function"] = function
+            copy_kwargs["map_batched"] = batched
+            copy_kwargs["map_batch_size"] = batch_size
+            copy_kwargs["map_drop_last_batch"] = drop_last_batch
+            copy_kwargs["map_remove_columns"] = remove_columns
+            copy_kwargs["map_with_indices"] = with_indices
+            copy_kwargs["map_input_columns"] = input_columns
+            copy_kwargs["map_fn_kwargs"] = fn_kwargs
 
-        return new_dataset
+        return self._copy(**copy_kwargs)
 
     def _apply_map_to_example(self, example, example_idx):
         """
@@ -986,18 +1075,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         # Re-shuffle files if epoch changed
         if self._last_iter_epoch != self._epoch:
-            # Determine effective seed for this epoch
-            if self._base_shuffle_seed is not None:
-                # shuffle() was called - use base_seed + epoch
-                effective_seed = self._base_shuffle_seed + self._epoch
-            elif self._epoch > 0:
-                # shuffle() not called, but set_epoch() was called with non-zero epoch
-                # Use epoch itself as seed for deterministic per-epoch shuffling
-                effective_seed = self._epoch
-            else:
-                # epoch == 0 and no base_seed - no shuffle needed
-                effective_seed = None
-
+            effective_seed = self._get_effective_seed(fallback_seed=None)
             if effective_seed is not None:
                 self._reshuffle_files_with_seed(effective_seed)
             self._last_iter_epoch = self._epoch
@@ -1292,15 +1370,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         # Apply shuffle buffer if configured
         if self._shuffle_buffer_size is not None and self._shuffle_buffer_size > 0:
             # Compute effective seed for shuffle buffer (accounts for epoch)
-            if self._base_shuffle_seed is not None:
-                # shuffle() was called - use base_seed + epoch
-                effective_seed = self._base_shuffle_seed + self._epoch
-            elif self._epoch > 0:
-                # shuffle() not called, but set_epoch() was called - use epoch as seed
-                effective_seed = self._epoch
-            else:
-                # No shuffle() or set_epoch() - use existing seed or default
-                effective_seed = self._shuffle_seed or 0
+            effective_seed = self._get_effective_seed(
+                fallback_seed=self._shuffle_seed or 0
+            )
 
             # Wrap base iterator with shuffle buffer
             yield from self._apply_shuffle_buffer(
