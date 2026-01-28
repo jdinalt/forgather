@@ -21,27 +21,32 @@
     -- set ns.log_memory_to_tb = False
 
     ## The dataset sub-project to use
-    -- set ns.dataset_proj = dataset_proj | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
+    -- set ns.dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan')
 
     ## The configuration in the dataset sub-project
     ## Note: Switch to 'tinystories-iter.yaml' for the full dataset.
-    -- set ns.dataset_config = dataset_config | default("tinystories-abridged.yaml")
+    -- set ns.dataset_config = "tinystories-abridged.yaml"
   
     ## The model project to import
     -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'causal_lm')
     -- set ns.model_project_config = "4M.yaml"
-    -- set ns.debug_model_project = False
 
 [datasets_preprocessor_args]
 tokenizer_args: &tokenizer_args !dict
     truncation: True
 
 [datasets_definition]
+    [dataset_project_pp_args]
+.define: &dataset_project_pp_args !dict
+
     [dataset_project]
 .define: &dataset_dict !call:forgather:from_project
     project_dir: "{{ ns.dataset_proj }}"
     config_template: "{{ ns.dataset_config }}"
-    targets: [ "train_dataset", "eval_dataset" ] 
+    targets: [ "train_dataset", "eval_dataset" ]
+    # These are passed to the project preprocessor
+    pp_kwargs: *dataset_project_pp_args
+    # These are injected as variables as runtime
     preprocess_args: *tokenizer_args
     tokenizer: *tokenizer
 
@@ -57,15 +62,19 @@ eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
     -- include 'tiny.trainer_config'
 
 [construct_new_model]
+    [model_project_pp_args]
+.define: &model_project_pp_args
+    output_dir: "{{ ns.output_dir }}"
+
+    [model_project]
 .define: &model_dict !call:forgather:from_project
     project_dir: "{{ ns.model_project_dir }}"
     config_template: "{{ ns.model_project_config }}"
     targets: [ "pretrained_tokenizer", "model" ] 
-    pp_kwargs:
-        output_dir: "{{ ns.output_dir }}"
-    pp_debug: {{ ns.debug_model_project | default(False) }}
+    pp_kwargs: *model_project_pp_args
     model_constructor_args: *model_constructor_args
 
+    [model_assets]
 tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
 model: &model !call:getitem [ *model_dict, 'model' ]
 
@@ -103,15 +112,6 @@ optimizer: &optimizer !partial:torch:optim.AdamW
         names: "--log-peak-memory"
         action: "store_true"
         help: "Log peak GPU memory at each log step"
-    dataset_config:
-        names: "--dataset-config"
-        type: "str"
-        help: "The name of the dataset configuration to use"
-    dataset_proj:
-        names: "--dataset-proj"
-        type: "path"
-        help: "Path to dataset project to use"
-
 
 #-------------------- tiny.trainer_config --------------------
 -- extends ns.trainer_class
@@ -122,7 +122,6 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 
 [trainer_args]
     == super()
-    
     # **Tiny Project**
     seed: 42
     per_device_train_batch_size: 32
