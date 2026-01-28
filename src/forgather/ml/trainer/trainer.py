@@ -161,6 +161,9 @@ class TrainingArguments(BaseTrainingArguments):
     # Set this to 0 to include all steps or > 0 for compile warmup time.
     speed_metrics_start_step: int = 1
 
+    # If the train dataset has a `set_epoch(epoch: int)` method, call it at the start of each epoch. 
+    set_dataset_epoch: bool = True
+
 
 @contextmanager
 def set_train(model: torch.nn.Module, mode: bool):
@@ -508,6 +511,9 @@ class Trainer(BaseTrainer):
         self.do_eval = eval_dataset is not None
 
         if self.do_train:
+            if self.args.set_dataset_epoch and self.args.num_train_epochs > 1.0 and not hasattr(train_dataset, "set_epoch"):
+                logger.warning("Train dataset does not support `set_epoch` and training for > 1 epoch. Dataset will not be reshuffled after each epoch")
+                self.args.set_dataset_epoch = False
             self.train_dataloader = self._get_dataloader(
                 train_dataset, self.args.per_device_train_batch_size
             )
@@ -880,8 +886,13 @@ class Trainer(BaseTrainer):
             # Epoch loop
             while True:
                 self.control.should_epoch_stop = False
-                self._dispatch_event("on_epoch_begin")
+                if self.args.set_dataset_epoch and self.state.raw_epoch > 0:
+                    # If supported, reshuffle dataset at the start of each epoch
+                    logger.info("Setting datalset epoch {self.state.raw_epoch}")
+                    self.train_dataloader.dataset.set_epoch(self.state.raw_epoch)
                 data_iterator = iter(self.train_dataloader)
+                self._dispatch_event("on_epoch_begin")
+                
                 while True:
                     self._dispatch_event("on_step_begin")
 

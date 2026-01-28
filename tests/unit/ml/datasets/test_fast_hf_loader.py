@@ -2481,3 +2481,54 @@ def test_set_epoch_with_shard():
     # Each shard should change between epochs
     assert shard0_epoch0 != shard0_epoch1, "Shard 0 should differ between epochs"
     assert shard1_epoch0 != shard1_epoch1, "Shard 1 should differ between epochs"
+
+
+def test_set_epoch_without_explicit_shuffle():
+    """
+    Test that set_epoch() works even when shuffle() was not called.
+
+    When shuffle() is not called but set_epoch() is called with epoch > 0,
+    the implementation uses the epoch number itself as the seed for shuffling.
+
+    This test verifies:
+    - With shuffle buffer: different epochs use different seeds (epoch as seed)
+    - Same epoch produces same order (reproducibility)
+
+    Note: For multi-file datasets, set_epoch() would shuffle file order using
+    epoch as seed, providing different data orders across epochs. This test uses
+    a shuffle buffer since the test dataset has only one Arrow file.
+    """
+    # Load dataset WITHOUT calling shuffle()
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+
+    # Enable shuffle buffer (simulates environment where buffer is used)
+    # This allows us to test epoch-based seed selection
+    ds._shuffle_buffer_size = 10
+
+    # Epoch 1 - should use seed=1 for buffer
+    ds.set_epoch(1)
+    epoch1_examples = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+
+    # Epoch 2 - should use seed=2 for buffer
+    ds.set_epoch(2)
+    epoch2_examples = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+
+    # Epoch 3 - should use seed=3 for buffer
+    ds.set_epoch(3)
+    epoch3_examples = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+
+    # Different epochs should use different buffer seeds
+    assert epoch1_examples != epoch2_examples, "Epoch 1 and 2 should differ"
+    assert epoch2_examples != epoch3_examples, "Epoch 2 and 3 should differ"
+    assert epoch1_examples != epoch3_examples, "Epoch 1 and 3 should differ"
+
+    # Verify reproducibility for each epoch
+    ds.set_epoch(1)
+    epoch1_again = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+    assert epoch1_examples == epoch1_again, "Epoch 1 should be reproducible"
+
+    ds.set_epoch(2)
+    epoch2_again = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+    assert epoch2_examples == epoch2_again, "Epoch 2 should be reproducible"

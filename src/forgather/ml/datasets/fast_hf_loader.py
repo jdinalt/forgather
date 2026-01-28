@@ -252,10 +252,8 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Set the epoch for the dataset.
 
-        When used with shuffle(), this changes the shuffling pattern for each epoch
-        while maintaining reproducibility. The effective seed becomes base_seed + epoch.
-
-        This should be called at the start of each training epoch:
+        Enables different shuffling patterns for each epoch while maintaining
+        reproducibility. This should be called at the start of each training epoch:
 
             for epoch in range(num_epochs):
                 train_dataset.set_epoch(epoch)
@@ -266,10 +264,17 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         Args:
             epoch: The current epoch number (0-indexed)
 
+        Behavior:
+            - If shuffle() was called: effective_seed = base_seed + epoch
+            - If shuffle() was not called but epoch > 0: effective_seed = epoch
+            - If shuffle() was not called and epoch == 0: no shuffle occurs
+
+        This allows set_epoch() to work even without explicitly calling shuffle(),
+        enabling epoch-based shuffling with deterministic seeds derived from the
+        epoch number itself.
+
         Note:
             This method must be called BEFORE iteration starts for the epoch.
-            The dataset will re-shuffle with a new seed derived from the base seed.
-            If shuffle() was never called, this method is a no-op.
         """
         self._epoch = epoch
 
@@ -979,15 +984,23 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         Yields:
             Examples from the dataset
         """
-        # Re-shuffle files if epoch changed and we have a base shuffle seed
-        if self._base_shuffle_seed is not None:
-            # Compute effective seed for this epoch
-            effective_seed = self._base_shuffle_seed + self._epoch
+        # Re-shuffle files if epoch changed
+        if self._last_iter_epoch != self._epoch:
+            # Determine effective seed for this epoch
+            if self._base_shuffle_seed is not None:
+                # shuffle() was called - use base_seed + epoch
+                effective_seed = self._base_shuffle_seed + self._epoch
+            elif self._epoch > 0:
+                # shuffle() not called, but set_epoch() was called with non-zero epoch
+                # Use epoch itself as seed for deterministic per-epoch shuffling
+                effective_seed = self._epoch
+            else:
+                # epoch == 0 and no base_seed - no shuffle needed
+                effective_seed = None
 
-            # Re-shuffle if this is a new epoch
-            if self._last_iter_epoch != self._epoch:
+            if effective_seed is not None:
                 self._reshuffle_files_with_seed(effective_seed)
-                self._last_iter_epoch = self._epoch
+            self._last_iter_epoch = self._epoch
 
         # Reset counts if configured or if stats were invalidated
         if self._reset_length_on_iter or self._length_invalidated:
@@ -1280,15 +1293,20 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         if self._shuffle_buffer_size is not None and self._shuffle_buffer_size > 0:
             # Compute effective seed for shuffle buffer (accounts for epoch)
             if self._base_shuffle_seed is not None:
+                # shuffle() was called - use base_seed + epoch
                 effective_seed = self._base_shuffle_seed + self._epoch
+            elif self._epoch > 0:
+                # shuffle() not called, but set_epoch() was called - use epoch as seed
+                effective_seed = self._epoch
             else:
+                # No shuffle() or set_epoch() - use existing seed or default
                 effective_seed = self._shuffle_seed or 0
 
             # Wrap base iterator with shuffle buffer
             yield from self._apply_shuffle_buffer(
                 self._base_iter(),
                 self._shuffle_buffer_size,
-                effective_seed  # Use effective seed (base_seed + epoch)
+                effective_seed  # Use effective seed
             )
         else:
             # No shuffle buffer, use base iterator directly
