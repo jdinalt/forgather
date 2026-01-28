@@ -471,7 +471,12 @@ def create_dataset_parser(global_args):
     )
     parser.add_argument(
         "--select-range",
-        help="Select dataset range. eg. `100:500`, `10%:`, `:0.1`",
+        help="Select dataset range. eg. '100:500', '10%%:', ':0.1",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help="Shuffle with seed",
     )
     add_output_arg(parser)
     add_editor_arg(parser)
@@ -873,9 +878,7 @@ def create_logs_parser(global_args):
         formatter_class=RawTextHelpFormatter,
     )
 
-    subparsers = parser.add_subparsers(
-        dest="logs_subcommand", help="Logs subcommands"
-    )
+    subparsers = parser.add_subparsers(dest="logs_subcommand", help="Logs subcommands")
 
     # summary subcommand
     summary_parser = subparsers.add_parser(

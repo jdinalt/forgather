@@ -31,8 +31,10 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
         map_fn: *map_function
         tokenizer: *tokenizer
         shard_dataset: !var [ "shard_dataset", False ]
-        fn_kwargs: !var "preprocess_args"
+        fn_kwargs: !var [ "preprocess_args", {} ]
     select_range: !var [ "select_range", null ]
+    shuffle: !var [ "shuffle", False ]
+    seed: !var [ "seed", False ]
     dataset: *train_dataset_split
     desc: "Tokenizing train"
    

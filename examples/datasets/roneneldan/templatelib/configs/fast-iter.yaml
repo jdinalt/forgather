@@ -10,9 +10,6 @@
 .define: &map_function !partial:forgather.ml.datasets:default_tokenize_map_fn
     add_eos: True
 
-[map_kwargs]
-.define: &map_kwargs !dict
-
 [train_dataset_split]
 train_dataset_split: &train_dataset_split !singleton:forgather.ml.datasets:fast_load_iterable_dataset
     arg0: "roneneldan/TinyStories"
@@ -34,9 +31,10 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
         map_fn: *map_function
         tokenizer: *tokenizer
         shard_dataset: !var [ "shard_dataset", False ]
-        fn_kwargs: !var "preprocess_args"
-        map_kwargs: *map_kwargs
+        fn_kwargs: !var [ "preprocess_args", {} ]
     select_range: !var [ "select_range", null ]
+    shuffle: !var [ "shuffle", False ]
+    seed: !var [ "seed", False ]
     dataset: *train_dataset_split
    
 [eval_dataset]

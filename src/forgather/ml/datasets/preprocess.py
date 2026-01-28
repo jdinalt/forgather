@@ -160,7 +160,7 @@ def preprocess_dataset(
     num_shards: int = 256,
     desc: str = "Tokenizing Dataset",
     seed: int = 42,
-    shuffle_buffer_size: int = 10000,
+    shuffle_buffer_size: int = 1000,
     map_fn: Callable = default_tokenize_map_fn,
     map_kwargs: Optional[dict[str, Any]] = None,
     fn_kwargs: Optional[dict[str, Any]] = None,
@@ -257,7 +257,7 @@ def preprocess_dataset(
         if shard_dataset is not None:
             world_size = shard_dataset["num_shards"]
             rank = shard_dataset["index"]
-            
+
             # As an optimization, skip sharding output would be the same as the input
             if world_size > 1:
                 logger.debug(f"Sharding dataset: num_shards={world_size}, index={rank}")

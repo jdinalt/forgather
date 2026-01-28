@@ -62,6 +62,10 @@ def dataset_cmd(args):
         data += "Tokenizer:\n" + repr(tokenizer) + "\n"
         template_args["tokenizer"] = tokenizer
 
+    if args.seed is not None:
+        template_args["shuffle"] = True
+        template_args["seed"] = args.seed
+
     split = proj(args.target, **template_args)
 
     if args.histogram:
