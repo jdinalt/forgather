@@ -128,6 +128,11 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._shuffle_buffer_size = None  # Example-level shuffle buffer size
         self._total_examples = None  # Cached length
 
+        # Epoch-based shuffle state (for multi-epoch training)
+        self._base_shuffle_seed = None  # Original seed from shuffle() call
+        self._epoch = 0  # Current epoch (default 0)
+        self._last_iter_epoch = None  # Track which epoch was used for last iteration
+
         # Virtual split boundaries (global example indices, before sharding)
         self._split_start_idx = None  # Inclusive
         self._split_end_idx = None  # Exclusive
@@ -219,7 +224,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         # Create new instance with shuffled files
         new_dataset = SimpleArrowIterableDataset(shuffled_files, shuffled_lengths)
         new_dataset._shard_config = self._shard_config
-        new_dataset._shuffle_seed = seed  # Always set seed for reproducibility
+        new_dataset._shuffle_seed = seed  # Current effective seed
+        new_dataset._base_shuffle_seed = seed  # Store base seed for epoch-based re-shuffling
+        new_dataset._epoch = 0  # Initialize epoch to 0
+        new_dataset._last_iter_epoch = 0  # Mark that files are already shuffled for epoch 0
         new_dataset._shuffle_buffer_size = buffer_size  # Store buffer size
         new_dataset._shuffled_files = shuffled_files
         new_dataset._shuffled_lengths = shuffled_lengths
@@ -239,6 +247,60 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._cached_exact_length = None
 
         return new_dataset
+
+    def set_epoch(self, epoch: int):
+        """
+        Set the epoch for the dataset.
+
+        When used with shuffle(), this changes the shuffling pattern for each epoch
+        while maintaining reproducibility. The effective seed becomes base_seed + epoch.
+
+        This should be called at the start of each training epoch:
+
+            for epoch in range(num_epochs):
+                train_dataset.set_epoch(epoch)
+                for batch in dataloader:
+                    # Training code
+                    pass
+
+        Args:
+            epoch: The current epoch number (0-indexed)
+
+        Note:
+            This method must be called BEFORE iteration starts for the epoch.
+            The dataset will re-shuffle with a new seed derived from the base seed.
+            If shuffle() was never called, this method is a no-op.
+        """
+        self._epoch = epoch
+
+    def _reshuffle_files_with_seed(self, seed: int):
+        """
+        Re-shuffle the Arrow file list with a new seed.
+
+        This updates _shuffled_files and _shuffled_lengths in-place.
+        Used by set_epoch() to change shuffle pattern between epochs.
+
+        Args:
+            seed: Random seed for shuffling
+        """
+        import random
+
+        if self.file_lengths:
+            # Shuffle files and lengths together
+            paired = list(zip(self.arrow_files, self.file_lengths))
+            rng = random.Random(seed)
+            rng.shuffle(paired)
+            shuffled_files, shuffled_lengths = zip(*paired)
+            self._shuffled_files = list(shuffled_files)
+            self._shuffled_lengths = list(shuffled_lengths)
+        else:
+            self._shuffled_files = self.arrow_files.copy()
+            rng = random.Random(seed)
+            rng.shuffle(self._shuffled_files)
+            self._shuffled_lengths = None
+
+        # Update current working seed
+        self._shuffle_seed = seed
 
     def select(self, indices):
         """
@@ -394,6 +456,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._shuffled_files = self._shuffled_files
         new_dataset._shuffled_lengths = self._shuffled_lengths
         new_dataset._shuffle_seed = self._shuffle_seed
+        new_dataset._base_shuffle_seed = self._base_shuffle_seed  # Propagate base seed
+        new_dataset._epoch = self._epoch  # Propagate current epoch
+        new_dataset._last_iter_epoch = None  # Reset for new dataset instance
         new_dataset._shuffle_buffer_size = self._shuffle_buffer_size
         new_dataset._shard_config = self._shard_config
         new_dataset._split_start_idx = start_idx
@@ -445,6 +510,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._shuffled_files = self._shuffled_files
         new_dataset._shuffled_lengths = self._shuffled_lengths
         new_dataset._shuffle_seed = self._shuffle_seed
+        new_dataset._base_shuffle_seed = self._base_shuffle_seed  # Propagate base seed
+        new_dataset._epoch = self._epoch  # Propagate current epoch
+        new_dataset._last_iter_epoch = None  # Reset for new dataset instance
         new_dataset._shuffle_buffer_size = self._shuffle_buffer_size
         new_dataset._split_start_idx = self._split_start_idx
         new_dataset._split_end_idx = self._split_end_idx
@@ -563,6 +631,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._shuffled_lengths = self._shuffled_lengths
         new_dataset._shard_config = self._shard_config
         new_dataset._shuffle_seed = self._shuffle_seed
+        new_dataset._base_shuffle_seed = self._base_shuffle_seed  # Propagate base seed
+        new_dataset._epoch = self._epoch  # Propagate current epoch
+        new_dataset._last_iter_epoch = None  # Reset for new dataset instance
         new_dataset._shuffle_buffer_size = self._shuffle_buffer_size
         new_dataset._split_start_idx = self._split_start_idx
         new_dataset._split_end_idx = self._split_end_idx
@@ -908,6 +979,16 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         Yields:
             Examples from the dataset
         """
+        # Re-shuffle files if epoch changed and we have a base shuffle seed
+        if self._base_shuffle_seed is not None:
+            # Compute effective seed for this epoch
+            effective_seed = self._base_shuffle_seed + self._epoch
+
+            # Re-shuffle if this is a new epoch
+            if self._last_iter_epoch != self._epoch:
+                self._reshuffle_files_with_seed(effective_seed)
+                self._last_iter_epoch = self._epoch
+
         # Reset counts if configured or if stats were invalidated
         if self._reset_length_on_iter or self._length_invalidated:
             # Keep ratio estimate as starting point if invalidated
@@ -1197,11 +1278,17 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         # Apply shuffle buffer if configured
         if self._shuffle_buffer_size is not None and self._shuffle_buffer_size > 0:
+            # Compute effective seed for shuffle buffer (accounts for epoch)
+            if self._base_shuffle_seed is not None:
+                effective_seed = self._base_shuffle_seed + self._epoch
+            else:
+                effective_seed = self._shuffle_seed or 0
+
             # Wrap base iterator with shuffle buffer
             yield from self._apply_shuffle_buffer(
                 self._base_iter(),
                 self._shuffle_buffer_size,
-                self._shuffle_seed or 0  # Use shuffle seed, or 0 if not set
+                effective_seed  # Use effective seed (base_seed + epoch)
             )
         else:
             # No shuffle buffer, use base iterator directly
@@ -1398,7 +1485,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         return {
             "current_file_index": self._current_file_index,
             "current_example_index": self._current_example_index,
-            "shuffle_seed": self._shuffle_seed,
+            "shuffle_seed": self._shuffle_seed,  # Current effective seed
+            "base_shuffle_seed": self._base_shuffle_seed,  # Base seed for epoch-based shuffling
+            "epoch": self._epoch,  # Current epoch
             "shuffle_buffer_size": self._shuffle_buffer_size,
             "shard_config": self._shard_config,
             # Instead of storing thousands of file paths, store a checksum
@@ -1438,6 +1527,8 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._current_file_index = state_dict["current_file_index"]
         self._current_example_index = state_dict["current_example_index"]
         self._shuffle_seed = state_dict.get("shuffle_seed")
+        self._base_shuffle_seed = state_dict.get("base_shuffle_seed")  # Restore base seed
+        self._epoch = state_dict.get("epoch", 0)  # Default to 0 for old checkpoints
         self._shuffle_buffer_size = state_dict.get("shuffle_buffer_size")
         self._shard_config = state_dict.get("shard_config")
 
@@ -1493,6 +1584,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._output_count = state_dict.get("output_count", 0)
         self._cached_exact_length = state_dict.get("cached_exact_length")
         self._length_invalidated = state_dict.get("length_invalidated", False)
+
+        # Set last_iter_epoch to match restored epoch so we don't re-shuffle
+        # The files were already shuffled correctly when we reconstructed them above
+        self._last_iter_epoch = self._epoch
 
     def get_length_stats(self) -> Dict[str, Any]:
         """

@@ -231,7 +231,9 @@ def test_shuffle_buffer_checkpoint():
 
     # Verify checkpoint contains buffer_size
     # (state is in the nested dataset state)
-    assert "dataset" in checkpoint or "_snapshot" in checkpoint
+    assert "dataset_state" in checkpoint or "_snapshot" in checkpoint
+    dataset_state = checkpoint.get("dataset_state", checkpoint.get("_snapshot", {}))
+    assert dataset_state.get("shuffle_buffer_size") == 10, "Checkpoint should preserve buffer size"
 
     # Create fresh dataloader and restore
     ids_restored = fast_load_iterable_dataset(
@@ -2196,3 +2198,282 @@ def test_slice_then_shard_no_overlap():
     assert (
         val_shard1._split_end_idx == total_examples
     ), f"Val shard 1 should preserve split_end_idx={total_examples}, got {val_shard1._split_end_idx}"
+
+
+# ============================================================================
+# set_epoch() Tests
+# ============================================================================
+
+
+def test_set_epoch_basic():
+    """
+    Test that set_epoch() changes the shuffle pattern.
+
+    Verifies that:
+    1. Different epochs produce different shuffle orders
+    2. Same epoch produces same order (reproducibility)
+    """
+    # Load small dataset
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=42, buffer_size=10)
+
+    # Collect first 5 examples from epoch 0
+    ds_shuffled.set_epoch(0)
+    epoch0_examples = [ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 5]
+
+    # Collect first 5 examples from epoch 1
+    ds_shuffled.set_epoch(1)
+    epoch1_examples = [ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 5]
+
+    # Should be different
+    assert epoch0_examples != epoch1_examples, "Different epochs should produce different shuffle orders"
+
+    # Collect first 5 examples from epoch 0 again
+    ds_shuffled.set_epoch(0)
+    epoch0_again = [ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 5]
+
+    # Should match original epoch 0
+    assert epoch0_examples == epoch0_again, "Same epoch should produce same shuffle order (reproducibility)"
+
+
+def test_set_epoch_reproducibility():
+    """
+    Test that set_epoch() provides reproducible shuffles across dataset instances.
+
+    Verifies that two datasets with same base seed and epoch produce identical order.
+    """
+    # Create two independent dataset instances
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds1_shuffled = ds1.shuffle(seed=42, buffer_size=10)
+
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds2_shuffled = ds2.shuffle(seed=42, buffer_size=10)
+
+    # Set both to epoch 2
+    ds1_shuffled.set_epoch(2)
+    ds2_shuffled.set_epoch(2)
+
+    # Collect examples from both
+    ds1_examples = [ex["text"][:30] for i, ex in enumerate(ds1_shuffled) if i < 10]
+    ds2_examples = [ex["text"][:30] for i, ex in enumerate(ds2_shuffled) if i < 10]
+
+    # Should be identical
+    assert ds1_examples == ds2_examples, "Same base seed + epoch should produce identical order"
+
+
+def test_set_epoch_without_shuffle():
+    """
+    Test that set_epoch() is a no-op when shuffle() was never called.
+
+    Verifies that calling set_epoch() on non-shuffled dataset doesn't break anything.
+    """
+    # Load dataset without shuffling
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:50]"
+    )
+
+    # Set epoch (should be no-op)
+    ds.set_epoch(1)
+
+    # Collect examples from epoch 1
+    epoch1_examples = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+
+    # Set different epoch
+    ds.set_epoch(5)
+
+    # Collect examples from epoch 5
+    epoch5_examples = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+
+    # Should be identical (no shuffling applied)
+    assert epoch1_examples == epoch5_examples, "set_epoch() on non-shuffled dataset should have no effect"
+
+
+def test_set_epoch_checkpoint():
+    """
+    Test that epoch is preserved in checkpoint.
+
+    Verifies that:
+    1. Current epoch is saved in state_dict()
+    2. Epoch is restored in load_state_dict()
+    3. Restored dataset continues with correct epoch after restoration
+    """
+    # Create dataset and set to epoch 3
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=42, buffer_size=10)
+    ds_shuffled.set_epoch(3)
+
+    # Save state before iteration
+    state_before_iter = ds_shuffled.state_dict()
+
+    # Verify epoch is in state dict
+    assert state_before_iter["epoch"] == 3, "Epoch should be saved in state_dict"
+    assert state_before_iter["base_shuffle_seed"] == 42, "Base seed should be saved in state_dict"
+
+    # Create new dataset and restore
+    ds_new = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_new_shuffled = ds_new.shuffle(seed=42, buffer_size=10)
+    ds_new_shuffled.load_state_dict(state_before_iter)
+
+    # Verify epoch was restored
+    assert ds_new_shuffled._epoch == 3, "Epoch should be restored from checkpoint"
+    assert ds_new_shuffled._base_shuffle_seed == 42, "Base seed should be restored from checkpoint"
+
+    # Collect first 5 examples from both datasets
+    original_examples = [ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 5]
+    restored_examples = [ex["text"][:30] for i, ex in enumerate(ds_new_shuffled) if i < 5]
+
+    # Both should produce the same order (epoch 3 with same seed)
+    assert original_examples == restored_examples, "Restored dataset should use same epoch 3 shuffle pattern"
+
+    # Verify that changing epoch produces different results
+    ds_new_shuffled.set_epoch(5)
+    epoch5_examples = [ex["text"][:30] for i, ex in enumerate(ds_new_shuffled) if i < 5]
+    assert epoch5_examples != restored_examples, "Different epoch should produce different order"
+
+
+def test_set_epoch_multi_epoch():
+    """
+    Test that different epochs produce consistently different patterns.
+
+    Verifies that epochs 0, 1, 2 all produce distinct shuffle orders.
+    """
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=42, buffer_size=10)
+
+    # Collect examples from 3 different epochs
+    epochs_data = {}
+    for epoch in [0, 1, 2]:
+        ds_shuffled.set_epoch(epoch)
+        epochs_data[epoch] = [ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 10]
+
+    # All epochs should be different from each other
+    assert epochs_data[0] != epochs_data[1], "Epoch 0 and 1 should differ"
+    assert epochs_data[0] != epochs_data[2], "Epoch 0 and 2 should differ"
+    assert epochs_data[1] != epochs_data[2], "Epoch 1 and 2 should differ"
+
+
+def test_set_epoch_propagation():
+    """
+    Test that epoch is propagated through slice(), shard(), and map().
+
+    Verifies that dataset transformations preserve epoch state.
+    """
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=42, buffer_size=10)
+    ds_shuffled.set_epoch(5)
+
+    # Test slice preserves epoch
+    ds_sliced = ds_shuffled.slice(0, 50)
+    assert ds_sliced._epoch == 5, "slice() should preserve epoch"
+    assert ds_sliced._base_shuffle_seed == 42, "slice() should preserve base_shuffle_seed"
+
+    # Test shard preserves epoch
+    ds_sharded = ds_shuffled.shard(num_shards=2, index=0)
+    assert ds_sharded._epoch == 5, "shard() should preserve epoch"
+    assert ds_sharded._base_shuffle_seed == 42, "shard() should preserve base_shuffle_seed"
+
+    # Test map preserves epoch
+    ds_mapped = ds_shuffled.map(lambda x: x)
+    assert ds_mapped._epoch == 5, "map() should preserve epoch"
+    assert ds_mapped._base_shuffle_seed == 42, "map() should preserve base_shuffle_seed"
+
+
+def test_set_epoch_backward_compatibility():
+    """
+    Test that loading old checkpoints (without epoch) works correctly.
+
+    Verifies that checkpoints without epoch field default to epoch=0.
+    """
+    # Create dataset
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=42, buffer_size=10)
+
+    # Create state dict and remove epoch (simulate old checkpoint)
+    state = ds_shuffled.state_dict()
+    del state["epoch"]
+    del state["base_shuffle_seed"]
+
+    # Create new dataset and restore
+    ds_new = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_new_shuffled = ds_new.shuffle(seed=42, buffer_size=10)
+    ds_new_shuffled.load_state_dict(state)
+
+    # Should default to epoch 0
+    assert ds_new_shuffled._epoch == 0, "Old checkpoint should default to epoch=0"
+    assert ds_new_shuffled._base_shuffle_seed is None, "Old checkpoint should have None for base_shuffle_seed"
+
+
+def test_set_epoch_effective_seed():
+    """
+    Test that effective seed is correctly computed and applied.
+
+    Verifies that:
+    1. Effective seed = base_seed + epoch
+    2. Files are re-shuffled when epoch changes
+    3. Buffer shuffle uses effective seed
+    """
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=100, buffer_size=10)
+
+    # Set epoch 5 (effective seed should be 100 + 5 = 105)
+    ds_shuffled.set_epoch(5)
+
+    # Trigger iteration to apply re-shuffle
+    first_ex = next(iter(ds_shuffled))
+
+    # Check that effective seed was applied
+    assert ds_shuffled._shuffle_seed == 105, "Effective seed should be base_seed + epoch"
+    assert ds_shuffled._base_shuffle_seed == 100, "Base seed should remain unchanged"
+    assert ds_shuffled._epoch == 5, "Epoch should be 5"
+
+
+def test_set_epoch_with_shard():
+    """
+    Test set_epoch() works correctly with sharded datasets.
+
+    Verifies that epoch changes produce different data in each shard.
+    """
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=42, buffer_size=10)
+
+    # Create two shards
+    shard0 = ds_shuffled.shard(num_shards=2, index=0)
+    shard1 = ds_shuffled.shard(num_shards=2, index=1)
+
+    # Epoch 0
+    shard0.set_epoch(0)
+    shard1.set_epoch(0)
+    shard0_epoch0 = [ex["text"][:20] for i, ex in enumerate(shard0) if i < 3]
+    shard1_epoch0 = [ex["text"][:20] for i, ex in enumerate(shard1) if i < 3]
+
+    # Epoch 1
+    shard0.set_epoch(1)
+    shard1.set_epoch(1)
+    shard0_epoch1 = [ex["text"][:20] for i, ex in enumerate(shard0) if i < 3]
+    shard1_epoch1 = [ex["text"][:20] for i, ex in enumerate(shard1) if i < 3]
+
+    # Each shard should change between epochs
+    assert shard0_epoch0 != shard0_epoch1, "Shard 0 should differ between epochs"
+    assert shard1_epoch0 != shard1_epoch1, "Shard 1 should differ between epochs"
