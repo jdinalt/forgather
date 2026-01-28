@@ -26,12 +26,16 @@ def test_stateful_checkpoint_restore(num_workers):
     1. A checkpoint can be saved after N batches
     2. A NEW dataloader can be created and restored from checkpoint
     3. The restored dataloader continues from the correct position
+
+    Note: Uses buffer_size=0 to disable shuffle buffer for exact reproducibility.
+    Shuffle buffer state is not saved in checkpoints, so exact continuation is only
+    possible without it. File-level shuffle is still active and tested.
     """
     # Load dataset
     ids = fast_load_iterable_dataset(
         "wikitext", name="wikitext-2-raw-v1", split="train"
     )
-    ids = ids.shuffle(seed=42)
+    ids = ids.shuffle(seed=42, buffer_size=0)
 
     # Create dataloader and iterate 5 batches
     dataloader = StatefulDataLoader(ids, batch_size=4, num_workers=num_workers)
@@ -48,7 +52,7 @@ def test_stateful_checkpoint_restore(num_workers):
     ids_fresh = fast_load_iterable_dataset(
         "wikitext", name="wikitext-2-raw-v1", split="train"
     )
-    ids_fresh = ids_fresh.shuffle(seed=42)
+    ids_fresh = ids_fresh.shuffle(seed=42, buffer_size=0)
     dataloader_fresh = StatefulDataLoader(
         ids_fresh, batch_size=4, num_workers=num_workers
     )
@@ -66,7 +70,7 @@ def test_stateful_checkpoint_restore(num_workers):
     ids_restored = fast_load_iterable_dataset(
         "wikitext", name="wikitext-2-raw-v1", split="train"
     )
-    ids_restored = ids_restored.shuffle(seed=42)
+    ids_restored = ids_restored.shuffle(seed=42, buffer_size=0)
     dataloader_restored = StatefulDataLoader(
         ids_restored, batch_size=4, num_workers=num_workers
     )
