@@ -18,6 +18,10 @@
         preprocess_args: !var "preprocess_args"
         tokenizer: *tokenizer
         pp_kwargs: *pp_kwargs
+        shard_dataset: !var [ "shard_dataset", False ]
+        select_range: !var [ "select_range", null ]
+        shuffle: !var [ "shuffle", False ]
+        seed: !var [ "seed", False ]
     project_dir: "{{ project_dir }}"
     config_template: "smollm-corpus/fineweb-edu-dedup.yaml"
     targets: [ "train_dataset", "eval_dataset", "test_dataset" ]

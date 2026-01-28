@@ -42,6 +42,10 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
         map_fn: *map_function
         fn_kwargs: !var "preprocess_args"
         map_kwargs: *map_kwargs
+        shard_dataset: !var [ "shard_dataset", False ]
+    select_range: !var [ "select_range", null ]
+    shuffle: !var [ "shuffle", False ]
+    seed: !var [ "seed", False ]
     dataset: *train_dataset_split
     
 [eval_dataset]
