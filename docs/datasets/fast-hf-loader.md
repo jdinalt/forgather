@@ -29,8 +29,11 @@ ids = fast_load_iterable_dataset(
     split="train"
 )
 
-# Shuffle at shard level (234 Arrow files)
-ids = ids.shuffle(seed=42)
+# Shuffle at both shard and example level
+ids = ids.shuffle(seed=42, buffer_size=1000)
+
+# Shard-level only (no example buffer)
+ids = ids.shuffle(seed=42, buffer_size=0)
 
 # Optional: Shard for DDP
 ids = ids.shard(num_shards=world_size, index=rank)
@@ -141,10 +144,11 @@ for step, batch in enumerate(dataloader, start=checkpoint['step']+1):
 - Subsequent loads are instant (<1 second)
 - No data copying - memory-maps HF cache
 
-✅ **Shard-Level Shuffling**
-- Shuffles Arrow file order for randomization
-- More efficient than example-level shuffling
-- 234 Arrow files = 234 natural shards
+✅ **Multi-Level Shuffling**
+- Shard-level: Shuffles Arrow file order (234 files = 234 shards)
+- Example-level: Shuffle buffer for fine-grained randomization
+- Configurable buffer size (default: 1000 examples)
+- Combines both levels for better randomization
 
 ✅ **Virtual Splits**
 - Create train/val/test splits without copying data
@@ -194,6 +198,37 @@ for step, batch in enumerate(dataloader, start=checkpoint['step']+1):
 2. `state_dict()` returns current position (~1 KB)
 3. `load_state_dict()` restores position
 4. Iterator skips directly to saved position (no iteration needed)
+
+### Shuffle Buffer
+
+The shuffle buffer implements reservoir sampling for fine-grained example shuffling:
+
+1. **Fill Phase**: Fills buffer with first `buffer_size` examples
+2. **Streaming Phase**: For each new example:
+   - Randomly selects a position in the buffer
+   - Yields the example at that position
+   - Replaces it with the new example
+3. **Flush Phase**: Shuffles and yields remaining buffer contents
+
+**Configuration:**
+```python
+# Default buffer size (1000 examples)
+ids = ids.shuffle(seed=42, buffer_size=1000)
+
+# Larger buffer for better randomization (uses more memory)
+ids = ids.shuffle(seed=42, buffer_size=10000)
+
+# Disable example-level shuffling (shard-level only)
+ids = ids.shuffle(seed=42, buffer_size=0)
+```
+
+**Memory Usage:**
+- Buffer size = 1000 → ~few MB (depends on example size)
+- Buffer size = 10000 → ~tens of MB
+- Larger buffers provide better randomization at cost of memory
+
+**Checkpoint Behavior:**
+When resuming from a checkpoint with shuffle buffer enabled, the shuffle pattern after resumption will differ from a non-interrupted run. However, randomness is maintained and the seed ensures reproducibility of the overall shuffle behavior.
 
 ### Worker Distribution
 
@@ -297,7 +332,9 @@ Main loading function.
 Iterable dataset with checkpointing support.
 
 **Methods:**
-- `.shuffle(seed=None)`: Shuffle Arrow file order
+- `.shuffle(seed=None, buffer_size=1000)`: Shuffle at shard and example level
+  - `seed`: Random seed for reproducibility
+  - `buffer_size`: Size of example shuffle buffer (0 to disable example-level shuffling)
 - `.select(indices)`: Select examples by indices (HuggingFace API compatible)
   - `indices`: Range, list, iterable, ndarray, or Series of integer indices
   - Supports only contiguous ranges (efficiently translates to `.slice()`)

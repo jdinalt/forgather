@@ -125,6 +125,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._current_file_index = 0
         self._current_example_index = 0
         self._shuffle_seed = None
+        self._shuffle_buffer_size = None  # Example-level shuffle buffer size
         self._total_examples = None  # Cached length
 
         # Virtual split boundaries (global example indices, before sharding)
@@ -170,21 +171,35 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
     def shuffle(self, seed: Optional[int] = None, buffer_size: int = 1000):
         """
-        Shuffle at the Arrow file level (shard-level shuffling).
+        Shuffle at both file and example level.
+
+        Implements two-level shuffling:
+        1. Shard-level: Shuffles Arrow file order
+        2. Example-level: Maintains a shuffle buffer during iteration
 
         Args:
             seed: Random seed for shuffling. If None, generates a random seed.
                   Storing the seed allows checkpoint/restore to reproduce the shuffle.
-            buffer_size: Unused (kept for API compatibility)
+            buffer_size: Size of shuffle buffer for example-level shuffling.
+                        Larger buffers provide better randomization but use more memory.
+                        Set to 0 or None to disable example-level shuffling (shard-level only).
 
         Returns:
-            New dataset instance with shuffled file order
+            New dataset instance with shuffling configured
+
+        Note:
+            With checkpoint resumption, the shuffle pattern after the checkpoint will
+            differ from a non-interrupted run, but randomness is still maintained.
         """
         import random
 
         # Generate seed if not provided, so shuffle can be reproduced from checkpoint
         if seed is None:
             seed = random.randint(0, 2**31 - 1)
+
+        # Normalize buffer_size
+        if buffer_size is None or buffer_size <= 0:
+            buffer_size = None  # Disable example-level shuffling
 
         # Shuffle Arrow file order (and lengths in parallel)
         if self.file_lengths:
@@ -205,6 +220,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset = SimpleArrowIterableDataset(shuffled_files, shuffled_lengths)
         new_dataset._shard_config = self._shard_config
         new_dataset._shuffle_seed = seed  # Always set seed for reproducibility
+        new_dataset._shuffle_buffer_size = buffer_size  # Store buffer size
         new_dataset._shuffled_files = shuffled_files
         new_dataset._shuffled_lengths = shuffled_lengths
         new_dataset._split_start_idx = self._split_start_idx
@@ -378,6 +394,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._shuffled_files = self._shuffled_files
         new_dataset._shuffled_lengths = self._shuffled_lengths
         new_dataset._shuffle_seed = self._shuffle_seed
+        new_dataset._shuffle_buffer_size = self._shuffle_buffer_size
         new_dataset._shard_config = self._shard_config
         new_dataset._split_start_idx = start_idx
         new_dataset._split_end_idx = end_idx
@@ -428,6 +445,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._shuffled_files = self._shuffled_files
         new_dataset._shuffled_lengths = self._shuffled_lengths
         new_dataset._shuffle_seed = self._shuffle_seed
+        new_dataset._shuffle_buffer_size = self._shuffle_buffer_size
         new_dataset._split_start_idx = self._split_start_idx
         new_dataset._split_end_idx = self._split_end_idx
 
@@ -545,6 +563,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         new_dataset._shuffled_lengths = self._shuffled_lengths
         new_dataset._shard_config = self._shard_config
         new_dataset._shuffle_seed = self._shuffle_seed
+        new_dataset._shuffle_buffer_size = self._shuffle_buffer_size
         new_dataset._split_start_idx = self._split_start_idx
         new_dataset._split_end_idx = self._split_end_idx
         new_dataset._shard_start_idx = self._shard_start_idx
@@ -826,21 +845,68 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         for result_example in result_examples:
             yield result_example
 
-    def __iter__(self):
+    def _apply_shuffle_buffer(self, iterator, buffer_size, seed):
         """
-        Iterate through Arrow files sequentially.
+        Apply shuffle buffer to an iterator of examples.
 
-        Supports:
-        - File-level and example-level sharding
-        - Multi-worker DataLoader (each worker gets a subset of files)
-        - Checkpoint resumption (skips to saved position)
+        This implements reservoir sampling-style shuffling:
+        1. Fill buffer with first buffer_size examples
+        2. For each new example, randomly replace an example in the buffer
+        3. Yield the replaced example
+        4. At the end, shuffle and yield remaining buffer contents
 
-        For StatefulDataLoader compatibility, each worker instance tracks
-        its own position independently.
+        Args:
+            iterator: Iterator yielding examples
+            buffer_size: Size of shuffle buffer
+            seed: Random seed for reproducibility
 
-        IMPORTANT: We check self._current_file_index and self._current_example_index
-        dynamically (not captured in local vars) so that if load_state_dict() is
-        called after __iter__ but before iteration starts, we use the restored values.
+        Yields:
+            Shuffled examples
+        """
+        import random
+
+        if buffer_size is None or buffer_size <= 0:
+            # No shuffling, just pass through
+            yield from iterator
+            return
+
+        # Initialize RNG with seed for reproducibility
+        rng = random.Random(seed)
+
+        # Fill initial buffer
+        buffer = []
+        for example in iterator:
+            buffer.append(example)
+            if len(buffer) >= buffer_size:
+                break
+
+        if not buffer:
+            # Empty iterator
+            return
+
+        # Main shuffling loop
+        for example in iterator:
+            # Randomly select an index to replace
+            idx = rng.randint(0, buffer_size - 1)
+            # Yield the example being replaced
+            yield buffer[idx]
+            # Replace it with the new example
+            buffer[idx] = example
+
+        # Shuffle remaining buffer and yield all
+        rng.shuffle(buffer)
+        for example in buffer:
+            yield example
+
+    def _base_iter(self):
+        """
+        Base iteration without shuffle buffer.
+
+        This is the core iteration logic that reads from Arrow files.
+        The shuffle buffer (if enabled) wraps this iterator.
+
+        Yields:
+            Examples from the dataset
         """
         # Reset counts if configured or if stats were invalidated
         if self._reset_length_on_iter or self._length_invalidated:
@@ -1106,6 +1172,41 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 self._cached_exact_length = self._output_count
             self._current_batch_buffer_size = 0  # Clear buffer tracking
 
+    def __iter__(self):
+        """
+        Iterate through Arrow files sequentially with optional shuffle buffer.
+
+        Supports:
+        - File-level and example-level sharding
+        - Multi-worker DataLoader (each worker gets a subset of files)
+        - Checkpoint resumption (skips to saved position)
+        - Example-level shuffle buffer (if configured via .shuffle(buffer_size=N))
+
+        For StatefulDataLoader compatibility, each worker instance tracks
+        its own position independently.
+
+        IMPORTANT: We check self._current_file_index and self._current_example_index
+        dynamically (not captured in local vars) so that if load_state_dict() is
+        called after __iter__ but before iteration starts, we use the restored values.
+
+        Note:
+            When shuffle buffer is enabled and checkpoint resumption occurs, the shuffle
+            pattern after resumption will differ from a non-interrupted run. However,
+            randomness is still maintained and the seed ensures reproducibility of the
+            overall shuffle behavior.
+        """
+        # Apply shuffle buffer if configured
+        if self._shuffle_buffer_size is not None and self._shuffle_buffer_size > 0:
+            # Wrap base iterator with shuffle buffer
+            yield from self._apply_shuffle_buffer(
+                self._base_iter(),
+                self._shuffle_buffer_size,
+                self._shuffle_seed or 0  # Use shuffle seed, or 0 if not set
+            )
+        else:
+            # No shuffle buffer, use base iterator directly
+            yield from self._base_iter()
+
     def __len__(self) -> int:
         """
         Get total number of examples in the dataset.
@@ -1298,6 +1399,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             "current_file_index": self._current_file_index,
             "current_example_index": self._current_example_index,
             "shuffle_seed": self._shuffle_seed,
+            "shuffle_buffer_size": self._shuffle_buffer_size,
             "shard_config": self._shard_config,
             # Instead of storing thousands of file paths, store a checksum
             "dataset_fingerprint": fingerprint,
@@ -1336,6 +1438,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._current_file_index = state_dict["current_file_index"]
         self._current_example_index = state_dict["current_example_index"]
         self._shuffle_seed = state_dict.get("shuffle_seed")
+        self._shuffle_buffer_size = state_dict.get("shuffle_buffer_size")
         self._shard_config = state_dict.get("shard_config")
 
         # Verify dataset fingerprint matches
