@@ -36,7 +36,7 @@
     [train_dataset]
 train_dataset: &train_dataset !singleton:forgather.ml.datasets:interleave_datasets
     <<: &interleave_args
-        # More accurately, these are weights. No need to sum to 1.
+        # Probabilities are proportional to remaining examples in each dataset.
         probabilities: !partial:forgather.ml.datasets:balance_remaining_examples
         seed: 42
         stopping_strategy: "all_exhausted"

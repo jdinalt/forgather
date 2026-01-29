@@ -18,31 +18,54 @@
     -- set ns.model_project_dir = abspath(joinpath(ns.forgather_dir, "examples/models/deepone/"))
     -- set ns.model_project_config = "117M.yaml"
 
+    -- set ns.per_device_train_batch_size = 4
+    -- set ns.base_learning_rate = 1.0e-4
+
+    -- set ns.world_size = (getenv("WORLD_SIZE", "1") | int)
+    -- set ns.effective_batch_size = ns.per_device_train_batch_size * ns.world_size
+
+    # Learning Rate, scaled by sqrt(ns.effective_batch_size)
+    -- set ns.scaled_lr = ns.base_learning_rate * (ns.effective_batch_size ** 0.5)
+
 [datasets_preprocessor_args]
-.define: &datasets_preprocessor_args !dict
+.define: &tokenizer_args !dict
     truncation: True
     max_length: 4096
 
 [datasets_definition]
+   [dataset_project_pp_args]
+.define: &dataset_project_pp_args !dict
+
+    [dataset_project]
 .define: &dataset_dict !call:forgather:from_project
     project_dir: "{{ ns.dataset_proj }}"
     config_template: "{{ ns.dataset_config }}"
-    targets: [  "train_dataset", "eval_dataset" ]
-    preprocess_args: *datasets_preprocessor_args
+    targets: [ "train_dataset", "eval_dataset" ]
+    # These are passed to the project preprocessor
+    pp_kwargs: *dataset_project_pp_args
+    # These are injected as variables as runtime
+    preprocess_args: *tokenizer_args
     tokenizer: *tokenizer
+    shard_dataset: True
 
+    [dataset_splits]
 train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
 eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 
 [construct_new_model]
+    [model_project_pp_args]
+.define: &model_project_pp_args
+    output_dir: "{{ ns.output_dir }}"
+
+    [model_project]
 .define: &model_dict !call:forgather:from_project
-    project_dir: "{{ model_project | default(ns.model_project_dir) }}"
-    config_template: "{{ model_config | default(ns.model_project_config) }}"
+    project_dir: "{{ ns.model_project_dir }}"
+    config_template: "{{ ns.model_project_config }}"
     targets: [ "pretrained_tokenizer", "model" ] 
-    pp_kwargs:
-        output_dir: "{{ ns.output_dir }}"
+    pp_kwargs: *model_project_pp_args
     model_constructor_args: *model_constructor_args
 
+    [model_assets]
 tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
 model: &model !call:getitem [ *model_dict, 'model' ]
 
@@ -54,7 +77,8 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW
-    lr: 2.0e-4
+    # Scale LR by sqrt(WORLD_SIZE)
+    lr: {{ ns.scaled_lr | toyaml }}
 
 [lr_scheduler]
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
@@ -87,7 +111,11 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
         help: "Don't restore dataset state from checkpoint"
 
 #-------------------- project.trainer_config --------------------
--- extends 'trainers/trainer.yaml'
+-- extends 'trainers/ddp_trainer.yaml'
+
+[trainer_meta_config]
+    == super()
+    -- set ns.nproc_per_node = "gpu"
 
 [trainer_args]
     == super()
@@ -96,29 +124,28 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 
     eval_strategy: "steps"
     max_eval_steps: -1
-    eval_steps: 50
+    eval_steps: {{ 400 // ns.effective_batch_size }}
     eval_delay: 0
 
     save_strategy: "{{ save_strategy | default('steps') }}"
     save_safetensors: False
     save_total_limit: 3
-    save_steps: 200
+    save_steps: {{ 800 // ns.effective_batch_size }}
 
-    logging_steps: 10
+    logging_steps: {{ 50 // ns.effective_batch_size }}
 
-    # epoch_train_steps: 100000
     num_train_epochs: 1
 
     resume_from_checkpoint: {{ not (init_model | default(False)) }}
     # Useful when changing datasets
     restore_dataset_state: {{ not (no_restore_dataset_state | default(False)) }}
 
-    per_device_train_batch_size: 4
-    per_device_eval_batch_size: 4
+    per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
+    per_device_eval_batch_size: {{ ns.per_device_train_batch_size * 2 }}
 
     dataloader_num_workers: 1
     dataloader_drop_last: True
-    dataloader_persistent_workers: True
+    dataloader_persistent_workers: False
     dataloader_prefetch_factor: 32
 
     float32_matmul_precision: "high"
@@ -127,12 +154,15 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     torch_compile: True
     torch_compile_dynamic: True
 
-    gradient_accumulation_steps: 2
+    gradient_accumulation_steps: 1
     max_grad_norm: 5.0
+
+    # We are sharding the dataset. No need to dispatch batches.
+    dispatch_batches: False
 
 [trainer_constructor]
     == super()
-    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
+    #fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
 
 #-------------------- project.logger_config --------------------
 -- extends 'callbacks/loggers.yaml'

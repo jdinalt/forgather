@@ -1189,23 +1189,66 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
             # Memory-map Arrow file
             ds = Dataset.from_file(arrow_file)
+            file_len = len(ds)
 
-            for example_idx, example in enumerate(ds):
-                # Skip examples before checkpoint (only for resume file)
-                # Check dynamically so load_state_dict() updates are seen
-                if (
-                    file_idx == self._current_file_index
-                    and example_idx < self._current_example_index
-                ):
-                    if use_virtual_split or use_example_sharding:
-                        global_example_idx += 1
+            # Compute the range of examples we need from this file (for efficient random access)
+            # This eliminates sequential seeking - we use .select() to jump directly to the range
+            file_start_idx = 0  # Start of range to read from this file
+            file_end_idx = file_len  # End of range (exclusive)
+
+            # 1. Handle checkpoint resumption (skip examples before checkpoint position)
+            if file_idx == self._current_file_index:
+                # This is the file where we need to resume
+                file_start_idx = max(file_start_idx, self._current_example_index)
+
+            # 2. Handle virtual split and example-level sharding
+            # These define windows in global example space that we need to intersect with this file
+            if use_virtual_split or use_example_sharding:
+                # Examples in this file span [global_example_idx, global_example_idx + file_len)
+                file_global_start = global_example_idx
+                file_global_end = global_example_idx + file_len
+
+                # Compute the global range we want
+                desired_global_start = split_start
+                desired_global_end = split_end
+
+                # If using example-level sharding, further restrict the range
+                if use_example_sharding:
+                    # Shard boundaries are relative to split_start
+                    shard_global_start = split_start + self._shard_start_idx
+                    shard_global_end = split_start + self._shard_end_idx
+                    desired_global_start = max(desired_global_start, shard_global_start)
+                    desired_global_end = min(desired_global_end, shard_global_end)
+
+                # Check if file intersects with desired range
+                if file_global_end <= desired_global_start or file_global_start >= desired_global_end:
+                    # File is completely outside desired range - skip it entirely
+                    global_example_idx += file_len
                     continue
 
-                # Check virtual split boundaries first
+                # Compute intersection with desired range
+                intersect_start = max(file_global_start, desired_global_start)
+                intersect_end = min(file_global_end, desired_global_end)
+
+                # Convert to file-local indices
+                file_start_idx = max(file_start_idx, intersect_start - file_global_start)
+                file_end_idx = min(file_end_idx, intersect_end - file_global_start)
+
+            # Now use .select() to efficiently extract just the range we need
+            # This is fast - Arrow supports random access, no sequential iteration needed
+            if file_start_idx > 0 or file_end_idx < file_len:
+                if file_start_idx >= file_end_idx:
+                    # Empty range - skip this file
+                    if use_virtual_split or use_example_sharding:
+                        global_example_idx += file_len
+                    continue
+                ds = ds.select(range(file_start_idx, file_end_idx))
+
+            # Now iterate over the efficiently-selected subset
+            # Note: enumerate starts from file_start_idx to maintain correct checkpoint indices
+            for local_idx, example in enumerate(ds, start=file_start_idx):
+                # Check virtual split end (already filtered by .select(), but need to handle early exit)
                 if use_virtual_split:
-                    if global_example_idx < split_start:
-                        global_example_idx += 1
-                        continue
                     if global_example_idx >= split_end:
                         # Reached end of split - flush any pending batch before stopping
                         if (
@@ -1232,9 +1275,8 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                     # Compute position relative to split start
                     relative_idx = global_example_idx - split_start
 
-                    if relative_idx < self._shard_start_idx:
-                        global_example_idx += 1
-                        continue
+                    # Note: Shard filtering should have been applied during .select()
+                    # This is a safety check for edge cases
                     if relative_idx >= self._shard_end_idx:
                         # Reached end of shard - flush any pending batch before stopping
                         if (
@@ -1264,7 +1306,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
                 # Update position for checkpointing (for next checkpoint)
                 self._current_file_index = file_idx
-                self._current_example_index = example_idx + 1  # Next example to process
+                self._current_example_index = local_idx + 1  # Next example to process
 
                 # Apply map function if configured
                 if self._map_function is not None:
