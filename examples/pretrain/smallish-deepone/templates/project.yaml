@@ -46,7 +46,7 @@
     # These are injected as variables as runtime
     preprocess_args: *tokenizer_args
     tokenizer: *tokenizer
-    shard_dataset: True
+    #shard_dataset: True
 
     [dataset_splits]
 train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
@@ -124,15 +124,15 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 
     eval_strategy: "steps"
     max_eval_steps: -1
-    eval_steps: {{ 400 // ns.effective_batch_size }}
+    eval_steps: {{ 400 // ns.per_device_train_batch_size }}
     eval_delay: 0
 
     save_strategy: "{{ save_strategy | default('steps') }}"
     save_safetensors: False
     save_total_limit: 3
-    save_steps: {{ 800 // ns.effective_batch_size }}
+    save_steps: {{ 800 // ns.per_device_train_batch_size }}
 
-    logging_steps: {{ 50 // ns.effective_batch_size }}
+    logging_steps: {{ 50 // ns.per_device_train_batch_size }}
 
     num_train_epochs: 1
 
@@ -158,7 +158,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     max_grad_norm: 5.0
 
     # We are sharding the dataset. No need to dispatch batches.
-    dispatch_batches: False
+    #dispatch_batches: False
 
 [trainer_constructor]
     == super()

@@ -2204,6 +2204,112 @@ def test_slice_then_shard_no_overlap():
     ), f"Val shard 1 should preserve split_end_idx={total_examples}, got {val_shard1._split_end_idx}"
 
 
+def test_slice_composition():
+    """
+    Test that slicing a sliced dataset composes correctly.
+
+    Regression test for bug where slice() computed indices relative to the
+    original dataset instead of the current slice, causing composed slices
+    to overwrite rather than compose.
+
+    Example bug scenario:
+    - ds.slice(10000, None) -> creates split [10000, 36718)
+    - ds_sliced.slice(100, None) -> BUG: overwrote to [100, 36718)
+    - Expected: should compose to [10100, 36718)
+    """
+    # Load dataset
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    total = len(ids)
+
+    # Test case 1: Absolute index composition
+    # First slice: skip first 10,000 examples
+    ds_sliced1 = ids.slice(10000, None)
+    assert ds_sliced1._split_start_idx == 10000
+    assert ds_sliced1._split_end_idx == total
+    assert len(ds_sliced1) == total - 10000
+
+    # Second slice: skip another 100 examples from the sliced dataset
+    ds_sliced2 = ds_sliced1.slice(100, None)
+    # Should compose to [10000 + 100, total) = [10100, total)
+    assert ds_sliced2._split_start_idx == 10100, (
+        f"Composed slice should start at 10100, got {ds_sliced2._split_start_idx}"
+    )
+    assert ds_sliced2._split_end_idx == total
+    assert len(ds_sliced2) == total - 10100
+
+    # Verify it matches a direct slice
+    ds_direct = ids.slice(10100, None)
+    assert ds_sliced2._split_start_idx == ds_direct._split_start_idx
+    assert ds_sliced2._split_end_idx == ds_direct._split_end_idx
+    assert len(ds_sliced2) == len(ds_direct)
+
+    # Verify first examples match
+    first_sliced2 = next(iter(ds_sliced2))
+    first_direct = next(iter(ds_direct))
+    assert first_sliced2["text"] == first_direct["text"]
+
+    # Test case 2: Percentage composition
+    # Take first 50%
+    ds_half = ids.slice(None, 0.5)
+    assert ds_half._split_start_idx == 0
+    assert ds_half._split_end_idx == int(total * 0.5)
+    expected_half_len = int(total * 0.5)
+    assert len(ds_half) == expected_half_len
+
+    # Take last 50% of the first half (should give 25%-50% of original)
+    ds_quarter = ds_half.slice(0.5, None)
+    # Should compose to [0 + 0.5 * half_len, half_len) = [0.25 * total, 0.5 * total)
+    expected_quarter_start = int(total * 0.25)
+    expected_quarter_end = int(total * 0.5)
+    assert ds_quarter._split_start_idx == expected_quarter_start, (
+        f"Composed percentage slice should start at {expected_quarter_start}, "
+        f"got {ds_quarter._split_start_idx}"
+    )
+    assert ds_quarter._split_end_idx == expected_quarter_end
+    expected_quarter_len = expected_quarter_end - expected_quarter_start
+    assert len(ds_quarter) == expected_quarter_len
+
+    # Verify it matches a direct slice
+    ds_direct_quarter = ids.slice(0.25, 0.5)
+    assert ds_quarter._split_start_idx == ds_direct_quarter._split_start_idx
+    assert ds_quarter._split_end_idx == ds_direct_quarter._split_end_idx
+    assert len(ds_quarter) == len(ds_direct_quarter)
+
+    # Test case 3: Multiple compositions
+    # Chain three slices together
+    ds_chain = ids.slice(5000, None).slice(1000, None).slice(500, None)
+    # Should compose to [5000 + 1000 + 500, total) = [6500, total)
+    assert ds_chain._split_start_idx == 6500
+    assert ds_chain._split_end_idx == total
+    assert len(ds_chain) == total - 6500
+
+    # Verify it matches a direct slice
+    ds_direct_chain = ids.slice(6500, None)
+    assert ds_chain._split_start_idx == ds_direct_chain._split_start_idx
+    assert len(ds_chain) == len(ds_direct_chain)
+
+    # Test case 4: Bounded slices (both start and end)
+    # Take middle 50% of dataset
+    middle_start = int(total * 0.25)
+    middle_end = int(total * 0.75)
+    ds_middle = ids.slice(0.25, 0.75)
+    assert ds_middle._split_start_idx == middle_start
+    assert ds_middle._split_end_idx == middle_end
+    middle_len = middle_end - middle_start
+    assert len(ds_middle) == middle_len
+
+    # Take first 10% of the middle 50%
+    # Should give [0.25 * total + 0.1 * middle_len, 0.75 * total)
+    ds_middle_slice = ds_middle.slice(None, 0.1)
+    expected_start = middle_start
+    expected_end = middle_start + int(middle_len * 0.1)
+    assert ds_middle_slice._split_start_idx == expected_start
+    assert ds_middle_slice._split_end_idx == expected_end
+
+
 # ============================================================================
 # set_epoch() Tests
 # ============================================================================

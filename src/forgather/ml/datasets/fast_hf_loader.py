@@ -562,41 +562,55 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 return idx
             raise ValueError(f"Invalid index type: {type(idx)}")
 
-        # Get total examples (before any splitting)
-        # We need the base total, not the current split total
-        if self._split_start_idx is not None or self._split_end_idx is not None:
-            # Already has a split, get the original total
-            # This is tricky - we need to temporarily clear the split
-            temp_dataset = SimpleArrowIterableDataset(
-                self.arrow_files, self.file_lengths
-            )
-            temp_dataset._shuffled_files = self._shuffled_files
-            temp_dataset._shuffled_lengths = self._shuffled_lengths
-            total_examples = len(temp_dataset)
-        else:
-            total_examples = len(self)
+        # Get current slice boundaries (these are absolute indices in original dataset)
+        current_start = self._split_start_idx if self._split_start_idx is not None else 0
+        current_end = self._split_end_idx
 
-        # Parse indices
-        start_idx = parse_index(start, total_examples) if start is not None else 0
-        end_idx = (
-            parse_index(end, total_examples) if end is not None else total_examples
+        if current_end is None:
+            # Need to compute total length of original dataset
+            if self.file_lengths:
+                current_end = sum(self.file_lengths)
+            else:
+                # Must iterate to compute - create temp dataset without split
+                temp_dataset = SimpleArrowIterableDataset(
+                    self.arrow_files, self.file_lengths
+                )
+                temp_dataset._shuffled_files = self._shuffled_files
+                temp_dataset._shuffled_lengths = self._shuffled_lengths
+                current_end = len(temp_dataset)
+
+        # Current slice has (current_end - current_start) examples
+        current_length = current_end - current_start
+
+        # Parse indices RELATIVE to current slice
+        relative_start = parse_index(start, current_length) if start is not None else 0
+        relative_end = (
+            parse_index(end, current_length) if end is not None else current_length
         )
 
-        # Validate
-        if start_idx < 0 or start_idx > total_examples:
+        # Validate relative indices
+        if relative_start < 0 or relative_start > current_length:
             raise ValueError(
-                f"Start index {start_idx} out of range [0, {total_examples}]"
+                f"Start index {relative_start} out of range [0, {current_length}]"
             )
-        if end_idx < 0 or end_idx > total_examples:
-            raise ValueError(f"End index {end_idx} out of range [0, {total_examples}]")
-        if start_idx >= end_idx:
-            raise ValueError(f"Start index {start_idx} must be < end index {end_idx}")
+        if relative_end < 0 or relative_end > current_length:
+            raise ValueError(
+                f"End index {relative_end} out of range [0, {current_length}]"
+            )
+        if relative_start >= relative_end:
+            raise ValueError(
+                f"Start index {relative_start} must be < end index {relative_end}"
+            )
 
-        # Create copy with updated split boundaries
+        # Convert to ABSOLUTE indices in original dataset space
+        absolute_start = current_start + relative_start
+        absolute_end = current_start + relative_end
+
+        # Create copy with updated split boundaries (using absolute indices)
         # Note: Don't copy old shard boundaries - sharding should happen on the sliced dataset
         return self._copy(
-            split_start_idx=start_idx,
-            split_end_idx=end_idx,
+            split_start_idx=absolute_start,
+            split_end_idx=absolute_end,
             last_iter_epoch=None,  # Reset for new dataset instance
             # Don't copy counts - this is a different slice
             original_length=None,

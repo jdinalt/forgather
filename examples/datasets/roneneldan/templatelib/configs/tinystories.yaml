@@ -34,7 +34,7 @@ train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_datase
         fn_kwargs: !var [ "preprocess_args", {} ]
     select_range: !var [ "select_range", null ]
     shuffle: !var [ "shuffle", False ]
-    seed: !var [ "seed", False ]
+    seed: !var [ "seed", 42 ]
     dataset: *train_dataset_split
     desc: "Tokenizing train"
    
