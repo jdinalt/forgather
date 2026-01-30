@@ -1197,13 +1197,31 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             if file_idx < self._current_file_index:
                 # Skip entire file, but track global position
                 if use_virtual_split or use_example_sharding:
-                    ds = Dataset.from_file(arrow_file)
-                    global_example_idx += len(ds)
+                    # Use cached file lengths instead of loading file (FAST!)
+                    if self._shuffled_lengths:
+                        file_len = self._shuffled_lengths[file_idx]
+                    elif self.file_lengths:
+                        file_len = self.file_lengths[file_idx]
+                    else:
+                        # Fallback: must load file to get length (rare case)
+                        ds = Dataset.from_file(arrow_file)
+                        file_len = len(ds)
+                    global_example_idx += file_len
                 continue
 
-            # Memory-map Arrow file
-            ds = Dataset.from_file(arrow_file)
-            file_len = len(ds)
+            # Get file length (use cached if available for fast range checking)
+            file_len_cached = False
+            if self._shuffled_lengths:
+                file_len = self._shuffled_lengths[file_idx]
+                file_len_cached = True
+            elif self.file_lengths:
+                file_len = self.file_lengths[file_idx]
+                file_len_cached = True
+            else:
+                # No cached length - must load file to get it
+                ds = Dataset.from_file(arrow_file)
+                file_len = len(ds)
+                file_len_cached = False
 
             # Compute the range of examples we need from this file (for efficient random access)
             # This eliminates sequential seeking - we use .select() to jump directly to the range
@@ -1247,6 +1265,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 # Convert to file-local indices
                 file_start_idx = max(file_start_idx, intersect_start - file_global_start)
                 file_end_idx = min(file_end_idx, intersect_end - file_global_start)
+
+            # Now load the Arrow file if we haven't already (deferred until after range check)
+            if file_len_cached:
+                ds = Dataset.from_file(arrow_file)
 
             # Now use .select() to efficiently extract just the range we need
             # This is fast - Arrow supports random access, no sequential iteration needed

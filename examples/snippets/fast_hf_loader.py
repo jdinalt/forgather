@@ -25,13 +25,16 @@ def main(args: Args):
         tokenizer=tokenizer,
         map_fn=partial(default_tokenize_map_fn, add_eos=True),
         map_kwargs=dict(batch_size=32),
-        shard_dataset=dict(num_shards=2, index=1),
-        select_range=":10%",
+        shard_dataset=dict(num_shards=2, index=0),
+        #select_range=":10%",
         #shuffle=False,
     )
 
     print(fineweb)
 
+    # Load and print the first example
+    example = next(iter(fineweb))
+    print(tokenizer.decode(example["input_ids"]))
 
 def parse_args() -> Args:
     parser = argparse.ArgumentParser(
