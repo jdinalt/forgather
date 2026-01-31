@@ -1,8 +1,8 @@
-import datetime
 import getpass
 import os
 import re
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 import yaml
 from jinja2 import FileSystemLoader, StrictUndefined, Undefined
@@ -311,22 +311,22 @@ def toyaml(obj, default_value=Undefined):
     return yaml_str
 
 
+def utcnow():
+    return datetime.now(timezone.utc)
+
+
 class PPEnvironment(SandboxedEnvironment):
     TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
     FILE_TIME_FORMAT = "%Y-%m-%dT%H-%M-%S"
 
     default_globals = {
-        "isotime": lambda: datetime.datetime.now().isoformat(timespec="seconds"),
-        "utcisotime": lambda: datetime.datetime.utcnow().isoformat(timespec="seconds"),
+        "isotime": lambda: datetime.now().isoformat(timespec="seconds"),
+        "utcisotime": lambda: utcnow().isoformat(timespec="seconds"),
         # An ISO 8601-like time, suitable for use in file names
-        "filetime": lambda: datetime.datetime.now().strftime(
-            PPEnvironment.FILE_TIME_FORMAT
-        ),
-        "utcfiletime": lambda: datetime.datetime.utcnow().strftime(
-            PPEnvironment.FILE_TIME_FORMAT
-        ),
-        "now": datetime.datetime.now,
-        "utcnow": datetime.datetime.utcnow,
+        "filetime": lambda: datetime.now().strftime(PPEnvironment.FILE_TIME_FORMAT),
+        "utcfiletime": lambda: utcnow().strftime(PPEnvironment.FILE_TIME_FORMAT),
+        "now": datetime.now,
+        "utcnow": utcnow,
         "joinpath": _os_path_join,
         "normpath": _os_path_normpath,
         "abspath": os.path.abspath,
