@@ -1,0 +1,41 @@
+-- extends "configs/default.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Qwen3 124M"
+    -- set ns.config_description = "Qwen3 with 124M parameters"
+    -- set ns.model_name = "qwen3_124m"
+
+[model_definition]
+    -- include "config.119m.model"
+
+#------------- config.119m.model --------------
+-- extends "config.default.model"
+
+[model_tokenizer]
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "32k.yaml"
+
+[init_regex_list]
+    == super()
+    # Erase head init -- embeddings and head are tied
+    head: null
+
+[init_f_map]
+    == super()
+    # When using tied embeddings, we need to change the embedding init
+    init_embeddings: !partial:.init_weights:init_embeddings { scale_rsqrt_d_model: True }
+    # Alternative init
+    # init_embeddings: !partial:.init_weights:init_embeddings { std: 0.02 }
+    init_output_layer: null
+
+[model_config]
+    == super()
+    # **124M**
+    hidden_size: {{ hidden_size | toyaml(768) }}
+    intermediate_size: {{ intermediate_size | toyaml(2048) }}
+    num_attention_heads: {{ num_attention_heads | toyaml(8) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(16) }}
+    num_key_value_heads: {{ num_key_value_heads | toyaml(2) }}
+    tie_word_embeddings: True

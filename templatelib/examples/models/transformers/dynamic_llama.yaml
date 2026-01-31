@@ -96,26 +96,34 @@
     scale_sqrt_d_model: False
 
     [init_weights]
-# Init method based upon https://github.com/pytorch/torchtitan/blob/main/torchtitan/models/llama3/model/model.py
-.define: &init_weights !partial:.init_weights:init_weights_by_regex@init_weights
+        [init_regex_list]
+.define: &init_regex_list !dlist
     # Note: Yaml treats single and double quotes differently WRT escapes. Use single
     # quotes for regex expressions, wihc prevents Yaml from interpreting escapes.
     # For a literal ' use ''
-    regex_list:
-        - [ 'norm', "pass" ]
-        - [ 'bias', "zeros" ]
-        - [ 'embedding\.weight', "init_embeddings" ]
-        - [ 'up_proj|query_linear|key_linear|value_linear', "trunc_normal_magic" ]
-        - [ 'gate_proj|down_proj|output_linear', "trunc_normal" ]
-        - [ 'lm_head', "init_output_layer" ]
-    init_f_map:
-        pass: !partial:.init_weights:init_pass
-        zeros: !partial:torch.nn.init:zeros_
-        init_embeddings: !partial:.llama_init:init_embeddings
-        trunc_normal_magic: !partial:.llama_init:trunc_normal_magic
-        trunc_normal: !partial:.llama_init:trunc_normal
-            std: !call:.llama_init:llama_std [ !var "num_hidden_layers" ]
-        init_output_layer: !partial:.llama_init:init_output_layer { d_model: !var "hidden_size" }
+    norm: [ 'norm', "pass" ]
+    bias: [ 'bias', "zeros" ]
+    embddings: [ 'embedding\.weight', "init_embeddings" ]
+    up: [ 'up_proj|query_linear|key_linear|value_linear', "trunc_normal_magic" ]
+    down: [ 'gate_proj|down_proj|output_linear', "trunc_normal" ]
+    head: [ 'lm_head', "init_output_layer" ]
+
+        [init_f_map]
+.define: &init_f_map
+    pass: !partial:.init_weights:init_pass
+    zeros: !partial:torch.nn.init:zeros_
+    init_embeddings: !partial:.llama_init:init_embeddings
+    trunc_normal_magic: !partial:.llama_init:trunc_normal_magic
+    trunc_normal: !partial:.llama_init:trunc_normal
+        std: !call:.llama_init:llama_std [ !var "num_hidden_layers" ]
+    init_output_layer: !partial:.llama_init:init_output_layer { d_model: !var "hidden_size" }
+
+        [init_function]
+# Init method based upon https://github.com/pytorch/torchtitan/blob/main/torchtitan/models/llama3/model/model.py
+.define: &init_weights !partial:.init_weights:init_weights_by_regex@init_weights
+    regex_list: *init_regex_list
+    init_f_map: *init_f_map
+    
     # Print how each param is being initialized.
     debug: False
 
