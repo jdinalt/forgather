@@ -1,7 +1,8 @@
 import logging
+import os
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Dict, List, Optional, override
+from typing import Dict, Iterator, List, Optional, Tuple, override
 
 import torch
 from torch import Tensor
@@ -9,10 +10,12 @@ from torch import distributed as dist
 from torch.distributed.device_mesh import init_device_mesh
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from ..checkpoint_manager import RNGState
-from ..checkpoint_types import SharingPattern, StateComponent
-from ..dataloader_dispatcher import DataloaderDispatcher
-from ..trainer import Trainer, TrainingArguments
+from forgather.ml.trainer import DataloaderDispatcher
+from forgather.ml.trainer.checkpoint_manager import RNGState
+from forgather.ml.trainer.checkpoint_types import SharingPattern, StateComponent
+from forgather.ml.trainer.synchronized_dataloader import SynchronizedDataLoader
+from forgather.ml.trainer.trainer import Trainer, TrainingArguments
+from forgather.ml.trainer.trainer_types import FusedLossFactoryT
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +55,20 @@ class DDPTrainer(Trainer):
         self,
         *,
         args: DDPTrainingArguments,
+        fused_loss_factory: Optional[FusedLossFactoryT] = None,
         **kwargs,
     ):
         self.args = args  # For type checking hint
-        super().__init__(args=args, **kwargs)
+
+        assert (
+            not self.args.fuse_optim_with_backward
+        ), "DDPTrainer does not support option fuse_optim_with_backward"
+
+        assert (
+            fused_loss_factory is None
+        ), "DDPTrainer does not work with fused cross-entropy-loss at present."
+
+        super().__init__(args=args, fused_loss_factory=fused_loss_factory, **kwargs)
 
     @override
     def _init_distributed(self):
@@ -106,6 +119,7 @@ class DDPTrainer(Trainer):
         # - Fused loss function will probably not work.
 
         if self.args.dispatch_batches:
+            # Use DataloaderDispatcher for centralized batch loading
             if self.train_dataloader:
                 self.train_dataloader = DataloaderDispatcher(
                     self.train_dataloader,
@@ -119,6 +133,26 @@ class DDPTrainer(Trainer):
                     self.mesh,
                     self.args.device,
                 )
+        else:
+            # Use SynchronizedDataLoader for sharded datasets
+            # Ensures all ranks agree on when to stop iterating
+            if self.train_dataloader:
+                self.train_dataloader = SynchronizedDataLoader(
+                    self.train_dataloader,
+                    device=self.args.device,
+                    process_group=self.ddp_group,
+                    enabled=True,
+                )
+
+            if self.eval_dataloader:
+                self.eval_dataloader = SynchronizedDataLoader(
+                    self.eval_dataloader,
+                    device=self.args.device,
+                    process_group=self.ddp_group,
+                    enabled=True,
+                )
+
+    # No custom iteration logic needed - SynchronizedDataLoader handles it transparently
 
     @override
     def unwrapped_model(self) -> torch.nn.Module:
