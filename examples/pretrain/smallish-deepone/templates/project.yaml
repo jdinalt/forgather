@@ -11,24 +11,39 @@
     -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, 'examples/datasets/HuggingFaceTB/'))
 
     ## The configuration in the dataset sub-project
-    ## Note that this config assumes packed-sequences
     -- set ns.dataset_config = "smollm-corpus/interleaved-packed.yaml"
 
     ## Set predefined model project to import
-    -- set ns.model_project_dir = abspath(joinpath(ns.forgather_dir, "examples/models/deepone/"))
-    -- set ns.model_project_config = "117M.yaml"
+    -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples/models/llama/"))))
+    -- set ns.model_project_config = model_config | default("117M.yaml")
 
-    -- set ns.per_device_train_batch_size = 4
-    -- set ns.base_learning_rate = 1.0e-4
+    ## Training settings
+    -- set ns.per_device_train_batch_size = batch_size | default(4)
+    -- set ns.base_learning_rate = learning_rate | default(1.0e-4)
+    
+    ## Shard the dataset, rather than dispatching from rank0
+    -- set ns.dispatch_batches = False
 
+    ## This scales the number of steps per log/eval/save cycle
+    -- set ns.step_cadence = step_cadence | default(1.0)
+
+[globals]
+    ## Computed config. values
+    == super()
     -- set ns.world_size = (getenv("WORLD_SIZE", "1") | int)
     -- set ns.effective_batch_size = ns.per_device_train_batch_size * ns.world_size
-
-    # Learning Rate, scaled by sqrt(ns.effective_batch_size)
+    ## Learning Rate, scaled by sqrt(ns.effective_batch_size)
     -- set ns.scaled_lr = ns.base_learning_rate * (ns.effective_batch_size ** 0.5)
 
-    # Shard the dataset, rather than dispatching from rank0
-    -- set ns.dispatch_batches = False
+[variable_listing]
+    == super()
+# Pretrain
+# ns.per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
+# ns.base_learning_rate: {{ ns.base_learning_rate }}
+# ns.step_cadence: {{ ns.step_cadence }}
+# ns.world_size: {{ ns.world_size }}
+# ns.effective_batch_size: {{ ns.effective_batch_size }}
+# ns.scaled_lr: {{ ns.scaled_lr }}
 
 [datasets_preprocessor_args]
 .define: &tokenizer_args !dict
@@ -97,6 +112,11 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 [dynamic_args]
     == super()
     # **Pretrain**
+    batch_size:
+        names: "--batch-size"
+        type: int
+        default: 4
+        help: "Set the per-device-training batch size"
     model_project:
         names: "--model-project"
         type: path
@@ -115,7 +135,17 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     no_compile:
         names: "--no-compile"
         action: "store_true"
-        help: "Disable Torch compile for faster startup."
+        help: "Disable Torch compile for faster startup"
+    learning_rate:
+        names: [ "--learning-rate", "--lr" ]
+        type: float
+        default: !!float 1.0e-4
+        help: "Set the base learning rate"
+    step_cadence:
+        names: "--step-cadence"
+        type: float
+        default: 1.0
+        help: "Scale size of train/eval/save steps by this factor"
 
 #-------------------- project.trainer_config --------------------
 -- extends 'trainers/ddp_trainer.yaml'
@@ -130,21 +160,23 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     seed: 42
 
     eval_strategy: "steps"
-    max_eval_steps: -1
-    eval_steps: {{ 100 // ns.per_device_train_batch_size }}
-    eval_delay: 0
+    max_eval_steps: -1 # This limits the number of examples in the eval. step.
 
     save_strategy: "{{ save_strategy | default('steps') }}"
     save_safetensors: False
     save_total_limit: 3
-    save_steps: {{ 800 // ns.per_device_train_batch_size }}
 
-    logging_steps: {{ 50 // ns.per_device_train_batch_size }}
+    # Scale stepping cadence with batch-size
+    logging_steps: {{ (50 * ns.step_cadence / ns.per_device_train_batch_size) | int }}
+    eval_steps: {{ (500 * ns.step_cadence / ns.per_device_train_batch_size) | int }}
+    save_steps: {{ (5000 * ns.step_cadence / ns.per_device_train_batch_size) | int }}
 
     num_train_epochs: 1
 
+    # Resume if not init_model
     resume_from_checkpoint: {{ not (init_model | default(False)) }}
-    # Useful when changing datasets
+    # Optionally disable restoration of dataset state. This is useful when
+    # switching datasets.
     restore_dataset_state: {{ not (no_restore_dataset_state | default(False)) }}
 
     per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
@@ -163,11 +195,14 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 
     gradient_accumulation_steps: 1
     max_grad_norm: 5.0
+
+    # When True, only rank0 reads the datasets -- and dispatches batches to other ranks.
     dispatch_batches: {{ ns.dispatch_batches }}
 
 [trainer_constructor]
     == super()
-    #fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
+    # Disabled, as it is not compatible with DDP the DDP trainer at present.
+    # fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
 
 #-------------------- project.logger_config --------------------
 -- extends 'callbacks/loggers.yaml'
@@ -182,6 +217,7 @@ generation_config: &generation_config !dict:@generation_config
     repetition_penalty: 1.15
 
     [text_gen_callback_args]
+# Periodically generate text at eval. step for subjective model evaluation.
 text_gen_callback_args: &text_gen_callback_args
     summary_writer: *summary_writer
     prompts: {{ abspath(joinpath(ns.forgather_dir, "prompts/short_stories.yaml")) }}
