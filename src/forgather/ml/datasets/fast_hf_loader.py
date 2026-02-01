@@ -1078,15 +1078,14 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         for example in buffer:
             yield example
 
-    def _base_iter(self):
+    # ========== Helper Methods for _base_iter ==========
+
+    def _prepare_iteration(self) -> tuple[int, int]:
         """
-        Base iteration without shuffle buffer.
+        Prepare iteration state: handle epoch changes and reset counts.
 
-        This is the core iteration logic that reads from Arrow files.
-        The shuffle buffer (if enabled) wraps this iterator.
-
-        Yields:
-            Examples from the dataset
+        Returns:
+            (start_input_count, start_output_count): Starting counts for tracking this iteration
         """
         # Re-shuffle files if epoch changed
         if self._last_iter_epoch != self._epoch:
@@ -1110,9 +1109,15 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             self._length_invalidated = False
 
         # Track starting counts for this iteration
-        start_input_count = self._input_count
-        start_output_count = self._output_count
+        return self._input_count, self._output_count
 
+    def _initialize_iteration_state(self) -> tuple[list[str], bool, int, int]:
+        """
+        Initialize iteration state and determine if fresh vs checkpoint restoration.
+
+        Returns:
+            (worker_files, is_fresh_iteration, worker_id, num_workers)
+        """
         worker_id, num_workers = self._get_worker_info()
         files = self._get_files_for_shard()
 
@@ -1138,8 +1143,22 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         # Clear the checkpoint restoration flag after first iteration starts
         self._restored_from_checkpoint = False
 
+        return worker_files, is_fresh_iteration, worker_id, num_workers
+
+    def _compute_iteration_boundaries(
+        self, num_workers: int, worker_id: int
+    ) -> tuple[int, int, bool, bool, bool]:
+        """
+        Compute iteration boundaries for splits, shards, and worker-level sharding.
+
+        Args:
+            num_workers: Total number of workers
+            worker_id: Current worker ID
+
+        Returns:
+            (split_start, split_end, use_virtual_split, use_example_sharding, worker_sharding_enabled)
+        """
         # Track global position for virtual splits and example-level sharding
-        global_example_idx = 0
         use_virtual_split = (
             self._split_start_idx is not None or self._split_end_idx is not None
         )
@@ -1186,152 +1205,306 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             use_virtual_split = True  # Enable filtering by these boundaries
             worker_sharding_enabled = True
 
-        # Batch collection for batched map operations
+        return split_start, split_end, use_virtual_split, use_example_sharding, worker_sharding_enabled
+
+    def _get_file_length(self, file_idx: int, arrow_file: str) -> tuple[int, bool]:
+        """
+        Get length of Arrow file, using cache if available.
+
+        Args:
+            file_idx: Index of file in files list
+            arrow_file: Path to Arrow file
+
+        Returns:
+            (file_len, file_len_cached): Length and whether it came from cache
+        """
+        if self._shuffled_lengths:
+            return self._shuffled_lengths[file_idx], True
+        elif self.file_lengths:
+            return self.file_lengths[file_idx], True
+        else:
+            # No cached length - must load file to get it
+            ds = Dataset.from_file(arrow_file)
+            return len(ds), False
+
+    def _skip_processed_file(
+        self,
+        file_idx: int,
+        arrow_file: str,
+        use_virtual_split: bool,
+        use_example_sharding: bool
+    ) -> tuple[bool, int]:
+        """
+        Check if file should be skipped and compute global index delta.
+
+        Args:
+            file_idx: Current file index
+            arrow_file: Path to Arrow file
+            use_virtual_split: Whether virtual split is enabled
+            use_example_sharding: Whether example sharding is enabled
+
+        Returns:
+            (should_skip, global_idx_delta): Whether to skip and how much to advance global index
+        """
+        # Check checkpoint position dynamically (not captured as local var)
+        # This allows load_state_dict() to work even if called after __iter__
+        if file_idx < self._current_file_index:
+            # Skip entire file, but track global position
+            if use_virtual_split or use_example_sharding:
+                # Use cached file lengths instead of loading file (FAST!)
+                if self._shuffled_lengths:
+                    file_len = self._shuffled_lengths[file_idx]
+                elif self.file_lengths:
+                    file_len = self.file_lengths[file_idx]
+                else:
+                    # Fallback: must load file to get length (rare case)
+                    ds = Dataset.from_file(arrow_file)
+                    file_len = len(ds)
+                return True, file_len
+            return True, 0
+        return False, 0
+
+    def _compute_file_range(
+        self,
+        file_idx: int,
+        file_len: int,
+        global_example_idx: int,
+        split_start: int,
+        split_end: int,
+        use_virtual_split: bool,
+        use_example_sharding: bool
+    ) -> tuple[int, int, int]:
+        """
+        Compute the range of examples to read from this file.
+
+        Handles:
+        - Checkpoint resumption
+        - Virtual split boundaries
+        - Example-level sharding
+
+        Args:
+            file_idx: Current file index
+            file_len: Length of the file
+            global_example_idx: Global position before this file
+            split_start, split_end: Split boundaries
+            use_virtual_split, use_example_sharding: Flags
+
+        Returns:
+            (file_start_idx, file_end_idx, updated_global_idx):
+                Range to read and updated global position
+        """
+        # Compute the range of examples we need from this file (for efficient random access)
+        # This eliminates sequential seeking - we use .select() to jump directly to the range
+        file_start_idx = 0  # Start of range to read from this file
+        file_end_idx = file_len  # End of range (exclusive)
+
+        # 1. Handle checkpoint resumption (skip examples before checkpoint position)
+        if file_idx == self._current_file_index:
+            # This is the file where we need to resume
+            file_start_idx = max(file_start_idx, self._current_example_index)
+
+        # 2. Handle virtual split and example-level sharding
+        # These define windows in global example space that we need to intersect with this file
+        if use_virtual_split or use_example_sharding:
+            # Examples in this file span [global_example_idx, global_example_idx + file_len)
+            file_global_start = global_example_idx
+            file_global_end = global_example_idx + file_len
+
+            # Compute the global range we want
+            desired_global_start = split_start
+            desired_global_end = split_end
+
+            # If using example-level sharding, further restrict the range
+            if use_example_sharding:
+                # Shard boundaries are relative to split_start
+                shard_global_start = split_start + self._shard_start_idx
+                shard_global_end = split_start + self._shard_end_idx
+                desired_global_start = max(desired_global_start, shard_global_start)
+                desired_global_end = min(desired_global_end, shard_global_end)
+
+            # Check if file intersects with desired range
+            if file_global_end <= desired_global_start or file_global_start >= desired_global_end:
+                # File is completely outside desired range - return empty range
+                return file_start_idx, file_start_idx, global_example_idx + file_len
+
+            # Compute intersection with desired range
+            intersect_start = max(file_global_start, desired_global_start)
+            intersect_end = min(file_global_end, desired_global_end)
+
+            # Convert to file-local indices
+            file_start_idx = max(file_start_idx, intersect_start - file_global_start)
+            file_end_idx = min(file_end_idx, intersect_end - file_global_start)
+
+        return file_start_idx, file_end_idx, global_example_idx
+
+    def _load_file_range(
+        self,
+        arrow_file: str,
+        file_len: int,
+        file_start_idx: int,
+        file_end_idx: int,
+        file_len_cached: bool
+    ) -> Dataset:
+        """
+        Load Arrow file and select the specified range of examples.
+
+        Args:
+            arrow_file: Path to Arrow file
+            file_len: Length of the file
+            file_start_idx: Start index in file
+            file_end_idx: End index in file (exclusive)
+            file_len_cached: Whether file length was cached (file not yet loaded)
+
+        Returns:
+            Dataset containing selected examples
+        """
+        # Load the Arrow file if we haven't already (deferred until after range check)
+        if file_len_cached:
+            ds = Dataset.from_file(arrow_file)
+        else:
+            # Already loaded during _get_file_length
+            ds = Dataset.from_file(arrow_file)
+
+        # Use .select() to efficiently extract just the range we need
+        # This is fast - Arrow supports random access, no sequential iteration needed
+        if file_start_idx > 0 or file_end_idx < file_len:
+            if file_start_idx >= file_end_idx:
+                # Return empty dataset
+                return ds.select([])
+            ds = ds.select(range(file_start_idx, file_end_idx))
+
+        return ds
+
+    def _handle_early_exit(
+        self,
+        reason: str,
+        batch_buffer: list | None,
+        batch_start_idx: int | None,
+        worker_files: list[str]
+    ):
+        """
+        Handle early exit from iteration (split/shard exhausted).
+
+        Flushes any pending batch, caches length if appropriate,
+        marks iteration as complete.
+
+        Args:
+            reason: Reason for exit ("split_exhausted", "shard_exhausted")
+            batch_buffer: Pending batch buffer (if batched map)
+            batch_start_idx: Starting index of batch
+            worker_files: List of files being processed
+
+        Yields:
+            Any remaining buffered examples
+        """
+        # Flush pending batch buffer if needed
+        if (
+            self._map_batched
+            and self._map_function is not None
+            and batch_buffer
+        ):
+            yield from self._flush_batch_buffer(batch_buffer, batch_start_idx)
+
+        # Cache exact length
+        if self.length_estimate_mode in ("dynamic", "exact"):
+            if self._cached_exact_length is None:
+                self._cached_exact_length = self._output_count
+
+        # Mark iteration as complete for next fresh iteration
+        self._current_file_index = len(worker_files)
+        self._current_example_index = 0
+
+    def _track_counts(self, input_delta: int, output_delta: int) -> None:
+        """
+        Update input/output counts for length estimation.
+
+        Only updates if length_estimate_mode is "dynamic" or "exact".
+
+        Args:
+            input_delta: Number of input examples to add
+            output_delta: Number of output examples to add
+        """
+        if self.length_estimate_mode in ("dynamic", "exact"):
+            self._input_count += input_delta
+            self._output_count += output_delta
+
+    # ========== Main Iteration Method ==========
+
+    def _base_iter(self):
+        """
+        Base iteration without shuffle buffer.
+
+        This is the core iteration logic that reads from Arrow files.
+        The shuffle buffer (if enabled) wraps this iterator.
+
+        Yields:
+            Examples from the dataset
+        """
+        # Phase 1: Initialize iteration state
+        start_input_count, start_output_count = self._prepare_iteration()
+        worker_files, is_fresh_iteration, worker_id, num_workers = self._initialize_iteration_state()
+        split_start, split_end, use_virtual_split, use_example_sharding, worker_sharding_enabled = \
+            self._compute_iteration_boundaries(num_workers, worker_id)
+
+        # Phase 2: Initialize batch buffer for batched map operations
         if self._map_batched and self._map_function is not None:
             batch_buffer = []
             batch_start_idx = None
 
+        # Track global position for virtual splits and example-level sharding
+        global_example_idx = 0
+
+        # Phase 3: Main file iteration loop
         for file_idx, arrow_file in enumerate(worker_files):
-            # Check checkpoint position dynamically (not captured as local var)
-            # This allows load_state_dict() to work even if called after __iter__
-            if file_idx < self._current_file_index:
-                # Skip entire file, but track global position
+            # Skip files already processed (checkpoint restoration)
+            should_skip, global_idx_delta = self._skip_processed_file(
+                file_idx, arrow_file, use_virtual_split, use_example_sharding
+            )
+            if should_skip:
+                global_example_idx += global_idx_delta
+                continue
+
+            # Get file length and compute range to read
+            file_len, file_len_cached = self._get_file_length(file_idx, arrow_file)
+            file_start_idx, file_end_idx, global_example_idx = self._compute_file_range(
+                file_idx, file_len, global_example_idx, split_start, split_end,
+                use_virtual_split, use_example_sharding
+            )
+
+            # Skip if range is empty (file outside split boundaries)
+            if file_start_idx >= file_end_idx:
                 if use_virtual_split or use_example_sharding:
-                    # Use cached file lengths instead of loading file (FAST!)
-                    if self._shuffled_lengths:
-                        file_len = self._shuffled_lengths[file_idx]
-                    elif self.file_lengths:
-                        file_len = self.file_lengths[file_idx]
-                    else:
-                        # Fallback: must load file to get length (rare case)
-                        ds = Dataset.from_file(arrow_file)
-                        file_len = len(ds)
                     global_example_idx += file_len
                 continue
 
-            # Get file length (use cached if available for fast range checking)
-            file_len_cached = False
-            if self._shuffled_lengths:
-                file_len = self._shuffled_lengths[file_idx]
-                file_len_cached = True
-            elif self.file_lengths:
-                file_len = self.file_lengths[file_idx]
-                file_len_cached = True
-            else:
-                # No cached length - must load file to get it
-                ds = Dataset.from_file(arrow_file)
-                file_len = len(ds)
-                file_len_cached = False
+            # Load file and select range
+            ds = self._load_file_range(arrow_file, file_len, file_start_idx, file_end_idx, file_len_cached)
 
-            # Compute the range of examples we need from this file (for efficient random access)
-            # This eliminates sequential seeking - we use .select() to jump directly to the range
-            file_start_idx = 0  # Start of range to read from this file
-            file_end_idx = file_len  # End of range (exclusive)
-
-            # 1. Handle checkpoint resumption (skip examples before checkpoint position)
-            if file_idx == self._current_file_index:
-                # This is the file where we need to resume
-                file_start_idx = max(file_start_idx, self._current_example_index)
-
-            # 2. Handle virtual split and example-level sharding
-            # These define windows in global example space that we need to intersect with this file
-            if use_virtual_split or use_example_sharding:
-                # Examples in this file span [global_example_idx, global_example_idx + file_len)
-                file_global_start = global_example_idx
-                file_global_end = global_example_idx + file_len
-
-                # Compute the global range we want
-                desired_global_start = split_start
-                desired_global_end = split_end
-
-                # If using example-level sharding, further restrict the range
-                if use_example_sharding:
-                    # Shard boundaries are relative to split_start
-                    shard_global_start = split_start + self._shard_start_idx
-                    shard_global_end = split_start + self._shard_end_idx
-                    desired_global_start = max(desired_global_start, shard_global_start)
-                    desired_global_end = min(desired_global_end, shard_global_end)
-
-                # Check if file intersects with desired range
-                if file_global_end <= desired_global_start or file_global_start >= desired_global_end:
-                    # File is completely outside desired range - skip it entirely
-                    global_example_idx += file_len
-                    continue
-
-                # Compute intersection with desired range
-                intersect_start = max(file_global_start, desired_global_start)
-                intersect_end = min(file_global_end, desired_global_end)
-
-                # Convert to file-local indices
-                file_start_idx = max(file_start_idx, intersect_start - file_global_start)
-                file_end_idx = min(file_end_idx, intersect_end - file_global_start)
-
-            # Now load the Arrow file if we haven't already (deferred until after range check)
-            if file_len_cached:
-                ds = Dataset.from_file(arrow_file)
-
-            # Now use .select() to efficiently extract just the range we need
-            # This is fast - Arrow supports random access, no sequential iteration needed
-            if file_start_idx > 0 or file_end_idx < file_len:
-                if file_start_idx >= file_end_idx:
-                    # Empty range - skip this file
-                    if use_virtual_split or use_example_sharding:
-                        global_example_idx += file_len
-                    continue
-                ds = ds.select(range(file_start_idx, file_end_idx))
-
-            # Now iterate over the efficiently-selected subset
+            # Phase 4: Iterate over examples in the file
             # Note: enumerate starts from file_start_idx to maintain correct checkpoint indices
             for local_idx, example in enumerate(ds, start=file_start_idx):
-                # Check virtual split end (already filtered by .select(), but need to handle early exit)
-                if use_virtual_split:
-                    if global_example_idx >= split_end:
-                        # Reached end of split - flush any pending batch before stopping
-                        if (
-                            self._map_batched
-                            and self._map_function is not None
-                            and batch_buffer
-                        ):
-                            # Flush pending batch buffer
-                            yield from self._flush_batch_buffer(
-                                batch_buffer, batch_start_idx
-                            )
+                # Check early exit conditions
+                if use_virtual_split and global_example_idx >= split_end:
+                    # Reached end of split
+                    yield from self._handle_early_exit(
+                        "split_exhausted",
+                        batch_buffer if self._map_batched and self._map_function is not None else None,
+                        batch_start_idx if self._map_batched and self._map_function is not None else None,
+                        worker_files
+                    )
+                    return
 
-                        # Cache and stop iteration
-                        if self.length_estimate_mode in ("dynamic", "exact"):
-                            if self._cached_exact_length is None:
-                                self._cached_exact_length = self._output_count
-                        # Mark iteration as complete for next fresh iteration
-                        self._current_file_index = len(worker_files)
-                        self._current_example_index = 0
-                        return
-
-                # For example-level sharding, check relative position within split
                 if use_example_sharding:
                     # Compute position relative to split start
                     relative_idx = global_example_idx - split_start
-
-                    # Note: Shard filtering should have been applied during .select()
-                    # This is a safety check for edge cases
                     if relative_idx >= self._shard_end_idx:
-                        # Reached end of shard - flush any pending batch before stopping
-                        if (
-                            self._map_batched
-                            and self._map_function is not None
-                            and batch_buffer
-                        ):
-                            # Flush pending batch buffer
-                            yield from self._flush_batch_buffer(
-                                batch_buffer, batch_start_idx
-                            )
-
-                        # Cache and stop iteration
-                        if self.length_estimate_mode in ("dynamic", "exact"):
-                            if self._cached_exact_length is None:
-                                self._cached_exact_length = self._output_count
-                        # Mark iteration as complete for next fresh iteration
-                        self._current_file_index = len(worker_files)
-                        self._current_example_index = 0
+                        # Reached end of shard
+                        yield from self._handle_early_exit(
+                            "shard_exhausted",
+                            batch_buffer if self._map_batched and self._map_function is not None else None,
+                            batch_start_idx if self._map_batched and self._map_function is not None else None,
+                            worker_files
+                        )
                         return
 
                 # Save index for map with_indices (before incrementing)
@@ -1362,12 +1535,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                                 batch_buffer, batch_start_idx
                             )
 
-                            # Track counts in dynamic/exact mode
-                            # IMPORTANT: Count both inputs and outputs atomically before yielding
-                            # to avoid race conditions where counts are temporarily out of sync
+                            # Track counts atomically before yielding
+                            self._track_counts(len(batch_buffer), len(result_examples))
                             if self.length_estimate_mode in ("dynamic", "exact"):
-                                self._input_count += len(batch_buffer)
-                                self._output_count += len(result_examples)
                                 self._current_batch_buffer_size = 0  # Reset buffer size
 
                             # Yield results
@@ -1377,9 +1547,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                             batch_start_idx = None
                     else:
                         # Non-batched mode: apply to individual example
-                        # Track input in dynamic/exact mode
-                        if self.length_estimate_mode in ("dynamic", "exact"):
-                            self._input_count += 1
+                        self._track_counts(1, 0)  # Track input
 
                         example = self._apply_map_to_example(
                             example, current_global_idx
@@ -1389,14 +1557,11 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                             continue
 
                         # Track output and yield
-                        if self.length_estimate_mode in ("dynamic", "exact"):
-                            self._output_count += 1
+                        self._track_counts(0, 1)  # Track output
                         yield example
                 else:
                     # No map function, input = output
-                    if self.length_estimate_mode in ("dynamic", "exact"):
-                        self._input_count += 1
-                        self._output_count += 1
+                    self._track_counts(1, 1)
                     yield example
 
             # After finishing a file, move to next file
@@ -1404,14 +1569,12 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 self._current_example_index = 0
                 self._current_file_index = file_idx + 1
 
-        # Process final partial batch if using batched map
+        # Phase 5: Finalization - flush pending batch and cache length
         if self._map_batched and self._map_function is not None and batch_buffer:
-            # Use helper method to flush pending batch
+            # Flush final partial batch
             yield from self._flush_batch_buffer(batch_buffer, batch_start_idx)
 
         # Cache exact length after complete iteration (in dynamic/exact mode only)
-        # Only cache if not already set (preserve across multiple iterations)
-        # AND only if we actually processed some examples (output_count > 0)
         if self.length_estimate_mode in ("dynamic", "exact"):
             if self._cached_exact_length is None and self._output_count > 0:
                 self._cached_exact_length = self._output_count
