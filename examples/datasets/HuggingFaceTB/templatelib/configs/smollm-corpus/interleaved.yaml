@@ -21,7 +21,7 @@
         shard_dataset: !var [ "shard_dataset", False ]
         select_range: !var [ "select_range", null ]
         shuffle: !var [ "shuffle", False ]
-        seed: !var [ "seed", False ]
+        seed: !var [ "seed", 42 ]
     project_dir: "{{ project_dir }}"
     config_template: "smollm-corpus/fineweb-edu-dedup.yaml"
     targets: [ "train_dataset", "eval_dataset", "test_dataset" ]
