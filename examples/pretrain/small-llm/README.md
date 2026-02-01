@@ -118,5 +118,5 @@ forgather train --attn-implementation flash_attention_2 -d 0,1,3,4,5
 Train a 30M parameter Llama model on 5 of 6 GPus.
 
 ```bash
-train --init-model --model-project ../../models/llama/ --model-config 30M.yaml --attn-implementation flash_attention_2  -d 0,1,3,4,5 --batch-size 16 --step-cadence 4.0
+forgather train --init-model --model-project ../../models/llama/ --model-config 30M.yaml --attn-implementation flash_attention_2  -d 0,1,3,4,5 --batch-size 16 --step-cadence 4.0
 ```
