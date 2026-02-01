@@ -164,6 +164,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._cached_exact_length = None  # Exact count after full iteration
         self._length_invalidated = False  # Flag for operations that invalidate stats
         self._current_batch_buffer_size = 0  # For batched maps: track pending batch
+        self._restored_from_checkpoint = False  # Track if load_state_dict was called
 
     def __repr__(self):
         return (
@@ -1119,24 +1120,23 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         # This ensures consistent results regardless of num_workers
         worker_files = files
 
-        # Reset checkpoint if we've completed a previous full iteration
-        # This allows the dataset to be iterated multiple times
-        # Don't reset if we're mid-iteration (for checkpoint restoration)
-        if worker_files and self._current_file_index >= len(worker_files):
-            # We're past all files, must be starting fresh
+        # Determine if this is a fresh iteration vs checkpoint restoration
+        # Fresh iteration: reset both position and counts
+        # Checkpoint restoration: preserve both position and counts
+        is_fresh_iteration = not self._restored_from_checkpoint
+
+        if is_fresh_iteration:
+            # Reset position to start for fresh iteration
             self._current_file_index = 0
             self._current_example_index = 0
+            # Reset counts to track this iteration
+            self._input_count = 0
+            self._output_count = 0
+            # Don't reset _cached_exact_length - it persists across iterations
+        # else: checkpoint restoration - preserve position and counts
 
-        # Reset counts at the start of each fresh iteration (not during checkpoint restoration)
-        # This ensures counts reflect the current iteration, not cumulative across iterations
-        # Only reset if we're starting from the beginning (not mid-checkpoint)
-        if self._current_file_index == 0 and self._current_example_index == 0:
-            # Starting fresh iteration - reset counts but preserve cached length
-            if self._cached_exact_length is not None:
-                # Have cached length from previous iteration - keep it, reset counts
-                self._input_count = 0
-                self._output_count = 0
-                # Don't reset _cached_exact_length - it persists across iterations
+        # Clear the checkpoint restoration flag after first iteration starts
+        self._restored_from_checkpoint = False
 
         # Track global position for virtual splits and example-level sharding
         global_example_idx = 0
@@ -1404,12 +1404,6 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 self._current_example_index = 0
                 self._current_file_index = file_idx + 1
 
-                # Cache exact length at file boundaries (in dynamic/exact mode)
-                # Only cache if not already set (preserve across iterations)
-                if self.length_estimate_mode in ("dynamic", "exact"):
-                    if self._cached_exact_length is None:
-                        self._cached_exact_length = self._output_count
-
         # Process final partial batch if using batched map
         if self._map_batched and self._map_function is not None and batch_buffer:
             # Use helper method to flush pending batch
@@ -1417,10 +1411,20 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
         # Cache exact length after complete iteration (in dynamic/exact mode only)
         # Only cache if not already set (preserve across multiple iterations)
+        # AND only if we actually processed some examples (output_count > 0)
         if self.length_estimate_mode in ("dynamic", "exact"):
-            if self._cached_exact_length is None:
+            if self._cached_exact_length is None and self._output_count > 0:
                 self._cached_exact_length = self._output_count
             self._current_batch_buffer_size = 0  # Clear buffer tracking
+
+        # Mark iteration as complete so next iteration starts fresh
+        # ONLY if we actually processed some examples in this iteration
+        # This prevents the alternating 9/0/9/0 pattern when SynchronizedDataLoader
+        # stops iteration immediately (before any examples are processed)
+        processed_any_examples = self._output_count > start_output_count
+        if worker_files and processed_any_examples:
+            self._current_file_index = len(worker_files)
+            self._current_example_index = 0
 
     def __iter__(self):
         """
@@ -1756,6 +1760,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         # Set last_iter_epoch to match restored epoch so we don't re-shuffle
         # The files were already shuffled correctly when we reconstructed them above
         self._last_iter_epoch = self._epoch
+
+        # Mark that we just restored from checkpoint
+        # This prevents the next iteration from resetting counts
+        self._restored_from_checkpoint = True
 
     def get_length_stats(self) -> Dict[str, Any]:
         """

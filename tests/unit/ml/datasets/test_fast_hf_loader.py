@@ -2638,3 +2638,101 @@ def test_set_epoch_without_explicit_shuffle():
     ds.set_epoch(2)
     epoch2_again = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
     assert epoch2_examples == epoch2_again, "Epoch 2 should be reproducible"
+
+
+def test_length_not_cached_during_partial_iteration():
+    """
+    Test that _cached_exact_length is NOT set during partial iteration.
+
+    This is a regression test for a bug where _cached_exact_length was incorrectly
+    set when advancing to the next Arrow file, even though the dataset had more
+    files to process.
+
+    The bug caused datasets to report length=0 after processing only the first
+    file in multi-file datasets, breaking length-based sampling in interleaved
+    datasets.
+
+    This test verifies:
+    1. _cached_exact_length is None during partial iteration
+    2. _cached_exact_length is set only after complete iteration
+    3. The cached length matches the actual example count
+    """
+    # Load dataset with dynamic length estimation
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train",
+        length_estimate="dynamic",
+    )
+
+    # Apply a filtering map to test length tracking
+    # Remove empty examples to create a mapping where output_count != input_count
+    def filter_empty(ex):
+        text = ex.get("text", "").strip()
+        return ex if text else None
+
+    ds_filtered = ds.map(filter_empty)
+
+    # Verify initial state
+    assert ds_filtered._cached_exact_length is None, (
+        "Cached length should be None before iteration"
+    )
+
+    # Partially iterate through dataset (take first 50 examples)
+    partial_examples = []
+    iterator = iter(ds_filtered)
+    for i in range(50):
+        try:
+            partial_examples.append(next(iterator))
+        except StopIteration:
+            break
+
+    # CRITICAL: After partial iteration, cached length should still be None
+    assert ds_filtered._cached_exact_length is None, (
+        f"Cached length should remain None during partial iteration, "
+        f"but got {ds_filtered._cached_exact_length}. "
+        f"This indicates the bug where length is cached at file boundaries."
+    )
+
+    # Verify length estimate is still being calculated dynamically
+    estimated_len = len(ds_filtered)
+    assert estimated_len > 0, "Length estimate should be positive during iteration"
+
+    # Now complete the full iteration
+    all_examples = partial_examples.copy()
+    for example in iterator:
+        all_examples.append(example)
+
+    # After complete iteration, cached length should be set
+    assert ds_filtered._cached_exact_length is not None, (
+        "Cached length should be set after complete iteration"
+    )
+
+    # Verify the cached length matches actual count
+    actual_count = len(all_examples)
+    assert ds_filtered._cached_exact_length == actual_count, (
+        f"Cached length {ds_filtered._cached_exact_length} should match "
+        f"actual count {actual_count}"
+    )
+
+    # Verify len() now returns the exact cached value
+    assert len(ds_filtered) == actual_count, (
+        f"len() should return cached exact length {actual_count} "
+        f"after complete iteration"
+    )
+
+    # Verify the value persists across new iterations
+    ds_filtered_again = iter(ds_filtered)
+    assert ds_filtered._cached_exact_length == actual_count, (
+        "Cached length should persist across iterations"
+    )
+
+    # Consume a few examples from new iteration
+    for i, _ in enumerate(ds_filtered_again):
+        if i >= 5:
+            break
+
+    # Cached length should still be preserved
+    assert ds_filtered._cached_exact_length == actual_count, (
+        "Cached length should remain unchanged during subsequent iterations"
+    )
