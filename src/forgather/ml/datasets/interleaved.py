@@ -79,6 +79,16 @@ class InterleavedDataset(TorchIterableDataset):
         self._current_example_count = 0  # Total examples yielded
         self._datasets_exhausted = [False] * len(datasets)
 
+    def __repr__(self):
+        s = "InterleavedDataset(\n"
+        for ds in self.datasets:
+            s += "  " + repr(ds) + ",\n"
+        s += "  probabilities=" + repr(self.probabilities) + ",\n"
+        s += "  seed=" + repr(self.seed) + ",\n"
+        s += "  stopping_strategy=" + repr(self.stopping_strategy) + ",\n"
+        s += "  _probabilities_fn=" + repr(self._probabilities_fn) + "\n)\n"
+        return s
+
     def __iter__(self):
         """
         Interleave examples from child datasets.
