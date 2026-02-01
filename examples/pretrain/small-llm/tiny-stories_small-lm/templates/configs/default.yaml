@@ -1,0 +1,50 @@
+-- extends "datasets/dataset_type.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Tiny Stories x Small LM"
+    -- set ns.config_description = "Soft sequential progression from Tiny Stories to Small LM datasets"
+    -- set ns.main_feature = "text"
+
+[main_body]
+.define: &tokenizer !var "tokenizer"
+
+    [pp_kwargs]
+.define: &pp_kwargs !dict
+
+    [tiny_stories]
+.define: &tiny_stories !call:forgather:from_project
+    <<: &dataset_args
+        preprocess_args: !var "preprocess_args"
+        tokenizer: *tokenizer
+        pp_kwargs: *pp_kwargs
+        shard_dataset: !var [ "shard_dataset", False ]
+        select_range: !var [ "select_range", null ]
+        shuffle: !var [ "shuffle", False ]
+        seed: !var [ "seed", 42 ]
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan') }}"
+    config_template: "tinystories-packed.yaml"
+    targets: [ "train_dataset", "eval_dataset", "test_dataset" ]
+
+    [small_lm]
+.define: &small_lm !call:forgather:from_project
+    <<: *dataset_args
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'datasets', 'HuggingFaceTB') }}"
+    config_template: "smollm-corpus/interleaved-packed.yaml"
+    targets: [ "train_dataset" ]
+
+    [train_dataset]
+train_dataset: &train_dataset !singleton:forgather.ml.datasets:interleave_datasets
+    <<: &interleave_args
+        probabilities: !partial:forgather.ml.datasets:soft_sequential
+        seed: 42
+        stopping_strategy: "all_exhausted"
+    datasets:
+        - !call:getitem [ *tiny_stories, 'train_dataset' ]
+        - !call:getitem [ *small_lm, 'train_dataset' ]
+
+    [eval_dataset]
+eval_dataset: !call:getitem [ *small_lm, 'eval_dataset' ]
+
+    [test_dataset]
+test_dataset: !call:getitem [ *small_lm, 'test_dataset' ]

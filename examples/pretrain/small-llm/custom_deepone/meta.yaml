@@ -1,0 +1,11 @@
+-- extends "meta_defaults.yaml"
+[searchdir_project]
+    == super()
+    ## Join search directory with base project
+    - "{{ joinpath(ns.forgather_dir, 'examples/models/deepone/templates') }}"
+
+[configs]
+name: "Custom DeepOne"
+description: "A customized model project, based on the DeepOne model"
+config_prefix: "configs"
+default_config: "custom_deepone.yaml"

@@ -64,10 +64,6 @@ class DDPTrainer(Trainer):
             not self.args.fuse_optim_with_backward
         ), "DDPTrainer does not support option fuse_optim_with_backward"
 
-        assert (
-            fused_loss_factory is None
-        ), "DDPTrainer does not work with fused cross-entropy-loss at present."
-
         super().__init__(args=args, fused_loss_factory=fused_loss_factory, **kwargs)
 
     @override

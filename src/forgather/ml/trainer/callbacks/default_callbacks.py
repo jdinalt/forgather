@@ -81,7 +81,10 @@ class ProgressCallback:
         self.last_step = state.global_step
         if self.use_tqdm:
             self.train_progress_bar = tqdm(
-                initial=state.global_step, total=state.max_steps, dynamic_ncols=True
+                initial=state.global_step,
+                smoothing=0.03,
+                total=state.max_steps,
+                dynamic_ncols=True,
             )
 
     def on_train_end(self, args, state, control, **kwargs):

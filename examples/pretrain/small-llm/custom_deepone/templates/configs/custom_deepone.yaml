@@ -1,0 +1,61 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Custom Deepone"
+    -- set ns.config_description = "A Deepone with a few customizations"
+    -- set ns.model_name = "custom_deepone"
+
+[model_definition]
+    -- include "config.model"
+
+#------------- config.model --------------
+-- extends "models/transformers/deepone.yaml"
+
+[model_tokenizer]
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "32k.yaml"
+    pp_debug: False
+
+[rel_positional_encoder]
+.define: &relative_pe !singleton:.rotary_embeddings:RotaryPE@relative_pe
+    hidden_size: !var "hidden_size"
+    num_attention_heads: !var "num_attention_heads"
+    max_sequence_length: !var "max_position_embeddings"
+    rope_theta: !var "rope_theta"
+    rope_scaling: !var "rope_scaling"
+
+[qk_norm_factory]
+# Add QK Norm -- Like Qwen3
+.define: &qk_norm_factory !partial:torch.nn:RMSNorm@qk_norm_factory
+    eps: !var "rms_norm_eps"
+
+[attention_factory]
+# Replace ALiBi attention with RoPE
+.define: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    num_kv_heads: !var "num_key_value_heads"
+    dropout: !var "attention_dropout"
+    pos_encoder: *relative_pe
+    attn_implementation: !var "attn_implementation" # Value from &model_constructor_args
+    attn_functions: *attn_functions
+    qk_norm_factory: *qk_norm_factory
+    sliding_window: !var "sliding_window"
+    # Needed for vLLM attention interface
+    config: !var "config"
+
+[model_config]
+    == super()
+    # **Custom Deepone Overrides**
+    hidden_size: 768
+    intermediate_size: 2048
+    num_attention_heads: 8
+    num_hidden_layers: 16
+    embedding_dropout: 0.0
+    layer_dropout: 0.0
+
+    num_key_value_heads: null
+    rope_scaling: null
+    rope_theta: !!float 10000.0

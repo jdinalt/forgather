@@ -3,8 +3,8 @@
 [config_metadata]
     == super()
     ## Overrides
-    -- set ns.config_name = "Pretrain Deepone"
-    -- set ns.config_description = "Pretrain a smallish Deepone model"
+    -- set ns.config_name = "Pretrain Small-LLM"
+    -- set ns.config_description = "Pretrain a small LLM"
     -- set ns.model_name = "default"
 
     ## The dataset sub-project to use
@@ -14,12 +14,13 @@
     -- set ns.dataset_config = "smollm-corpus/interleaved-packed.yaml"
 
     ## Set predefined model project to import
-    -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples/models/llama/"))))
-    -- set ns.model_project_config = model_config | default("117M.yaml")
+    -- set ns.model_project_dir = abspath(model_project | default((joinpath(project_dir, "custom_deepone"))))
+    -- set ns.model_project_config = model_config | default("custom_deepone.yaml")
 
     ## Training settings
     -- set ns.per_device_train_batch_size = batch_size | default(4)
     -- set ns.base_learning_rate = learning_rate | default(1.0e-4)
+    -- set ns.max_length = max_length | default(4096)
     
     ## Shard the dataset, rather than dispatching from rank0
     -- set ns.dispatch_batches = False
@@ -48,7 +49,7 @@
 [datasets_preprocessor_args]
 .define: &tokenizer_args !dict
     truncation: True
-    max_length: 4096
+    max_length: {{ ns.max_length }}
 
 [datasets_definition]
    [dataset_project_pp_args]
@@ -70,6 +71,10 @@
 train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
 eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 
+[model_constructor_args]
+.define: &model_constructor_args
+    attn_implementation: "{{ attn_implementation | default('sdpa') }}"
+
 [construct_new_model]
     [model_project_pp_args]
 .define: &model_project_pp_args
@@ -90,6 +95,10 @@ model: &model !call:getitem [ *model_dict, 'model' ]
 [datacollator]
 data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
     tokenizer: *tokenizer
+    # Pad to max-length. This maintains a constant input shape
+    # With packed examples, there should be very little padding and this can speed things up a little.
+    padding: "max_length"
+    max_length: {{ ns.max_length }}
     packed_sequences: True
     return_tensors: pt
 
@@ -141,6 +150,11 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
         type: float
         default: !!float 1.0e-4
         help: "Set the base learning rate"
+    max_length:
+        names: [ "--max_length" ]
+        type: int
+        default: 4096
+        help: "Set maximum sequence length"
     step_cadence:
         names: "--step-cadence"
         type: float
@@ -201,8 +215,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 
 [trainer_constructor]
     == super()
-    # Disabled, as it is not compatible with DDP the DDP trainer at present.
-    # fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
+    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
 
 #-------------------- project.logger_config --------------------
 -- extends 'callbacks/loggers.yaml'
@@ -230,3 +243,4 @@ text_gen_callback_args: &text_gen_callback_args
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         <<: *text_gen_callback_args
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
+    peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory

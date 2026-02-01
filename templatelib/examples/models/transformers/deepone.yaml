@@ -25,6 +25,12 @@
     activation_factory: !partial:torch.nn.ReLU
     dropout: !var "activation_dropout"
 
+    [rel_positional_encoder]
+.define: &relative_pe null
+
+    [qk_norm_factory]
+.define: &qk_norm_factory null
+
     [flex_attn_kernel_options]
     -- include "flex_kernel_options/default.yaml"
 

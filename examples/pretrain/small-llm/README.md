@@ -18,13 +18,12 @@ is nearly instant, thanks to the new [Fast HF Dataset Loader](../../../docs/data
 This project will train with all available GPUs, using [DDP](../../tiny_experiments/ddp_trainer/README.md), on the current node, dynamically
 adjusting learning-rate with the global batch size.
 
-When multiple GPUs are available, the default is to create a dataset shard for each rank and to process it independently. An alternative is to
-set "ns.dispatch_batches = True," which will result in only rank0 reading and pre-processing the dataset, dispatching batches to the other ranks.
+When multiple GPUs are available, the default is to create a dataset shard for each rank and to process it independently. An alternative is to set "ns.dispatch_batches = True," which will result in only rank0 reading and pre-processing the dataset, dispatching batches to the other ranks.
 
 ## Basic Usage
 
 ```bash
-# Start training with newly initialized model
+# Start training with default (DeepOne:117M) newly initialized model
 forgather train --init-model
 
 # Resume training from last checkpoint
@@ -35,6 +34,11 @@ When initializing the model, you can specify the model project and configuration
 
 ```bash
 forgather train --init-model --model-project ../../models/qwen3/ --model-config 124M.yaml
+```
+Note that if you change the model configuration, you should delete the old model directory first:
+
+```bash
+rm -rf output_models
 ```
 
 By default, Torch SDPA attention will be used, although this is sub-optimal from a compute perspective, as SDPA does not support attention sparsity.
@@ -50,6 +54,8 @@ within the memory constraints of your GPU -- and you probably will want to tweak
 
 Note that DDP is not suitable for models which will not fit on a single GPU. This will require other parallelism methods. e.g. Tensor, Pipeline, Fully-Sharded, etc.
 With DDP and 24 GBs, you should still be able to reach about 1.7B parameters, although this will require additional memory optimizations.
+
+Not all models work correctly with `flash_attention_2` at present. Specifically, models using ALiBi relative positional encoding, like the "Deep One" model.
 
 ```bash
 forgather train --batch-size 8
@@ -109,14 +115,14 @@ Initialize and train Quen3 124 million parameter model using flash-attention-2 o
 ```bash
 
 # Init model and train through to step 500, then checkpoint and stop.
-forgather train --init-model --model-project ../../models/qwen3/ --model-config 124M.yaml --attn-implementation flash_attention_2 --no-compile --max-steps 500 -d 0,1,3,4,5
+forgather train --init-model --model-project ../../models/qwen3/ --model-config 124M.yaml --attn-implementation flex_attention --no-compile --max-steps 500 -d 0,1,3,4,5
 
 # Resume training from step 500 through the end of the epoch; don't disable Torch Compile.
 forgather train --attn-implementation flash_attention_2 -d 0,1,3,4,5
 ```
 
-Train a 30M parameter Llama model on 5 of 6 GPus.
+Train a 30M parameter Llama model
 
 ```bash
-forgather train --init-model --model-project ../../models/llama/ --model-config 30M.yaml --attn-implementation flash_attention_2  -d 0,1,3,4,5 --batch-size 16 --step-cadence 4.0
+forgather train --init-model --model-project ../../models/llama/ --model-config 30M.yaml --attn-implementation flash_attention_2 --batch-size 16 --step-cadence 4.0
 ```

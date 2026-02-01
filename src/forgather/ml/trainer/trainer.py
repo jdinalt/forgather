@@ -671,9 +671,6 @@ class Trainer(BaseTrainer):
             logger.info("Enabled fused loss-logits function")
             self.use_fused_loss = True
             return self.fused_loss_factory(module.get_output_embeddings())
-        logger.warning(
-            f"Fused loss factory not provided. Provide a fused-loss factory for enhanced performance."
-        )
         return default_loss_fn
 
     def _init_optimizer(self) -> None:

@@ -1,0 +1,11 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    -- set ns.config_name = "Tiny Stories x Small LM"
+    -- set ns.config_description = "Soft sequential progression from Tiny Stories to Small LM datasets"
+
+    ## The dataset sub-project to use
+    -- set ns.dataset_proj = abspath(joinpath(project_dir, 'tiny-stories_small-lm'))
+
+    ## The configuration in the dataset sub-project
+    -- set ns.dataset_config = "default.yaml"
