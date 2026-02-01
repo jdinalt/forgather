@@ -141,7 +141,6 @@ class DDPTrainer(Trainer):
                     self.train_dataloader,
                     device=self.args.device,
                     process_group=self.ddp_group,
-                    enabled=True,
                 )
 
             if self.eval_dataloader:
@@ -149,7 +148,6 @@ class DDPTrainer(Trainer):
                     self.eval_dataloader,
                     device=self.args.device,
                     process_group=self.ddp_group,
-                    enabled=True,
                 )
 
     # No custom iteration logic needed - SynchronizedDataLoader handles it transparently
