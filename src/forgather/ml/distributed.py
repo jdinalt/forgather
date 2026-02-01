@@ -354,7 +354,7 @@ def null_barrier(*args, **kwargs) -> None | Work:
     return None
 
 
-def get_barrier_fn(group: Optional[ProcessGroup]) -> Callable[[], None | Work]:
+def get_barrier_fn(group: Optional[ProcessGroup] = None) -> Callable[[], None | Work]:
     """
     Get a barrier function appropriate for the current distributed configuration.
 
