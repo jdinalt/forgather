@@ -33,11 +33,12 @@ from forgather.ml.construct import torch_dtype
 from forgather.ml.datasets import sync_dataset_state_from_dataloader
 from forgather.ml.utils import default_dtype
 
-from ..distributed import DistributedEnvInterface
+from ..distributed import DistributedEnvInterface, prefix_logger_rank
 from ..loss import RescaleLoss
 from ..no_init_weights import no_init_weights
 from ..sharded_checkpoint import (
     create_sharing_metadata,
+    next_checkpoint_path,
     retie_parameters,
     save_checkpoint_metrics,
 )
@@ -62,6 +63,7 @@ from .trainer_types import (
 )
 
 logger = logging.getLogger(__name__)
+prefix_logger_rank(logger)
 
 
 # Type checking protocols
@@ -490,6 +492,11 @@ class Trainer(BaseTrainer):
             model_preprocessor=self.processing_class,
             stateful_provider=self,
         )
+        # Set trainer reference for callback state save/load
+        checkpoint_manager.trainer = self
+        # Set preserve_n_best from training args
+        if hasattr(self.args, "preserve_n_best"):
+            checkpoint_manager.preserve_n_best = self.args.preserve_n_best
         return checkpoint_manager
 
     def _init_dataloaders(self, train_dataset, eval_dataset) -> None:
@@ -737,8 +744,14 @@ class Trainer(BaseTrainer):
 
         # Handle evaluation (normal schedule or control-triggered)
         eval_metrics = None
+        should_eval = periodic_eval.step() or self.control.should_evaluate
 
-        if periodic_eval.step() or self.control.should_evaluate:
+        # Force eval if saving and eval_on_save enabled
+        should_save = periodic_save.step() or self.control.should_save
+        if should_save and self.args.eval_on_save and self.eval_dataset is not None:
+            should_eval = True
+
+        if should_eval:
             periodic_eval.reset()
             self.control.should_evaluate = False
 
@@ -747,84 +760,43 @@ class Trainer(BaseTrainer):
             eval_metrics = self._eval_loop()
 
         # Handle checkpointing - normal schedule or control-triggered
-        if periodic_save.step() or self.control.should_save:
+        if should_save:
             periodic_save.reset()
             self.control.should_save = False
             assert self.checkpoint_manager
-            checkpoint_path = self.checkpoint_manager.save_checkpoint(
+
+            # Determine checkpoint path BEFORE saving
+            checkpoint_path = next_checkpoint_path(
+                self.args.output_dir, str(self.state.global_step)
+            )
+
+            # Update best checkpoints list BEFORE saving (so preserved list is correct)
+            if self.args.preserve_best_model and eval_metrics:
+                self.checkpoint_manager.update_best_checkpoints(
+                    checkpoint_path=checkpoint_path,
+                    metrics=eval_metrics,
+                    metric_key=self.args.best_model_metric,
+                    greater_is_better=self.args.best_model_greater_is_better,
+                    preserve_n_best=self.args.preserve_n_best,
+                )
+                # Update state for compatibility
+                if self.checkpoint_manager.best_checkpoints:
+                    self.state.best_metric = self.checkpoint_manager.best_checkpoints[
+                        0
+                    ][1]
+                    self.state.best_model_checkpoint = (
+                        self.checkpoint_manager.best_checkpoints[0][0]
+                    )
+
+            # Now save checkpoint (deletion will use updated preserved list)
+            saved_path = self.checkpoint_manager.save_checkpoint(
                 checkpoint_id=str(self.state.global_step)
             )
             self._dispatch_event("on_save")
 
-            # For load_best_model_at_end, we need metrics from the most recent evaluation
-            if self.args.load_best_model_at_end:
-                if not eval_metrics:
-                    logger.error(
-                        "load_best_model_at_end requires that save and eval occur on the same step\n"
-                        f"periodic_eval_step={str(periodic_eval)}\nperiodic_save_step={periodic_save}\n"
-                        "Skipping update of best model and continuing..."
-                    )
-                else:
-                    # Update best model tracking with current evaluation metrics
-                    logger.info(
-                        f"Updating best model to {checkpoint_path} with metrics {eval_metrics}"
-                    )
-                    self._update_best_model(checkpoint_path, eval_metrics)
-                    save_checkpoint_metrics(checkpoint_path, eval_metrics)
-
-    def _update_best_model(
-        self, checkpoint_path: str, metrics: Dict[str, float]
-    ) -> None:
-        """
-        Update best model tracking based on current metrics.
-
-        Compares current metric value against best seen so far using the metric specified
-        in args.metric_for_best_model and comparison direction from args.greater_is_better.
-        Updates state.best_metric and state.best_model_checkpoint if current is better.
-
-        Args:
-            checkpoint_path: Path to checkpoint being evaluated
-            metrics: Dictionary of evaluation metrics from most recent eval
-        """
-        if not self.args.load_best_model_at_end:
-            return
-
-        # Try exact match first, then with eval_ prefix
-        metric_value = metrics.get(self.args.metric_for_best_model)
-        if metric_value is None:
-            metric_value = metrics.get(f"eval_{self.args.metric_for_best_model}")
-
-        if metric_value is None:
-            logger.warning(
-                f"Metric '{self.args.metric_for_best_model}' not found in evaluation metrics. "
-                f"Available metrics: {list(metrics.keys())}"
-            )
-            return
-
-        # Initialize best metric on first evaluation
-        if self.state.best_metric is None:
-            self.state.best_metric = metric_value
-            self.state.best_model_checkpoint = checkpoint_path
-            logger.info(
-                f"First evaluation - setting best {self.args.metric_for_best_model}: {metric_value}"
-            )
-            return
-
-        # Check if current metric is better
-        is_better = (
-            self.args.greater_is_better and metric_value > self.state.best_metric
-        ) or (not self.args.greater_is_better and metric_value < self.state.best_metric)
-
-        if is_better:
-            previous_best = self.state.best_metric
-            self.state.best_metric = metric_value
-            self.state.best_model_checkpoint = checkpoint_path
-            assert self.checkpoint_manager
-            self.checkpoint_manager.set_best_checkpoint(checkpoint_path)
-            logger.info(
-                f"New best {self.args.metric_for_best_model}: {metric_value} (previous: {previous_best})"
-            )
-            logger.info(f"Saving new best model checkpoint to {checkpoint_path}")
+            # Save metrics file
+            if eval_metrics:
+                save_checkpoint_metrics(saved_path, eval_metrics)
 
     def load_best_model(self) -> None:
         """
@@ -981,6 +953,18 @@ class Trainer(BaseTrainer):
             start_time, train_steps - self.args.speed_metrics_start_step
         )
         self.log(metrics)
+
+        # Log best checkpoints summary at end of training
+        if (
+            self.args.preserve_best_model
+            and self.checkpoint_manager
+            and self.state.is_world_process_zero
+        ):
+            summary = self.checkpoint_manager.get_best_checkpoints_summary(
+                metric_key=self.args.best_model_metric
+            )
+            logger.info(f"\n{'='*60}\nTraining complete!\n{summary}\n{'='*60}")
+
         self._dispatch_event("on_train_end")
         return TrainOutput(self.state.global_step, metrics)
 

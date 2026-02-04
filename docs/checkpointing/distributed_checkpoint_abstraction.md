@@ -529,10 +529,6 @@ args = TrainingArguments(
     save_strategy="steps",
     save_steps=500,
     save_total_limit=3,
-    save_optimizer_state=True,
-    save_scheduler_state=True,
-    save_dataset_state=True,
-    save_rng_state=True,
 )
 
 trainer = Trainer(
@@ -701,10 +697,10 @@ StateComponent(
 - Load fails with "file not found" for optimizer_state.pt or similar
 - Checkpoint directory exists but some files missing
 
-**Cause:** Component was marked as `required=True` but wasn't saved (e.g., `save_optimizer_state=False` during save).
+**Cause:** Component was marked as `required=True` but file was deleted from checkpoint directory.
 
 **Solution:** Either:
-1. Set `required=False` for optional components
+1. Set `required=False` for optional components in get_state_components()
 2. Ensure save flags match load expectations
 3. Use `strict=False` when loading to skip missing components
 

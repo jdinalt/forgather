@@ -734,9 +734,17 @@ def load_checkpoint_metrics(checkpoint_path: str) -> Dict[str, float] | None:
 
 
 def maybe_delete_oldest_checkpoint(
-    model_dir: str, max_checkpoints: int, best_checkpoint: str | None = None
+    model_dir: str, max_checkpoints: int, best_checkpoint: str | None = None, preserved_checkpoints: List[str] | None = None
 ) -> None:
-    """Delete oldest checkpoints, preserving the best checkpoint if specified."""
+    """
+    Delete oldest checkpoints, preserving specified checkpoints.
+
+    Args:
+        model_dir: Model directory containing checkpoints subdirectory
+        max_checkpoints: Maximum number of checkpoints to keep
+        best_checkpoint: (Deprecated) Single best checkpoint to preserve
+        preserved_checkpoints: List of checkpoint paths to never delete
+    """
     checkpoints_dir = os.path.join(model_dir, "checkpoints")
     if not os.path.isdir(checkpoints_dir):
         logger.debug(
@@ -748,22 +756,24 @@ def maybe_delete_oldest_checkpoint(
     if len(checkpoints) <= max_checkpoints:
         return
 
-    # Never delete the best checkpoint if specified
-    checkpoints_to_consider = checkpoints
+    # Build set of preserved checkpoint paths
+    preserved_set = set(preserved_checkpoints or [])
     if best_checkpoint:
-        checkpoints_to_consider = [cp for cp in checkpoints if cp != best_checkpoint]
+        preserved_set.add(best_checkpoint)
+
+    # Filter out preserved checkpoints from deletion candidates
+    checkpoints_to_consider = [cp for cp in checkpoints if cp not in preserved_set]
 
     # Calculate how many to delete
     num_to_delete = len(checkpoints) - max_checkpoints
     # Ensure we don't delete more than available in checkpoints_to_consider
-    if best_checkpoint and best_checkpoint in checkpoints:
-        num_to_delete = min(num_to_delete, len(checkpoints_to_consider))
+    num_to_delete = min(num_to_delete, len(checkpoints_to_consider))
 
     if num_to_delete > 0:
         # Sort by modification time and delete the oldest
         checkpoints_to_consider.sort(key=lambda path: os.path.getmtime(path))
         for checkpoint_path in checkpoints_to_consider[:num_to_delete]:
-            logger.info(f"Deleting checkpoint at {checkpoint_path}")
+            logger.info(f"Deleting checkpoint at {checkpoint_path} (preserved: {preserved_set})")
             shutil.rmtree(checkpoint_path)
 
 

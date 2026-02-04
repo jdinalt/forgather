@@ -194,6 +194,9 @@ class DDPTrainer(Trainer):
         """
         Get state components for DDP training.
 
+        All training state is always saved to checkpoints. To skip loading a component,
+        delete its file from the checkpoint directory.
+
         DDP uses data parallelism where model and optimizer state are replicated
         across all ranks. DDP automatically synchronizes model weights and gradients,
         so these components use REPLICATED pattern with validation enabled to catch
@@ -211,7 +214,7 @@ class DDPTrainer(Trainer):
 
         components = []
 
-        # Model - REPLICATED in DDP
+        # Model - REQUIRED, REPLICATED in DDP
         # DDP synchronizes model weights across all ranks
         components.append(
             StateComponent(
@@ -220,51 +223,47 @@ class DDPTrainer(Trainer):
                 sharing_pattern=SharingPattern.REPLICATED,
                 validate_replication=True,  # Verify DDP synchronization
                 validation_level="tensor",  # Good balance of speed vs accuracy
+                required=True,  # Model is always required
             )
         )
 
-        # Optimizer - REPLICATED in DDP
+        # Optimizer - optional, REPLICATED in DDP
         # DDP synchronizes gradients, so optimizer state should be identical
-        if self.args.save_optimizer_state:
-            components.append(
-                StateComponent(
-                    key="optimizer",
-                    stateful=self.optimizer,
-                    sharing_pattern=SharingPattern.REPLICATED,
-                    validate_replication=True,
-                    validation_level="quick",  # Fast hash-based validation
-                    required=self.args.save_optimizer_state,
-                )
+        components.append(
+            StateComponent(
+                key="optimizer",
+                stateful=self.optimizer,
+                sharing_pattern=SharingPattern.REPLICATED,
+                validate_replication=True,
+                validation_level="quick",  # Fast hash-based validation
+                required=False,
             )
+        )
 
-        # LR Scheduler - REPLICATED
+        # LR Scheduler - optional, REPLICATED
         # Same schedule across all ranks
-        if self.args.save_scheduler_state:
-            components.append(
-                StateComponent(
-                    key="scheduler",
-                    stateful=self.lr_scheduler,
-                    sharing_pattern=SharingPattern.REPLICATED,
-                    required=self.args.save_scheduler_state,
-                )
+        components.append(
+            StateComponent(
+                key="scheduler",
+                stateful=self.lr_scheduler,
+                sharing_pattern=SharingPattern.REPLICATED,
+                required=False,
             )
+        )
 
-        # Trainer state - REPLICATED
+        # Trainer state - optional, REPLICATED
         # Training progress is synchronized across all ranks
-        if self.args.save_dataset_state:
-            components.append(
-                StateComponent(
-                    key="trainer",
-                    stateful=self,
-                    sharing_pattern=SharingPattern.REPLICATED,
-                    required=self.args.save_dataset_state,
-                )
+        components.append(
+            StateComponent(
+                key="trainer",
+                stateful=self,
+                sharing_pattern=SharingPattern.REPLICATED,
+                required=False,
             )
+        )
 
-        # Dataset state - depends on dispatch_batches setting
-        if self.args.save_dataset_state and hasattr(
-            self.train_dataloader, "state_dict"
-        ):
+        # Dataset state - optional, depends on dispatch_batches setting
+        if hasattr(self.train_dataloader, "state_dict"):
             components.append(
                 StateComponent(
                     key="dataset",
@@ -274,17 +273,16 @@ class DDPTrainer(Trainer):
                 )
             )
 
-        # RNG state - PER_RANK
+        # RNG state - optional, PER_RANK
         # Each rank needs different random numbers for data augmentation, dropout, etc.
-        if self.args.save_rng_state:
-            components.append(
-                StateComponent(
-                    key="rng",
-                    stateful=RNGState(),
-                    sharing_pattern=SharingPattern.PER_RANK,
-                    required=self.args.save_rng_state,
-                )
+        components.append(
+            StateComponent(
+                key="rng",
+                stateful=RNGState(),
+                sharing_pattern=SharingPattern.PER_RANK,
+                required=False,
             )
+        )
 
         return components
 

@@ -8,10 +8,12 @@ from forgather.dotdict import DotDict
 from forgather.ml.distributed import (
     DistributedEnvInterface,
     from_env,
+    prefix_logger_rank,
 )
 from forgather.project import Project
 
 logger = logging.getLogger(__name__)
+prefix_logger_rank(logger)
 
 
 @dataclass(kw_only=True)
@@ -34,35 +36,30 @@ class TrainingScript:
     @record
     def run(self):
         # In a distriubted environment, we only want one process to print messages
-        is_main_process = self.distributed_env.local_rank == 0
 
-        if is_main_process:
-            logger.info("**** Training Script Started *****")
-            logger.info(f"config_name: {self.meta.config_name}")
-            logger.info(f"config_description: {self.meta.config_description}")
-            logger.info(f"output_dir: {self.meta.output_dir}")
-            if "logging_dir" in self.meta:
-                logger.info(f"logging_dir: {self.meta.logging_dir}")
+        logger.info("**** Training Script Started *****")
+        logger.info(f"config_name: {self.meta.config_name}")
+        logger.info(f"config_description: {self.meta.config_description}")
+        logger.info(f"output_dir: {self.meta.output_dir}")
+        if "logging_dir" in self.meta:
+            logger.info(f"logging_dir: {self.meta.logging_dir}")
 
         if self.do_train:
             # This is where the actual 'loop' is.
             output = self.trainer.train()
 
-            if is_main_process:
-                logger.info("**** Training Completed *****")
-                logger.info(output)
+            logger.info("**** Training Completed *****")
+            logger.info(output)
 
         if self.do_eval:
             output = self.trainer.evaluate()
 
-            if is_main_process:
-                logger.info("**** Evaluation Completed *****")
-                logger.info(output)
+            logger.info("**** Evaluation Completed *****")
+            logger.info(output)
 
         if self.do_save:
             self.trainer.save_model(self.meta.output_dir)
-            if is_main_process:
-                logger.info(f"Model saved to: {self.meta.output_dir}")
+            logger.info(f"Model saved to: {self.meta.output_dir}")
 
 
 def training_loop(project_directory, config_template=""):

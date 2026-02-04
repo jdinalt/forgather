@@ -15,6 +15,12 @@ Forgather's distributed checkpoint system provides automatic coordination for mu
 - Multi-node training
 - Best practices and troubleshooting
 
+**[Divergence Detection & Checkpoint Preservation](divergence_detection.md)** - Advanced features
+- Prevent loss of best checkpoints
+- Early divergence detection with stateful callbacks
+- Decoupled eval/save scheduling
+- Multiple detection strategies
+
 ### For Developers
 
 **[Migration Guide](migration_guide.md)** - Implementing custom trainers
@@ -80,6 +86,10 @@ All implementation details are documented in the main documentation:
 - ✅ **Manifests**: Complete checkpoint inventory for debugging
 - ✅ **Backward Compatible**: Old checkpoints still load
 - ✅ **Production Ready**: All trainers tested successfully
+- ✅ **Checkpoint Preservation**: Keep best N checkpoints safe from cleanup
+- ✅ **Divergence Detection**: Catch training issues early with stateful callbacks
+- ✅ **Stateful Callbacks**: Callback state saved/restored with checkpoints
+- ✅ **Decoupled Eval/Save**: Flexible eval/save scheduling without alignment
 
 ## Getting Started
 
@@ -89,11 +99,9 @@ All implementation details are documented in the main documentation:
    args = TrainingArguments(
        save_strategy="steps",
        save_steps=1000,
-       save_optimizer_state=True,
-       save_scheduler_state=True,
-       save_dataset_state=True,
-       save_rng_state=True,
    )
+   # All state is saved automatically:
+   # - Model, optimizer, scheduler, dataset, RNG, training progress
    ```
 3. **Train and checkpoint** - automatic!
 4. **Resume from checkpoint**:

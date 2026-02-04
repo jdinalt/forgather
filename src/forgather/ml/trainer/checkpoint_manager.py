@@ -3,7 +3,7 @@ import logging
 import os
 import traceback
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Tuple
 
 import torch
 from torch.distributed.checkpoint.stateful import Stateful
@@ -12,6 +12,7 @@ from forgather.ml.distributed import (
     DistributedEnvInterface,
     get_barrier_fn,
     get_global_process_group,
+    prefix_logger_rank,
 )
 from forgather.ml.sharded_checkpoint import (
     find_latest_checkpoint,
@@ -29,7 +30,8 @@ from .checkpoint_coordinator import CheckpointCoordinator
 from .trainer_types import CheckpointInterface, StatefulProvider
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
+prefix_logger_rank(logger)
 
 
 def default_checkpoint_id():
@@ -88,7 +90,12 @@ class CheckpointManager(CheckpointInterface):
                 safetensors=config.save_safetensors,
             )
         self.shard_index = shard_index
-        self.best_checkpoint = None
+        self.best_checkpoint = None  # Deprecated - use best_checkpoints instead
+        self.best_checkpoints: List[Tuple[str, float]] = (
+            []
+        )  # List of (path, metric_value)
+        self.preserve_n_best: int = 1
+        self.trainer = None  # Set by trainer for callback access
         self.barrier_fn = get_barrier_fn(get_global_process_group())
 
         # Initialize CheckpointCoordinator for state component handling
@@ -113,8 +120,11 @@ class CheckpointManager(CheckpointInterface):
                 # No non-model components to coordinate
                 self.coordinator = None
         else:
-            # Old API - will use get_statefuls_for_save/load
-            self.coordinator = None
+            # StatefulProvider must implement get_state_components()
+            raise RuntimeError(
+                "StatefulProvider does not implement get_state_components(). "
+                "All trainers must use the new checkpoint API."
+            )
 
     def save_checkpoint(
         self,
@@ -128,8 +138,7 @@ class CheckpointManager(CheckpointInterface):
                 self.config.output_dir, checkpoint_id
             )
 
-        if self.dist.local_rank == 0:
-            logger.info(f"Saving checkpoint at {checkpoint_path}")
+        logger.info(f"Saving checkpoint at {checkpoint_path}")
 
         if self._should_save_unique():
             # Ensure the checkpoint directory exists
@@ -141,27 +150,149 @@ class CheckpointManager(CheckpointInterface):
             self._save_model(checkpoint_path)
 
         # Save training state
-        # If using CheckpointCoordinator, ALL ranks must call it (has barriers)
-        # If using old API, only saving ranks call it
+        # ALL ranks must call CheckpointCoordinator (has barriers)
         if self.coordinator is not None:
-            # New API: all ranks participate
             self._save_training_state(checkpoint_path)
-        else:
-            # Old API: only saving ranks
-            if self._should_save_common():
-                self._save_training_state(checkpoint_path)
+
+        # Save stateful callback states and best checkpoints list
+        if self._should_save_common():
+            checkpoint_metadata = {}
+
+            # Save best checkpoints list for preservation on resume
+            if self.best_checkpoints:
+                checkpoint_metadata["best_checkpoints"] = self.best_checkpoints
+                logger.debug(
+                    f"Saving best checkpoints list: {[cp[0] for cp in self.best_checkpoints]}"
+                )
+
+            # Save callback states
+            if self.trainer and hasattr(self.trainer, "callbacks"):
+                callback_states = {}
+                for i, callback in enumerate(self.trainer.callbacks):
+                    if isinstance(callback, Stateful):
+                        callback_states[f"callback_{i}_{type(callback).__name__}"] = (
+                            callback.state_dict()
+                        )
+                if callback_states:
+                    checkpoint_metadata["callback_states"] = callback_states
+                    logger.debug(f"Saved {len(callback_states)} callback states")
+
+            # Save metadata if we have anything to save
+            if checkpoint_metadata:
+                metadata_path = os.path.join(checkpoint_path, "checkpoint_metadata.pt")
+                torch.save(checkpoint_metadata, metadata_path)
+                logger.debug(f"Saved checkpoint metadata to {metadata_path}")
 
         # At most, one process per node should delete excess checkpoints
         if self._should_save_unique():
+            # Build list of preserved checkpoint paths
+            preserved_paths = [cp[0] for cp in self.best_checkpoints]
+            # Also preserve old-style best_checkpoint for backward compatibility
+            if self.best_checkpoint and self.best_checkpoint not in preserved_paths:
+                preserved_paths.append(self.best_checkpoint)
+
             maybe_delete_oldest_checkpoint(
                 self.config.output_dir,
                 self.config.save_total_limit,
-                self.best_checkpoint,
+                preserved_checkpoints=preserved_paths,
             )
         self._barrier()
         return checkpoint_path
 
+    def update_best_checkpoints(
+        self,
+        checkpoint_path: str,
+        metrics: dict[str, float],
+        metric_key: str,
+        greater_is_better: bool | None,
+        preserve_n_best: int,
+    ) -> bool:
+        """
+        Update best checkpoints list with new checkpoint if it qualifies.
+
+        This should be called BEFORE save_checkpoint() so the preserved list
+        is accurate when deletion happens.
+
+        Args:
+            checkpoint_path: Path to checkpoint being evaluated
+            metrics: Dictionary of evaluation metrics
+            metric_key: Name of metric to use for comparison
+            greater_is_better: Whether higher metric values are better
+            preserve_n_best: Number of best checkpoints to keep
+            is_world_process_zero: Whether this is rank 0 (for logging)
+
+        Returns:
+            True if this checkpoint qualifies as one of the best
+        """
+        # Extract metric value
+        metric_value = metrics.get(metric_key) or metrics.get(f"eval_{metric_key}")
+
+        if metric_value is None:
+            logger.warning(
+                f"Metric '{metric_key}' not found in evaluation metrics. "
+                f"Available: {list(metrics.keys())}"
+            )
+            return False
+
+        # Auto-detect comparison direction if not specified
+        if greater_is_better is None:
+            greater_is_better = metric_key not in ["loss", "eval_loss"]
+
+        # Determine if this checkpoint should be preserved
+        is_best = False
+
+        if len(self.best_checkpoints) < preserve_n_best:
+            # Have room for more best checkpoints
+            is_best = True
+        else:
+            # Compare against worst of current best checkpoints
+            worst_best = (max if greater_is_better else min)(
+                self.best_checkpoints, key=lambda x: x[1]
+            )
+            is_best = (
+                (metric_value > worst_best[1])
+                if greater_is_better
+                else (metric_value < worst_best[1])
+            )
+
+        if is_best:
+            logger.info(
+                f"New best checkpoint: {checkpoint_path} ({metric_key}={metric_value:.4f})"
+            )
+
+            # Add to list
+            self.best_checkpoints.append((checkpoint_path, metric_value))
+
+            # Sort (best to worst)
+            self.best_checkpoints.sort(key=lambda x: x[1], reverse=greater_is_better)
+
+            # Trim to N best
+            self.best_checkpoints = self.best_checkpoints[:preserve_n_best]
+
+            # Log the updated list with metrics
+            logger.info("Best checkpoints:")
+            for cp_path, cp_metric in self.best_checkpoints:
+                logger.info(f"  {cp_path} ({metric_key}={cp_metric:.4f})")
+
+        return is_best
+
+    def get_best_checkpoints_summary(self, metric_key: str = "loss") -> str:
+        """Get formatted summary of best checkpoints with metrics."""
+        if not self.best_checkpoints:
+            return "No best checkpoints tracked"
+
+        lines = [f"Best checkpoints (N={len(self.best_checkpoints)}):"]
+        for cp_path, cp_metric in self.best_checkpoints:
+            lines.append(f"  {cp_path}: {metric_key}={cp_metric:.4f}")
+        return "\n".join(lines)
+
     def set_best_checkpoint(self, best_checkpoint: str) -> None:
+        """
+        Mark checkpoint as best (deprecated single-checkpoint API).
+
+        This is kept for backward compatibility with CheckpointInterface.
+        Use update_best_checkpoints() for the new N-best API.
+        """
         self.best_checkpoint = best_checkpoint
 
     def resolve_checkpoint_path(self, checkpoint_path: str | None) -> str | None:
@@ -187,10 +318,60 @@ class CheckpointManager(CheckpointInterface):
         checkpoint_path = self.resolve_checkpoint_path(checkpoint_path)
         if checkpoint_path is None:
             raise RuntimeError("Could not load checkpoint")
-        if self.dist.local_rank == 0:
-            logger.info(f"Resuming training from checkpoint: {checkpoint_path}")
+        logger.info(f"Resuming training from checkpoint: {checkpoint_path}")
         self._load_model_from_checkpoint(checkpoint_path)
         self._load_training_state(checkpoint_path)
+
+        # Load checkpoint metadata (best checkpoints list + callback states)
+        metadata_path = os.path.join(checkpoint_path, "checkpoint_metadata.pt")
+        if os.path.exists(metadata_path):
+            try:
+                checkpoint_metadata = torch.load(
+                    metadata_path, map_location=torch.device("cpu")
+                )
+
+                # Restore best checkpoints list
+                if "best_checkpoints" in checkpoint_metadata:
+                    self.best_checkpoints = checkpoint_metadata["best_checkpoints"]
+                    logger.info(
+                        f"Restored best checkpoints list: "
+                        f"{[os.path.basename(cp[0]) for cp in self.best_checkpoints]}"
+                    )
+
+                # Restore callback states
+                if (
+                    "callback_states" in checkpoint_metadata
+                    and self.trainer
+                    and hasattr(self.trainer, "callbacks")
+                ):
+                    callback_states = checkpoint_metadata["callback_states"]
+                    for i, callback in enumerate(self.trainer.callbacks):
+                        key = f"callback_{i}_{type(callback).__name__}"
+                        if isinstance(callback, Stateful) and key in callback_states:
+                            callback.load_state_dict(callback_states[key])
+                            logger.info(f"Restored state for {type(callback).__name__}")
+            except Exception as e:
+                logger.warning(f"Failed to load checkpoint metadata: {e}")
+        else:
+            # Try legacy callback_states.pt for backward compatibility
+            callback_path = os.path.join(checkpoint_path, "callback_states.pt")
+            if (
+                os.path.exists(callback_path)
+                and self.trainer
+                and hasattr(self.trainer, "callbacks")
+            ):
+                try:
+                    callback_states = torch.load(
+                        callback_path, map_location=torch.device("cpu")
+                    )
+
+                    for i, callback in enumerate(self.trainer.callbacks):
+                        key = f"callback_{i}_{type(callback).__name__}"
+                        if isinstance(callback, Stateful) and key in callback_states:
+                            callback.load_state_dict(callback_states[key])
+                            logger.info(f"Restored state for {type(callback).__name__}")
+                except Exception as e:
+                    logger.warning(f"Failed to load callback states: {e}")
 
     def save_model(
         self,
@@ -290,8 +471,7 @@ class CheckpointManager(CheckpointInterface):
         """Load model weights from checkpoint using the sharded checkpoint loader."""
 
         # Use the sharded checkpoint loader to handle all checkpoint formats
-        if self.dist.local_rank == 0:
-            logger.info(f"Loading model weights from checkpoint: {checkpoint_path}")
+        logger.info(f"Loading model weights from checkpoint: {checkpoint_path}")
 
         for mod in self.model_parts:
             load_checkpoint(
@@ -304,42 +484,28 @@ class CheckpointManager(CheckpointInterface):
     def _save_training_state(self, output_dir: str) -> None:
         """Save all training state components to separate files."""
         if self.coordinator is not None:
-            # Use new CheckpointCoordinator API
+            # Use CheckpointCoordinator API
             # IMPORTANT: ALL ranks must call this (coordinator has barriers)
             try:
                 self.coordinator.save_checkpoint(output_dir, validate=False)
             except Exception as e:
-                logger.error(f"Failed to save training state via CheckpointCoordinator\n{e}")
+                logger.error(
+                    f"Failed to save training state via CheckpointCoordinator\n{e}"
+                )
                 traceback.print_exc()
                 raise
-        else:
-            # Fall back to old API
-            for key, obj in self.stateful_provider.get_statefuls_for_save().items():
-                if obj:
-                    try:
-                        self._save_state_dict(key, obj, output_dir)
-                    except Exception as e:
-                        logger.error(f"Failed to save {key}\n{e}")
-                        traceback.print_exc()
 
     def _load_training_state(self, checkpoint_path: str) -> None:
         """Load all training state components from separate files."""
         if self.coordinator is not None:
-            # Use new CheckpointCoordinator API
+            # Use CheckpointCoordinator API
             try:
                 self.coordinator.load_checkpoint(checkpoint_path, strict=False)
             except Exception as e:
-                logger.warning(f"Failed to load training state via CheckpointCoordinator\n{e}")
+                logger.warning(
+                    f"Failed to load training state via CheckpointCoordinator\n{e}"
+                )
                 traceback.print_exc()
-        else:
-            # Fall back to old API
-            for key, obj in self.stateful_provider.get_statefuls_for_load().items():
-                if obj:
-                    try:
-                        self._load_state_dict(key, obj, checkpoint_path)
-                    except Exception as e:
-                        logger.warning(f"Failed to load {key}\n{e}")
-                        # traceback.print_exc()
 
 
 class RNGState(Stateful):

@@ -23,18 +23,20 @@ args = TrainingArguments(
     save_steps=500,                   # Save every 500 steps
     save_total_limit=3,               # Keep only last 3 checkpoints
 
-    # What to save
-    save_optimizer_state=True,        # Save optimizer state (recommended)
-    save_scheduler_state=True,        # Save LR scheduler state
-    save_dataset_state=True,          # Save dataset position (important!)
-    save_rng_state=True,              # Save RNG state for reproducibility
-
     # Optional
     save_safetensors=True,            # Use safetensors format (default)
 )
 
 trainer = Trainer(model=model, args=args, ...)
 trainer.train()
+
+# All state is saved automatically:
+# - Model weights (always required)
+# - Optimizer state (momentum, adaptive rates, etc.)
+# - LR scheduler state (current step, etc.)
+# - Training progress (global_step, epoch, etc.)
+# - Dataset state (iteration position, if dataloader is stateful)
+# - RNG state (for reproducibility)
 ```
 
 **Output:**
@@ -76,6 +78,42 @@ args = TrainingArguments(
 
 **Result**: Training continues from the exact step/epoch where it left off, with identical optimizer state, learning rate schedule, dataset position, and RNG state.
 
+### Partial Checkpoint Loading
+
+To selectively skip loading certain components (e.g., when changing datasets or optimizer types), manually delete the component files from the checkpoint directory:
+
+```bash
+# Example: Change dataset between runs
+rm checkpoint-1000/dataset_state.pt
+rm checkpoint-1000/trainer_state.pt  # Also remove training progress
+
+# Example: Change optimizer type
+rm checkpoint-1000/optimizer_state.pt
+
+# Example: Change LR scheduler
+rm checkpoint-1000/scheduler_state.pt
+
+# Example: Fresh randomization
+rm checkpoint-1000/rng_state*.pt
+```
+
+Then resume training normally:
+
+```python
+args = TrainingArguments(
+    output_dir="output_models/my_model",
+    resume_from_checkpoint="output_models/my_model/checkpoint-1000",
+    max_steps=2000,
+)
+
+trainer = Trainer(model=model, args=args, ...)
+trainer.train()  # Loads model weights, skips deleted components
+```
+
+The checkpoint system will log warnings for missing components but continue loading with your current configuration for those components.
+
+**Note**: Model weights are always required and cannot be skipped.
+
 ## DDP Training (Data Parallel)
 
 ### Centralized Data Loading (Recommended)
@@ -90,9 +128,6 @@ args = DDPTrainingArguments(
     dispatch_batches=True,            # Rank 0 loads, others receive
     save_strategy="steps",
     save_steps=1000,
-    save_optimizer_state=True,
-    save_scheduler_state=True,
-    save_dataset_state=True,
 )
 
 # Launch with torchrun
@@ -106,6 +141,7 @@ trainer = DDPTrainer(
 )
 
 trainer.train()
+# All state is saved automatically
 ```
 
 **Checkpoint behavior:**
@@ -129,7 +165,6 @@ args = DDPTrainingArguments(
     dispatch_batches=False,           # Each rank loads independently
     save_strategy="steps",
     save_steps=1000,
-    save_dataset_state=True,          # Important! Each rank saves its position
 )
 
 # Ensure each rank gets different data
@@ -379,21 +414,23 @@ trainer.train()
 
 ## Best Practices
 
-### 1. Always Save Dataset State
+### 1. Dataset State is Critical
 
-```python
-save_dataset_state=True  # Critical for resuming mid-epoch
+Dataset state is automatically saved (if your dataloader is stateful). Without dataset state, resuming will restart from beginning of epoch, wasting compute.
+
+To skip dataset state for testing purposes, delete the checkpoint file:
+```bash
+rm checkpoint-1000/dataset_state.pt
 ```
 
-Without dataset state, resuming will restart from beginning of epoch, wasting compute.
+### 2. RNG State Ensures Reproducibility
 
-### 2. Save RNG State for Reproducibility
+RNG state is automatically saved for reproducibility. Without RNG state, data augmentation and dropout will differ after resume.
 
-```python
-save_rng_state=True  # Ensures exact reproducibility
+To skip RNG state (e.g., for fresh randomization), delete the checkpoint files:
+```bash
+rm checkpoint-1000/rng_state*.pt
 ```
-
-Without RNG state, data augmentation and dropout will differ after resume.
 
 ### 3. Use Reasonable Checkpoint Frequency
 
@@ -478,11 +515,11 @@ Verify resuming works before investing days in training.
 **Symptom**: Resume produces different results than training straight through
 
 **Possible causes:**
-1. Missing RNG state (`save_rng_state=False`)
-2. Missing dataset state (`save_dataset_state=False`)
+1. Missing RNG state (was deleted from checkpoint)
+2. Missing dataset state (was deleted from checkpoint)
 3. Dataset not deterministic
 
-**Expected**: With full state saved, results should match within floating-point precision (~0.01% difference acceptable).
+**Expected**: With full state loaded, results should match within floating-point precision (~0.01% difference acceptable).
 
 ## Advanced: Custom Checkpoint Components
 

@@ -1,5 +1,6 @@
 import contextlib
 import functools
+import logging
 from typing import Optional
 
 import torch
@@ -7,6 +8,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import FloatTensor, LongTensor, Tensor
 from torch.nn.functional import cross_entropy
+
+from forgather.ml.distributed import prefix_logger_rank
+
+logger = logging.getLogger(__name__)
+prefix_logger_rank(logger)
 
 
 def _causal_loss_fn(logits: FloatTensor, labels: LongTensor) -> FloatTensor:
@@ -268,9 +274,6 @@ class LinearCrossEntropyLoss:
         Returns:
             (actual_impl_name, compute_function)
         """
-        import logging
-
-        logger = logging.getLogger(__name__)
 
         if impl == "auto":
             if self.bias:

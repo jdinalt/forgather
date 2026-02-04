@@ -314,15 +314,13 @@ args = TrainingArguments(
     save_strategy="steps",
     save_steps=1000,                  # Save every 1000 steps
     save_total_limit=3,               # Keep only last 3 checkpoints
-    save_optimizer_state=True,        # Save optimizer state
-    save_scheduler_state=True,        # Save LR scheduler state
-    save_dataset_state=True,          # Save dataset position (important!)
-    save_rng_state=True,              # Save RNG state for reproducibility
 )
 
 trainer = Trainer(model=model, args=args, ...)
 trainer.train()  # Checkpoints saved automatically
 ```
+
+All state is saved: model, optimizer, scheduler, dataset position, RNG, training progress.
 
 **Output:**
 ```
@@ -333,6 +331,7 @@ output_models/my_model/
 │   ├── scheduler_state.pt
 │   ├── dataset_state.pt
 │   ├── rng_state.pt
+│   ├── trainer_state.pt
 │   └── checkpoint_manifest.json    # Metadata for debugging
 ├── checkpoint-2000/
 └── checkpoint-3000/
@@ -350,6 +349,16 @@ args = TrainingArguments(
 trainer = Trainer(model=model, args=args, ...)
 trainer.train()  # Continues from checkpoint-3000
 ```
+
+**To skip loading components** (e.g., changing dataset):
+```bash
+# Manually delete the checkpoint files you don't want to restore
+rm checkpoint-1000/dataset_state.pt
+rm checkpoint-1000/trainer_state.pt
+```
+Checkpoint loading will warn about missing components but continue with your current configuration.
+
+**Note:** Model weights are always required and cannot be skipped.
 
 ### Distributed Training Patterns
 
@@ -420,8 +429,8 @@ Use manifests for debugging checkpoint issues or verifying what was saved.
 - Ensure all ranks call checkpoint save methods
 
 **Different results after resume:**
-- Enable `save_rng_state=True` and `save_dataset_state=True`
-- Ensures exact reproducibility
+- Ensure RNG and dataset state files were not deleted
+- Both are saved automatically for exact reproducibility
 
 **Validation failed for component 'optimizer':**
 - Known issue with AccelerateOptimizer wrapper (validation automatically disabled)
@@ -436,10 +445,11 @@ For complete documentation, see:
 
 **Key Features:**
 - Automatic coordination for multi-GPU/multi-node training
+- All state always saved (model, optimizer, scheduler, dataset, RNG, training progress)
 - Explicit state sharing patterns (GLOBAL, PER_RANK, REPLICATED, PER_GROUP, PER_NODE)
 - Optional replication validation to catch DDP synchronization bugs
 - Complete checkpoint manifests for debugging
-- Backward compatible with old checkpoints
+- Partial loading via manual file deletion
 
 ## Architecture Overview
 

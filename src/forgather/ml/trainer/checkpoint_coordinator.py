@@ -56,9 +56,14 @@ import torch
 from torch.distributed import ProcessGroup
 from torch.distributed.checkpoint.stateful import Stateful
 
-from forgather.ml.distributed import DistributedEnvInterface, get_barrier_fn
+from forgather.ml.distributed import (
+    DistributedEnvInterface,
+    get_barrier_fn,
+    prefix_logger_rank,
+)
 from forgather.ml.sharded_checkpoint import (
     find_latest_checkpoint,
+    index_file_name,
     load_checkpoint,
     make_shard_index,
     maybe_delete_oldest_checkpoint,
@@ -66,7 +71,6 @@ from forgather.ml.sharded_checkpoint import (
     save_shard_index,
     save_sharded_checkpoint,
     validate_checkpoint,
-    index_file_name,
 )
 
 from .checkpoint_types import (
@@ -77,20 +81,22 @@ from .checkpoint_types import (
     compute_state_hash,
 )
 from .checkpoint_utils import (
-    is_group_leader,
-    is_node_leader,
-    get_group_file_suffix,
-    get_node_file_suffix,
-    find_group_checkpoint_file,
-    find_node_checkpoint_file,
+    ValidationLevel,
+    all_gather_scalar,
     collect_group_savers,
     collect_node_savers,
-    all_gather_scalar,
+    find_group_checkpoint_file,
+    find_node_checkpoint_file,
+    get_group_file_suffix,
+    get_node_file_suffix,
+    is_group_leader,
+    is_node_leader,
     validate_replication,
-    ValidationLevel,
 )
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+prefix_logger_rank(logger)
 
 
 class CheckpointCoordinator:
@@ -227,8 +233,7 @@ class CheckpointCoordinator:
                 checkpoint_id = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
             checkpoint_path = next_checkpoint_path(self.output_dir, checkpoint_id)
 
-        if self.dist.local_rank == 0:
-            logger.info(f"Saving checkpoint at {checkpoint_path}")
+        logger.info(f"Saving checkpoint at {checkpoint_path}")
 
         # Create checkpoint directory
         if self._should_save_unique():
@@ -318,7 +323,9 @@ class CheckpointCoordinator:
             torch.save(state_dict, state_path)
 
             # Compute size
-            size_bytes = os.path.getsize(state_path) if os.path.exists(state_path) else 0
+            size_bytes = (
+                os.path.getsize(state_path) if os.path.exists(state_path) else 0
+            )
 
             return ComponentManifest(
                 key=component.key,
@@ -425,7 +432,9 @@ class CheckpointCoordinator:
             state_dict = component.stateful.state_dict()
             torch.save(state_dict, state_path)
 
-            size_bytes = os.path.getsize(state_path) if os.path.exists(state_path) else 0
+            size_bytes = (
+                os.path.getsize(state_path) if os.path.exists(state_path) else 0
+            )
 
             return ComponentManifest(
                 key=component.key,
@@ -483,7 +492,9 @@ class CheckpointCoordinator:
             torch.save(state_dict, state_path)
 
             # Collect file size for manifest
-            size_bytes = os.path.getsize(state_path) if os.path.exists(state_path) else 0
+            size_bytes = (
+                os.path.getsize(state_path) if os.path.exists(state_path) else 0
+            )
 
             # All-gather file sizes from all ranks to compute total
             all_sizes = all_gather_scalar(size_bytes if should_save else 0)
@@ -532,16 +543,16 @@ class CheckpointCoordinator:
             f"{component.key}_state_{file_suffix}.pt",
         )
 
-        logger.debug(
-            f"Saving PER_NODE component '{component.key}' to {state_path}"
-        )
+        logger.debug(f"Saving PER_NODE component '{component.key}' to {state_path}")
 
         try:
             state_dict = component.stateful.state_dict()
             torch.save(state_dict, state_path)
 
             # Collect file size for manifest
-            size_bytes = os.path.getsize(state_path) if os.path.exists(state_path) else 0
+            size_bytes = (
+                os.path.getsize(state_path) if os.path.exists(state_path) else 0
+            )
 
             # All-gather file sizes from all ranks to compute total
             all_sizes = all_gather_scalar(size_bytes if should_save else 0)
@@ -645,9 +656,7 @@ class CheckpointCoordinator:
         if checkpoint_path is None:
             checkpoint_path = find_latest_checkpoint(self.output_dir)
             if not checkpoint_path:
-                raise RuntimeError(
-                    f"No checkpoints found in {self.output_dir}"
-                )
+                raise RuntimeError(f"No checkpoints found in {self.output_dir}")
 
         if not os.path.exists(checkpoint_path):
             raise RuntimeError(f"Checkpoint path does not exist: {checkpoint_path}")
@@ -668,9 +677,7 @@ class CheckpointCoordinator:
 
         self._barrier()
 
-    def _load_with_manifest(
-        self, checkpoint_path: str, strict: bool = True
-    ) -> None:
+    def _load_with_manifest(self, checkpoint_path: str, strict: bool = True) -> None:
         """Load checkpoint using manifest for validation and coordination."""
         manifest_path = os.path.join(checkpoint_path, "checkpoint_manifest.json")
         manifest = CheckpointManifest.load(manifest_path)
@@ -691,7 +698,9 @@ class CheckpointCoordinator:
                         f"Required component '{component.key}' not found in checkpoint"
                     )
                 logger.warning(
-                    f"Component '{component.key}' not found in checkpoint, skipping"
+                    f"⚠️  Component '{component.key}' not found in checkpoint\n"
+                    f"    This is normal if you deleted it to change {component.key} type.\n"
+                    f"    Training will continue with current {component.key} configuration."
                 )
                 continue
 
@@ -732,12 +741,16 @@ class CheckpointCoordinator:
                     f"Required component '{component.key}' not found at {state_path}"
                 )
             logger.warning(
-                f"Component '{component.key}' not found at {state_path}, skipping"
+                f"⚠️  Component '{component.key}' not found at {state_path}\n"
+                f"    This is normal if you deleted it to change {component.key} type.\n"
+                f"    Training will continue with current {component.key} configuration."
             )
             return
 
         try:
-            logger.debug(f"Loading GLOBAL component '{component.key}' from {state_path}")
+            logger.debug(
+                f"Loading GLOBAL component '{component.key}' from {state_path}"
+            )
             state_dict = torch.load(state_path, map_location=torch.device("cpu"))
             component.stateful.load_state_dict(state_dict)
         except Exception as e:
@@ -793,7 +806,9 @@ class CheckpointCoordinator:
                     f"Required component '{component.key}' not found at {state_path}"
                 )
             logger.warning(
-                f"Component '{component.key}' not found at {state_path}, skipping"
+                f"⚠️  Component '{component.key}' not found at {state_path}\n"
+                f"    This is normal if you deleted it to change {component.key} type.\n"
+                f"    Training will continue with current {component.key} configuration."
             )
             return
 

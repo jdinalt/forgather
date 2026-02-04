@@ -12,6 +12,7 @@ from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from ..distributed import prefix_logger_rank
 from .checkpoint_manager import RNGState
 from .checkpoint_types import SharingPattern, StateComponent
 from .trainer_types import (
@@ -33,6 +34,7 @@ from .trainer_types import (
 )
 
 logger = logging.getLogger(__name__)
+prefix_logger_rank(logger)
 
 ModelConstructor = Callable[[], torch.nn.Module]
 
@@ -40,33 +42,33 @@ ModelConstructor = Callable[[], torch.nn.Module]
 @dataclass(kw_only=True)
 class BaseTrainingArguments(MinimalTrainingArguments):
     """
-    Extended training arguments with checkpoint control and PyTorch optimizations.
+    Extended training arguments with checkpoint management and PyTorch optimizations.
 
-    Extends MinimalTrainingArguments with fine-grained control over what gets saved/restored
-    in checkpoints, plus PyTorch runtime optimizations.
+    Extends MinimalTrainingArguments with checkpoint preservation features and
+    PyTorch runtime optimizations.
 
-    NOTE: These checkpoint save/restore options are NOT compatible with HF Trainer.
+    All training state (model, optimizer, scheduler, dataset position, RNG state)
+    is automatically saved in checkpoints. To skip loading specific components,
+    manually delete their files from the checkpoint directory before resuming.
+
+    NOTE: These checkpoint options are NOT compatible with HF Trainer.
     Use HF-compatible MinimalTrainingArguments for basic HF compatibility.
     """
-
-    # Checkpointing options - control what gets saved in checkpoints
-    # These allow fine-grained control over checkpoint size vs resumability tradeoffs
-    save_optimizer_state: bool = True  # Save optimizer state (momentum, etc.)
-    save_scheduler_state: bool = True  # Save LR scheduler state
-    save_dataset_state: bool = True  # Save dataset iteration position
-    save_rng_state: bool = True  # Save random number generator states
-
-    # Control what gets restored from checkpoints
-    restore_optimizer_state: bool = True  # Restore optimizer state
-    restore_scheduler_state: bool = True  # Restore LR scheduler state
-    restore_dataset_state: bool = True  # Restore dataset iteration position
-    restore_rng_state: bool = True  # Restore RNG states for reproducibility
 
     # Default torch dtype for model construction (e.g., "float32", "bfloat16", "float16")
     default_dtype: str | None = None
 
     # Limit maximum validation/eval steps (-1 for unlimited)
     max_eval_steps: int = -1
+
+    # Checkpoint preservation
+    preserve_best_model: bool = False
+    best_model_metric: str = "loss"
+    best_model_greater_is_better: bool | None = None
+    preserve_n_best: int = 1  # Keep N best checkpoints safe from cleanup
+
+    # Force evaluation before save (decouples save/eval scheduling)
+    eval_on_save: bool = False
 
     # Offload activation tensors to CPU memory during backward pass to reduce GPU memory usage.
     # Best combined with activation checkpointing. Trade GPU memory for CPU memory and bandwidth.
@@ -116,49 +118,6 @@ class BaseTrainingArguments(MinimalTrainingArguments):
 
         if self.lr_scheduler_kwargs is None:
             self.lr_scheduler_kwargs = {}
-
-        # Auto-determine greater_is_better from metric name if not set
-        if self.greater_is_better is None:
-            # Common metrics where higher is better
-            higher_is_better_metrics = {
-                "accuracy",
-                "f1",
-                "precision",
-                "recall",
-                "auc",
-                "roc_auc",
-                "ap",
-                "map",
-                "bleu",
-                "rouge",
-                "meteor",
-                "bertscore",
-                "exact_match",
-                "squad_f1",
-            }
-            # Check if metric name contains any higher-is-better patterns
-            metric_lower = self.metric_for_best_model.lower()
-            self.greater_is_better = any(
-                pattern in metric_lower for pattern in higher_is_better_metrics
-            )
-
-        # Validate alignment requirements for load_best_model_at_end
-        if self.load_best_model_at_end:
-            if self.save_strategy != self.eval_strategy:
-                raise ValueError(
-                    "load_best_model_at_end requires save_strategy and eval_strategy to be the same. "
-                    f"Got save_strategy={self.save_strategy}, eval_strategy={self.eval_strategy}"
-                )
-
-            if (
-                self.save_strategy == IntervalStrategy.STEPS
-                and self.eval_strategy == IntervalStrategy.STEPS
-            ):
-                if self.save_steps % self.eval_steps != 0:
-                    raise ValueError(
-                        "load_best_model_at_end requires save_steps to be a multiple of eval_steps when using step-based strategies. "
-                        f"Got save_steps={self.save_steps}, eval_steps={self.eval_steps}"
-                    )
 
 
 class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
@@ -536,15 +495,15 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         """
         Save complete training checkpoint.
 
-        Saves model, optimizer, scheduler, dataset position, RNG state, and trainer state
-        to a timestamped checkpoint directory under args.output_dir. This allows resuming
-        training from the exact point where it left off.
+        Saves all training state to a timestamped checkpoint directory under args.output_dir:
+        - Model weights (always required)
+        - Optimizer state (momentum buffers, adaptive rates, etc.)
+        - LR scheduler state (current step, etc.)
+        - Training progress (global_step, epoch, etc.)
+        - Dataset position (if dataloader is stateful)
+        - Random number generator states (for reproducibility)
 
-        Checkpoint contents controlled by args.save_*_state flags:
-        - save_optimizer_state: Optimizer state (momentum buffers, etc.)
-        - save_scheduler_state: LR scheduler state
-        - save_dataset_state: Dataset iteration position
-        - save_rng_state: Random number generator states
+        This allows resuming training from the exact point where it left off.
 
         Args:
             checkpoint_path: Optional specific checkpoint path, otherwise auto-generated
@@ -558,15 +517,21 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         """
         Load complete training checkpoint to resume training.
 
-        Restores model, optimizer, scheduler, dataset position, RNG state, and trainer state
-        from a saved checkpoint. If checkpoint_path is None, automatically finds the latest
-        checkpoint in args.output_dir.
+        Restores all training state from a saved checkpoint:
+        - Model weights (always loaded)
+        - Optimizer state (if file exists)
+        - LR scheduler state (if file exists)
+        - Training progress (if file exists)
+        - Dataset position (if file exists)
+        - Random number generator states (if file exists)
 
-        What gets restored is controlled by args.restore_*_state flags:
-        - restore_optimizer_state: Restore optimizer state
-        - restore_scheduler_state: Restore LR scheduler state
-        - restore_dataset_state: Restore dataset iteration position
-        - restore_rng_state: Restore RNG states for reproducibility
+        If checkpoint_path is None, automatically finds the latest checkpoint in args.output_dir.
+
+        To skip loading specific components, delete their files from the checkpoint directory
+        before calling this method. For example:
+            rm checkpoint-1000/optimizer_state.pt  # Use fresh optimizer
+
+        The checkpoint system will log warnings for missing components but continue loading.
 
         Args:
             checkpoint_path: Path to checkpoint directory, or None for latest checkpoint
@@ -576,175 +541,92 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
 
     # StatefulProvider
     @override
-    def get_statefuls_for_save(self):
-        """
-        Get dictionary of stateful objects to save in checkpoint.
-
-        Collects trainer components that need to be saved for resumable training.
-        What gets included is controlled by args.save_*_state flags.
-
-        Returns:
-            Dictionary mapping component names to Stateful objects:
-            - "optimizer": Optimizer state (momentum, adaptive rates, etc.)
-            - "scheduler": LR scheduler state (current step, etc.)
-            - "trainer": Trainer state (global_step, epoch, etc.)
-            - "dataset": Dataset/dataloader iteration position
-            - "rng": RNG states (torch, numpy, random module)
-        """
-        statefuls = {}
-        save_dataset_state = False
-
-        # Not all dataloaders are stateful and not all dataloader with
-        # a state_dict() method are an instance of Stateful.
-        if self.args.save_dataset_state:
-            if hasattr(self.train_dataloader, "state_dict"):
-                save_dataset_state = True
-            else:
-                logger.warning("train_dataloader doesn't have state_dict method")
-
-        for key, obj, save in (
-            ("optimizer", self.optimizer, self.args.save_optimizer_state),
-            ("scheduler", self.lr_scheduler, self.args.save_scheduler_state),
-            ("trainer", self, self.args.save_dataset_state),
-            ("dataset", self.train_dataloader, save_dataset_state),
-            ("rng", RNGState(), self.args.save_rng_state),
-        ):
-            if not save:
-                continue
-            assert obj, f"{key} is not initialized"
-            statefuls[key] = obj
-
-        return statefuls
-
-    # StatefulProvider
-    @override
-    def get_statefuls_for_load(self):
-        """
-        Get dictionary of stateful objects to restore from checkpoint.
-
-        Collects trainer components that should be loaded from checkpoint for
-        resuming training. What gets included is controlled by args.restore_*_state flags.
-
-        Returns:
-            Dictionary mapping component names to Stateful objects:
-            - "optimizer": Optimizer to restore state into
-            - "scheduler": LR scheduler to restore state into
-            - "trainer": Trainer to restore state into (global_step, epoch, etc.)
-            - "dataset": Dataset/dataloader to restore iteration position
-            - "rng": RNG states to restore for reproducibility
-        """
-        statefuls = {}
-        restore_dataset_state = False
-        if self.args.restore_dataset_state:
-            if hasattr(self.train_dataloader, "load_state_dict"):
-                restore_dataset_state = True
-            else:
-                logger.warning(
-                    "Could not restored Dataloader state, as it does not have a load method"
-                )
-
-        for key, obj, load in (
-            ("optimizer", self.optimizer, self.args.restore_optimizer_state),
-            ("scheduler", self.lr_scheduler, self.args.restore_scheduler_state),
-            ("trainer", self, self.args.restore_dataset_state),
-            ("dataset", self.train_dataloader, restore_dataset_state),
-            ("rng", RNGState(), self.args.restore_rng_state),
-        ):
-            if not load:
-                continue
-            assert obj, f"{key} is not initialized"
-            statefuls[key] = obj
-
-        return statefuls
-
-    # StatefulProvider - New Checkpoint API
     def get_state_components(self) -> List[StateComponent]:
         """
-        Get state components with explicit sharing patterns for distributed checkpointing.
+        Get state components for distributed checkpointing.
 
-        This is the new preferred API for checkpoint coordination. Each StateComponent
-        declares its sharing pattern (GLOBAL, PER_RANK, REPLICATED, etc.), enabling
-        automatic distributed checkpoint coordination without manual rank checks.
+        All training state is always saved to checkpoints:
+        - Model weights (required - cannot be skipped)
+        - Optimizer state (momentum, adaptive rates, etc.)
+        - LR scheduler state (current step, etc.)
+        - Training progress (global_step, epoch, etc.)
+        - Dataset state (iteration position, if dataloader is stateful)
+        - RNG state (for reproducibility)
+
+        To skip loading a component, delete its file from the checkpoint directory.
+        For example, to change datasets between runs:
+            rm checkpoint-1000/dataset_state.pt
+            rm checkpoint-1000/trainer_state.pt
+
+        The checkpoint system will log warnings for missing components but continue loading.
 
         For single-GPU trainers, all state is GLOBAL except RNG which is PER_RANK.
 
         Returns:
             List of StateComponent objects describing all checkpointable state
-
-        Example:
-            Components for simple trainer:
-            - model: GLOBAL (single GPU, one copy)
-            - optimizer: GLOBAL
-            - scheduler: GLOBAL
-            - trainer: GLOBAL (training progress)
-            - dataset: GLOBAL or PER_RANK (depends on dataloader type)
-            - rng: PER_RANK (each rank needs unique random numbers)
         """
         components = []
 
-        # Model - always saved
+        # Model - REQUIRED (always must be present)
         components.append(
             StateComponent(
                 key="model",
                 stateful=self.model,
                 sharing_pattern=SharingPattern.GLOBAL,
+                required=True,  # Model is always required
             )
         )
 
-        # Optimizer
-        if self.args.save_optimizer_state:
-            components.append(
-                StateComponent(
-                    key="optimizer",
-                    stateful=self.optimizer,
-                    sharing_pattern=SharingPattern.GLOBAL,
-                    required=self.args.save_optimizer_state,
-                )
+        # Optimizer - optional (allows changing optimizer type)
+        components.append(
+            StateComponent(
+                key="optimizer",
+                stateful=self.optimizer,
+                sharing_pattern=SharingPattern.GLOBAL,
+                required=False,
             )
+        )
 
-        # LR Scheduler
-        if self.args.save_scheduler_state:
-            components.append(
-                StateComponent(
-                    key="scheduler",
-                    stateful=self.lr_scheduler,
-                    sharing_pattern=SharingPattern.GLOBAL,
-                    required=self.args.save_scheduler_state,
-                )
+        # LR Scheduler - optional (allows changing scheduler type)
+        components.append(
+            StateComponent(
+                key="scheduler",
+                stateful=self.lr_scheduler,
+                sharing_pattern=SharingPattern.GLOBAL,
+                required=False,
             )
+        )
 
-        # Trainer state (training progress)
-        if self.args.save_dataset_state:  # Note: trainer state saved with dataset flag
-            components.append(
-                StateComponent(
-                    key="trainer",
-                    stateful=self,
-                    sharing_pattern=SharingPattern.GLOBAL,
-                    required=self.args.save_dataset_state,
-                )
+        # Trainer state - optional (allows fresh training progress)
+        components.append(
+            StateComponent(
+                key="trainer",
+                stateful=self,
+                sharing_pattern=SharingPattern.GLOBAL,
+                required=False,
             )
+        )
 
-        # Dataset state - pattern depends on dataloader type
-        if self.args.save_dataset_state and hasattr(self.train_dataloader, "state_dict"):
+        # Dataset state - optional, only if dataloader is stateful
+        if hasattr(self.train_dataloader, "state_dict"):
             components.append(
                 StateComponent(
                     key="dataset",
                     stateful=self.train_dataloader,
                     sharing_pattern=self._get_dataset_sharing_pattern(),
-                    required=False,  # Optional - not all dataloaders are stateful
+                    required=False,
                 )
             )
 
-        # RNG state - always PER_RANK
-        if self.args.save_rng_state:
-            components.append(
-                StateComponent(
-                    key="rng",
-                    stateful=RNGState(),
-                    sharing_pattern=SharingPattern.PER_RANK,
-                    required=self.args.save_rng_state,
-                )
+        # RNG state - optional (allows fresh randomization)
+        components.append(
+            StateComponent(
+                key="rng",
+                stateful=RNGState(),
+                sharing_pattern=SharingPattern.PER_RANK,
+                required=False,
             )
+        )
 
         return components
 

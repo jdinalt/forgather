@@ -153,6 +153,9 @@ class AccelTrainer(Trainer):
         """
         Get state components for Accelerate-based distributed training.
 
+        All training state is always saved to checkpoints. To skip loading a component,
+        delete its file from the checkpoint directory.
+
         Accelerate uses DDP for multi-GPU training, which synchronizes model
         and optimizer state across all ranks. Therefore, we use REPLICATED
         pattern for these components with validation enabled to catch sync bugs.
@@ -162,7 +165,7 @@ class AccelTrainer(Trainer):
         """
         components = []
 
-        # Model - REPLICATED in DDP
+        # Model - REQUIRED, REPLICATED in DDP
         # Accelerate synchronizes model weights across all ranks
         components.append(
             StateComponent(
@@ -171,51 +174,49 @@ class AccelTrainer(Trainer):
                 sharing_pattern=SharingPattern.REPLICATED,
                 validate_replication=True,  # Verify DDP synchronization
                 validation_level="tensor",  # Good balance of speed vs accuracy
+                required=True,  # Model is always required
             )
         )
 
-        # Optimizer - REPLICATED in DDP
+        # Optimizer - optional, REPLICATED in DDP
         # Accelerate synchronizes optimizer state across all ranks
         # Note: Validation disabled - AcceleratedOptimizer wrapper may have rank-specific state
-        if self.args.save_optimizer_state:
-            components.append(
-                StateComponent(
-                    key="optimizer",
-                    stateful=self.optimizer,
-                    sharing_pattern=SharingPattern.REPLICATED,
-                    validate_replication=False,  # Disabled: AcceleratedOptimizer has rank-specific state
-                    validation_level="quick",
-                    required=self.args.save_optimizer_state,
-                )
+        components.append(
+            StateComponent(
+                key="optimizer",
+                stateful=self.optimizer,
+                sharing_pattern=SharingPattern.REPLICATED,
+                validate_replication=False,  # Disabled: AcceleratedOptimizer has rank-specific state
+                validation_level="quick",
+                required=False,
             )
+        )
 
-        # LR Scheduler - REPLICATED
+        # LR Scheduler - optional, REPLICATED
         # Same schedule across all ranks
-        if self.args.save_scheduler_state:
-            components.append(
-                StateComponent(
-                    key="scheduler",
-                    stateful=self.lr_scheduler,
-                    sharing_pattern=SharingPattern.REPLICATED,
-                    required=self.args.save_scheduler_state,
-                )
+        components.append(
+            StateComponent(
+                key="scheduler",
+                stateful=self.lr_scheduler,
+                sharing_pattern=SharingPattern.REPLICATED,
+                required=False,
             )
+        )
 
-        # Trainer state - REPLICATED
+        # Trainer state - optional, REPLICATED
         # Training progress is synchronized across all ranks
-        if self.args.save_dataset_state:
-            components.append(
-                StateComponent(
-                    key="trainer",
-                    stateful=self,
-                    sharing_pattern=SharingPattern.REPLICATED,
-                    required=self.args.save_dataset_state,
-                )
+        components.append(
+            StateComponent(
+                key="trainer",
+                stateful=self,
+                sharing_pattern=SharingPattern.REPLICATED,
+                required=False,
             )
+        )
 
-        # Dataset state - depends on dataloader configuration
+        # Dataset state - optional, depends on dataloader configuration
         # Accelerate can use different data loading strategies
-        if self.args.save_dataset_state and hasattr(self.train_dataloader, "state_dict"):
+        if hasattr(self.train_dataloader, "state_dict"):
             components.append(
                 StateComponent(
                     key="dataset",
@@ -225,17 +226,16 @@ class AccelTrainer(Trainer):
                 )
             )
 
-        # RNG state - PER_RANK
+        # RNG state - optional, PER_RANK
         # Each rank needs different random numbers for data augmentation, dropout, etc.
-        if self.args.save_rng_state:
-            components.append(
-                StateComponent(
-                    key="rng",
-                    stateful=RNGState(),
-                    sharing_pattern=SharingPattern.PER_RANK,
-                    required=self.args.save_rng_state,
-                )
+        components.append(
+            StateComponent(
+                key="rng",
+                stateful=RNGState(),
+                sharing_pattern=SharingPattern.PER_RANK,
+                required=False,
             )
+        )
 
         return components
 

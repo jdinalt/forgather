@@ -981,6 +981,9 @@ class PipelineTrainer(Trainer):
         """
         Get state components for pipeline parallel training.
 
+        All training state is always saved to checkpoints. To skip loading a component,
+        delete its file from the checkpoint directory.
+
         Pipeline parallelism splits the model across ranks, so model and optimizer
         are PER_RANK (different pipeline stages on each rank). Scheduler and trainer
         state are REPLICATED (same across all ranks). Dataset uses GLOBAL pattern
@@ -992,7 +995,7 @@ class PipelineTrainer(Trainer):
         """
         components = []
 
-        # Model - PER_RANK (different pipeline stages per rank)
+        # Model - REQUIRED, PER_RANK (different pipeline stages per rank)
         # pipeline_modules contains the stage modules assigned to this rank
         if self.pipeline_modules:
             components.append(
@@ -1000,48 +1003,48 @@ class PipelineTrainer(Trainer):
                     key="model",
                     stateful=self.pipeline_modules,
                     sharing_pattern=SharingPattern.PER_RANK,
+                    required=True,  # Model is always required
                 )
             )
 
-        # Optimizer - PER_RANK (optimizes different parameters per rank)
+        # Optimizer - optional, PER_RANK (optimizes different parameters per rank)
         # Each rank's optimizer only contains parameters for its pipeline stages
-        if self.args.save_optimizer_state and self.optimizer:
+        if self.optimizer:
             components.append(
                 StateComponent(
                     key="optimizer",
                     stateful=self.optimizer,
                     sharing_pattern=SharingPattern.PER_RANK,
-                    required=self.args.save_optimizer_state,
+                    required=False,
                 )
             )
 
-        # LR Scheduler - REPLICATED (same schedule across all ranks)
+        # LR Scheduler - optional, REPLICATED (same schedule across all ranks)
         # All ranks follow the same learning rate schedule
-        if self.args.save_scheduler_state and self.lr_scheduler:
+        if self.lr_scheduler:
             components.append(
                 StateComponent(
                     key="scheduler",
                     stateful=self.lr_scheduler,
                     sharing_pattern=SharingPattern.REPLICATED,
-                    required=self.args.save_scheduler_state,
+                    required=False,
                 )
             )
 
-        # Trainer state - REPLICATED (same global step across all ranks)
+        # Trainer state - optional, REPLICATED (same global step across all ranks)
         # Training progress is synchronized across all pipeline stages
-        if self.args.save_dataset_state:
-            components.append(
-                StateComponent(
-                    key="trainer",
-                    stateful=self,
-                    sharing_pattern=SharingPattern.REPLICATED,
-                    required=self.args.save_dataset_state,
-                )
+        components.append(
+            StateComponent(
+                key="trainer",
+                stateful=self,
+                sharing_pattern=SharingPattern.REPLICATED,
+                required=False,
             )
+        )
 
-        # Dataset state - GLOBAL (DataloaderDispatcher with pure MP mode)
+        # Dataset state - optional, GLOBAL (DataloaderDispatcher with pure MP mode)
         # Rank 0 loads data and broadcasts to all ranks (dp_mesh_dim=None)
-        if self.args.save_dataset_state and hasattr(self.train_dataloader, "state_dict"):
+        if hasattr(self.train_dataloader, "state_dict"):
             components.append(
                 StateComponent(
                     key="dataset",
@@ -1051,17 +1054,16 @@ class PipelineTrainer(Trainer):
                 )
             )
 
-        # RNG state - PER_RANK (each rank needs different random numbers)
+        # RNG state - optional, PER_RANK (each rank needs different random numbers)
         # Different dropout patterns, etc. for different pipeline stages
-        if self.args.save_rng_state:
-            components.append(
-                StateComponent(
-                    key="rng",
-                    stateful=RNGState(),
-                    sharing_pattern=SharingPattern.PER_RANK,
-                    required=self.args.save_rng_state,
-                )
+        components.append(
+            StateComponent(
+                key="rng",
+                stateful=RNGState(),
+                sharing_pattern=SharingPattern.PER_RANK,
+                required=False,
             )
+        )
 
         return components
 

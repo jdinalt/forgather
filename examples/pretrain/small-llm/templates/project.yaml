@@ -19,7 +19,8 @@
 
     ## Training settings
     -- set ns.per_device_train_batch_size = batch_size | default(4)
-    -- set ns.base_learning_rate = learning_rate | default(1.0e-4)
+    -- set ns.gradient_accumulation_steps = 1
+    -- set ns.base_learning_rate = learning_rate | default(2.0e-05)
     -- set ns.max_length = max_length | default(4096)
     
     ## Shard the dataset, rather than dispatching from rank0
@@ -32,7 +33,7 @@
     ## Computed config. values
     == super()
     -- set ns.world_size = (getenv("WORLD_SIZE", "1") | int)
-    -- set ns.effective_batch_size = ns.per_device_train_batch_size * ns.world_size
+    -- set ns.effective_batch_size = ns.gradient_accumulation_steps * ns.per_device_train_batch_size * ns.world_size
     ## Learning Rate, scaled by sqrt(ns.effective_batch_size)
     -- set ns.scaled_lr = ns.base_learning_rate * (ns.effective_batch_size ** 0.5)
 
@@ -40,10 +41,11 @@
     == super()
 # Pretrain
 # ns.per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
-# ns.base_learning_rate: {{ ns.base_learning_rate }}
-# ns.step_cadence: {{ ns.step_cadence }}
+# ns.gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
 # ns.world_size: {{ ns.world_size }}
 # ns.effective_batch_size: {{ ns.effective_batch_size }}
+# ns.base_learning_rate: {{ ns.base_learning_rate }}
+# ns.step_cadence: {{ ns.step_cadence }}
 # ns.scaled_lr: {{ ns.scaled_lr }}
 
 [datasets_preprocessor_args]
@@ -170,48 +172,50 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 
 [trainer_args]
     == super()
-    # **Pretrain**
-    seed: 42
+    # --- Pretrain Config ---
 
-    eval_strategy: "steps"
-    max_eval_steps: -1 # This limits the number of examples in the eval. step.
+    # **Cadence**
+    logging_steps: {{ (100 * ns.step_cadence / ns.per_device_train_batch_size) | int }}
+    eval_steps: {{ (1000 * ns.step_cadence / ns.per_device_train_batch_size) | int }}
+    save_steps: {{ (20000 * ns.step_cadence / ns.per_device_train_batch_size) | int }}
 
-    save_strategy: "{{ save_strategy | default('steps') }}"
-    save_safetensors: False
-    save_total_limit: 3
-
-    # Scale stepping cadence with batch-size
-    logging_steps: {{ (50 * ns.step_cadence / ns.per_device_train_batch_size) | int }}
-    eval_steps: {{ (500 * ns.step_cadence / ns.per_device_train_batch_size) | int }}
-    save_steps: {{ (5000 * ns.step_cadence / ns.per_device_train_batch_size) | int }}
-
+    # **Dataloader Config**
     num_train_epochs: 1
-
-    # Resume if not init_model
-    resume_from_checkpoint: {{ not (init_model | default(False)) }}
-    # Optionally disable restoration of dataset state. This is useful when
-    # switching datasets.
-    restore_dataset_state: {{ not (no_restore_dataset_state | default(False)) }}
-
     per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
     per_device_eval_batch_size: {{ ns.per_device_train_batch_size * 2 }}
-
     dataloader_num_workers: 1
     dataloader_drop_last: True
     dataloader_persistent_workers: False
     dataloader_prefetch_factor: 32
+    # When True, only rank0 reads the datasets -- and dispatches batches to other ranks.
+    dispatch_batches: False
 
-    float32_matmul_precision: "high"
-    default_dtype: "bfloat16"
+    # **Eval Config**
+    eval_strategy: "steps"
+    max_eval_steps: -1 # This limits the number of examples in the eval. step.
 
+    # **Checkpoing saving**
+    save_strategy: {{ save_strategy | toyaml('steps') }}
+    save_safetensors: False
+    save_total_limit: 3
+    preserve_best_model: True
+    best_model_metric: "loss"
+    preserve_n_best: 2
+    eval_on_save: True
+
+    # **Checkpoint loading**
+    resume_from_checkpoint: {{ not (init_model | default(False)) }}
+
+    # **Torch Compile Config**
     torch_compile: {{ not (no_compile | default(False)) }}
     torch_compile_dynamic: True
 
-    gradient_accumulation_steps: 1
-    max_grad_norm: 5.0
-
-    # When True, only rank0 reads the datasets -- and dispatches batches to other ranks.
-    dispatch_batches: {{ ns.dispatch_batches }}
+    # **Misc.**
+    seed: 42
+    float32_matmul_precision: "high"
+    default_dtype: "bfloat16"
+    gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
+    max_grad_norm: 1.0
 
 [trainer_constructor]
     == super()
@@ -236,11 +240,16 @@ text_gen_callback_args: &text_gen_callback_args
     prompts: {{ abspath(joinpath(ns.forgather_dir, "prompts/short_stories.yaml")) }}
     generation_config: *generation_config
     max_new_tokens: 120
-    generation_steps: 2000
+    generation_steps: 10000
 
 [callback_list]
     == super()
-    text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
-        <<: *text_gen_callback_args
+    #text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
+    #    <<: *text_gen_callback_args
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
     peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
+    divergence_detector: !singleton:forgather.ml.trainer.callbacks:DualTimeScaleDivergenceDetector
+        short_alpha: 0.1        # Fast EMA (~10 step window)
+        long_alpha: 0.01        # Slow EMA (~100 step window)
+        threshold: 1.0          # Stop if short - long >= 1.0
+        action: "abort"

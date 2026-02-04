@@ -578,9 +578,9 @@ else:
 ```
 
 **For custom trainers:**
-- Implement `get_state_components()` for new API (recommended)
-- Keep old `get_statefuls_for_save/load()` for backward compatibility (optional)
-- CheckpointManager will use new API if available, fall back to old API otherwise
+- Must implement `get_state_components()` (required as of v2.0)
+- Old `get_statefuls_for_save/load()` methods have been removed
+- CheckpointManager requires the new API
 
 ## Migration Checklist
 
@@ -596,6 +596,70 @@ else:
 - [ ] Update documentation
 - [ ] Remove legacy `get_statefuls_for_save/load()` (after testing)
 
+## Removed Features (v2.0)
+
+### Save/Restore Flags Removed
+
+The following flags have been removed from TrainingArguments:
+- `save_optimizer_state` / `restore_optimizer_state`
+- `save_scheduler_state` / `restore_scheduler_state`
+- `save_dataset_state` / `restore_dataset_state`
+- `save_rng_state` / `restore_rng_state`
+
+**Rationale**: These flags created confusing coupling between save and restore decisions. The new approach is simpler and more flexible.
+
+**Migration**: All state is now always saved. To skip loading a component, delete its file from the checkpoint directory before resuming training.
+
+**Before (old API):**
+```python
+args = TrainingArguments(
+    restore_optimizer_state=False,  # Skip optimizer restore
+)
+```
+
+**After (new API):**
+```bash
+# Delete optimizer state file before resuming
+rm checkpoint-1000/optimizer_state.pt
+```
+
+### Old Protocol Methods Removed
+
+The deprecated `get_statefuls_for_save()` and `get_statefuls_for_load()` methods have been removed from the StatefulProvider protocol.
+
+**Migration**: All trainers must now implement `get_state_components()` instead.
+
+**Before (old API):**
+```python
+def get_statefuls_for_save(self) -> Dict[str, Stateful]:
+    return {
+        "optimizer": self.optimizer if self.args.save_optimizer_state else None,
+        "scheduler": self.lr_scheduler if self.args.save_scheduler_state else None,
+    }
+```
+
+**After (new API):**
+```python
+@override
+def get_state_components(self) -> List[StateComponent]:
+    return [
+        StateComponent(
+            key="optimizer",
+            stateful=self.optimizer,
+            sharing_pattern=SharingPattern.GLOBAL,
+            required=False,  # Optional - can be skipped by deleting file
+        ),
+        StateComponent(
+            key="scheduler",
+            stateful=self.lr_scheduler,
+            sharing_pattern=SharingPattern.GLOBAL,
+            required=False,
+        ),
+    ]
+```
+
+**Note**: Model weights remain `required=True` and cannot be skipped.
+
 ## Getting Help
 
 - **Main Documentation**: `docs/checkpointing/distributed_checkpoint_abstraction.md`
@@ -605,7 +669,8 @@ else:
 
 ## Current Status
 
-- **Phase 3 Complete**: All built-in trainers migrated and tested
-- **New API**: Default for all built-in trainers
-- **Old API**: Still supported for custom trainers (backward compatibility)
-- **Production Ready**: 5/5 trainer types tested successfully
+- **v2.0**: Checkpoint API cleanup complete
+- **New API**: Only API supported (old API removed)
+- **All state always saved**: Simplified approach with manual file deletion for partial loading
+- **Production Ready**: All built-in trainers tested successfully
+- **Breaking Change**: Save/restore flags removed - see "Removed Features" section above

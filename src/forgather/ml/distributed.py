@@ -33,8 +33,48 @@ from torch import distributed as dist
 from torch._C._distributed_c10d import Work
 from torch.distributed import ProcessGroup
 
+
+def prefix_logger_rank(
+    logger: logging.Logger,
+    filter: Optional[Callable[[int], bool]] = None,
+    format: Optional[str] = None,
+):
+    """
+    Modifies a logger to prefix the log output with the rank of the process
+
+    Optionally, a filter function can be provided to filter on rank
+
+    By default, the filter filters all ranks, excepting rank 0
+    """
+    logger.propagate = False
+    handler = logging.StreamHandler()
+
+    if format is None:
+        # The default filter only prints messages from rank0; no need to specify the rank.
+        if filter is None:
+            format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        else:
+            format = (
+                "[Rank %(rank)s] %(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            )
+
+    if filter is None:
+        filter = lambda rank: rank == 0
+
+    def rank_filter(record):
+        record.rank = get_rank()
+        return filter(record.rank)
+
+    handler.addFilter(rank_filter)
+    formatter = logging.Formatter(format)
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    return logger
+
+
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG)
+prefix_logger_rank(logger, lambda rank: True)
 
 # Tracks recursion depth of main_local_process_first to prevent nested barriers
 mpf_recursion_level = 0
@@ -612,5 +652,5 @@ class DistributedEnvironment(DistributedEnvInterface):
 
     def _init_process_group(self):
         """Initialize the torch.distributed process group with the configured backend."""
-        logger.info(f"RANK{self.rank}: init_process_group({self.backend, self.device})")
+        logger.info(f"init_process_group({self.backend, self.device})")
         dist.init_process_group(backend=self.backend)

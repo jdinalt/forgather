@@ -715,47 +715,16 @@ class StatefulProvider(Protocol):
     Used by checkpoint managers to collect all components that need to be
     saved/restored during checkpointing (optimizer, scheduler, dataset, etc.).
 
-    Supports two APIs:
-    1. Legacy API: get_statefuls_for_save/load() - Returns flat dict of Statefuls
-    2. New API: get_state_components() - Returns list of StateComponents with sharing patterns
+    The protocol uses StateComponents which declare explicit sharing patterns
+    (GLOBAL, PER_RANK, REPLICATED, etc.) to enable automatic distributed
+    checkpoint coordination for hybrid parallelism strategies.
 
-    The new API enables distributed checkpoint coordination for hybrid parallelism.
-    Implementations should provide both for backward compatibility during migration.
-
-    Migration timeline:
-    - Phase 1 (current): Both APIs supported, legacy is default
-    - Phase 2 (3 months): New API is default, legacy deprecated
-    - Phase 3 (6 months): Legacy API removed
+    All implementations must provide:
+    - get_state_components(): Returns list of StateComponents with sharing patterns
+    - get_process_groups(): Returns named process groups (only if using PER_GROUP pattern)
     """
 
-    # Legacy API - Deprecated, use get_state_components() instead
     @abstractmethod
-    def get_statefuls_for_save(self) -> Dict[str, Stateful]:
-        """
-        Get stateful objects to save in checkpoint.
-
-        DEPRECATED: Use get_state_components() for new code.
-
-        Returns:
-            Dictionary mapping component names to Stateful objects for saving
-            (e.g., {"optimizer": optimizer, "scheduler": lr_scheduler})
-        """
-        pass
-
-    @abstractmethod
-    def get_statefuls_for_load(self) -> Dict[str, Stateful]:
-        """
-        Get stateful objects to restore from checkpoint.
-
-        DEPRECATED: Use get_state_components() for new code.
-
-        Returns:
-            Dictionary mapping component names to Stateful objects for loading
-            (e.g., {"optimizer": optimizer, "scheduler": lr_scheduler})
-        """
-        pass
-
-    # New API - Preferred for distributed checkpointing
     def get_state_components(self) -> List["StateComponent"]:  # type: ignore
         """
         Get state components with explicit sharing patterns for distributed checkpointing.
@@ -813,9 +782,7 @@ class StatefulProvider(Protocol):
 
         See: docs/checkpointing/migration_guide.md for full migration guide
         """
-        # Default implementation returns None to signal use of legacy API
-        # Implementations should override this to provide StateComponents
-        return None  # type: ignore
+        pass
 
     def get_process_groups(self) -> Dict[str, Any]:
         """
