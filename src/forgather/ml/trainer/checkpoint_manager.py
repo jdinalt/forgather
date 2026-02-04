@@ -330,13 +330,32 @@ class CheckpointManager(CheckpointInterface):
                     metadata_path, map_location=torch.device("cpu")
                 )
 
-                # Restore best checkpoints list
+                # Restore best checkpoints list, filtering out non-existent paths
                 if "best_checkpoints" in checkpoint_metadata:
-                    self.best_checkpoints = checkpoint_metadata["best_checkpoints"]
-                    logger.info(
-                        f"Restored best checkpoints list: "
-                        f"{[os.path.basename(cp[0]) for cp in self.best_checkpoints]}"
-                    )
+                    restored_checkpoints = checkpoint_metadata["best_checkpoints"]
+                    # Filter out checkpoints that no longer exist on disk
+                    self.best_checkpoints = [
+                        (cp_path, metric)
+                        for cp_path, metric in restored_checkpoints
+                        if os.path.exists(cp_path)
+                    ]
+
+                    # Log what was restored and what was filtered
+                    if len(self.best_checkpoints) < len(restored_checkpoints):
+                        filtered = len(restored_checkpoints) - len(self.best_checkpoints)
+                        logger.warning(
+                            f"Filtered out {filtered} non-existent checkpoints from best_checkpoints list"
+                        )
+
+                    if self.best_checkpoints:
+                        logger.info(
+                            f"Restored best checkpoints list: "
+                            f"{[os.path.basename(cp[0]) for cp in self.best_checkpoints]}"
+                        )
+                    else:
+                        logger.info(
+                            "Best checkpoints list was empty after filtering non-existent paths"
+                        )
 
                 # Restore callback states
                 if (
