@@ -4,5 +4,7 @@
     == super()
     -- set ns.config_name = "Fast Cosmopedia v2"
     -- set ns.config_description = "Cosmopedia v2 is an enhanced version of Cosmopedia, the largest synthetic dataset for pre-training, consisting of over 39 million textbooks, blog posts, and stories..."
-    -- set ns.dataset_name = "cosmopedia-v2"
 
+[load_dataset_args]
+    == super()
+    name: "cosmopedia-v2"

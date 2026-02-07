@@ -193,7 +193,7 @@ class MetaConfig:
 
         found_project_dir = MetaConfig._find_dir(project_dir, is_project)
         if not found_project_dir:
-            raise ValueError(f"No projects where fouund at or below {project_dir}")
+            raise ValueError(f"No projects where found at or below {project_dir}")
         return found_project_dir
 
     @staticmethod

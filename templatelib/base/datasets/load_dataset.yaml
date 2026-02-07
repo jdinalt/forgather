@@ -1,0 +1,74 @@
+-- extends "datasets/dataset_type.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "load_dataset"
+    -- set ns.config_description = "A template for loading datasets"
+    -- set ns.main_feature = "text"
+    -- set ns.load_method = "datasets:load_dataset"
+    -- set ns.preprocess_method = "forgather.ml.datasets:preprocess_dataset"
+
+[main_body]
+.define: &tokenizer !var "tokenizer"
+
+    [map_function]
+.define: &map_function !partial:forgather.ml.datasets:default_tokenize_map_fn
+        add_eos: True
+
+    [pp_kwargs]
+.define: &pp_kwargs !dict
+
+    [load_dataset_args]
+.define: &load_dataset_args
+    ## Example args...
+    ## path: "EleutherAI/wikitext_document_level"
+    ## name: "wikitext-103-raw-v1"
+    ## revision: "6472347"
+
+    [map_args]
+.define: &map_kwargs !dict
+
+    [dataset_args]
+.define: &dataset_args
+    map_fn: *map_function
+    map_kwargs: *map_kwargs
+    tokenizer: *tokenizer
+    shard_dataset: !var [ "shard_dataset", False ]
+    fn_kwargs: !var [ "preprocess_args", {} ]
+    feature: {{ ns.main_feature }}
+
+    [train_dataset_split]
+train_dataset_split: &train_dataset_split !singleton:{{ ns.load_method }}@train_dataset_split
+    <<: *load_dataset_args
+    split: "train"
+
+    [validation_dataset_split]
+validation_dataset_split: &validation_dataset_split !singleton:{{ ns.load_method }}@validation_dataset_split
+    <<: *load_dataset_args
+    split: "validation"
+
+    [test_dataset_split]
+test_dataset_split: &test_dataset_split !singleton:{{ ns.load_method }}@test_dataset_split
+    <<: *load_dataset_args
+    split: "test"
+
+    [train_dataset]
+train_dataset: &train_dataset !singleton:{{ ns.preprocess_method }}@train_dataset
+    <<: *dataset_args
+    select_range: !var [ "select_range", null ]
+    shuffle: !var [ "shuffle", False ]
+    seed: !var [ "seed", 42 ]
+    dataset: *train_dataset_split
+    desc: "Train"
+   
+    [eval_dataset]
+eval_dataset: &eval_dataset !singleton:{{ ns.preprocess_method }}@eval_dataset
+    <<: *dataset_args
+    dataset: *validation_dataset_split
+    desc: "Validation"
+
+    [test_dataset]
+test_dataset: &test_dataset !singleton:{{ ns.preprocess_method }}@test_dataset
+    <<: *dataset_args
+    dataset: *test_dataset_split
+    desc: "Test"

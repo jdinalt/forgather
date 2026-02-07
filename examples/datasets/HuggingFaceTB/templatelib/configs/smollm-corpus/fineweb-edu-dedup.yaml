@@ -4,5 +4,7 @@
     == super()
     -- set ns.config_name = "Fast FineWeb-Edu-Dedup"
     -- set ns.config_description = "FineWeb-Edu-Dedup is a deduplicated subset of the FineWeb-Edu dataset, containing 220 billion tokens of educational web pages."
-    -- set ns.dataset_name = "fineweb-edu-dedup"
 
+[load_dataset_args]
+    == super()
+    name: "fineweb-edu-dedup"

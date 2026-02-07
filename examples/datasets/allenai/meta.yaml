@@ -4,5 +4,5 @@
 name: "allenai"
 description: "Building breatkthrough AI to solve the world's biggest problems."
 config_prefix: "configs"
-default_config: "en-abridged.yaml"
+default_config: "en.yaml"
 << endblock configs

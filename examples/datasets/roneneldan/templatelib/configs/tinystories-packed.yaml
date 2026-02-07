@@ -26,7 +26,6 @@
     map_kwargs:
         batch_size: 1000
     num_shards: 1024
-    fn_kwargs: !var { name: "preprocess_args", default: null }
 
 [dynamic_args]
     == super()
