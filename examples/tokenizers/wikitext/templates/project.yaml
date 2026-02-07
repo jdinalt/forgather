@@ -6,7 +6,7 @@
     -- set ns.config_description = "BPE tokenizer trained on Wikietext Document Level dataset"
 
 [tokenizer_dataset]
-tokenizer_dataset: &tokenizer_dataset !singleton:datasets:load_dataset@tokenizer_dataset
+tokenizer_dataset: &tokenizer_dataset !partial:datasets:load_dataset@tokenizer_dataset
     args: [ "EleutherAI/wikitext_document_level", "wikitext-103-raw-v1" ]
     kwargs: { split: "train" }
 

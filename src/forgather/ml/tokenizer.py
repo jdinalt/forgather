@@ -1,7 +1,7 @@
 import os
 import time
 from collections.abc import Sequence
-from typing import Dict, List
+from typing import Callable
 
 from tqdm.auto import tqdm
 from transformers import PreTrainedTokenizerFast
@@ -79,7 +79,7 @@ class TokenizerTrainer:
         post_processor,
         decoder,
         trainer,
-        dataset: Dataset,
+        dataset: Callable[[], Dataset],
         feature: str = "text",
         select_range: range | int | float | Sequence | None = None,
         args=None,
@@ -94,15 +94,15 @@ class TokenizerTrainer:
 
         self.tokenizer = tokenizer
         self.trainer = trainer
-        self.train_dataset = dataset
+        self.train_dataset = dataset()
         self.args = args
         self.output_dir = output_dir
         self.feature = feature
-        select_range
+        
         if select_range is not None:
             select_range = normalize_range(len(self.train_dataset), select_range)
             print(f"Selecting range {select_range} from dataset")
-            self.train_dataset = dataset.select(select_range)
+            self.train_dataset = self.train_dataset.select(select_range)
 
     def __call__(self):
         self.train()
