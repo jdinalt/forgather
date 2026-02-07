@@ -1,12 +1,14 @@
 import os
 import subprocess
+from argparse import Namespace
 from typing import Optional
 
 from forgather.config import ConfigEnvironment
+from forgather.latent import Latent
 from forgather.meta_config import MetaConfig, preprocessor_globals
 
 
-def set_default_template(meta, args):
+def set_default_template(meta, args: Namespace):
     """Set default template if not specified in args."""
     if not args.config_template:
         default_config = meta.default_config()
@@ -30,7 +32,7 @@ def get_config(meta, env, config_template, **kwargs):
 class BaseCommand:
     """Base class for CLI commands with common setup patterns."""
 
-    def __init__(self, args, search_for_project=True):
+    def __init__(self, args: Namespace, search_for_project=True):
         if search_for_project:
             args.project_dir = MetaConfig.find_project_dir(args.project_dir)
         self.args = args
@@ -41,6 +43,18 @@ class BaseCommand:
     def get_config(self, **kwargs):
         """Get configuration for current template."""
         return get_config(self.meta, self.env, self.args.config_template, **kwargs)
+
+
+def assert_project_class(args: Namespace, cls_prefix: str):
+    """Check if a project class is of a specified type"""
+    cmd = BaseCommand(args)
+    config, pp_config = cmd.get_config()
+    config_meta = Latent.materialize(config.meta)
+    config_class = config_meta["config_class"]
+    if not config_class.startswith(cls_prefix):
+        raise ValueError(
+            f"Config class is not of '{cls_prefix}'. config_class={config_class}"
+        )
 
 
 def add_output_arg(parser):
@@ -64,7 +78,7 @@ def add_editor_arg(parser):
     )
 
 
-def write_output(args, data):
+def write_output(args: Namespace, data):
     """For commands with an '-o' argument, either write data to stdout or to file"""
     if args.output_file:
         try:
@@ -77,7 +91,9 @@ def write_output(args, data):
         print(data)
 
 
-def write_output_or_edit(args, data, file_extension=".txt", command_name="output"):
+def write_output_or_edit(
+    args: Namespace, data, file_extension=".txt", command_name="output"
+):
     """Write data to file, temp file + editor, or stdout based on flags
 
     Args:
@@ -122,7 +138,7 @@ def write_output_or_edit(args, data, file_extension=".txt", command_name="output
         write_output(args, data)
 
 
-def should_use_absolute_paths(args):
+def should_use_absolute_paths(args: Namespace):
     """Check if we should use absolute paths (when using -e flag)
 
     When using -e flag, we create files in ./tmp/ directory,

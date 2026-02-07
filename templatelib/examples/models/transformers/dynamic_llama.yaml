@@ -30,8 +30,7 @@
     hidden_size: !var "hidden_size"
     num_attention_heads: !var "num_attention_heads"
     max_sequence_length: !var "max_position_embeddings"
-    rope_theta: !var "rope_theta"
-    rope_scaling: !var "rope_scaling"
+    rope_parameters: !var "rope_parameters"
 
     [qk_norm_factory]
 .define: &qk_norm_factory null
@@ -152,7 +151,7 @@ model_factory: &model_factory !dict@model_factory
         - *tokenizer
         - "model_max_length"
     intermediate_size: {{ intermediate_size | toyaml(11008) }}
-    rope_theta: {{ rope_theta | toyaml(10000.0) }}
+    rope_parameters: {{ rope_parameters | toyaml({'rope_theta': 10000.0}) }}
     embedding_dropout: {{ embedding_dropout | toyaml(0.0) }}
     rms_norm_eps: {{ rms_norm_eps | toyaml(1.0e-05) }}
     layer_dropout: {{ layer_dropout | toyaml(0.0) }}
@@ -162,7 +161,6 @@ model_factory: &model_factory !dict@model_factory
     enable_activation_checkpoint: False
     checkpoint_stride: {{ checkpoint_stride | toyaml(1) }}
     tie_word_embeddings: {{ tie_word_embeddings | toyaml(False) }}
-    rope_scaling: {{ rope_scaling | toyaml(None) }}
     sliding_window: {{ sliding_window | toyaml(None) }}
     flex_attn_kernel_options: *flex_attn_kernel_options
     

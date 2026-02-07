@@ -6,6 +6,7 @@ from forgather import Project
 from forgather.ml.sharded_checkpoint import create_pretrained_symlinks
 
 from .dynamic_args import get_dynamic_args
+from .utils import assert_project_class
 
 
 def checkpoint_cmd(args):
@@ -20,6 +21,7 @@ def checkpoint_cmd(args):
 
 
 def link_command(args):
+    assert_project_class(args, "type.training_script")
     if not args.output_path:
         config_name = args.config_template
         if args.config_template is None:
@@ -141,6 +143,7 @@ def inspect_with_manifest(checkpoint_path: str, manifest_path: str, args):
         print(f"Error reading manifest: {e}")
         if args.verbose:
             import traceback
+
             traceback.print_exc()
 
 
@@ -225,7 +228,10 @@ def validate_checkpoint_files(checkpoint_path: str, manifest, args):
             expected_count = len(comp_manifest.ranks)
             actual_count = len(files)
 
-            if actual_count != expected_count and comp_manifest.sharing_pattern not in ("global", "replicated"):
+            if (
+                actual_count != expected_count
+                and comp_manifest.sharing_pattern not in ("global", "replicated")
+            ):
                 issues.append(
                     f"  ⚠ Component '{key}': Expected {expected_count} files, found {actual_count}"
                 )

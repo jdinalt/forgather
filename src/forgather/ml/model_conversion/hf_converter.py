@@ -16,7 +16,7 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizer,
 )
-from transformers.modeling_utils import no_init_weights as hf_no_init_weights
+from transformers.initialization import no_init_weights as hf_no_init_weights
 
 from forgather import MetaConfig, Project
 from forgather.ml.no_init_weights import no_init_weights
@@ -508,7 +508,12 @@ class HFConverter(ModelConverter):
         )
 
         # Determine max length
-        max_model_length = src_model_config.max_sequence_length
+        # Use max_position_embeddings which is the standard HF config field
+        max_model_length = getattr(
+            src_model_config,
+            'max_position_embeddings',
+            getattr(src_model_config, 'max_sequence_length', None)
+        )
         if max_length:
             max_model_length = max_length
 
@@ -525,7 +530,8 @@ class HFConverter(ModelConverter):
             hf_model = hf_model_class(hf_config)
 
         # The hf_no_init_weights() context manager disabled tie_weights() in post_init(), so
-        # we need to call it explicitly.
+        # we need to call it explicitly. In v5.0, tie_weights() has optional parameters but
+        # defaults work fine for our use case.
         if hasattr(hf_model, "tie_weights"):
             hf_model.tie_weights()
 
@@ -573,6 +579,7 @@ class HFConverter(ModelConverter):
             src_model,
             hf_model,
             tokenizer,
+            tokenizer,  # Use same tokenizer for both source and destination
             prompt,
             "Source Forgather",
             f"Destination HuggingFace {self.model_type}",
@@ -594,6 +601,8 @@ class HFConverter(ModelConverter):
         config_name = "generation_config.json"
         src_config_path = os.path.join(src_model_path, config_name)
         if os.path.isfile(src_config_path):
+            # Ensure destination directory exists
+            os.makedirs(dst_model_path, exist_ok=True)
             dst_config_path = os.path.join(dst_model_path, config_name)
             logger.info(
                 f"Copy generation config from {src_config_path} to {dst_config_path}"

@@ -1,15 +1,16 @@
+import json
 import os
 import subprocess
 
 from forgather.latent import Latent
 
 from .dynamic_args import get_dynamic_args
-from .utils import BaseCommand
+from .utils import BaseCommand, assert_project_class
 
 
 def train_cmd(args):
     """Run configuration with train script."""
-    import json
+    assert_project_class(args, "type.training_script")
 
     cmd = BaseCommand(args)
     config, pp_config = cmd.get_config()

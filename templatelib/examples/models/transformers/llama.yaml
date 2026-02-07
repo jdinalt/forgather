@@ -13,6 +13,7 @@ tokenizer: &tokenizer !call:transformers:AutoTokenizer.from_pretrained@tokenizer
     arg0: "TheBloke/Llama-2-7B-GPTQ"
     legacy: False
     model_max_length: 4096
+    trust_remote_code: True
 
 [model_config]
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/configuration_llama.py

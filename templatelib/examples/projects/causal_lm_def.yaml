@@ -47,17 +47,13 @@
         names: "--intermediate-size"
         type: "int"
         help: "Feedforward dimension"
-    rope_theta:
-        names: "--rope-theta"
-        type: "float"
-        help: "RoPE Theta"
+    rope_parameters:
+        names: "--rope-parameters"
+        help: "RoPE parameters dict (rope_theta, rope_type, factor, etc.)"
     rms_norm_eps:
         names: "--rms-norm-eps"
         type: "float"
         help: "RMS Norm eps"
-    rope_scaling:
-        names: "--rope-scaling"
-        help: "RoPE scaling type"
     sliding_window:
         names: "--sliding-window"
         type: "int"

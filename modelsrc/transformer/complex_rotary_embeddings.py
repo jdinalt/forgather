@@ -111,18 +111,50 @@ class RotaryPE:
         hidden_size: int,
         num_attention_heads: int,
         max_sequence_length: int = 2048,
-        rope_theta: float = 10000.0,
-        rope_scaling: Optional[Dict[str, Any]] = None,
+        rope_parameters: Optional[Dict[str, Any]] = None,
+        rope_theta: Optional[float] = None,  # Deprecated: use rope_parameters
+        rope_scaling: Optional[Dict[str, Any]] = None,  # Deprecated: use rope_parameters
         use_liger: bool = False,
         # Ignored parameters for interface compatibility
         cache_embeddings: bool = None,
         compile_on_demand: bool = None,
         use_complex_rope: bool = None,
     ):
+        """Initialize complex RoPE embeddings.
+
+        Args:
+            rope_parameters: Dictionary with rope_theta, rope_type, and scaling params.
+                            Example: {'rope_theta': 10000.0, 'rope_type': 'llama3',
+                                     'factor': 32.0, 'low_freq_factor': 1.0, ...}
+            rope_theta: (Deprecated) Use rope_parameters instead
+            rope_scaling: (Deprecated) Use rope_parameters instead
+        """
+        # Extract parameters from rope_parameters dict (v5.0 format)
+        # Or fall back to legacy rope_theta/rope_scaling params
+        if rope_parameters is not None:
+            extracted_theta = rope_parameters.get('rope_theta', 10000.0)
+
+            # Build rope_scaling dict from rope_parameters
+            extracted_scaling = {}
+            if 'rope_type' in rope_parameters:
+                extracted_scaling['rope_type'] = rope_parameters['rope_type']
+            for key in ['factor', 'low_freq_factor', 'high_freq_factor',
+                       'original_max_position_embeddings', 'attention_factor',
+                       'beta_fast', 'beta_slow', 'short_factor', 'long_factor']:
+                if key in rope_parameters:
+                    extracted_scaling[key] = rope_parameters[key]
+
+            if not extracted_scaling:
+                extracted_scaling = None
+        else:
+            # Legacy mode: use separate rope_theta/rope_scaling params
+            extracted_theta = rope_theta if rope_theta is not None else 10000.0
+            extracted_scaling = rope_scaling
+
         self.d_head = hidden_size // num_attention_heads
         self.max_sequence_length = max_sequence_length
-        self.rope_theta = rope_theta
-        self.rope_scaling = rope_scaling
+        self.rope_theta = extracted_theta
+        self.rope_scaling = extracted_scaling
         self.dtype = torch.get_default_dtype()
 
         # Validate requirements

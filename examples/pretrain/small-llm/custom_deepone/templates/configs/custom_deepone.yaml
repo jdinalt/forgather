@@ -23,8 +23,7 @@ tokenizer: &tokenizer !call:forgather:from_project
     hidden_size: !var "hidden_size"
     num_attention_heads: !var "num_attention_heads"
     max_sequence_length: !var "max_position_embeddings"
-    rope_theta: !var "rope_theta"
-    rope_scaling: !var "rope_scaling"
+    rope_parameters: !var "rope_parameters"
 
 [qk_norm_factory]
 # Add QK Norm -- Like Qwen3
@@ -57,5 +56,4 @@ tokenizer: &tokenizer !call:forgather:from_project
     layer_dropout: 0.0
 
     num_key_value_heads: null
-    rope_scaling: null
-    rope_theta: !!float 10000.0
+    rope_parameters: {{ rope_parameters | toyaml({'rope_theta': 10000.0}) }}

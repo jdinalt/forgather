@@ -14,7 +14,7 @@ from forgather.ml.sharded_checkpoint import load_checkpoint
 from forgather.ml.utils import count_parameters, default_dtype
 
 from .dynamic_args import get_dynamic_args
-from .utils import write_output_or_edit
+from .utils import assert_project_class, write_output_or_edit
 
 
 def optimizer_hook(optimizer, name, parameter):
@@ -41,6 +41,8 @@ def load_model(args):
 
 def model_cmd(args):
     """Model test commands."""
+    assert_project_class(args, "type.model")
+
     print(f"{args=}")
     if hasattr(args, "model_subcommand"):
         match args.model_subcommand:
