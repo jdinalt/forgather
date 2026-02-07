@@ -6,6 +6,8 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.optim import Optimizer
 
+from .rounding_utils import fp32_to_bf16_stochastic_round
+
 
 class AdamW(Optimizer):
     """
@@ -20,6 +22,7 @@ class AdamW(Optimizer):
         eps: float = 1e-6,
         weight_decay: float = 0.0,
         torch_compile: bool = False,
+        bf16_stochastic_round: bool = False,
     ):
         self.compile = torch_compile
         defaults = dict(
@@ -27,6 +30,7 @@ class AdamW(Optimizer):
             betas=betas,
             eps=eps,
             weight_decay=weight_decay,
+            bf16_stochastic_round=bf16_stochastic_round,
         )
         super().__init__(params, defaults)
 
@@ -67,6 +71,7 @@ class AdamW(Optimizer):
                         betas[1],
                         group["eps"],
                         group["weight_decay"],
+                        group["bf16_stochastic_round"],
                     ]
                     if self.compile:
                         torch.compile(_adam, fullgraph=True, dynamic=False)(*args)
@@ -87,6 +92,7 @@ def _adam(
     beta2: float,
     eps: float,
     weight_decay: float,
+    bf16_stochastic_round: bool,
 ):
     """
     DECOUPLED WEIGHT DECAY REGULARIZATION
@@ -108,5 +114,7 @@ def _adam(
     if p.dtype == update.dtype:
         p.add_(update, alpha=-alpha)
     else:
-        # p -= (alpha * update).to(dtype=p.dtype)
-        p.copy_(p.float() - alpha * update)
+        update = p.float() - alpha * update
+        if bf16_stochastic_round:
+            update = fp32_to_bf16_stochastic_round(update)
+        p.copy_(update)
