@@ -150,6 +150,42 @@ class Adafactor(Optimizer):
 
         return loss
 
+    def state_dict(self):
+        """Return optimizer state handling conditional col=None."""
+        state_dict = super().state_dict()
+
+        # Validate state structure
+        for param_id, param_state in state_dict["state"].items():
+            expected_keys = {"step", "row", "col"}
+            if not expected_keys.issubset(param_state.keys()):
+                missing = expected_keys - param_state.keys()
+                raise ValueError(
+                    f"Adafactor state missing keys for param {param_id}: {missing}"
+                )
+
+            # Ensure col=None is handled correctly (not converted to tensor)
+            if param_state["col"] is not None and not torch.is_tensor(
+                param_state["col"]
+            ):
+                raise ValueError(
+                    f"Adafactor col must be tensor or None, got {type(param_state['col'])}"
+                )
+
+        return state_dict
+
+    def load_state_dict(self, state_dict):
+        """Load optimizer state handling conditional col=None."""
+        # Validate structure
+        for param_id, param_state in state_dict["state"].items():
+            expected_keys = {"step", "row", "col"}
+            if not expected_keys.issubset(param_state.keys()):
+                missing = expected_keys - param_state.keys()
+                raise ValueError(
+                    f"Cannot load Adafactor: missing keys for param {param_id}: {missing}"
+                )
+
+        super().load_state_dict(state_dict)
+
 
 """
 Derivation of the implementation:

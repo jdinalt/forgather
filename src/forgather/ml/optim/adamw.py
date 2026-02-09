@@ -80,6 +80,34 @@ class AdamW(Optimizer):
 
         return loss
 
+    def state_dict(self):
+        """Return optimizer state with structure validation."""
+        state_dict = super().state_dict()
+
+        # Validate state structure for debugging
+        for param_id, param_state in state_dict["state"].items():
+            expected_keys = {"step", "m", "v"}
+            if not expected_keys.issubset(param_state.keys()):
+                missing = expected_keys - param_state.keys()
+                raise ValueError(
+                    f"AdamW state missing keys for param {param_id}: {missing}"
+                )
+
+        return state_dict
+
+    def load_state_dict(self, state_dict):
+        """Load optimizer state with validation."""
+        # Validate before loading
+        for param_id, param_state in state_dict["state"].items():
+            expected_keys = {"step", "m", "v"}
+            if not expected_keys.issubset(param_state.keys()):
+                missing = expected_keys - param_state.keys()
+                raise ValueError(
+                    f"Cannot load AdamW: missing keys for param {param_id}: {missing}"
+                )
+
+        super().load_state_dict(state_dict)
+
 
 def _adam(
     p: Tensor,

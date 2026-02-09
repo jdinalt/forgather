@@ -146,3 +146,135 @@ class Apollo(Optimizer):
                 # print(f"{projector.proj_type=}, {projector.A.shape=}, {R_tilde.shape=}, {S.shape=}, {grad.shape=}")
 
         return loss
+
+    def state_dict(self):
+        """Return optimizer state with serialized projector objects.
+
+        Projector objects are converted to dicts containing only tensors and primitives
+        to ensure proper checkpoint serialization.
+
+        Note: The projector_factory in param_groups is removed since it's a
+        non-serializable function. On load_state_dict, it must be provided
+        via the optimizer constructor.
+        """
+        from forgather.ml.optim.subspace_proj import OnlinePCAProjector, RandProjector
+
+        state_dict = super().state_dict()
+
+        # Remove projector_factory from param_groups (can't pickle functions)
+        for group in state_dict["param_groups"]:
+            if "projector_factory" in group:
+                del group["projector_factory"]
+
+        # Serialize projector objects
+        for param_id, param_state in state_dict["state"].items():
+            if "projector" in param_state:
+                proj = param_state["projector"]
+
+                # Serialize based on projector type
+                proj_dict = {
+                    "_class": type(proj).__name__,
+                    "rank": proj.rank,
+                    "dim": proj.dim,
+                    "proj_type": proj.proj_type,
+                    "update_steps": proj.update_steps,
+                    "_step": proj._step,
+                    "scale": proj.scale,
+                }
+
+                # Add type-specific state
+                if isinstance(proj, OnlinePCAProjector):
+                    proj_dict["A"] = proj.A
+                    # orthonormalize function is reconstructed from defaults
+
+                elif isinstance(proj, RandProjector):
+                    proj_dict["A"] = proj.A
+                    proj_dict["init"] = proj.init
+                    proj_dict["lazy"] = proj.lazy
+                    proj_dict["seed"] = proj.seed
+                    if hasattr(proj, "gen") and proj.gen is not None:
+                        proj_dict["gen_state"] = proj.gen.get_state()
+                    if hasattr(proj, "saved_gen_state"):
+                        proj_dict["saved_gen_state"] = proj.saved_gen_state
+                    if hasattr(proj, "device"):
+                        proj_dict["device"] = str(proj.device)  # Serialize as string
+                    if hasattr(proj, "dtype"):
+                        proj_dict["dtype"] = str(proj.dtype)  # Serialize as string
+
+                param_state["projector"] = proj_dict
+
+        return state_dict
+
+    def load_state_dict(self, state_dict):
+        """Load optimizer state and reconstruct projector objects.
+
+        Deserializes projector dicts back into projector objects.
+        """
+        from forgather.ml.optim.subspace_proj import OnlinePCAProjector, RandProjector
+
+        # Reconstruct projector objects from serialized dicts
+        for param_id, param_state in state_dict["state"].items():
+            if "projector" in param_state:
+                proj_dict = param_state["projector"]
+
+                if not isinstance(proj_dict, dict):
+                    raise ValueError(
+                        f"Apollo projector state must be dict, got {type(proj_dict)}"
+                    )
+
+                proj_class_name = proj_dict.get("_class")
+
+                # Reconstruct based on class type
+                if proj_class_name == "OnlinePCAProjector":
+                    # Note: orthag defaults to "none" in current implementation
+                    proj = OnlinePCAProjector(
+                        rank=proj_dict["rank"],
+                        dim=proj_dict["dim"],
+                        proj_type=proj_dict["proj_type"],
+                        update_steps=proj_dict["update_steps"],
+                    )
+                    # Restore all attributes
+                    proj.A = proj_dict["A"]
+                    proj._step = proj_dict["_step"]
+                    proj.scale = proj_dict["scale"]
+                    # Note: proj_shape, einsum_* are set by __init__, orthonormalize defaults to identity
+
+                elif proj_class_name == "RandProjector":
+                    proj = RandProjector(
+                        rank=proj_dict["rank"],
+                        dim=proj_dict["dim"],
+                        proj_type=proj_dict["proj_type"],
+                        update_steps=proj_dict["update_steps"],
+                        init=proj_dict["init"],
+                        lazy=proj_dict["lazy"],
+                        seed=proj_dict["seed"],
+                    )
+                    proj.A = proj_dict["A"]
+                    proj._step = proj_dict["_step"]
+                    proj.scale = proj_dict["scale"]
+
+                    # Restore generator state if present
+                    if "gen_state" in proj_dict:
+                        # Need to create generator on correct device
+                        device_str = proj_dict.get("device", "cpu")
+                        device = torch.device(device_str.replace("cuda:", "cuda:"))
+                        proj.gen = torch.Generator(device=device)
+                        proj.gen.set_state(proj_dict["gen_state"])
+
+                    if "saved_gen_state" in proj_dict:
+                        proj.saved_gen_state = proj_dict["saved_gen_state"]
+                    if "device" in proj_dict:
+                        proj.device = torch.device(
+                            proj_dict["device"].replace("cuda:", "cuda:")
+                        )
+                    if "dtype" in proj_dict:
+                        # Convert string like "torch.float32" to dtype
+                        dtype_str = proj_dict["dtype"].replace("torch.", "")
+                        proj.dtype = getattr(torch, dtype_str)
+
+                else:
+                    raise ValueError(f"Unknown projector class: {proj_class_name}")
+
+                param_state["projector"] = proj
+
+        super().load_state_dict(state_dict)
