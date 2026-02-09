@@ -34,8 +34,8 @@ class Adafactor(Optimizer):
         # Import Triton kernels if needed
         if use_triton:
             assert (
-                bf16_stochastic_round == False and relative_step == False
-            ), "bf16_stochastic_round and relative_step are not supported by Adafactor tritan kernel. Set use_triton = False"
+                relative_step == False
+            ), "relative_step is not supported by Adafactor Triton kernel. Set use_triton = False"
             try:
                 from . import adafactor_triton
 
@@ -108,6 +108,7 @@ class Adafactor(Optimizer):
                                 group["lr"],
                                 group["weight_decay"],
                                 group["clip_threshold"],
+                                group["bf16_stochastic_round"],
                             )
                         else:
                             # 2D case
@@ -121,6 +122,7 @@ class Adafactor(Optimizer):
                                 group["lr"],
                                 group["weight_decay"],
                                 group["clip_threshold"],
+                                group["bf16_stochastic_round"],
                             )
                     else:
                         # Use standard PyTorch implementation

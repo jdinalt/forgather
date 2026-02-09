@@ -10,10 +10,12 @@ Key optimizations over the memory-optimized version:
 
 Target configuration:
 - relative_step=False (use fixed lr)
-- bf16_stochastic_round=False (standard conversion)
+- bf16_stochastic_round: True or False
 - weight_decay >= 0
 - clip_threshold=1.0 (enabled)
 """
+
+import random
 
 import torch
 import triton
@@ -28,6 +30,30 @@ def _get_num_sms(device):
     if idx not in _num_sms_cache:
         _num_sms_cache[idx] = torch.cuda.get_device_properties(idx).multi_processor_count
     return _num_sms_cache[idx]
+
+
+# ============================================================
+# Stochastic rounding helper
+# ============================================================
+
+
+@triton.jit
+def _stochastic_round_bf16(val, seed, offs):
+    """
+    Stochastically round f32 values to bf16-representable f32.
+
+    Extracts the lower 16 bits of the f32 representation (the bits lost
+    when converting to bf16), generates a random 16-bit value, and rounds
+    away from zero if the random value is less than the fractional bits.
+    This matches the behavior of fp32_to_bf16_stochastic_round().
+    """
+    val_bits = val.to(tl.int32, bitcast=True)
+    fraction = val_bits & 0xFFFF  # lower 16 bits (lost in bf16 truncation)
+    val_rounded = val_bits - fraction  # round toward zero (== val_bits & 0xFFFF0000)
+    rand_bits = tl.randint(seed, offs).to(tl.int32) & 0xFFFF
+    # Round away from zero with probability fraction/2^16
+    val_bits = tl.where(rand_bits < fraction, val_rounded + 0x10000, val_rounded)
+    return val_bits.to(tl.float32, bitcast=True)
 
 
 # ============================================================
@@ -101,8 +127,10 @@ def _persistent_update_2d_kernel(
     lr,
     weight_decay,
     clip_threshold,
+    seed,
     NUM_SMS: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    BF16_STOCHASTIC_ROUND: tl.constexpr,
 ):
     """
     Persistent kernel: compute update RMS via global reduction, then apply
@@ -169,6 +197,8 @@ def _persistent_update_2d_kernel(
 
         param = tl.load(param_ptr + offs, mask=mask, other=0.0)
         param = param * (1.0 - lr * weight_decay) - lr * update
+        if BF16_STOCHASTIC_ROUND:
+            param = _stochastic_round_bf16(param, seed, offs)
         tl.store(param_ptr + offs, param, mask=mask)
 
         chunk_id += NUM_SMS
@@ -218,7 +248,9 @@ def _apply_update_2d_kernel(
     lr,
     weight_decay,
     clip_threshold,
+    seed,
     BLOCK_SIZE: tl.constexpr,
+    BF16_STOCHASTIC_ROUND: tl.constexpr,
 ):
     """Apply clipped update to parameters (2D). Reads clip info from device memory."""
     block_start = tl.program_id(0) * BLOCK_SIZE
@@ -241,6 +273,8 @@ def _apply_update_2d_kernel(
 
     param = tl.load(param_ptr + offs, mask=mask, other=0.0)
     param = param * (1.0 - lr * weight_decay) - lr * update
+    if BF16_STOCHASTIC_ROUND:
+        param = _stochastic_round_bf16(param, seed, offs)
     tl.store(param_ptr + offs, param, mask=mask)
 
 
@@ -280,7 +314,9 @@ def _apply_update_1d_kernel(
     lr,
     weight_decay,
     clip_threshold,
+    seed,
     BLOCK_SIZE: tl.constexpr,
+    BF16_STOCHASTIC_ROUND: tl.constexpr,
 ):
     """Apply clipped update to parameters (1D). Reads clip info from device memory."""
     block_start = tl.program_id(0) * BLOCK_SIZE
@@ -299,6 +335,8 @@ def _apply_update_1d_kernel(
 
     param = tl.load(param_ptr + offs, mask=mask, other=0.0)
     param = param * (1.0 - lr * weight_decay) - lr * update
+    if BF16_STOCHASTIC_ROUND:
+        param = _stochastic_round_bf16(param, seed, offs)
     tl.store(param_ptr + offs, param, mask=mask)
 
 
@@ -319,6 +357,7 @@ def adafactor_step_2d_triton(
     lr: float,
     weight_decay: float,
     clip_threshold: float,
+    bf16_stochastic_round: bool = False,
 ):
     """
     Speed-optimized 2D Adafactor step.
@@ -374,6 +413,10 @@ def adafactor_step_2d_triton(
     # Scratch tensors
     update_sq_sum = torch.zeros(1, device=grad.device, dtype=torch.float32)
 
+    # Stochastic rounding only applies when converting f32 -> bf16
+    do_stochastic_round = bf16_stochastic_round and param.dtype != torch.float32
+    seed = random.randint(0, 2**31 - 1) if do_stochastic_round else 0
+
     BLOCK_SIZE = 1024
     num_sms = _get_num_sms(grad.device)
     n_blocks = triton.cdiv(n_elements, BLOCK_SIZE)
@@ -393,8 +436,10 @@ def adafactor_step_2d_triton(
             lr,
             weight_decay,
             clip_threshold,
+            seed,
             grid_size,
             BLOCK_SIZE,
+            do_stochastic_round,
         )
     else:
         _compute_rms_2d_kernel[(n_blocks,)](
@@ -417,7 +462,9 @@ def adafactor_step_2d_triton(
             lr,
             weight_decay,
             clip_threshold,
+            seed,
             BLOCK_SIZE,
+            do_stochastic_round,
         )
 
     if param.dtype != torch.float32:
@@ -433,6 +480,7 @@ def adafactor_step_1d_triton(
     lr: float,
     weight_decay: float,
     clip_threshold: float,
+    bf16_stochastic_round: bool = False,
 ):
     """
     Speed-optimized 1D Adafactor step.
@@ -461,6 +509,11 @@ def adafactor_step_1d_triton(
 
     # Compute RMS then apply (two kernels, no CPU sync)
     update_sq_sum = torch.zeros(1, device=grad.device, dtype=torch.float32)
+
+    # Stochastic rounding only applies when converting f32 -> bf16
+    do_stochastic_round = bf16_stochastic_round and param.dtype != torch.float32
+    seed = random.randint(0, 2**31 - 1) if do_stochastic_round else 0
+
     BLOCK_SIZE = 1024
     n_blocks = triton.cdiv(n_elements, BLOCK_SIZE)
 
@@ -481,7 +534,9 @@ def adafactor_step_1d_triton(
         lr,
         weight_decay,
         clip_threshold,
+        seed,
         BLOCK_SIZE,
+        do_stochastic_round,
     )
 
     if param.dtype != torch.float32:
