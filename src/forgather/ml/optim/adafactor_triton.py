@@ -1,319 +1,312 @@
 """
-Memory-optimized Triton kernels for Adafactor optimizer.
+Speed-optimized Triton kernels for Adafactor optimizer.
 
-This implementation focuses on reducing peak memory utilization by:
-1. Avoiding materialization of intermediate tensors (grad**2, update, etc.)
-2. Computing factored preconditioner element-wise without outer product
-3. In-place parameter updates
-4. Fused operations (weight decay, clipping, parameter update)
+Key optimizations over the memory-optimized version:
+1. Zero CPU-GPU synchronization (no .item() calls)
+2. Persistent kernel fusing RMS computation + clip + parameter update
+   into a single kernel launch (reads gradient once for both RMS and apply)
+3. Precomputed rsqrt vectors to reduce per-element work in kernels
+4. Avoids materializing intermediate tensors (grad^2, update)
 
 Target configuration:
 - relative_step=False (use fixed lr)
 - bf16_stochastic_round=False (standard conversion)
-- weight_decay > 0 (typically 0.001)
+- weight_decay >= 0
 - clip_threshold=1.0 (enabled)
 """
-
-import math
 
 import torch
 import triton
 import triton.language as tl
 
+# Cache SM count per device
+_num_sms_cache = {}
+
+
+def _get_num_sms(device):
+    idx = device.index if device.index is not None else torch.cuda.current_device()
+    if idx not in _num_sms_cache:
+        _num_sms_cache[idx] = torch.cuda.get_device_properties(idx).multi_processor_count
+    return _num_sms_cache[idx]
+
+
+# ============================================================
+# Row/Col reduction kernels (no intermediate tensor)
+# ============================================================
+
 
 @triton.jit
-def factored_row_reduction_kernel(
+def _row_reduction_kernel(
     grad_ptr,
-    row_ptr,
-    row_sums_ptr,  # Temporary buffer for row sums
-    n_rows: tl.constexpr,
-    n_cols: tl.constexpr,
+    row_sums_ptr,
+    n_cols,
     eps1,
     BLOCK_SIZE_COL: tl.constexpr,
 ):
-    """
-    Compute row sums of grad**2 + eps1 without materializing full tensor.
-
-    Each program computes one row sum.
-    """
+    """Row sums of grad^2 + eps. One program per row, coalesced access."""
     row_idx = tl.program_id(0)
-    if row_idx < n_rows:
-        row_sum = 0.0
+    row_sum = 0.0
 
-        # Iterate over columns in blocks
-        for col_start in range(0, n_cols, BLOCK_SIZE_COL):
-            col_offs = col_start + tl.arange(0, BLOCK_SIZE_COL)
-            mask = col_offs < n_cols
+    for col_start in range(0, n_cols, BLOCK_SIZE_COL):
+        col_offs = col_start + tl.arange(0, BLOCK_SIZE_COL)
+        mask = col_offs < n_cols
+        grad_offs = row_idx * n_cols + col_offs
+        grad_vals = tl.load(grad_ptr + grad_offs, mask=mask, other=0.0).to(tl.float32)
+        grad_sq = grad_vals * grad_vals + eps1
+        row_sum += tl.sum(tl.where(mask, grad_sq, 0.0))
 
-            # Load gradient values
-            grad_offs = row_idx * n_cols + col_offs
-            grad_vals = tl.load(grad_ptr + grad_offs, mask=mask, other=0.0)
-
-            # Accumulate grad**2 + eps1
-            grad_sq = grad_vals * grad_vals + eps1
-            row_sum += tl.sum(grad_sq)
-
-        # Store row sum to temporary buffer
-        tl.store(row_sums_ptr + row_idx, row_sum)
+    tl.store(row_sums_ptr + row_idx, row_sum)
 
 
 @triton.jit
-def factored_col_reduction_kernel(
+def _col_reduction_kernel(
     grad_ptr,
-    col_ptr,
-    col_sums_ptr,  # Temporary buffer for column sums
-    n_rows: tl.constexpr,
-    n_cols: tl.constexpr,
+    col_sums_ptr,
+    n_rows,
+    n_cols,
     eps1,
     BLOCK_SIZE_ROW: tl.constexpr,
 ):
-    """
-    Compute column sums of grad**2 + eps1 without materializing full tensor.
-
-    Each program computes one column sum.
-    """
+    """Column sums of grad^2 + eps. One program per column."""
     col_idx = tl.program_id(0)
-
     if col_idx < n_cols:
         col_sum = 0.0
-
-        # Iterate over rows in blocks
         for row_start in range(0, n_rows, BLOCK_SIZE_ROW):
             row_offs = row_start + tl.arange(0, BLOCK_SIZE_ROW)
             mask = row_offs < n_rows
-
-            # Load gradient values
             grad_offs = row_offs * n_cols + col_idx
-            grad_vals = tl.load(grad_ptr + grad_offs, mask=mask, other=0.0)
-
-            # Accumulate grad**2 + eps1
+            grad_vals = tl.load(grad_ptr + grad_offs, mask=mask, other=0.0).to(
+                tl.float32
+            )
             grad_sq = grad_vals * grad_vals + eps1
-            col_sum += tl.sum(grad_sq)
-
-        # Store column sum to temporary buffer
+            col_sum += tl.sum(tl.where(mask, grad_sq, 0.0))
         tl.store(col_sums_ptr + col_idx, col_sum)
 
 
-@triton.jit
-def row_sum_kernel(
-    row_ptr,
-    row_sum_ptr,
-    n_rows: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """
-    Compute sum of row state for normalization.
-    Simple reduction kernel.
-    """
-    row_sum_acc = 0.0
-
-    for row_start in range(0, n_rows, BLOCK_SIZE):
-        row_offs = row_start + tl.arange(0, BLOCK_SIZE)
-        mask = row_offs < n_rows
-        row_vals = tl.load(row_ptr + row_offs, mask=mask, other=0.0)
-        row_sum_acc += tl.sum(row_vals)
-
-    # Store result (only program 0 does this)
-    if tl.program_id(0) == 0:
-        tl.store(row_sum_ptr, row_sum_acc)
+# ============================================================
+# 2D persistent kernel: fused RMS computation + clip + apply
+# ============================================================
 
 
 @triton.jit
-def compute_update_rms_kernel(
-    grad_ptr,
-    row_ptr,
-    col_ptr,
-    update_sq_sum_ptr,
-    n_rows: tl.constexpr,
-    n_cols: tl.constexpr,
-    row_sum,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """
-    Compute sum of squared updates for RMS calculation.
-
-    This kernel computes update^2 element-wise and accumulates the sum
-    without materializing the update tensor.
-    """
-    block_start = tl.program_id(0) * BLOCK_SIZE
-    offs = block_start + tl.arange(0, BLOCK_SIZE)
-
-    # Convert 1D offset to 2D indices
-    row_idx = offs // n_cols
-    col_idx = offs % n_cols
-    mask = offs < (n_rows * n_cols)
-
-    # Load gradient
-    grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
-
-    # Load row and col preconditioner values
-    row_val = tl.load(row_ptr + row_idx, mask=mask, other=1.0)
-    col_val = tl.load(col_ptr + col_idx, mask=mask, other=1.0)
-
-    # Compute preconditioned update element-wise
-    row_scale = tl.rsqrt(row_val / row_sum)
-    col_scale = tl.rsqrt(col_val)
-    update = grad * row_scale * col_scale
-
-    # Accumulate update**2
-    update_sq_sum = tl.sum(tl.where(mask, update * update, 0.0))
-
-    # Atomic add to global sum
-    tl.atomic_add(update_sq_sum_ptr, update_sq_sum)
-
-
-@triton.jit
-def apply_update_with_clipping_kernel(
+def _persistent_update_2d_kernel(
     param_ptr,
     grad_ptr,
-    row_ptr,
-    col_ptr,
-    n_rows: tl.constexpr,
-    n_cols: tl.constexpr,
-    row_sum,
+    row_rsqrt_ptr,
+    col_rsqrt_ptr,
+    update_sq_sum_ptr,
+    counter_ptr,
+    n_elements,
+    N_COLS: tl.constexpr,
     lr,
     weight_decay,
-    clip_scale,
+    clip_threshold,
+    NUM_SMS: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    Apply preconditioned update to parameters with clipping.
+    Persistent kernel: compute update RMS via global reduction, then apply
+    clipped update to parameters. Two phases with spin-wait barrier.
 
-    This kernel computes update element-wise and applies it with the
-    pre-computed clipping scale, along with weight decay.
+    Phase 1: Each block accumulates partial sum of update^2 over its chunks,
+             then atomically adds to the global accumulator.
+    Barrier: Spin-wait until all blocks have completed phase 1.
+    Phase 2: Each block computes clip_scale from the global sum, then
+             recomputes and applies the clipped update to parameters.
+
+    The gradient is read twice (once per phase) but the second read is
+    likely served from L1/L2 cache since the same block processes the
+    same memory regions in both phases.
     """
+    pid = tl.program_id(0)
+    n_elements_f = n_elements.to(tl.float32)
+
+    # Phase 1: accumulate update^2
+    partial_sq_sum = 0.0
+    chunk_id = pid
+    while chunk_id * BLOCK_SIZE < n_elements:
+        offs = chunk_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offs < n_elements
+
+        row_idx = offs // N_COLS
+        col_idx = offs % N_COLS
+
+        grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
+        r_rs = tl.load(row_rsqrt_ptr + row_idx, mask=mask, other=0.0)
+        c_rs = tl.load(col_rsqrt_ptr + col_idx, mask=mask, other=0.0)
+
+        update = grad * r_rs * c_rs
+        partial_sq_sum += tl.sum(tl.where(mask, update * update, 0.0))
+
+        chunk_id += NUM_SMS
+
+    tl.atomic_add(update_sq_sum_ptr, partial_sq_sum)
+
+    # Barrier
+    tl.atomic_add(counter_ptr, 1)
+    while tl.atomic_add(counter_ptr, 0) < NUM_SMS:
+        pass
+
+    # Compute clip scale (redundantly per block, cheap)
+    total_sq = tl.atomic_add(update_sq_sum_ptr, 0.0)
+    rms = tl.sqrt(total_sq / n_elements_f)
+    clip_scale = tl.maximum(1.0, rms / clip_threshold)
+
+    # Phase 2: apply clipped update
+    chunk_id = pid
+    while chunk_id * BLOCK_SIZE < n_elements:
+        offs = chunk_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offs < n_elements
+
+        row_idx = offs // N_COLS
+        col_idx = offs % N_COLS
+
+        grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
+        r_rs = tl.load(row_rsqrt_ptr + row_idx, mask=mask, other=0.0)
+        c_rs = tl.load(col_rsqrt_ptr + col_idx, mask=mask, other=0.0)
+
+        update = grad * r_rs * c_rs / clip_scale
+
+        param = tl.load(param_ptr + offs, mask=mask, other=0.0)
+        param = param * (1.0 - lr * weight_decay) - lr * update
+        tl.store(param_ptr + offs, param, mask=mask)
+
+        chunk_id += NUM_SMS
+
+
+# ============================================================
+# 2D non-persistent fallback: two separate kernels
+# ============================================================
+
+
+@triton.jit
+def _compute_rms_2d_kernel(
+    grad_ptr,
+    row_rsqrt_ptr,
+    col_rsqrt_ptr,
+    update_sq_sum_ptr,
+    n_elements,
+    N_COLS: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """Compute sum of update^2 for RMS calculation (2D)."""
     block_start = tl.program_id(0) * BLOCK_SIZE
     offs = block_start + tl.arange(0, BLOCK_SIZE)
+    mask = offs < n_elements
 
-    # Convert 1D offset to 2D indices
-    row_idx = offs // n_cols
-    col_idx = offs % n_cols
-    mask = offs < (n_rows * n_cols)
+    row_idx = offs // N_COLS
+    col_idx = offs % N_COLS
 
-    # Load gradient
     grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
+    r_rs = tl.load(row_rsqrt_ptr + row_idx, mask=mask, other=0.0)
+    c_rs = tl.load(col_rsqrt_ptr + col_idx, mask=mask, other=0.0)
 
-    # Load row and col preconditioner values
-    row_val = tl.load(row_ptr + row_idx, mask=mask, other=1.0)
-    col_val = tl.load(col_ptr + col_idx, mask=mask, other=1.0)
+    update = grad * r_rs * c_rs
+    sq_sum = tl.sum(tl.where(mask, update * update, 0.0))
+    tl.atomic_add(update_sq_sum_ptr, sq_sum)
 
-    # Compute preconditioned update element-wise
-    row_scale = tl.rsqrt(row_val / row_sum)
-    col_scale = tl.rsqrt(col_val)
-    update = grad * row_scale * col_scale
 
-    # Apply clipping
-    update = update / clip_scale
+@triton.jit
+def _apply_update_2d_kernel(
+    param_ptr,
+    grad_ptr,
+    row_rsqrt_ptr,
+    col_rsqrt_ptr,
+    update_sq_sum_ptr,
+    n_elements,
+    N_COLS: tl.constexpr,
+    lr,
+    weight_decay,
+    clip_threshold,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """Apply clipped update to parameters (2D). Reads clip info from device memory."""
+    block_start = tl.program_id(0) * BLOCK_SIZE
+    offs = block_start + tl.arange(0, BLOCK_SIZE)
+    mask = offs < n_elements
 
-    # Load parameter
+    row_idx = offs // N_COLS
+    col_idx = offs % N_COLS
+
+    total_sq = tl.load(update_sq_sum_ptr)
+    n_elements_f = n_elements.to(tl.float32)
+    rms = tl.sqrt(total_sq / n_elements_f)
+    clip_scale = tl.maximum(1.0, rms / clip_threshold)
+
+    grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
+    r_rs = tl.load(row_rsqrt_ptr + row_idx, mask=mask, other=0.0)
+    c_rs = tl.load(col_rsqrt_ptr + col_idx, mask=mask, other=0.0)
+
+    update = grad * r_rs * c_rs / clip_scale
+
     param = tl.load(param_ptr + offs, mask=mask, other=0.0)
-
-    # Apply weight decay
-    if weight_decay > 0.0:
-        param = param * (1.0 - lr * weight_decay)
-
-    # Apply update
-    param = param - lr * update
-
-    # Store updated parameter
+    param = param * (1.0 - lr * weight_decay) - lr * update
     tl.store(param_ptr + offs, param, mask=mask)
 
 
-@triton.jit
-def vector_moment_update_kernel(
-    grad_ptr,
-    state_ptr,
-    n_elements: tl.constexpr,
-    beta2t,
-    eps1,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """
-    Update second moment state for 1D tensors (vectors/biases).
-
-    Performs:
-    - state.lerp_(grad**2 + eps1, 1-beta2t)
-    """
-    block_start = tl.program_id(0) * BLOCK_SIZE
-    offs = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offs < n_elements
-
-    # Load data
-    grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
-    state = tl.load(state_ptr + offs, mask=mask, other=0.0)
-
-    # Update second moment state
-    grad_sq = grad * grad + eps1
-    new_state = state * beta2t + grad_sq * (1.0 - beta2t)
-    tl.store(state_ptr + offs, new_state, mask=mask)
+# ============================================================
+# 1D kernels (biases, layernorm params)
+# ============================================================
 
 
 @triton.jit
-def vector_compute_update_rms_kernel(
+def _compute_rms_1d_kernel(
     grad_ptr,
     state_ptr,
     update_sq_sum_ptr,
-    n_elements: tl.constexpr,
+    n_elements,
     BLOCK_SIZE: tl.constexpr,
 ):
-    """
-    Compute sum of squared updates for RMS calculation (1D case).
-    """
+    """Compute sum of update^2 for RMS calculation (1D)."""
     block_start = tl.program_id(0) * BLOCK_SIZE
     offs = block_start + tl.arange(0, BLOCK_SIZE)
     mask = offs < n_elements
 
-    # Load data
     grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
-    state = tl.load(state_ptr + offs, mask=mask, other=0.0)
+    state = tl.load(state_ptr + offs, mask=mask, other=1.0)
 
-    # Compute update
-    update = grad / tl.sqrt(state)
-
-    # Accumulate update**2
-    update_sq_sum = tl.sum(tl.where(mask, update * update, 0.0))
-    tl.atomic_add(update_sq_sum_ptr, update_sq_sum)
+    update = grad * tl.rsqrt(state)
+    sq_sum = tl.sum(tl.where(mask, update * update, 0.0))
+    tl.atomic_add(update_sq_sum_ptr, sq_sum)
 
 
 @triton.jit
-def vector_apply_update_kernel(
+def _apply_update_1d_kernel(
     param_ptr,
     grad_ptr,
     state_ptr,
-    n_elements: tl.constexpr,
+    update_sq_sum_ptr,
+    n_elements,
     lr,
     weight_decay,
-    clip_scale,
+    clip_threshold,
     BLOCK_SIZE: tl.constexpr,
 ):
-    """
-    Apply preconditioned update to parameters (1D case).
-    """
+    """Apply clipped update to parameters (1D). Reads clip info from device memory."""
     block_start = tl.program_id(0) * BLOCK_SIZE
     offs = block_start + tl.arange(0, BLOCK_SIZE)
     mask = offs < n_elements
 
-    # Load data
+    total_sq = tl.load(update_sq_sum_ptr)
+    n_elements_f = n_elements.to(tl.float32)
+    rms = tl.sqrt(total_sq / n_elements_f)
+    clip_scale = tl.maximum(1.0, rms / clip_threshold)
+
     grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
-    state = tl.load(state_ptr + offs, mask=mask, other=0.0)
+    state = tl.load(state_ptr + offs, mask=mask, other=1.0)
+
+    update = grad * tl.rsqrt(state) / clip_scale
+
     param = tl.load(param_ptr + offs, mask=mask, other=0.0)
-
-    # Compute update
-    update = grad / tl.sqrt(state)
-
-    # Apply clipping
-    update = update / clip_scale
-
-    # Apply weight decay
-    if weight_decay > 0.0:
-        param = param * (1.0 - lr * weight_decay)
-
-    # Apply update
-    param = param - lr * update
+    param = param * (1.0 - lr * weight_decay) - lr * update
     tl.store(param_ptr + offs, param, mask=mask)
 
 
-# Helper functions for launching kernels
+# ============================================================
+# Public API
+# ============================================================
+
+_PERSISTENT_THRESHOLD = 65536
 
 
 def adafactor_step_2d_triton(
@@ -328,100 +321,107 @@ def adafactor_step_2d_triton(
     clip_threshold: float,
 ):
     """
-    Launch Triton kernels for 2D parameter update.
+    Speed-optimized 2D Adafactor step.
 
-    Uses Triton for reductions to avoid materializing grad**2 tensor.
+    Uses Triton reduction kernels (same style as original, no grad_sq
+    materialization), then a persistent Triton kernel for the fused
+    RMS + clip + parameter update with zero CPU-GPU synchronization.
     """
     n_rows, n_cols = grad.shape
     n_elements = n_rows * n_cols
 
-    # Convert to float32 for computations
-    grad_f32 = grad.float() if grad.dtype != torch.float32 else grad
-    row_f32 = row.float() if row.dtype != torch.float32 else row
-    col_f32 = col.float() if col.dtype != torch.float32 else col
+    # Convert gradient to f32
+    if grad.dtype == torch.float32 and grad.is_contiguous():
+        grad_f32 = grad
+    else:
+        grad_f32 = grad.float().contiguous()
 
-    # Allocate temporary buffers for row/col sums (much smaller than grad_sq)
+    # Row/col reduction via Triton (no grad_sq materialization)
     row_sums = torch.empty(n_rows, device=grad.device, dtype=torch.float32)
     col_sums = torch.empty(n_cols, device=grad.device, dtype=torch.float32)
 
-    # Compute row sums using Triton (no grad_sq materialization)
-    BLOCK_SIZE_COL = 1024
-    BLOCK_SIZE_ROW = 256
-    factored_row_reduction_kernel[(n_rows,)](
-        grad_f32,
-        row_f32,
-        row_sums,
-        n_rows,
-        n_cols,
-        eps1,
-        BLOCK_SIZE_COL,
+    BLOCK_COL = 1024
+    BLOCK_ROW = 256
+    _row_reduction_kernel[(n_rows,)](
+        grad_f32, row_sums, n_cols, eps1, BLOCK_COL,
+    )
+    _col_reduction_kernel[(n_cols,)](
+        grad_f32, col_sums, n_rows, n_cols, eps1, BLOCK_ROW,
     )
 
-    # Compute column sums using Triton (no grad_sq materialization)
-    factored_col_reduction_kernel[(n_cols,)](
-        grad_f32,
-        col_f32,
-        col_sums,
-        n_rows,
-        n_cols,
-        eps1,
-        BLOCK_SIZE_ROW,
-    )
-
-    # Update states with EMA using PyTorch (these are small 1D ops)
+    # EMA state update (small vectors, fast PyTorch ops)
+    row_f32 = row.float()
+    col_f32 = col.float()
     row_f32.lerp_(row_sums, 1.0 - beta2t)
     col_f32.lerp_(col_sums, 1.0 - beta2t)
-
-    # Copy back to original dtype if needed
     if row.dtype != torch.float32:
         row.copy_(row_f32)
     if col.dtype != torch.float32:
         col.copy_(col_f32)
 
-    # Compute row sum for normalization
-    row_sum = row_f32.sum().item()
+    # Precompute rsqrt vectors (small, cheap, stays on device)
+    row_sum = row_f32.sum()
+    row_rsqrt = torch.rsqrt(row_f32 / row_sum).contiguous()
+    col_rsqrt = torch.rsqrt(col_f32).contiguous()
 
-    # Compute RMS of updates using Triton (avoid materializing update tensor)
+    # Flatten for 1D kernel indexing
+    grad_flat = grad_f32.reshape(-1)
+    if param.dtype == torch.float32:
+        param_flat = param.reshape(-1)
+    else:
+        param_flat = param.float().reshape(-1)
+
+    # Scratch tensors
     update_sq_sum = torch.zeros(1, device=grad.device, dtype=torch.float32)
+
     BLOCK_SIZE = 1024
+    num_sms = _get_num_sms(grad.device)
     n_blocks = triton.cdiv(n_elements, BLOCK_SIZE)
-    grid = (n_blocks,)
 
-    compute_update_rms_kernel[grid](
-        grad_f32,
-        row_f32,
-        col_f32,
-        update_sq_sum,
-        n_rows,
-        n_cols,
-        row_sum,
-        BLOCK_SIZE,
-    )
+    if n_elements >= _PERSISTENT_THRESHOLD:
+        counter = torch.zeros(1, device=grad.device, dtype=torch.int32)
+        grid_size = min(num_sms, n_blocks)
+        _persistent_update_2d_kernel[(grid_size,)](
+            param_flat,
+            grad_flat,
+            row_rsqrt,
+            col_rsqrt,
+            update_sq_sum,
+            counter,
+            n_elements,
+            n_cols,
+            lr,
+            weight_decay,
+            clip_threshold,
+            grid_size,
+            BLOCK_SIZE,
+        )
+    else:
+        _compute_rms_2d_kernel[(n_blocks,)](
+            grad_flat,
+            row_rsqrt,
+            col_rsqrt,
+            update_sq_sum,
+            n_elements,
+            n_cols,
+            BLOCK_SIZE,
+        )
+        _apply_update_2d_kernel[(n_blocks,)](
+            param_flat,
+            grad_flat,
+            row_rsqrt,
+            col_rsqrt,
+            update_sq_sum,
+            n_elements,
+            n_cols,
+            lr,
+            weight_decay,
+            clip_threshold,
+            BLOCK_SIZE,
+        )
 
-    # Compute clipping scale
-    update_rms = torch.sqrt(update_sq_sum / n_elements)
-    clip_scale = max(1.0, update_rms.item() / clip_threshold)
-
-    # Apply updates with clipping using Triton (element-wise, no materialization)
-    param_f32 = param.float() if param.dtype != torch.float32 else param
-
-    apply_update_with_clipping_kernel[grid](
-        param_f32,
-        grad_f32,
-        row_f32,
-        col_f32,
-        n_rows,
-        n_cols,
-        row_sum,
-        lr,
-        weight_decay,
-        clip_scale,
-        BLOCK_SIZE,
-    )
-
-    # Copy back to original dtype if needed
     if param.dtype != torch.float32:
-        param.copy_(param_f32)
+        param.copy_(param_flat.view(param.shape))
 
 
 def adafactor_step_1d_triton(
@@ -435,31 +435,36 @@ def adafactor_step_1d_triton(
     clip_threshold: float,
 ):
     """
-    Launch Triton kernels for 1D parameter update.
+    Speed-optimized 1D Adafactor step.
 
-    For simplicity, use PyTorch for state update and Triton for parameter update.
+    Uses PyTorch for state update, two small Triton kernels for
+    update computation with no CPU-GPU sync.
     """
     n_elements = grad.numel()
 
-    # Convert to float32 for computations
-    grad_f32 = grad.float() if grad.dtype != torch.float32 else grad
-    state_f32 = state.float() if state.dtype != torch.float32 else state
+    # Convert to f32
+    grad_f32 = grad.float().contiguous()
+    state_f32 = state.float()
 
-    # Use PyTorch for moment update
-    grad_sq = grad_f32**2 + eps1
+    # Update second moment state
+    grad_sq = grad_f32 * grad_f32 + eps1
     state_f32.lerp_(grad_sq, 1.0 - beta2t)
-
-    # Copy back to original dtype if needed
+    del grad_sq
     if state.dtype != torch.float32:
         state.copy_(state_f32)
 
-    # Compute RMS of updates using Triton
+    # Param in f32
+    if param.dtype == torch.float32:
+        param_f32 = param.contiguous()
+    else:
+        param_f32 = param.float().contiguous()
+
+    # Compute RMS then apply (two kernels, no CPU sync)
     update_sq_sum = torch.zeros(1, device=grad.device, dtype=torch.float32)
     BLOCK_SIZE = 1024
     n_blocks = triton.cdiv(n_elements, BLOCK_SIZE)
-    grid = (n_blocks,)
 
-    vector_compute_update_rms_kernel[grid](
+    _compute_rms_1d_kernel[(n_blocks,)](
         grad_f32,
         state_f32,
         update_sq_sum,
@@ -467,24 +472,17 @@ def adafactor_step_1d_triton(
         BLOCK_SIZE,
     )
 
-    # Compute clipping scale
-    update_rms = torch.sqrt(update_sq_sum / n_elements)
-    clip_scale = max(1.0, update_rms.item() / clip_threshold)
-
-    # Apply updates with clipping using Triton
-    param_f32 = param.float() if param.dtype != torch.float32 else param
-
-    vector_apply_update_kernel[grid](
+    _apply_update_1d_kernel[(n_blocks,)](
         param_f32,
         grad_f32,
         state_f32,
+        update_sq_sum,
         n_elements,
         lr,
         weight_decay,
-        clip_scale,
+        clip_threshold,
         BLOCK_SIZE,
     )
 
-    # Copy back to original dtype if needed
     if param.dtype != torch.float32:
         param.copy_(param_f32)
