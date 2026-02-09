@@ -678,6 +678,11 @@ class CheckpointCoordinator:
                 "Set strict=False to attempt load anyway."
             )
 
+        # Track load results for summary
+        loaded = []
+        skipped = []
+        failed = []
+
         # Load each component
         for component in self.state_components:
             if component.key not in manifest.components:
@@ -686,41 +691,57 @@ class CheckpointCoordinator:
                         f"Required component '{component.key}' not found in checkpoint"
                     )
                 logger.warning(
-                    f"⚠️  Component '{component.key}' not found in checkpoint\n"
-                    f"    This is normal if you deleted it to change {component.key} type.\n"
-                    f"    Training will continue with current {component.key} configuration."
+                    f"Component '{component.key}' not found in checkpoint. "
+                    f"This is normal if you deleted it to change {component.key} type. "
+                    f"Training will continue with current {component.key} configuration."
                 )
+                skipped.append(component.key)
                 continue
 
             manifest_entry = manifest.components[component.key]
-            self._load_component(component, checkpoint_path, manifest_entry)
+            success = self._load_component(component, checkpoint_path, manifest_entry)
+            if success:
+                loaded.append(component.key)
+            else:
+                failed.append(component.key)
+
+        # Log load summary
+        self._log_load_summary(loaded, skipped, failed)
 
     def _load_component(
         self,
         component: StateComponent,
         checkpoint_path: str,
         manifest_entry: Optional[ComponentManifest] = None,
-    ) -> None:
-        """Load a single component based on its sharing pattern."""
+    ) -> bool:
+        """Load a single component based on its sharing pattern.
+
+        Returns:
+            True if component was loaded successfully, False otherwise.
+        """
         pattern = component.sharing_pattern
 
         if pattern == SharingPattern.GLOBAL:
-            self._load_global_component(component, checkpoint_path)
+            return self._load_global_component(component, checkpoint_path)
         elif pattern == SharingPattern.PER_RANK:
-            self._load_per_rank_component(component, checkpoint_path)
+            return self._load_per_rank_component(component, checkpoint_path)
         elif pattern == SharingPattern.REPLICATED:
-            self._load_replicated_component(component, checkpoint_path)
+            return self._load_replicated_component(component, checkpoint_path)
         elif pattern == SharingPattern.PER_GROUP:
-            self._load_per_group_component(component, checkpoint_path)
+            return self._load_per_group_component(component, checkpoint_path)
         elif pattern == SharingPattern.PER_NODE:
-            self._load_per_node_component(component, checkpoint_path)
+            return self._load_per_node_component(component, checkpoint_path)
         else:
             raise ValueError(f"Unknown sharing pattern: {pattern}")
 
     def _load_global_component(
         self, component: StateComponent, checkpoint_path: str
-    ) -> None:
-        """Load GLOBAL component (all ranks load same file)."""
+    ) -> bool:
+        """Load GLOBAL component (all ranks load same file).
+
+        Returns:
+            True if loaded successfully, False otherwise.
+        """
         state_path = os.path.join(checkpoint_path, f"{component.key}_state.pt")
 
         if not os.path.exists(state_path):
@@ -729,11 +750,10 @@ class CheckpointCoordinator:
                     f"Required component '{component.key}' not found at {state_path}"
                 )
             logger.warning(
-                f"⚠️  Component '{component.key}' not found at {state_path}\n"
-                f"    This is normal if you deleted it to change {component.key} type.\n"
-                f"    Training will continue with current {component.key} configuration."
+                f"Component '{component.key}' not found at {state_path}. "
+                f"Training will continue with current {component.key} configuration."
             )
-            return
+            return False
 
         try:
             logger.debug(
@@ -741,17 +761,28 @@ class CheckpointCoordinator:
             )
             state_dict = torch.load(state_path, map_location=torch.device("cpu"))
             component.stateful.load_state_dict(state_dict)
+            return True
         except Exception as e:
             if component.required:
                 raise RuntimeError(
                     f"Failed to load required component '{component.key}': {e}"
                 ) from e
-            logger.warning(f"Failed to load component '{component.key}': {e}")
+            logger.error(
+                f"FAILED to load component '{component.key}': {e}. "
+                f"Training will continue WITHOUT restored {component.key} state. "
+                f"This may cause training instability.",
+                exc_info=True,
+            )
+            return False
 
     def _load_per_rank_component(
         self, component: StateComponent, checkpoint_path: str
-    ) -> None:
-        """Load PER_RANK component (each rank loads its own file)."""
+    ) -> bool:
+        """Load PER_RANK component (each rank loads its own file).
+
+        Returns:
+            True if loaded successfully, False otherwise.
+        """
         state_path = os.path.join(
             checkpoint_path, f"{component.key}_state_rank_{self.dist.rank}.pt"
         )
@@ -764,7 +795,7 @@ class CheckpointCoordinator:
             logger.warning(
                 f"Component '{component.key}' for rank {self.dist.rank} not found, skipping"
             )
-            return
+            return False
 
         try:
             logger.debug(
@@ -772,19 +803,28 @@ class CheckpointCoordinator:
             )
             state_dict = torch.load(state_path, map_location=torch.device("cpu"))
             component.stateful.load_state_dict(state_dict)
+            return True
         except Exception as e:
             if component.required:
                 raise RuntimeError(
                     f"Failed to load required component '{component.key}' on rank {self.dist.rank}: {e}"
                 ) from e
-            logger.warning(
-                f"Failed to load component '{component.key}' on rank {self.dist.rank}: {e}"
+            logger.error(
+                f"FAILED to load component '{component.key}' on rank {self.dist.rank}: {e}. "
+                f"Training will continue WITHOUT restored {component.key} state. "
+                f"This may cause training instability.",
+                exc_info=True,
             )
+            return False
 
     def _load_replicated_component(
         self, component: StateComponent, checkpoint_path: str
-    ) -> None:
-        """Load REPLICATED component (all ranks load same file)."""
+    ) -> bool:
+        """Load REPLICATED component (all ranks load same file).
+
+        Returns:
+            True if loaded successfully, False otherwise.
+        """
         # REPLICATED is saved by rank 0, loaded by all ranks
         state_path = os.path.join(checkpoint_path, f"{component.key}_state.pt")
 
@@ -794,11 +834,10 @@ class CheckpointCoordinator:
                     f"Required component '{component.key}' not found at {state_path}"
                 )
             logger.warning(
-                f"⚠️  Component '{component.key}' not found at {state_path}\n"
-                f"    This is normal if you deleted it to change {component.key} type.\n"
-                f"    Training will continue with current {component.key} configuration."
+                f"Component '{component.key}' not found at {state_path}. "
+                f"Training will continue with current {component.key} configuration."
             )
-            return
+            return False
 
         try:
             logger.debug(
@@ -806,17 +845,28 @@ class CheckpointCoordinator:
             )
             state_dict = torch.load(state_path, map_location=torch.device("cpu"))
             component.stateful.load_state_dict(state_dict)
+            return True
         except Exception as e:
             if component.required:
                 raise RuntimeError(
                     f"Failed to load required component '{component.key}': {e}"
                 ) from e
-            logger.warning(f"Failed to load component '{component.key}': {e}")
+            logger.error(
+                f"FAILED to load component '{component.key}': {e}. "
+                f"Training will continue WITHOUT restored {component.key} state. "
+                f"This may cause training instability.",
+                exc_info=True,
+            )
+            return False
 
     def _load_per_group_component(
         self, component: StateComponent, checkpoint_path: str
-    ) -> None:
-        """Load PER_GROUP component (ranks load based on group membership)."""
+    ) -> bool:
+        """Load PER_GROUP component (ranks load based on group membership).
+
+        Returns:
+            True if loaded successfully, False otherwise.
+        """
         group_name = component.process_group_name
         assert group_name is not None
         pg = self.process_groups[group_name]
@@ -834,7 +884,7 @@ class CheckpointCoordinator:
             logger.warning(
                 f"Component '{component.key}' for group {group_name} not found, skipping"
             )
-            return
+            return False
 
         try:
             logger.debug(
@@ -842,17 +892,28 @@ class CheckpointCoordinator:
             )
             state_dict = torch.load(state_path, map_location=torch.device("cpu"))
             component.stateful.load_state_dict(state_dict)
+            return True
         except Exception as e:
             if component.required:
                 raise RuntimeError(
                     f"Failed to load required component '{component.key}': {e}"
                 ) from e
-            logger.warning(f"Failed to load component '{component.key}': {e}")
+            logger.error(
+                f"FAILED to load component '{component.key}' (group {group_name}): {e}. "
+                f"Training will continue WITHOUT restored {component.key} state. "
+                f"This may cause training instability.",
+                exc_info=True,
+            )
+            return False
 
     def _load_per_node_component(
         self, component: StateComponent, checkpoint_path: str
-    ) -> None:
-        """Load PER_NODE component (ranks load based on node membership)."""
+    ) -> bool:
+        """Load PER_NODE component (ranks load based on node membership).
+
+        Returns:
+            True if loaded successfully, False otherwise.
+        """
         # Find the checkpoint file for this rank's node
         state_path = find_node_checkpoint_file(checkpoint_path, component.key)
 
@@ -864,7 +925,7 @@ class CheckpointCoordinator:
             logger.warning(
                 f"Component '{component.key}' (PER_NODE) not found, skipping"
             )
-            return
+            return False
 
         try:
             logger.debug(
@@ -872,12 +933,19 @@ class CheckpointCoordinator:
             )
             state_dict = torch.load(state_path, map_location=torch.device("cpu"))
             component.stateful.load_state_dict(state_dict)
+            return True
         except Exception as e:
             if component.required:
                 raise RuntimeError(
                     f"Failed to load required component '{component.key}': {e}"
                 ) from e
-            logger.warning(f"Failed to load component '{component.key}': {e}")
+            logger.error(
+                f"FAILED to load component '{component.key}' (PER_NODE): {e}. "
+                f"Training will continue WITHOUT restored {component.key} state. "
+                f"This may cause training instability.",
+                exc_info=True,
+            )
+            return False
 
     def _load_legacy_checkpoint(
         self, checkpoint_path: str, strict: bool = True
@@ -889,20 +957,55 @@ class CheckpointCoordinator:
         """
         logger.info("Loading legacy checkpoint (no manifest)")
 
+        loaded = []
+        skipped = []
+        failed = []
+
         for component in self.state_components:
+            success = False
             # Try to infer file names from component key and sharing pattern
             if component.sharing_pattern == SharingPattern.GLOBAL:
-                self._load_global_component(component, checkpoint_path)
+                success = self._load_global_component(component, checkpoint_path)
             elif component.sharing_pattern == SharingPattern.PER_RANK:
-                self._load_per_rank_component(component, checkpoint_path)
+                success = self._load_per_rank_component(component, checkpoint_path)
             elif component.sharing_pattern == SharingPattern.REPLICATED:
                 # REPLICATED uses same file as GLOBAL
-                self._load_replicated_component(component, checkpoint_path)
+                success = self._load_replicated_component(component, checkpoint_path)
             else:
                 logger.warning(
                     f"Cannot load component '{component.key}' with pattern "
                     f"{component.sharing_pattern.value} from legacy checkpoint"
                 )
+                skipped.append(component.key)
+                continue
+
+            if success:
+                loaded.append(component.key)
+            else:
+                failed.append(component.key)
+
+        self._log_load_summary(loaded, skipped, failed)
+
+    def _log_load_summary(self, loaded: list, skipped: list, failed: list) -> None:
+        """Log a clear summary of checkpoint load results."""
+        parts = []
+        if loaded:
+            parts.append(f"loaded=[{', '.join(loaded)}]")
+        if skipped:
+            parts.append(f"skipped=[{', '.join(skipped)}]")
+        if failed:
+            parts.append(f"FAILED=[{', '.join(failed)}]")
+
+        summary = ", ".join(parts)
+
+        if failed:
+            logger.error(
+                f"Checkpoint load completed with failures: {summary}. "
+                f"Components that failed to load will use freshly initialized state. "
+                f"This is likely to cause training instability (e.g. grad-norm spikes, loss jumps)."
+            )
+        else:
+            logger.info(f"Checkpoint load completed: {summary}")
 
     def _validate_checkpoint(self, checkpoint_path: str) -> bool:
         """
@@ -941,4 +1044,3 @@ class CheckpointCoordinator:
             True if this is rank 0 (global coordinator)
         """
         return self.dist.rank == 0
-

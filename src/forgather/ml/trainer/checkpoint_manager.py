@@ -342,7 +342,9 @@ class CheckpointManager(CheckpointInterface):
 
                     # Log what was restored and what was filtered
                     if len(self.best_checkpoints) < len(restored_checkpoints):
-                        filtered = len(restored_checkpoints) - len(self.best_checkpoints)
+                        filtered = len(restored_checkpoints) - len(
+                            self.best_checkpoints
+                        )
                         logger.warning(
                             f"Filtered out {filtered} non-existent checkpoints from best_checkpoints list"
                         )
@@ -518,13 +520,17 @@ class CheckpointManager(CheckpointInterface):
         """Load all training state components from separate files."""
         if self.coordinator is not None:
             # Use CheckpointCoordinator API
+            # The coordinator handles per-component errors internally and logs them.
+            # We only catch unexpected errors (e.g. filesystem failures, manifest corruption).
             try:
                 self.coordinator.load_checkpoint(checkpoint_path, strict=False)
             except Exception as e:
-                logger.warning(
-                    f"Failed to load training state via CheckpointCoordinator\n{e}"
+                logger.error(
+                    f"Failed to load training state via CheckpointCoordinator: {e}\n"
+                    f"Training will continue WITHOUT any restored training state "
+                    f"(optimizer, scheduler, etc.). This is likely to cause training instability.",
+                    exc_info=True,
                 )
-                traceback.print_exc()
 
 
 class RNGState(Stateful):
