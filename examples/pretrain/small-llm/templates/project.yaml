@@ -20,7 +20,7 @@
     ## Training settings
     -- set ns.per_device_train_batch_size = batch_size | default(4)
     -- set ns.gradient_accumulation_steps = 1
-    -- set ns.base_learning_rate = learning_rate | default(2.0e-05)
+    -- set ns.base_learning_rate = learning_rate | default(1.4e-05)
     -- set ns.max_length = max_length | default(4096)
     
     ## Shard the dataset, rather than dispatching from rank0
@@ -35,7 +35,7 @@
     -- set ns.world_size = (getenv("WORLD_SIZE", "1") | int)
     -- set ns.effective_batch_size = ns.gradient_accumulation_steps * ns.per_device_train_batch_size * ns.world_size
     ## Learning Rate, scaled by sqrt(ns.effective_batch_size)
-    -- set ns.scaled_lr = ns.base_learning_rate * (ns.effective_batch_size ** 0.5)
+    -- set ns.lr_scale = ns.effective_batch_size ** 0.5
 
 [variable_listing]
     == super()
@@ -46,7 +46,6 @@
 # ns.effective_batch_size: {{ ns.effective_batch_size }}
 # ns.base_learning_rate: {{ ns.base_learning_rate }}
 # ns.step_cadence: {{ ns.step_cadence }}
-# ns.scaled_lr: {{ ns.scaled_lr }}
 
 [datasets_preprocessor_args]
 .define: &tokenizer_args !dict
@@ -98,21 +97,24 @@ model: &model !call:getitem [ *model_dict, 'model' ]
 data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
     tokenizer: *tokenizer
     # Pad to max-length. This maintains a constant input shape
-    # With packed examples, there should be very little padding and this can speed things up a little.
+    # With packed examples, there should be very little p5adding and this can speed things up a little.
     padding: "max_length"
     max_length: {{ ns.max_length }}
     packed_sequences: True
     return_tensors: pt
 
 [optimizer]
-optimizer: &optimizer !partial:torch:optim.AdamW
+optimizer: &optimizer !partial:forgather.ml.optim:Adafactor
     # Scale LR by sqrt(WORLD_SIZE)
-    lr: {{ ns.scaled_lr | toyaml }}
+    lr: {{ (ns.base_learning_rate * ns.lr_scale) | toyaml }}
+    bf16_stochastic_round: True
 
 [lr_scheduler]
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
-    warmup_steps: 50
-    cooldown_steps: 0 # Use constant learning-rate, after warmup
+    warmup_steps: 500
+    cooldown_steps: {{ (0.7 * 60000000 / ns.effective_batch_size) | int }}
+    constant_lr: {{ (7.5e-6 * ns.lr_scale) | toyaml }}
+    min_lr: {{ (1.4e-6 * ns.lr_scale) | toyaml }}
 
 [trainer_definition]
     -- include 'project.trainer_config'
@@ -143,10 +145,10 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
         names: "--no-restore-dataset-state"
         action: "store_true"
         help: "Don't restore dataset state from checkpoint"
-    no_compile:
-        names: "--no-compile"
+    compile:
+        names: "--compile"
         action: "store_true"
-        help: "Disable Torch compile for faster startup"
+        help: "Enable Torch compile"
     learning_rate:
         names: [ "--learning-rate", "--lr" ]
         type: float
@@ -197,7 +199,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     # **Checkpoing saving**
     save_strategy: {{ save_strategy | toyaml('steps') }}
     save_safetensors: False
-    save_total_limit: 3
+    save_total_limit: 4
     preserve_best_model: True
     best_model_metric: "loss"
     preserve_n_best: 2
@@ -207,7 +209,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     resume_from_checkpoint: {{ not (init_model | default(False)) }}
 
     # **Torch Compile Config**
-    torch_compile: {{ not (no_compile | default(False)) }}
+    torch_compile: {{ compile | default(False) }}
     torch_compile_dynamic: True
 
     # **Misc.**
@@ -215,7 +217,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     float32_matmul_precision: "high"
     default_dtype: "bfloat16"
     gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
-    max_grad_norm: 1.0
+    max_grad_norm: 4.0
 
 [trainer_constructor]
     == super()
@@ -244,6 +246,7 @@ text_gen_callback_args: &text_gen_callback_args
 
 [callback_list]
     == super()
+    # Disabled, as flex_attention appears to be someone unstable for generation.
     #text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
     #    <<: *text_gen_callback_args
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
