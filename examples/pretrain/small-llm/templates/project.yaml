@@ -33,7 +33,8 @@
     ## Computed config. values
     == super()
     -- set ns.world_size = (getenv("WORLD_SIZE", "1") | int)
-    -- set ns.effective_batch_size = ns.gradient_accumulation_steps * ns.per_device_train_batch_size * ns.world_size
+    -- set ns.effective_per_device_batch_size = ns.gradient_accumulation_steps * ns.per_device_train_batch_size
+    -- set ns.effective_batch_size = ns.effective_per_device_batch_size * ns.world_size
     ## Learning Rate, scaled by sqrt(ns.effective_batch_size)
     -- set ns.lr_scale = ns.effective_batch_size ** 0.5
 
@@ -108,6 +109,7 @@ optimizer: &optimizer !partial:forgather.ml.optim:Adafactor
     # Scale LR by sqrt(WORLD_SIZE)
     lr: {{ (ns.base_learning_rate * ns.lr_scale) | toyaml }}
     bf16_stochastic_round: True
+    use_triton: True
 
 [lr_scheduler]
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
@@ -177,9 +179,9 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     # --- Pretrain Config ---
 
     # **Cadence**
-    logging_steps: {{ (100 * ns.step_cadence / ns.per_device_train_batch_size) | int }}
-    eval_steps: {{ (1000 * ns.step_cadence / ns.per_device_train_batch_size) | int }}
-    save_steps: {{ (20000 * ns.step_cadence / ns.per_device_train_batch_size) | int }}
+    logging_steps: {{ (100 * ns.step_cadence / ns.effective_per_device_batch_size) | int }}
+    eval_steps: {{ (1000 * ns.step_cadence / ns.effective_per_device_batch_size) | int }}
+    save_steps: {{ (20000 * ns.step_cadence / ns.effective_per_device_batch_size) | int }}
 
     # **Dataloader Config**
     num_train_epochs: 1

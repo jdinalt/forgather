@@ -1,0 +1,31 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Big Adam"
+    -- set ns.config_description = "Large batch size via gradient accumulation with AdamW"
+    -- set ns.gradient_accumulation_steps = 25
+
+[optimizer]
+optimizer: &optimizer !partial:torch.optim:AdamW
+    # Scale LR by sqrt(WORLD_SIZE)
+    lr: {{ (ns.base_learning_rate * ns.lr_scale) | toyaml }}
+
+[lr_scheduler]
+    == super()
+    warmup_steps: 20
+
+[trainer_definition]
+    -- include 'big_adam.trainer_config'
+
+#-------------------- big_adam.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+[trainer_args]
+    == super()
+    # # --- Big Adam Config ---
+    
+    # **Cadence**
+    logging_steps: 1
+    eval_steps: 10
+    save_steps: 200
