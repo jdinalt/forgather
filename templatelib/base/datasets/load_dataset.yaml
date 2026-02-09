@@ -9,14 +9,8 @@
     -- set ns.preprocess_method = "forgather.ml.datasets:preprocess_dataset"
 
 [main_body]
+    [tokenizer]
 .define: &tokenizer !var "tokenizer"
-
-    [map_function]
-.define: &map_function !partial:forgather.ml.datasets:default_tokenize_map_fn
-        add_eos: True
-
-    [pp_kwargs]
-.define: &pp_kwargs !dict
 
     [load_dataset_args]
 .define: &load_dataset_args
@@ -24,6 +18,10 @@
     ## path: "EleutherAI/wikitext_document_level"
     ## name: "wikitext-103-raw-v1"
     ## revision: "6472347"
+
+    [map_function]
+.define: &map_function !partial:forgather.ml.datasets:default_tokenize_map_fn
+    add_eos: True
 
     [map_args]
 .define: &map_kwargs !dict
