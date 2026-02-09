@@ -66,7 +66,6 @@ from forgather.ml.sharded_checkpoint import (
     index_file_name,
     load_checkpoint,
     make_shard_index,
-    maybe_delete_oldest_checkpoint,
     next_checkpoint_path,
     save_shard_index,
     save_sharded_checkpoint,
@@ -111,7 +110,6 @@ class CheckpointCoordinator:
         process_groups: Named process groups for PER_GROUP patterns
         dist: Distributed environment interface
         output_dir: Base directory for checkpoints
-        save_total_limit: Maximum checkpoints to keep (oldest deleted first)
         save_safetensors: Use safetensors format for model weights
         model: Reference to model for weight saving (optional if using custom save)
         model_parts: List of model parts for sharded saving (e.g., pipeline stages)
@@ -128,7 +126,6 @@ class CheckpointCoordinator:
         process_groups: Dict[str, ProcessGroup],
         dist: DistributedEnvInterface,
         output_dir: str,
-        save_total_limit: int = 2,
         save_safetensors: bool = True,
         model: Optional[torch.nn.Module] = None,
         model_parts: Optional[List[torch.nn.Module]] = None,
@@ -138,9 +135,7 @@ class CheckpointCoordinator:
         self.process_groups = process_groups
         self.dist = dist
         self.output_dir = output_dir
-        self.save_total_limit = save_total_limit
         self.save_safetensors = save_safetensors
-        self.best_checkpoint = None
 
         # Model handling for backward compatibility
         self.model = model
@@ -221,8 +216,9 @@ class CheckpointCoordinator:
                - PER_GROUP: One rank per group
                - PER_NODE: One rank per node
             4. Generate and save manifest (rank 0)
-            5. Cleanup old checkpoints (rank 0)
-            6. Barrier to ensure all ranks complete
+            5. Barrier to ensure all ranks complete
+
+        Note: Checkpoint cleanup is handled by CheckpointManager, not here.
 
         Example:
             coordinator.save_checkpoint(checkpoint_id="step-1000")
@@ -260,14 +256,6 @@ class CheckpointCoordinator:
             manifest_path = os.path.join(checkpoint_path, "checkpoint_manifest.json")
             manifest.save(manifest_path)
             logger.debug(f"Saved checkpoint manifest to {manifest_path}")
-
-        # Cleanup old checkpoints (rank 0 only)
-        if self._should_save_unique():
-            maybe_delete_oldest_checkpoint(
-                self.output_dir,
-                self.save_total_limit,
-                self.best_checkpoint,
-            )
 
         self._barrier()
 
@@ -954,6 +942,3 @@ class CheckpointCoordinator:
         """
         return self.dist.rank == 0
 
-    def set_best_checkpoint(self, best_checkpoint: str) -> None:
-        """Mark a checkpoint as the best model (for checkpoint retention)."""
-        self.best_checkpoint = best_checkpoint
