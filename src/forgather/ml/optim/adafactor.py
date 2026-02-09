@@ -58,6 +58,16 @@ class Adafactor(Optimizer):
         )
         super().__init__(params, defaults)
 
+        # Dedicated generator for stochastic rounding. Using a fixed seed
+        # ensures all DDP ranks produce identical rounding decisions,
+        # preventing parameter divergence across ranks. The generator is
+        # only advanced by SR draws (not shared with dropout, data loading,
+        # etc.) so it stays in sync as long as all ranks process the same
+        # parameters in the same order -- which DDP guarantees.
+        self._sr_generator = torch.Generator()
+        self._sr_generator.manual_seed(5489)
+        self._sr_cuda_generators = {}  # device -> Generator, lazily created
+
     def _init_state(self, state, group, p, grad):
         state["step"] = torch.tensor(0.0, dtype=torch.float32)
         if grad.dim() <= 1:
@@ -94,9 +104,18 @@ class Adafactor(Optimizer):
                         max=beta2
                     )
 
+                    # Draw SR seed from dedicated generator (same across DDP ranks)
+                    bf16_sr = group["bf16_stochastic_round"]
+                    if bf16_sr:
+                        sr_seed = int(torch.randint(
+                            0, 2**31, (1,), generator=self._sr_generator,
+                        ).item())
+                    else:
+                        sr_seed = 0
+
                     # Route to Triton or PyTorch implementation
                     if self.use_triton and grad.is_cuda:
-                        # Use Triton kernels for memory-efficient implementation
+                        # Use Triton kernels
                         if state["col"] is None:
                             # 1D case
                             self.triton_module.adafactor_step_1d_triton(
@@ -108,7 +127,8 @@ class Adafactor(Optimizer):
                                 group["lr"],
                                 group["weight_decay"],
                                 group["clip_threshold"],
-                                group["bf16_stochastic_round"],
+                                bf16_sr,
+                                sr_seed,
                             )
                         else:
                             # 2D case
@@ -122,9 +142,21 @@ class Adafactor(Optimizer):
                                 group["lr"],
                                 group["weight_decay"],
                                 group["clip_threshold"],
-                                group["bf16_stochastic_round"],
+                                bf16_sr,
+                                sr_seed,
                             )
                     else:
+                        # Prepare CUDA generator for PyTorch SR path
+                        sr_cuda_gen = None
+                        if bf16_sr and p.is_cuda:
+                            device = p.device
+                            if device not in self._sr_cuda_generators:
+                                self._sr_cuda_generators[device] = (
+                                    torch.Generator(device=device)
+                                )
+                            sr_cuda_gen = self._sr_cuda_generators[device]
+                            sr_cuda_gen.manual_seed(sr_seed)
+
                         # Use standard PyTorch implementation
                         args = [
                             p,
@@ -141,7 +173,8 @@ class Adafactor(Optimizer):
                             eps2,
                             group["weight_decay"],
                             group["relative_step"],
-                            group["bf16_stochastic_round"],
+                            bf16_sr,
+                            sr_cuda_gen,
                         ]
                         if self.compile:
                             torch.compile(_adafactor, fullgraph=True, dynamic=False)(
@@ -173,10 +206,16 @@ class Adafactor(Optimizer):
                     f"Adafactor col must be tensor or None, got {type(param_state['col'])}"
                 )
 
+        # Save SR generator state for deterministic resume
+        state_dict["sr_generator_state"] = self._sr_generator.get_state()
+
         return state_dict
 
     def load_state_dict(self, state_dict):
         """Load optimizer state handling conditional col=None."""
+        # Extract SR generator state before super() processes the dict
+        sr_gen_state = state_dict.pop("sr_generator_state", None)
+
         # Validate structure
         for param_id, param_state in state_dict["state"].items():
             expected_keys = {"step", "row", "col"}
@@ -187,6 +226,10 @@ class Adafactor(Optimizer):
                 )
 
         super().load_state_dict(state_dict)
+
+        # Restore SR generator state for deterministic resume
+        if sr_gen_state is not None:
+            self._sr_generator.set_state(sr_gen_state)
 
 
 """
@@ -318,6 +361,7 @@ def _adafactor(
     weight_decay: float,
     relative_step: bool,
     bf16_stochastic_round: bool,
+    sr_generator=None,
 ):
     """
     Adafactor: Adaptive Learning Rates with Sublinear Memory Cost
@@ -370,5 +414,5 @@ def _adafactor(
     else:
         update = p.float() - lr * update
         if bf16_stochastic_round:
-            update = fp32_to_bf16_stochastic_round(update)
+            update = fp32_to_bf16_stochastic_round(update, generator=sr_generator)
         p.copy_(update)

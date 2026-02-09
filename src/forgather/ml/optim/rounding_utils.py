@@ -12,7 +12,7 @@ import torch
 from torch import Tensor
 
 
-def fp32_to_bf16_stochastic_round(x_f32: Tensor) -> Tensor:
+def fp32_to_bf16_stochastic_round(x_f32: Tensor, generator=None) -> Tensor:
     """
     Convert FP32 tensor to BF16 with stochastic rounding.
 
@@ -29,6 +29,9 @@ def fp32_to_bf16_stochastic_round(x_f32: Tensor) -> Tensor:
 
     Args:
         x_f32: Input tensor in FP32 precision
+        generator: Optional torch.Generator for deterministic rounding.
+            Must be on the same device as x_f32. When None, uses the
+            default generator (WARNING: diverges across DDP ranks).
 
     Returns:
         Tensor converted to BF16 with stochastic rounding
@@ -36,7 +39,8 @@ def fp32_to_bf16_stochastic_round(x_f32: Tensor) -> Tensor:
     # Generate random 16-bit integers for stochastic decision
     # We have to use int32 since most arithmetic ops are not implemented for uint32/int16/uint16
     rand_16bit = torch.randint(
-        0, 1 << 16, x_f32.shape, device=x_f32.device, dtype=torch.int32
+        0, 1 << 16, x_f32.shape, device=x_f32.device, dtype=torch.int32,
+        generator=generator,
     )
 
     # View FP32 as int32 to manipulate bits

@@ -15,8 +15,6 @@ Target configuration:
 - clip_threshold=1.0 (enabled)
 """
 
-import random
-
 import torch
 import triton
 import triton.language as tl
@@ -358,6 +356,7 @@ def adafactor_step_2d_triton(
     weight_decay: float,
     clip_threshold: float,
     bf16_stochastic_round: bool = False,
+    sr_seed: int = 0,
 ):
     """
     Speed-optimized 2D Adafactor step.
@@ -415,7 +414,7 @@ def adafactor_step_2d_triton(
 
     # Stochastic rounding only applies when converting f32 -> bf16
     do_stochastic_round = bf16_stochastic_round and param.dtype != torch.float32
-    seed = random.randint(0, 2**31 - 1) if do_stochastic_round else 0
+    seed = sr_seed if do_stochastic_round else 0
 
     BLOCK_SIZE = 1024
     num_sms = _get_num_sms(grad.device)
@@ -481,6 +480,7 @@ def adafactor_step_1d_triton(
     weight_decay: float,
     clip_threshold: float,
     bf16_stochastic_round: bool = False,
+    sr_seed: int = 0,
 ):
     """
     Speed-optimized 1D Adafactor step.
@@ -512,7 +512,7 @@ def adafactor_step_1d_triton(
 
     # Stochastic rounding only applies when converting f32 -> bf16
     do_stochastic_round = bf16_stochastic_round and param.dtype != torch.float32
-    seed = random.randint(0, 2**31 - 1) if do_stochastic_round else 0
+    seed = sr_seed if do_stochastic_round else 0
 
     BLOCK_SIZE = 1024
     n_blocks = triton.cdiv(n_elements, BLOCK_SIZE)
