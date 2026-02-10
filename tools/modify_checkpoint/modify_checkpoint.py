@@ -1,289 +1,21 @@
+#!/usr/bin/env python3
+"""
+Checkpoint Parameter Modification Tool
+
+Safely modify optimizer, scheduler, and other component parameters in Forgather checkpoints.
+Supports atomic file operations with validation to prevent corruption.
+"""
+
+import argparse
 import ast
 import json
 import os
 import shutil
-from datetime import datetime
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
-
-from forgather import Project
-from forgather.ml.sharded_checkpoint import create_pretrained_symlinks
-
-from .dynamic_args import get_dynamic_args
-from .utils import assert_project_class
-
-
-def checkpoint_cmd(args):
-    """checkpoint commands."""
-
-    if hasattr(args, "cp_subcommand"):
-        match args.cp_subcommand:
-            case "link":
-                link_command(args)
-            case "inspect":
-                inspect_command(args)
-            case "components":
-                list_components_command(args)
-            case "list":
-                list_params_command(args)
-            case "modify":
-                modify_params_command(args)
-
-
-def link_command(args):
-    assert_project_class(args, "type.training_script")
-    if not args.output_path:
-        config_name = args.config_template
-        if args.config_template is None:
-            args.config_template = ""
-
-        project_args = get_dynamic_args(args)
-        proj = Project(
-            config_name=args.config_template,
-            project_dir=args.project_dir,
-            **project_args,
-        )
-        proj_meta = proj("meta")
-        output_dir = proj_meta["output_dir"]
-    else:
-        output_dir = args.output_path
-
-    print(f"Creating symlinks to newest checkpoint in {output_dir}")
-    link_files = create_pretrained_symlinks(
-        output_dir, force_overwrite=args.force, dry_run=args.dry_run
-    )
-    print(f"Created links: {link_files}")
-
-
-def inspect_command(args):
-    """
-    Inspect a checkpoint and display its structure, manifest, and validation info.
-
-    Shows:
-    - Checkpoint manifest (if present)
-    - File structure and sizes
-    - Component patterns and ranks
-    - Validation status
-    - Missing or unexpected files
-    """
-    checkpoint_path = args.checkpoint_path
-
-    if not os.path.exists(checkpoint_path):
-        print(f"Error: Checkpoint path does not exist: {checkpoint_path}")
-        return
-
-    print(f"=" * 80)
-    print(f"Checkpoint Inspection: {checkpoint_path}")
-    print(f"=" * 80)
-    print()
-
-    # Check for manifest
-    manifest_path = os.path.join(checkpoint_path, "checkpoint_manifest.json")
-    has_manifest = os.path.exists(manifest_path)
-
-    if has_manifest:
-        print("✓ Checkpoint manifest found")
-        inspect_with_manifest(checkpoint_path, manifest_path, args)
-    else:
-        print("⚠ No checkpoint manifest found (legacy checkpoint)")
-        inspect_without_manifest(checkpoint_path, args)
-
-
-def inspect_with_manifest(checkpoint_path: str, manifest_path: str, args):
-    """Inspect checkpoint using manifest."""
-    try:
-        from forgather.ml.trainer.checkpoint_types import CheckpointManifest
-
-        manifest = CheckpointManifest.load(manifest_path)
-
-        print()
-        print("Checkpoint Metadata:")
-        print(f"  World Size: {manifest.world_size}")
-        print(f"  Created: {manifest.timestamp}")
-        if manifest.pytorch_version:
-            print(f"  PyTorch Version: {manifest.pytorch_version}")
-        if manifest.forgather_version:
-            print(f"  Forgather Version: {manifest.forgather_version}")
-        if manifest.training_args_hash:
-            print(f"  Config Hash: {manifest.training_args_hash}")
-
-        print()
-        print(f"Components ({len(manifest.components)}):")
-        print()
-
-        total_size = 0
-        for key, comp_manifest in sorted(manifest.components.items()):
-            print(f"  [{key}]")
-            print(f"    Pattern: {comp_manifest.sharing_pattern}")
-            print(f"    Size: {_format_size(comp_manifest.size_bytes)}")
-            print(f"    Saved by ranks: {comp_manifest.ranks}")
-
-            if comp_manifest.replicated_across:
-                print(f"    Replicated across: {comp_manifest.replicated_across}")
-            if comp_manifest.group_name:
-                print(f"    Process group: {comp_manifest.group_name}")
-            if comp_manifest.checksum:
-                print(f"    Checksum: {comp_manifest.checksum[:16]}...")
-
-            total_size += comp_manifest.size_bytes
-
-            # Verify files exist
-            if args.verbose:
-                files = _find_component_files(checkpoint_path, key, comp_manifest)
-                if files:
-                    print(f"    Files ({len(files)}):")
-                    for f in files[:5]:  # Show first 5
-                        print(f"      - {os.path.basename(f)}")
-                    if len(files) > 5:
-                        print(f"      ... and {len(files) - 5} more")
-                else:
-                    print(f"    ⚠ No files found!")
-
-            print()
-
-        print(f"Total checkpoint size: {_format_size(total_size)}")
-
-        # Validation
-        if args.validate:
-            print()
-            print("Validation:")
-            validate_checkpoint_files(checkpoint_path, manifest, args)
-
-    except Exception as e:
-        print(f"Error reading manifest: {e}")
-        if args.verbose:
-            import traceback
-
-            traceback.print_exc()
-
-
-def inspect_without_manifest(checkpoint_path: str, args):
-    """Inspect legacy checkpoint without manifest."""
-    print()
-    print("Scanning checkpoint directory...")
-    print()
-
-    # Find all state files
-    state_files = []
-    for root, dirs, files in os.walk(checkpoint_path):
-        for file in files:
-            if file.endswith(".pt") or file.endswith(".safetensors"):
-                full_path = os.path.join(root, file)
-                state_files.append(full_path)
-
-    if not state_files:
-        print("⚠ No checkpoint files found (.pt or .safetensors)")
-        return
-
-    print(f"Found {len(state_files)} checkpoint file(s):")
-    print()
-
-    total_size = 0
-    for file_path in sorted(state_files):
-        rel_path = os.path.relpath(file_path, checkpoint_path)
-        size = os.path.getsize(file_path)
-        total_size += size
-
-        print(f"  {rel_path}")
-        print(f"    Size: {_format_size(size)}")
-
-        # Try to infer pattern from filename
-        pattern = _infer_pattern_from_filename(os.path.basename(file_path))
-        if pattern:
-            print(f"    Inferred pattern: {pattern}")
-
-        print()
-
-    print(f"Total size: {_format_size(total_size)}")
-
-
-def _find_component_files(checkpoint_path: str, key: str, comp_manifest) -> list:
-    """Find all files for a component based on its manifest."""
-    import glob
-
-    pattern = comp_manifest.sharing_pattern
-    files = []
-
-    if pattern == "global" or pattern == "replicated":
-        # Single file: {key}_state.pt
-        path = os.path.join(checkpoint_path, f"{key}_state.pt")
-        if os.path.exists(path):
-            files.append(path)
-    elif pattern == "per_rank":
-        # Multiple files: {key}_state_rank_*.pt
-        pattern_str = os.path.join(checkpoint_path, f"{key}_state_rank_*.pt")
-        files = glob.glob(pattern_str)
-    elif pattern == "per_group":
-        # Multiple files: {key}_state_group_*_rank_*.pt
-        pattern_str = os.path.join(checkpoint_path, f"{key}_state_group_*_rank_*.pt")
-        files = glob.glob(pattern_str)
-    elif pattern == "per_node":
-        # Multiple files: {key}_state_node_*_rank_*.pt
-        pattern_str = os.path.join(checkpoint_path, f"{key}_state_node_*_rank_*.pt")
-        files = glob.glob(pattern_str)
-
-    return files
-
-
-def validate_checkpoint_files(checkpoint_path: str, manifest, args):
-    """Validate that all expected files exist."""
-    issues = []
-
-    for key, comp_manifest in manifest.components.items():
-        files = _find_component_files(checkpoint_path, key, comp_manifest)
-
-        if not files:
-            issues.append(f"  ✗ Component '{key}': No files found")
-        else:
-            expected_count = len(comp_manifest.ranks)
-            actual_count = len(files)
-
-            if (
-                actual_count != expected_count
-                and comp_manifest.sharing_pattern not in ("global", "replicated")
-            ):
-                issues.append(
-                    f"  ⚠ Component '{key}': Expected {expected_count} files, found {actual_count}"
-                )
-            else:
-                print(f"  ✓ Component '{key}': {len(files)} file(s)")
-
-    if issues:
-        print()
-        print("Issues:")
-        for issue in issues:
-            print(issue)
-    else:
-        print("  All components validated ✓")
-
-
-def _format_size(size_bytes: int) -> str:
-    """Format size in bytes to human-readable string."""
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if size_bytes < 1024.0:
-            return f"{size_bytes:.2f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.2f} PB"
-
-
-def _infer_pattern_from_filename(filename: str) -> str:
-    """Infer sharing pattern from filename."""
-    if "_rank_" in filename:
-        if "_group_" in filename:
-            return "per_group"
-        elif "_node_" in filename:
-            return "per_node"
-        else:
-            return "per_rank"
-    else:
-        return "global or replicated"
-
-
-# ============================================================================
-# Parameter Modification Commands
-# ============================================================================
 
 
 def discover_checkpoint_files(checkpoint_path: str, component: str) -> List[str]:
@@ -757,6 +489,7 @@ def update_checkpoint_manifest(
         if "metadata" not in component_info:
             component_info["metadata"] = {}
 
+        from datetime import datetime
         component_info["metadata"]["modified_by"] = "forgather checkpoint modify"
         component_info["metadata"]["modified_at"] = datetime.now().isoformat()
 
@@ -845,88 +578,12 @@ def print_changes_table(changes: List[dict], component: str) -> None:
         print(f"└─{'─' * param_width}─┴─{'─' * old_width}─┴─{'─' * new_width}─┘")
 
 
-def list_components_command(args):
-    """List available components in a checkpoint directory."""
-    import sys
-    import glob
-
-    checkpoint_path = Path(args.checkpoint_path).resolve()
-
-    if not checkpoint_path.exists():
-        print(f"Error: Checkpoint path does not exist: {checkpoint_path}", file=sys.stderr)
-        return 1
-
-    if checkpoint_path.is_file():
-        checkpoint_path = checkpoint_path.parent
-
-    if not checkpoint_path.is_dir():
-        print(f"Error: Not a directory: {checkpoint_path}", file=sys.stderr)
-        return 1
-
-    print(f"\nCheckpoint: {checkpoint_path}")
-    print()
-
-    # Find all *_state*.pt files
-    state_files = list(checkpoint_path.glob("*_state*.pt"))
-
-    if not state_files:
-        print("No component checkpoint files found (pattern: *_state*.pt)")
-        return 0
-
-    # Extract component names from filenames
-    components = {}
-    for file_path in state_files:
-        filename = file_path.name
-
-        # Extract component name (everything before _state)
-        if "_state" in filename:
-            component = filename.split("_state")[0]
-
-            if component not in components:
-                components[component] = []
-            components[component].append(filename)
-
-    if not components:
-        print("No components found")
-        return 0
-
-    print(f"Found {len(components)} component(s):")
-    print()
-
-    for component in sorted(components.keys()):
-        files = components[component]
-        total_size = sum(os.path.getsize(checkpoint_path / f) for f in files)
-
-        print(f"  {component}")
-        print(f"    Files: {len(files)}")
-        print(f"    Size: {_format_size(total_size)}")
-
-        if args.verbose:
-            print(f"    File list:")
-            for f in sorted(files):
-                file_size = os.path.getsize(checkpoint_path / f)
-                print(f"      - {f} ({_format_size(file_size)})")
-
-        print()
-
-    if not args.verbose:
-        print("Use --verbose to see individual file details")
-        print()
-
-    print(f"Use 'forgather checkpoint list CHECKPOINT --component COMPONENT' to inspect parameters")
-
-    return 0
-
-
-def list_params_command(args):
+def cmd_list(args):
     """List modifiable parameters in a checkpoint component."""
-    import sys
-
     try:
         files = discover_checkpoint_files(args.checkpoint_path, args.component)
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
-        print(f"\nHint: Use 'forgather checkpoint components {args.checkpoint_path}' to see available components", file=sys.stderr)
         return 1
 
     print(f"\nComponent: {args.component}")
@@ -959,10 +616,8 @@ def list_params_command(args):
     return 0
 
 
-def modify_params_command(args):
+def cmd_modify(args):
     """Modify parameters in a checkpoint component."""
-    import sys
-
     # Parse modifications
     modifications = []
 
@@ -1007,7 +662,6 @@ def modify_params_command(args):
         files = discover_checkpoint_files(args.checkpoint_path, args.component)
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
-        print(f"\nHint: Use 'forgather checkpoint components {args.checkpoint_path}' to see available components", file=sys.stderr)
         return 1
 
     print(f"\nDiscovering checkpoint files...")
@@ -1123,3 +777,109 @@ def modify_params_command(args):
     print(f"\nDone! Modified {len(modified_files)} file(s).")
 
     return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Modify optimizer, scheduler, and other component parameters in Forgather checkpoints"
+    )
+
+    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
+
+    # List command
+    list_parser = subparsers.add_parser(
+        'list',
+        help='List modifiable parameters in a checkpoint component'
+    )
+    list_parser.add_argument(
+        'checkpoint_path',
+        help='Path to checkpoint directory or file'
+    )
+    list_parser.add_argument(
+        '--component',
+        default='optimizer',
+        help='Component to inspect (default: optimizer)'
+    )
+    list_parser.add_argument(
+        '--verbose', '-v',
+        action='store_true',
+        help='Show value types and detailed information'
+    )
+
+    # Modify command
+    modify_parser = subparsers.add_parser(
+        'modify',
+        help='Modify parameters in a checkpoint component'
+    )
+    modify_parser.add_argument(
+        'checkpoint_path',
+        help='Path to checkpoint directory or file'
+    )
+    modify_parser.add_argument(
+        '--component',
+        default='optimizer',
+        help='Component to modify (default: optimizer)'
+    )
+    modify_parser.add_argument(
+        '--set',
+        action='append',
+        default=[],
+        metavar='KEY=VALUE',
+        help='Set parameter to exact value (can be used multiple times)'
+    )
+    modify_parser.add_argument(
+        '--scale',
+        action='append',
+        default=[],
+        metavar='KEY=FACTOR',
+        help='Multiply parameter by factor (can be used multiple times)'
+    )
+    modify_parser.add_argument(
+        '--param-group',
+        type=int,
+        metavar='INDEX',
+        help='For optimizer: target specific param group (default: all)'
+    )
+    modify_parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Preview changes without saving'
+    )
+    modify_parser.add_argument(
+        '--no-backup',
+        action='store_true',
+        help='Skip backup creation (still uses atomic operations)'
+    )
+    modify_parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Skip confirmation prompts'
+    )
+    modify_parser.add_argument(
+        '--verbose', '-v',
+        action='store_true',
+        help='Detailed logging'
+    )
+    modify_parser.add_argument(
+        '--quiet', '-q',
+        action='store_true',
+        help='Minimal output'
+    )
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return 1
+
+    if args.command == 'list':
+        return cmd_list(args)
+    elif args.command == 'modify':
+        return cmd_modify(args)
+    else:
+        parser.print_help()
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
