@@ -22,7 +22,7 @@ class Adafactor(Optimizer):
         clip_threshold: float = 1.0,
         betas: Tuple[float, float] = (0.9, 0.999),
         eps: Tuple[float, float] = (1e-30, 1e-3),
-        weight_decay: float = 0.0,
+        weight_decay: float = 0.01,
         relative_step: bool = False,
         torch_compile: bool = False,
         bf16_stochastic_round: bool = False,
@@ -107,9 +107,14 @@ class Adafactor(Optimizer):
                     # Draw SR seed from dedicated generator (same across DDP ranks)
                     bf16_sr = group["bf16_stochastic_round"]
                     if bf16_sr:
-                        sr_seed = int(torch.randint(
-                            0, 2**31, (1,), generator=self._sr_generator,
-                        ).item())
+                        sr_seed = int(
+                            torch.randint(
+                                0,
+                                2**31,
+                                (1,),
+                                generator=self._sr_generator,
+                            ).item()
+                        )
                     else:
                         sr_seed = 0
 
@@ -151,8 +156,8 @@ class Adafactor(Optimizer):
                         if bf16_sr and p.is_cuda:
                             device = p.device
                             if device not in self._sr_cuda_generators:
-                                self._sr_cuda_generators[device] = (
-                                    torch.Generator(device=device)
+                                self._sr_cuda_generators[device] = torch.Generator(
+                                    device=device
                                 )
                             sr_cuda_gen = self._sr_cuda_generators[device]
                             sr_cuda_gen.manual_seed(sr_seed)
