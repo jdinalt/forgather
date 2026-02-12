@@ -6,7 +6,7 @@ from argparse import RawTextHelpFormatter
 
 import torch
 import yaml
-from transformers import AutoModel, AutoTokenizer, GenerationConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
 
 def main(args):
@@ -15,8 +15,8 @@ def main(args):
         assert isinstance(prompts, list)
 
     device = args.device
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModel.from_pretrained(
+    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
         args.model,
         trust_remote_code=True,
         dtype=args.dtype,
