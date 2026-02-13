@@ -22,6 +22,10 @@
     -- set ns.gradient_accumulation_steps = 1
     -- set ns.base_learning_rate = learning_rate | default(1.4e-05)
     -- set ns.max_length = max_length | default(4096)
+
+    ## Chinchilla compute optimal = model_size * 20
+    ## Thus, for a 150M parameter model, 150e6 * 20 = 3e9
+    -- set ns.total_tokens = (total_tokens | default(3)) * 1000 * 1000 * 1000
     
     ## Shard the dataset, rather than dispatching from rank0
     -- set ns.dispatch_batches = False
@@ -37,6 +41,8 @@
     -- set ns.effective_batch_size = ns.effective_per_device_batch_size * ns.world_size
     ## Learning Rate, scaled by sqrt(ns.effective_batch_size)
     -- set ns.lr_scale = ns.effective_batch_size ** 0.5
+    -- set ns.tokens_per_step = ns.max_length * ns.effective_batch_size
+    -- set ns.total_steps = ns.total_tokens // ns.tokens_per_step
 
 [variable_listing]
     == super()
@@ -46,7 +52,11 @@
 # ns.world_size: {{ ns.world_size }}
 # ns.effective_batch_size: {{ ns.effective_batch_size }}
 # ns.base_learning_rate: {{ ns.base_learning_rate }}
-# ns.step_cadence: {{ ns.step_cadence }}
+# ns.step_cadence: {{ ns.step_cadence }} steps
+# ns.max_length: {{ ns.max_length }} tokens
+# ns.total_tokens: {{ ns.total_tokens // (1000 * 1000 * 1000)}} billion
+# ns.tokens_per_step: {{ ns.tokens_per_step }} tokens
+# ns.total_steps: {{ ns.total_steps }} steps
 
 [datasets_preprocessor_args]
 .define: &tokenizer_args !dict
@@ -114,7 +124,7 @@ optimizer: &optimizer !partial:forgather.ml.optim:Adafactor
 [lr_scheduler]
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
     warmup_steps: 500
-    cooldown_steps: {{ (0.7 * 60000000 / ns.effective_batch_size) | int }}
+    cooldown_steps: {{ (0.7 * ns.total_steps) | int }}
     constant_lr: {{ (7.5e-6 * ns.lr_scale) | toyaml }}
     min_lr: {{ (1.4e-6 * ns.lr_scale) | toyaml }}
 
@@ -166,6 +176,10 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
         type: float
         default: 1.0
         help: "Scale size of train/eval/save steps by this factor"
+    tokens:
+        names: "--total-tokens"
+        type: int
+        help: "Total training tokens (billions)"
 
 #-------------------- project.trainer_config --------------------
 -- extends 'trainers/ddp_trainer.yaml'
@@ -216,6 +230,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 
     # **Misc.**
     seed: 42
+    max_steps: {{ max_steps | toyaml(ns.total_steps) }}
     float32_matmul_precision: "high"
     default_dtype: "bfloat16"
     gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
