@@ -91,10 +91,16 @@ tokenizer: &tokenizer !call:forgather:from_project
     out_features: !var "vocab_size"
     bias: False
 
+    [embedding]
+.define: &embedding !call:torch.nn.Embedding
+    num_embeddings: !var "vocab_size"
+    embedding_dim: !var "hidden_size"
+    padding_idx: !var "pad_token_id"
+
     [input_encoder]
 .define: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
     d_model: !var "hidden_size"
-    vocab_size: !var "vocab_size"
+    embedding: *embedding
     scale_sqrt_d_model: True
 
     [init_weights]

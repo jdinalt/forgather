@@ -21,7 +21,7 @@
 ## excepting this being a causal LM.
 [model_bits]
     [loss_fn]
-.define: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn
+.define: &loss_fn !call:.causal_loss:CausalLoss@loss_fn
 
     [layer_norm_factory]
 .define: &layer_norm_factory !partial:torch.nn:LayerNorm@layer_norm_factory
@@ -65,7 +65,7 @@
     residual_dropout: !var "residual_dropout"
     
     [layer_stack]
-.define: &layer_stack !factory:.checkpoint_layer_stack:LayerStack@layer_stack
+.define: &layer_stack !call:.checkpoint_layer_stack:LayerStack@layer_stack
     layer_factory: *layer_factory
     num_hidden_layers: !var "num_hidden_layers"
     enable_checkpoint: !var "enable_activation_checkpoint"
@@ -77,16 +77,21 @@
     out_features: !var "vocab_size"
     bias: False
 
-
     [positional_encoder]
-.define: &positional_encoder !factory:.sinusoidal_pe:SinusoidalPE@positional_encoder
+.define: &positional_encoder !call:.sinusoidal_pe:SinusoidalPE@positional_encoder
     d_model: !var "hidden_size"
     max_sequence_length: !var "max_position_embeddings"
 
+    [embedding]
+.define: &embedding !call:torch.nn.Embedding
+    num_embeddings: !var "vocab_size"
+    embedding_dim: !var "hidden_size"
+    padding_idx: !var "pad_token_id"
+
     [input_encoder]
-.define: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
+.define: &input_encoder !call:.input_encoder:InputEncoder@input_encoder
     d_model: !var "hidden_size"
-    vocab_size: !var "vocab_size"
+    embedding: *embedding
     dropout: !var "embedding_dropout"
     positional_encoder: *positional_encoder
     scale_sqrt_d_model: True
@@ -114,7 +119,7 @@ model_factory: &model_factory !dict@model_factory
     hidden_size: {{ hidden_size | toyaml(512) }}
     num_attention_heads: {{ num_attention_heads | toyaml(8) }}
     num_hidden_layers: {{ num_hidden_layers | toyaml(6) }}
-    max_position_embeddings: !singleton:getattr
+    max_position_embeddings: !call:getattr
         - *tokenizer
         - "model_max_length"
     intermediate_size: {{ intermediate_size | toyaml(2048) }}

@@ -49,11 +49,18 @@ class SingleHeadAlibiAttn(nn.Module):
         self.value_linear = nn.Linear(self.d_model, self.d_model, bias=self.bias)
 
         # Unlike the original design, the slope is a learnable parameter.
+
         if self.trainable_alibi:
-            self.alibi_slope = nn.Parameter(torch.tensor(self.slope_init))
+            self.alibi_slope = nn.Parameter(torch.empty((1,), dtype=torch.float32))
         else:
             self.alibi_slope = self.slope_init
         self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        if self.trainable_alibi:
+            with torch.no_grad():
+                self.alibi_slope.fill_(self.slope_init)
 
     def extra_repr(self):
         return (

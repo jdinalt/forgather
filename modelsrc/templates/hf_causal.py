@@ -3,7 +3,7 @@
 # If you are looking at the post-processed template, it is best not to edit it
 # directly, but to regenerate it with the Forgather code generator.
 from functools import partial
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union, override
 
 import torch
 from torch import FloatTensor, LongTensor, Tensor, nn
@@ -141,12 +141,12 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
         if not self.is_base_model:
             # vLLM expects the output-decoder to be named "lm_head"
             self.lm_head = model_dict['lm_head']()
+            setattr(self.lm_head, "init_prefix", "lm_head")
             self.loss_function = model_dict['loss_fn']
         else:
             self.lm_head = None
         
         self.post_init()
-
         """
         The 'pp_plan', which is the HF/vLLM API for specifying how to convert a model to Pipeline Parallel,
         consists of a Dict[str, Tuple[List[str], str]]
@@ -331,33 +331,41 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
         else:
             return outputs[0]
     
-    def initialize_weights(self):
-        self.causal_lm.initialize_weights()
+    @override
+    def _init_weights(self, module: torch.nn.Module):
+        self.causal_lm.init_weights(module)
     
+    @override
     def get_attn_mask_fn(self):
         return self.causal_lm.get_attn_mask_fn()
     
+    @override
     def get_input_embeddings(self) -> nn.Embedding:
         return self.causal_lm.get_input_embeddings()
     
+    @override
     def set_input_embeddings(self, value: nn.Embedding):
         self.causal_lm.set_input_embeddings(value)
 
+    @override
     def get_output_embeddings(self) -> nn.Module:
         if not self.lm_head or isinstance(self.lm_head, nn.Linear):
             return self.lm_head
         else:
             return self.lm_head.get_output_embeddings()
 
+    @override
     def set_output_embeddings(self, new_embedding: nn.Module):
         if not self.lm_head or isinstance(self.lm_head, nn.Linear):
             self.lm_head = new_embedding
         else:
             self.lm_head.set_output_embeddings(new_embedding)
     
+    @override
     def resize_position_embeddings(self, new_num_position_embeddings: int):
         self.causal_lm.resize_position_embeddings(new_num_position_embeddings)
 
+    @override
     def get_position_embeddings(self) -> Union[nn.Embedding, tuple[nn.Embedding]]:
         return self.causal_lm.get_position_embeddings()
 

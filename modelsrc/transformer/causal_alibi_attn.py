@@ -66,25 +66,41 @@ class CausalAlibiAttn(nn.Module):
 
         # Query projections for all heads
         self.query_linear = nn.Linear(d_model, d_model, bias=bias)
+        setattr(self.query_linear, "init_prefix", "attn.query")
 
         # Key/Value projections for KV heads (potentially fewer than query heads)
         self.key_linear = nn.Linear(d_model, self.num_kv_heads * self.d_head, bias=bias)
+        setattr(self.key_linear, "init_prefix", "attn.key")
+
         self.value_linear = nn.Linear(
             d_model, self.num_kv_heads * self.d_head, bias=bias
         )
+        setattr(self.value_linear, "init_prefix", "attn.value")
 
         # Output projection
         self.output_linear = nn.Linear(d_model, d_model, bias=bias)
+        setattr(self.output_linear, "init_prefix", "attn.output")
 
         # Store dropout probability for SDPA function
         self.dropout_p = dropout
 
+        self.alt_alibi_init = alt_alibi_init
+        self.alibi_slopes = nn.Parameter(
+            torch.empty((self.num_heads,), dtype=torch.float32)
+        )
+        self.alibi_slopes.requires_grad = trainable_alibi
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        device = self.alibi_slopes.device
+        dtype = self.alibi_slopes.dtype
+
         # Initialize ALiBi slopes - one slope per attention head
-        if alt_alibi_init:
+        if self.alt_alibi_init:
             # Alternative initialization: high half slopes shift towards 1.0+, low half approach zero
             # This can work better with trainable slopes in some cases
             alibi_slopes = 1.0 / torch.logspace(
-                1, 8, self.num_heads, base=2, dtype=torch.float32
+                1, 8, self.num_heads, base=2, dtype=dtype, device=device
             )
             # Zero out the lower half of slopes (position-agnostic heads)
             alibi_slopes.masked_fill_(
@@ -97,11 +113,10 @@ class CausalAlibiAttn(nn.Module):
             # Original ALiBi slope distribution from the paper
             # Creates exponentially decreasing slopes: 1/2^0, 1/2^1, ..., 1/2^7
             alibi_slopes = 1.0 / torch.logspace(
-                0, 7, self.num_heads, base=2, dtype=torch.float32
+                0, 7, self.num_heads, base=2, dtype=dtype, device=device
             )
-
-        self.alibi_slopes = nn.Parameter(alibi_slopes)
-        self.alibi_slopes.requires_grad = trainable_alibi
+        with torch.no_grad():
+            self.alibi_slopes.copy_(alibi_slopes)
 
     def extra_repr(self):
         return (

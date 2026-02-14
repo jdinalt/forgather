@@ -21,9 +21,11 @@ class FeedforwardLayer(nn.Module):
         self.d_feedforward = d_feedforward
 
         self.linear1 = nn.Linear(self.d_model, self.d_feedforward, bias=bias)
+        setattr(self.linear1, "init_prefix", "ff.up_proj")
         self.dropout = nn.Dropout(dropout) if dropout != 0.0 else nn.Identity()
         self.activation = activation_factory()
         self.linear2 = nn.Linear(self.d_feedforward, self.d_model, bias=bias)
+        setattr(self.linear2, "init_prefix", "ff.down_proj")
 
     def extra_repr(self):
         return f"d_model={self.d_model}, d_feedforward={self.d_feedforward}"

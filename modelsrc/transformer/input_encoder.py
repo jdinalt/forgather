@@ -10,11 +10,10 @@ class InputEncoder(nn.Module):
 
     Also performs embedding dropout by default, as per the Attention is All You Need.
 
-    d_model: Model hidden dimesnion
-    vocab_size: Number of tokens in vocabulary
+    d_model: Model hidden dimesnion; used to compute sqrt(d_model), if scale_sqrt_d_model
     dropout: Embedding dropout probability, as per original Transformer paper.
-    positional_encoder_factory: Constructs a positional encoder; default is None
-    embedding_factory: Constructs an embedding implementaiton. Default is nn.Embedding(vocab_size, d_model)
+    positional_encoder: And absolute positional encoder or None
+    embedding: A torch nn.Embedding or equivalent
     scale: Set embedding scale. scale_sqrt_d_model == True overrides this value.
     scale_sqrt_d_model: Multiply  sqrt(d_model), as per Attention is All you Need.
         Note: When used, embedding std should be: 1/sqrt(d_model)
@@ -23,31 +22,18 @@ class InputEncoder(nn.Module):
     def __init__(
         self,
         d_model: int,
-        vocab_size: int,
+        embedding: nn.Module,
         *,
-        dropout: Optional[float] = 0.1,
-        positional_encoder: Optional[Callable] = None,
-        embedding: Optional[Callable] = None,
+        dropout: float = 0.0,
+        positional_encoder: Optional[nn.Module] = None,
         scale: float = 1.0,
         scale_sqrt_d_model: bool = False,
     ):
         super().__init__()
-        self.d_model = d_model
-        self.vocab_size = vocab_size
-        if scale_sqrt_d_model:
-            self.scale = math.sqrt(d_model)
-        else:
-            self.scale = scale
-
-        if dropout == 0.0:
-            self.dropout = nn.Identity()
-        else:
-            self.dropout = nn.Dropout(dropout)
-
-        if embedding is not None:
-            self.embedding = embedding
-        else:
-            self.embedding = nn.Embedding(vocab_size, d_model)
+        self.scale = math.sqrt(d_model) if scale_sqrt_d_model else scale
+        self.dropout = nn.Identity() if dropout == 0.0 else nn.Dropout(dropout)
+        self.embedding = embedding
+        setattr(self.embedding, "init_prefix", "embedding")
 
         if positional_encoder is not None:
             self.positional_encoder = positional_encoder
@@ -55,10 +41,10 @@ class InputEncoder(nn.Module):
             self.positional_encoder = None
 
     def extra_repr(self):
-        return f"d_model={self.d_model}, vocab_size={self.vocab_size}"
+        return f"scale={self.scale}"
 
     def forward(
-        self, input_ids: LongTensor, position_ids: LongTensor = None
+        self, input_ids: LongTensor, position_ids: Optional[LongTensor] = None
     ) -> FloatTensor:
         x = self.embedding(input_ids)
         if self.scale != 1.0:

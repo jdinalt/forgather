@@ -20,8 +20,11 @@ class GLUFeedforwardLayer(nn.Module):
         self.d_feedforward = d_feedforward
 
         self.up_proj = nn.Linear(self.d_model, self.d_feedforward, bias=False)
+        setattr(self.up_proj, "init_prefix", "ff.up_proj")
         self.gate_proj = nn.Linear(self.d_model, self.d_feedforward, bias=False)
+        setattr(self.gate_proj, "init_prefix", "ff.gate_proj")
         self.down_proj = nn.Linear(self.d_feedforward, self.d_model, bias=False)
+        setattr(self.down_proj, "init_prefix", "ff.down_proj")
         self.activation = activation_factory()
         if dropout == 0.0:
             self.dropout = nn.Identity()

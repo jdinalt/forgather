@@ -74,15 +74,20 @@ class CausalMultiheadAttn(nn.Module):
 
         # Query projections for all heads
         self.query_linear = nn.Linear(d_model, self.num_heads * self.d_head, bias=bias)
+        setattr(self.query_linear, "init_prefix", "attn.query")
 
         # Key/Value projections for KV heads (potentially fewer than query heads)
         self.key_linear = nn.Linear(d_model, self.num_kv_heads * self.d_head, bias=bias)
+        setattr(self.key_linear, "init_prefix", "attn.key")
+
         self.value_linear = nn.Linear(
             d_model, self.num_kv_heads * self.d_head, bias=bias
         )
+        setattr(self.value_linear, "init_prefix", "attn.value")
 
         # Output projection
         self.output_linear = nn.Linear(self.num_heads * self.d_head, d_model, bias=bias)
+        setattr(self.output_linear, "init_prefix", "attn.output")
 
         # Store dropout probability for SDPA function
         self.dropout_p = dropout
