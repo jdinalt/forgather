@@ -21,11 +21,20 @@
     -- set ns.per_device_train_batch_size = batch_size | default(4)
     -- set ns.gradient_accumulation_steps = 1
     -- set ns.base_learning_rate = learning_rate | default(1.4e-05)
+    -- set ns.base_constant_lr = 7.5e-6
+    -- set ns.base_min_lr = 1.4e-6
     -- set ns.max_length = max_length | default(4096)
+    -- set ns.warmup_steps = 500
 
     ## Chinchilla compute optimal = model_size * 20
     ## Thus, for a 150M parameter model, 150e6 * 20 = 3e9
     -- set ns.total_tokens = (total_tokens | default(3)) * 1000 * 1000 * 1000
+
+    ## The ratio of total training steps over which to decay max-lr to constant-lr
+    -- set ns.cooldown_ratio = 0.7
+
+    ## Imposes a lower limit on cooldown_steps
+    -- set ns.min_cooldown_tokens = (min_cooldown_tokens | default(100)) * 1000 * 1000 * 1000
     
     ## Shard the dataset, rather than dispatching from rank0
     -- set ns.dispatch_batches = False
@@ -38,10 +47,11 @@
     == super()
     -- set ns.world_size = (getenv("WORLD_SIZE", "1") | int)
     -- set ns.effective_per_device_batch_size = ns.gradient_accumulation_steps * ns.per_device_train_batch_size
-    -- set ns.effective_batch_size = ns.effective_per_device_batch_size * ns.world_size
-    ## Learning Rate, scaled by sqrt(ns.effective_batch_size)
-    -- set ns.lr_scale = ns.effective_batch_size ** 0.5
-    -- set ns.tokens_per_step = ns.max_length * ns.effective_batch_size
+    -- set ns.global_batch_size = ns.effective_per_device_batch_size * ns.world_size
+    ## Learning Rate, scaled by sqrt(ns.global_batch_size)
+    -- set ns.lr_scale = ns.global_batch_size ** 0.5
+    -- set ns.tokens_per_step = ns.max_length * ns.global_batch_size
+    -- set ns.min_cooldown_steps = ns.min_cooldown_tokens // ns.tokens_per_step
     -- set ns.total_steps = ns.total_tokens // ns.tokens_per_step
 
 [variable_listing]
@@ -50,12 +60,18 @@
 # ns.per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
 # ns.gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
 # ns.world_size: {{ ns.world_size }}
-# ns.effective_batch_size: {{ ns.effective_batch_size }}
+# ns.effective_per_device_batch_size: {{ ns.effective_per_device_batch_size }}
+# ns.global_batch_size: {{ ns.global_batch_size }}
+# ns.lr_scale: {{ ns.lr_scale }}
+# ns.warmup_steps: {{ ns.warmup_steps }}
 # ns.base_learning_rate: {{ ns.base_learning_rate }}
+# ns.base_constant_lr: {{ ns.base_constant_lr }}
+# ns.base_min_lr: {{ ns.base_min_lr }}
 # ns.step_cadence: {{ ns.step_cadence }} steps
 # ns.max_length: {{ ns.max_length }} tokens
 # ns.total_tokens: {{ ns.total_tokens // (1000 * 1000 * 1000)}} billion
 # ns.tokens_per_step: {{ ns.tokens_per_step }} tokens
+# ns.min_cooldown_steps: {{ ns.min_cooldown_steps }}
 # ns.total_steps: {{ ns.total_steps }} steps
 
 [datasets_preprocessor_args]
@@ -123,10 +139,10 @@ optimizer: &optimizer !partial:forgather.ml.optim:Adafactor
 
 [lr_scheduler]
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
-    warmup_steps: 500
-    cooldown_steps: {{ (0.7 * ns.total_steps) | int }}
-    constant_lr: {{ (7.5e-6 * ns.lr_scale) | toyaml }}
-    min_lr: {{ (1.4e-6 * ns.lr_scale) | toyaml }}
+    warmup_steps: {{ ns.warmup_steps }}
+    cooldown_steps: {{ [ns.min_cooldown_steps, ns.cooldown_ratio * ns.total_steps] | max | int }}
+    constant_lr: {{ (ns.base_constant_lr * ns.lr_scale) | toyaml }}
+    min_lr: {{ (ns.base_min_lr * ns.lr_scale) | toyaml }}
 
 [trainer_definition]
     -- include 'project.trainer_config'
@@ -176,10 +192,15 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
         type: float
         default: 1.0
         help: "Scale size of train/eval/save steps by this factor"
-    tokens:
+    total_tokens:
         names: "--total-tokens"
         type: int
         help: "Total training tokens (billions)"
+    min_cooldown_tokens:
+        names: "--min-cooldown-tokens"
+        type: int
+        default: 100
+        help: "Minimum tokens (billions) for LR cooldown phase"
 
 #-------------------- project.trainer_config --------------------
 -- extends 'trainers/ddp_trainer.yaml'

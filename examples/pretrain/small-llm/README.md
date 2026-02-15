@@ -1,139 +1,609 @@
 # Small LLM Pretraining
 
-Train a model from scratch on [HuggingFaceTB/smollm-corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus)
+A complete example project for pretraining small language models (100M-2B parameters) from scratch, demonstrating token-efficient training with principled learning rate scheduling.
 
-> This dataset is a curated collection of high-quality educational and synthetic data designed for training small language models.
+## Overview
 
-The train dataset is a combination of the "cosmopedia-v2" and "fineweb-edu-dedup" subsets of "HuggingFaceTB/smollm-corpus", where samples
-are randomly interleaved. The draw probabilities are proportional to the estimated remaining samples in each sub-set, which should result in
-all datasets running out of examples at about the same time.
+This project trains models on the [HuggingFaceTB/smollm-corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus), a curated collection of high-quality educational and synthetic data designed for training small language models. The training dataset combines "cosmopedia-v2" and "fineweb-edu-dedup" subsets with intelligent interleaving to balance data sources.
 
-Multiple examples are [packed into 4K token blocks](../../../docs/datasets/sequence-packing.md), where masking is applied to prevent cross-attention among samples within the same block.
+**Key Features:**
+- Token-budget-based training with Chinchilla-optimal defaults
+- Principled LR scheduling that adapts to training scale
+- Multi-GPU distributed training with DDP
+- Sequence packing for efficiency (4K token blocks)
+- Comprehensive monitoring and checkpointing
+- Support for multiple model architectures (DeepOne, Llama, Qwen, etc.)
 
-See [SmolLM-Corpus dataset project](../../datasets/HuggingFaceTB/README.md)
+**Default Configuration:**
+- Model: Custom DeepOne (117M parameters)
+- Token Budget: 3B tokens (Chinchilla-optimal for 150M params)
+- Batch Size: 4 per device (auto-scaled with world size)
+- Sequence Length: 4096 tokens
+- Optimizer: Adafactor with BF16 stochastic rounding
 
-Note that these dataset are quite large and will take a long time to download, if you don't already have them cached. Once cached, loading
-is nearly instant, thanks to the new [Fast HF Dataset Loader](../../../docs/datasets/fast-hf-loader.md).
-
-This project will train with all available GPUs, using [DDP](../../tiny_experiments/ddp_trainer/README.md), on the current node, dynamically
-adjusting learning-rate with the global batch size.
-
-By default, the project will use a [custom DeepOne model](./custom_deepone/README.md). This model has been chosen as the [DeepNet](https://arxiv.org/abs/2203.00555) architecture is relatively forgiving. The original ALiBi positional encoding has been replaced with RoPE, primarily for speed, as it is better optimized at present.
-
-When multiple GPUs are available, the default is to create a dataset shard for each rank and to process it independently. An alternative is to set "ns.dispatch_batches = True," which will result in only rank0 reading and pre-processing the dataset, dispatching batches to the other ranks.
-
-## Basic Usage
+## Quick Start
 
 ```bash
-# Start training with default (DeepOne:117M) newly initialized model
+# Train with defaults (DeepOne 117M, 3B tokens)
 forgather train --init-model
 
-# Resume training from last checkpoint
+# Resume from checkpoint
 forgather train
+
+# Train with different model
+forgather train --init-model --model-project ../../models/llama/ --model-config 124M.yaml
+
+# Train for longer (10B tokens instead of 3B)
+forgather train --init-model --total-tokens 10
+
+# Use flex attention for better performance
+forgather train --init-model --attn-implementation flex_attention
 ```
 
-When initializing the model, you can specify the model project and configuration to construct:
+## Training Configuration
+
+The training configuration is built around several interconnected parameters that together determine training dynamics, compute requirements, and final model quality.
+
+### Token Budget and Compute Allocation
+
+Training is controlled by a **token budget** rather than epochs or arbitrary step counts. This aligns with modern understanding of compute-optimal training.
+
+**Key Parameters:**
+- `--total-tokens N`: Total training tokens in billions (default: 3)
+- `--max-steps N`: Override to limit training steps (optional)
+
+**Chinchilla Optimal:**
+The default 3B token budget follows Chinchilla scaling laws for compute-optimal training:
+```
+optimal_tokens ≈ 20 × model_parameters
+```
+
+For a 150M parameter model: `150M × 20 = 3B tokens`
+
+**How it works:**
+```python
+# These are computed automatically from your settings:
+tokens_per_step = max_length × global_batch_size
+total_steps = total_tokens // tokens_per_step
+
+# Example with defaults (4 GPUs):
+# tokens_per_step = 4096 × (4 × 4) = 65,536
+# total_steps = 3B / 65,536 ≈ 45,777 steps
+```
+
+### Batch Size and Learning Rate Scaling
+
+Batch sizes and learning rates are coupled through sqrt-scaling to maintain training dynamics across different hardware configurations.
+
+**Key Parameters:**
+- `--batch-size N`: Per-device training batch size (default: 4)
+- `--learning-rate LR`: Base learning rate for batch size 1 (default: 1.4e-5)
+
+**How it works:**
+```python
+# Global batch size scales with world size
+global_batch_size = batch_size × gradient_accumulation_steps × world_size
+
+# Learning rate scales by sqrt of global batch size
+lr_scale = sqrt(global_batch_size)
+actual_lr = base_lr × lr_scale
+
+# Example with 4 GPUs:
+# global_batch_size = 4 × 1 × 4 = 16
+# lr_scale = sqrt(16) = 4.0
+# actual_lr = 1.4e-5 × 4.0 = 5.6e-5
+```
+
+**Why sqrt-scaling?**
+This maintains the signal-to-noise ratio in gradients as batch size increases, allowing larger batches without changing optimization dynamics. Based on empirical findings from "Don't Decay the Learning Rate, Increase the Batch Size" (Smith et al., 2017).
+
+### Learning Rate Scheduling Strategy
+
+The LR schedule uses the **InfiniteLRScheduler**, designed for flexible pretraining with optional continuation and annealing phases.
+
+**Schedule Structure:**
+```
+1. Warmup (500 steps): 0 → max_lr
+2. Cooldown (variable): max_lr → constant_lr (cosine decay)
+3. Constant (remaining): constant_lr
+4. Annealing (optional): constant_lr → min_lr (not used by default)
+```
+
+**Key Parameters:**
+- `--warmup-steps N`: Steps to warm up to max_lr (default: 500)
+- `--min-cooldown-tokens N`: Minimum tokens (billions) for cooldown phase (default: 100)
+
+**Adaptive Cooldown Duration:**
+
+The cooldown phase duration adapts to training scale:
+```python
+# Compute both minimum and ratio-based durations
+min_cooldown_steps = min_cooldown_tokens / tokens_per_step
+ratio_cooldown_steps = 0.7 × total_steps
+
+# Use the larger value
+cooldown_steps = max(min_cooldown_steps, ratio_cooldown_steps)
+```
+
+**Why this matters:**
+
+Short training runs (e.g., 3B tokens) benefit from maintaining high LR longer, while long runs (100B+ tokens) can afford earlier decay. The cosine function is nearly flat at the beginning, so even "starting" decay early keeps LR high initially:
+
+- **3B token run**: `max(1.22M steps, 32K steps) = 1.22M` → trains at ~99.6% max_lr throughout
+- **50B token run**: `max(1.22M steps, 427K steps) = 1.22M` → meaningful but gentle decay
+- **300B token run**: `max(1.22M steps, 2.56M steps) = 2.56M` → full 70% decay ratio
+
+**Base Learning Rates** (before scaling):
+- `max_lr`: 1.4e-5 (set with `--learning-rate`)
+- `constant_lr`: 7.5e-6 (hardcoded, ~53% of max)
+- `min_lr`: 1.4e-6 (hardcoded, ~10% of max)
+
+**Tuning min_cooldown_tokens:**
+
+The default 100B was chosen conservatively. For experimentation:
+```bash
+# More aggressive (start decay sooner)
+forgather train --min-cooldown-tokens 20
+
+# More conservative (maintain high LR longer)
+forgather train --min-cooldown-tokens 200
+```
+
+**The annealing phase** (warmup → cooldown → constant → anneal) allows you to:
+1. Train to token budget with constant_lr
+2. Save checkpoint
+3. Fork for task-specific annealing
+4. Continue pretraining from constant_lr checkpoint without re-warming
+
+See "Training to Do Better Than a Fake Loss Function" for the research behind this approach.
+
+### Sequence Length
+
+**Parameter:**
+- `--max-length N`: Maximum sequence length in tokens (default: 4096)
+
+Sequences are packed to this length using multiple examples with masking to prevent cross-attention between samples. This maximizes GPU utilization while maintaining training semantics.
+
+**Trade-offs:**
+- Longer sequences: Better context, more memory, fewer steps for same token budget
+- Shorter sequences: Less memory, faster iteration, more gradient updates
+
+**Memory scaling:** Attention is O(n²) in sequence length. For large models, you may need to reduce sequence length or use memory-efficient attention (flash_attention_2, flex_attention).
+
+### Step Cadence
+
+**Parameter:**
+- `--step-cadence FACTOR`: Scales logging/eval/save intervals (default: 1.0)
+
+Controls how often various events occur without changing the token scale:
+```python
+# Base intervals (in tokens processed, not steps):
+logging_interval = 100 tokens
+eval_interval = 1000 tokens
+save_interval = 20000 tokens
+
+# Actual step intervals:
+logging_steps = (100 × step_cadence) / (batch_size × grad_accum)
+eval_steps = (1000 × step_cadence) / (batch_size × grad_accum)
+save_steps = (20000 × step_cadence) / (batch_size × grad_accum)
+```
+
+**Use cases:**
+- `--step-cadence 4.0`: For small models - checkpoint/eval less frequently
+- `--step-cadence 0.25`: For debugging - more frequent monitoring
+
+## Model Selection
+
+### Default Model: Custom DeepOne
+
+A customized 117M parameter model based on DeepNet architecture:
+- 16 layers × 768 hidden × 8 attention heads
+- RoPE positional encoding (replaced ALiBi for speed)
+- Qwen3-style QK-Norm
+- GLU feedforward (SwiGLU)
+- 32K vocabulary
+
+**Why DeepOne?**
+The DeepNet architecture is relatively forgiving for pretraining experiments due to its improved initialization and normalization. Good choice for learning about pretraining dynamics.
+
+See [Custom DeepOne README](./custom_deepone/README.md) for details.
+
+### Using Different Models
 
 ```bash
-forgather train --init-model --model-project ../../models/qwen3/ --model-config 124M.yaml
-```
-Note that if you change the model configuration, you should delete the old model directory first:
+# Llama architecture (30M - 3B params)
+forgather train --init-model \
+    --model-project ../../models/llama/ \
+    --model-config 124M.yaml
 
+# Qwen3 architecture
+forgather train --init-model \
+    --model-project ../../models/qwen3/ \
+    --model-config 124M.yaml
+
+# List available model configs
+ls ../../models/llama/templates/configs/
+```
+
+**Important:** When changing models, delete the old output directory:
 ```bash
 rm -rf output_models
+forgather train --init-model --model-project ...
 ```
 
-By default, Torch SDPA attention will be used, although this is sub-optimal from a compute perspective, as it does not support sparsity. We recommend flex_attention.
+## Dataset
 
-```bash
-# Use Flex Attention, which supports sparsity
-forgather train --attn-implementation flex_attention
-```
+**Source:** [HuggingFaceTB/smollm-corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus)
 
-The training batch sizes have been tuned for a model with about 130M parameters. On a 24GB GPU, there is plenty memory to spare for a larger batch size, but it has been found that throughput is better will smaller batches.
+**Subsets used:**
+- `cosmopedia-v2`: Synthetic educational content
+- `fineweb-edu-dedup`: Deduplicated educational web content
 
-Note that DDP is not suitable for models which will not fit on a single GPU. This will require other parallelism methods. e.g. Tensor, Pipeline, Fully-Sharded, etc.
-With DDP and 24 GBs, you should still be able to reach about 1.7B parameters, although this will require additional memory optimizations -- and quite a bit of tuning.
+**Processing:**
+- Interleaved with proportional sampling (balanced consumption)
+- Packed into 4K token blocks with masking
+- Fast loading with [Fast HF Dataset Loader](../../../docs/datasets/fast-hf-loader.md)
 
-```bash
-forgather train --batch-size 8
-```
+**Note:** Initial download is large (~100GB+) but subsequent loads are nearly instant when cached.
 
-The learning rate is specified in terms of a global batch-size of 1, where this value is scaled by sqrt(effective_batch_size), where effective_batch_size is 
-equal to per_device_train_batch_size * world_size. The base learning rate can be set on the command line for tuning.
+See [SmolLM-Corpus dataset project](../../datasets/HuggingFaceTB/README.md) for details.
 
-```bash
-forgather train --lr 1.0e-4
-```
+## Command-Line Options
 
-By default, Torch Compile is enabled. This can cause a substantial initial delay, which 
+### Core Options
 
-## Options
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--init-model` | Initialize new model (vs resume from checkpoint) | Resume |
+| `--total-tokens N` | Total training tokens in billions | 3 |
+| `--batch-size N` | Per-device training batch size | 4 |
+| `--learning-rate LR` | Base learning rate (for batch size 1) | 1.4e-5 |
+| `--max-length N` | Maximum sequence length | 4096 |
+| `--min-cooldown-tokens N` | Minimum tokens (billions) for LR cooldown | 100 |
 
-```
-usage: forgather train [-h] [-d DEVICES] [--dry-run] [--max-steps MAX_STEPS] [--save-strategy {no,steps,epoch}] [--no-accelerator] [--dist-backend DIST_BACKEND] [--attn-implementation {eager,sdpa,flash_attention_2,flex_attention}] [--verbose-info]
-                       [--batch-size BATCH_SIZE] [--model-project MODEL_PROJECT] [--model-config MODEL_CONFIG] [--init-model] [--no-restore-dataset-state] [--no-compile] [--learning-rate LEARNING_RATE] [--max_length MAX_LENGTH] [--step-cadence STEP_CADENCE]
-                       ...
+### Model Options
 
-Run configuration with train script
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--model-project PATH` | Path to model project directory | `./custom_deepone` |
+| `--model-config NAME` | Model configuration file | `custom_deepone.yaml` |
 
-positional arguments:
-  remainder             All arguments after -- will be forwarded as torchrun arguments.
+### Attention Implementation
 
-options:
-  -h, --help            show this help message and exit
-  -d DEVICES, --devices DEVICES
-                        CUDA Visible Devices e.g. "0,1"
-  --dry-run             Just show the generated commandline, without actually executing it.
-  --max-steps MAX_STEPS
-                        Set maximum training steps
-  --save-strategy {no,steps,epoch}, -S {no,steps,epoch}
-                        When to save checkpoints
-  --no-accelerator      Disable use of accelerator, when available. e.g. 'don't use GPU'
-  --dist-backend DIST_BACKEND
-                        The name of the torch-distributed backend to use
-  --attn-implementation {eager,sdpa,flash_attention_2,flex_attention}
-                        Attention implementation
-  --verbose-info        Display verbose training info on startup
-  --batch-size BATCH_SIZE
-                        Set the per-device-training batch size
-  --model-project MODEL_PROJECT
-                        Path to model project for model initialization
-  --model-config MODEL_CONFIG
-                        Model project configuration for model init
-  --init-model          Initialize model weights
-  --no-restore-dataset-state
-                        Don't restore dataset state from checkpoint
-  --compile             Enable Torch compile
-  --learning-rate LEARNING_RATE, --lr LEARNING_RATE
-                        Set the base learning rate
-  --max_length MAX_LENGTH
-                        Set maximum sequence length
-  --step-cadence STEP_CADENCE
-                        Scale size of train/eval/save steps by this factor
-  ```
+| Option | Description | Performance |
+|--------|-------------|-------------|
+| `--attn-implementation sdpa` | PyTorch SDPA (default) | Good, no sparsity |
+| `--attn-implementation flex_attention` | Flex attention | Best, supports sparsity |
+| `--attn-implementation flash_attention_2` | Flash Attention 2 | Excellent, requires installation |
+| `--attn-implementation eager` | Standard PyTorch | Slow, debugging only |
+
+**Recommendation:** Use `flex_attention` for best performance with sequence packing.
+
+### Training Control
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--max-steps N` | Override max steps (instead of token budget) | Auto-computed |
+| `--save-strategy {no,steps,epoch}` | When to save checkpoints | steps |
+| `--step-cadence FACTOR` | Scale log/eval/save intervals | 1.0 |
+| `--compile` | Enable Torch compile (slower startup, faster training) | Disabled |
+
+### Distributed Training
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-d DEVICES` | CUDA visible devices (e.g., "0,1,3") | All GPUs |
+| `--dist-backend BACKEND` | PyTorch distributed backend | nccl |
+
+### Debugging
+
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | Show command without executing |
+| `--verbose-info` | Display detailed config at startup |
+| `--no-restore-dataset-state` | Start from dataset beginning |
+| `--save-strategy no` | Disable checkpointing for quick experiments |
 
 ## Examples
 
-Initialize and train Quen3 124 million parameter model using flash-attention-2 on GPUs 0,1,3,4 and 5. Disable Torch compile for faster startup and run for the first 500 steps.
+### Example 1: Quick Chinchilla-Optimal Run
+
+Train the default 117M model for 3B tokens (Chinchilla-optimal):
 
 ```bash
-
-# Init model and train through to step 500, then checkpoint and stop.
-forgather train --init-model --model-project ../../models/qwen3/ --model-config 124M.yaml --attn-implementation flex_attention --max-steps 500 -d 0,1,3,4,5
-
-# Resume training from step 500 through the end of the epoch; don't disable Torch Compile.
-forgather train --attn-implementation flash_attention_2 -d 0,1,3,4,5
+forgather train --init-model --attn-implementation flex_attention
 ```
 
-Train a 30M parameter Llama model
+**What happens:**
+- Model: DeepOne 117M
+- Total tokens: 3B
+- Total steps: ~45K (with 4 GPUs)
+- LR: Stays at ~99.6% of max_lr throughout
+- Training time: ~6-8 hours on 4x RTX 3090
+
+### Example 2: Longer Training Run
+
+Train for 10B tokens to see more convergence:
 
 ```bash
-forgather train --init-model --model-project ../../models/llama/ --model-config 30M.yaml --attn-implementation flash_attention_2 --batch-size 16 --step-cadence 4.0
+forgather train --init-model \
+    --total-tokens 10 \
+    --attn-implementation flex_attention
 ```
 
-Test various hyper-parameters on a short run, without saving.
+**What happens:**
+- Total steps: ~150K
+- LR: Gentle decay over training
+- Better final performance but diminishing returns per token
+
+### Example 3: Small Model, High Cadence
+
+Train a tiny model quickly with frequent checkpointing:
 
 ```bash
-forgather train --init-model --attn-implementation flex_attention --save-strategy no --max-steps 2000
+forgather train --init-model \
+    --model-project ../../models/llama/ \
+    --model-config 30M.yaml \
+    --batch-size 16 \
+    --step-cadence 4.0 \
+    --attn-implementation flex_attention
 ```
+
+**Why this works:**
+- 30M model trains fast
+- Larger batch size (16) → fewer steps
+- `step_cadence 4.0` → checkpoints less frequently
+- Good for testing configurations quickly
+
+### Example 4: Multi-GPU on Specific Devices
+
+Use specific GPUs (skip GPU 2):
+
+```bash
+forgather train --init-model \
+    -d 0,1,3,4,5 \
+    --attn-implementation flex_attention
+```
+
+**What happens:**
+- Uses 5 GPUs (skips GPU 2)
+- `global_batch_size = 4 × 5 = 20`
+- LR auto-scales: `1.4e-5 × sqrt(20) ≈ 6.3e-5`
+
+### Example 5: Hyperparameter Exploration
+
+Quick experiment without saving checkpoints:
+
+```bash
+forgather train --init-model \
+    --max-steps 2000 \
+    --save-strategy no \
+    --learning-rate 2.0e-5 \
+    --attn-implementation flex_attention
+```
+
+**Use case:**
+- Test different learning rates quickly
+- No disk space used for checkpoints
+- 2000 steps ≈ 130M tokens with defaults
+
+### Example 6: Resume and Continue
+
+Resume from checkpoint and train longer:
+
+```bash
+# Initial run
+forgather train --init-model --total-tokens 3
+
+# Later: continue for 7B more tokens (10B total)
+forgather train --total-tokens 10
+```
+
+**What happens:**
+- Resumes from last checkpoint
+- Continues to 10B total tokens
+- Dataset state restored (picks up where it left off)
+
+### Example 7: Conservative LR Schedule
+
+Use more conservative cooldown for very long training:
+
+```bash
+forgather train --init-model \
+    --total-tokens 50 \
+    --min-cooldown-tokens 200 \
+    --attn-implementation flex_attention
+```
+
+**What happens:**
+- 50B token budget
+- Won't start meaningful LR decay until very late in training
+- Good for exploring if longer high-LR phases improve convergence
+
+## Advanced Topics
+
+### Distributed Data Parallel (DDP)
+
+The project uses PyTorch DDP for multi-GPU training on a single node. Each GPU maintains a complete copy of the model and processes different data.
+
+**Dataset sharding** (default):
+- Each rank processes a different shard of the dataset
+- More efficient: parallel data loading
+- Drawback: Requires more CPU memory
+
+**Batch dispatching** (alternative):
+Set `ns.dispatch_batches = True` in config:
+- Rank 0 loads and dispatches batches to all ranks
+- More memory efficient
+- Drawback: Potential data loading bottleneck
+
+**Memory limits:**
+DDP requires the full model to fit on a single GPU. For larger models (>2B params with 24GB), consider:
+- Pipeline parallelism
+- Tensor parallelism
+- Fully-sharded data parallel (FSDP)
+
+### Attention Implementations
+
+**SDPA (default):**
+- PyTorch native scaled dot-product attention
+- Works everywhere, good performance
+- Does NOT support sparsity from sequence packing
+
+**Flex Attention (recommended):**
+```bash
+forgather train --attn-implementation flex_attention
+```
+- Supports sparsity masks (respects sequence packing)
+- Excellent performance
+- Requires PyTorch 2.5+
+
+**Flash Attention 2:**
+```bash
+forgather train --attn-implementation flash_attention_2
+```
+- Fastest for dense attention
+- Requires separate installation: `pip install flash-attn`
+- Does NOT support sparsity
+
+### Torch Compile
+
+Enable with `--compile` flag:
+```bash
+forgather train --init-model --compile
+```
+
+**Trade-offs:**
+- Initial compilation: 5-15 minute delay on first run
+- Training speed: 10-30% faster after compilation
+- Worth it for long runs, skip for quick experiments
+
+### Checkpoint Management
+
+**Automatic checkpointing:**
+- Saves every 20K tokens (adjustable with `--step-cadence`)
+- Keeps last 4 checkpoints (`save_total_limit: 4`)
+- Preserves best 2 models by eval loss
+
+**What's saved:**
+- Model weights
+- Optimizer state
+- LR scheduler state
+- Dataset position (for exact resume)
+- RNG state (for reproducibility)
+- Training progress
+
+**Manual checkpoint control:**
+
+Use training control commands while running:
+```bash
+# List running jobs
+forgather control list
+
+# Save checkpoint now
+forgather control save JOB_ID
+
+# Stop gracefully (saves final checkpoint)
+forgather control stop JOID_ID
+
+# Abort without saving (failed hyperparameter experiment)
+forgather control abort JOB_ID
+```
+
+See [Training Job Control](../../../docs/trainers/trainer-control.md) for details.
+
+### Monitoring Training
+
+**Training logs:**
+```bash
+# View recent progress
+tail -f output_models/default/runs/*/trainer_logs.json
+
+# Get summary statistics
+forgather logs summary
+
+# Generate plots
+forgather logs plot --loss-curves
+forgather logs plot --loss-curves -e  # Open in editor
+
+# Compare multiple runs
+forgather logs plot --compare run1/trainer_logs.json run2/trainer_logs.json
+```
+
+See [Training Log Analysis](../../../docs/logs-analysis.md) for details.
+
+**Divergence detection:**
+
+The config includes a `DualTimeScaleDivergenceDetector` that monitors loss with fast and slow EMAs. If the fast EMA diverges from slow EMA by threshold (1.0), training aborts automatically to save compute.
+
+### Memory Optimization
+
+For fitting larger models:
+
+1. **Reduce batch size:** `--batch-size 2` or `--batch-size 1`
+2. **Reduce sequence length:** `--max-length 2048`
+3. **Use gradient accumulation:** Edit config to set `gradient_accumulation_steps: 4`
+4. **Use flash attention:** `--attn-implementation flash_attention_2`
+5. **Disable some callbacks:** Edit config to remove peak_memory, text_gen callbacks
+
+## Troubleshooting
+
+**OOM (Out of Memory):**
+- Reduce `--batch-size`
+- Reduce `--max-length`
+- Use `--attn-implementation flash_attention_2`
+- Train on fewer GPUs with same global batch (LR auto-adjusts)
+
+**Slow data loading:**
+- First run downloads dataset (slow, one-time)
+- Subsequent runs load from cache (fast)
+- If still slow, check disk I/O and consider SSD
+
+**Loss not decreasing:**
+- Check LR isn't too low (use `--verbose-info` to see actual LR)
+- Try higher `--learning-rate`
+- Check for data preprocessing issues
+- Verify model initialized correctly (`--init-model`)
+
+**Loss exploding:**
+- LR might be too high, reduce `--learning-rate`
+- Check gradient clipping (`max_grad_norm: 4.0` in config)
+- Divergence detector should catch this automatically
+
+**Different results after resume:**
+- Dataset state should restore automatically
+- If deleted dataset checkpoint, training continues from random position
+- Use `--no-restore-dataset-state` to explicitly restart from beginning
+
+## Configuration Files
+
+**Main config:** `templates/project.yaml`
+- Defines all training parameters
+- Inherits from base training script templates
+- Customizable through child configs
+
+**Alternative configs:**
+- `big_adam.yaml`: Large batch via gradient accumulation with AdamW
+- `tiny_samll-lm.yaml`: Progressive curriculum (Tiny Stories → SmolLM)
+
+**Creating custom configs:**
+```yaml
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "My Experiment"
+
+[optimizer]
+    # Override to use AdamW instead of Adafactor
+    optimizer: &optimizer !partial:torch.optim:AdamW
+        lr: {{ (ns.base_learning_rate * ns.lr_scale) | toyaml }}
+```
+
+## References
+
+- [Chinchilla Paper](https://arxiv.org/abs/2203.15556): Training Compute-Optimal Large Language Models
+- [DeepNet Paper](https://arxiv.org/abs/2203.00555): Scaling Transformers to 1,000 Layers and Beyond
+- [SmolLM-Corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus): High-quality pretraining data
+- [InfiniteLR Scheduler](https://arxiv.org/abs/2108.06084): Training to Do Better Than a Fake Loss Function
+- [Learning Rate Scaling](https://arxiv.org/abs/1711.00489): Don't Decay the Learning Rate, Increase the Batch Size
