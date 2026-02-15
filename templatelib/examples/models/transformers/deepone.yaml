@@ -110,13 +110,18 @@
         - !partial:torch.nn.init:xavier_uniform_
             gain: !call:.deepnet:deepnet_beta [ !var "num_hidden_layers", 0 ]
     linear:
-        - 'attn.key.weight|attn.query.weight|lm_head.weight'
+        - 'attn.key.weight|attn.query.weight'
         - !partial:torch.nn.init:xavier_uniform_
+    embedding:
+        - 'embedding.weight'
+        - !partial:.init_weights:init_embeddings
+            padding_index: !var "pad_token_id"
+            scale_rsqrt_d_model: False
 
         [init_function]
 .define: &init_weights !partial:.init_weights:init_weights_by_regex@init_weights
     regex_list: *init_regex_list
-    debug: False
+    debug: True
 
     [attn_mask_fn]
 .define: &attn_mask_fn !partial:.causal_mask:causal_mask@attn_mask_fn
