@@ -26,15 +26,15 @@
         seed: !var [ "seed", 42 ]
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan') }}"
     config_template: "fast-iter-packed.yaml"
-    targets: [ "train_dataset", "eval_dataset", "test_dataset" ]
+    targets: [ "train_dataset" ]
 
     [small_lm]
 .define: &small_lm !call:forgather:from_project
     <<: *dataset_args
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'datasets', 'HuggingFaceTB') }}"
     config_template: "smollm-corpus/interleaved-packed.yaml"
-    targets: [ "train_dataset" ]
-
+    targets: [ "train_dataset", "eval_dataset", "test_dataset" ]
+    
     [train_dataset]
 train_dataset: &train_dataset !singleton:forgather.ml.datasets:interleave_datasets
     <<: &interleave_args
