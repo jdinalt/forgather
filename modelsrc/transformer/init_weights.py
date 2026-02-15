@@ -171,9 +171,11 @@ def init_weights_by_regex(
             for regex, init_fn in regex_list:
                 m = re.search(regex, name)
                 if m is not None:
-                    if debug:
-                        print(f"Init: {_get_callable_name(init_fn)}({name})")
-                    init_fn(param)
+                    # Skip parameters which were loaded from checkpoint
+                    if not getattr(param, "_is_hf_initialized", True):
+                        if debug:
+                            print(f"Init: {_get_callable_name(init_fn)}({name})")
+                        init_fn(param)
                     break
             else:
                 # Keep track of unmatched parameter names
