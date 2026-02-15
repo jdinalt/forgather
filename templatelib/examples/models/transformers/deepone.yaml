@@ -121,7 +121,7 @@
         [init_function]
 .define: &init_weights !partial:.init_weights:init_weights_by_regex@init_weights
     regex_list: *init_regex_list
-    debug: True
+    debug: False
 
     [attn_mask_fn]
 .define: &attn_mask_fn !partial:.causal_mask:causal_mask@attn_mask_fn

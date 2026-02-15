@@ -9,6 +9,7 @@ A Forgather configuration defines a collection of constructable Python objects, 
 - **[Syntax Reference](syntax-reference.md)** - Complete syntax reference
 - **[High-level API](project.ipynb)** - The "Project" abstraction
 - **[Low-level API](low-level-api.md)** - The API upon which the 'Project' abstraction is built from
+- **[Model Initialization](model-initialization.md)** - Regex-based parameter initialization system
 - **[Debugging Guide](debugging.md)** - Tools and techniques for debugging configurations
 
 ## Quick Overview

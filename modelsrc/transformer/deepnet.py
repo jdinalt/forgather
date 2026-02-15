@@ -18,7 +18,7 @@ class DeepnetLayer(nn.Module):
         feedforward_factory: Callable,
         attention_factory: Callable,
         norm_factory: Callable,
-        dropout: Optional[float] = 0.1,
+        dropout: Optional[float] = 0.0,
         residual_dropout: Optional[float] = 0.0,
         alpha=1.0,  # See deepnet_alpha()
         **kwargs,
