@@ -84,6 +84,16 @@ def create_dataset_parser(global_args):
         type=int,
         help="Shuffle with seed",
     )
+    parser.add_argument(
+        "--example-stride",
+        type=int,
+        help="The number of dataset steps between output examples",
+    )
+    parser.add_argument(
+        "--truncate",
+        type=int,
+        help="Truncate examples to N characters.",
+    )
     add_output_arg(parser)
     add_editor_arg(parser)
     parse_dynamic_args(parser, global_args)

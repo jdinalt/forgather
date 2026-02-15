@@ -4,7 +4,11 @@ import torch
 from transformers import AutoTokenizer
 
 from forgather import Project
-from forgather.ml.datasets import plot_token_length_histogram
+from forgather.ml.datasets import (
+    InterleavedDataset,
+    SimpleArrowIterableDataset,
+    plot_token_length_histogram,
+)
 
 from .dynamic_args import get_dynamic_args
 from .utils import assert_project_class, write_output_or_edit
@@ -98,32 +102,108 @@ def dataset_cmd(args):
     print(f"{split=}")
 
     if args.examples:
-        print(f"Printing {args.examples} examples from the dataset:")
+        stride = args.example_stride if args.example_stride else 1
+        # Print incrementally if not outputting to file or editor
+        print_incremental = args.output_file is None and not args.edit
+        if print_incremental:
+            print(data)
+            data = ""
+
+        print(f"Printing {args.examples} examples from the dataset (stride={stride}):")
+
         if args.tokenized:
             assert tokenizer, "Decoding a tokenized dataset requires the tokenizer"
-            for i, example in zip(range(args.examples), split):
-                input_ids = example["input_ids"]
-                document_starts = example.get("document_starts", None)
-                # Use explicit document boundaries if available (preferred)
-                if document_starts:
-                    n_documents = len(document_starts)
-                    print(f"Document Starts: {document_starts}")
-                # Fall back to counting EOS tokens (legacy, less reliable)
-                elif tokenizer.eos_token_id is not None:
-                    n_documents = (
-                        (torch.tensor(input_ids) == tokenizer.eos_token_id).sum().item()
-                    )
-                else:
-                    n_documents = "unknown"
+            example_count = 0
+            dataset_index = 0
 
-                header = f" {i} Tokens: {len(input_ids)}, Documents: {n_documents}, Features: {example.keys()}"
-                data += f"{header:-^80}" + "\n" + tokenizer.decode(input_ids) + "\n"
+            for example in split:
+                # Check if this is an index we want to print
+                if dataset_index % stride == 0 and example_count < args.examples:
+                    input_ids = example["input_ids"]
+                    document_starts = example.get("document_starts", None)
+                    # Use explicit document boundaries if available (preferred)
+                    if document_starts:
+                        n_documents = len(document_starts)
+                        print(f"Document Starts: {document_starts}")
+                    # Fall back to counting EOS tokens (legacy, less reliable)
+                    elif tokenizer.eos_token_id is not None:
+                        n_documents = (
+                            (torch.tensor(input_ids) == tokenizer.eos_token_id)
+                            .sum()
+                            .item()
+                        )
+                    else:
+                        n_documents = "unknown"
+
+                    header = f" {dataset_index} Tokens: {len(input_ids)}, Documents: {n_documents}, Features: {example.keys()}"
+
+                    # Show estimated lengths, where relevant
+                    if isinstance(split, SimpleArrowIterableDataset):
+                        header += f", Estimated Len: {len(split)}"
+                    elif isinstance(split, InterleavedDataset):
+                        header += f", InterleavedDataset Lengths: {get_interleaved_lengths(split)}"
+
+                    decoded_text = tokenizer.decode(input_ids)
+
+                    # Apply truncation if specified
+                    if args.truncate and len(decoded_text) > args.truncate:
+                        decoded_text = decoded_text[: args.truncate] + "..."
+
+                    output = f"{header:-^80}" + "\n" + decoded_text + "\n"
+                    if print_incremental:
+                        print(output)
+                    else:
+                        data += output
+                    example_count += 1
+
+                dataset_index += 1
+
+                # Stop if we've printed enough examples
+                if example_count >= args.examples:
+                    break
 
         else:
             print("Dumping raw examples.")
-            for i, example in zip(range(args.examples), split):
-                header = f" {i} Features: {example.keys()}"
-                data += f"{header:-^80}" + "\n"
-                for feature in features:
-                    data += f"{feature:*^16}\n\n" + str(example[feature]) + "\n"
+            example_count = 0
+            dataset_index = 0
+
+            for example in split:
+                # Check if this is an index we want to print
+                if dataset_index % stride == 0 and example_count < args.examples:
+                    header = f" {dataset_index} Features: {example.keys()}"
+                    output = f"{header:-^80}" + "\n"
+                    for feature in features:
+                        feature_text = str(example[feature])
+
+                        # Apply truncation if specified
+                        if args.truncate and len(feature_text) > args.truncate:
+                            feature_text = feature_text[: args.truncate] + "..."
+
+                        output += f"{feature:*^16}\n\n" + feature_text + "\n"
+
+                    if print_incremental:
+                        print(output)
+                    else:
+                        data += output
+                    example_count += 1
+
+                dataset_index += 1
+
+                # Stop if we've printed enough examples
+                if example_count >= args.examples:
+                    break
     write_output_or_edit(args, data, ".txt")
+
+
+def get_interleaved_lengths(dataset) -> str:
+    s = str(len(dataset)) + " ["
+    for ds in dataset.datasets:
+        if isinstance(ds, SimpleArrowIterableDataset):
+            s += str(len(ds))
+        elif isinstance(ds, InterleavedDataset):
+            s += get_interleaved_lengths(ds)
+        else:
+            s += "*" + str(len(ds))
+        s += ", "
+    s += "]"
+    return s

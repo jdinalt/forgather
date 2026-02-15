@@ -11,6 +11,8 @@
 
     [pp_kwargs]
 .define: &pp_kwargs !dict
+    stride: {{ stride | default(0)}}
+    max_length: {{ max_length | default(4096)}}
 
     [tiny_stories]
 .define: &tiny_stories !call:forgather:from_project
@@ -23,7 +25,7 @@
         shuffle: !var [ "shuffle", False ]
         seed: !var [ "seed", 42 ]
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan') }}"
-    config_template: "tinystories-packed.yaml"
+    config_template: "fast-iter-packed.yaml"
     targets: [ "train_dataset", "eval_dataset", "test_dataset" ]
 
     [small_lm]
@@ -48,3 +50,14 @@ eval_dataset: !call:getitem [ *small_lm, 'eval_dataset' ]
 
     [test_dataset]
 test_dataset: !call:getitem [ *small_lm, 'test_dataset' ]
+
+[dynamic_args]
+    == super()
+    max_length:
+        names: "--max-length"
+        type: "int"
+        help: "Maximum length of output sequences."
+    stride:
+        names: "--stride"
+        type: "int"
+        help: "Number of tokens to repeat from previous overflowing example."
