@@ -19,6 +19,7 @@ def format_train_info(
     lr_scheduler,
     train_dataloader,
     eval_dataloader,
+    trainer=None,
     **kwargs,
 ):
     """
@@ -27,7 +28,13 @@ def format_train_info(
     This returns two dictionaries, info and extra_info, for basic and verbose logging.
     """
     if hasattr(state, "num_processes"):
-        total_train_batch_size = state.num_processes * state.train_batch_size
+        # Use trainer's method if available to correctly account for pipeline/model parallelism
+        if trainer is not None and hasattr(trainer, "_calculate_effective_batch_size"):
+            total_train_batch_size = trainer._calculate_effective_batch_size()
+        else:
+            # Fallback: assume data parallelism (may be incorrect for pipeline parallel)
+            total_train_batch_size = state.num_processes * state.train_batch_size
+
         total_train_samples = total_train_batch_size * state.max_steps
         total_examples = state.epoch_train_steps * total_train_batch_size
         total_train_batch_size = f"{total_train_batch_size:,}"

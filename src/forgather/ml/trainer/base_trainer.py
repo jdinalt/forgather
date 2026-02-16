@@ -461,6 +461,7 @@ class BaseTrainer(
                 lr_scheduler=self.lr_scheduler,
                 train_dataloader=self.train_dataloader,
                 eval_dataloader=self.eval_dataloader,
+                trainer=self,
                 **kwargs,
             )
 
