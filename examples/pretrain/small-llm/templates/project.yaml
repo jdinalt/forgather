@@ -12,11 +12,9 @@
 
     ## The dataset sub-project to use
     -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, 'examples/datasets/HuggingFaceTB/'))
-    ##-- set ns.dataset_proj = abspath(joinpath(project_dir, 'tiny-stories_small-lm'))
 
     ## The configuration in the dataset sub-project
     -- set ns.dataset_config = "smollm-corpus/interleaved-packed.yaml"
-    ##-- set ns.dataset_config = "default.yaml"
 
     ## Set predefined model project to import
     -- set ns.model_project_dir = abspath(model_project | default((joinpath(project_dir, "custom_deepone"))))

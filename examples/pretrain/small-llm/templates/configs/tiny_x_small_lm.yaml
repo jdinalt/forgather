@@ -1,0 +1,9 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Use Tiny Stories x Small-LM datasets"
+    -- set ns.config_description = "This config is an experiment to see what difference this dataset makes in the outcome"
+
+    -- set ns.dataset_proj = abspath(joinpath(project_dir, 'tiny-stories_small-lm'))
+    -- set ns.dataset_config = "default.yaml"
