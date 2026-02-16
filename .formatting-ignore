@@ -1,0 +1,6 @@
+# Files and patterns to exclude from isort/black formatting
+# One pattern per line, supports glob patterns
+
+# Jinja2 templates that look like Python files
+modelsrc/templates/hf_causal.py
+modelsrc/templates/*.py
