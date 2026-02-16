@@ -7,6 +7,9 @@
     -- set ns.config_description = "Pretrain a small LLM"
     -- set ns.model_name = "default"
 
+    ## Use all available GPUs
+    -- set ns.nproc_per_node = "gpu"
+
     ## The dataset sub-project to use
     ##-- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, 'examples/datasets/HuggingFaceTB/'))
     -- set ns.dataset_proj = abspath(joinpath(project_dir, 'tiny-stories_small-lm'))
@@ -254,10 +257,6 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 
 #-------------------- project.trainer_config --------------------
 -- extends 'trainers/ddp_trainer.yaml'
-
-[trainer_meta_config]
-    == super()
-    -- set ns.nproc_per_node = "gpu"
 
 [trainer_constructor]
     == super()

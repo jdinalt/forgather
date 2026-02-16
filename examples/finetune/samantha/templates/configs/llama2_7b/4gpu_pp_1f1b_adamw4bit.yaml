@@ -6,6 +6,7 @@
     -- set ns.config_description = "Train Samantha on 1F1B 4 GPU Pipeline with AdamW-4bit"
     -- set ns.log_name = "1f1b_4gpu_adamw4bit"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
+    -- set ns.nproc_per_node = 4
 
 [trainer_args]
     == super()
@@ -29,10 +30,6 @@ optimizer: &optimizer !partial:torchao.optim:AdamW4bit
 
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'
-
-[trainer_meta_config]
-    == super()
-    -- set ns.nproc_per_node = 4
 
 [trainer_constructor]
     == super()

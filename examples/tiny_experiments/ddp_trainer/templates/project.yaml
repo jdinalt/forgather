@@ -6,6 +6,7 @@
     -- set ns.config_description = "Minimal DDP Trainer config"
     -- set ns.trainer_class = 'trainers/ddp_trainer.yaml'
     -- set ns.log_name = "ddp_2gpu"
+    -- set ns.nproc_per_node = 2
 
 [trainer_definition]
     -- include 'project.trainer_config'
@@ -16,7 +17,3 @@
 
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
-
-[trainer_meta_config]
-    == super()
-    -- set ns.nproc_per_node = 2

@@ -7,6 +7,7 @@
     -- set ns.log_name = "tiny_gpipe_2gpu"
     -- set ns.model_name = "tiny_pipeline"
     -- set ns.model_project_config = "tiny_pipeline_model.yaml"
+    -- set ns.nproc_per_node = 2
 
 [trainer_args]
     == super()
@@ -18,14 +19,3 @@
     per_device_train_batch_size: 16
     per_device_eval_batch_size: 16
     n_microbatches: 8
-
-[trainer_definition]
-    -- include 'experiment.trainer_config'
-
-#-------------------- experiment.trainer_config --------------------
--- extends 'base_pipeline_project.trainer_config'
-
-[trainer_meta_config]
-    == super()
-    ## Much smaller model for testing
-    -- set ns.nproc_per_node = 2

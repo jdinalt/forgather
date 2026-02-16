@@ -6,6 +6,7 @@
     -- set ns.config_description = "ZBVZ 4 GPU Pipeline"
     -- set ns.log_name = "zbvz_4gpu"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
+    -- set ns.nproc_per_node = 4
 
 [trainer_args]
     == super()
@@ -30,10 +31,6 @@
 
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'
-
-[trainer_meta_config]
-    == super()
-    -- set ns.nproc_per_node = 4
     
 [trainer_constructor]
     == super()

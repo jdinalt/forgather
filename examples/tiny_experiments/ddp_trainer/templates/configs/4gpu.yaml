@@ -5,6 +5,7 @@
     -- set ns.config_name = "DDP Trainer 4x"
     -- set ns.config_description = "Test DDP Trainer with 4 GPUs"
     -- set ns.log_name = "4gpu"
+    -- set ns.nproc_per_node = 4
 
 [dataset_project]
     == super()
@@ -16,16 +17,6 @@
     # We can disable 'dispatch_batches' when we know that the dataset will be sharded.
     dispatch_batches: False
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
 [optimizer]
     == super()
     lr: 2.0e-3
-
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer_config'
-
-[trainer_meta_config]
-    == super()
-    -- set ns.nproc_per_node = 4

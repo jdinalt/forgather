@@ -6,6 +6,7 @@
     -- set ns.config_description = "Train pipeline model with multiple checkpoints to test checkpoint saving"
     -- set ns.log_name = "checkpoint_test_train"
     -- set ns.model_name = "checkpoint_test"
+    -- set ns.nproc_per_node = 2
 
 [trainer_args]
     == super()
@@ -24,16 +25,3 @@
     logging_steps: 10                # Log frequently to see progress
     eval_steps: 40                   # Evaluate occasionally
     n_microbatches: 4
-
-[trainer_definition]
-    -- include 'experiment.checkpoint_test_trainer_config'
-
-#-------------------- experiment.checkpoint_test_trainer_config --------------------
--- extends 'base_pipeline_project.trainer_config'
-
-[trainer_meta_config]
-    == super()
-    ## Use same small model as tiny_gpipe_2gpu for fast testing
-    -- set ns.nproc_per_node = 2
-
-

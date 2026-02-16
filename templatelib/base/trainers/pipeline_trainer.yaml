@@ -5,8 +5,6 @@
     -- set ns.trainer_description = "Pipeline parallel trainer -- manual split"
     -- set ns.trainer_config_class = "forgather.ml.trainer.pipeline:PipelineTrainingArguments"
     -- set ns.trainer_class = "forgather.ml.trainer.pipeline:PipelineTrainer"
-    ## Set to match number of pipeline segments on each node
-    ## -- set ns.nproc_per_node = N
 
 [trainer_dependencies]
     == super()

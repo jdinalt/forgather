@@ -4,7 +4,6 @@
 -- block trainer_meta_config
     -- set ns.trainer_name = "Base Trainer"
     -- set ns.trainer_description = "A ML model trainer"
-    -- set ns.nproc_per_node = 1
     -- set ns.trainer_config_class = "forgather.ml:TrainingArguments"
     -- set ns.trainer_class = "forgather.ml:Trainer"
 << endblock trainer_meta_config
@@ -20,7 +19,6 @@
 # Description: {{ ns.trainer_description }}
 # Trainer Config Class: {{ ns.trainer_config_class }}
 # Trainer Class: {{ ns.trainer_class }}
-# nproc_per_node: {{ ns.nproc_per_node }}
 << endblock trainer_header
 -- endfilter ## trim()
 

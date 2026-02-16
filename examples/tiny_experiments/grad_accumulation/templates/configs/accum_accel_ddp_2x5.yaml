@@ -7,6 +7,7 @@
     -- set ns.model_name = "control"
     -- set ns.log_name = "aaccel_2x5"
     -- set ns.trainer_class = 'trainers/accel_trainer.yaml'
+    -- set ns.nproc_per_node = 2
 
 [trainer_args]
     == super()
@@ -45,11 +46,6 @@
 
 #-------------------- experiment.trainer_config --------------------
 -- extends 'tiny.trainer_config'
-
-[trainer_meta_config]
-    == super()
-    ## Train with two device
-    -- set ns.nproc_per_node = 2
 
 [accelerator]
 == super()

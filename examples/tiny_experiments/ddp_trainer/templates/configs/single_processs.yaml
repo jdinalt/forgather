@@ -7,17 +7,8 @@
     -- set ns.config_name = "Single Process"
     -- set ns.config_description = "Test DDP trainer on a single process"
     -- set ns.log_name = "single_process"
-
-[trainer_definition]
-    -- include 'config.trainer_config'
+    -- set ns.nproc_per_node = 1
 
 [optimizer]
     == super()
     lr: 1.0e-3
-
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer_config'
-
-[trainer_meta_config]
-    == super()
-    -- set ns.nproc_per_node = 1

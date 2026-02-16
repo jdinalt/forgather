@@ -5,6 +5,7 @@
     -- set ns.config_name = "GPipe with 2 GPUs"
     -- set ns.config_description = "Pipeline with 2 GPUs"
     -- set ns.log_name = "gpipe_2gpu"
+    -- set ns.nproc_per_node = 2
 
 [trainer_definition]
     -- include 'experiment.trainer_config'
@@ -13,10 +14,3 @@
     == super()
     # Experiment Overrides
     n_microbatches: 4
-
-#-------------------- experiment.trainer_config --------------------
--- extends 'base_pipeline_project.trainer_config'
-
-[trainer_meta_config]
-    == super()
-    -- set ns.nproc_per_node = 2

@@ -3,7 +3,6 @@
     == super()
     -- set ns.trainer_name = "Huggingface Traice"
     -- set ns.trainer_description = "https://huggingface.co/docs/transformers/main_classes/trainer"
-    -- set ns.nproc_per_node = "gpu"
     -- set ns.trainer_config_class = "transformers:TrainingArguments"
     -- set ns.trainer_class = "transformers:Trainer"
 

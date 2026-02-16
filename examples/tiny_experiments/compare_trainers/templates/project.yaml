@@ -40,8 +40,3 @@ optimizer: &optimizer ~
 
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
-
-[trainer_meta_config]
-    == super()
-    ## Disable DDP training, when supported
-    -- set ns.nproc_per_node = 1
