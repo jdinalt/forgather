@@ -11,12 +11,12 @@
     -- set ns.nproc_per_node = "gpu"
 
     ## The dataset sub-project to use
-    ##-- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, 'examples/datasets/HuggingFaceTB/'))
-    -- set ns.dataset_proj = abspath(joinpath(project_dir, 'tiny-stories_small-lm'))
+    -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, 'examples/datasets/HuggingFaceTB/'))
+    ##-- set ns.dataset_proj = abspath(joinpath(project_dir, 'tiny-stories_small-lm'))
 
     ## The configuration in the dataset sub-project
-    ##-- set ns.dataset_config = "smollm-corpus/interleaved-packed.yaml"
-    -- set ns.dataset_config = "default.yaml"
+    -- set ns.dataset_config = "smollm-corpus/interleaved-packed.yaml"
+    ##-- set ns.dataset_config = "default.yaml"
 
     ## Set predefined model project to import
     -- set ns.model_project_dir = abspath(model_project | default((joinpath(project_dir, "custom_deepone"))))
@@ -173,6 +173,11 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
     max_grad_norm: 4.0
 
+    post_local_sgd:
+        enabled: True
+        start_step: {{ start_step | toyaml(2000) }}
+        period: {{ post_local_period | toyaml(4) }}
+
 [datacollator]
 data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
     tokenizer: *tokenizer
@@ -203,6 +208,9 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 
 [trainer_callbacks]
     -- include 'project.logger_config'
+
+[trainer_definition]
+    -- include 'trainers/ddp_trainer.yaml'
 
 [dynamic_args]
     == super()
