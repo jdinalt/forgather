@@ -197,8 +197,9 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     constant_lr: {{ (ns.base_constant_lr * ns.lr_scale) | toyaml }}
     min_lr: {{ (ns.base_min_lr * ns.lr_scale) | toyaml }}
 
-[trainer_definition]
-    -- include 'project.trainer_config'
+[fused_loss_factory]
+# Fused output-linear x cross-entropy-loss kernel
+.define: &fused_loss_factory !partial:forgather.ml.loss:LinearCrossEntropyLoss
 
 [trainer_callbacks]
     -- include 'project.logger_config'
@@ -254,13 +255,6 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
         type: int
         default: 100
         help: "Minimum tokens (billions) for LR cooldown phase"
-
-#-------------------- project.trainer_config --------------------
--- extends 'trainers/ddp_trainer.yaml'
-
-[trainer_constructor]
-    == super()
-    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
 
 #-------------------- project.logger_config --------------------
 -- extends 'callbacks/loggers.yaml'

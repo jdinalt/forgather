@@ -7,6 +7,7 @@
     -- set ns.log_name = log_name | default('i1f1b_4gpu_packed')
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
     -- set ns.nproc_per_node = 4
+    -- set ns.pipe_schedule_factory = "ScheduleInterleaved1F1B"
 
 [trainer_args]
     == super()
@@ -24,9 +25,6 @@
     fuse_optim_with_backward: True
     # enable_activation_offloading: True
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
 [optimizer]
     == super()
     lr: 4.0e-6
@@ -34,11 +32,3 @@
 [lr_scheduler]
     == super()
     warmup_steps: 15
-
-#-------------------- config.trainer_config --------------------
--- extends 'samantha_packed.trainer'
-
-[trainer_constructor]
-    == super()
-    # Config Overrides
-    pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleInterleaved1F1B

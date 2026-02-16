@@ -9,6 +9,7 @@
     -- set ns.default_max_steps = 250
     -- set ns.max_eval_steps = 10
     -- set ns.nproc_per_node = 2
+    -- set ns.pipe_schedule_factory = "ScheduleInterleaved1F1B"
 
 [trainer_args]
     == super()
@@ -23,9 +24,6 @@
     gradient_checkpointing: True
     fuse_optim_with_backward: True
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
 [datacollator]
     == super()
     padding: "max_length" # Required for pipeline
@@ -37,11 +35,3 @@
 [lr_scheduler]
     == super()
     warmup_steps: 60
-
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer'
-    
-[trainer_constructor]
-    == super()
-    # Config Overrides
-    pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleInterleaved1F1B

@@ -7,6 +7,7 @@
     -- set ns.log_name = "i1f1b_4gpu"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
     -- set ns.nproc_per_node = 4
+    -- set ns.pipe_schedule_factory = "ScheduleInterleaved1F1B"
 
 [trainer_args]
     == super()
@@ -17,18 +18,7 @@
     per_device_train_batch_size: 8
     per_device_eval_batch_size: 8
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
 [datacollator]
     == super()
     padding: "max_length" # Required for pipeline
     max_length: 1300
-
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer'
-
-[trainer_constructor]
-    == super()
-    # Config Overrides
-    pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleInterleaved1F1B

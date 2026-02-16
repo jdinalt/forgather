@@ -106,10 +106,14 @@ eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
     sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
     sdpa_set_priority: False # If list, interpret as priority order
 
+[fused_loss_factory]
+# Fused output-linear x cross-entropy-loss kernel
+.define: &fused_loss_factory !partial:forgather.ml.loss:LinearCrossEntropyLoss
+
+[trainer_definition]
 ## Defaults to the basic trainer implementation
 ## Note: This is unsuitable for multiple GPUs.
 ## Override 'ns.trainer_class' to change the trainer class.
-[trainer_definition]
     ## See definition below
     -- include 'finetune.trainer'
 
@@ -244,10 +248,3 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
 ## This has a side effect of not being able to statically resolve the
 ## parent template, which is named in the 'ns.trainer_class' variable,
 ## the value of which is defined in the 'config_metadata' block, above.
-
-[trainer_constructor]
-    == super()
-    # If supported, use fused-causal-cross-entropy
-    # else, fallback to basic causal-cross-entropy
-    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
-    

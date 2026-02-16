@@ -8,12 +8,6 @@
     -- set ns.log_name = "ddp_2gpu"
     -- set ns.nproc_per_node = 2
 
-[trainer_definition]
-    -- include 'project.trainer_config'
-
 [optimizer]
     == super()
     lr: 1.41e-3
-
-#-------------------- project.trainer_config --------------------
--- extends 'tiny.trainer_config'

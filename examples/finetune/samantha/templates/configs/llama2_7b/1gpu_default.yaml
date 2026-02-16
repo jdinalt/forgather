@@ -15,17 +15,6 @@
     fuse_optim_with_backward: True
     # enable_activation_offloading: True
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
 [datacollator]
     == super()
     max_length: 1300
-
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer'
-
-[trainer_constructor]
-    == super()
-    # Disable fused logits-loss
-    fused_loss_factory: null

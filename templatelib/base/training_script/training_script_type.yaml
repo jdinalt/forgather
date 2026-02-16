@@ -140,6 +140,12 @@ trainer_args: &trainer_args !dict
     << endblock trainer_args
     -- endfilter
 
+== h3('Trainer Dependencies')
+
+    -- filter trim()
+    -- block trainer_dependencies
+    << endblock trainer_dependencies
+    -- endfilter
 
 == h2('Trainer')
 

@@ -18,5 +18,5 @@
     == super()
     # **PipelineTrainer**
     # https://docs.pytorch.org/docs/stable/distributed.pipelining.html#module-torch.distributed.pipelining.schedules
-    pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleGPipe
+    pipe_schedule_factory: !partial:torch.distributed.pipelining:{{ ns.pipe_schedule_factory | default("ScheduleGPipe") }}
     model_splitter: *model_splitter

@@ -15,9 +15,6 @@
     # **samantha packed**
     gc_threshold: 0.9
 
-[trainer_definition]
-    -- include 'samantha_packed.trainer'
-
 [datasets_preprocessor_args]
 # Overrides for forgather.ml.datasets:block_tokenize_fn
 .define: &datasets_preprocessor_args !dict
@@ -34,6 +31,3 @@
     == super()
     # Packed examples should use flex_attention
     attn_implementation: "{{ attn_implementation | default('flex_attention') }}"
-
-#-------------------- samantha_packed.trainer --------------------
--- extends "project.trainer"

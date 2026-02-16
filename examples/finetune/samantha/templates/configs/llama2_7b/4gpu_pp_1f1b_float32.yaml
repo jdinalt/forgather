@@ -7,6 +7,7 @@
     -- set ns.log_name = "1f1b_4gpu_float32"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
     -- set ns.nproc_per_node = 4
+    -- set ns.pipe_schedule_factory = "Schedule1F1B"
 
 [trainer_args]
     == super()
@@ -18,18 +19,7 @@
     gradient_checkpointing: True
     fuse_optim_with_backward: True
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
 [datacollator]
     == super()
     padding: "max_length" # Required for pipeline
     max_length: 1300
-
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer'
-
-[trainer_constructor]
-    == super()
-    # Config Overrides
-    pipe_schedule_factory: !partial:torch.distributed.pipelining:Schedule1F1B

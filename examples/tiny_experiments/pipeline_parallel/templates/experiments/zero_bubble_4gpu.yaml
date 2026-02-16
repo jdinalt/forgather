@@ -7,6 +7,7 @@
     -- set ns.log_name = "izb_4gpu"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
     -- set ns.nproc_per_node = 4
+    -- set ns.pipe_schedule_factory = "ScheduleInterleavedZeroBubble"
 
 [trainer_args]
     == super()
@@ -17,14 +18,3 @@
     stages_per_rank: 2
     per_device_train_batch_size: 8
     per_device_eval_batch_size: 8
-
-[trainer_definition]
-    -- include 'experiment.trainer_config'
-
-#-------------------- experiment.trainer_config --------------------
--- extends 'base_pipeline_project.trainer_config'
-
-[trainer_constructor]
-    == super()
-    # Experiment Overrides
-    pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleInterleavedZeroBubble

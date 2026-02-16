@@ -7,10 +7,3 @@
     == super()
     # Project Overrides
     save_strategy: "steps" # Save models when done
-
-[trainer_definition]
-    -- include 'project.trainer_config'
-
-#-------------------- project.trainer_config --------------------
--- extends 'tiny.trainer_config'
-

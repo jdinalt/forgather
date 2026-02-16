@@ -27,7 +27,3 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
     warmup_steps: 50
     cooldown_steps: 0 # Use constant learning-rate, after warmup
-
-#-------------------- project.trainer --------------------
--- extends "finetune.trainer"
-

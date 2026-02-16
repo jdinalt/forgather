@@ -6,19 +6,9 @@
     -- set ns.config_description = "Pipeline with 4 GPUs"
     -- set ns.log_name = "1f1b_4gpu"
     -- set ns.nproc_per_node = 4
-
-[trainer_definition]
-    -- include 'experiment.trainer_config'
+    -- set ns.pipe_schedule_factory = "Schedule1F1B"
 
 [trainer_args]
     == super()
     # Experiment Overrides
     n_microbatches: 8
-
-#-------------------- experiment.trainer_config --------------------
--- extends 'base_pipeline_project.trainer_config'
-
-[trainer_constructor]
-    == super()
-    # Experiment Overrides
-    pipe_schedule_factory: !partial:torch.distributed.pipelining:Schedule1F1B

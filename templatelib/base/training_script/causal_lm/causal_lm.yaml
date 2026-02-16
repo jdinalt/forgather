@@ -51,6 +51,10 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
     output_dir: "{{ ns.output_dir }}"
     logging_dir: "{{ ns.logging_dir }}"
 
+[trainer_dependencies]
+    [fused_loss_factory]
+.define: &fused_loss_factory null
+
 [trainer_definition]
     ## Set default trainer
     -- include 'trainers/trainer.yaml'

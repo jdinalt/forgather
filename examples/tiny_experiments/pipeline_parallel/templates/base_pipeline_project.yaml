@@ -15,9 +15,4 @@
     -- set ns.log_name = "pipeline_defaults"
     ## Change the trainer implementation.
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
-
-[trainer_definition]
-    -- include 'base_pipeline_project.trainer_config'
-
-#-------------------- base_pipeline_project.trainer_config --------------------
--- extends 'project.trainer_config'
+    -- set ns.pipe_schedule_factory = "ScheduleGPipe"

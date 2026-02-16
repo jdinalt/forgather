@@ -26,14 +26,12 @@
     warmup_steps: 50
     cooldown_steps: 5000
 
-
 [optimizer]
     == super()
 
     # **experiment**
     # Scale LR by sqrt(10)
     lr: 3.16e-3
-
 
 [trainer_callbacks]
     -- include 'experiment.callbacks'

@@ -7,6 +7,7 @@
     -- set ns.log_name = "zbvz_4gpu"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
     -- set ns.nproc_per_node = 4
+    -- set ns.pipe_schedule_factory = "ScheduleZBVZeroBubble"
 
 [trainer_args]
     == super()
@@ -21,18 +22,7 @@
     eval_strategy: "no" # Eval does not work with zbvz at present
     load_best_model_at_end: False
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
 [datacollator]
     == super()
     padding: "max_length" # Required for pipeline
     max_length: 1300
-
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer'
-    
-[trainer_constructor]
-    == super()
-    # Config Overrides
-    pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleZBVZeroBubble

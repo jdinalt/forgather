@@ -26,9 +26,6 @@
     speed_metrics_start_step: 1
     num_train_epochs: {{ epochs | default(2)}}
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
 [datacollator]
     == super()
     # This should be long enough for all examples in Samantha, with the Llama3.2 1B tokenizer
@@ -44,11 +41,3 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
 [lr_scheduler]
     == super()
     warmup_steps: {{ warmup_steps | default(50) }}
-
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer'
-
-[trainer_constructor]
-    == super()
-    # Disable fused logits-loss
-    fused_loss_factory: null

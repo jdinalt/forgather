@@ -9,8 +9,10 @@
 
 [trainer_constructor]
     == super()
+    
     # **Trainer**
     compute_loss_func: !singleton:forgather.ml.loss:CausalLoss
     distributed_env: *distributed_env
     optimizer_factory: *optimizer
     lr_scheduler_factory: *lr_scheduler
+    fused_loss_factory: *fused_loss_factory

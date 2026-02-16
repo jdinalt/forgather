@@ -11,6 +11,7 @@
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
     -- set ns.default_dataset_config = "samantha-packed.yaml"
     -- set ns.nproc_per_node = 2
+    -- set ns.pipe_schedule_factory = "ScheduleInterleaved1F1B"
 
 [trainer_args]
     == super()
@@ -29,9 +30,6 @@
     #enable_activation_offloading: True
     detect_anomaly: True
     torch_compile: True
-
-[trainer_definition]
-    -- include 'config.trainer_config'
 
 [datasets_preprocessor_args]
 # Overrides for forgather.ml.datasets:block_tokenize_fn
@@ -52,12 +50,7 @@
     == super()
     warmup_steps: 15
 
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer'
-    
-[trainer_constructor]
-    == super()
-    # **Config**
-    pipe_schedule_factory: !partial:torch.distributed.pipelining:ScheduleInterleaved1F1B
-    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
-        impl: "cce"
+[fused_loss_factory]
+# Fused output-linear x cross-entropy-loss kernel
+.define: &fused_loss_factory !partial:forgather.ml.loss:LinearCrossEntropyLoss
+    impl: "cce"

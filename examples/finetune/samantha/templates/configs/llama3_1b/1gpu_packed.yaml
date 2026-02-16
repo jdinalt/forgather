@@ -27,9 +27,6 @@
     speed_metrics_start_step: 1
     num_train_epochs: {{ epochs | default(2) }}
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
 [optimizer]
     == super()
     lr: !!float {{ lr | default(1.0e-4) }}
@@ -38,11 +35,7 @@
     == super()
     warmup_steps: {{ warmup_steps | default(10) }}
 
-#-------------------- config.trainer_config --------------------
--- extends 'samantha_packed.trainer'
-
-[trainer_constructor]
-    == super()
-    # **Config**
-    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
-        impl: "cce"
+[fused_loss_factory]
+# Fused output-linear x cross-entropy-loss kernel
+.define: &fused_loss_factory !partial:forgather.ml.loss:LinearCrossEntropyLoss
+    impl: "cce"
