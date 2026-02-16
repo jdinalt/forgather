@@ -1,7 +1,7 @@
 # A subclass of Trainer, which adds support for the Acclerate library.
 import logging
 from dataclasses import dataclass
-from typing import Dict, Generic, List, Optional, TypeVar, override
+from typing import Dict, Generic, List, Optional, TypeVar, cast, override
 
 import torch
 from accelerate import Accelerator
@@ -30,6 +30,8 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
     Modify the base Trainer to use the Accelerate library.
     """
 
+    args: TAccelTrainingArguments
+
     def __init__(
         self,
         *,
@@ -38,7 +40,9 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
         **kwargs,
     ):
         if isinstance(args, dict):
-            args: TAccelTrainingArguments = from_dict(AccelTrainingArguments, args)
+            args = cast(
+                TAccelTrainingArguments, from_dict(AccelTrainingArguments, args)
+            )
         assert isinstance(accelerator, Accelerator)
         super().__init__(args=args, **kwargs)
 

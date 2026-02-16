@@ -15,6 +15,7 @@ from typing import (
     Optional,
     Tuple,
     TypeVar,
+    cast,
     override,
 )
 
@@ -163,6 +164,7 @@ class BaseTrainer(
     and BaseTrainingArguments for supported configuration options.
     """
 
+    args: TBaseTrainingArguments
     model: torch.nn.Module | None
     data_collator: DataCollatorT | None
     train_dataset: IterableDatasetT | None
@@ -197,7 +199,7 @@ class BaseTrainer(
 
     def __init__(
         self,
-        args: TBaseTrainingArguments | dict,
+        args: TBaseTrainingArguments,
         model: torch.nn.Module | None = None,
         *,
         data_collator: Optional[DataCollatorT] = None,
@@ -208,9 +210,6 @@ class BaseTrainer(
         callbacks: Optional[List[TrainerCallback]] = None,
         compute_loss_func: Optional[LossFunctionT] = None,
     ):
-        if isinstance(args, dict):
-            args: TBaseTrainingArguments = from_dict(BaseTrainingArguments, args)
-
         assert (
             model or model_init
         ), "Either a model or a model constructor must be specified"

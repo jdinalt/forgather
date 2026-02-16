@@ -14,6 +14,7 @@ from typing import (
     Tuple,
     TypeAlias,
     TypeVar,
+    cast,
     override,
 )
 
@@ -175,6 +176,7 @@ class PipelineTrainer(
     - ModelSplitter signature: src/forgather/ml/trainer/pipeline/model_splitter.py
     """
 
+    args: TPipelineTrainingArguments
     model_splitter: ModelSplitter
     pipe_schedule_factory: PipelineSchedulerFactorT
     pp_group: Any
@@ -209,8 +211,8 @@ class PipelineTrainer(
             **kwargs: Additional arguments passed to base Trainer (train_dataset, optimizer_factory, etc.)
         """
         if isinstance(args, dict):
-            args: TPipelineTrainingArguments = from_dict(
-                PipelineTrainingArguments, args
+            args = cast(
+                TPipelineTrainingArguments, from_dict(PipelineTrainingArguments, args)
             )
         super().__init__(args=args, **kwargs)
         self.model_splitter = model_splitter

@@ -261,6 +261,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         trainer.train()
     """
 
+    args: TTrainingArguments
     dist: DistributedEnvInterface
     optimizer_factory: OptimizerFactoryT | None
     lr_scheduler_factory: LRSchedulerFactoryT | None
@@ -281,7 +282,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
     def __init__(
         self,
         *,
-        args: TTrainingArguments,
+        args: TTrainingArguments | dict,
         distributed_env: DistributedEnvInterface,
         optimizer_factory: Optional[OptimizerFactoryT] = None,
         # Alternative, for compatibility with transformers.Trainer
@@ -296,7 +297,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         **kwargs,
     ):
         if isinstance(args, dict):
-            args: TTrainingArguments = from_dict(TrainingArguments, args)
+            args = cast(TTrainingArguments, from_dict(TrainingArguments, args))
         super().__init__(args=args, **kwargs)
 
         # HF Trainer compatibility.

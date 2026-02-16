@@ -2,7 +2,7 @@ import logging
 import os
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, List, Optional, TypeVar, override
+from typing import Any, Dict, Generic, List, Optional, TypeVar, cast, override
 
 import torch
 from dacite import from_dict
@@ -65,6 +65,7 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
     Modify the base Trainer to use the Accelerate library.
     """
 
+    args: TDDPTrainingArguments
     gradient_accumulation_step: int
 
     def __init__(
@@ -75,7 +76,7 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
         **kwargs,
     ):
         if isinstance(args, dict):
-            args: TDDPTrainingArguments = from_dict(DDPTrainingArguments, args)
+            args = cast(TDDPTrainingArguments, from_dict(DDPTrainingArguments, args))
 
         super().__init__(args=args, fused_loss_factory=fused_loss_factory, **kwargs)
 
@@ -127,9 +128,6 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
             static_graph=self.args.ddp.static_graph,
             skip_all_reduce_unused_params=self.args.ddp.skip_all_reduce_unused_params,
         )
-
-        # TODO:
-        # - Fused loss function will probably not work.
 
         if self.args.dispatch_batches:
             # Use DataloaderDispatcher for centralized batch loading
