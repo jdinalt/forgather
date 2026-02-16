@@ -25,6 +25,7 @@ from typing import (
 
 import torch
 import torchdata.nodes as tn
+from dacite import from_dict
 from torch import Tensor
 from torch import distributed as dist
 from torch.utils.data import DataLoader
@@ -294,7 +295,8 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         fused_loss_factory: Optional[FusedLossFactoryT] = None,
         **kwargs,
     ):
-        assert isinstance(args, TrainingArguments)
+        if isinstance(args, dict):
+            args: TTrainingArguments = from_dict(TrainingArguments, args)
         super().__init__(args=args, **kwargs)
 
         # HF Trainer compatibility.
@@ -826,9 +828,6 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
 
     @override
     def _train_loop(self) -> TrainOutput:
-        assert isinstance(self.args.logging_strategy, IntervalStrategy)
-        assert isinstance(self.args.eval_strategy, IntervalStrategy)
-        assert isinstance(self.args.save_strategy, IntervalStrategy)
         periodic_log = PeriodicFunction(
             global_step=self.state.global_step,
             strategy=self.args.logging_strategy,
@@ -933,10 +932,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         # Final log-eval-save step; skip on abort condition
         if not self.control.should_abort_without_save:
             # Force save, if we have not already saved on this step and save enabled.
-            if (
-                periodic_save.rel_step != 0
-                and self.args.save_strategy != IntervalStrategy.NO
-            ):
+            if periodic_save.rel_step != 0 and self.args.save_strategy != "no":
                 logger.info(f"Saving final checkpoint at step {self.state.global_step}")
                 # If load best model, we need to evaluate it too.
                 if self.args.load_best_model_at_end:

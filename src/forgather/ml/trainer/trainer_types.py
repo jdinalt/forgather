@@ -305,15 +305,11 @@ class MinimalTrainingArguments:
     dataloader_drop_last: bool = False
 
     # Strategy may also be: "no" | "steps" | "epoch"
-    eval_strategy: ConversionDescriptor = ConversionDescriptor(
-        IntervalStrategy, default=IntervalStrategy.NO
-    )
+    eval_strategy: str = "no"
     eval_steps: int = 100
     eval_delay: int = 0
 
-    logging_strategy: ConversionDescriptor = ConversionDescriptor(
-        IntervalStrategy, default=IntervalStrategy.STEPS
-    )
+    logging_strategy: str = "steps"
     logging_steps: int = 50
     logging_first_step: bool = False
 
@@ -327,9 +323,7 @@ class MinimalTrainingArguments:
     gradient_accumulation_steps: int = 1
 
     # Checkpointing options
-    save_strategy: ConversionDescriptor = ConversionDescriptor(
-        IntervalStrategy, default=IntervalStrategy.STEPS
-    )
+    save_strategy: str = "steps"
     save_steps: int = 1000
     save_total_limit: int = 2
     save_safetensors: bool = True

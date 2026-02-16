@@ -40,6 +40,7 @@ dependencies = [
     "cut-cross-entropy",
     "liger-kernel",
     "triton",
+    "dacite",
 ]
 version = "2024.0.0a1"
 authors = [

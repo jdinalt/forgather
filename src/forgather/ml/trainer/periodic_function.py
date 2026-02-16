@@ -5,7 +5,7 @@ class PeriodicFunction:
     def __init__(
         self,
         global_step,
-        strategy: IntervalStrategy,
+        strategy: str,
         period: int,
         epoch_period: int,
         first_step=0,
@@ -22,12 +22,12 @@ class PeriodicFunction:
         # Total number of times triggered
 
         match strategy:
-            case IntervalStrategy.NO:
+            case "no":
                 self.enabled = False
-            case IntervalStrategy.STEPS:
+            case "steps":
                 assert period > 0
                 self.period = period
-            case IntervalStrategy.EPOCH:
+            case "epoch":
                 assert epoch_period > 0
                 self.period = epoch_period
             case _:

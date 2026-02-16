@@ -5,6 +5,7 @@ from typing import Dict, Generic, List, Optional, TypeVar, override
 
 import torch
 from accelerate import Accelerator
+from dacite import from_dict
 from torch import Tensor
 
 from ..checkpoint_manager import RNGState
@@ -32,11 +33,12 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
     def __init__(
         self,
         *,
-        args: TAccelTrainingArguments,
+        args: TAccelTrainingArguments | dict,
         accelerator: Accelerator,
         **kwargs,
     ):
-        assert isinstance(args, AccelTrainingArguments)
+        if isinstance(args, dict):
+            args: TAccelTrainingArguments = from_dict(AccelTrainingArguments, args)
         assert isinstance(accelerator, Accelerator)
         super().__init__(args=args, **kwargs)
 

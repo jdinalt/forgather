@@ -19,6 +19,7 @@ from typing import (
 
 import torch
 import torch.distributed as dist
+from dacite import from_dict
 from torch import Tensor, distributed
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.pipelining import ScheduleGPipe
@@ -174,7 +175,6 @@ class PipelineTrainer(
     - ModelSplitter signature: src/forgather/ml/trainer/pipeline/model_splitter.py
     """
 
-    args: PipelineTrainingArguments
     model_splitter: ModelSplitter
     pipe_schedule_factory: PipelineSchedulerFactorT
     pp_group: Any
@@ -191,7 +191,7 @@ class PipelineTrainer(
     def __init__(
         self,
         *,
-        args: TPipelineTrainingArguments,
+        args: TPipelineTrainingArguments | dict,
         model_splitter: ModelSplitter,  # Required: function to split model into pipeline stages
         pipe_schedule_factory: PipelineSchedulerT = ScheduleGPipe,
         **kwargs,
@@ -208,7 +208,10 @@ class PipelineTrainer(
                 Default ScheduleGPipe uses simple GPipe scheduling with gradient accumulation.
             **kwargs: Additional arguments passed to base Trainer (train_dataset, optimizer_factory, etc.)
         """
-        assert isinstance(args, PipelineTrainingArguments)
+        if isinstance(args, dict):
+            args: TPipelineTrainingArguments = from_dict(
+                PipelineTrainingArguments, args
+            )
         super().__init__(args=args, **kwargs)
         self.model_splitter = model_splitter
         self.pipe_schedule_factory = pipe_schedule_factory

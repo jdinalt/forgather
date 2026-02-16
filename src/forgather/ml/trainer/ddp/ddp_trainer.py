@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Generic, List, Optional, TypeVar, override
 
 import torch
+from dacite import from_dict
 from torch import Tensor
 from torch import distributed as dist
 from torch.distributed.device_mesh import init_device_mesh
@@ -69,10 +70,13 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
     def __init__(
         self,
         *,
-        args: TDDPTrainingArguments,
+        args: TDDPTrainingArguments | dict,
         fused_loss_factory: Optional[FusedLossFactoryT] = None,
         **kwargs,
     ):
+        if isinstance(args, dict):
+            args: TDDPTrainingArguments = from_dict(DDPTrainingArguments, args)
+
         super().__init__(args=args, fused_loss_factory=fused_loss_factory, **kwargs)
 
         assert (

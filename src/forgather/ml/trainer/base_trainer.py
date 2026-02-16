@@ -19,6 +19,7 @@ from typing import (
 )
 
 import torch
+from dacite import from_dict
 from torch import Tensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -196,7 +197,7 @@ class BaseTrainer(
 
     def __init__(
         self,
-        args: TBaseTrainingArguments,
+        args: TBaseTrainingArguments | dict,
         model: torch.nn.Module | None = None,
         *,
         data_collator: Optional[DataCollatorT] = None,
@@ -207,6 +208,9 @@ class BaseTrainer(
         callbacks: Optional[List[TrainerCallback]] = None,
         compute_loss_func: Optional[LossFunctionT] = None,
     ):
+        if isinstance(args, dict):
+            args: TBaseTrainingArguments = from_dict(BaseTrainingArguments, args)
+
         assert (
             model or model_init
         ), "Either a model or a model constructor must be specified"
