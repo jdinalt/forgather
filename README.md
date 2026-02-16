@@ -252,12 +252,47 @@ forgather tb --all -- --bind_all
 forgather control list
 ```
 
+## Development Setup
+
+### Git Hooks for Code Formatting
+
+Forgather uses automatic code formatting to maintain consistent code style across the project. Git hooks automatically format Python files with `isort` and `black` before each commit.
+
+**First-time setup (required for contributors):**
+
+```bash
+./scripts/setup-hooks.sh
+```
+
+This one-time command configures git to use the tracked hooks in `.githooks/`. After setup:
+- ✅ Python files are automatically formatted on commit
+- ✅ Imports are sorted with `isort`
+- ✅ Code is formatted with `black`
+- ✅ Files matching `.formatting-ignore` patterns are skipped
+
+**Bypass formatting (when needed):**
+```bash
+git commit --no-verify -m "Your message"
+```
+
+**Add formatting exceptions:**
+
+Edit `.formatting-ignore` to exclude files (e.g., Jinja2 templates):
+```
+# Files to exclude from formatting
+modelsrc/templates/*.py
+path/to/specific/file.py
+```
+
+See [.githooks/README.md](./.githooks/README.md) for more details.
+
 ## Contributing
 
 Forgather is actively developed and welcomes contributions:
 
-1. **Bug Reports & Feature Requests**: Open GitHub issues
-2. **Code Contributions**: Submit pull requests
-3. **Documentation**: Improve tutorials and examples
-4. **Community**: Share your experiments and templates
+1. **Development Setup**: Run `./scripts/setup-hooks.sh` to enable git hooks
+2. **Bug Reports & Feature Requests**: Open GitHub issues
+3. **Code Contributions**: Submit pull requests
+4. **Documentation**: Improve tutorials and examples
+5. **Community**: Share your experiments and templates
 
