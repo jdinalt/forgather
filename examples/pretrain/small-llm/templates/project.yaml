@@ -173,11 +173,6 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
     max_grad_norm: 4.0
 
-    post_local_sgd:
-        enabled: True
-        start_step: {{ start_step | toyaml(2000) }}
-        period: {{ post_local_period | toyaml(4) }}
-
 [datacollator]
 data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
     tokenizer: *tokenizer
