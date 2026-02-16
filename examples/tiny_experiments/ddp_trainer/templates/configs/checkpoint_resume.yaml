@@ -1,34 +1,17 @@
 ## DDP Trainer checkpoint resume test - resume from 500 to 1000 steps
--- extends "project.yaml"
+-- extends "configs/checkpoint_train.yaml"
 
 [config_metadata]
     == super()
     -- set ns.config_name = "DDP Checkpoint Resume"
     -- set ns.config_description = "Resume DDPTrainer training from checkpoint (500->1000 steps)"
-    -- set ns.log_name = "checkpoint"
+    -- set ns.log_name = "checkpoint_resume"
 
 [trainer_args]
     == super()
-
-    # Enable checkpoint features
-    save_strategy: "steps"
-    eval_strategy: "steps"
-    save_steps: 200
-    eval_steps: 100
-    logging_steps: 50
-    save_safetensors: True
-    save_total_limit: 3
-    save_optimizer_state: true
-    save_scheduler_state: true
-    save_dataset_state: true
-    save_rng_state: true
 
     # Resume from latest checkpoint
     resume_from_checkpoint: True
 
     # Continue training to 1000 steps
     max_steps: 1000
-
-    # Small batch size for quick testing
-    per_device_train_batch_size: 8
-    per_device_eval_batch_size: 16

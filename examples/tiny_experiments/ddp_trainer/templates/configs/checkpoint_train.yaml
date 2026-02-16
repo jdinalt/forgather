@@ -18,10 +18,6 @@
     logging_steps: 50
     save_safetensors: True
     save_total_limit: 3
-    save_optimizer_state: true
-    save_scheduler_state: true
-    save_dataset_state: true
-    save_rng_state: true
 
     # Train for 500 steps
     max_steps: 500

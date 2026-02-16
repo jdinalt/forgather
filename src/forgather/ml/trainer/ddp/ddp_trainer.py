@@ -17,6 +17,7 @@ from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.optim import PostLocalSGDOptimizer
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+from forgather.ml.distributed import prefix_logger_rank
 from forgather.ml.trainer import DataloaderDispatcher
 from forgather.ml.trainer.checkpoint_manager import RNGState
 from forgather.ml.trainer.checkpoint_types import SharingPattern, StateComponent
@@ -25,6 +26,7 @@ from forgather.ml.trainer.trainer import Trainer, TrainingArguments
 from forgather.ml.trainer.trainer_types import FusedLossFactoryT
 
 logger = logging.getLogger(__name__)
+prefix_logger_rank(logger, lambda rank: True)
 
 
 @dataclass(kw_only=True)
@@ -45,6 +47,7 @@ class PostLocalSGDArguments:
     enabled: bool = False
     start_step: int = 500
     period: int = 4
+    post_local_gradient_allreduce: bool = False
 
 
 @dataclass(kw_only=True)
@@ -170,10 +173,12 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
 
         assert self.optimizer is not None
         if self.args.post_local_sgd.enabled:
+            logger.info(f"Enabling post-local-SGD: {self.args.post_local_sgd}")
             self.post_local_sgd_state = PostLocalSGDState(
                 process_group=self.ddp_group,
                 subgroup=None,
                 start_localSGD_iter=self.args.post_local_sgd.start_step,
+                post_local_gradient_allreduce=self.args.post_local_sgd.post_local_gradient_allreduce,
             )
             self.model.register_comm_hook(self.post_local_sgd_state, post_localSGD_hook)
             self.optimizer = PostLocalSGDOptimizer(

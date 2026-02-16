@@ -1,0 +1,13 @@
+## DDP Trainer checkpoint save test - train for 500 steps
+-- extends "configs/checkpoint_train.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Post-local-SGD Checkpoint Train"
+    -- set ns.config_description = "Train Post-local-SGD DDPTrainer for 500 steps with checkpointing"
+    -- set ns.log_name = "postlocal_ckpt"
+
+[trainer_args]
+    == super()
+    post_local_sgd:
+        enabled: True

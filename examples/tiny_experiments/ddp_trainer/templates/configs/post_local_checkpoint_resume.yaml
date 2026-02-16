@@ -1,0 +1,16 @@
+## DDP Trainer checkpoint save test - train for 500 steps
+-- extends "configs/post_local_checkpoint_train.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Post-local-SGD Checkpoint Resume"
+    -- set ns.config_description = "Resume post-local DDPTrainer training from checkpoint (500->1000 steps)"
+    -- set ns.log_name = "postlocal_resume"
+
+[trainer_args]
+    == super()
+    # Resume from latest checkpoint
+    resume_from_checkpoint: True
+
+    # Continue training to 1000 steps
+    max_steps: 1000
