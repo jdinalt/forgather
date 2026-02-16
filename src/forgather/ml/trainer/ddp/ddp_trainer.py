@@ -5,10 +5,16 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Generic, List, Optional, TypeVar, cast, override
 
 import torch
+import torch.distributed.algorithms.model_averaging.averagers as averagers
 from dacite import from_dict
 from torch import Tensor
 from torch import distributed as dist
+from torch.distributed.algorithms.ddp_comm_hooks.post_localSGD_hook import (
+    PostLocalSGDState,
+    post_localSGD_hook,
+)
 from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed.optim import PostLocalSGDOptimizer
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from forgather.ml.trainer import DataloaderDispatcher
@@ -36,8 +42,9 @@ class DDPArguments:
 
 @dataclass(kw_only=True)
 class PostLocalSGDArguments:
-    enable: bool = False
+    enabled: bool = False
     start_step: int = 500
+    period: int = 4
 
 
 @dataclass(kw_only=True)
@@ -161,7 +168,21 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
                     process_group=self.ddp_group,
                 )
 
-    # No custom iteration logic needed - SynchronizedDataLoader handles it transparently
+        assert self.optimizer is not None
+        if self.args.post_local_sgd.enabled:
+            self.post_local_sgd_state = PostLocalSGDState(
+                process_group=self.ddp_group,
+                subgroup=None,
+                start_localSGD_iter=self.args.post_local_sgd.start_step,
+            )
+            self.model.register_comm_hook(self.post_local_sgd_state, post_localSGD_hook)
+            self.optimizer = PostLocalSGDOptimizer(
+                optim=self.optimizer,
+                averager=averagers.PeriodicModelAverager(
+                    period=self.args.post_local_sgd.period,
+                    warmup_steps=self.args.post_local_sgd.start_step,
+                ),
+            )
 
     @override
     def unwrapped_model(self) -> torch.nn.Module:
