@@ -32,6 +32,7 @@ def main(args):
         temperature=args.temperature,
         repetition_penalty=args.repetition_penalty,
         seed=args.seed,
+        return_dict_in_generate=True,
     )
 
     tokenizer_outputs = tokenizer(
@@ -48,7 +49,6 @@ def main(args):
         outputs = model.generate(
             input_ids,
             generation_config=generation_config,
-            return_dict_in_generate=True,
             tokenizer=tokenizer,
         )
 
