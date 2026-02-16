@@ -19,12 +19,6 @@
     #    num_shards: {{ getenv("WORLD_SIZE", "1") | int }}
     #    index: {{ getenv("RANK", "0") | int }}
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer_config'
-
 [trainer_args]
     == super()
 

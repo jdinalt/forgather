@@ -21,10 +21,6 @@ accelerator: &accelerator !call:accelerate:Accelerator
     dataloader_config: *accel_dataloader_config
     project_dir: "{{ ns.output_dir }}"
 
-[trainer_args]
-    == super()
-    # **AccelTrainer**
-
 [trainer_constructor]
     == super()
     # **Accel Trainer**

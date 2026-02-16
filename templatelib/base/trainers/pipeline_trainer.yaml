@@ -16,31 +16,6 @@
 ## or provide a custom model-splitter function
 .define: &model_splitter !call:forgather.ml.trainer.pipeline:create_manual_causal_lm_splitter
 
-[trainer_args]
-    == super()
-    # **PipelineTrainer**
-    # Split batches into n_microbatches; batch-sizes must be divisible by this value.
-    n_microbatches: 2
-    ## Must be 1 for PipelineScheduleSingle. Otherwise, see scheduler documentation for requirements.
-    stages_per_rank: 1
-    ## Set to True, if pipe_schedule_factory is a sub-class of PipelineScheduleMulti
-    is_multistage: False
-    ## Optional:
-    ## Enable Pipeline Debug logging
-    ##   debug_pipeline: bool = False
-    ##
-    ## Extra debug info about model splitting.
-    ##   debug_split_model: bool = False
-    ##
-    ## Extra debug info about model params
-    ##   debug_model_params: bool = False
-    ##
-    ## Extra debug info about weight init
-    ##   debug_model_init: bool = False
-    ##
-    ## ZBVZ requires the "v" option.
-    ##   pp_stage_type: "v" | "loop" = "loop"
-
 [trainer_constructor]
     == super()
     # **PipelineTrainer**

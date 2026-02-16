@@ -8,6 +8,16 @@
     -- set ns.default_dataset_proj = joinpath(ns.forgather_dir, 'examples', 'datasets', 'Open-Orca')
     -- set ns.default_dataset_config = "openorca.yaml"
 
+[trainer_args]
+    == super()
+    # **open-orca**
+    logging_steps: 10
+    eval_steps: 50
+    max_eval_steps: 50
+    save_steps: 1000
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 16
+
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     lr: 4.0e-6
@@ -21,12 +31,3 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 #-------------------- project.trainer --------------------
 -- extends "finetune.trainer"
 
-[trainer_args]
-    == super()
-    # **open-orca**
-    logging_steps: 10
-    eval_steps: 50
-    max_eval_steps: 50
-    save_steps: 1000
-    per_device_train_batch_size: 8
-    per_device_eval_batch_size: 16

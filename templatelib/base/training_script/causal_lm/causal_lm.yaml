@@ -44,8 +44,15 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
     tokenizer: *tokenizer
     return_tensors: pt
 
+[trainer_args]
+    == super()
+    save_strategy: "{{ save_strategy | default('no') }}"
+    max_steps: {{ max_steps | default(-1) }}
+    output_dir: "{{ ns.output_dir }}"
+    logging_dir: "{{ ns.logging_dir }}"
+
 [trainer_definition]
-    ## Set defulat trainer
+    ## Set default trainer
     -- include 'trainers/trainer.yaml'
 
 [dynamic_args]

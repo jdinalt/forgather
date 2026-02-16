@@ -6,12 +6,6 @@
     -- set ns.config_name = "Resume Training from Checkpoint"
     -- set ns.config_description = "Continue training from the latest checkpoint, restoring optimizer and scheduler state"
 
-[trainer_definition]
-    -- include 'accel_trainer_ddp_resume.trainer_config'
-
-#-------------------- accel_trainer_ddp_resume.trainer_config --------------------
--- extends 'accel_trainer_ddp.trainer_config'
-
 [trainer_args]
     == super()
     resume_from_checkpoint: True

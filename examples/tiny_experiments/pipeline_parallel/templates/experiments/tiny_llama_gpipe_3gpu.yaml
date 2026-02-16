@@ -12,16 +12,6 @@
     -- set ns.model_project_dir = joinpath(project_dir, 'models/llama')
     -- set ns.model_project_config = "tiny_pipeline_llama.yaml"
 
-[trainer_definition]
-    -- include 'experiment.llama_trainer_config'
-
-#-------------------- experiment.llama_trainer_config --------------------
--- extends 'base_pipeline_project.trainer_config'
-
-[trainer_meta_config]
-    == super()
-    -- set ns.nproc_per_node = 3
-
 [trainer_args]
     == super()
     
@@ -45,3 +35,13 @@
     debug_split_model: False
     debug_model_params: False
     debug_model_init: False
+
+[trainer_definition]
+    -- include 'experiment.llama_trainer_config'
+
+#-------------------- experiment.llama_trainer_config --------------------
+-- extends 'base_pipeline_project.trainer_config'
+
+[trainer_meta_config]
+    == super()
+    -- set ns.nproc_per_node = 3

@@ -51,15 +51,27 @@ eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
 model: &model !call:getitem [ *model_dict, 'model' ]
 
+[trainer_args]
+    == super()
+    # Tiny Llama Project Overrides
+    eval_strategy: "steps"
+    save_strategy: "{{ save_strategy | default('steps') }}"
+    save_steps: 10000
+    # Safetensors can't handle tied parameters/buffers, so fallback to PyTorch format.
+    save_safetensors: False
+    seed: 42
+    per_device_train_batch_size: 32
+    per_device_eval_batch_size: 64
+    logging_steps: 100
+    eval_steps: 500
+    num_train_epochs: 1
+    dataloader_num_workers: 1
+
 ## This includes an inline template, defined below.
 ## The need to do this relates to Jinja2 disallowing a template from
 ## directly having more than one parent template. We can get around 
 ## this limitation by extending in 'project.model_config' and including
 ## the resulting template.
-[trainer_definition]
-    -- include 'project.trainer_config'
-
-## Override loggers
 [trainer_callbacks]
     -- include 'project.logger_config'
 
@@ -82,25 +94,6 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     ## Limit maximum sequence length 512 tokens, at the data-collator level.
     truncation: True
     max_length: 512
-
-#-------------------- project.trainer_config --------------------
--- extends 'trainers/trainer.yaml'
-
-[trainer_args]
-    == super()
-    # Tiny Llama Project Overrides
-    eval_strategy: "steps"
-    save_strategy: "{{ save_strategy | default('steps') }}"
-    save_steps: 10000
-    # Safetensors can't handle tied parameters/buffers, so fallback to PyTorch format.
-    save_safetensors: False
-    seed: 42
-    per_device_train_batch_size: 32
-    per_device_eval_batch_size: 64
-    logging_steps: 100
-    eval_steps: 500
-    num_train_epochs: 1
-    dataloader_num_workers: 1
 
 #-------------------- project.logger_config --------------------
 -- extends 'callbacks/loggers.yaml'

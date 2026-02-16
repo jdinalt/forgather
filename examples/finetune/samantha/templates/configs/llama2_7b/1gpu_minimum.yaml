@@ -6,24 +6,6 @@
     -- set ns.config_description = "Train on 16 GB GPU"
     -- set ns.log_name = "16gb"
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
-
-[datacollator]
-    == super()
-    # Demonstrate that we /can/ train with this sequence length! But not fast...
-    max_length: 512
-    ## Set to always use max_length. This can reduce peak memory slightly.
-    padding: "max_length"
-
-[optimizer]
-    == super()
-    lr: 1.41e-6 # Rescale LR for smaller batch-size
-
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer'
-
 [trainer_args]
     == super()
 
@@ -38,3 +20,13 @@
     fuse_optim_with_backward: True
     enable_activation_offloading: True
 
+[datacollator]
+    == super()
+    # Demonstrate that we /can/ train with this sequence length! But not fast...
+    max_length: 512
+    ## Set to always use max_length. This can reduce peak memory slightly.
+    padding: "max_length"
+
+[optimizer]
+    == super()
+    lr: 1.41e-6 # Rescale LR for smaller batch-size

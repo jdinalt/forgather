@@ -132,6 +132,14 @@ lr_scheduler: &lr_scheduler ~
     << endblock lr_scheduler
     -- endfilter
 
+== h3('Trainer Args')
+
+    -- filter trim()
+    -- block trainer_args
+trainer_args: &trainer_args !dict
+    << endblock trainer_args
+    -- endfilter
+
 
 == h2('Trainer')
 

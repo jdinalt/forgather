@@ -72,6 +72,39 @@ train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
     [eval_dataset]
 eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 
+## Setup some defaults for this type of project
+[trainer_args]
+    == super()
+
+    # **finetune**
+    seed: 42
+    logging_steps: 10
+    eval_steps: 100
+    eval_strategy: "steps"
+    max_eval_steps: -1
+    num_train_epochs: {{ epochs | default(1) }}
+    dataloader_num_workers: 1
+    float32_matmul_precision: "high"
+    default_dtype: bfloat16
+    gradient_checkpointing: {{ gradient_checkpointing | default(False) }}
+
+    # Checkpoint Save Settings
+    save_strategy: "{{ save_strategy | default('steps') }}" # Set to "steps" to save every "save_steps"; set to "no" to disable
+    save_steps: 1000                 # Checkpoint every N steps
+    save_safetensors: False          # Safe tensors don't support shared weights
+    save_total_limit: 3              # Keep at most N checkpoints
+    save_on_each_node: False         # Save common files on each node
+    save_rng_state: True             # Save RNG state with checkpoint
+    save_on_each_node: {{ save_on_each_node | default(False) }}
+
+    # Load model from latest checkpoint
+    resume_from_checkpoint: {{ resume_from_checkpoint | default(True) }}
+
+    # Where to construct the model: ["default"|"device"|"meta"]
+    construct_model_on: "device"    # Construct model on accelerator device
+    # Enable all SDPA backends and let PyTorch choose which to use.
+    sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
+    sdpa_set_priority: False # If list, interpret as priority order
 
 ## Defaults to the basic trainer implementation
 ## Note: This is unsuitable for multiple GPUs.
@@ -211,40 +244,6 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
 ## This has a side effect of not being able to statically resolve the
 ## parent template, which is named in the 'ns.trainer_class' variable,
 ## the value of which is defined in the 'config_metadata' block, above.
-
-## Setup some defaults for this type of project
-[trainer_args]
-    == super()
-
-    # **finetune**
-    seed: 42
-    logging_steps: 10
-    eval_steps: 100
-    eval_strategy: "steps"
-    max_eval_steps: -1
-    num_train_epochs: {{ epochs | default(1) }}
-    dataloader_num_workers: 1
-    float32_matmul_precision: "high"
-    default_dtype: bfloat16
-    gradient_checkpointing: {{ gradient_checkpointing | default(False) }}
-
-    # Checkpoint Save Settings
-    save_strategy: "{{ save_strategy | default('steps') }}" # Set to "steps" to save every "save_steps"; set to "no" to disable
-    save_steps: 1000                 # Checkpoint every N steps
-    save_safetensors: False          # Safe tensors don't support shared weights
-    save_total_limit: 3              # Keep at most N checkpoints
-    save_on_each_node: False         # Save common files on each node
-    save_rng_state: True             # Save RNG state with checkpoint
-    save_on_each_node: {{ save_on_each_node | default(False) }}
-
-    # Load model from latest checkpoint
-    resume_from_checkpoint: {{ resume_from_checkpoint | default(True) }}
-
-    # Where to construct the model: ["default"|"device"|"meta"]
-    construct_model_on: "device"    # Construct model on accelerator device
-    # Enable all SDPA backends and let PyTorch choose which to use.
-    sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
-    sdpa_set_priority: False # If list, interpret as priority order
 
 [trainer_constructor]
     == super()

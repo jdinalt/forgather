@@ -11,20 +11,6 @@
     -- set ns.default_max_steps = 500
     -- set ns.max_eval_steps = 10
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
-[optimizer]
-    == super()
-    lr: 3.2e-6
-
-[lr_scheduler]
-    == super()
-    warmup_steps: 100
-
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer'
-
 [trainer_args]
     == super()
 
@@ -37,3 +23,11 @@
     gradient_checkpointing: True
     fuse_optim_with_backward: True
     enable_activation_offloading: True
+
+[optimizer]
+    == super()
+    lr: 3.2e-6
+
+[lr_scheduler]
+    == super()
+    warmup_steps: 100

@@ -6,6 +6,14 @@
     -- set ns.config_description = "Conservative setting to train a 7B Llaama model on 1 GPU"
     -- set ns.log_name = "default"
 
+[trainer_args]
+    == super()
+    # **config**
+    per_device_train_batch_size: 4
+    per_device_eval_batch_size: 4
+    gradient_checkpointing: True
+    fuse_optim_with_backward: True
+    # enable_activation_offloading: True
 
 [trainer_definition]
     -- include 'config.trainer_config'
@@ -16,15 +24,6 @@
 
 #-------------------- config.trainer_config --------------------
 -- extends 'project.trainer'
-
-[trainer_args]
-    == super()
-    # **config**
-    per_device_train_batch_size: 4
-    per_device_eval_batch_size: 4
-    gradient_checkpointing: True
-    fuse_optim_with_backward: True
-    # enable_activation_offloading: True
 
 [trainer_constructor]
     == super()

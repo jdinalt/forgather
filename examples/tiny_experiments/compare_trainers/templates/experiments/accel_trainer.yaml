@@ -9,12 +9,6 @@
     ## Set trainer
     -- set ns.trainer_class = 'trainers/accel_trainer.yaml'
 
-[trainer_definition]
-    -- include 'accel_trainer.trainer_config'
-
-#-------------------- accel_trainer.trainer_config --------------------
--- extends 'project.trainer_config'
-
 [trainer_args]
     == super()
     # Not supported by HF trainer.
@@ -23,3 +17,11 @@
     # use_stateful_dataloader=True triggers an invalid attribute access.
     # https://github.com/huggingface/accelerate/issues/3110
     dataloader_num_workers: 0
+    
+[trainer_definition]
+    -- include 'accel_trainer.trainer_config'
+
+#-------------------- accel_trainer.trainer_config --------------------
+-- extends 'project.trainer_config'
+
+

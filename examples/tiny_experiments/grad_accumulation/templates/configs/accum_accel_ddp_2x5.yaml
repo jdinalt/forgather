@@ -8,6 +8,20 @@
     -- set ns.log_name = "aaccel_2x5"
     -- set ns.trainer_class = 'trainers/accel_trainer.yaml'
 
+[trainer_args]
+    == super()
+
+    # **Experiment overrides**
+    #gradient_accumulation_steps: 5
+
+    # Scale steps by factor of gradient_accumulation_steps, relative to baseline
+    logging_steps: 10
+    eval_steps: 50
+    save_steps: 1000
+
+    # https://github.com/huggingface/accelerate/issues/3110
+    dataloader_num_workers: 0
+
 [lr_scheduler]
     == super()
     
@@ -36,20 +50,6 @@
     == super()
     ## Train with two device
     -- set ns.nproc_per_node = 2
-
-[trainer_args]
-    == super()
-
-    # **Experiment overrides**
-    #gradient_accumulation_steps: 5
-
-    # Scale steps by factor of gradient_accumulation_steps, relative to baseline
-    logging_steps: 10
-    eval_steps: 50
-    save_steps: 1000
-
-    # https://github.com/huggingface/accelerate/issues/3110
-    dataloader_num_workers: 0
 
 [accelerator]
 == super()

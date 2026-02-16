@@ -7,17 +7,6 @@
     -- set ns.log_name = "zbvz_4gpu"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
 
-[trainer_definition]
-    -- include 'experiment.trainer_config'
-
-#-------------------- experiment.trainer_config --------------------
--- extends 'base_pipeline_project.trainer_config'
-
-
-[trainer_meta_config]
-    == super()
-    -- set ns.nproc_per_node = 4
-
 [trainer_args]
     == super()
     # Experiment Overrides
@@ -30,6 +19,17 @@
 
     eval_strategy: "no" # Eval does not work with zbvz at present
     load_best_model_at_end: False
+
+[trainer_definition]
+    -- include 'experiment.trainer_config'
+
+#-------------------- experiment.trainer_config --------------------
+-- extends 'base_pipeline_project.trainer_config'
+
+
+[trainer_meta_config]
+    == super()
+    -- set ns.nproc_per_node = 4
 
 [trainer_constructor]
     == super()

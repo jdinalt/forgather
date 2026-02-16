@@ -9,6 +9,11 @@
     ## Set trainer; this is a variable defined in 'projects/tiny.yaml'
     -- set ns.trainer_class = 'trainers/ddp_trainer.yaml'
 
+[trainer_args]
+    == super()
+    # Not supported by HF trainer.
+    float32_matmul_precision: "high"
+
 [trainer_definition]
     -- include 'ddp_trainer.trainer_config'
 
@@ -18,8 +23,3 @@
 [trainer_meta_config]
     == super()
     -- set ns.nproc_per_node = "gpu"
-
-[trainer_args]
-    == super()
-    # Not supported by HF trainer.
-    float32_matmul_precision: "high"

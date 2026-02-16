@@ -9,20 +9,6 @@
     -- set ns.config_description = "Train with 4096 token context on single GPU, 24 GBs"
     -- set ns.log_name = log_name | default('1gpu_4096_packed')
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
-[optimizer]
-    == super()
-    lr: 4.0e-6
-
-[lr_scheduler]
-    == super()
-    warmup_steps: 30
-
-#-------------------- samantha_packed.trainer_config --------------------
--- extends 'project.trainer'
-
 [trainer_args]
     == super()
     # **config**
@@ -35,3 +21,11 @@
     gradient_checkpointing: True
     fuse_optim_with_backward: True
     enable_activation_offloading: True
+
+[optimizer]
+    == super()
+    lr: 4.0e-6
+
+[lr_scheduler]
+    == super()
+    warmup_steps: 30

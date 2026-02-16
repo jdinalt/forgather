@@ -7,6 +7,24 @@
     -- set ns.log_name = "checkpoint_test_train"
     -- set ns.model_name = "checkpoint_test"
 
+[trainer_args]
+    == super()
+    max_steps: {{ max_steps | default(237) }} # Not a multiple of save_steps to test final checkpoint
+    
+    # Checkpoint test settings - create multiple checkpoints with final step not multiple of save_steps
+    save_strategy: "{{ save_strategy | default('steps') }}" # Save every "save_steps" steps
+    save_steps: 50                   # Save every 10 steps: 10, 20, 30, then final at 37
+    save_safetensors: False
+    save_total_limit: 2              # Keep 2 checkpoints
+    save_on_each_node: False
+    
+    # Quick testing settings
+    per_device_train_batch_size: 16
+    per_device_eval_batch_size: 16
+    logging_steps: 10                # Log frequently to see progress
+    eval_steps: 40                   # Evaluate occasionally
+    n_microbatches: 4
+
 [trainer_definition]
     -- include 'experiment.checkpoint_test_trainer_config'
 
@@ -18,24 +36,4 @@
     ## Use same small model as tiny_gpipe_2gpu for fast testing
     -- set ns.nproc_per_node = 2
 
-[trainer_args]
-    == super()
-    max_steps: {{ max_steps | default(237) }} # Not a multiple of save_steps to test final checkpoint
-    
-    # Checkpoint test settings - create multiple checkpoints with final step not multiple of save_steps
-    save_strategy: "{{ save_strategy | default('steps') }}" # Save every "save_steps" steps
-    save_steps: 50                   # Save every 10 steps: 10, 20, 30, then final at 37
-    save_safetensors: False
-    save_total_limit: 2              # Keep 2 checkpoints
-    save_on_each_node: False
-    save_optimizer_state: True       # Test optimizer state saving per rank
-    save_scheduler_state: True       # Test scheduler state saving per rank
-    save_rng_state: True             # Test RNG state saving per rank
-    overwrite_output_dir: True
-    
-    # Quick testing settings
-    per_device_train_batch_size: 16
-    per_device_eval_batch_size: 16
-    logging_steps: 10                # Log frequently to see progress
-    eval_steps: 40                   # Evaluate occasionally
-    n_microbatches: 4
+

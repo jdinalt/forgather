@@ -13,22 +13,21 @@
     -- set ns.sgd_lr = 1.0e0
     -- set ns.apollo_lr = 5.0e-4
 
-[trainer_definition]
-    -- include 'project.trainer_config'
-
-
-[trainer_callbacks]
-    -- include 'project.callbacks'
-
-#-------------------- project.trainer_config --------------------
--- extends 'tiny.trainer_config'
-
 [trainer_args]
     == super()
     # project overrides
     logging_steps: 50
     eval_steps: 200
     default_dtype: bfloat16
+
+[trainer_definition]
+    -- include 'project.trainer_config'
+
+[trainer_callbacks]
+    -- include 'project.callbacks'
+
+#-------------------- project.trainer_config --------------------
+-- extends 'tiny.trainer_config'
 
 #-------------------- project.callbacks --------------------
 -- extends 'tiny.callbacks'

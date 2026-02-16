@@ -25,26 +25,12 @@
 -- endfilter ## trim()
 
 
-== h3('Trainer Args')
+== h3('Trainer Dependencies')
 
 -- filter trim()
 -- block trainer_dependencies
 ## Additional definitions required for trainer_args block
 << endblock trainer_dependencies
--- endfilter
-
-
--- filter trim()
--- block trainer_args
-trainer_args: &trainer_args !singleton:{{ ns.trainer_config_class  }}@trainer_args
-    ## Base Trainer Defaults ; this is a common subset on these two interfaces
-    ## https://huggingface.co/docs/transformers/en/main_classes/trainer#transformers.TrainingArguments
-    ## forgather.ml.TrainerArgs
-    save_strategy: "{{ save_strategy | default('no') }}"
-    max_steps: {{ max_steps | default(-1) }}
-    output_dir: "{{ ns.output_dir }}"
-    logging_dir: "{{ ns.logging_dir }}"
-<< endblock trainer_args
 -- endfilter
 
 

@@ -4,14 +4,15 @@
     == super()
     ##-- set ns.trainer_class = 'trainers/trainer.yaml'
 
+[trainer_args]
+    == super()
+    # project overrides
+    per_device_train_batch_size: 32
+    per_device_eval_batch_size: 32
+
 [trainer_definition]
     -- include 'project.trainer_config'
 
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
 
-[trainer_args]
-    == super()
-    # project overrides
-    per_device_train_batch_size: 32
-    per_device_eval_batch_size: 32

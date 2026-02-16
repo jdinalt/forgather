@@ -6,13 +6,6 @@
     -- set ns.config_name = "Resume Training from Checkpoint"
     -- set ns.config_description = "Continue training from the latest checkpoint, restoring optimizer and scheduler state"
 
-[trainer_definition]
-    -- include 'resume.trainer_config'
-
-#-------------------- resume.trainer_config --------------------
--- extends 'checkpointing.trainer_config'
-## Override the trainer config for resume training
-
 [trainer_args]
     == super()
     resume_from_checkpoint: True

@@ -6,20 +6,6 @@
     -- set ns.config_description = "Train with 4096 token context on single GPU, 24 GBs"
     -- set ns.log_name = "1gpu_4096"
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
-[datacollator]
-    == super()
-    max_length: 4096
-
-[optimizer]
-    == super()
-    lr: 3.5e-6 # Rescale LR for smaller batch-size
-
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer'
-
 [trainer_args]
     == super()
 
@@ -30,3 +16,10 @@
     fuse_optim_with_backward: True
     enable_activation_offloading: True
 
+[datacollator]
+    == super()
+    max_length: 4096
+
+[optimizer]
+    == super()
+    lr: 3.5e-6 # Rescale LR for smaller batch-size

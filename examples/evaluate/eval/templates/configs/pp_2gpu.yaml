@@ -8,6 +8,13 @@
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
     -- set ns.pp_batch_size = batch_size | default(ns.default_batch_size)
 
+[trainer_args]
+    == super()
+    # **config**
+    n_microbatches: {{ ns.pp_batch_size }}
+    per_device_train_batch_size: {{ ns.pp_batch_size }}
+    per_device_eval_batch_size: {{ ns.pp_batch_size }}
+
 [trainer_definition]
     -- include 'config_2gpu.trainer_config'
 
@@ -22,13 +29,6 @@
 [trainer_meta_config]
     == super()
     -- set ns.nproc_per_node = 2
-
-[trainer_args]
-    == super()
-    # **config**
-    n_microbatches: {{ ns.pp_batch_size }}
-    per_device_train_batch_size: {{ ns.pp_batch_size }}
-    per_device_eval_batch_size: {{ ns.pp_batch_size }}
 
 [trainer_constructor]
     == super()

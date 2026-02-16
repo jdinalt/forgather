@@ -7,21 +7,6 @@
     -- set ns.log_name = log_name | default('1gpu_4096_packed')
     -- set ns.log_memory_to_tb = True
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
-
-[optimizer]
-    == super()
-    lr: !!float {{ lr | default(1.0e-4) }}
-
-[lr_scheduler]
-    == super()
-    warmup_steps: {{ warmup_steps | default(10) }}
-
-#-------------------- config.trainer_config --------------------
--- extends 'samantha_packed.trainer'
-
 [trainer_args]
     == super()
 
@@ -41,6 +26,20 @@
     torch_compile_dynamic: False
     speed_metrics_start_step: 1
     num_train_epochs: {{ epochs | default(2) }}
+
+[trainer_definition]
+    -- include 'config.trainer_config'
+
+[optimizer]
+    == super()
+    lr: !!float {{ lr | default(1.0e-4) }}
+
+[lr_scheduler]
+    == super()
+    warmup_steps: {{ warmup_steps | default(10) }}
+
+#-------------------- config.trainer_config --------------------
+-- extends 'samantha_packed.trainer'
 
 [trainer_constructor]
     == super()

@@ -6,6 +6,11 @@
     -- set ns.config_description = "Pipeline with 4 GPUs"
     -- set ns.log_name = "gpipe_4gpu"
 
+[trainer_args]
+    == super()
+    # Experiment Overrides
+    n_microbatches: 8
+
 [trainer_definition]
     -- include 'experiment.trainer_config'
 
@@ -15,8 +20,3 @@
 [trainer_meta_config]
     == super()
     -- set ns.nproc_per_node = 4
-
-[trainer_args]
-    == super()
-    # Experiment Overrides
-    n_microbatches: 8

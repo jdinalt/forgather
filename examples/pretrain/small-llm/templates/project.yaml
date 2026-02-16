@@ -122,6 +122,54 @@ eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
 model: &model !call:getitem [ *model_dict, 'model' ]
 
+[trainer_args]
+    == super()
+    # --- Pretrain Config ---
+
+    # **Cadence**
+    logging_steps: {{ (100 * ns.step_cadence / ns.effective_per_device_batch_size) | int }}
+    eval_steps: {{ (1000 * ns.step_cadence / ns.effective_per_device_batch_size) | int }}
+    save_steps: {{ (20000 * ns.step_cadence / ns.effective_per_device_batch_size) | int }}
+
+    # **Dataloader Config**
+    num_train_epochs: 1
+    per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
+    per_device_eval_batch_size: {{ ns.per_device_train_batch_size * 2 }}
+    dataloader_num_workers: 1
+    dataloader_drop_last: True
+    dataloader_persistent_workers: False
+    dataloader_prefetch_factor: 32
+    # When True, only rank0 reads the datasets -- and dispatches batches to other ranks.
+    dispatch_batches: False
+
+    # **Eval Config**
+    eval_strategy: "steps"
+    max_eval_steps: -1 # This limits the number of examples in the eval. step.
+
+    # **Checkpoing saving**
+    save_strategy: {{ save_strategy | toyaml('steps') }}
+    save_safetensors: False
+    save_total_limit: 4
+    preserve_best_model: True
+    best_model_metric: "loss"
+    preserve_n_best: 2
+    eval_on_save: True
+
+    # **Checkpoint loading**
+    resume_from_checkpoint: {{ not (init_model | default(False)) }}
+
+    # **Torch Compile Config**
+    torch_compile: {{ compile | default(False) }}
+    torch_compile_dynamic: True
+
+    # **Misc.**
+    seed: 42
+    max_steps: {{ max_steps | toyaml(ns.total_steps) }}
+    float32_matmul_precision: "high"
+    default_dtype: "bfloat16"
+    gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
+    max_grad_norm: 4.0
+
 [datacollator]
 data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
     tokenizer: *tokenizer
@@ -210,54 +258,6 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 [trainer_meta_config]
     == super()
     -- set ns.nproc_per_node = "gpu"
-
-[trainer_args]
-    == super()
-    # --- Pretrain Config ---
-
-    # **Cadence**
-    logging_steps: {{ (100 * ns.step_cadence / ns.effective_per_device_batch_size) | int }}
-    eval_steps: {{ (1000 * ns.step_cadence / ns.effective_per_device_batch_size) | int }}
-    save_steps: {{ (20000 * ns.step_cadence / ns.effective_per_device_batch_size) | int }}
-
-    # **Dataloader Config**
-    num_train_epochs: 1
-    per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
-    per_device_eval_batch_size: {{ ns.per_device_train_batch_size * 2 }}
-    dataloader_num_workers: 1
-    dataloader_drop_last: True
-    dataloader_persistent_workers: False
-    dataloader_prefetch_factor: 32
-    # When True, only rank0 reads the datasets -- and dispatches batches to other ranks.
-    dispatch_batches: False
-
-    # **Eval Config**
-    eval_strategy: "steps"
-    max_eval_steps: -1 # This limits the number of examples in the eval. step.
-
-    # **Checkpoing saving**
-    save_strategy: {{ save_strategy | toyaml('steps') }}
-    save_safetensors: False
-    save_total_limit: 4
-    preserve_best_model: True
-    best_model_metric: "loss"
-    preserve_n_best: 2
-    eval_on_save: True
-
-    # **Checkpoint loading**
-    resume_from_checkpoint: {{ not (init_model | default(False)) }}
-
-    # **Torch Compile Config**
-    torch_compile: {{ compile | default(False) }}
-    torch_compile_dynamic: True
-
-    # **Misc.**
-    seed: 42
-    max_steps: {{ max_steps | toyaml(ns.total_steps) }}
-    float32_matmul_precision: "high"
-    default_dtype: "bfloat16"
-    gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
-    max_grad_norm: 4.0
 
 [trainer_constructor]
     == super()

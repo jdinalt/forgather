@@ -31,10 +31,6 @@
 .define: &model_splitter !call:forgather.ml.trainer.pipeline:create_automatic_splitter
     split_spec: *split_spec
 
-[trainer_args]
-    == super()
-    n_microbatches: {{ ns.pipeline_microbatches }}
-
 [trainer_constructor]
     == super()
     # **auto PipelineTrainer**

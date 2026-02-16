@@ -7,12 +7,6 @@
     -- set ns.model_name = "control"
     -- set ns.log_name = "compile"
 
-[trainer_definition]
-    -- include 'experiment.trainer_config'
-
-#-------------------- experiment.trainer_config --------------------
--- extends 'project.trainer_config'
-
 [trainer_args]
     == super()
     # experiment overrides

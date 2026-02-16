@@ -58,6 +58,30 @@ eval_dataset: &eval_dataset !call:forgather:from_project
     [train_dataset]
 train_dataset: &train_dataset null
 
+[trainer_args]
+    == super()
+
+    # **eval**
+    seed: 42
+    max_eval_steps: {{ max_steps | default(-1) }}
+    dataloader_num_workers: 1
+    float32_matmul_precision: {{ float32_precision | default("high") }}
+    default_dtype: {{ dtype | default("float32") }}
+    per_device_eval_batch_size: {{ batch_size | default(ns.default_batch_size) }}
+
+    # We load the model via the newest checkpoint
+    resume_from_checkpoint: {{ from_checkpoint | default(True) }}
+    construct_model_on: "device"    # Construct model on accelerator device
+
+    # Only load weights
+    restore_optimizer_state: False
+    restore_scheduler_state: False
+    restore_dataset_state: False
+    restore_rng_state: False
+
+    sdpa_backend: {{ '[ ' + sdpa_backend | default('"math", "flash", "efficient", "cudnn"') + ' ]' }}
+    sdpa_set_priority: False # If list, interpret as priority order
+
 ## Defaults to the basic trainer implementation
 ## Note: This is unsuitable for multiple GPUs.
 ## Override 'ns.trainer_class' to change the trainer class.
@@ -147,26 +171,3 @@ data_collator: &data_collator !call:forgather.ml.data_collator:DataCollatorForCa
 #-------------------- eval.trainer --------------------
 -- extends ns.trainer_class
 
-[trainer_args]
-    == super()
-
-    # **eval**
-    seed: 42
-    max_eval_steps: {{ max_steps | default(-1) }}
-    dataloader_num_workers: 1
-    float32_matmul_precision: {{ float32_precision | default("high") }}
-    default_dtype: {{ dtype | default("float32") }}
-    per_device_eval_batch_size: {{ batch_size | default(ns.default_batch_size) }}
-
-    # We load the model via the newest checkpoint
-    resume_from_checkpoint: {{ from_checkpoint | default(True) }}
-    construct_model_on: "device"    # Construct model on accelerator device
-
-    # Only load weights
-    restore_optimizer_state: False
-    restore_scheduler_state: False
-    restore_dataset_state: False
-    restore_rng_state: False
-
-    sdpa_backend: {{ '[ ' + sdpa_backend | default('"math", "flash", "efficient", "cudnn"') + ' ]' }}
-    sdpa_set_priority: False # If list, interpret as priority order

@@ -10,6 +10,18 @@
     ## Defines
     -- set ns.trainer_class = 'trainers/trainer.yaml'
 
+[trainer_args]
+    == super()
+    # HF Trainer compat. LR scheduler args.
+    lr_scheduler_type: "linear"
+    warmup_steps: 500
+
+    # HR optimizer args
+    learning_rate: 1.0e-3
+
+    # Grad norm is disabled by default in our trainer. Set value to enable it in all trainers.
+    max_grad_norm: 1.0
+
 [trainer_definition]
     -- include 'project.trainer_config'
 
@@ -33,15 +45,3 @@ optimizer: &optimizer ~
     == super()
     ## Disable DDP training, when supported
     -- set ns.nproc_per_node = 1
-
-[trainer_args]
-    == super()
-    # HF Trainer compat. LR scheduler args.
-    lr_scheduler_type: "linear"
-    warmup_steps: 500
-
-    # HR optimizer args
-    learning_rate: 1.0e-3
-
-    # Grad norm is disabled by default in our trainer. Set value to enable it in all trainers.
-    max_grad_norm: 1.0

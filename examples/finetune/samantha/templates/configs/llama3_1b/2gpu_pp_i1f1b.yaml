@@ -11,6 +11,24 @@
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
     -- set ns.default_dataset_config = "samantha-packed.yaml"
 
+[trainer_args]
+    == super()
+    # **config**
+    n_microbatches: 4
+    is_multistage: True
+    stages_per_rank: 2
+    logging_steps: 2
+    eval_steps: 15
+    save_steps: 65
+    ## With sequence packing, the effective batch size is ~3.15 times the baseline
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 8
+    #gradient_checkpointing: True
+    #fuse_optim_with_backward: True
+    #enable_activation_offloading: True
+    detect_anomaly: True
+    torch_compile: True
+
 [trainer_definition]
     -- include 'config.trainer_config'
 
@@ -39,25 +57,6 @@
 [trainer_meta_config]
     == super()
     -- set ns.nproc_per_node = 2
-
-[trainer_args]
-    == super()
-    # **config**
-    n_microbatches: 4
-    is_multistage: True
-    stages_per_rank: 2
-    logging_steps: 2
-    eval_steps: 15
-    save_steps: 65
-    ## With sequence packing, the effective batch size is ~3.15 times the baseline
-    per_device_train_batch_size: 8
-    per_device_eval_batch_size: 8
-    #gradient_checkpointing: True
-    #fuse_optim_with_backward: True
-    #enable_activation_offloading: True
-    detect_anomaly: True
-    torch_compile: True
-    
     
 [trainer_constructor]
     == super()

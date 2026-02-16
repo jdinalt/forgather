@@ -1,19 +1,16 @@
 -- extends 'projects/tiny.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
--- endblock config_metadata
 
+[trainer_args]
+    == super()
+    # Project Overrides
+    save_strategy: "steps" # Save models when done
 
--- block trainer_definition
+[trainer_definition]
     -- include 'project.trainer_config'
--- endblock trainer_definition
 
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
 
--- block trainer_args
-    == super()
-    # Project Overrides
-    save_strategy: "steps"
--- endblock trainer_args

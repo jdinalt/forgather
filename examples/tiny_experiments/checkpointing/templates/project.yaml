@@ -6,12 +6,6 @@
     -- set ns.config_name = "Checkpoint Testing Project"
     -- set ns.config_description = "Project for testing optimizer and scheduler checkpoint functionality"
 
-[trainer_definition]
-    -- include 'checkpointing.trainer_config'
-
-#-------------------- checkpointing.trainer_config --------------------
--- extends ns.trainer_class
-
 [trainer_args]
     == super()
     
@@ -36,3 +30,11 @@
     # Smaller batch size for quick iterations
     per_device_train_batch_size: 8
     per_device_eval_batch_size: 16
+
+[trainer_definition]
+    -- include 'checkpointing.trainer_config'
+
+#-------------------- checkpointing.trainer_config --------------------
+-- extends ns.trainer_class
+
+

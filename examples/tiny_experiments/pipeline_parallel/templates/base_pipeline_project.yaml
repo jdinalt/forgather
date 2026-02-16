@@ -21,11 +21,3 @@
 
 #-------------------- base_pipeline_project.trainer_config --------------------
 -- extends 'project.trainer_config'
-
-[trainer_args]
-    == super()
-    # Debug settings -- for quick access
-    debug_pipeline: False
-    debug_split_model: False
-    debug_model_params: False
-    debug_model_init: False

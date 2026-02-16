@@ -10,6 +10,11 @@
     -- set ns.default_dataset_config = "samantha-packed.yaml"
     -- set ns.packed_sequence_length = 4096
 
+[trainer_args]
+    == super()
+    # **samantha packed**
+    gc_threshold: 0.9
+
 [trainer_definition]
     -- include 'samantha_packed.trainer'
 
@@ -32,8 +37,3 @@
 
 #-------------------- samantha_packed.trainer --------------------
 -- extends "project.trainer"
-
-[trainer_args]
-    == super()
-    # **samantha packed**
-    gc_threshold: 0.9

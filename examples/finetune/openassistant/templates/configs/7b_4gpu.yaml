@@ -9,6 +9,23 @@
     -- set ns.default_max_steps = 250
     -- set ns.max_eval_steps = 10
 
+[trainer_args]
+    == super()
+    # **config**
+    n_microbatches: 8
+    is_multistage: True
+    stages_per_rank: 2
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 8
+    stages_per_rank: 2
+    logging_steps: 2
+    gradient_checkpointing: True
+
+    # This dataset seems to produce large gradient spikes
+    # As long as we have the memory to store the gradients, we
+    # can set max_grad_norm to moderate their impact on training.
+    max_grad_norm: 75.0
+
 [trainer_definition]
     -- include 'config.trainer_config'
 
@@ -30,23 +47,6 @@
 [trainer_meta_config]
     == super()
     -- set ns.nproc_per_node = 4
-
-[trainer_args]
-    == super()
-    # **config**
-    n_microbatches: 8
-    is_multistage: True
-    stages_per_rank: 2
-    per_device_train_batch_size: 8
-    per_device_eval_batch_size: 8
-    stages_per_rank: 2
-    logging_steps: 2
-    gradient_checkpointing: True
-
-    # This dataset seems to produce large gradient spikes
-    # As long as we have the memory to store the gradients, we
-    # can set max_grad_norm to moderate their impact on training.
-    max_grad_norm: 75.0
     
 [trainer_constructor]
     == super()

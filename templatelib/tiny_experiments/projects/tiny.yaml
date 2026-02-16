@@ -78,6 +78,21 @@ eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
 model: &model !call:getitem [ *model_dict, 'model' ]
 
+[trainer_args]
+    == super()
+    # **Tiny Project**
+    seed: 42
+    per_device_train_batch_size: 32
+    per_device_eval_batch_size: 64
+    logging_steps: 100
+    eval_strategy: "steps"
+    eval_steps: 500
+    save_steps: 10000
+    num_train_epochs: 1
+    dataloader_num_workers: 1
+    # Safetensors can't handle tied parameters/buffers, so fallback to PyTorch format.
+    save_safetensors: False
+
 [trainer_callbacks]
     ## See definition below
     -- include 'tiny.callbacks'
@@ -119,21 +134,6 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 ## This has a side effect of not being able to statically resolve the
 ## parent template, which is named in the 'ns.trainer_class' variable,
 ## the value of which is defined in the 'config_metadata' block, above.
-
-[trainer_args]
-    == super()
-    # **Tiny Project**
-    seed: 42
-    per_device_train_batch_size: 32
-    per_device_eval_batch_size: 64
-    logging_steps: 100
-    eval_strategy: "steps"
-    eval_steps: 500
-    save_steps: 10000
-    num_train_epochs: 1
-    dataloader_num_workers: 1
-    # Safetensors can't handle tied parameters/buffers, so fallback to PyTorch format.
-    save_safetensors: False
 
 #-------------------- tiny.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'

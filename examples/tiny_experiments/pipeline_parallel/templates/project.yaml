@@ -14,6 +14,16 @@
 [trainer_callbacks]
     -- include 'project.callbacks'
 
+[trainer_args]
+    == super()
+    # Project Overrides
+    per_device_train_batch_size: 64
+    per_device_eval_batch_size: 64
+    logging_steps: 10
+    eval_steps: 50
+    max_steps: {{ max_steps | default(250) }}
+    default_dtype: "bfloat16"
+
 [datacollator]
 # Pipeline Parallel requires constant input tensor shapes. Use the datacollator to
 # generate constant sequence length batches, padding if too short and truncating if too long.
@@ -31,16 +41,6 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
 
 #-------------------- project.trainer_config --------------------
 -- extends 'tiny.trainer_config'
-
-[trainer_args]
-    == super()
-    # Project Overrides
-    per_device_train_batch_size: 64
-    per_device_eval_batch_size: 64
-    logging_steps: 10
-    eval_steps: 50
-    max_steps: {{ max_steps | default(250) }}
-    default_dtype: "bfloat16"
 
 #-------------------- project.callbacks --------------------
 -- extends 'tiny.callbacks'

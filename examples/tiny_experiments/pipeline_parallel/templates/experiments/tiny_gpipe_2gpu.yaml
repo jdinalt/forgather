@@ -8,17 +8,6 @@
     -- set ns.model_name = "tiny_pipeline"
     -- set ns.model_project_config = "tiny_pipeline_model.yaml"
 
-[trainer_definition]
-    -- include 'experiment.trainer_config'
-
-#-------------------- experiment.trainer_config --------------------
--- extends 'base_pipeline_project.trainer_config'
-
-[trainer_meta_config]
-    == super()
-    ## Much smaller model for testing
-    -- set ns.nproc_per_node = 2
-
 [trainer_args]
     == super()
     
@@ -30,8 +19,13 @@
     per_device_eval_batch_size: 16
     n_microbatches: 8
 
-    # Debug settings
-    debug_pipeline: False
-    debug_split_model: False
-    debug_model_params: False
-    debug_model_init: False
+[trainer_definition]
+    -- include 'experiment.trainer_config'
+
+#-------------------- experiment.trainer_config --------------------
+-- extends 'base_pipeline_project.trainer_config'
+
+[trainer_meta_config]
+    == super()
+    ## Much smaller model for testing
+    -- set ns.nproc_per_node = 2

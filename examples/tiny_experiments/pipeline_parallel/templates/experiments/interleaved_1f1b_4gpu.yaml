@@ -9,6 +9,13 @@
 [trainer_definition]
     -- include 'experiment.trainer_config'
 
+[trainer_args]
+    == super()
+    # Experiment Overrides
+    n_microbatches: 8
+    is_multistage: True
+    stages_per_rank: 2
+
 #-------------------- experiment.trainer_config --------------------
 -- extends 'base_pipeline_project.trainer_config'
 
@@ -16,13 +23,6 @@
 [trainer_meta_config]
     == super()
     -- set ns.nproc_per_node = 4
-
-[trainer_args]
-    == super()
-    # Experiment Overrides
-    n_microbatches: 8
-    is_multistage: True
-    stages_per_rank: 2
 
 [trainer_constructor]
     == super()
