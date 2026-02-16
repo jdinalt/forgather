@@ -158,7 +158,7 @@ def preprocess_dataset(
     feature: str = "text",
     shuffle: bool = False,
     num_shards: int = 256,
-    desc: str = "Tokenizing Dataset",
+    desc: str = "Dataset",
     seed: int = 42,
     shuffle_buffer_size: int = 1000,
     map_fn: Callable = default_tokenize_map_fn,
@@ -298,7 +298,7 @@ def preprocess_dataset(
                         buffer_size=shuffle_buffer_size, seed=seed
                     )
             else:
-                map_kwargs["desc"] = desc
+                map_kwargs["desc"] = "Tokenizing " + desc
                 if shuffle:
                     dataset = dataset.shuffle(seed=seed)
         else:
