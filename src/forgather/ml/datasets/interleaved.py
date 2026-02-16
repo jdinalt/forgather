@@ -105,6 +105,11 @@ class InterleavedDataset(TorchIterableDataset):
         # Track examples per dataset (for dynamic probabilities and checkpointing)
         examples_per_dataset = [0] * len(self.datasets)
 
+        # Restore from checkpoint if available
+        if hasattr(self, "_restored_examples_per_dataset"):
+            examples_per_dataset = self._restored_examples_per_dataset.copy()
+            delattr(self, "_restored_examples_per_dataset")
+
         # Setup RNG if using probabilities (static or dynamic)
         use_probabilities = (
             self.probabilities is not None or self._probabilities_callable
@@ -182,6 +187,9 @@ class InterleavedDataset(TorchIterableDataset):
                 # Update checkpoint position
                 self._current_dataset_index = chosen_idx
                 self._current_example_count = examples_yielded
+
+                # Save examples_per_dataset for checkpointing
+                self._examples_per_dataset_checkpoint = examples_per_dataset.copy()
 
                 yield example
 
@@ -271,6 +279,10 @@ class InterleavedDataset(TorchIterableDataset):
             "child_states": [],
         }
 
+        # Save examples_per_dataset if available (needed for dynamic probability functions)
+        if hasattr(self, "_examples_per_dataset_checkpoint"):
+            state["examples_per_dataset"] = self._examples_per_dataset_checkpoint.copy()
+
         # Save state for each child dataset
         for i, dataset in enumerate(self.datasets):
             if hasattr(dataset, "state_dict"):
@@ -293,6 +305,12 @@ class InterleavedDataset(TorchIterableDataset):
         self._datasets_exhausted = state_dict.get(
             "datasets_exhausted", [False] * len(self.datasets)
         )
+
+        # Restore examples_per_dataset if available (for dynamic probability functions)
+        if "examples_per_dataset" in state_dict:
+            self._restored_examples_per_dataset = state_dict[
+                "examples_per_dataset"
+            ].copy()
 
         # Restore state for each child dataset
         child_states = state_dict.get("child_states", [])
