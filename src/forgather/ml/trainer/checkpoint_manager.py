@@ -95,7 +95,7 @@ class CheckpointManager(CheckpointInterface):
             []
         )  # List of (path, metric_value)
         self.preserve_n_best: int = 1
-        self.trainer = None  # Set by trainer for callback access
+        self.trainer: "BaseTrainer" | None = None  # Set by trainer for callback access
         self.barrier_fn = get_barrier_fn(get_global_process_group())
 
         # Initialize CheckpointCoordinator for state component handling

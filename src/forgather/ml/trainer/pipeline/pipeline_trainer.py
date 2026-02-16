@@ -8,10 +8,12 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Generic,
     List,
     Protocol,
     Tuple,
     TypeAlias,
+    TypeVar,
     override,
 )
 
@@ -122,7 +124,14 @@ class PipelineTrainingArguments(TrainingArguments):
     is_multistage: bool = False
 
 
-class PipelineTrainer(Trainer):
+TPipelineTrainingArguments = TypeVar(
+    "TPipelineTrainingArguments", bound=PipelineTrainingArguments
+)
+
+
+class PipelineTrainer(
+    Trainer[TPipelineTrainingArguments], Generic[TPipelineTrainingArguments]
+):
     """
     Trainer for pipeline parallel training using PyTorch distributed pipelining.
 
@@ -182,7 +191,7 @@ class PipelineTrainer(Trainer):
     def __init__(
         self,
         *,
-        args: PipelineTrainingArguments,
+        args: TPipelineTrainingArguments,
         model_splitter: ModelSplitter,  # Required: function to split model into pipeline stages
         pipe_schedule_factory: PipelineSchedulerT = ScheduleGPipe,
         **kwargs,
@@ -200,32 +209,17 @@ class PipelineTrainer(Trainer):
             **kwargs: Additional arguments passed to base Trainer (train_dataset, optimizer_factory, etc.)
         """
         assert isinstance(args, PipelineTrainingArguments)
-        self.args = args  # For type checking hint
+        super().__init__(args=args, **kwargs)
         self.model_splitter = model_splitter
         self.pipe_schedule_factory = pipe_schedule_factory
-        super().__init__(args=args, **kwargs)
 
-    @override
-    def _is_pipeline_parallel(self) -> bool:
-        """
-        Indicate this trainer uses pipeline parallelism.
-
-        Pipeline parallelism doesn't increase effective batch size (unlike DDP) because
-        the same batch flows through all stages sequentially - different microbatches are
-        in different stages at any given time, but they all belong to the same original batch.
-
-        Returns:
-            True to indicate pipeline parallel training
-        """
-        return True
-
-    @override
-    def _post_init(self) -> None:
         if self.args.debug_pipeline:
             logger.setLevel(logging.DEBUG)
-        super()._post_init()
-        assert self.model is None
-        assert self.model_init
+
+        assert (
+            self.model is None
+        ), "Pipeline trainer only support model_init=fn, where fn is a zero-args Callable, returning a model"
+        assert self.model_init, "Pipeline trainer requires a model_init function"
 
         for batch_size in (
             self.args.per_device_train_batch_size,
@@ -240,6 +234,20 @@ class PipelineTrainer(Trainer):
 
         # The pipeline requires a fixed shape for the inputs
         self.args.dataloader_drop_last = True
+
+    @override
+    def _is_pipeline_parallel(self) -> bool:
+        """
+        Indicate this trainer uses pipeline parallelism.
+
+        Pipeline parallelism doesn't increase effective batch size (unlike DDP) because
+        the same batch flows through all stages sequentially - different microbatches are
+        in different stages at any given time, but they all belong to the same original batch.
+
+        Returns:
+            True to indicate pipeline parallel training
+        """
+        return True
 
     @override
     def _init_distributed(self):

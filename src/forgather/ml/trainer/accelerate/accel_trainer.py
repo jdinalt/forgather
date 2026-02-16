@@ -1,16 +1,15 @@
 # A subclass of Trainer, which adds support for the Acclerate library.
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, override
+from typing import Dict, Generic, List, Optional, TypeVar, override
 
 import torch
 from accelerate import Accelerator
-from torch import Tensor, accelerator, distributed
+from torch import Tensor
 
 from ..checkpoint_manager import RNGState
 from ..checkpoint_types import SharingPattern, StateComponent
-from ..trainer import Trainer, TrainingArguments
-from ..trainer_types import TrainerState
+from ..trainer import Trainer, TrainerState, TrainingArguments
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +19,12 @@ class AccelTrainingArguments(TrainingArguments):
     pass
 
 
-class AccelTrainer(Trainer):
+TAccelTrainingArguments = TypeVar(
+    "TAccelTrainingArguments", bound=AccelTrainingArguments
+)
+
+
+class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArguments]):
     """
     Modify the base Trainer to use the Accelerate library.
     """
@@ -28,13 +32,14 @@ class AccelTrainer(Trainer):
     def __init__(
         self,
         *,
-        args: AccelTrainingArguments,
+        args: TAccelTrainingArguments,
         accelerator: Accelerator,
         **kwargs,
     ):
         assert isinstance(args, AccelTrainingArguments)
-        self.args = args  # For type checking hint
         assert isinstance(accelerator, Accelerator)
+        super().__init__(args=args, **kwargs)
+
         self.accelerator = accelerator
 
         # Ensure Accelerator and TrainingArguments gradient accumulation settings are consistent
@@ -52,10 +57,6 @@ class AccelTrainer(Trainer):
                     accelerator.gradient_accumulation_steps
                 )
 
-        super().__init__(args=args, **kwargs)
-
-    def _post_init(self) -> None:
-        super()._post_init()
         assert (
             not self.args.fuse_optim_with_backward
         ), "AccelTrainer does not support option fuse_optim_with_backward"
@@ -70,12 +71,6 @@ class AccelTrainer(Trainer):
     def _init_device(self):
         # Accel uses a special device target
         self.args.device = self.accelerator.device
-
-    @override
-    def _wrap_loss_fn(self):
-        # Accelerate scales loss internally
-        self.train_loss_fn = self.loss_fn
-        self.eval_loss_fn = self.loss_fn
 
     @override
     def _wrap(
@@ -106,10 +101,6 @@ class AccelTrainer(Trainer):
         # Accelerate modifies the dataloaders, which can change both the length and the batch size.
         if self.train_dataloader is not None:
             self._update_training_steps()
-
-    @override
-    def _loss_post_scaler(self):
-        return 1.0 / self.args.gradient_accumulation_steps
 
     @override
     def _distributed_loss(self, loss: Tensor) -> Tensor:

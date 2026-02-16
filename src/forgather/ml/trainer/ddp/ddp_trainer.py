@@ -1,8 +1,8 @@
 import logging
 import os
 from contextlib import nullcontext
-from dataclasses import dataclass
-from typing import Dict, Iterator, List, Optional, Tuple, override
+from dataclasses import dataclass, field
+from typing import Any, Dict, Generic, List, Optional, TypeVar, override
 
 import torch
 from torch import Tensor
@@ -21,6 +21,25 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(kw_only=True)
+class DDPArguments:
+    # These are the same as the arguments to DDP
+    # See: https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html
+    broadcast_buffers: bool = True
+    init_sync: bool = True
+    bucket_cap_mb: Optional[int] = None
+    find_unused_parameters: bool = False
+    gradient_as_bucket_view: bool = True
+    static_graph: bool = False
+    skip_all_reduce_unused_params: bool = False
+
+
+@dataclass(kw_only=True)
+class PostLocalSGDArguments:
+    enable: bool = False
+    start_step: int = 500
+
+
+@dataclass(kw_only=True)
 class DDPTrainingArguments(TrainingArguments):
     # Load and preprocess all batches on rank-0, then dispatch to other ranks
     # All ranks are sent full batches, as specified by `per_device_train_batch_size`, where
@@ -33,18 +52,14 @@ class DDPTrainingArguments(TrainingArguments):
     # When set to False, care must be taken to ensure that each rank receives different examples.
     dispatch_batches: bool = True
 
-    # These are the same as the arguments to DDP
-    # See: https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html
-    ddp_broadcast_buffers: bool = True
-    ddp_init_sync: bool = True
-    ddp_bucket_cap_mb: Optional[int] = None
-    ddp_find_unused_parameters: bool = False
-    ddp_gradient_as_bucket_view: bool = True
-    ddp_static_graph: bool = False
-    ddp_skip_all_reduce_unused_params: bool = False
+    ddp: DDPArguments = field(default_factory=DDPArguments)
+    post_local_sgd: PostLocalSGDArguments = field(default_factory=PostLocalSGDArguments)
 
 
-class DDPTrainer(Trainer):
+TDDPTrainingArguments = TypeVar("TDDPTrainingArguments", bound=DDPTrainingArguments)
+
+
+class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments]):
     """
     Modify the base Trainer to use the Accelerate library.
     """
@@ -54,17 +69,15 @@ class DDPTrainer(Trainer):
     def __init__(
         self,
         *,
-        args: DDPTrainingArguments,
+        args: TDDPTrainingArguments,
         fused_loss_factory: Optional[FusedLossFactoryT] = None,
         **kwargs,
     ):
-        self.args = args  # For type checking hint
+        super().__init__(args=args, fused_loss_factory=fused_loss_factory, **kwargs)
 
         assert (
             not self.args.fuse_optim_with_backward
         ), "DDPTrainer does not support option fuse_optim_with_backward"
-
-        super().__init__(args=args, fused_loss_factory=fused_loss_factory, **kwargs)
 
     @override
     def _init_distributed(self):
@@ -102,13 +115,13 @@ class DDPTrainer(Trainer):
             self.model,
             device_ids=[self.args.device] if self.dist.device_type != "cpu" else None,
             process_group=self.ddp_group,
-            broadcast_buffers=self.args.ddp_broadcast_buffers,
-            init_sync=self.args.ddp_init_sync,
-            bucket_cap_mb=self.args.ddp_bucket_cap_mb,
-            find_unused_parameters=self.args.ddp_find_unused_parameters,
-            gradient_as_bucket_view=self.args.ddp_gradient_as_bucket_view,
-            static_graph=self.args.ddp_static_graph,
-            skip_all_reduce_unused_params=self.args.ddp_skip_all_reduce_unused_params,
+            broadcast_buffers=self.args.ddp.broadcast_buffers,
+            init_sync=self.args.ddp.init_sync,
+            bucket_cap_mb=self.args.ddp.bucket_cap_mb,
+            find_unused_parameters=self.args.ddp.find_unused_parameters,
+            gradient_as_bucket_view=self.args.ddp.gradient_as_bucket_view,
+            static_graph=self.args.ddp.static_graph,
+            skip_all_reduce_unused_params=self.args.ddp.skip_all_reduce_unused_params,
         )
 
         # TODO:
@@ -311,7 +324,7 @@ class DDPTrainer(Trainer):
             return SharingPattern.PER_RANK
 
     @override
-    def get_process_groups(self) -> Dict[str, any]:
+    def get_process_groups(self) -> Dict[str, Any]:
         """
         Get named process groups for checkpoint coordination.
 

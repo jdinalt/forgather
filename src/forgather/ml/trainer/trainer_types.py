@@ -382,7 +382,7 @@ class AbstractBaseTrainer(Protocol):
 
     @abstractmethod
     def evaluate(
-        self, eval_dataset: Optional[Dataset] = None, **kwargs
+        self, eval_dataset: Optional[BaseDataset] = None, **kwargs
     ) -> dict[str, float]:
         """
         Perform evaluation, either from the default eval dataset or from a specified dataset.
@@ -409,48 +409,6 @@ class AbstractBaseTrainer(Protocol):
     def load_checkpoint(self, checkpoint_path=None) -> None:
         """
         Load model / trainer checkpoint
-        """
-        pass
-
-
-class ExtensibleTrainer(AbstractBaseTrainer):
-    """
-    Trainer interface extended with callback support.
-
-    Adds callback management methods to AbstractBaseTrainer, enabling
-    extensibility through the TrainerCallback system.
-
-    Callbacks allow hooking into training events (on_step_end, on_epoch_begin, etc.)
-    without modifying trainer code. Common uses:
-    - Custom logging (TensorBoard, wandb, MLflow)
-    - Early stopping based on metrics
-    - Learning rate scheduling
-    - Progress bars and notifications
-
-    Compatible with HuggingFace TrainerCallback API.
-    """
-
-    @abstractmethod
-    def add_callback(self, callback):
-        """
-        Add callback to the list of callbacks
-        Either a type (instantiate it) or an instance
-        """
-        pass
-
-    @abstractmethod
-    def pop_callback(self, callback):
-        """
-        Callback may either be and instance or a type
-        Remove the first match and return it
-        """
-        pass
-
-    @abstractmethod
-    def remove_callback(self, callback):
-        """
-        Like pop, but don't return it.
-        This seems redundant, but API consistency...
         """
         pass
 
@@ -621,6 +579,48 @@ class TrainerCallback(Protocol):
         control: TrainerControl,
         **kwargs,
     ) -> Optional[TrainerControl]:
+        pass
+
+
+class ExtensibleTrainer(AbstractBaseTrainer):
+    """
+    Trainer interface extended with callback support.
+
+    Adds callback management methods to AbstractBaseTrainer, enabling
+    extensibility through the TrainerCallback system.
+
+    Callbacks allow hooking into training events (on_step_end, on_epoch_begin, etc.)
+    without modifying trainer code. Common uses:
+    - Custom logging (TensorBoard, wandb, MLflow)
+    - Early stopping based on metrics
+    - Learning rate scheduling
+    - Progress bars and notifications
+
+    Compatible with HuggingFace TrainerCallback API.
+    """
+
+    @abstractmethod
+    def add_callback(self, callback: TrainerCallback):
+        """
+        Add callback to the list of callbacks
+        Either a type (instantiate it) or an instance
+        """
+        pass
+
+    @abstractmethod
+    def pop_callback(self, callback: TrainerCallback) -> TrainerCallback | None:
+        """
+        Callback may either be and instance or a type
+        Remove the first match and return it
+        """
+        pass
+
+    @abstractmethod
+    def remove_callback(self, callback: TrainerCallback):
+        """
+        Like pop, but don't return it.
+        This seems redundant, but API consistency...
+        """
         pass
 
 

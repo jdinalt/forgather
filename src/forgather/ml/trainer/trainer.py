@@ -10,14 +10,15 @@ from dataclasses import dataclass
 from functools import partial
 from typing import (
     Any,
-    Callable,
     Dict,
+    Generic,
     Iterator,
     Optional,
     Protocol,
     Tuple,
     Type,
     TypeGuard,
+    TypeVar,
     cast,
     override,
 )
@@ -47,13 +48,13 @@ from .callbacks.default_callbacks import InfoCallback, ProgressCallback
 from .checkpoint_manager import CheckpointConfig, CheckpointManager
 from .periodic_function import PeriodicFunction
 from .trainer_types import (
+    BaseDataset,
     CheckpointInterface,
     EnableCheckpointFnT,
     FusedLossFactoryT,
     IntervalStrategy,
-    IterableDatasetT,
+    LossFunctionT,
     LRSchedulerFactoryT,
-    LRSchedulerT,
     OptimizerFactoryT,
     OptimizerT,
 )
@@ -226,7 +227,11 @@ def optimizer_hook(optimizer, total_grad_squared, name, parameter):
     optimizer.zero_grad()
 
 
-class Trainer(BaseTrainer):
+# Help static-type-checking correctly infer the type of "args"
+TTrainingArguments = TypeVar("TTrainingArguments", bound=TrainingArguments)
+
+
+class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
     """
     A lightweight, single-device trainer with API close to transformers.Trainer.
 
@@ -255,11 +260,10 @@ class Trainer(BaseTrainer):
         trainer.train()
     """
 
-    args: TrainingArguments
     dist: DistributedEnvInterface
     optimizer_factory: OptimizerFactoryT | None
     lr_scheduler_factory: LRSchedulerFactoryT | None
-    enable_activation_checkpoint_fn: EnableCheckpointFnT
+    enable_activation_checkpoint_fn: EnableCheckpointFnT | None
     fused_loss_factory: FusedLossFactoryT | None
 
     max_steps: int
@@ -276,7 +280,7 @@ class Trainer(BaseTrainer):
     def __init__(
         self,
         *,
-        args: TrainingArguments,
+        args: TTrainingArguments,
         distributed_env: DistributedEnvInterface,
         optimizer_factory: Optional[OptimizerFactoryT] = None,
         # Alternative, for compatibility with transformers.Trainer
@@ -291,7 +295,8 @@ class Trainer(BaseTrainer):
         **kwargs,
     ):
         assert isinstance(args, TrainingArguments)
-        self.args = args  # For type checking hint
+        super().__init__(args=args, **kwargs)
+
         # HF Trainer compatibility.
         if not optimizer_factory:
             if not optimizer_cls_and_kwargs:
@@ -312,10 +317,6 @@ class Trainer(BaseTrainer):
         self.enable_activation_checkpoint_fn = enable_activation_checkpoint_fn
         self.fused_loss_factory = fused_loss_factory
         self.use_fused_loss = False
-        super().__init__(args=args, **kwargs)
-
-    @override
-    def _post_init(self) -> None:
         assert (self.model is not None) or (
             self.model_init is not None
         ), "Either a model or a model constructor must be specified."
@@ -335,9 +336,6 @@ class Trainer(BaseTrainer):
 
         if self.data_collator is None:
             self.data_collator = torch.utils.data.default_collate
-
-        self._init_distributed()
-        self._init_device()
 
     def _init_distributed(self):
         """
@@ -379,11 +377,14 @@ class Trainer(BaseTrainer):
 
     @override
     def _prepare(
-        self, train_dataset: IterableDatasetT, eval_dataset: IterableDatasetT
+        self, train_dataset: Optional[BaseDataset], eval_dataset: Optional[BaseDataset]
     ) -> None:
         """
         Prepare for training and/or evaluation
         """
+        self._init_distributed()
+        self._init_device()
+
         # Set the random seed
         if self.args.seed != -1:
             import random
@@ -459,6 +460,7 @@ class Trainer(BaseTrainer):
         Hook for model compilation. Subclasses may override to customize compilation
         behavior or apply compilation to additional wrapped objects.
         """
+        assert self.model is not None
         self.model.compile(
             backend=self.args.torch_compile_backend,
             mode=self.args.torch_compile_mode,
@@ -570,6 +572,7 @@ class Trainer(BaseTrainer):
                         self.model = self.model_init()
                 else:
                     logger.info(f"Moving model to {self.args.device}")
+                    assert self.model is not None
                 self.model = self.model.to(self.args.device)
             case "meta":
                 assert (
@@ -626,14 +629,16 @@ class Trainer(BaseTrainer):
                 # Enable activation checkpointing for all modules in the pipeline.
                 self.enable_activation_checkpoint_fn(self.dist.rank, self.model)
         self.loss_fn = self._maybe_get_fused_loss_fn(self.model, self.loss_fn)
+        self._wrap_loss_fn()
 
+    def _wrap_loss_fn(self):
         # Rescale loss by gradient accumulation steps.
         self.loss_fn = RescaleLoss(
             self.loss_fn, 1 / self.args.gradient_accumulation_steps
         )
 
     def _maybe_get_fused_loss_fn(
-        self, module: torch.nn.Module, default_loss_fn: Callable
+        self, module: torch.nn.Module, default_loss_fn: Optional[LossFunctionT]
     ):
         """
         Attempt to enable fused loss-logits computation for memory optimization.
@@ -689,6 +694,7 @@ class Trainer(BaseTrainer):
         - Fused backward/optimizer hooks if fuse_optim_with_backward=True
         """
         # _prepare() sub-step 3
+        assert self.model is not None
         if self.optimizer is None:
             assert self.optimizer_factory is not None
             self.optimizer = self.optimizer_factory(self.model.named_parameters())

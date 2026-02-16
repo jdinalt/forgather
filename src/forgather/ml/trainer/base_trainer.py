@@ -5,7 +5,18 @@ import time
 from abc import abstractmethod
 from contextlib import ExitStack
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Optional, Tuple, override
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    Iterable,
+    List,
+    Optional,
+    Tuple,
+    TypeVar,
+    override,
+)
 
 import torch
 from torch import Tensor
@@ -16,6 +27,7 @@ from ..distributed import prefix_logger_rank
 from .checkpoint_manager import RNGState
 from .checkpoint_types import SharingPattern, StateComponent
 from .trainer_types import (
+    BaseDataset,
     CheckpointInterface,
     DataCollatorT,
     ExtensibleTrainer,
@@ -120,7 +132,12 @@ class BaseTrainingArguments(MinimalTrainingArguments):
             self.lr_scheduler_kwargs = {}
 
 
-class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
+TBaseTrainingArguments = TypeVar("TBaseTrainingArguments", bound=BaseTrainingArguments)
+
+
+class BaseTrainer(
+    ExtensibleTrainer, Stateful, StatefulProvider, Generic[TBaseTrainingArguments]
+):
     """
     Abstract base class implementing common trainer functionality.
 
@@ -135,7 +152,6 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
     - Common initialization and configuration handling
 
     Concrete implementations must define:
-    - _post_init(): Post-initialization hook (device setup, wrapping, etc.)
     - _prepare(): Setup dataloaders, model, optimizer before training
     - _train_loop(): The actual training iteration loop
     - _eval_loop(): The evaluation loop
@@ -147,14 +163,13 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
     """
 
     model: torch.nn.Module | None
-    args: BaseTrainingArguments
-    data_collator: DataCollatorT
+    data_collator: DataCollatorT | None
     train_dataset: IterableDatasetT | None
     eval_dataset: IterableDatasetT | None
     processing_class: PreprocessingClassT | None
     model_init: ModelConstructor | None
     callbacks: List[TrainerCallback]
-    loss_fn: LossFunctionT
+    loss_fn: LossFunctionT | None
     train_dataloader: Iterable | None
     eval_dataloader: Iterable | None
     optimizer: OptimizerT | None
@@ -181,7 +196,7 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
 
     def __init__(
         self,
-        args: BaseTrainingArguments,
+        args: TBaseTrainingArguments,
         model: torch.nn.Module | None = None,
         *,
         data_collator: Optional[DataCollatorT] = None,
@@ -258,8 +273,6 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
             )
             torch.set_float32_matmul_precision(self.args.float32_matmul_precision)
 
-        self._post_init()
-
     def __repr__(self):
         return (
             f"{type(self).__name__}("
@@ -301,7 +314,7 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
     # AbstractBaseTrainer
     @override
     def evaluate(
-        self, eval_dataset: Optional[IterableDatasetT] = None, **kwargs
+        self, eval_dataset: Optional[BaseDataset] = None, **kwargs
     ) -> dict[str, float]:
         """
         The main entry point to evaluate the model.
@@ -320,14 +333,14 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
 
     # AbstractBaseTrainer
     @override
-    def add_callback(self, callback):
+    def add_callback(self, callback: TrainerCallback):
         if isinstance(callback, type):
             callback = callback()
         self.callbacks.append(callback)
 
     # AbstractBaseTrainer
     @override
-    def pop_callback(self, callback):
+    def pop_callback(self, callback: TrainerCallback) -> TrainerCallback | None:
         if isinstance(callback, type):
             compare = lambda a, b: type(a) == b
         else:
@@ -335,10 +348,11 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         for i, cb in enumerate(self.callbacks):
             if compare(cb, callback):
                 return self.callbacks.pop(i)
+        return None
 
     # AbstractBaseTrainer
     @override
-    def remove_callback(self, callback):
+    def remove_callback(self, callback: TrainerCallback):
         self.pop_callback(callback)
 
     def log(self, logs: Dict[str, float]):
@@ -566,7 +580,7 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
             List of StateComponent objects describing all checkpointable state
         """
         components = []
-
+        assert self.model is not None
         # Model - REQUIRED (always must be present)
         components.append(
             StateComponent(
@@ -647,7 +661,7 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         # Subclasses with distributed training should override this method
         return SharingPattern.GLOBAL
 
-    def get_process_groups(self) -> Dict[str, any]:
+    def get_process_groups(self) -> Dict[str, Any]:
         """
         Get named process groups for PER_GROUP sharing pattern.
 
@@ -703,30 +717,10 @@ class BaseTrainer(ExtensibleTrainer, Stateful, StatefulProvider):
         }
 
     @abstractmethod
-    def _post_init(self) -> None:
-        """
-        Post-initialization hook called at end of __init__.
-
-        Used by concrete trainer implementations to perform additional setup after
-        basic initialization. Common uses:
-        - Set device if not specified
-        - Validate configuration combinations
-        - Set up data collators
-
-        Distributed trainers may defer some setup to _prepare() where datasets are available.
-
-        Examples:
-        - Trainer: Sets default device, validates args, sets default data_collator
-        - AccelTrainer: Initializes Accelerator instance
-        - PipelineTrainer: Validates pipeline parallelism configuration
-        """
-        pass
-
-    @abstractmethod
     def _prepare(
         self,
-        train_dataset: IterableDatasetT | None,
-        eval_dataset: IterableDatasetT | None,
+        train_dataset: Optional[BaseDataset],
+        eval_dataset: Optional[BaseDataset],
     ) -> None:
         """
         Prepare all components for training and/or evaluation.
