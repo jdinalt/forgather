@@ -1,0 +1,25 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Post Local SGD"
+    -- set ns.config_description = "Test Post Local SGD on 4 GPUs"
+    -- set ns.log_name = "post_local"
+    -- set ns.nproc_per_node = 4
+
+[dataset_project]
+    == super()
+    shard_dataset: True
+
+[trainer_args]
+    == super()
+    # **Post Local SGD**
+    dispatch_batches: False
+    post_local_sgd:
+        enabled: True
+        start_step: 100
+        period: 4
+
+[optimizer]
+    == super()
+    lr: 2.0e-3
