@@ -89,6 +89,8 @@ class TextgenCallback(TrainerCallback):
             eos_token_id=tokenizer.eos_token_id,
             bos_token_id=tokenizer.bos_token_id,
             pad_token_id=tokenizer.pad_token_id,
+            max_new_tokens=self.max_new_tokens,
+            return_dict_in_generate=True,
             **self.gen_config_args,
         )
 
@@ -106,9 +108,7 @@ class TextgenCallback(TrainerCallback):
             outputs = model.generate(
                 input_ids,
                 generation_config=generation_config,
-                return_dict_in_generate=True,
                 tokenizer=tokenizer,
-                max_new_tokens=self.max_new_tokens,
             )
 
         output_text = tokenizer.batch_decode(
