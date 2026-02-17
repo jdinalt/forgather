@@ -1,0 +1,85 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    ## Overrides
+    -- set ns.config_name = "Train with PP"
+    -- set ns.config_description = "Experiment in training a small LM with Pipeline Parallel"
+    -- set ns.model_name = "pp"
+
+    ## Set pipeline parallel schedule
+    -- set ns.pipe_schedule_factory = pipeline_schedule | default("ScheduleInterleaved1F1B")
+    -- set ns.stages_per_rank = stages_per_rank | default(2)
+    -- set ns.microbatch_scale = microbatch_scale | default(1)
+
+[globals]
+    ## Computed config. values
+    == super()
+    -- if (ns.per_device_train_batch_size % (ns.stages_per_rank * ns.microbatch_scale)) != 0
+        == raise("per_device_train_batch_size must be evenly divisible by stages_per_rank * microbatch_scale")
+    -- endif
+
+    ## This is the size of each micro-batch
+    -- set ns.per_stage_batch_size = ns.per_device_train_batch_size // (ns.stages_per_rank * ns.microbatch_scale)
+
+    ## The global number of microbatches for all ranks
+    -- set ns.n_microbatches = ns.world_size * ns.stages_per_rank * ns.microbatch_scale
+
+    ## The total Pipeline Parallel batch size, which is to be divided into micro-batches.
+    -- set ns.pp_batch_size = ns.n_microbatches * ns.per_stage_batch_size
+
+    ## ZBVZ is unique, in that it has a different stage layout
+    -- if ns.pipe_schedule_factory == "ScheduleZBVZeroBubble"
+        -- set ns.pp_stage_type = "v"
+    -- else
+        -- set ns.pp_stage_type = "loop"
+    -- endif
+
+[variable_listing]
+    == super()
+# Pipeline Parallel:
+# ns.stages_per_rank: {{ ns.stages_per_rank }}
+# ns.per_stage_batch_size: {{ ns.per_stage_batch_size }}
+# ns.n_microbatches: {{ ns.n_microbatches }}
+# ns.pp_batch_size: {{ ns.pp_batch_size }}
+# ns.pp_stage_type: {{ ns.pp_stage_type }}
+
+[dataset_project]
+    == super()
+    # All examples are loaded by rank0
+    shard_dataset: False
+
+[trainer_args]
+    == super()
+    # Pipeline Parallel
+    n_microbatches: {{ ns.n_microbatches }}
+    is_multistage: {{ (ns.stages_per_rank > 1) | toyaml }}
+    stages_per_rank: {{ ns.stages_per_rank }}
+    pp_stage_type: {{ ns.pp_stage_type | toyaml }}
+
+    per_device_train_batch_size: {{ ns.pp_batch_size }}
+    per_device_eval_batch_size: {{ ns.pp_batch_size }}
+
+    # PP does not have 'dispatch_batches'
+    dispatch_batches: null
+
+[trainer_definition]
+    ## Switch to PP
+    -- include 'trainers/pipeline_trainer.yaml'
+
+[dynamic_args]
+    == super()
+    pipeline_schedule:
+        names: "--pipeline-schedule"
+        default: "ScheduleInterleaved1F1B"
+        help: "The name of the Pipeline Parallel schedule class to use."
+    stages_per_rank:
+        names: "--stages-per-rank"
+        default: 2
+        type: int
+        help: "The number of stages per rank. Must match requirements of pipeline-schedule!"
+    microbatch_scale:
+        names: "--microbatch-scale"
+        default: 1
+        type: int
+        help: "Scale the number of microbatches by this amount. Total batch size must be divisible by this factor."
