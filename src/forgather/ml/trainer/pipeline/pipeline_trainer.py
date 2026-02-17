@@ -47,8 +47,11 @@ from ..dataloader_dispatcher import DataloaderDispatcher
 from ..trainer import Trainer, TrainingArguments, optimizer_hook
 from ..trainer_types import LossFunctionT
 from .model_splitter import ModelSplitter
-from .pipeline_fixes import assert_no_duplicate_fqns
-from .pipeline_utils import missing_buffers, pipeline_stage_indices
+from .pipeline_utils import (
+    assert_no_duplicate_fqns,
+    missing_buffers,
+    pipeline_stage_indices,
+)
 
 logger = logging.getLogger(__name__)
 
