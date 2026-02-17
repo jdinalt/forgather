@@ -585,35 +585,40 @@ class BaseTrainer(
         """
         components = []
         assert self.model is not None
-        # Model - REQUIRED (always must be present)
+        # Model - REQUIRED (always must be present).
+        # cast: nn.Module.load_state_dict returns _IncompatibleKeys, not None,
+        # so it doesn't satisfy the Stateful protocol strictly. This is a PyTorch
+        # library limitation; at runtime it works correctly.
         components.append(
             StateComponent(
                 key="model",
-                stateful=self.model,
+                stateful=cast(Stateful, self.model),
                 sharing_pattern=SharingPattern.GLOBAL,
                 required=True,  # Model is always required
             )
         )
 
         # Optimizer - optional (allows changing optimizer type)
-        components.append(
-            StateComponent(
-                key="optimizer",
-                stateful=self.optimizer,
-                sharing_pattern=SharingPattern.GLOBAL,
-                required=False,
+        if self.optimizer is not None:
+            components.append(
+                StateComponent(
+                    key="optimizer",
+                    stateful=cast(Stateful, self.optimizer),
+                    sharing_pattern=SharingPattern.GLOBAL,
+                    required=False,
+                )
             )
-        )
 
         # LR Scheduler - optional (allows changing scheduler type)
-        components.append(
-            StateComponent(
-                key="scheduler",
-                stateful=self.lr_scheduler,
-                sharing_pattern=SharingPattern.GLOBAL,
-                required=False,
+        if self.lr_scheduler is not None:
+            components.append(
+                StateComponent(
+                    key="scheduler",
+                    stateful=cast(Stateful, self.lr_scheduler),
+                    sharing_pattern=SharingPattern.GLOBAL,
+                    required=False,
+                )
             )
-        )
 
         # Trainer state - optional (allows fresh training progress)
         components.append(
@@ -626,11 +631,13 @@ class BaseTrainer(
         )
 
         # Dataset state - optional, only if dataloader is stateful
-        if hasattr(self.train_dataloader, "state_dict"):
+        if self.train_dataloader is not None and hasattr(
+            self.train_dataloader, "state_dict"
+        ):
             components.append(
                 StateComponent(
                     key="dataset",
-                    stateful=self.train_dataloader,
+                    stateful=cast(Stateful, self.train_dataloader),
                     sharing_pattern=self._get_dataset_sharing_pattern(),
                     required=False,
                 )

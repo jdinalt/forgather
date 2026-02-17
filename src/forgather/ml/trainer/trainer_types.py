@@ -39,14 +39,11 @@ ArgsType = Dict[str, ArgsValueType]
 
 
 class BaseDataset(Protocol):
-    def __len__(self):
-        pass
+    def __len__(self): ...
 
-    def load_state_dict(self, state_dict: Dict[str, Any]):
-        pass
+    def load_state_dict(self, state_dict: Dict[str, Any]): ...
 
-    def state_dict(self) -> Dict[str, Any]:
-        pass
+    def state_dict(self) -> Dict[str, Any]: ...
 
 
 class IterableDatasetT(BaseDataset):
@@ -68,34 +65,25 @@ class TrainOutput(NamedTuple):
 
 
 class OptimizerT(Protocol):
-    def load_state_dict(self, state_dict: Dict[str, Any]):
-        pass
+    def load_state_dict(self, state_dict: Dict[str, Any]): ...
 
-    def state_dict(self) -> Dict[str, Any]:
-        pass
+    def state_dict(self) -> Dict[str, Any]: ...
 
-    def step(self):
-        pass
+    def step(self): ...
 
-    def zero_grad(self):
-        pass
+    def zero_grad(self): ...
 
 
 class LRSchedulerT(Protocol):
-    def load_state_dict(self, state_dict: Dict[str, Any]):
-        pass
+    def load_state_dict(self, state_dict: Dict[str, Any]): ...
 
-    def state_dict(self) -> Dict[str, Any]:
-        pass
+    def state_dict(self) -> Dict[str, Any]: ...
 
-    def step(self):
-        pass
+    def step(self): ...
 
-    def get_lr(self) -> float:
-        pass
+    def get_lr(self) -> List[float]: ...
 
-    def get_last_lr(self) -> float:
-        pass
+    def get_last_lr(self) -> List[float]: ...
 
 
 DataCollatorT: TypeAlias = Callable[[List[Dict[str, Any]]], Dict[str, Any]]
@@ -114,7 +102,7 @@ FusedLossFactoryT: TypeAlias = Callable[[nn.Module], LossFunctionT]
 
 PreprocessingClassT: TypeAlias = Callable
 
-EnableCheckpointFnT: TypeAlias = Callable[[], None]
+EnableCheckpointFnT: TypeAlias = Callable[[int, nn.Module], None]
 
 
 class IntervalStrategy(DiagnosticEnum):

@@ -355,6 +355,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         Returns:
             Estimated FLOPs per token for forward + backward pass
         """
+        assert self.model is not None
         num_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         # 6N per forward token, 2x for backward (12N), total ~18N
         # More precise: 6N forward + 12N backward = 18N
@@ -523,7 +524,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             fullgraph=self.args.torch_compile_full_graph,
         )
 
-    def _init_checkpoint_manager(self) -> CheckpointInterface:
+    def _init_checkpoint_manager(self) -> CheckpointManager:  # type: ignore[override]
         """
         Initialize checkpoint manager hook.
 
@@ -674,6 +675,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                     self.model = self.model_init()
             case _:
                 raise ValueError("Requires one of: default|meta|device")
+        assert self.model is not None
         if self.args.gradient_checkpointing:
             if self.enable_activation_checkpoint_fn is None:
                 if self.dist.rank == 0:
@@ -742,7 +744,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                 return default_loss_fn
             logger.info("Enabled fused loss-logits function")
             self.use_fused_loss = True
-            return self.fused_loss_factory(module.get_output_embeddings())
+            return self.fused_loss_factory(module.get_output_embeddings())  # type: ignore[operator]
         return default_loss_fn
 
     def _init_optimizer(self) -> None:
@@ -777,9 +779,8 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
 
         if self.lr_scheduler is None:
             if self.lr_scheduler_factory is not None:
-                self.lr_scheduler = self.lr_scheduler_factory(
-                    optimizer=self.optimizer,
-                )
+                assert self.optimizer is not None
+                self.lr_scheduler = self.lr_scheduler_factory(self.optimizer)
             elif self.args.lr_scheduler_type:
                 from transformers import get_scheduler
 
@@ -839,7 +840,8 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
 
             # Update best checkpoints list BEFORE saving (so preserved list is correct)
             if self.args.preserve_best_model and eval_metrics:
-                self.checkpoint_manager.update_best_checkpoints(
+                checkpoint_manager = cast(CheckpointManager, self.checkpoint_manager)
+                checkpoint_manager.update_best_checkpoints(
                     checkpoint_path=checkpoint_path,
                     metrics=eval_metrics,
                     metric_key=self.args.best_model_metric,
@@ -847,12 +849,10 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                     preserve_n_best=self.args.preserve_n_best,
                 )
                 # Update state for compatibility
-                if self.checkpoint_manager.best_checkpoints:
-                    self.state.best_metric = self.checkpoint_manager.best_checkpoints[
-                        0
-                    ][1]
+                if checkpoint_manager.best_checkpoints:
+                    self.state.best_metric = checkpoint_manager.best_checkpoints[0][1]
                     self.state.best_model_checkpoint = (
-                        self.checkpoint_manager.best_checkpoints[0][0]
+                        checkpoint_manager.best_checkpoints[0][0]
                     )
 
             # Now save checkpoint (deletion will use updated preserved list)
@@ -909,6 +909,10 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             first_step=0,
         )
 
+        assert self.optimizer is not None
+        assert self.model is not None
+        assert self.train_dataloader is not None
+
         # Just to be sure...
         self.optimizer.zero_grad()
 
@@ -929,7 +933,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                 if self.args.set_dataset_epoch and self.state.raw_epoch > 0:
                     # If supported, reshuffle dataset at the start of each epoch
                     logger.debug(f"Setting dataset epoch {self.state.raw_epoch}")
-                    self.train_dataloader.dataset.set_epoch(self.state.raw_epoch)
+                    self.train_dataloader.dataset.set_epoch(self.state.raw_epoch)  # type: ignore[union-attr]
                 data_iterator = iter(self.train_dataloader)
                 self._dispatch_event("on_epoch_begin")
 
@@ -1025,9 +1029,9 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             and self.checkpoint_manager
             and self.state.is_world_process_zero
         ):
-            summary = self.checkpoint_manager.get_best_checkpoints_summary(
-                metric_key=self.args.best_model_metric
-            )
+            summary = cast(
+                CheckpointManager, self.checkpoint_manager
+            ).get_best_checkpoints_summary(metric_key=self.args.best_model_metric)
             logger.info(f"\n{'='*60}\nTraining complete!\n{summary}\n{'='*60}")
 
         self._dispatch_event("on_train_end")
@@ -1039,6 +1043,8 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         """
         The inner evaluation loop
         """
+        assert self.model is not None
+        assert self.eval_dataloader is not None
         with set_train(self.model, False):
             total_loss = torch.zeros(1, device=self.args.device)
             step = -1
@@ -1054,7 +1060,8 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             assert step >= 0, "The eval dataloader did not yield any examples"
 
             metrics = {"eval_loss": (total_loss / (step + 1)).item()}
-            sync_dataset_state_from_dataloader(self.eval_dataloader)
+            if isinstance(self.eval_dataloader, StatefulDataLoader):
+                sync_dataset_state_from_dataloader(self.eval_dataloader)
             self._dispatch_event("on_evaluate", metrics=metrics)
             return metrics
 
@@ -1077,6 +1084,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             self._total_grad_squared -= self._total_grad_squared
             return total_norm
 
+        assert self.model is not None
         # If not clipping, just compute and return it
         if max_grad_norm is None or max_grad_norm == 0:
             grads = [p.grad for p in self.model.parameters() if p.grad is not None]
@@ -1122,6 +1130,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             accumulated_tokens += self._count_batch_tokens(input_dict, labels)
 
         assert self._should_sync_gradients()
+        assert self.optimizer is not None
 
         total_norm = self._clip_grad_norm(self.args.max_grad_norm)
         if not self.args.fuse_optim_with_backward:
@@ -1158,8 +1167,10 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         Returns:
             Detached loss tensor for logging
         """
+        assert self.model is not None
+        assert self.loss_fn is not None
         if self.use_fused_loss:
-            input_dict["return_hidden_states"] = True
+            input_dict["return_hidden_states"] = True  # type: ignore[assignment]
         outputs = self.model(**input_dict)
         logits = logits_from_outputs(outputs)
         loss = self.loss_fn(logits, labels)
@@ -1205,7 +1216,8 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         This may need to be called multiple times if dataloader is wrapped (e.g., by Accelerate)
         and its length changes. Also synchronizes dataset state to ensure accurate length.
         """
-        sync_dataset_state_from_dataloader(self.train_dataloader)
+        if isinstance(self.train_dataloader, StatefulDataLoader):
+            sync_dataset_state_from_dataloader(self.train_dataloader)
 
         # The number of training steps in a single epoch (batch processing steps)
         if isinstance(self.train_dataloader, Sized):
@@ -1281,7 +1293,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             )
 
     def _end_train_loop(
-        self, start_time: float, train_steps: int
+        self, start_time: float | None, train_steps: int
     ) -> dict[str, int | float]:
         if start_time:
             runtime = time.time() - start_time
@@ -1347,7 +1359,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             return base_batch_size
         else:
             # Data parallel (DDP) or single process: multiply by num_processes
-            return self.state.num_processes * base_batch_size
+            return self.num_processes * base_batch_size
 
     def _is_pipeline_parallel(self) -> bool:
         """
@@ -1389,8 +1401,10 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         Returns:
             Dictionary with 'loss', 'logits', and 'labels' tensors
         """
+        assert self.model is not None
+        assert isinstance(self.loss_fn, RescaleLoss)
         if self.use_fused_loss:
-            input_dict["return_hidden_states"] = True
+            input_dict["return_hidden_states"] = True  # type: ignore[assignment]
         with self.loss_fn.no_rescale():
             outputs = self.model(**input_dict)
             logits = logits_from_outputs(outputs)
@@ -1404,7 +1418,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         }
 
     def _speed_metrics(
-        self, prefix: str, runtime: float, samples: int, steps: int
+        self, prefix: str, runtime: float | None, samples: int, steps: int
     ) -> dict[str, int | float]:
         if runtime is not None and steps > 0:
             samples_per_second = round(samples / runtime, 3)
