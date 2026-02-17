@@ -129,8 +129,9 @@ class PeakMemory(TrainerCallback):
             # Only take a single snapshot
             self.enable_memory_snapshot = False
 
-        max_allocated = torch.cuda.max_memory_allocated(device=device)
-        torch.cuda.reset_peak_memory_stats(device=device)
+        # Use the value captured and reset by _log_step so that a single reset
+        # serves all callbacks and they don't interfere with each other.
+        max_allocated = logs.get("peak_mem_allocated", 0)
         self.max_allocated = max(self.max_allocated, max_allocated)
         if self.world_size > 1:
             max_allocated_tensor = torch.tensor(max_allocated, device=device)

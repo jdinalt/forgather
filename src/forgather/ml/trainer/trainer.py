@@ -1469,6 +1469,15 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                     last_lr = last_lr.item()
                 logs["learning_rate"] = last_lr
 
+        # Capture peak CUDA memory for this rank and reset stats so each interval
+        # reflects only the high-water mark since the previous log step.  Doing this
+        # here (rather than in individual callbacks) ensures the reset happens exactly
+        # once regardless of how many callbacks query memory statistics.
+        if torch.cuda.is_available():
+            device = torch.cuda.current_device()
+            logs["peak_mem_allocated"] = torch.cuda.max_memory_allocated(device=device)
+            torch.cuda.reset_peak_memory_stats(device=device)
+
         # Capture control object from log callbacks for trainer control
         return self.log(logs)
 

@@ -5,7 +5,6 @@ import time
 from io import TextIOBase
 from typing import Literal, Optional
 
-import torch
 from tqdm.auto import tqdm
 
 from forgather.ml.trainer.logging import (
@@ -239,13 +238,13 @@ class ProgressCallback:
                         mfu = achieved_flops / self.peak_hardware_flops
                         display_logs["mfu"] = f"{mfu:.1%}"
 
-        # Peak CUDA memory on the logging rank since last log step
-        if self.show_peak_memory and torch.cuda.is_available():
-            device = torch.cuda.current_device()
-            max_allocated = torch.cuda.max_memory_allocated(device=device)
-            torch.cuda.reset_peak_memory_stats(device=device)
-            gib = 1024**3
-            display_logs["peak_mem"] = f"{max_allocated / gib:.3f} GiB"
+        # Peak CUDA memory on the logging rank since last log step.
+        # The value is captured and reset once in _log_step before on_log is dispatched.
+        if self.show_peak_memory:
+            peak_mem = logs.get("peak_mem_allocated")
+            if peak_mem is not None:
+                gib = 1024**3
+                display_logs["peak_mem"] = f"{peak_mem / gib:.3f} GiB"
 
         # Update tracking for next interval
         self._last_log_time = now
