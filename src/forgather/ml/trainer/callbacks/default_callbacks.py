@@ -5,6 +5,7 @@ import time
 from io import TextIOBase
 from typing import Literal, Optional
 
+import torch
 from tqdm.auto import tqdm
 
 from forgather.ml.trainer.logging import (
@@ -46,13 +47,14 @@ class ProgressCallback:
         show_epoch: bool = True,
         show_tokens_per_second: bool = False,
         peak_hardware_flops: Optional[float] = None,
+        show_peak_memory: bool = False,
     ):
         """
         Args:
             use_tqdm: If True, use TQDM; else if False, use logging; else auto select
             output_stream: The output stream to use, if using logging
             show_loss: Display loss in console logs (default: True)
-            show_grad_norm: Display gradient norm in console logs (default: False)
+            show_grad_norm: Display gradient norm in console logs (default: True)
             show_learning_rate: Display learning rate in console logs (default: True)
             show_tokens: Display token count for the log interval (default: False)
             show_epoch: Display epoch in console logs (default: True)
@@ -70,6 +72,10 @@ class ProgressCallback:
                   A100 SXM:         312e12
                   H100 SXM:         989e12
                 (default: None, MFU not computed)
+            show_peak_memory: Display peak CUDA memory allocated on the logging rank
+                since the last log step, formatted as GiB. Peak stats are reset after
+                each read, so the value reflects the interval high-water mark rather
+                than a cumulative maximum. Requires CUDA. (default: False)
         """
         super().__init__()
         self.train_progress_bar = None
@@ -81,6 +87,7 @@ class ProgressCallback:
         self.show_epoch = show_epoch
         self.show_tokens_per_second = show_tokens_per_second
         self.peak_hardware_flops = peak_hardware_flops
+        self.show_peak_memory = show_peak_memory
 
         # Tracking for per-interval speed metrics
         self._last_log_time: Optional[float] = None
@@ -231,6 +238,14 @@ class ProgressCallback:
                         achieved_flops = delta_flos / elapsed
                         mfu = achieved_flops / self.peak_hardware_flops
                         display_logs["mfu"] = f"{mfu:.1%}"
+
+        # Peak CUDA memory on the logging rank since last log step
+        if self.show_peak_memory and torch.cuda.is_available():
+            device = torch.cuda.current_device()
+            max_allocated = torch.cuda.max_memory_allocated(device=device)
+            torch.cuda.reset_peak_memory_stats(device=device)
+            gib = 1024**3
+            display_logs["peak_mem"] = f"{max_allocated / gib:.3f} GiB"
 
         # Update tracking for next interval
         self._last_log_time = now

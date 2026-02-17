@@ -20,6 +20,7 @@ _STEP_METRICS: dict[str, tuple[str, Callable]] = {
     "total_flos": ("flos", lambda v: f"{v:.3e}"),
     "tok/s": ("tok/s", lambda v: f"{int(v):,}"),
     "mfu": ("mfu", lambda v: str(v)),  # pre-formatted as "38.5%"
+    "peak_mem": ("peak_mem", lambda v: str(v)),  # pre-formatted as "12.345 GiB"
 }
 
 # Ordered display labels and formatters for final training metrics.
