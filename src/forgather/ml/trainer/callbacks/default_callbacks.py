@@ -42,11 +42,11 @@ class ProgressCallback:
         show_loss: bool = True,
         show_grad_norm: bool = True,
         show_learning_rate: bool = True,
-        show_tokens: bool = False,
+        show_tokens: bool = True,
         show_epoch: bool = True,
-        show_tokens_per_second: bool = False,
+        show_tokens_per_second: bool = True,
         peak_hardware_flops: Optional[float] = None,
-        show_peak_memory: bool = False,
+        show_peak_memory: bool = True,
     ):
         """
         Args:
@@ -157,8 +157,7 @@ class ProgressCallback:
             return
 
         if self.use_tqdm:
-            if self.train_progress_bar is not None:
-                self.train_progress_bar.update(state.global_step - self.last_step)
+            self.train_progress_bar.update(state.global_step - self.last_step)
         self.last_step = state.global_step
 
     def on_prediction_step(self, args, state, control, eval_dataloader, **kwargs):
