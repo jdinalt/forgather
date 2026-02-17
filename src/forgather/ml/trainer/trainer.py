@@ -340,6 +340,58 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         if self.data_collator is None:
             self.data_collator = torch.utils.data.default_collate
 
+        # Compute FLOPs per token for tracking
+        # Note: model not initialized yet, will be set in _prepare()
+
+    def _compute_flops_per_token(self) -> float:
+        """
+        Estimate FLOPs per token for forward + backward pass.
+
+        Uses standard transformer formula:
+        - Forward pass: 6 * num_params FLOPs per token
+        - Backward pass: 2 * forward (approximately)
+        - Total: 6 * num_params * 3 = 18 * num_params per token
+
+        Returns:
+            Estimated FLOPs per token for forward + backward pass
+        """
+        num_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        # 6N per forward token, 2x for backward (12N), total ~18N
+        # More precise: 6N forward + 12N backward = 18N
+        return 18.0 * num_params
+
+    def _count_batch_tokens(self, input_dict: dict[str, Tensor], labels: Tensor) -> int:
+        """
+        Count non-padding tokens using labels tensor.
+
+        Uses labels as the primary source since the cross-entropy ignore_index (-100)
+        marks padding and special tokens that should not be counted.
+
+        Args:
+            input_dict: Batch input dictionary (unused in base, available for overrides)
+            labels: Target labels with -100 (ignore_index) for positions to ignore
+
+        Returns:
+            Number of non-ignored tokens in the batch
+        """
+        # Labels have -100 for padding/special tokens; count only real target tokens
+        return int((labels != -100).sum().item())
+
+    def _distributed_tokens(self, tokens: Tensor) -> Tensor:
+        """
+        Aggregate token counts across processes.
+
+        Base implementation for single-device training.
+        Distributed trainers override to sum across ranks.
+
+        Args:
+            tokens: Token count tensor from current process
+
+        Returns:
+            Token count tensor (single-device) or aggregated across ranks (distributed)
+        """
+        return tokens
+
     def _init_distributed(self):
         """
         Subclasses are expected to override, if they support distributed training.
@@ -634,6 +686,11 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         self.loss_fn = self._maybe_get_fused_loss_fn(self.model, self.loss_fn)
         self._wrap_loss_fn()
 
+        # Compute FLOPs per token for performance tracking
+        self._flops_per_token = self._compute_flops_per_token()
+        if self.dist.rank == 0:
+            logger.info(f"Estimated FLOPs per token: {self._flops_per_token:.2e}")
+
     def _wrap_loss_fn(self):
         # Rescale loss by gradient accumulation steps.
         self.loss_fn = RescaleLoss(
@@ -738,6 +795,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         self,
         loss_log,
         total_norm_log,
+        tokens_log,
         periodic_log,
         periodic_eval,
         periodic_save,
@@ -749,7 +807,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             log_steps = periodic_log.reset()
             self.control.should_log = False
 
-            self._log_step(loss_log, total_norm_log)
+            self._log_step(loss_log, total_norm_log, tokens_log)
 
         # Handle evaluation (normal schedule or control-triggered)
         eval_metrics = None
@@ -858,9 +916,10 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         train_steps = 0
         self._dispatch_event("on_train_begin")
 
-        # Holds loss and grad-norm samples between logs steps
+        # Holds loss, grad-norm, and token samples between log steps
         accumulated_grad_norm = []
         accumulated_loss = []
+        accumulated_tokens = []
 
         # Context manager for setting model.train()/eval()
         with set_train(self.model, True):
@@ -878,7 +937,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                     self._dispatch_event("on_step_begin")
 
                     try:
-                        loss, total_norm = self._train_step(data_iterator)
+                        loss, total_norm, tokens = self._train_step(data_iterator)
                     except StopIteration:
                         self.state.raw_epoch += 1
                         self.state.epoch_start_step = self.state.global_step
@@ -889,6 +948,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
 
                     accumulated_grad_norm.append(total_norm)
                     accumulated_loss.append(loss)
+                    accumulated_tokens.append(tokens)
 
                     # Increment global step
                     self.state.global_step += 1
@@ -903,6 +963,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                     self._maybe_log_save_evaluate(
                         accumulated_loss,
                         accumulated_grad_norm,
+                        accumulated_tokens,
                         periodic_log,
                         periodic_eval,
                         periodic_save,
@@ -942,6 +1003,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             self._maybe_log_save_evaluate(
                 accumulated_loss,
                 accumulated_grad_norm,
+                accumulated_tokens,
                 periodic_log,
                 periodic_eval,
                 periodic_save,
@@ -1036,24 +1098,28 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
 
     def _train_step(
         self, data_iterator: Iterator[dict[str, Tensor]]
-    ) -> Tuple[Tensor, Tensor | None]:
+    ) -> Tuple[Tensor, Tensor | None, Tensor]:
         """
         Perform a single training step, with optional gradient accumulation.
 
         Args:
-
+            data_iterator: Iterator over training batches
 
         Returns:
-            Tuple of (loss, grad_norm). Loss is unscaled for logging consistency.
+            Tuple of (loss, grad_norm, tokens). Loss is unscaled for logging consistency.
             grad_norm is None if not computed on this step.
+            tokens is the total non-padding tokens processed in this step.
         """
         accumulated_losses = []
+        accumulated_tokens = 0
 
         for gradient_step in range(self.args.gradient_accumulation_steps):
             self.gradient_accumulation_step = gradient_step + 1
             input_dict, labels = self._prepare_batch(next(data_iterator))
             loss = self._forward_backward_step(input_dict, labels)
             accumulated_losses.append(loss)
+            # Count tokens in this micro-batch (local, not yet synchronized across ranks)
+            accumulated_tokens += self._count_batch_tokens(input_dict, labels)
 
         assert self._should_sync_gradients()
 
@@ -1067,7 +1133,13 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
 
         loss = torch.sum(torch.stack(accumulated_losses))
         loss = self._distributed_loss(loss)
-        return loss, total_norm
+
+        # Return local token count as tensor; synchronization deferred to _log_step()
+        # to amortize the cost of all_reduce across many steps
+        tokens_tensor = torch.tensor(
+            accumulated_tokens, device=self.args.device, dtype=torch.int64
+        )
+        return loss, total_norm, tokens_tensor
 
     def _forward_backward_step(
         self, input_dict: dict[str, Tensor], labels: Tensor
@@ -1223,6 +1295,19 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         )
         metrics["epoch"] = self.state.epoch
         metrics["effective_batch_size"] = effective_batch_size
+
+        # Add token and FLOP metrics
+        metrics["total_tokens"] = self.state.num_input_tokens_seen
+        if runtime and runtime > 0:
+            metrics["tokens_per_second"] = round(
+                self.state.num_input_tokens_seen / runtime, 2
+            )
+
+        if self.state.total_flos > 0:
+            metrics["total_flops"] = self.state.total_flos
+            if runtime and runtime > 0:
+                metrics["flops_per_second"] = round(self.state.total_flos / runtime, 2)
+
         return metrics
 
     def _calculate_effective_batch_size(self) -> int:
@@ -1336,7 +1421,12 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         }
         return metrics
 
-    def _log_step(self, loss_log: list[Tensor], total_norm_log: list[Tensor]):
+    def _log_step(
+        self,
+        loss_log: list[Tensor],
+        total_norm_log: list[Tensor],
+        tokens_log: list[Tensor],
+    ):
         self._update_training_steps()
 
         logs = {
@@ -1358,6 +1448,19 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             logs["grad_norm"] = total_norm.square().mean().sqrt().item()
             logs["max_grad_norm"] = total_norm.max().item()
             total_norm_log.clear()
+        else:
+            raise ValueError("No grad norm!")
+
+        # Synchronize token counts across ranks at log step (amortizes all_reduce cost)
+        if len(tokens_log):
+            local_tokens = torch.stack(tokens_log).sum()
+            synced_tokens = self._distributed_tokens(local_tokens)
+            tokens_count = int(synced_tokens.item())
+            self.state.num_input_tokens_seen += tokens_count
+            self.state.total_flos += self._flops_per_token * tokens_count
+            logs["tokens"] = tokens_count
+            logs["total_flos"] = self.state.total_flos
+            tokens_log.clear()
 
         if self.lr_scheduler is not None:
             last_lr = self.lr_scheduler.get_last_lr()[0]

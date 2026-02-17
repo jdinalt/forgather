@@ -315,6 +315,14 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
+def raise_helper(msg: str):
+    raise ValueError(msg)
+
+
+def assert_helper(condition: bool, msg: str):
+    assert condition, msg
+
+
 class PPEnvironment(SandboxedEnvironment):
     TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
     FILE_TIME_FORMAT = "%Y-%m-%dT%H-%M-%S"
@@ -335,6 +343,8 @@ class PPEnvironment(SandboxedEnvironment):
         "basename": os.path.basename,
         "splitext": os.path.splitext,
         "getenv": os.environ.get,
+        "raise": raise_helper,
+        "assert": assert_helper,
         "repr": repr,
         # Given a module file path, return the module name
         "modname_from_path": lambda path: os.path.splitext(os.path.basename(path))[0],

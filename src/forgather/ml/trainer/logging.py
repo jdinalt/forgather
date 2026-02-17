@@ -1,12 +1,56 @@
 import datetime
 import sys
 from pprint import pformat
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from forgather.ml.trainer.trainer_types import TrainerState
 from forgather.ml.utils import alt_repr
 
 Mapping = dict[str, Any]
+
+# Per-metric display name and value formatter for periodic step logs.
+# Keys not listed here fall through to generic formatting.
+_STEP_METRICS: dict[str, tuple[str, Callable]] = {
+    "epoch": ("epoch", lambda v: f"{v:.4g}"),
+    "loss": ("loss", lambda v: f"{v:.5f}"),
+    "grad_norm": ("grad", lambda v: f"{v:.4f}"),
+    "max_grad_norm": ("maxg", lambda v: f"{v:.4f}"),
+    "learning_rate": ("lr", lambda v: f"{v:.2e}"),
+    "tokens": ("tokens", lambda v: f"{int(v):,}"),
+    "total_flos": ("flos", lambda v: f"{v:.3e}"),
+    "tok/s": ("tok/s", lambda v: f"{int(v):,}"),
+    "mfu": ("mfu", lambda v: str(v)),  # pre-formatted as "38.5%"
+}
+
+# Ordered display labels and formatters for final training metrics.
+# Keys present in the metrics dict but not listed here are shown at the end.
+_FINAL_METRICS: dict[str, tuple[str, Callable]] = {
+    "train_runtime": ("Runtime", lambda v: f"{v:.2f} s"),
+    "step": ("Total steps", lambda v: f"{int(v):,}"),
+    "train_samples": ("Total samples", lambda v: f"{int(v):,}"),
+    "effective_batch_size": ("Effective batch size", lambda v: f"{int(v):,}"),
+    "train_samples_per_second": ("Samples/sec", lambda v: f"{v:.3f}"),
+    "train_steps_per_second": ("Steps/sec", lambda v: f"{v:.3f}"),
+    "epoch": ("Epoch", lambda v: f"{v:.6g}"),
+    "total_tokens": ("Total tokens", lambda v: f"{int(v):,}"),
+    "tokens_per_second": ("Tokens/sec", lambda v: f"{v:,.0f}"),
+    "total_flops": ("Total FLOPs", lambda v: f"{v:.3e}"),
+    "flops_per_second": ("FLOPs/sec", lambda v: f"{v:.3e}"),
+}
+
+
+def _fmt_step_value(key: str, value: Any) -> str:
+    if key in _STEP_METRICS:
+        return _STEP_METRICS[key][1](value)
+    elif isinstance(value, float):
+        return f"{value:.4g}"
+    elif isinstance(value, int):
+        return f"{value:,}"
+    return str(value)
+
+
+def _fmt_step_label(key: str) -> str:
+    return _STEP_METRICS[key][0] if key in _STEP_METRICS else key
 
 
 def format_train_info(
@@ -88,13 +132,50 @@ def format_log_header(state: TrainerState):
     return s
 
 
-def format_train_log(state: TrainerState, mapping: Mapping):
+def format_train_log(state: TrainerState, mapping: Mapping) -> str:
+    """
+    Format a single-line training step log entry.
+
+    Formats all keys in mapping on one line. Known metric keys (loss, grad,
+    lr, tokens, tok/s, mfu, etc.) receive type-appropriate formatting and
+    abbreviated labels. Unknown keys fall through to generic formatting.
+    """
     header = format_log_header(state)
-    if "loss" in mapping and "learning_rate" in mapping and "grad_norm" in mapping:
-        return f"{header} train-loss: {round(mapping['loss'], 5):<10}grad-norm: {round(mapping['grad_norm'], 5):<10}learning-rate: {mapping['learning_rate']:1.2e}"
-    # Fallback to generic formatting
-    else:
-        return header + format_mapping(mapping)
+    parts = [
+        f"{_fmt_step_label(k)}: {_fmt_step_value(k, v)}" for k, v in mapping.items()
+    ]
+    return header + "  " + "  ".join(parts)
+
+
+def format_final_metrics(metrics: Mapping) -> str:
+    """
+    Format end-of-training metrics as a multi-line human-readable summary.
+
+    Known metrics are shown first in a fixed order with descriptive labels.
+    Any remaining keys are appended at the end.
+    """
+    col_width = 28
+    lines = ["Training complete:"]
+    shown: set[str] = set()
+
+    for key, (label, fmt) in _FINAL_METRICS.items():
+        if key in metrics:
+            lines.append(f"  {label + ':':{col_width}} {fmt(metrics[key])}")
+            shown.add(key)
+
+    # Any keys not in the known list
+    for key, value in metrics.items():
+        if key in shown:
+            continue
+        if isinstance(value, float):
+            formatted = f"{value:.4g}"
+        elif isinstance(value, int):
+            formatted = f"{value:,}"
+        else:
+            formatted = str(value)
+        lines.append(f"  {key + ':':{col_width}} {formatted}")
+
+    return "\n".join(lines)
 
 
 def format_eval_log(state, mapping: Mapping):

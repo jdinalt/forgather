@@ -483,6 +483,12 @@ class PipelineTrainer(
         # some trainer callbacks may wish to dump the layout.
         self.model = model
 
+        # Compute FLOPs per token using the meta-device model.
+        # p.numel() works correctly for meta tensors (shape is defined, data is not).
+        self._flops_per_token = self._compute_flops_per_token()
+        if self.dist.rank == 0:
+            logger.info(f"Estimated FLOPs per token: {self._flops_per_token:.2e}")
+
     def _construct_model(self, device):
         # Construct model on device
         assert self.model_init
@@ -970,6 +976,42 @@ class PipelineTrainer(
         )
 
         return total_norm
+
+    @override
+    def _count_batch_tokens(self, input_dict: dict[str, Tensor], labels: Tensor) -> int:
+        """
+        Count tokens in pipeline parallel training.
+
+        Only first stage has input_ids and labels, so only it counts tokens.
+        Other stages return 0. _distributed_tokens() sums across ranks.
+
+        Args:
+            input_dict: Batch dictionary (only first stage has 'input_ids')
+            labels: Target labels (only first stage has meaningful labels for counting)
+
+        Returns:
+            Token count if first stage, 0 otherwise
+        """
+        if not self.pp_has_first_stage:
+            return 0
+        return super()._count_batch_tokens(input_dict, labels)
+
+    @override
+    def _distributed_tokens(self, tokens: Tensor) -> Tensor:
+        """
+        Sum token counts across pipeline stages.
+
+        First stage contributes actual count, others contribute 0.
+        Sum gives total tokens in batch.
+
+        Args:
+            tokens: Token count from current stage (non-zero only on first stage)
+
+        Returns:
+            Total token count (sum across all pipeline stages)
+        """
+        dist.all_reduce(tokens, op=dist.ReduceOp.SUM)
+        return tokens
 
     @override
     def _distributed_loss(self, loss: Tensor):

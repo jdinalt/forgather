@@ -214,6 +214,26 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
         return loss
 
     @override
+    def _distributed_tokens(self, tokens: Tensor) -> Tensor:
+        """
+        Sum token counts across all DDP ranks.
+
+        In DDP, each rank processes different batches, so token counts must be
+        summed across all ranks to get the total tokens processed per step.
+
+        Args:
+            tokens: Token count from current rank
+
+        Returns:
+            Total token count across all DDP ranks
+        """
+        if self.dist.world_size == 1:
+            return super()._distributed_tokens(tokens)
+
+        dist.all_reduce(tokens, op=dist.ReduceOp.SUM)
+        return tokens
+
+    @override
     def _forward_backward_step(
         self,
         *args,

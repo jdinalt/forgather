@@ -45,6 +45,10 @@
     ## This scales the number of steps per log/eval/save cycle
     -- set ns.step_cadence = step_cadence | default(1.0)
 
+    ## The default is for the RTX4090
+    ## See docs/trainers/training-performance-metrics.md
+    -- set ns.peak_hardware_flops = 165.2e12
+
 [globals]
     ## Computed config. values
     == super()
@@ -56,6 +60,7 @@
     -- set ns.tokens_per_step = ns.max_length * ns.global_batch_size
     -- set ns.min_cooldown_steps = ns.min_cooldown_tokens // ns.tokens_per_step
     -- set ns.total_steps = ns.total_tokens // ns.tokens_per_step
+    -- set ns.total_peak_hardware_flops = ns.world_size * ns.peak_hardware_flops
 
 [variable_listing]
     == super()
@@ -76,6 +81,7 @@
 # ns.tokens_per_step: {{ ns.tokens_per_step }} tokens
 # ns.min_cooldown_steps: {{ ns.min_cooldown_steps }}
 # ns.total_steps: {{ ns.total_steps }} steps
+# ns.total_peak_hardware_flops: {{ ns.total_peak_hardware_flops / 1e12 }} TFLOPS
 
 [datasets_preprocessor_args]
 .define: &tokenizer_args !dict
@@ -290,3 +296,9 @@ text_gen_callback_args: &text_gen_callback_args
         long_alpha: 0.01        # Slow EMA (~100 step window)
         threshold: 1.0          # Stop if short - long >= 1.0
         action: "abort"
+    progress_callback: !singleton:forgather.ml.trainer.callbacks:ProgressCallback
+        use_tqdm: null
+        output_stream: "stdout"
+        show_tokens: True
+        show_tokens_per_second: True
+        peak_hardware_flops: {{ ns.total_peak_hardware_flops | toyaml }}
