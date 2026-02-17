@@ -53,8 +53,8 @@
 
     ## Tokens between logging, validation, and save steps
     -- set ns.logging_tokens = 2 * 1000 * 1000 * ns.step_cadence
-    -- set ns.validation_tokens = 20 * 1000 * 1000 * ns.step_cadence
-    -- set ns.save_tokens = 500 * 1000 * 1000 * ns.step_cadence
+    -- set ns.validation_tokens = 50 * 1000 * 1000 * ns.step_cadence
+    -- set ns.save_tokens = 1000 * 1000 * 1000 * ns.step_cadence
 
     ## Safe-default to SDPA -- it has fast startup and tends to have relatively few issues.
     -- set ns.default_attn_implementation = "sdpa"
