@@ -8,6 +8,19 @@ from forgather.ml.utils import alt_repr
 
 Mapping = dict[str, Any]
 
+
+def _fmt_si(v: int) -> str:
+    """Format an integer with SI suffix (K, M, G)."""
+    v = int(v)
+    if v >= 1_000_000_000:
+        return f"{v / 1_000_000_000:.3g}G"
+    elif v >= 1_000_000:
+        return f"{v / 1_000_000:.3g}M"
+    elif v >= 1_000:
+        return f"{v / 1_000:.3g}K"
+    return str(v)
+
+
 # Per-metric display name and value formatter for periodic step logs.
 # Keys not listed here fall through to generic formatting.
 _STEP_METRICS: dict[str, tuple[str, Callable]] = {
@@ -17,6 +30,7 @@ _STEP_METRICS: dict[str, tuple[str, Callable]] = {
     "max_grad_norm": ("maxg", lambda v: f"{v:.4f}"),
     "learning_rate": ("lr", lambda v: f"{v:.2e}"),
     "tokens": ("tokens", lambda v: f"{int(v):,}"),
+    "total_tokens": ("total_tok", _fmt_si),
     "total_flos": ("flos", lambda v: f"{v:.3e}"),
     "tok/s": ("tok/s", lambda v: f"{int(v):,}"),
     "mfu": ("mfu", lambda v: str(v)),  # pre-formatted as "38.5%"

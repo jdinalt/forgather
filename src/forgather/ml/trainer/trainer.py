@@ -1473,6 +1473,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             self.state.num_input_tokens_seen += tokens_count
             self.state.total_flos += self._flops_per_token * tokens_count
             logs["tokens"] = tokens_count
+            logs["total_tokens"] = self.state.num_input_tokens_seen
             logs["total_flos"] = self.state.total_flos
             tokens_log.clear()
 

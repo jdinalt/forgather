@@ -229,6 +229,8 @@ class ProgressCallback:
             display_logs["learning_rate"] = logs["learning_rate"]
         if self.show_tokens and "tokens" in logs:
             display_logs["tokens"] = logs["tokens"]
+        if self.show_tokens and "total_tokens" in logs:
+            display_logs["total_tokens"] = logs["total_tokens"]
 
         # Compute per-interval speed metrics from delta since last log step
         if (
