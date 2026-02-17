@@ -298,7 +298,7 @@ text_gen_callback_args: &text_gen_callback_args
 [callback_list]
     == super()
     ## Flex attention seems to occasionally crash when generating. Disabled until issue is resolved.
-    -- if "{{ attn_implementation | default(ns.default_attn_implementation) }}" != "flex_attention"
+    -- if (attn_implementation | default(ns.default_attn_implementation)) != "flex_attention"
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         <<: *text_gen_callback_args
     -- endif
