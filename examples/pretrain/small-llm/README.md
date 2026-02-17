@@ -533,6 +533,15 @@ per_stage_batch_size = 4 // (2 × 1) = 2
 pp_batch_size = 4 × 2 = 8  (the logical batch size seen by the trainer)
 ```
 
+Tip: When you double batch-size, also double microbatch-scale. e.g.
+
+```
+... --batch-size 4 --microbatch-scale 1
+... --batch-size 8 --microbatch-scale 2
+... --batch-size 32 --microbatch-scale 8
+...
+```
+
 **Choosing a schedule:**
 
 Simple schedules (`ScheduleGPipe`, `Schedule1F1B`) use one stage per rank. Interleaved schedules (`ScheduleInterleaved1F1B`, `ScheduleLoopedBFS`) use two stages per rank and require an even divisor batch size, but reduce pipeline bubble and improve utilization. Start with `ScheduleInterleaved1F1B` (the default).

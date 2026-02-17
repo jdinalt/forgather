@@ -15,6 +15,8 @@
     -- set ns.pipe_schedule_factory = pipeline_schedule | default("ScheduleInterleaved1F1B")
     -- set ns.microbatch_scale = microbatch_scale | default(1)
 
+    ## Pipeline always dispatches batches
+    -- set ns.dispatch_batches = True
 [globals]
     ## Computed config. values
     == super()
@@ -54,11 +56,6 @@
 # ns.n_microbatches: {{ ns.n_microbatches }}
 # ns.pp_batch_size: {{ ns.pp_batch_size }}
 # ns.pp_stage_type: {{ ns.pp_stage_type }}
-
-[dataset_project]
-    == super()
-    # All examples are loaded by rank0
-    shard_dataset: False
 
 [trainer_args]
     == super()

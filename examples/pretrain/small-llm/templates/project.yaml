@@ -27,11 +27,13 @@
     -- set ns.base_constant_lr = 7.5e-6
     -- set ns.base_min_lr = 1.4e-6
     -- set ns.max_length = max_length | default(4096)
-    -- set ns.warmup_steps = 500
 
     ## Chinchilla compute optimal = model_size * 20
     ## Thus, for a 150M parameter model, 150e6 * 20 = 3e9
     -- set ns.total_tokens = (total_tokens | default(3)) * 1000 * 1000 * 1000
+
+    ## Number of tokens used for warmup -- Millions
+    -- set ns.warmup_tokens = 40 * 1000 * 1000
 
     ## The ratio of total training steps over which to decay max-lr to constant-lr
     -- set ns.cooldown_ratio = 0.7
@@ -66,6 +68,7 @@
     ## Learning Rate, scaled by sqrt(ns.global_batch_size)
     -- set ns.lr_scale = ns.global_batch_size ** 0.5
     -- set ns.tokens_per_step = ns.max_length * ns.global_batch_size
+    -- set ns.warmup_steps = ns.warmup_tokens // ns.tokens_per_step
     -- set ns.min_cooldown_steps = ns.min_cooldown_tokens // ns.tokens_per_step
     -- set ns.total_steps = ns.total_tokens // ns.tokens_per_step
     -- set ns.total_peak_hardware_flops = ns.world_size * ns.peak_hardware_flops
