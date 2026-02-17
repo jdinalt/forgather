@@ -8,13 +8,24 @@
     -- set ns.model_name = "pp"
 
     ## Set pipeline parallel schedule
+    ## pipeline_schedule is one of:
+    ## [ScheduleGPipe, Schedule1F1B, *ScheduleInterleaved1F1B, *ScheduleLoopedBFS, *ScheduleInterleavedZeroBubble, *ScheduleZBVZeroBubble]
+    ## * use stages_per_rank = 2
+    ## Note that the two zero-bubble configs appears to be broken at present.
     -- set ns.pipe_schedule_factory = pipeline_schedule | default("ScheduleInterleaved1F1B")
-    -- set ns.stages_per_rank = stages_per_rank | default(2)
     -- set ns.microbatch_scale = microbatch_scale | default(1)
 
 [globals]
     ## Computed config. values
     == super()
+
+    ## Auto-select stages_per_rank, based upon scheduler
+    -- if ns.pipe_schedule_factory in [ "ScheduleGPipe", "Schedule1F1B" ]
+        -- set ns.stages_per_rank = 1
+    -- else
+        -- set ns.stages_per_rank = 2
+    -- endif
+
     -- if (ns.per_device_train_batch_size % (ns.stages_per_rank * ns.microbatch_scale)) != 0
         == raise("per_device_train_batch_size must be evenly divisible by stages_per_rank * microbatch_scale")
     -- endif
@@ -73,11 +84,6 @@
         names: "--pipeline-schedule"
         default: "ScheduleInterleaved1F1B"
         help: "The name of the Pipeline Parallel schedule class to use."
-    stages_per_rank:
-        names: "--stages-per-rank"
-        default: 2
-        type: int
-        help: "The number of stages per rank. Must match requirements of pipeline-schedule!"
     microbatch_scale:
         names: "--microbatch-scale"
         default: 1

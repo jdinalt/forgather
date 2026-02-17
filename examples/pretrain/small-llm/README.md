@@ -9,13 +9,13 @@ This project trains models on the [HuggingFaceTB/smollm-corpus](https://huggingf
 **Key Features:**
 - Token-budget-based training with Chinchilla-optimal defaults
 - Principled LR scheduling that adapts to training scale
-- Multi-GPU distributed training with DDP
+- Multi-GPU distributed training with DDP and Pipeline Parallel
 - Sequence packing for efficiency (4K token blocks)
 - Comprehensive monitoring and checkpointing
 - Support for multiple model architectures (DeepOne, Llama, Qwen, etc.)
 
 **Default Configuration:**
-- Model: Custom DeepOne (117M parameters)
+- Model: Custom DeepOne (162M parameters)
 - Token Budget: 3B tokens (Chinchilla-optimal for 150M params)
 - Batch Size: 4 per device (auto-scaled with world size)
 - Sequence Length: 4096 tokens
@@ -196,7 +196,7 @@ save_steps = (20000 × step_cadence) / (batch_size × grad_accum)
 
 ### Default Model: Custom DeepOne
 
-A customized 117M parameter model based on DeepNet architecture:
+A customized 162M parameter model based on DeepNet architecture:
 - 16 layers × 768 hidden × 8 attention heads
 - RoPE positional encoding (replaced ALiBi for speed)
 - Qwen3-style QK-Norm
@@ -294,6 +294,28 @@ See [SmolLM-Corpus dataset project](../../datasets/HuggingFaceTB/README.md) for 
 |--------|-------------|---------|
 | `-d DEVICES` | CUDA visible devices (e.g., "0,1,3") | All GPUs |
 | `--dist-backend BACKEND` | PyTorch distributed backend | nccl |
+
+### Pipeline Parallel Options
+
+These options apply when using `pp.yaml` (`forgather -t pp.yaml`).
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--pipeline-schedule NAME` | Pipeline schedule class to use (see below) | `ScheduleInterleaved1F1B` |
+| `--microbatch-scale N` | Multiply the number of microbatches by N | 1 |
+
+**Available pipeline schedules:**
+
+| Schedule | `stages_per_rank` | Notes |
+|----------|--------------------|-------|
+| `ScheduleGPipe` | 1 | Simple, high pipeline bubble |
+| `Schedule1F1B` | 1 | Reduced bubble vs GPipe |
+| `ScheduleInterleaved1F1B` | 2 | Default; lower bubble, requires 2 stages/rank |
+| `ScheduleLoopedBFS` | 2 | Alternative interleaved schedule |
+| `ScheduleInterleavedZeroBubble` | 2 | Near-zero bubble |
+| `ScheduleZBVZeroBubble` | 2 | Zero-bubble V layout (experimental) |
+
+**Batch size constraint:** `per_device_train_batch_size` must be divisible by `stages_per_rank × microbatch_scale`. The default batch size of 4 works with `stages_per_rank=2` (the interleaved default). Use `--microbatch-scale` to increase throughput by adding more microbatches without changing the logical batch size.
 
 ### Debugging
 
@@ -404,7 +426,43 @@ forgather train --total-tokens 10
 - Continues to 10B total tokens
 - Dataset state restored (picks up where it left off)
 
-### Example 7: Conservative LR Schedule
+### Example 7: Pipeline Parallel Training
+
+Train using Pipeline Parallel across 4 GPUs with the interleaved schedule:
+
+```bash
+forgather -t pp.yaml train --init-model \
+    -d 0,1,2,3 \
+    --attn-implementation flex_attention \
+    --pipeline-schedule ScheduleInterleaved1F1B
+```
+
+**What happens:**
+- 4 GPUs, `stages_per_rank=2` → 8 total pipeline stages
+- Each GPU holds 2 model stages (interleaved across the pipeline)
+- Default batch size (4) split into microbatches of 1 each
+- Memory per GPU: roughly 1/4 of total model parameters
+
+**Performance testing without checkpointing:**
+
+```bash
+forgather -t pp.yaml train --init-model \
+    -d 0,1 \
+    --attn-implementation sdpa \
+    --microbatch-scale 2 \
+    --batch-size 8 \
+    --max-steps 100 \
+    --save-strategy no \
+    --pipeline-schedule ScheduleGPipe
+```
+
+This runs 100 steps with `--save-strategy no` for fast iteration when testing schedule and batch size combinations.
+
+**When to use PP over DDP:**
+- Model does not fit on a single GPU in full precision
+- You want to pipeline compute across GPUs rather than replicate the model
+
+### Example 8: Conservative LR Schedule
 
 Use more conservative cooldown for very long training:
 
@@ -439,9 +497,68 @@ Set `ns.dispatch_batches = True` in config:
 
 **Memory limits:**
 DDP requires the full model to fit on a single GPU. For larger models (>2B params with 24GB), consider:
-- Pipeline parallelism
+- Pipeline parallelism (see below)
 - Tensor parallelism
 - Fully-sharded data parallel (FSDP)
+
+### Pipeline Parallel
+
+Use `pp.yaml` instead of the default config to train with Pipeline Parallel (PP). This is configured with `forgather -t pp.yaml`.
+
+**When to use PP:**
+- The model is too large to fit on a single GPU with DDP
+- You want to split compute across GPUs in a pipeline rather than replicate the full model
+
+**How it works:**
+
+The model is partitioned into stages distributed across GPUs. Each GPU holds one or more stages and processes microbatches in a pipelined fashion. The pipeline schedule determines the order in which microbatches flow through stages.
+
+**Batch size and microbatches:**
+
+```
+# DDP: each GPU processes a full batch independently
+# PP: the batch is split into microbatches that flow through the pipeline
+
+stages_per_rank = 1 or 2 (determined by schedule)
+n_microbatches = world_size × stages_per_rank × microbatch_scale
+per_stage_batch_size = per_device_train_batch_size // (stages_per_rank × microbatch_scale)
+pp_batch_size = n_microbatches × per_stage_batch_size
+```
+
+With defaults (`--batch-size 4`, `ScheduleInterleaved1F1B`, 2 GPUs):
+```
+stages_per_rank = 2
+n_microbatches = 2 × 2 × 1 = 4
+per_stage_batch_size = 4 // (2 × 1) = 2
+pp_batch_size = 4 × 2 = 8  (the logical batch size seen by the trainer)
+```
+
+**Choosing a schedule:**
+
+Simple schedules (`ScheduleGPipe`, `Schedule1F1B`) use one stage per rank. Interleaved schedules (`ScheduleInterleaved1F1B`, `ScheduleLoopedBFS`) use two stages per rank and require an even divisor batch size, but reduce pipeline bubble and improve utilization. Start with `ScheduleInterleaved1F1B` (the default).
+
+**Dataset loading:**
+
+PP loads the dataset only on rank 0 (not sharded), unlike DDP which shards across ranks. This is handled automatically by the `pp.yaml` config.
+
+**Basic usage:**
+```bash
+# 4 GPUs, interleaved schedule, flex attention
+forgather -t pp.yaml train --init-model -d 0,1,2,3 --attn-implementation flex_attention
+
+# 2 GPUs, GPipe schedule (simpler, one stage per rank)
+forgather -t pp.yaml train --init-model -d 0,1 --pipeline-schedule ScheduleGPipe
+
+# Increase microbatch count without changing batch size
+forgather -t pp.yaml train --init-model -d 0,1 --microbatch-scale 2 --batch-size 8
+```
+
+**Resuming from checkpoint:**
+
+PP checkpoints are saved per rank (each rank holds different pipeline stages). Resume works the same as DDP:
+```bash
+forgather -t pp.yaml train  # omit --init-model to resume
+```
 
 ### Attention Implementations
 
@@ -474,7 +591,7 @@ forgather train --init-model --compile
 ```
 
 **Trade-offs:**
-- Initial compilation: 5-15 minute delay on first run
+- Initial compilation: takes a few minutes on first run
 - Training speed: 10-30% faster after compilation
 - Worth it for long runs, skip for quick experiments
 
@@ -528,6 +645,10 @@ forgather logs plot --loss-curves -e  # Open in editor
 
 # Compare multiple runs
 forgather logs plot --compare run1/trainer_logs.json run2/trainer_logs.json
+
+# Start tensorboard for all models in output_models directory.
+forgather tb --all               # Only available from localhost
+forgather tb --all -- --bind_all # Available on all interfaces
 ```
 
 See [Training Log Analysis](../../../docs/logs-analysis.md) for details.
@@ -583,8 +704,9 @@ For fitting larger models:
 - Customizable through child configs
 
 **Alternative configs:**
-- `big_adam.yaml`: Large batch via gradient accumulation with AdamW
-- `tiny_samll-lm.yaml`: Progressive curriculum (Tiny Stories → SmolLM)
+- `configs/pp.yaml`: Pipeline Parallel training with configurable schedule and microbatch settings
+- `configs/big_adam.yaml`: Large batch via gradient accumulation with AdamW
+- `configs/tiny_small_lm.yaml`: Progressive curriculum (Tiny Stories → SmolLM)
 
 **Creating custom configs:**
 ```yaml

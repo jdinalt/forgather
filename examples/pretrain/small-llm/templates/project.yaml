@@ -290,7 +290,7 @@ text_gen_callback_args: &text_gen_callback_args
     #text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
     #    <<: *text_gen_callback_args
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
-    peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
+    # peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
     divergence_detector: !singleton:forgather.ml.trainer.callbacks:DualTimeScaleDivergenceDetector
         short_alpha: 0.1        # Fast EMA (~10 step window)
         long_alpha: 0.01        # Slow EMA (~100 step window)
@@ -301,4 +301,5 @@ text_gen_callback_args: &text_gen_callback_args
         output_stream: "stdout"
         show_tokens: True
         show_tokens_per_second: True
+        show_peak_memory: True
         peak_hardware_flops: {{ ns.total_peak_hardware_flops | toyaml }}
