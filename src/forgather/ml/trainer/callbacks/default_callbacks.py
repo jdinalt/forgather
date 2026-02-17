@@ -3,7 +3,7 @@ import logging
 import sys
 import time
 from io import TextIOBase
-from typing import Literal, Optional
+from typing import Literal, Optional, cast
 
 from tqdm.auto import tqdm
 
@@ -112,17 +112,20 @@ class ProgressCallback:
             self.logger.addHandler(console_handler)
 
     @staticmethod
-    def _get_output_stream(output_stream: OutputStream) -> TextIOBase:
+    def _get_output_stream(output_stream: Optional[OutputStream]) -> TextIOBase:
         if output_stream is None:
-            return sys.stdout
+            # sys.stdout satisfies the TextIOBase interface at runtime
+            return cast(TextIOBase, sys.stdout)  # type: ignore[return-value]
         elif isinstance(output_stream, TextIOBase):
             return output_stream
         else:
             assert isinstance(output_stream, str)
             if output_stream == "stderr":
-                return sys.stderr
+                # sys.stderr satisfies the TextIOBase interface at runtime
+                return cast(TextIOBase, sys.stderr)  # type: ignore[return-value]
             elif output_stream == "stdout":
-                return sys.stdout
+                # sys.stdout satisfies the TextIOBase interface at runtime
+                return cast(TextIOBase, sys.stdout)  # type: ignore[return-value]
             else:
                 raise ValueError("Must be one of 'stderr' or 'stdout'")
 
@@ -145,7 +148,8 @@ class ProgressCallback:
         if not state.is_world_process_zero:
             return
         if self.use_tqdm:
-            self.train_progress_bar.close()
+            if self.train_progress_bar is not None:
+                self.train_progress_bar.close()
             self.train_progress_bar = None
 
     def on_step_end(self, args, state, control, **kwargs):
@@ -153,7 +157,8 @@ class ProgressCallback:
             return
 
         if self.use_tqdm:
-            self.train_progress_bar.update(state.global_step - self.last_step)
+            if self.train_progress_bar is not None:
+                self.train_progress_bar.update(state.global_step - self.last_step)
         self.last_step = state.global_step
 
     def on_prediction_step(self, args, state, control, eval_dataloader, **kwargs):

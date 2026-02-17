@@ -13,9 +13,13 @@ import signal
 import socket
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    import aiohttp
+    import aiohttp.web
 
 try:
     import aiohttp
@@ -44,7 +48,7 @@ class ControlCommand:
 
     command: str
     timestamp: float
-    data: Dict[str, Any] = None
+    data: Optional[Dict[str, Any]] = field(default=None)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -79,7 +83,12 @@ class TrainerControlCallback(TrainerCallback):
     via torch.distributed for coordination.
     """
 
-    def __init__(self, job_id: str = None, port: int = None, enable_http: bool = None):
+    def __init__(
+        self,
+        job_id: Optional[str] = None,
+        port: Optional[int] = None,
+        enable_http: Optional[bool] = None,
+    ):
         """
         Initialize the control callback.
 
@@ -230,6 +239,7 @@ class TrainerControlCallback(TrainerCallback):
     def _run_server_thread(self):
         """Run HTTP server in separate thread."""
         asyncio.set_event_loop(self.event_loop)
+        assert self.event_loop is not None
         try:
             self.event_loop.run_until_complete(self._run_http_server())
         except asyncio.CancelledError:
@@ -258,7 +268,9 @@ class TrainerControlCallback(TrainerCallback):
                 command=command, timestamp=time.time(), data=data.get("data", {})
             )
 
-            await self.command_queue.put(control_command)
+            command_queue = self.command_queue
+            assert command_queue is not None
+            await command_queue.put(control_command)
 
             return aiohttp.web.json_response(
                 {
@@ -429,7 +441,7 @@ class TrainerControlCallback(TrainerCallback):
                 torch.distributed.broadcast(size_tensor, src=0)
 
                 # Then receive the commands tensor with the correct size
-                tensor_size = size_tensor.item()
+                tensor_size = int(size_tensor.item())
                 if tensor_size > 0:
                     commands_tensor = torch.zeros(
                         tensor_size, dtype=torch.long, device=device
@@ -463,7 +475,12 @@ class TrainerControlCallback(TrainerCallback):
             if (
                 self.trainer_args
                 and self.trainer_args.load_best_model_at_end
-                and self.trainer_args.eval_strategy.value != "no"
+                and getattr(
+                    self.trainer_args.eval_strategy,
+                    "value",
+                    self.trainer_args.eval_strategy,
+                )
+                != "no"
             ):
                 control.should_evaluate = True
             logger.info("Checkpoint save requested")
@@ -473,7 +490,12 @@ class TrainerControlCallback(TrainerCallback):
             if (
                 self.trainer_args
                 and self.trainer_args.load_best_model_at_end
-                and self.trainer_args.eval_strategy.value != "no"
+                and getattr(
+                    self.trainer_args.eval_strategy,
+                    "value",
+                    self.trainer_args.eval_strategy,
+                )
+                != "no"
             ):
                 control.should_evaluate = True
             control.should_training_stop = True
@@ -532,7 +554,7 @@ class TrainerControlCallback(TrainerCallback):
         args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
-        logs: dict = None,
+        logs: Optional[dict] = None,
         **kwargs,
     ):
         """Check for control commands on each log event."""
@@ -561,9 +583,10 @@ class TrainerControlCallback(TrainerCallback):
                     self.server_task.cancel()
 
                 # Shutdown server
-                if self.server_runner:
+                event_loop = self.event_loop
+                if self.server_runner and event_loop is not None:
                     asyncio.run_coroutine_threadsafe(
-                        self.server_runner.cleanup(), self.event_loop
+                        self.server_runner.cleanup(), event_loop
                     ).result(timeout=5)
 
                 # Stop event loop

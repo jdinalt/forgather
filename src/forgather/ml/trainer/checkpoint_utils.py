@@ -44,6 +44,7 @@ class ValidationLevel(Enum):
           - Use only for debugging or small models
           - Can cause OOM on large models with many ranks
     """
+
     NONE = "none"
     QUICK = "quick"
     TENSOR = "tensor"
@@ -60,6 +61,7 @@ class TensorChecksum:
     - Dtype differences
     - Numerical differences (within tolerance)
     """
+
     name: str
     shape: Tuple[int, ...]
     dtype: str
@@ -79,6 +81,7 @@ class StateChecksum:
 
     Includes individual tensor checksums plus overall hash.
     """
+
     overall_hash: str
     tensor_checksums: Dict[str, TensorChecksum]
     num_tensors: int
@@ -107,9 +110,7 @@ def get_group_rank(process_group: Optional[ProcessGroup] = None) -> int:
     except Exception:
         # Fallback: try to determine from global rank and group membership
         # This is a workaround for older PyTorch versions
-        logger.warning(
-            "Could not get group rank directly, falling back to heuristic"
-        )
+        logger.warning("Could not get group rank directly, falling back to heuristic")
         return _estimate_group_rank(process_group)
 
 
@@ -129,9 +130,7 @@ def get_group_size(process_group: Optional[ProcessGroup] = None) -> int:
     try:
         return dist.get_world_size(process_group)
     except Exception:
-        logger.warning(
-            "Could not get group size directly, falling back to heuristic"
-        )
+        logger.warning("Could not get group size directly, falling back to heuristic")
         return _estimate_group_size(process_group)
 
 
@@ -200,6 +199,7 @@ def get_node_rank() -> int:
     """
     try:
         import os
+
         world_size = int(os.environ.get("WORLD_SIZE", "1"))
         local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
         rank = int(os.environ.get("RANK", "0"))
@@ -225,6 +225,7 @@ def get_num_nodes() -> int:
     """
     try:
         import os
+
         world_size = int(os.environ.get("WORLD_SIZE", "1"))
         local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
 
@@ -255,6 +256,7 @@ def is_node_leader() -> bool:
     """
     try:
         import os
+
         local_rank = int(os.environ.get("LOCAL_RANK", "0"))
         return local_rank == 0
     except Exception:
@@ -287,9 +289,7 @@ def all_gather_scalar(value: int, group: Optional[ProcessGroup] = None) -> List[
         value_tensor = value_tensor.cuda()
 
     # Prepare output tensor list
-    gathered_tensors = [
-        torch.zeros_like(value_tensor) for _ in range(world_size)
-    ]
+    gathered_tensors = [torch.zeros_like(value_tensor) for _ in range(world_size)]
 
     # All-gather
     try:
@@ -303,9 +303,7 @@ def all_gather_scalar(value: int, group: Optional[ProcessGroup] = None) -> List[
     return [int(t.item()) for t in gathered_tensors]
 
 
-def all_gather_object_list(
-    obj: any, group: Optional[ProcessGroup] = None
-) -> List[any]:
+def all_gather_object_list(obj: Any, group: Optional[ProcessGroup] = None) -> List[Any]:
     """
     All-gather arbitrary Python objects from all ranks.
 
@@ -331,14 +329,16 @@ def all_gather_object_list(
         dist.all_gather_object(gathered_objects, obj, group=group)
     except Exception as e:
         rank = dist.get_rank() if dist.is_initialized() else 0
-        logger.warning(f"all_gather_object failed on rank {rank}: {e}, returning single object")
+        logger.warning(
+            f"all_gather_object failed on rank {rank}: {e}, returning single object"
+        )
         return [obj]
 
     return gathered_objects
 
 
 def collect_group_savers(
-    process_groups: Dict[str, ProcessGroup]
+    process_groups: Dict[str, ProcessGroup],
 ) -> Dict[str, List[int]]:
     """
     Collect which ranks are leaders for each process group.
@@ -405,9 +405,7 @@ def collect_node_savers() -> List[int]:
     return sorted(leader_ranks)
 
 
-def get_group_file_suffix(
-    group_name: str, process_group: ProcessGroup
-) -> str:
+def get_group_file_suffix(group_name: str, process_group: ProcessGroup) -> str:
     """
     Get a unique file suffix for this rank's position in a group.
 
@@ -464,8 +462,8 @@ def find_group_checkpoint_file(
     This handles loading PER_GROUP components by finding the file
     saved by the group leader that matches this rank's group membership.
     """
-    import os
     import glob
+    import os
 
     # Try to find file using group rank
     group_rank = get_group_rank(process_group)
@@ -473,7 +471,7 @@ def find_group_checkpoint_file(
     # Pattern: {key}_state_group_{group_name}_grank_{group_rank}_rank_*.pt
     pattern = os.path.join(
         checkpoint_path,
-        f"{component_key}_state_group_{group_name}_grank_{group_rank}_rank_*.pt"
+        f"{component_key}_state_group_{group_name}_grank_{group_rank}_rank_*.pt",
     )
 
     matches = glob.glob(pattern)
@@ -483,8 +481,7 @@ def find_group_checkpoint_file(
 
     # Fallback: try without group rank (legacy format)
     pattern = os.path.join(
-        checkpoint_path,
-        f"{component_key}_state_group_{group_name}_rank_*.pt"
+        checkpoint_path, f"{component_key}_state_group_{group_name}_rank_*.pt"
     )
 
     matches = glob.glob(pattern)
@@ -515,15 +512,14 @@ def find_node_checkpoint_file(
     This handles loading PER_NODE components by finding the file
     saved by the node leader for this node.
     """
-    import os
     import glob
+    import os
 
     node_rank = get_node_rank()
 
     # Pattern: {key}_state_node_{node_rank}_rank_*.pt
     pattern = os.path.join(
-        checkpoint_path,
-        f"{component_key}_state_node_{node_rank}_rank_*.pt"
+        checkpoint_path, f"{component_key}_state_node_{node_rank}_rank_*.pt"
     )
 
     matches = glob.glob(pattern)
@@ -633,6 +629,7 @@ def compute_state_checksum(
     # For TENSOR/FULL modes, hash the per-tensor checksums for efficiency
     if validation_level == ValidationLevel.QUICK:
         from forgather.ml.trainer.checkpoint_types import compute_state_hash
+
         overall_hash = compute_state_hash(state_dict)
     else:
         # Hash the concatenated tensor checksums
@@ -782,7 +779,12 @@ def validate_replication(
             ref_tensor = gathered_tensors[0]
 
             # Check if tensors are close (within tolerance)
-            if tensor.dtype in (torch.float32, torch.float64, torch.float16, torch.bfloat16):
+            if tensor.dtype in (
+                torch.float32,
+                torch.float64,
+                torch.float16,
+                torch.bfloat16,
+            ):
                 if not torch.allclose(tensor, ref_tensor, rtol=rtol, atol=atol):
                     # Compute max difference
                     max_diff = (tensor - ref_tensor).abs().max().item()

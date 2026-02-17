@@ -46,12 +46,14 @@ class JsonLogger(TrainerCallback):
         self.log_file = open(self.log_path, "x")
         self.log_file.write("[\n")
 
-    def on_evaluate(self, args, state, control, metrics, **kwargs):
+    def on_evaluate(self, args, state, control, **kwargs):
+        metrics = kwargs.get("metrics", {})
         if self.log_file is None:
             return
         self._write_log(state, metrics)
 
-    def on_log(self, args, state, control, logs, **kwargs):
+    def on_log(self, args, state, control, **kwargs):
+        logs = kwargs.get("logs", {})
         if self.log_file is None:
             return
         self._write_log(state, logs)

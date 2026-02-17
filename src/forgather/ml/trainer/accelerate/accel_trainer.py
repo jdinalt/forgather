@@ -7,6 +7,7 @@ import torch
 from accelerate import Accelerator
 from dacite import from_dict
 from torch import Tensor
+from torch.distributed.checkpoint.stateful import Stateful
 
 from ..checkpoint_manager import RNGState
 from ..checkpoint_types import SharingPattern, StateComponent
@@ -164,10 +165,11 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
 
         # Model - REQUIRED, REPLICATED in DDP
         # Accelerate synchronizes model weights across all ranks
+        # cast: nn.Module doesn't structurally satisfy Stateful (state_dict returns None, not dict)
         components.append(
             StateComponent(
                 key="model",
-                stateful=self.unwrapped_model(),
+                stateful=cast(Stateful, self.unwrapped_model()),
                 sharing_pattern=SharingPattern.REPLICATED,
                 validate_replication=True,  # Verify DDP synchronization
                 validation_level="tensor",  # Good balance of speed vs accuracy
@@ -178,27 +180,29 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
         # Optimizer - optional, REPLICATED in DDP
         # Accelerate synchronizes optimizer state across all ranks
         # Note: Validation disabled - AcceleratedOptimizer wrapper may have rank-specific state
-        components.append(
-            StateComponent(
-                key="optimizer",
-                stateful=self.optimizer,
-                sharing_pattern=SharingPattern.REPLICATED,
-                validate_replication=False,  # Disabled: AcceleratedOptimizer has rank-specific state
-                validation_level="quick",
-                required=False,
+        if self.optimizer is not None:
+            components.append(
+                StateComponent(
+                    key="optimizer",
+                    stateful=cast(Stateful, self.optimizer),
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    validate_replication=False,  # Disabled: AcceleratedOptimizer has rank-specific state
+                    validation_level="quick",
+                    required=False,
+                )
             )
-        )
 
         # LR Scheduler - optional, REPLICATED
         # Same schedule across all ranks
-        components.append(
-            StateComponent(
-                key="scheduler",
-                stateful=self.lr_scheduler,
-                sharing_pattern=SharingPattern.REPLICATED,
-                required=False,
+        if self.lr_scheduler is not None:
+            components.append(
+                StateComponent(
+                    key="scheduler",
+                    stateful=cast(Stateful, self.lr_scheduler),
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    required=False,
+                )
             )
-        )
 
         # Trainer state - optional, REPLICATED
         # Training progress is synchronized across all ranks
@@ -213,11 +217,12 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
 
         # Dataset state - optional, depends on dataloader configuration
         # Accelerate can use different data loading strategies
+        # cast: DataLoader doesn't structurally satisfy Stateful without stateful dataloader support
         if hasattr(self.train_dataloader, "state_dict"):
             components.append(
                 StateComponent(
                     key="dataset",
-                    stateful=self.train_dataloader,
+                    stateful=cast(Stateful, self.train_dataloader),
                     sharing_pattern=self._get_dataset_sharing_pattern(),
                     required=False,
                 )
@@ -257,7 +262,7 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
 
     @override
     def _end_train_loop(
-        self, start_time: float, train_steps: int
+        self, start_time: float | None, train_steps: int
     ) -> dict[str, int | float]:
         self.accelerator.end_training()
         return super()._end_train_loop(start_time, train_steps)
@@ -266,6 +271,7 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
     def _clip_grad_norm(
         self, max_grad_norm: float | None, norm_type: float = 2.0
     ) -> Optional[Tensor]:
+        assert self.model is not None
         if max_grad_norm is None or max_grad_norm == 0:
             grads = [p.grad for p in self.model.parameters() if p.grad is not None]
 

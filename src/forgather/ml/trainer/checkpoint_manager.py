@@ -3,7 +3,7 @@ import logging
 import os
 import traceback
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Tuple
 
 import torch
 from torch.distributed.checkpoint.stateful import Stateful
@@ -28,6 +28,9 @@ from forgather.ml.sharded_checkpoint import (
 
 from .checkpoint_coordinator import CheckpointCoordinator
 from .trainer_types import CheckpointInterface, StatefulProvider
+
+if TYPE_CHECKING:
+    from .base_trainer import BaseTrainer
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -95,7 +98,7 @@ class CheckpointManager(CheckpointInterface):
             []
         )  # List of (path, metric_value)
         self.preserve_n_best: int = 1
-        self.trainer: "BaseTrainer" | None = None  # Set by trainer for callback access
+        self.trainer: "BaseTrainer | None" = None  # Set by trainer for callback access
         self.barrier_fn = get_barrier_fn(get_global_process_group())
 
         # Initialize CheckpointCoordinator for state component handling
@@ -538,18 +541,20 @@ class RNGState(Stateful):
     A stateful for saving and restoring the random number generator states
     """
 
-    def load_state_dict(self, rng_state):
+    def load_state_dict(self, state_dict):
         # Restore CPU RNG state
-        if "torch_rng_state" in rng_state:
-            torch.set_rng_state(rng_state["torch_rng_state"])
+        if "torch_rng_state" in state_dict:
+            torch.set_rng_state(state_dict["torch_rng_state"])
             logger.debug("Restored CPU RNG state from checkpoint")
 
         # Restore CUDA RNG state if available
-        if "cuda_rng_state" in rng_state and torch.cuda.is_available():
+        if "cuda_rng_state" in state_dict and torch.cuda.is_available():
             current_device = torch.cuda.current_device()
-            saved_device = rng_state.get("cuda_device", current_device)
+            saved_device = state_dict.get("cuda_device", current_device)
 
-            torch.cuda.set_rng_state(rng_state["cuda_rng_state"], device=current_device)
+            torch.cuda.set_rng_state(
+                state_dict["cuda_rng_state"], device=current_device
+            )
             logger.debug(
                 f"Restored CUDA RNG state for device {current_device} from checkpoint"
             )

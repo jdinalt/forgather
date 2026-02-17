@@ -136,12 +136,16 @@ class DualTimeScaleDivergenceDetector(TrainerCallback, Stateful):
                 )
             return control
 
-        # Update EMAs
-        self.short_ema = self.short_alpha * loss + (1 - self.short_alpha) * self.short_ema
-        self.long_ema = self.long_alpha * loss + (1 - self.long_alpha) * self.long_ema
+        # Update EMAs (both are guaranteed non-None after the initialization branch above)
+        assert self.short_ema is not None
+        assert self.long_ema is not None
+        new_short = self.short_alpha * loss + (1 - self.short_alpha) * self.short_ema
+        new_long = self.long_alpha * loss + (1 - self.long_alpha) * self.long_ema
+        self.short_ema = new_short
+        self.long_ema = new_long
 
         # Check for divergence
-        divergence = self.short_ema - self.long_ema
+        divergence = new_short - new_long
 
         logger.debug(
             f"Divergence detector: {key_name}={loss:.4f}, "

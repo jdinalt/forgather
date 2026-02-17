@@ -4,8 +4,7 @@ Pipeline parallel model splitting utilities.
 Based on TorchTitan's pipeline_module_split approach.
 """
 
-import copy
-from typing import List
+from typing import Any, List
 
 from torch import nn
 
@@ -153,7 +152,8 @@ def split_model(model: nn.Module, module_names: List[str]) -> None:
         split_model(model, ["input_encoder", "layer_stack.layers.0", "layer_stack.layers.1"])
     """
     # Access the actual CasualLM model
-    causal_lm = model.causal_lm
+    # type: ignore comments needed: nn.Module.__getattr__ returns Tensor|Module, not the dynamic attrs
+    causal_lm: Any = model.causal_lm  # type: ignore[attr-defined]
 
     # Create a set of modules to keep for faster lookup
     modules_to_keep = set(module_names)
@@ -164,7 +164,7 @@ def split_model(model: nn.Module, module_names: List[str]) -> None:
 
     # Handle output_decoder
     if "output_decoder" not in modules_to_keep:
-        model.lm_head = None
+        setattr(model, "lm_head", None)  # type: ignore[arg-type]  # Module.__setattr__ rejects None
 
     # Handle layer_stack - this is more complex
     if causal_lm.layer_stack is not None:

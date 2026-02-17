@@ -90,7 +90,8 @@ class TBLogger(TrainerCallback):
 
             self.summary_writer.add_scalar(label, value, global_step=global_step)
 
-    def on_evaluate(self, args, state, control, metrics, **kwargs):
+    def on_evaluate(self, args, state, control, **kwargs):
+        metrics = kwargs.get("metrics", {})
         if not state.is_world_process_zero:
             return
         global_step = state.global_step
@@ -100,7 +101,8 @@ class TBLogger(TrainerCallback):
 
         self._log_metrics(global_step, metrics)
 
-    def on_log(self, args, state, control, logs, **kwargs):
+    def on_log(self, args, state, control, **kwargs):
+        logs = kwargs.get("logs", {})
         if not state.is_world_process_zero:
             return
 

@@ -72,7 +72,9 @@ class TextgenCallback(TrainerCallback):
         self.max_new_tokens = max_new_tokens
         self.next_gen_step = 0
 
-    def on_evaluate(self, args, state, control, /, model, processing_class, **kwargs):
+    def on_evaluate(self, args, state, control, **kwargs):
+        model = kwargs.get("model")
+        processing_class = kwargs.get("processing_class")
         if self.generation_steps is None:
             self.generation_steps = args.eval_steps
         if not state.is_world_process_zero or state.global_step < self.next_gen_step:

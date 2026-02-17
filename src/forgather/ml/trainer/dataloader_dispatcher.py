@@ -1,5 +1,5 @@
 import itertools
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, cast
 
 import torch
 from torch import distributed as dist
@@ -139,11 +139,13 @@ class DataloaderDispatcher:
 
     def _receive_metadata(self, group: dist.ProcessGroup) -> Dict:
         """Receive metadata from group source."""
-        objects = [None]
+        objects: List[Optional[object]] = [None]
         dist.broadcast_object_list(
             objects, group=group, group_src=0, device=self._device
         )
-        return objects[0]
+        result = objects[0]
+        assert result is not None
+        return cast(Dict, result)
 
     def _broadcast_metadata_from_dict(
         self, meta_data: Dict, group: dist.ProcessGroup
@@ -183,7 +185,12 @@ class DataloaderDispatcher:
         """Receive batch tensors via broadcast from group source."""
         batch = {}
         for key, dtype, shape in zip(meta_data["keys"], meta_data["dtypes"], shapes):
-            data = torch.empty(shape[0], shape[1], dtype=dtype, device=self._device)
+            data = torch.empty(
+                int(shape[0].item()),
+                int(shape[1].item()),
+                dtype=dtype,
+                device=self._device,
+            )
             dist.broadcast(data, group=group, group_src=0)
             batch[key] = data
         return batch
@@ -236,7 +243,12 @@ class DataloaderDispatcher:
         p2p_ops = []
         batch = {}
         for key, dtype, shape in zip(meta_data["keys"], meta_data["dtypes"], shapes):
-            data = torch.empty(shape[0], shape[1], dtype=dtype, device=self._device)
+            data = torch.empty(
+                int(shape[0].item()),
+                int(shape[1].item()),
+                dtype=dtype,
+                device=self._device,
+            )
             op = dist.P2POp(dist.irecv, data, 0, group=self._dp_group)
             p2p_ops.append(op)
             batch[key] = data
@@ -261,6 +273,9 @@ class DataloaderDispatcher:
         self, broadcast_to_mp: bool
     ) -> Iterator[Dict[str, torch.Tensor]]:
         """Coordinator loads batches and dispatches to other DP ranks."""
+        dp_group = self._dp_group
+        assert dp_group is not None
+        mp_group = self._mp_group  # May be None when broadcast_to_mp=False
         dataloader_iter = iter(self._dataloader)
         batch_lengths: Optional[torch.Tensor] = None
         meta_data: Optional[Dict] = None
@@ -274,20 +289,23 @@ class DataloaderDispatcher:
                 return
 
             if step == 0:
-                meta_data = self._broadcast_metadata(batches[0], self._dp_group)
+                meta_data = self._broadcast_metadata(batches[0], dp_group)
                 if broadcast_to_mp:
-                    self._broadcast_metadata(batches[0], self._mp_group)
+                    assert mp_group is not None
+                    self._broadcast_metadata(batches[0], mp_group)
                 batch_lengths = self._create_batch_lengths_buffer(
                     len(meta_data["keys"])
                 )
 
+            assert batch_lengths is not None
             self._populate_batch_lengths(batches, batch_lengths)
-            dist.broadcast(batch_lengths, group=self._dp_group, group_src=0)
+            dist.broadcast(batch_lengths, group=dp_group, group_src=0)
             self._send_batches_to_dp_ranks(batches)
 
             if broadcast_to_mp:
-                self._broadcast_shapes(batches[0], self._mp_group)
-                self._broadcast_batch(batches[0], self._mp_group)
+                assert mp_group is not None
+                self._broadcast_shapes(batches[0], mp_group)
+                self._broadcast_batch(batches[0], mp_group)
 
             yield batches[0]
 
@@ -295,35 +313,44 @@ class DataloaderDispatcher:
         self, broadcast_to_mp: bool
     ) -> Iterator[Dict[str, torch.Tensor]]:
         """Non-coordinator DP rank receives batches from coordinator."""
+        dp_group = self._dp_group
+        assert dp_group is not None
+        mp_group = self._mp_group  # May be None when broadcast_to_mp=False
         meta_data: Optional[Dict] = None
         batch_lengths: Optional[torch.Tensor] = None
 
         for step in itertools.count(start=0, step=1):
             if step == 0:
-                meta_data = self._receive_metadata(self._dp_group)
+                meta_data = self._receive_metadata(dp_group)
                 if not meta_data.get("keys"):
                     if broadcast_to_mp:
-                        self._signal_end_metadata(self._mp_group)
+                        assert mp_group is not None
+                        self._signal_end_metadata(mp_group)
                     return
                 if broadcast_to_mp:
-                    self._broadcast_metadata_from_dict(meta_data, self._mp_group)
+                    assert mp_group is not None
+                    self._broadcast_metadata_from_dict(meta_data, mp_group)
                 batch_lengths = self._create_batch_lengths_buffer(
                     len(meta_data["keys"])
                 )
 
-            dist.broadcast(batch_lengths, group=self._dp_group, group_src=0)
+            assert batch_lengths is not None
+            dist.broadcast(batch_lengths, group=dp_group, group_src=0)
 
+            assert meta_data is not None
             if batch_lengths[0][0][0] == 0:
                 if broadcast_to_mp:
-                    self._signal_end_shapes(len(meta_data["keys"]), self._mp_group)
+                    assert mp_group is not None
+                    self._signal_end_shapes(len(meta_data["keys"]), mp_group)
                 return
 
             rank_shapes = batch_lengths[self._dp_rank - 1]
             batch = self._receive_batch_from_coordinator(meta_data, rank_shapes)
 
             if broadcast_to_mp:
-                self._broadcast_shapes(batch, self._mp_group)
-                self._broadcast_batch(batch, self._mp_group)
+                assert mp_group is not None
+                self._broadcast_shapes(batch, mp_group)
+                self._broadcast_batch(batch, mp_group)
 
             yield batch
 
@@ -345,19 +372,22 @@ class DataloaderDispatcher:
 
     def _signal_dp_end(self, step: int, batch_lengths: Optional[torch.Tensor]) -> None:
         """Signal end of data to other DP ranks."""
+        dp_group = self._dp_group
+        assert dp_group is not None
         if step == 0:
-            self._signal_end_metadata(self._dp_group)
+            self._signal_end_metadata(dp_group)
         else:
-            dist.broadcast(
-                torch.zeros_like(batch_lengths), group=self._dp_group, group_src=0
-            )
+            assert batch_lengths is not None
+            dist.broadcast(torch.zeros_like(batch_lengths), group=dp_group, group_src=0)
 
     def _signal_mp_end(self, step: int, meta_data: Optional[Dict]) -> None:
         """Signal end of data to MP followers."""
+        mp_group = self._mp_group
+        assert mp_group is not None
         if step < 0 or meta_data is None:
-            self._signal_end_metadata(self._mp_group)
+            self._signal_end_metadata(mp_group)
         else:
-            self._signal_end_shapes(len(meta_data["keys"]), self._mp_group)
+            self._signal_end_shapes(len(meta_data["keys"]), mp_group)
 
     # -------------------------------------------------------------------------
     # Pure MP Mode
@@ -372,34 +402,40 @@ class DataloaderDispatcher:
 
     def _mp_leader_iter(self) -> Iterator[Dict[str, torch.Tensor]]:
         """DP leader loads data and broadcasts to MP group."""
+        mp_group = self._mp_group
+        assert mp_group is not None
         meta_data: Optional[Dict] = None
+        step = -1
         for step, batch in enumerate(self._dataloader):
             batch = {k: v.to(self._device, non_blocking=True) for k, v in batch.items()}
 
             if step == 0:
-                meta_data = self._broadcast_metadata(batch, self._mp_group)
+                meta_data = self._broadcast_metadata(batch, mp_group)
 
-            self._broadcast_shapes(batch, self._mp_group)
-            self._broadcast_batch(batch, self._mp_group)
+            self._broadcast_shapes(batch, mp_group)
+            self._broadcast_batch(batch, mp_group)
             yield batch
 
         self._signal_mp_end(step if meta_data else -1, meta_data)
 
     def _mp_follower_iter(self) -> Iterator[Dict[str, torch.Tensor]]:
         """MP follower receives batches via broadcast from DP leader."""
+        mp_group = self._mp_group
+        assert mp_group is not None
         meta_data: Optional[Dict] = None
 
         for step in itertools.count(start=0, step=1):
             if step == 0:
-                meta_data = self._receive_metadata(self._mp_group)
+                meta_data = self._receive_metadata(mp_group)
                 if not meta_data.get("keys"):
                     return
 
-            shapes = self._receive_shapes(len(meta_data["keys"]), self._mp_group)
+            assert meta_data is not None
+            shapes = self._receive_shapes(len(meta_data["keys"]), mp_group)
             if shapes[0][0] == 0:
                 return
 
-            batch = self._receive_batch(meta_data, shapes, self._mp_group)
+            batch = self._receive_batch(meta_data, shapes, mp_group)
             yield batch
 
     # -------------------------------------------------------------------------

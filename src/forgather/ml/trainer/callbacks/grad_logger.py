@@ -23,7 +23,9 @@ class GradLogger(TrainerCallback):
     def rms(x):
         return x.square().mean().sqrt().item()
 
-    def on_optimizer_step(self, args, state, control, /, model, **kwargs):
+    def on_optimizer_step(self, args, state, control, **kwargs):
+        model = kwargs.get("model")
+        assert model is not None
         if not state.is_world_process_zero:
             return
 

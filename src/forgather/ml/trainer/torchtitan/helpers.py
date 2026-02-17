@@ -1,20 +1,38 @@
 from logging import Logger
-from typing import Callable
+from typing import Callable, cast
 
 import torch
 from datasets.distributed import split_dataset_by_node
 from torch.nn import Module
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import IterableDataset
-from torchtitan.components.dataloader import ParallelAwareDataloader
-from torchtitan.components.ft import FTManager
-from torchtitan.components.lr_scheduler import LRSchedulersContainer
-from torchtitan.components.optimizer import OptimizersContainer
-from torchtitan.components.tokenizer import BaseTokenizer
-from torchtitan.config import JobConfig
-from torchtitan.config import LRScheduler as LRSchedulerConfig
-from torchtitan.config import Optimizer as OptimizerConfig
-from torchtitan.distributed import ParallelDims
+from torchtitan.components.dataloader import (
+    ParallelAwareDataloader,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.components.ft import (
+    FTManager,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.components.lr_scheduler import (
+    LRSchedulersContainer,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.components.optimizer import (
+    OptimizersContainer,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.components.tokenizer import (
+    BaseTokenizer,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.config import (
+    JobConfig,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.config import (
+    LRScheduler as LRSchedulerConfig,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.config import (
+    Optimizer as OptimizerConfig,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.distributed import (
+    ParallelDims,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
 
 LossFunction = Callable[..., torch.Tensor]
 
@@ -58,7 +76,7 @@ def build_dataloader(
     **kwargs,
 ) -> ParallelAwareDataloader:
     return ParallelAwareDataloader(
-        dataset=split_dataset_by_node(dataset, dp_rank, dp_world_size),
+        dataset=split_dataset_by_node(cast(object, dataset), dp_rank, dp_world_size),  # type: ignore[arg-type]  # IterableDataset satisfies DatasetType at runtime
         dp_rank=dp_rank,
         dp_world_size=dp_world_size,
         batch_size=batch_size,

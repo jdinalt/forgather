@@ -113,7 +113,8 @@ class PeakMemory(TrainerCallback):
         s += "```"
         return s
 
-    def on_log(self, args, state, control, logs, **kwargs):
+    def on_log(self, args, state, control, **kwargs):
+        logs = kwargs.get("logs", {})
         if not self.enabled or (not self.do_log and not self.summary_writer):
             return
         device = torch.cuda.current_device()
@@ -146,6 +147,7 @@ class PeakMemory(TrainerCallback):
             if self.rank != 0:
                 return
             # Only rank 0 will log the peak memory
+            assert gather_list is not None
             max_allocated_list = [i.item() for i in gather_list]
         else:
             max_allocated_list = [max_allocated]
