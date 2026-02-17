@@ -20,13 +20,17 @@ from torch.nn import Module
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
+from torchdata.stateful_dataloader import StatefulDataLoader
 
+from forgather.ml.datasets import sync_dataset_state_from_dataloader
 from forgather.ml.distributed import prefix_logger_rank
+from forgather.ml.loss import RescaleLoss
 from forgather.ml.trainer import DataloaderDispatcher
+from forgather.ml.trainer.base_trainer import logits_from_outputs
 from forgather.ml.trainer.checkpoint_manager import RNGState
 from forgather.ml.trainer.checkpoint_types import SharingPattern, StateComponent
 from forgather.ml.trainer.synchronized_dataloader import SynchronizedDataLoader
-from forgather.ml.trainer.trainer import Trainer, TrainingArguments
+from forgather.ml.trainer.trainer import Trainer, TrainingArguments, set_train
 from forgather.ml.trainer.trainer_types import FusedLossFactoryT
 
 logger = logging.getLogger(__name__)
@@ -205,6 +209,122 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
 
         assert self.model
         return cast(Module, self.model.module)
+
+    @override
+    @torch.no_grad()
+    def _eval_loop(self) -> Dict[str, float]:
+        """
+        Evaluation loop for DDP training.
+
+        For dispatch_batches=True or single-GPU, delegates to the base Trainer._eval_loop().
+
+        For dispatch_batches=False, bypasses SynchronizedDataLoader's MIN-based
+        synchronization to let each rank process ALL its local validation data
+        independently. This prevents data loss when token packing creates highly
+        uneven shard lengths across ranks (e.g., shard lengths [85, 167, 239, 247]
+        would otherwise be truncated to the shortest rank's count).
+        """
+        if self.dist.world_size == 1 or self.args.dispatch_batches:
+            return super()._eval_loop()
+        return self._eval_loop_all_shards()
+
+    @torch.no_grad()
+    def _eval_loop_all_shards(self) -> Dict[str, float]:
+        """
+        Eval loop that lets each rank process all its local validation data.
+
+        Instead of using SynchronizedDataLoader (which stops all ranks when ANY
+        rank runs out of data via MIN reduction), this synchronizes step-by-step
+        using MAX reduction: the loop continues while ANY rank still has data.
+        Ranks that exhaust their data early continue participating in the sync
+        loop without processing, keeping all ranks in lockstep so rank 0's
+        progress bar updates smoothly throughout.
+
+        After all ranks are exhausted, total_loss is aggregated via all_reduce.
+        The step count is implicit since each rank tracked its own local count.
+        """
+        assert self.model is not None
+        assert self.eval_dataloader is not None
+        assert isinstance(self.loss_fn, RescaleLoss)
+
+        # Access the underlying dataloader, bypassing SynchronizedDataLoader
+        assert isinstance(self.eval_dataloader, SynchronizedDataLoader)
+        raw_dataloader = self.eval_dataloader._dataloader
+
+        with set_train(self.model, False):
+            total_loss = torch.zeros(1, device=self.args.device)
+            local_steps = 0
+            has_data = True
+            iterator = iter(raw_dataloader)
+
+            # Reuse a single tensor for the per-step synchronization
+            has_data_tensor = torch.zeros(1, dtype=torch.int32, device=self.args.device)
+
+            while True:
+                # Try to get next batch from this rank's data
+                batch = None
+                if has_data:
+                    try:
+                        batch = next(iterator)
+                    except StopIteration:
+                        has_data = False
+
+                    # Respect max_eval_steps on this rank's own data
+                    if (
+                        has_data
+                        and self.args.max_eval_steps > 0
+                        and local_steps >= self.args.max_eval_steps
+                    ):
+                        has_data = False
+                        batch = None
+
+                # Synchronize: continue while ANY rank still has data (MAX as OR)
+                has_data_tensor.fill_(1 if has_data else 0)
+                dist.all_reduce(has_data_tensor, op=dist.ReduceOp.MAX)
+
+                if has_data_tensor.item() == 0:
+                    # All ranks are done
+                    break
+
+                # Process batch if this rank has one
+                if batch is not None:
+                    input_dict, labels = self._prepare_batch(batch)
+
+                    # Inline the forward pass from _prediction_step, but without
+                    # _distributed_loss (which would require an additional
+                    # per-step all_reduce).
+                    if self.use_fused_loss:
+                        input_dict["return_hidden_states"] = True  # type: ignore[assignment]
+                    with self.loss_fn.no_rescale():
+                        outputs = self.model(**input_dict)
+                        logits = logits_from_outputs(outputs)
+                        loss = self.loss_fn(logits, labels)
+
+                    total_loss += loss.detach()
+                    local_steps += 1
+
+                # Dispatch on every synchronized step so rank 0's progress bar
+                # keeps updating even after rank 0 exhausts its own data.
+                self._dispatch_event("on_prediction_step")
+
+            # Aggregate loss across all ranks
+            step_count = torch.tensor(
+                local_steps, device=self.args.device, dtype=torch.int64
+            )
+            dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
+            dist.all_reduce(step_count, op=dist.ReduceOp.SUM)
+
+            total_steps = step_count.item()
+            assert total_steps > 0, "No eval examples were processed across any rank"
+            eval_loss = (total_loss / total_steps).item()
+
+            # Sync dataset state on the underlying StatefulDataLoader
+            if isinstance(raw_dataloader, StatefulDataLoader):
+                sync_dataset_state_from_dataloader(raw_dataloader)
+
+            metrics = {"eval_loss": eval_loss}
+            self._dispatch_event("on_evaluate", metrics=metrics)
+            return metrics
 
     @override
     def _distributed_loss(self, loss: Tensor) -> Tensor:

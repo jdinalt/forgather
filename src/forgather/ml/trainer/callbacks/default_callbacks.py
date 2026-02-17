@@ -92,6 +92,9 @@ class ProgressCallback:
         self._last_log_time: Optional[float] = None
         self._last_total_flos: float = 0.0
 
+        # Remember actual eval steps from previous run for accurate progress bar
+        self._last_eval_steps: Optional[int] = None
+
         if use_tqdm is None:
             self.use_tqdm = get_env_type() != "file"
         else:
@@ -165,8 +168,11 @@ class ProgressCallback:
             return
         if self.use_tqdm:
             if self.eval_progress_bar is None:
-                max_eval_steps = getattr(state, "max_eval_steps", -1)
-                total = max(len(eval_dataloader), max_eval_steps, 1)
+                if self._last_eval_steps is not None:
+                    total = self._last_eval_steps
+                else:
+                    max_eval_steps = getattr(state, "max_eval_steps", -1)
+                    total = max(len(eval_dataloader), max_eval_steps, 1)
                 self.eval_progress_bar = tqdm(
                     initial=1,
                     total=total,
@@ -181,6 +187,8 @@ class ProgressCallback:
             return
         if self.use_tqdm:
             if self.eval_progress_bar is not None:
+                # Remember actual step count for next eval's progress bar
+                self._last_eval_steps = self.eval_progress_bar.n
                 self.eval_progress_bar.write(
                     format_timestamp() + format_eval_log(state, metrics)
                 )
