@@ -13,9 +13,13 @@ from torch.distributed.algorithms.ddp_comm_hooks.post_localSGD_hook import (
     PostLocalSGDState,
     post_localSGD_hook,
 )
+from torch.distributed.checkpoint.stateful import Stateful
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.optim import PostLocalSGDOptimizer
+from torch.nn import Module
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.optim import Optimizer
+from torch.utils.data import DataLoader
 
 from forgather.ml.distributed import prefix_logger_rank
 from forgather.ml.trainer import DataloaderDispatcher
@@ -143,14 +147,14 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
             # Use DataloaderDispatcher for centralized batch loading
             if self.train_dataloader:
                 self.train_dataloader = DataloaderDispatcher(
-                    self.train_dataloader,
+                    cast(DataLoader, self.train_dataloader),
                     self.mesh,
                     self.args.device,
                 )
 
             if self.eval_dataloader:
                 self.eval_dataloader = DataloaderDispatcher(
-                    self.eval_dataloader,
+                    cast(DataLoader, self.eval_dataloader),
                     self.mesh,
                     self.args.device,
                 )
@@ -182,7 +186,7 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
             )
             self.model.register_comm_hook(self.post_local_sgd_state, post_localSGD_hook)
             self.optimizer = PostLocalSGDOptimizer(
-                optim=self.optimizer,
+                optim=cast(Optimizer, self.optimizer),
                 averager=averagers.PeriodicModelAverager(
                     period=self.args.post_local_sgd.period,
                     warmup_steps=self.args.post_local_sgd.start_step,
@@ -200,7 +204,7 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
             return super().unwrapped_model()
 
         assert self.model
-        return self.model.module
+        return cast(Module, self.model.module)
 
     @override
     def _distributed_loss(self, loss: Tensor) -> Tensor:
@@ -247,7 +251,11 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
         if self.dist.world_size == 1:
             return super()._forward_backward_step(*args, **kwargs)
 
-        with nullcontext() if self._should_sync_gradients() else self.model.no_sync():
+        with (
+            nullcontext()
+            if self._should_sync_gradients()
+            else cast(DDP, self.model).no_sync()
+        ):
             return super()._forward_backward_step(*args, **kwargs)
 
     @override
@@ -280,7 +288,7 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
         components.append(
             StateComponent(
                 key="model",
-                stateful=self.unwrapped_model(),
+                stateful=cast(Stateful, self.unwrapped_model()),
                 sharing_pattern=SharingPattern.REPLICATED,
                 validate_replication=True,  # Verify DDP synchronization
                 validation_level="tensor",  # Good balance of speed vs accuracy
@@ -290,27 +298,29 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
 
         # Optimizer - optional, REPLICATED in DDP
         # DDP synchronizes gradients, so optimizer state should be identical
-        components.append(
-            StateComponent(
-                key="optimizer",
-                stateful=self.optimizer,
-                sharing_pattern=SharingPattern.REPLICATED,
-                validate_replication=True,
-                validation_level="quick",  # Fast hash-based validation
-                required=False,
+        if self.optimizer is not None:
+            components.append(
+                StateComponent(
+                    key="optimizer",
+                    stateful=cast(Stateful, self.optimizer),
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    validate_replication=True,
+                    validation_level="quick",  # Fast hash-based validation
+                    required=False,
+                )
             )
-        )
 
         # LR Scheduler - optional, REPLICATED
         # Same schedule across all ranks
-        components.append(
-            StateComponent(
-                key="scheduler",
-                stateful=self.lr_scheduler,
-                sharing_pattern=SharingPattern.REPLICATED,
-                required=False,
+        if self.lr_scheduler is not None:
+            components.append(
+                StateComponent(
+                    key="scheduler",
+                    stateful=cast(Stateful, self.lr_scheduler),
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    required=False,
+                )
             )
-        )
 
         # Trainer state - optional, REPLICATED
         # Training progress is synchronized across all ranks
@@ -328,7 +338,7 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
             components.append(
                 StateComponent(
                     key="dataset",
-                    stateful=self.train_dataloader,
+                    stateful=cast(Stateful, self.train_dataloader),
                     sharing_pattern=self._get_dataset_sharing_pattern(),
                     required=False,
                 )

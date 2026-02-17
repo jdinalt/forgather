@@ -22,11 +22,13 @@ import torch
 import torch.distributed as dist
 from dacite import from_dict
 from torch import Tensor, distributed
+from torch.distributed.checkpoint.stateful import Stateful
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.pipelining import ScheduleGPipe
 from torch.distributed.pipelining.microbatch import split_args_kwargs_into_chunks
 from torch.distributed.pipelining.stage import _PipelineStageBase
 from torch.nn import Module
+from torch.utils.data import DataLoader
 
 from forgather.ml.construct import torch_dtype
 from forgather.ml.loss import RescaleLoss
@@ -43,7 +45,7 @@ from ..checkpoint_manager import CheckpointConfig, CheckpointManager, RNGState
 from ..checkpoint_types import SharingPattern, StateComponent
 from ..dataloader_dispatcher import DataloaderDispatcher
 from ..trainer import Trainer, TrainingArguments, optimizer_hook
-from ..trainer_types import CheckpointInterface, LossFunctionT
+from ..trainer_types import LossFunctionT
 from .model_splitter import ModelSplitter
 from .pipeline_fixes import assert_no_duplicate_fqns
 from .pipeline_utils import missing_buffers, pipeline_stage_indices
@@ -67,8 +69,9 @@ log_level_for(
 
 
 class PipelineSchedulerT(Protocol):
-    def step(self, *args, targets: torch.Tensor | None, losses: list, **kwargs):
-        pass
+    def step(self, *args, targets: torch.Tensor | None, losses: list, **kwargs): ...
+
+    def eval(self, *args, **kwargs): ...
 
 
 PipelineSchedulerFactorT: TypeAlias = Callable[
@@ -185,7 +188,7 @@ class PipelineTrainer(
     pipeline_modules: List[Module] | None
     sharing_metadata: SharingMetadataT | None
     shard_index: ShardIndex | None
-    stage_indices: None
+    stage_indices: Tuple[int, ...] | None
     pp_has_last_stage: bool
     pp_has_first_stage: bool
     attention_mask_creator: Callable
@@ -195,7 +198,7 @@ class PipelineTrainer(
         *,
         args: TPipelineTrainingArguments | dict,
         model_splitter: ModelSplitter,  # Required: function to split model into pipeline stages
-        pipe_schedule_factory: PipelineSchedulerT = ScheduleGPipe,
+        pipe_schedule_factory: PipelineSchedulerFactorT = ScheduleGPipe,  # type: ignore[assignment]
         **kwargs,
     ):
         """
@@ -303,17 +306,17 @@ class PipelineTrainer(
         """
         if self.train_dataloader:
             self.train_dataloader = DataloaderDispatcher(
-                self.train_dataloader,
+                cast(DataLoader, self.train_dataloader),
                 self.mesh,
-                self.dist.device,
+                torch.device(self.dist.device),
                 dp_mesh_dim=None,  # Pure MP: all ranks get same batch
             )
 
         if self.eval_dataloader:
             self.eval_dataloader = DataloaderDispatcher(
-                self.eval_dataloader,
+                cast(DataLoader, self.eval_dataloader),
                 self.mesh,
-                self.dist.device,
+                torch.device(self.dist.device),
                 dp_mesh_dim=None,  # Pure MP: all ranks get same batch
             )
 
@@ -457,7 +460,7 @@ class PipelineTrainer(
         self.scheduler = self.pipe_schedule_factory(
             stages_arg,
             self.args.n_microbatches,
-            loss_fn=self.loss_fn,
+            loss_fn=self.loss_fn,  # type: ignore[call-arg]
             scale_grads=False,
         )
 
@@ -579,7 +582,7 @@ class PipelineTrainer(
             example_kwargs,
             stage_indices,
             train,
-            device=self.dist.device,
+            device=self.dist.device,  # type: ignore[call-arg]
             rank=rank,
             pp_group=self.pp_group,
         )
@@ -740,9 +743,13 @@ class PipelineTrainer(
         targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)
         assert self.scheduler
         if self.pp_has_first_stage:
-            self.scheduler.step(*inputs, **extra_kwargs, target=targets, losses=losses)
+            self.scheduler.step(
+                *inputs, **extra_kwargs, target=targets, losses=cast(list, losses)
+            )
         else:
-            self.scheduler.step(**extra_kwargs, target=targets, losses=losses)
+            self.scheduler.step(
+                **extra_kwargs, target=targets, losses=cast(list, losses)
+            )
 
         if self.pp_has_last_stage:
             assert losses
@@ -789,9 +796,7 @@ class PipelineTrainer(
                         p.register_post_accumulate_grad_hook(hook)
 
         if self.lr_scheduler is None and self.lr_scheduler_factory is not None:
-            self.lr_scheduler = self.lr_scheduler_factory(
-                optimizer=self.optimizer,
-            )
+            self.lr_scheduler = self.lr_scheduler_factory(self.optimizer)
 
     @override
     def _prediction_step(
@@ -828,7 +833,9 @@ class PipelineTrainer(
 
         targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)
         assert self.scheduler
-        with self.loss_fn.no_rescale():
+        loss_fn = self.loss_fn
+        assert isinstance(loss_fn, RescaleLoss)
+        with loss_fn.no_rescale():
             if self.pp_has_first_stage:
                 self.scheduler.eval(*inputs, **extra_kwargs)
             else:
@@ -849,7 +856,7 @@ class PipelineTrainer(
         }
 
     @override
-    def _init_checkpoint_manager(self) -> CheckpointInterface:
+    def _init_checkpoint_manager(self) -> CheckpointManager:
         """
         Initialize checkpoint manager for distributed pipeline parallel model.
 
@@ -1056,7 +1063,7 @@ class PipelineTrainer(
             components.append(
                 StateComponent(
                     key="model",
-                    stateful=self.pipeline_modules,
+                    stateful=cast(Stateful, self.pipeline_modules),
                     sharing_pattern=SharingPattern.PER_RANK,
                     required=True,  # Model is always required
                 )
@@ -1103,7 +1110,7 @@ class PipelineTrainer(
             components.append(
                 StateComponent(
                     key="dataset",
-                    stateful=self.train_dataloader,
+                    stateful=cast(Stateful, self.train_dataloader),
                     sharing_pattern=self._get_dataset_sharing_pattern(),
                     required=False,
                 )
