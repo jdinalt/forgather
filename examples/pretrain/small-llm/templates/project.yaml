@@ -49,6 +49,14 @@
     ## See docs/trainers/training-performance-metrics.md
     -- set ns.peak_hardware_flops = 165.2e12
 
+    ## Tokens between logging, validation, and save steps
+    -- set ns.logging_tokens = 2 * 1000 * 1000 * ns.step_cadence
+    -- set ns.validation_tokens = 20 * 1000 * 1000 * ns.step_cadence
+    -- set ns.save_tokens = 500 * 1000 * 1000 * ns.step_cadence
+
+    ## Safe-default to SDPA -- it has fast startup and tends to have relatively few issues.
+    -- set ns.default_attn_implementation = "sdpa"
+
 [globals]
     ## Computed config. values
     == super()
@@ -110,7 +118,7 @@ eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 
 [model_constructor_args]
 .define: &model_constructor_args
-    attn_implementation: "{{ attn_implementation | default('sdpa') }}"
+    attn_implementation: "{{ attn_implementation | default(ns.default_attn_implementation) }}"
 
 [construct_new_model]
     [model_project_pp_args]
@@ -134,9 +142,9 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     # --- Pretrain Config ---
 
     # **Cadence**
-    logging_steps: {{ (100 * ns.step_cadence / ns.effective_per_device_batch_size) | int }}
-    eval_steps: {{ (1000 * ns.step_cadence / ns.effective_per_device_batch_size) | int }}
-    save_steps: {{ (20000 * ns.step_cadence / ns.effective_per_device_batch_size) | int }}
+    logging_steps: {{ (ns.logging_tokens // ns.tokens_per_step) | int }}
+    eval_steps: {{ (ns.validation_tokens // ns.tokens_per_step) | int }}
+    save_steps: {{ (ns.save_tokens // ns.tokens_per_step) | int }}
 
     # **Dataloader Config**
     num_train_epochs: 1
@@ -286,11 +294,14 @@ text_gen_callback_args: &text_gen_callback_args
 
 [callback_list]
     == super()
-    # Disabled, as flex_attention appears to be someone unstable for generation.
-    #text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
-    #    <<: *text_gen_callback_args
+    ## Flex attention seems to occasionally crash when generating. Disabled until issue is resolved.
+    -- if "{{ attn_implementation | default(ns.default_attn_implementation) }}" != "flex_attention"
+    text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
+        <<: *text_gen_callback_args
+    -- endif
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
-    # peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
+    peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
+    # Abort training if loss diverges substantially
     divergence_detector: !singleton:forgather.ml.trainer.callbacks:DualTimeScaleDivergenceDetector
         short_alpha: 0.1        # Fast EMA (~10 step window)
         long_alpha: 0.01        # Slow EMA (~100 step window)

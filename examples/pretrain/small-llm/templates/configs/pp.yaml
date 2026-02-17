@@ -74,6 +74,9 @@
     # PP does not have 'dispatch_batches'
     dispatch_batches: null
 
+[trainer_callbacks]
+    -- include 'pp.logger_config'
+
 [trainer_definition]
     ## Switch to PP
     -- include 'trainers/pipeline_trainer.yaml'
@@ -89,3 +92,11 @@
         default: 1
         type: int
         help: "Scale the number of microbatches by this amount. Total batch size must be divisible by this factor."
+
+#-------------------- pp.logger_config --------------------
+-- extends 'project.logger_config'
+
+[callback_list]
+    == super()
+    # Textgen is incompatible with the Pipeline Parallel trainer
+    text_gen_callback: null
