@@ -49,7 +49,7 @@
 
     ## The default is for the RTX4090
     ## See docs/trainers/training-performance-metrics.md
-    -- set ns.peak_hardware_flops = 165.2e12
+    -- set ns.peak_hardware_flops = peak_hardware_flops | default(165.2e12)
 
     ## Tokens between logging, validation, and save steps
     -- set ns.logging_tokens = 2 * 1000 * 1000 * ns.step_cadence
@@ -250,12 +250,12 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
         action: "store_true"
         help: "Enable Torch compile"
     learning_rate:
-        names: [ "--learning-rate", "--lr" ]
+        names: ["--learning-rate", "--lr"]
         type: float
         default: !!float 1.0e-4
         help: "Set the base learning rate"
     max_length:
-        names: [ "--max_length" ]
+        names: "--max_length"
         type: int
         default: 4096
         help: "Set maximum sequence length"
@@ -273,6 +273,10 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
         type: int
         default: 100
         help: "Minimum tokens (billions) for LR cooldown phase"
+    peak_hardware_flops:
+        names: "--peak-hardware-flops"
+        type: float
+        help: "See docs/trainers/training-performance-metrics.md"
 
 #-------------------- project.logger_config --------------------
 -- extends 'callbacks/loggers.yaml'
@@ -317,3 +321,5 @@ text_gen_callback_args: &text_gen_callback_args
         show_tokens_per_second: True
         show_peak_memory: True
         peak_hardware_flops: {{ ns.total_peak_hardware_flops | toyaml }}
+    weight_norm_logger: !singleton:forgather.ml.trainer.callbacks:WeightNormLogger
+        summary_writer: *summary_writer

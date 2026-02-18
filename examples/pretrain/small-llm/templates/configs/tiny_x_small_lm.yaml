@@ -7,3 +7,4 @@
 
     -- set ns.dataset_proj = abspath(joinpath(project_dir, 'tiny-stories_small-lm'))
     -- set ns.dataset_config = "default.yaml"
+    -- set ns.model_name = "tiny_x_small_lm"
