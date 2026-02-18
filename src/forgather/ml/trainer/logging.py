@@ -21,21 +21,39 @@ def _fmt_si(v: int) -> str:
     return str(v)
 
 
-# Per-metric display name and value formatter for periodic step logs.
-# Keys not listed here fall through to generic formatting.
-_STEP_METRICS: dict[str, tuple[str, Callable]] = {
-    "epoch": ("epoch", lambda v: f"{v:.4g}"),
-    "loss": ("loss", lambda v: f"{v:.5f}"),
-    "grad_norm": ("grad", lambda v: f"{v:.4f}"),
-    "max_grad_norm": ("maxg", lambda v: f"{v:.4f}"),
-    "learning_rate": ("lr", lambda v: f"{v:.2e}"),
-    "tokens": ("tokens", lambda v: f"{int(v):,}"),
-    "total_tokens": ("total_tok", _fmt_si),
-    "total_flos": ("flos", lambda v: f"{v:.3e}"),
-    "tok/s": ("tok/s", lambda v: f"{int(v):,}"),
-    "mfu": ("mfu", lambda v: str(v)),  # pre-formatted as "38.5%"
-    "peak_mem": ("peak_mem", lambda v: str(v)),  # pre-formatted as "12.345 GiB"
+# Per-metric display config for columnar step logs.
+# Each entry: (column_header, column_width, value_formatter)
+# column_width must accommodate both the header label and the widest formatted value.
+_STEP_METRICS: dict[str, tuple[str, int, Callable]] = {
+    "epoch": ("epoch", 8, lambda v: f"{v:.4g}"),
+    "loss": ("loss", 8, lambda v: f"{v:.5f}"),
+    "grad_norm": ("grad", 8, lambda v: f"{v:.4f}"),
+    "max_grad_norm": ("maxg", 8, lambda v: f"{v:.4f}"),
+    "learning_rate": ("lr", 10, lambda v: f"{v:.2e}"),
+    "tokens": ("tokens", 10, lambda v: f"{int(v):,}"),
+    "total_tokens": ("total_tok", 10, _fmt_si),
+    "total_flos": ("flos", 10, lambda v: f"{v:.3e}"),
+    "tok/s": ("tok/s", 10, lambda v: f"{int(v):,}"),
+    "mfu": ("mfu", 6, lambda v: str(v)),
+    "peak_mem": ("peak_mem", 11, lambda v: str(v)),
 }
+
+# Canonical column display order for train log rows.
+_COLUMN_ORDER: list[str] = [
+    "epoch",
+    "loss",
+    "grad_norm",
+    "max_grad_norm",
+    "learning_rate",
+    "tokens",
+    "total_tokens",
+    "tok/s",
+    "mfu",
+    "peak_mem",
+]
+
+# Width of the step count prefix column.
+_STEP_COL_WIDTH = 10
 
 # Ordered display labels and formatters for final training metrics.
 # Keys present in the metrics dict but not listed here are shown at the end.
@@ -56,7 +74,7 @@ _FINAL_METRICS: dict[str, tuple[str, Callable]] = {
 
 def _fmt_step_value(key: str, value: Any) -> str:
     if key in _STEP_METRICS:
-        return _STEP_METRICS[key][1](value)
+        return _STEP_METRICS[key][2](value)
     elif isinstance(value, float):
         return f"{value:.4g}"
     elif isinstance(value, int):
@@ -66,6 +84,14 @@ def _fmt_step_value(key: str, value: Any) -> str:
 
 def _fmt_step_label(key: str) -> str:
     return _STEP_METRICS[key][0] if key in _STEP_METRICS else key
+
+
+def _col_spec(key: str) -> tuple[str, int]:
+    """Return (header_label, column_width) for a metric key."""
+    if key in _STEP_METRICS:
+        label, width, _ = _STEP_METRICS[key]
+        return label, width
+    return key, max(len(key) + 2, 8)
 
 
 def format_train_info(
@@ -147,19 +173,45 @@ def format_log_header(state: TrainerState):
     return s
 
 
+def format_train_header(mapping: Mapping) -> str:
+    """
+    Format a column header row for the active metrics in mapping.
+
+    Columns appear in canonical order (_COLUMN_ORDER), followed by any
+    unrecognised keys. Each label is right-aligned within its column width,
+    matching the alignment used by format_train_log.
+    """
+    parts = [f"{'step':>{_STEP_COL_WIDTH}}"]
+    for key in _COLUMN_ORDER:
+        if key in mapping:
+            label, width = _col_spec(key)
+            parts.append(f"{label:>{width}}")
+    for key in mapping:
+        if key not in _COLUMN_ORDER:
+            label, width = _col_spec(key)
+            parts.append(f"{label:>{width}}")
+    return "  ".join(parts)
+
+
 def format_train_log(state: TrainerState, mapping: Mapping) -> str:
     """
-    Format a single-line training step log entry.
+    Format a single columnar training step data row.
 
-    Formats all keys in mapping on one line. Known metric keys (loss, grad,
-    lr, tokens, tok/s, mfu, etc.) receive type-appropriate formatting and
-    abbreviated labels. Unknown keys fall through to generic formatting.
+    Values are right-aligned in fixed-width columns matching the header
+    produced by format_train_header. No key labels are included; the
+    header row provides those. Unknown keys are appended after the
+    canonical columns.
     """
-    header = format_log_header(state)
-    parts = [
-        f"{_fmt_step_label(k)}: {_fmt_step_value(k, v)}" for k, v in mapping.items()
-    ]
-    return header + "  " + "  ".join(parts)
+    parts = [f"{state.global_step:>{_STEP_COL_WIDTH},d}"]
+    for key in _COLUMN_ORDER:
+        if key in mapping:
+            _, width = _col_spec(key)
+            parts.append(f"{_fmt_step_value(key, mapping[key]):>{width}}")
+    for key, value in mapping.items():
+        if key not in _COLUMN_ORDER:
+            _, width = _col_spec(key)
+            parts.append(f"{_fmt_step_value(key, value):>{width}}")
+    return "  ".join(parts)
 
 
 def format_final_metrics(metrics: Mapping) -> str:
@@ -196,7 +248,7 @@ def format_final_metrics(metrics: Mapping) -> str:
 def format_eval_log(state, mapping: Mapping):
     header = format_log_header(state)
     if "eval_loss" in mapping:
-        return f"{header} eval-loss:  {round(mapping['eval_loss'], 5):<10}"
+        return f"{header}  eval-loss: {round(mapping['eval_loss'], 5)}"
     else:
         return header + format_mapping(mapping)
 

@@ -12,6 +12,7 @@ from forgather.ml.trainer.logging import (
     format_final_metrics,
     format_mapping,
     format_timestamp,
+    format_train_header,
     format_train_info,
     format_train_log,
     get_env_type,
@@ -47,6 +48,7 @@ class ProgressCallback:
         show_tokens_per_second: bool = True,
         peak_hardware_flops: Optional[float] = None,
         show_peak_memory: bool = True,
+        header_interval: int = 20,
     ):
         """
         Args:
@@ -75,6 +77,8 @@ class ProgressCallback:
                 since the last log step, formatted as GiB. Peak stats are reset after
                 each read, so the value reflects the interval high-water mark rather
                 than a cumulative maximum. Requires CUDA. (default: False)
+            header_interval: Print a column header row every this many log steps, and
+                also whenever the set of active columns changes. (default: 20)
         """
         super().__init__()
         self.train_progress_bar = None
@@ -87,6 +91,7 @@ class ProgressCallback:
         self.show_tokens_per_second = show_tokens_per_second
         self.peak_hardware_flops = peak_hardware_flops
         self.show_peak_memory = show_peak_memory
+        self.header_interval = header_interval
 
         # Tracking for per-interval speed metrics.
         # _step_start_time is set at on_step_begin and cleared at on_step_end.
@@ -95,6 +100,11 @@ class ProgressCallback:
         self._step_start_time: Optional[float] = None
         self._accumulated_train_time: float = 0.0
         self._last_total_flos: float = 0.0
+
+        # Column header tracking: print header every header_interval rows and
+        # whenever the active column set changes.
+        self._log_row_count: int = 0
+        self._last_active_keys: frozenset[str] = frozenset()
 
         # Remember actual eval steps from previous run for accurate progress bar
         self._last_eval_steps: Optional[int] = None
@@ -144,6 +154,8 @@ class ProgressCallback:
         self._last_total_flos = state.total_flos
         self._accumulated_train_time = 0.0
         self._step_start_time = None
+        self._log_row_count = 0
+        self._last_active_keys = frozenset()
         if self.use_tqdm:
             self.train_progress_bar = tqdm(
                 initial=state.global_step,
@@ -273,6 +285,21 @@ class ProgressCallback:
         # Reset accumulated training time for the next interval
         self._accumulated_train_time = 0.0
         self._last_total_flos = logs.get("total_flos", self._last_total_flos)
+
+        # Print a column header when the interval fires or the active column set changes
+        active_keys = frozenset(display_logs)
+        if (
+            self._log_row_count % self.header_interval == 0
+            or active_keys != self._last_active_keys
+        ):
+            header_line = format_train_header(display_logs)
+            if self.use_tqdm:
+                if self.train_progress_bar is not None:
+                    self.train_progress_bar.write(format_timestamp() + header_line)
+            else:
+                self.logger.info(header_line)
+            self._last_active_keys = active_keys
+        self._log_row_count += 1
 
         if self.use_tqdm:
             if self.train_progress_bar is not None:
