@@ -7,18 +7,9 @@
 
 [config_metadata]
     == super()
-    ## Overrides
     -- set ns.config_name = "Tiny Experiments"
     -- set ns.config_description = "A project template for running tiny model experiments."
-    ## Defines
     -- set ns.trainer_class = 'trainers/trainer.yaml'
-    ## We make use of custom models in these projects
-    -- set ns.trust_remote_code = True
-
-    ## memory debugging
-    -- set ns.debug_memory_detials = False
-    ## Debug logging to TensorBoard vs console
-    -- set ns.log_memory_to_tb = False
 
     ## The dataset sub-project to use
     -- set ns.dataset_proj = dataset_project | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
@@ -30,6 +21,12 @@
     ## The model project to import
     -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'causal_lm')
     -- set ns.model_project_config = "4M.yaml"
+
+    ## Safe-default to SDPA -- it has fast startup and tends to have relatively few issues.
+    -- set ns.default_attn_implementation = "sdpa"
+
+    ## See docs/trainers/training-performance-metrics.md
+    -- set ns.total_peak_hardware_flops = peak_hardware_flops | default(None)
 
 [datasets_preprocessor_args]
 tokenizer_args: &tokenizer_args !dict
@@ -90,8 +87,7 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     save_steps: 10000
     num_train_epochs: 1
     dataloader_num_workers: 1
-    # Safetensors can't handle tied parameters/buffers, so fallback to PyTorch format.
-    save_safetensors: False
+    torch_compile: {{ compile | default(False) }}
 
 [trainer_callbacks]
     ## See definition below
@@ -136,6 +132,18 @@ optimizer: &optimizer !partial:torch:optim.AdamW
         names: "--log-peak-memory"
         action: "store_true"
         help: "Log peak GPU memory at each log step"
+    debug_memory:
+        names: "--debug-memory"
+        action: "store_true"
+        help: "Record and display detailed memory usage."
+    compile:
+        names: "--compile"
+        action: "store_true"
+        help: "Enable Torch compile"
+    peak_hardware_flops:
+        names: "--peak-hardware-flops"
+        type: float
+        help: "See docs/trainers/training-performance-metrics.md"
 
 #-------------------- tiny.trainer_config --------------------
 -- extends ns.trainer_class
@@ -170,12 +178,19 @@ text_gen_callback_args: &text_gen_callback_args
 ## This adds a text-generationn sample every 'generation_steps'
 [callback_list]
     == super()
+    ## Flex attention seems to occasionally crash when generating. Disabled until issue is resolved.
+    -- if (attn_implementation | default(ns.default_attn_implementation)) != "flex_attention"
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         <<: *text_gen_callback_args
-    peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
-        show_details: {{ ns.debug_memory_detials }}
-        do_log: {{ log_peak_memory | default(False) }}
-    -- if ns.log_memory_to_tb
-        summary_writer: *summary_writer
     -- endif
+    peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
+        show_details: {{ debug_memory | toyaml(False) }}
+        do_log: {{ log_peak_memory | toyaml(False) }}
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
+    progress_callback: !singleton:forgather.ml.trainer.callbacks:ProgressCallback
+        use_tqdm: null
+        output_stream: "stdout"
+        show_tokens: True
+        show_tokens_per_second: True
+        show_peak_memory: True
+        peak_hardware_flops: {{ ns.total_peak_hardware_flops | toyaml }}
