@@ -88,8 +88,12 @@ class ProgressCallback:
         self.peak_hardware_flops = peak_hardware_flops
         self.show_peak_memory = show_peak_memory
 
-        # Tracking for per-interval speed metrics
-        self._last_log_time: Optional[float] = None
+        # Tracking for per-interval speed metrics.
+        # _step_start_time is set at on_step_begin and cleared at on_step_end.
+        # _accumulated_train_time sums pure training step durations between log calls,
+        # so evaluation time is excluded from throughput calculations.
+        self._step_start_time: Optional[float] = None
+        self._accumulated_train_time: float = 0.0
         self._last_total_flos: float = 0.0
 
         # Remember actual eval steps from previous run for accurate progress bar
@@ -137,8 +141,9 @@ class ProgressCallback:
             return
         self.last_step = state.global_step
         # Initialize speed metric tracking; use state values to handle checkpoint resume
-        self._last_log_time = time.monotonic()
         self._last_total_flos = state.total_flos
+        self._accumulated_train_time = 0.0
+        self._step_start_time = None
         if self.use_tqdm:
             self.train_progress_bar = tqdm(
                 initial=state.global_step,
@@ -155,9 +160,18 @@ class ProgressCallback:
                 self.train_progress_bar.close()
             self.train_progress_bar = None
 
+    def on_step_begin(self, args, state, control, **kwargs):
+        if not state.is_world_process_zero:
+            return
+        self._step_start_time = time.monotonic()
+
     def on_step_end(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
             return
+
+        if self._step_start_time is not None:
+            self._accumulated_train_time += time.monotonic() - self._step_start_time
+            self._step_start_time = None
 
         if self.use_tqdm:
             self.train_progress_bar.update(state.global_step - self.last_step)
@@ -213,8 +227,6 @@ class ProgressCallback:
                 self.logger.info(summary)
             return
 
-        now = time.monotonic()
-
         # Filter logs based on display options
         display_logs = {}
         if self.show_epoch and "epoch" in logs:
@@ -232,13 +244,11 @@ class ProgressCallback:
         if self.show_tokens and "total_tokens" in logs:
             display_logs["total_tokens"] = logs["total_tokens"]
 
-        # Compute per-interval speed metrics from delta since last log step
-        if (
-            self.show_tokens_per_second
-            and self._last_log_time is not None
-            and "tokens" in logs
-        ):
-            elapsed = now - self._last_log_time
+        # Compute per-interval speed metrics from accumulated pure training time.
+        # Using on_step_begin/on_step_end timestamps excludes evaluation time, so
+        # throughput is not deflated when evaluation runs between log steps.
+        if self.show_tokens_per_second and "tokens" in logs:
+            elapsed = self._accumulated_train_time
             if elapsed > 0:
                 delta_tokens = logs["tokens"]
                 tps = delta_tokens / elapsed
@@ -260,8 +270,8 @@ class ProgressCallback:
                 gib = 1024**3
                 display_logs["peak_mem"] = f"{peak_mem / gib:.3f} GiB"
 
-        # Update tracking for next interval
-        self._last_log_time = now
+        # Reset accumulated training time for the next interval
+        self._accumulated_train_time = 0.0
         self._last_total_flos = logs.get("total_flos", self._last_total_flos)
 
         if self.use_tqdm:
