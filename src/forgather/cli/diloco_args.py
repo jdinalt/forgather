@@ -88,6 +88,33 @@ def create_diloco_parser(global_args):
         default="0.0.0.0",
         help="Host address to bind to (default: 0.0.0.0)",
     )
+    server_parser.add_argument(
+        "--async",
+        dest="async_mode",
+        action="store_true",
+        help="Enable asynchronous mode (workers don't wait for each other)",
+    )
+    server_parser.add_argument(
+        "--dn-buffer-size",
+        type=int,
+        default=0,
+        help=(
+            "Delayed Nesterov buffer size. In async mode, buffer this many\n"
+            "submissions before applying momentum. Between buffered steps,\n"
+            "apply simple gradient descent. 0 = disabled (default: 0)"
+        ),
+    )
+    server_parser.add_argument(
+        "--dylu",
+        action="store_true",
+        help="Enable Dynamic Local Updates (DyLU) - adapt sync frequency per worker",
+    )
+    server_parser.add_argument(
+        "--dylu-base-sync-every",
+        type=int,
+        default=500,
+        help="DyLU base sync_every for the fastest worker (default: 500)",
+    )
 
     # status subcommand
     status_parser = subparsers.add_parser(
@@ -130,6 +157,17 @@ def create_diloco_parser(global_args):
         "--no-bf16",
         action="store_true",
         help="Disable bfloat16 communication (send full precision pseudo-gradients)",
+    )
+    worker_parser.add_argument(
+        "--dylu",
+        action="store_true",
+        help="Enable Dynamic Local Updates - adapt sync_every based on server recommendations",
+    )
+    worker_parser.add_argument(
+        "--heartbeat-interval",
+        type=float,
+        default=30.0,
+        help="Seconds between heartbeats to server (for DyLU speed reporting, default: 30)",
     )
     worker_parser.add_argument(
         "-d",

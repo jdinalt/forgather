@@ -75,6 +75,22 @@ def _server_cmd(args):
         f"Outer optimizer: SGD(lr={outer_lr}, momentum={outer_momentum}, nesterov={nesterov})"
     )
 
+    # Async mode settings
+    async_mode = getattr(args, "async_mode", False)
+    dn_buffer_size = getattr(args, "dn_buffer_size", 0)
+    dylu = getattr(args, "dylu", False)
+    dylu_base = getattr(args, "dylu_base_sync_every", 500)
+
+    if async_mode:
+        mode_str = "async"
+        if dn_buffer_size > 0:
+            mode_str += f", DN(buffer={dn_buffer_size})"
+        if dylu:
+            mode_str += f", DyLU(base={dylu_base})"
+        print(f"Mode: {mode_str}")
+    else:
+        print("Mode: sync")
+
     # Create server
     server = DiLoCoServer(
         model_state_dict=state_dict,
@@ -84,6 +100,10 @@ def _server_cmd(args):
         host=args.host,
         save_dir=args.save_dir,
         save_every_n_rounds=args.save_every,
+        async_mode=async_mode,
+        dn_buffer_size=dn_buffer_size,
+        dylu_enabled=dylu,
+        dylu_base_sync_every=dylu_base,
     )
 
     # Resume from saved state if requested
@@ -112,6 +132,7 @@ def _status_cmd(args):
     print("DiLoCo Server Status")
     print("=" * 50)
     print(f"  Status:        {status.get('status', 'unknown')}")
+    print(f"  Mode:          {status.get('mode', 'sync')}")
     print(f"  Sync round:    {status.get('sync_round', 0)}")
     print(f"  Workers:       {status.get('num_registered', 0)}/{status.get('num_workers', '?')}")
 
@@ -120,6 +141,15 @@ def _status_cmd(args):
         hours = int(uptime // 3600)
         minutes = int((uptime % 3600) // 60)
         print(f"  Uptime:        {hours}h {minutes}m")
+
+    # Async-specific fields
+    if status.get("mode") == "async":
+        print(f"  Submissions:   {status.get('total_submissions', 0)}")
+        dn_buf = status.get("dn_buffer_size", 0)
+        if dn_buf > 0:
+            print(f"  DN buffer:     {status.get('dn_buffered', 0)}/{dn_buf}")
+        if status.get("dylu_enabled"):
+            print(f"  DyLU base H:   {status.get('dylu_base_sync_every', '?')}")
 
     pending = status.get("pending_submissions", [])
     if pending:
@@ -161,6 +191,8 @@ def _worker_cmd(args):
     env["DILOCO_SERVER"] = args.server
     env["DILOCO_SYNC_EVERY"] = str(args.sync_every)
     env["DILOCO_BF16_COMM"] = "0" if args.no_bf16 else "1"
+    env["DILOCO_DYLU"] = "1" if getattr(args, "dylu", False) else "0"
+    env["DILOCO_HEARTBEAT_INTERVAL"] = str(getattr(args, "heartbeat_interval", 30.0))
 
     if args.worker_id:
         env["DILOCO_WORKER_ID"] = args.worker_id
@@ -191,6 +223,8 @@ def _worker_cmd(args):
         f"DiLoCo: server={args.server}, sync_every={args.sync_every}, "
         f"bf16={'yes' if not args.no_bf16 else 'no'}"
     )
+    if getattr(args, "dylu", False):
+        diloco_info += ", dylu=yes"
     if args.worker_id:
         diloco_info += f", worker_id={args.worker_id}"
 

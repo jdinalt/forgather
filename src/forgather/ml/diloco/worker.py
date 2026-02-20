@@ -5,6 +5,10 @@ Wraps around a model and optimizer to periodically synchronize with a DiLoCo
 parameter server. Uses optimizer post-step hooks so it works transparently
 with any existing Forgather trainer (single GPU, DDP, pipeline).
 
+Supports both synchronous and asynchronous DiLoCo modes (determined by the
+server). In async mode, the worker can optionally adapt its sync frequency
+dynamically via DyLU (Dynamic Local Updates) based on server recommendations.
+
 Usage:
     model = MyModel()
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
@@ -18,6 +22,7 @@ Rank 0 gathers/scatters parameters from/to other pipeline ranks.
 
 import logging
 import platform
+import threading
 import time
 import uuid
 from typing import Dict, List, Optional
@@ -38,7 +43,7 @@ class DiLoCoWorker:
     When sync_every steps have been taken, the worker:
     1. Computes pseudo-gradients: global_params - local_params
     2. Optionally casts to bfloat16 for bandwidth reduction
-    3. Submits to the server and blocks until all workers sync
+    3. Submits to the server (blocks in sync mode, returns immediately in async)
     4. Receives updated global params and loads them into the model
 
     Args:
@@ -50,6 +55,13 @@ class DiLoCoWorker:
         bf16_comm: If True, cast pseudo-gradients to bfloat16 before sending.
             Halves bandwidth with minimal quality loss.
         timeout: Client timeout in seconds for server communication.
+        dylu: If True, dynamically adjust sync_every based on server
+            recommendations from DyLU (Dynamic Local Updates). The server
+            computes a recommended sync interval proportional to this worker's
+            speed relative to the fastest worker. Requires periodic heartbeats.
+        heartbeat_interval: Seconds between heartbeat messages to the server.
+            Heartbeats report training speed and receive DyLU recommendations.
+            Only active when dylu=True. Set to 0 to disable.
     """
 
     def __init__(
@@ -61,12 +73,17 @@ class DiLoCoWorker:
         worker_id: Optional[str] = None,
         bf16_comm: bool = True,
         timeout: float = 600,
+        dylu: bool = False,
+        heartbeat_interval: float = 30.0,
     ):
         self.model = model
         self.optimizer = optimizer
         self.sync_every = sync_every
+        self._initial_sync_every = sync_every
         self.bf16_comm = bf16_comm
         self.worker_id = worker_id or self._generate_worker_id()
+        self.dylu = dylu
+        self.heartbeat_interval = heartbeat_interval
 
         self.client = DiLoCoClient(server_addr, timeout=timeout)
 
@@ -83,6 +100,12 @@ class DiLoCoWorker:
         self._last_sync_send_bytes: int = 0
         self._last_sync_recv_bytes: int = 0
         self._step_timestamps: List[float] = []
+        self._last_staleness: int = 0
+        self._dylu_adjustments: int = 0
+
+        # Heartbeat thread (for DyLU speed reporting)
+        self._heartbeat_thread: Optional[threading.Thread] = None
+        self._heartbeat_stop = threading.Event()
 
     @staticmethod
     def _generate_worker_id() -> str:
@@ -120,16 +143,30 @@ class DiLoCoWorker:
         self._active = True
         self._local_step = 0
 
+        # Start heartbeat thread if DyLU is enabled
+        if self.dylu and self.heartbeat_interval > 0:
+            self._heartbeat_stop.clear()
+            self._heartbeat_thread = threading.Thread(
+                target=self._heartbeat_loop, daemon=True
+            )
+            self._heartbeat_thread.start()
+
         logger.info(
             f"DiLoCoWorker {self.worker_id}: active. "
             f"Syncing every {self.sync_every} steps, "
-            f"bf16_comm={self.bf16_comm}"
+            f"bf16_comm={self.bf16_comm}, dylu={self.dylu}"
         )
 
     def stop(self):
         """Remove hooks and deregister from server."""
         if not self._active:
             return
+
+        # Stop heartbeat thread
+        if self._heartbeat_thread is not None:
+            self._heartbeat_stop.set()
+            self._heartbeat_thread.join(timeout=5)
+            self._heartbeat_thread = None
 
         # Remove optimizer hooks
         for hook in self._hooks:
@@ -146,6 +183,12 @@ class DiLoCoWorker:
             f"{self._sync_count} sync rounds, "
             f"total sync time: {self._total_sync_time:.1f}s"
         )
+        if self._dylu_adjustments > 0:
+            logger.info(
+                f"  DyLU adjustments: {self._dylu_adjustments}, "
+                f"final sync_every: {self.sync_every} "
+                f"(initial: {self._initial_sync_every})"
+            )
 
     def _get_worker_info(self) -> dict:
         """Gather worker metadata for registration."""
@@ -153,6 +196,7 @@ class DiLoCoWorker:
             "hostname": platform.node(),
             "sync_every": self.sync_every,
             "bf16_comm": self.bf16_comm,
+            "dylu": self.dylu,
         }
 
         # Add GPU info if available
@@ -223,7 +267,7 @@ class DiLoCoWorker:
         )
         self._last_sync_send_bytes = send_bytes
 
-        # Submit and receive updated global params (blocks until all workers sync)
+        # Submit and receive updated global params
         new_global_params = self.client.submit_pseudogradients(
             self.worker_id, pseudograds
         )
@@ -253,6 +297,29 @@ class DiLoCoWorker:
             f"took {elapsed:.1f}s"
         )
 
+    def _heartbeat_loop(self):
+        """Background thread that sends periodic heartbeats to the server."""
+        while not self._heartbeat_stop.wait(timeout=self.heartbeat_interval):
+            if not self._active:
+                break
+            try:
+                speed = self.get_steps_per_second()
+                response = self.client.heartbeat(self.worker_id, steps_per_second=speed)
+
+                # Apply DyLU recommendation if present
+                if self.dylu and "recommended_sync_every" in response:
+                    new_sync_every = response["recommended_sync_every"]
+                    if new_sync_every != self.sync_every:
+                        old = self.sync_every
+                        self.sync_every = new_sync_every
+                        self._dylu_adjustments += 1
+                        logger.info(
+                            f"DiLoCoWorker {self.worker_id}: DyLU adjusted "
+                            f"sync_every {old} -> {new_sync_every}"
+                        )
+            except Exception as e:
+                logger.warning(f"Heartbeat failed: {e}")
+
     def get_steps_per_second(self) -> float:
         """Compute current training speed from step timestamps."""
         if len(self._step_timestamps) < 2:
@@ -265,7 +332,7 @@ class DiLoCoWorker:
     @property
     def sync_metrics(self) -> dict:
         """Return current sync metrics for logging."""
-        return {
+        metrics = {
             "diloco/sync_count": self._sync_count,
             "diloco/local_step": self._local_step,
             "diloco/last_sync_time": self._last_sync_time,
@@ -273,7 +340,11 @@ class DiLoCoWorker:
             "diloco/last_send_mb": self._last_sync_send_bytes / 1e6,
             "diloco/last_recv_mb": self._last_sync_recv_bytes / 1e6,
             "diloco/steps_per_second": self.get_steps_per_second(),
+            "diloco/sync_every": self.sync_every,
         }
+        if self.dylu:
+            metrics["diloco/dylu_adjustments"] = self._dylu_adjustments
+        return metrics
 
     def force_sync(self):
         """Force an immediate sync regardless of step count."""

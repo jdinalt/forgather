@@ -6,6 +6,13 @@ requires high-bandwidth interconnects (NVLink, InfiniBand), DiLoCo reduces
 communication by ~500x, making 1 Gig Ethernet practical for multi-machine
 training.
 
+The system supports two operating modes:
+- **Synchronous**: All workers must submit before the server applies the outer
+  optimizer. Simple and deterministic.
+- **Asynchronous**: Workers submit independently without waiting. Supports
+  heterogeneous hardware (different GPU types, different numbers of GPUs per
+  machine) with Delayed Nesterov (DN) momentum and Dynamic Local Updates (DyLU).
+
 ## How It Works
 
 Each machine runs any existing Forgather trainer (single GPU, DDP, or pipeline)
@@ -38,9 +45,9 @@ Nesterov momentum) to produce new global parameters that all workers adopt.
    +------------+      +------------+      +------------+
 ```
 
-### Sync Protocol
+### Synchronous Protocol
 
-Each synchronization round follows these steps:
+In the default synchronous mode, each round follows these steps:
 
 1. Workers train locally for `sync_every` optimizer steps (the "inner loop")
 2. Each worker computes pseudo-gradients: `global_params - local_params`
@@ -50,6 +57,19 @@ Each synchronization round follows these steps:
 6. Server applies the outer optimizer step (SGD with Nesterov momentum)
 7. Updated global parameters are returned to all workers
 8. Workers load the new parameters and begin the next inner loop
+
+### Asynchronous Protocol
+
+In async mode (`--async`), the barrier is removed. Each worker submits
+pseudo-gradients and receives updated global params immediately without waiting
+for other workers. This is essential for heterogeneous clusters where machines
+have different training speeds.
+
+The server applies each worker's pseudo-gradients as they arrive. To mitigate
+the momentum amplification problem caused by stale gradients, the server
+supports **Delayed Nesterov (DN)** momentum and **Dynamic Local Updates (DyLU)**.
+
+See [Async Mode](#async-mode) for configuration details.
 
 ### Bandwidth Efficiency
 
@@ -72,16 +92,30 @@ The server is a standalone process that holds global model parameters. Start it
 on any reachable machine (it does not need a GPU):
 
 ```bash
+# Synchronous mode (default)
 forgather diloco server \
     -m path/to/model \
     -n 2 \
     --port 8512
+
+# Asynchronous mode (for heterogeneous hardware)
+forgather diloco server \
+    -m path/to/model \
+    -n 3 \
+    --async \
+    --dn-buffer-size 3 \
+    --dylu \
+    --dylu-base-sync-every 500
 ```
 
-Arguments:
+Server arguments:
 - `-m`: Path to a model directory (loaded via `AutoModelForCausalLM.from_pretrained`)
-- `-n`: Number of workers expected (the barrier waits for all N)
+- `-n`: Number of expected workers
 - `--port`: Server port (default: 8512)
+- `--async`: Enable asynchronous mode
+- `--dn-buffer-size N`: Delayed Nesterov buffer size (async only, default: 0 = disabled)
+- `--dylu`: Enable Dynamic Local Updates (async only)
+- `--dylu-base-sync-every N`: Base sync interval for the fastest worker (default: 500)
 
 For Forgather checkpoint format, add `-c`:
 
@@ -94,27 +128,31 @@ forgather diloco server -c -m output_models/my_model/checkpoint-1000 -n 2
 On each machine, launch a worker that wraps the normal training command:
 
 ```bash
-# Machine A
+# Machine A (sync mode)
 forgather diloco worker \
     --server 192.168.1.100:8512 \
     --sync-every 500 \
     -p my_project -t train.yaml \
     train
 
-# Machine B
+# Machine B (with DyLU - server adjusts sync frequency dynamically)
 forgather diloco worker \
     --server 192.168.1.100:8512 \
     --sync-every 500 \
+    --dylu \
+    --heartbeat-interval 30 \
     -d 0 \
     -p my_project -t train.yaml \
     train
 ```
 
-Worker-specific arguments:
+Worker arguments:
 - `--server`: Server address as `host:port`
 - `--sync-every`: Local steps between syncs (default: 500)
 - `--worker-id`: Optional unique ID (auto-generated if omitted)
 - `--no-bf16`: Send full-precision pseudo-gradients instead of bfloat16
+- `--dylu`: Enable dynamic sync frequency adjustment from server
+- `--heartbeat-interval`: Seconds between heartbeats for speed reporting (default: 30)
 - `-d`: CUDA visible devices
 
 ### 3. Monitor
@@ -124,7 +162,8 @@ forgather diloco status --server 192.168.1.100:8512
 ```
 
 Shows sync round, registered workers, their hostnames, training speeds, and
-pending sync submissions.
+pending sync submissions. In async mode, also shows total submissions, DN buffer
+status, and DyLU configuration.
 
 ## Programmatic API
 
@@ -167,6 +206,8 @@ Key parameters:
 - `sync_every`: Steps between syncs (H in the DiLoCo paper)
 - `bf16_comm`: Cast pseudo-gradients to bfloat16 (default: True)
 - `worker_id`: Unique ID (auto-generated if None)
+- `dylu`: Enable dynamic sync frequency adjustment (default: False)
+- `heartbeat_interval`: Seconds between heartbeats for DyLU (default: 30)
 
 ### DiLoCoServer
 
@@ -177,12 +218,24 @@ from forgather.ml.diloco import DiLoCoServer
 model = AutoModelForCausalLM.from_pretrained("my_model")
 state_dict = model.state_dict()
 
-# Start server (blocking)
+# Synchronous server (default)
 server = DiLoCoServer(
     model_state_dict=state_dict,
     num_workers=3,
     port=8512,
     outer_optimizer_factory=lambda p: torch.optim.SGD(p, lr=0.7, momentum=0.9, nesterov=True),
+)
+server.run()
+
+# Asynchronous server with DN momentum and DyLU
+server = DiLoCoServer(
+    model_state_dict=state_dict,
+    num_workers=3,
+    port=8512,
+    async_mode=True,
+    dn_buffer_size=3,
+    dylu_enabled=True,
+    dylu_base_sync_every=500,
 )
 server.run()
 
@@ -248,6 +301,81 @@ To resume a server from saved state:
 forgather diloco server -m model -n 2 --resume /path/to/saves/diloco_server_state_latest.pt
 ```
 
+## Async Mode
+
+Asynchronous mode removes the synchronization barrier, allowing workers to
+submit pseudo-gradients and receive updated parameters independently. This is
+the recommended mode for heterogeneous clusters where machines have different
+training speeds.
+
+### Delayed Nesterov (DN) Momentum
+
+In standard (synchronous) DiLoCo, the outer optimizer uses SGD with Nesterov
+momentum. In async mode, applying momentum on every single worker submission can
+amplify stale gradients, leading to training instability.
+
+**Delayed Nesterov** addresses this by buffering pseudo-gradient submissions.
+Between buffered steps, the server applies simple gradient descent (no momentum):
+
+```
+param -= lr * grad
+```
+
+When the buffer fills (every `dn_buffer_size` submissions), the server averages
+the buffered gradients and applies a full outer optimizer step with momentum.
+
+This prevents momentum from tracking the direction of stale individual worker
+updates while still benefiting from momentum's acceleration over longer windows.
+
+```bash
+# Buffer 3 submissions, then apply momentum
+forgather diloco server -m model -n 3 --async --dn-buffer-size 3
+```
+
+When `dn_buffer_size=0` (the default), the outer optimizer with momentum is
+applied on every submission, which is appropriate when staleness is low.
+
+### Dynamic Local Updates (DyLU)
+
+When workers have different hardware (e.g., 4x RTX 3090 vs 1x RTX 4090), they
+train at different speeds. Without adjustment, the faster worker submits far more
+updates, potentially biasing the global model.
+
+**DyLU** adapts each worker's sync frequency proportional to its relative speed:
+
+```
+H_w = floor((v_w / v_max) * H_base)
+```
+
+Where `v_w` is the worker's training speed (steps/second), `v_max` is the
+fastest worker's speed, and `H_base` is the base sync interval. This ensures
+faster workers do more local steps between syncs, so all workers contribute
+updates at approximately the same wall-clock rate.
+
+DyLU requires:
+1. **Server**: `--dylu` flag and `--dylu-base-sync-every` (default: 500)
+2. **Workers**: `--dylu` flag and `--heartbeat-interval` (default: 30s)
+
+Workers periodically report their training speed via heartbeats. The server
+computes the recommended sync interval and returns it in the heartbeat response.
+Workers adjust their `sync_every` dynamically.
+
+```bash
+# Server with DyLU
+forgather diloco server -m model -n 3 --async --dylu --dylu-base-sync-every 500
+
+# Worker with DyLU enabled
+forgather diloco worker --server host:8512 --sync-every 500 --dylu -- train
+```
+
+### Staleness Tracking
+
+In async mode, the server tracks **staleness** for each worker submission: the
+number of server-side updates that have occurred since the worker last synced.
+High staleness means the worker's pseudo-gradients are computed against an
+outdated reference, which can reduce training efficiency. Staleness is logged
+on each submission and visible in the status endpoint for monitoring.
+
 ## How Pseudo-Gradients Work
 
 The pseudo-gradient computation follows the TorchFt approach:
@@ -271,18 +399,27 @@ The server exposes these HTTP endpoints:
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/register` | Worker registration; returns global params |
-| POST | `/submit_pseudograd` | Submit pseudo-gradients; blocks until all workers sync; returns updated params |
+| POST | `/submit_pseudograd` | Submit pseudo-gradients; returns updated params. In sync mode, blocks until all workers submit. In async mode, applies immediately. |
 | GET | `/global_params` | Fetch current global parameters |
-| POST | `/heartbeat` | Worker heartbeat with training speed |
+| POST | `/heartbeat` | Worker heartbeat with training speed; returns DyLU recommendation if enabled |
 | POST | `/deregister` | Worker departure |
-| GET | `/status` | Server status (workers, sync round, etc.) |
+| GET | `/status` | Server status (mode, workers, sync round, async-specific fields) |
 
 Tensor data is serialized using `torch.save` to `BytesIO` and sent as
 `application/octet-stream`. The pseudo-gradient submission uses a
 length-prefixed JSON header followed by the tensor payload.
 
+The `/status` endpoint returns additional fields in async mode:
+- `mode`: `"sync"` or `"async"`
+- `total_submissions`: Total pseudo-gradient submissions received
+- `dn_buffer_size`: Configured DN buffer size
+- `dn_buffered`: Current number of buffered submissions
+- `dylu_enabled`: Whether DyLU is active
+- `dylu_base_sync_every`: Base sync interval for DyLU
+
 ## References
 
 - Douillard et al., "DiLoCo: Distributed Low-Communication Training of Language Models" (2024)
 - Douillard et al., "DiPaCo: Distributed Path Composition" (2024)
+- Douillard et al., "Asynchronous Local-SGD Training for Language Modeling" (2024) - Async DiLoCo, Delayed Nesterov, DyLU
 - TorchFt (Meta) - fault-tolerant distributed training library
