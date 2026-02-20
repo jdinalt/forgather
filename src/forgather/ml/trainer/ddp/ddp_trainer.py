@@ -425,7 +425,7 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
                     stateful=cast(Stateful, self.optimizer),
                     sharing_pattern=SharingPattern.REPLICATED,
                     validate_replication=True,
-                    validation_level="quick",  # Fast hash-based validation
+                    validation_level="tensor",  # Per-tensor checksums for accurate validation
                     required=False,
                 )
             )

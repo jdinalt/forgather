@@ -27,6 +27,8 @@ from forgather.ml.sharded_checkpoint import (
 )
 
 from .checkpoint_coordinator import CheckpointCoordinator
+from .checkpoint_types import StateComponent
+from .checkpoint_utils import ValidationLevel, validate_replication
 from .trainer_types import CheckpointInterface, StatefulProvider
 
 if TYPE_CHECKING:
@@ -105,8 +107,16 @@ class CheckpointManager(CheckpointInterface):
         # Try new API first, fall back to old API if not implemented
         state_components = stateful_provider.get_state_components()
         if state_components is not None:
-            # Filter out model component - CheckpointManager handles model separately
-            # via sharded checkpoint (which can handle large models efficiently)
+            # Extract model component - CheckpointManager handles model saving
+            # separately via sharded checkpoint, but we still need the
+            # StateComponent metadata for replication validation.
+            model_components = [
+                comp for comp in state_components if comp.key == "model"
+            ]
+            self.model_state_component: StateComponent | None = (
+                model_components[0] if model_components else None
+            )
+
             non_model_components = [
                 comp for comp in state_components if comp.key != "model"
             ]
@@ -147,6 +157,13 @@ class CheckpointManager(CheckpointInterface):
             # Ensure the checkpoint directory exists
             os.makedirs(checkpoint_path, exist_ok=True)
         self._barrier()
+
+        # Validate model replication before saving (all ranks must participate)
+        if (
+            self.model_state_component is not None
+            and self.model_state_component.validate_replication
+        ):
+            self._validate_model_replication(self.model_state_component)
 
         # Save model weights (only on ranks that should save)
         if self._should_save_common():
@@ -455,6 +472,51 @@ class CheckpointManager(CheckpointInterface):
         ):
             return False
         return True
+
+    def _validate_model_replication(self, model_component: StateComponent):
+        """Validate that model weights are identical across all ranks.
+
+        Called before saving model weights when the model StateComponent
+        has validate_replication=True (e.g., DDP training).
+        """
+        if self.dist.world_size <= 1:
+            return
+
+        try:
+            level_str = model_component.validation_level
+            try:
+                level = ValidationLevel(level_str)
+            except ValueError:
+                logger.warning(
+                    f"Invalid validation_level '{level_str}' for model, "
+                    "defaulting to TENSOR"
+                )
+                level = ValidationLevel.TENSOR
+
+            state_dict = model_component.stateful.state_dict()
+            is_valid, errors = validate_replication(
+                state_dict,
+                validation_level=level,
+                group=None,
+            )
+
+            if not is_valid:
+                logger.error(
+                    f"Model replication validation failed "
+                    f"(level: {level.value}). "
+                    f"Model weights differ across ranks!"
+                )
+                for error in errors:
+                    logger.error(f"  - {error}")
+                if model_component.required:
+                    raise RuntimeError(
+                        "Model replication validation failed: "
+                        "DDP model weights have diverged across ranks"
+                    )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.warning(f"Failed to validate model replication: {e}")
 
     def _save_model(self, output_dir: str):
         shard_index = self.shard_index
