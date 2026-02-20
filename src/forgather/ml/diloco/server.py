@@ -31,9 +31,10 @@ import socket
 import struct
 import threading
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 
@@ -195,6 +196,19 @@ class DiLoCoServer:
         # from stale async gradients.
         self._dn_grad_buffer: List[Dict[str, torch.Tensor]] = []
 
+        # Fragment streaming state - for per-fragment sync.
+        # Maps param name -> index in _param_list for fast lookup.
+        self._param_name_to_idx: Dict[str, int] = {
+            name: i for i, name in enumerate(self._param_names)
+        }
+        # Per-fragment sync tracking (sync mode):
+        # (fragment_id, round) -> worker_id -> pseudograds
+        self._fragment_pending: Dict[int, Dict[str, Dict[str, torch.Tensor]]] = defaultdict(dict)
+        self._fragment_rounds: Dict[int, int] = defaultdict(int)
+        self._completed_fragment_rounds: Dict[Tuple[int, int], Dict[str, torch.Tensor]] = {}
+        # Reuse _sync_cond for fragment barrier notifications
+        self._fragment_submissions = 0  # Total fragment submissions
+
         # Server state
         self._server: Optional[HTTPServer] = None
         self._server_thread: Optional[threading.Thread] = None
@@ -303,6 +317,53 @@ class DiLoCoServer:
         # Periodic save
         if self.save_dir and self._sync_round % self.save_every_n_rounds == 0:
             self.save_state()
+
+    def _get_params_by_names(self, param_names) -> Dict[str, torch.Tensor]:
+        """Get current global parameters for a subset of parameter names."""
+        return {
+            name: self._param_list[self._param_name_to_idx[name]].data.clone()
+            for name in param_names
+            if name in self._param_name_to_idx
+        }
+
+    def _apply_fragment_outer_optimizer(
+        self, pseudograds_list: List[Dict[str, Dict[str, torch.Tensor]]]
+    ):
+        """
+        Average pseudo-gradients and apply the outer optimizer for a fragment.
+
+        Only sets .grad on parameters present in the pseudo-gradients. The
+        optimizer skips parameters with None grad, so only the fragment's
+        parameters are updated. Momentum buffers for other parameters remain
+        untouched.
+
+        Args:
+            pseudograds_list: List of per-worker pseudo-gradient dicts for this
+                fragment. Each dict maps param_name -> tensor.
+        """
+        n = len(pseudograds_list)
+        if n == 0:
+            return
+
+        # Get the param names from the first submission
+        frag_param_names = list(pseudograds_list[0].keys())
+
+        # Average pseudo-gradients and set as .grad on fragment params only
+        for name in frag_param_names:
+            idx = self._param_name_to_idx[name]
+            avg_grad = None
+            for worker_pg in pseudograds_list:
+                pg = worker_pg[name].float()
+                if avg_grad is None:
+                    avg_grad = pg.clone()
+                else:
+                    avg_grad.add_(pg)
+            avg_grad.div_(n)
+            self._param_list[idx].grad = avg_grad
+
+        # step() skips params with None grad; only fragment params updated
+        self.outer_optimizer.step()
+        self.outer_optimizer.zero_grad()
 
     def _compute_dylu_sync_every(self, worker_id: str) -> Optional[int]:
         """
@@ -452,6 +513,114 @@ class DiLoCoServer:
 
         _send_tensor_response(handler, global_params)
 
+    def _handle_submit_fragment_pseudograd(self, handler: BaseHTTPRequestHandler):
+        """
+        Handle fragment pseudo-gradient submission.
+
+        Used by streaming DiLoCo workers that split the model into fragments
+        for staggered sync. Each submission contains pseudo-gradients for only
+        one fragment's parameters.
+
+        In sync mode: per-fragment barrier (all workers must submit the same
+        fragment before the outer optimizer applies).
+        In async mode: applies immediately like full-model async.
+        """
+        body = _read_request_body(handler)
+
+        header_len = struct.unpack("!I", body[:4])[0]
+        header = json.loads(body[4 : 4 + header_len].decode("utf-8"))
+        tensor_data = body[4 + header_len :]
+
+        worker_id = header["worker_id"]
+        fragment_id = header["fragment_id"]
+        pseudograds = _deserialize_state_dict(tensor_data)
+
+        if self.async_mode:
+            self._handle_submit_fragment_async(handler, worker_id, fragment_id, pseudograds)
+        else:
+            self._handle_submit_fragment_sync(handler, worker_id, fragment_id, pseudograds)
+
+    def _handle_submit_fragment_sync(self, handler, worker_id, fragment_id, pseudograds):
+        """Per-fragment synchronous submission with barrier."""
+        with self._sync_cond:
+            my_round = self._fragment_rounds[fragment_id]
+
+            self._fragment_pending[fragment_id][worker_id] = pseudograds
+
+            with self._workers_lock:
+                if worker_id in self._workers:
+                    self._workers[worker_id].last_heartbeat = time.time()
+
+            submitted = len(self._fragment_pending[fragment_id])
+            logger.info(
+                f"Worker {worker_id} submitted fragment {fragment_id} pseudograds "
+                f"({submitted}/{self.num_workers}) for fragment round {my_round}"
+            )
+
+            if submitted >= self.num_workers:
+                # All workers submitted for this fragment - apply outer optimizer
+                pg_list = list(self._fragment_pending[fragment_id].values())
+                self._apply_fragment_outer_optimizer(pg_list)
+
+                frag_param_names = list(pseudograds.keys())
+                result = self._get_params_by_names(frag_param_names)
+                self._completed_fragment_rounds[(fragment_id, my_round)] = result
+
+                self._fragment_rounds[fragment_id] += 1
+                self._fragment_pending[fragment_id].clear()
+                self._fragment_submissions += len(pg_list)
+                self._sync_round += 1
+
+                # Clean up old fragment rounds
+                old = [
+                    k for k in self._completed_fragment_rounds
+                    if k[0] == fragment_id and k[1] < my_round - 1
+                ]
+                for k in old:
+                    del self._completed_fragment_rounds[k]
+
+                self._sync_cond.notify_all()
+
+            # Wait for this fragment round's result
+            key = (fragment_id, my_round)
+            while key not in self._completed_fragment_rounds:
+                if not self._sync_cond.wait(timeout=600):
+                    _send_json_response(handler, {"error": "Fragment sync timeout"}, 504)
+                    return
+
+            result = self._completed_fragment_rounds[key]
+
+        _send_tensor_response(handler, result)
+
+    def _handle_submit_fragment_async(self, handler, worker_id, fragment_id, pseudograds):
+        """Asynchronous fragment submission - apply immediately."""
+        with self._async_lock:
+            with self._workers_lock:
+                if worker_id in self._workers:
+                    self._workers[worker_id].last_heartbeat = time.time()
+
+            logger.info(
+                f"Worker {worker_id} submitted fragment {fragment_id} (async), "
+                f"server_round={self._sync_round}"
+            )
+
+            # Apply fragment's pseudo-gradients to the outer optimizer
+            frag_param_names = list(pseudograds.keys())
+            for name in frag_param_names:
+                idx = self._param_name_to_idx[name]
+                self._param_list[idx].grad = pseudograds[name].float()
+
+            self.outer_optimizer.step()
+            self.outer_optimizer.zero_grad()
+
+            self._sync_round += 1
+            self._total_submissions += 1
+            self._fragment_submissions += 1
+
+            result = self._get_params_by_names(frag_param_names)
+
+        _send_tensor_response(handler, result)
+
     def _handle_get_global_params(self, handler: BaseHTTPRequestHandler):
         """Handle request for current global parameters."""
         if self.async_mode:
@@ -543,6 +712,9 @@ class DiLoCoServer:
             if self.dylu_enabled:
                 response["dylu_base_sync_every"] = self.dylu_base_sync_every
 
+        if self._fragment_submissions > 0:
+            response["fragment_submissions"] = self._fragment_submissions
+
         _send_json_response(handler, response)
 
     def _create_handler(self):
@@ -561,6 +733,8 @@ class DiLoCoServer:
                         server_ref._handle_register(self)
                     elif path == "/submit_pseudograd":
                         server_ref._handle_submit_pseudograd(self)
+                    elif path == "/submit_fragment_pseudograd":
+                        server_ref._handle_submit_fragment_pseudograd(self)
                     elif path == "/heartbeat":
                         server_ref._handle_heartbeat(self)
                     elif path == "/deregister":

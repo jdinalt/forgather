@@ -177,6 +177,16 @@ def create_diloco_parser(global_args):
         help='CUDA Visible Devices e.g. "0,1"',
     )
     worker_parser.add_argument(
+        "--num-fragments",
+        type=int,
+        default=1,
+        help=(
+            "Number of fragments for streaming sync. When > 1, splits the model\n"
+            "into N fragments that sync at staggered intervals in background\n"
+            "threads, overlapping communication with computation. (default: 1)"
+        ),
+    )
+    worker_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show the generated command without executing",

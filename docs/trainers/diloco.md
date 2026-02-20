@@ -376,6 +376,99 @@ High staleness means the worker's pseudo-gradients are computed against an
 outdated reference, which can reduce training efficiency. Staleness is logged
 on each submission and visible in the status endpoint for monitoring.
 
+## Streaming DiLoCo (Fragment Sync)
+
+Streaming DiLoCo splits the model into N **fragments** and staggers their
+synchronization. Instead of one large transfer every H steps, each fragment
+syncs every H/N steps, with communication happening in a background thread
+while training continues on the remaining fragments.
+
+### How It Works
+
+```
+sync_every=600, num_fragments=3 -> fragment interval = 200 steps
+
+Step 1-200:   Training
+Step 200:     Submit fragment 0 in background thread
+Step 201-400: Training continues (fragment 0 transfer in background)
+Step 400:     Apply fragment 0 result, submit fragment 1
+Step 401-600: Training continues (fragment 1 transfer in background)
+Step 600:     Apply fragment 1 result, submit fragment 2, reset counter
+Step 1-200:   Training continues (fragment 2 transfer in background)
+...
+```
+
+The total data transferred per `sync_every` steps is the same as standard mode
+(full model), but latency is hidden behind computation. With enough fragments,
+communication becomes fully overlapped.
+
+### Bandwidth Analysis (Streaming)
+
+| Model Size | Fragments | Fragment Size | Transfer Time | Compute Window | Hidden? |
+|------------|-----------|---------------|---------------|----------------|---------|
+| 150M       | 3         | 100 MB        | 0.8s          | 167s           | Yes     |
+| 1B         | 7         | 286 MB        | 2.3s          | 71s            | Yes     |
+| 7B         | 7         | 2 GB          | 16s           | 71s            | Yes     |
+
+### CLI Usage
+
+```bash
+# Worker with 4 streaming fragments
+forgather diloco worker \
+    --server 192.168.1.100:8512 \
+    --sync-every 500 \
+    --num-fragments 4 \
+    -p my_project -t train.yaml \
+    train
+```
+
+### Programmatic Usage
+
+```python
+from forgather.ml.diloco import DiLoCoWorker
+
+with DiLoCoWorker(
+    model=model,
+    optimizer=optimizer,
+    server_addr="192.168.1.100:8512",
+    sync_every=500,
+    num_fragments=4,       # Split model into 4 fragments
+) as diloco:
+    trainer.train()        # Fragment syncs happen in background
+```
+
+### FragmentManager
+
+The `FragmentManager` handles parameter-to-fragment assignment:
+
+```python
+from forgather.ml.diloco import FragmentManager
+
+fm = FragmentManager(model, num_fragments=4)
+
+# Query fragment contents
+print(fm.fragments[0])           # List of param names in fragment 0
+print(fm.param_to_fragment)      # Dict: param_name -> fragment_id
+
+# Check sync schedule
+frag_id = fm.get_fragment_schedule(local_step=200, sync_every=800)
+```
+
+Parameters are split into contiguous groups by default, which naturally aligns
+with pipeline stages where adjacent layers are on the same rank.
+
+### Design Notes
+
+- When `num_fragments=1` (default), the standard non-streaming path is used.
+  No background threads, no fragment overhead.
+- At most one fragment is in-flight at a time. Before submitting the next
+  fragment, the previous one's result is applied.
+- `force_sync()` always does a full-model sync regardless of fragment mode.
+- The server's outer optimizer handles partial pseudo-gradient submissions by
+  only setting `.grad` on the fragment's parameters. PyTorch optimizers skip
+  parameters with `None` grad, so momentum buffers for other fragments remain
+  untouched.
+
 ## How Pseudo-Gradients Work
 
 The pseudo-gradient computation follows the TorchFt approach:
@@ -399,11 +492,12 @@ The server exposes these HTTP endpoints:
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/register` | Worker registration; returns global params |
-| POST | `/submit_pseudograd` | Submit pseudo-gradients; returns updated params. In sync mode, blocks until all workers submit. In async mode, applies immediately. |
+| POST | `/submit_pseudograd` | Submit full-model pseudo-gradients; returns updated params |
+| POST | `/submit_fragment_pseudograd` | Submit fragment pseudo-gradients; returns updated fragment params |
 | GET | `/global_params` | Fetch current global parameters |
 | POST | `/heartbeat` | Worker heartbeat with training speed; returns DyLU recommendation if enabled |
 | POST | `/deregister` | Worker departure |
-| GET | `/status` | Server status (mode, workers, sync round, async-specific fields) |
+| GET | `/status` | Server status (mode, workers, sync round, fragment/async fields) |
 
 Tensor data is serialized using `torch.save` to `BytesIO` and sent as
 `application/octet-stream`. The pseudo-gradient submission uses a
@@ -422,4 +516,5 @@ The `/status` endpoint returns additional fields in async mode:
 - Douillard et al., "DiLoCo: Distributed Low-Communication Training of Language Models" (2024)
 - Douillard et al., "DiPaCo: Distributed Path Composition" (2024)
 - Douillard et al., "Asynchronous Local-SGD Training for Language Modeling" (2024) - Async DiLoCo, Delayed Nesterov, DyLU
+- Douillard et al., "Streaming DiLoCo with Overlapping Communication" (2024) - Fragment-based staggered sync
 - TorchFt (Meta) - fault-tolerant distributed training library

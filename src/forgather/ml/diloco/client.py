@@ -219,6 +219,48 @@ class DiLoCoClient:
 
         return params
 
+    def submit_fragment_pseudogradients(
+        self,
+        worker_id: str,
+        fragment_id: int,
+        pseudograds: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Submit pseudo-gradients for a single model fragment.
+
+        Used in streaming DiLoCo mode where the model is split into fragments
+        that sync at staggered intervals for communication-computation overlap.
+
+        Args:
+            worker_id: Worker identifier.
+            fragment_id: Which fragment these pseudo-gradients belong to.
+            pseudograds: Pseudo-gradients for the fragment's parameters only.
+
+        Returns:
+            Updated global parameters for the fragment.
+        """
+        header = json.dumps({
+            "worker_id": worker_id,
+            "fragment_id": fragment_id,
+        }).encode("utf-8")
+        tensor_data = self._serialize_state_dict(pseudograds)
+
+        body = struct.pack("!I", len(header)) + header + tensor_data
+
+        t0 = time.time()
+        params = self._request_tensor(
+            "POST", "/submit_fragment_pseudograd", body=body
+        )
+        elapsed = time.time() - t0
+
+        logger.debug(
+            f"Fragment {fragment_id} sync for {worker_id}: "
+            f"sent {len(tensor_data) / 1e6:.1f} MB, "
+            f"took {elapsed:.1f}s"
+        )
+
+        return params
+
     def get_global_params(self) -> Dict[str, torch.Tensor]:
         """Fetch current global parameters (for late joiners or recovery)."""
         return self._request_tensor("GET", "/global_params")

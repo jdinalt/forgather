@@ -9,10 +9,12 @@ Key components:
 - DiLoCoServer: Central HTTP parameter server holding global model state
 - DiLoCoClient: HTTP client for server communication
 - DiLoCoWorker: Composable wrapper that hooks into any optimizer for periodic sync
+- FragmentManager: Splits model into fragments for streaming sync
 """
 
 from .client import DiLoCoClient
+from .fragments import FragmentManager
 from .server import DiLoCoServer
 from .worker import DiLoCoWorker
 
-__all__ = ["DiLoCoServer", "DiLoCoClient", "DiLoCoWorker"]
+__all__ = ["DiLoCoServer", "DiLoCoClient", "DiLoCoWorker", "FragmentManager"]
