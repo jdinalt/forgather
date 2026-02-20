@@ -1,0 +1,59 @@
+-- extends "projects/tiny.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DiLoCo Training"
+    -- set ns.config_description = "Tiny model with DiLoCo distributed local-SGD"
+    -- set ns.log_name = "diloco"
+
+[trainer_callbacks]
+    -- include 'diloco_project.callbacks'
+
+[optimizer]
+    == super()
+    lr: 1.0e-3
+
+[dynamic_args]
+    == super()
+    diloco_server:
+        names: "--diloco-server"
+        type: str
+        help: "DiLoCo server address (host:port)"
+    diloco_sync_every:
+        names: "--diloco-sync-every"
+        type: int
+        help: "Local optimizer steps between DiLoCo syncs"
+    diloco_worker_id:
+        names: "--diloco-worker-id"
+        type: str
+        help: "Unique DiLoCo worker ID"
+    diloco_bf16_comm:
+        names: "--diloco-bf16"
+        action: "store_true"
+        help: "Cast pseudo-gradients to bfloat16"
+    diloco_dylu:
+        names: "--diloco-dylu"
+        action: "store_true"
+        help: "Enable Dynamic Local Updates"
+    diloco_heartbeat_interval:
+        names: "--diloco-heartbeat"
+        type: float
+        help: "Seconds between heartbeats"
+    diloco_num_fragments:
+        names: "--diloco-fragments"
+        type: int
+        help: "Number of streaming fragments"
+
+#-------------------- diloco_project.callbacks --------------------
+-- extends 'tiny.callbacks'
+
+[callback_list]
+    == super()
+    diloco_callback: !singleton:forgather.ml.trainer.callbacks:DiLoCoCallback
+        server_addr: {{ diloco_server | default(None) }}
+        sync_every: {{ diloco_sync_every | default(None) }}
+        worker_id: {{ diloco_worker_id | default(None) }}
+        bf16_comm: {{ diloco_bf16_comm | default(None) }}
+        dylu: {{ diloco_dylu | default(None) }}
+        heartbeat_interval: {{ diloco_heartbeat_interval | default(None) }}
+        num_fragments: {{ diloco_num_fragments | default(None) }}

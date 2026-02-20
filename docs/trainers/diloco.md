@@ -612,6 +612,88 @@ The `/status` endpoint returns additional fields in async mode:
 - `dylu_enabled`: Whether DyLU is active
 - `dylu_base_sync_every`: Base sync interval for DyLU
 
+## Forgather Integration
+
+The `DiLoCoCallback` integrates DiLoCo with the Forgather trainer ecosystem.
+It manages the `DiLoCoWorker` lifecycle automatically and integrates with the
+checkpoint system via the `Stateful` protocol.
+
+### Callback Usage
+
+Add `DiLoCoCallback` to your trainer's callback list. When `server_addr` is
+empty (and `DILOCO_SERVER` is unset), the callback is a no-op, so the same
+configuration works for both DiLoCo and standalone training.
+
+```python
+from forgather.ml.trainer.callbacks import DiLoCoCallback
+
+# Explicit configuration
+callback = DiLoCoCallback(
+    server_addr="192.168.1.100:8512",
+    sync_every=500,
+    bf16_comm=True,
+    num_fragments=1,
+)
+
+# Or rely on environment variables (set by `forgather diloco worker`)
+callback = DiLoCoCallback()
+
+trainer = Trainer(
+    model=model,
+    args=args,
+    train_dataset=train_dataset,
+    callbacks=[callback],
+)
+trainer.train()
+```
+
+All constructor parameters fall back to `DILOCO_*` environment variables:
+
+| Parameter | Env Var | Default |
+|-----------|---------|---------|
+| `server_addr` | `DILOCO_SERVER` | `""` (no-op) |
+| `sync_every` | `DILOCO_SYNC_EVERY` | `500` |
+| `worker_id` | `DILOCO_WORKER_ID` | auto-generated |
+| `bf16_comm` | `DILOCO_BF16_COMM` | `True` |
+| `dylu` | `DILOCO_DYLU` | `False` |
+| `heartbeat_interval` | `DILOCO_HEARTBEAT_INTERVAL` | `30.0` |
+| `num_fragments` | `DILOCO_NUM_FRAGMENTS` | `1` |
+
+### Configuration Template
+
+Include the DiLoCo callback template to add DiLoCo support to any project:
+
+```yaml
+-- extends 'callbacks/diloco.yaml'
+```
+
+Or add the callback directly in your project template:
+
+```yaml
+[callback_list]
+    == super()
+    diloco_callback: !singleton:forgather.ml.trainer.callbacks:DiLoCoCallback
+        server_addr: {{ diloco_server | default(None) }}
+        sync_every: {{ diloco_sync_every | default(None) }}
+        num_fragments: {{ diloco_num_fragments | default(None) }}
+```
+
+See `examples/tiny_experiments/diloco/` for a complete working example.
+
+### Checkpoint Behavior
+
+The `DiLoCoCallback` implements the `Stateful` protocol, so the checkpoint
+manager automatically saves and restores its state:
+
+- **Saved**: sync_count, local_step, sync_every, worker_id, total_sync_time,
+  retry/reconnection counters, DyLU adjustments, fragment sync count
+- **Not saved**: global_params snapshot (the server provides fresh params when
+  the worker re-registers on resume)
+
+On checkpoint resume, the callback's `load_state_dict` is called during
+`_prepare()` (before the worker exists). The state is deferred and applied
+in `on_train_begin` after the worker is created and registered with the server.
+
 ## References
 
 - Douillard et al., "DiLoCo: Distributed Low-Communication Training of Language Models" (2024)

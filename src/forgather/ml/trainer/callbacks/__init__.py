@@ -1,5 +1,6 @@
 from .control_callback import TrainerControlCallback
 from .default_callbacks import InfoCallback, ProgressCallback
+from .diloco_callback import DiLoCoCallback
 from .divergence_detector import (
     DualTimeScaleDivergenceDetector,
     DualWindowDivergenceDetector,

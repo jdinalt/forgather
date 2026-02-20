@@ -1,0 +1,22 @@
+-- extends 'callbacks/base_callbacks.yaml'
+
+## DiLoCo Callback
+## Adds DiLoCoCallback to the trainer callback list for distributed local-SGD
+## training. All parameters default to environment variables set by the
+## `forgather diloco worker` CLI, so this template works with both explicit
+## configuration and CLI-based env vars.
+##
+## When server_addr is empty (no DILOCO_SERVER), the callback is a no-op.
+
+[callback_list]
+    => super()
+    diloco_callback: !singleton:forgather.ml.trainer.callbacks:DiLoCoCallback
+        server_addr: {{ diloco_server | default(None) }}
+        sync_every: {{ diloco_sync_every | default(None) }}
+        worker_id: {{ diloco_worker_id | default(None) }}
+        bf16_comm: {{ diloco_bf16_comm | default(None) }}
+        dylu: {{ diloco_dylu | default(None) }}
+        heartbeat_interval: {{ diloco_heartbeat_interval | default(None) }}
+        num_fragments: {{ diloco_num_fragments | default(None) }}
+        timeout: {{ diloco_timeout | default(600) }}
+        max_sync_retries: {{ diloco_max_sync_retries | default(3) }}
