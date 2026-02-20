@@ -218,6 +218,8 @@ class Adafactor(Optimizer):
 
     def load_state_dict(self, state_dict):
         """Load optimizer state handling conditional col=None."""
+        # Shallow copy to avoid mutating caller's dict
+        state_dict = dict(state_dict)
         # Extract SR generator state before super() processes the dict
         sr_gen_state = state_dict.pop("sr_generator_state", None)
 

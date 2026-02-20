@@ -1,12 +1,13 @@
 """
-Speed-optimized Triton kernels for Adafactor optimizer.
+Triton kernels for Adafactor optimizer with deterministic RMS computation.
 
-Key optimizations over the memory-optimized version:
+Key design:
 1. Zero CPU-GPU synchronization (no .item() calls)
-2. Persistent kernel fusing RMS computation + clip + parameter update
-   into a single kernel launch (reads gradient once for both RMS and apply)
-3. Precomputed rsqrt vectors to reduce per-element work in kernels
-4. Avoids materializing intermediate tensors (grad^2, update)
+2. RMS/clip_scale computed in PyTorch (deterministic reductions) before kernel launch
+3. Triton kernels only apply the clipped update to parameters
+4. Precomputed rsqrt vectors to reduce per-element work in kernels
+5. For 2D: factored RMS avoids materializing full update tensor:
+   sum(update^2) = dot(row_rsqrt^2, grad^2 @ col_rsqrt^2)
 
 Target configuration:
 - relative_step=False (use fixed lr)
@@ -26,7 +27,9 @@ _num_sms_cache = {}
 def _get_num_sms(device):
     idx = device.index if device.index is not None else torch.cuda.current_device()
     if idx not in _num_sms_cache:
-        _num_sms_cache[idx] = torch.cuda.get_device_properties(idx).multi_processor_count
+        _num_sms_cache[idx] = torch.cuda.get_device_properties(
+            idx
+        ).multi_processor_count
     return _num_sms_cache[idx]
 
 
@@ -108,77 +111,33 @@ def _col_reduction_kernel(
 
 
 # ============================================================
-# 2D persistent kernel: fused RMS computation + clip + apply
+# 2D persistent kernel: apply precomputed clipped update
 # ============================================================
 
 
 @triton.jit
-def _persistent_update_2d_kernel(
+def _persistent_apply_2d_kernel(
     param_ptr,
     grad_ptr,
     row_rsqrt_ptr,
     col_rsqrt_ptr,
-    update_sq_sum_ptr,
-    counter_ptr,
+    clip_scale_ptr,
     n_elements,
     N_COLS: tl.constexpr,
     lr,
     weight_decay,
-    clip_threshold,
     seed,
     NUM_SMS: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     BF16_STOCHASTIC_ROUND: tl.constexpr,
 ):
     """
-    Persistent kernel: compute update RMS via global reduction, then apply
-    clipped update to parameters. Two phases with spin-wait barrier.
-
-    Phase 1: Each block accumulates partial sum of update^2 over its chunks,
-             then atomically adds to the global accumulator.
-    Barrier: Spin-wait until all blocks have completed phase 1.
-    Phase 2: Each block computes clip_scale from the global sum, then
-             recomputes and applies the clipped update to parameters.
-
-    The gradient is read twice (once per phase) but the second read is
-    likely served from L1/L2 cache since the same block processes the
-    same memory regions in both phases.
+    Persistent kernel: apply clipped update to parameters.
+    clip_scale is precomputed on the host via deterministic PyTorch reductions.
     """
     pid = tl.program_id(0)
-    n_elements_f = n_elements.to(tl.float32)
+    clip_scale = tl.load(clip_scale_ptr)
 
-    # Phase 1: accumulate update^2
-    partial_sq_sum = 0.0
-    chunk_id = pid
-    while chunk_id * BLOCK_SIZE < n_elements:
-        offs = chunk_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        mask = offs < n_elements
-
-        row_idx = offs // N_COLS
-        col_idx = offs % N_COLS
-
-        grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
-        r_rs = tl.load(row_rsqrt_ptr + row_idx, mask=mask, other=0.0)
-        c_rs = tl.load(col_rsqrt_ptr + col_idx, mask=mask, other=0.0)
-
-        update = grad * r_rs * c_rs
-        partial_sq_sum += tl.sum(tl.where(mask, update * update, 0.0))
-
-        chunk_id += NUM_SMS
-
-    tl.atomic_add(update_sq_sum_ptr, partial_sq_sum)
-
-    # Barrier
-    tl.atomic_add(counter_ptr, 1)
-    while tl.atomic_add(counter_ptr, 0) < NUM_SMS:
-        pass
-
-    # Compute clip scale (redundantly per block, cheap)
-    total_sq = tl.atomic_add(update_sq_sum_ptr, 0.0)
-    rms = tl.sqrt(total_sq / n_elements_f)
-    clip_scale = tl.maximum(1.0, rms / clip_threshold)
-
-    # Phase 2: apply clipped update
     chunk_id = pid
     while chunk_id * BLOCK_SIZE < n_elements:
         offs = chunk_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -203,35 +162,8 @@ def _persistent_update_2d_kernel(
 
 
 # ============================================================
-# 2D non-persistent fallback: two separate kernels
+# 2D non-persistent fallback: apply kernel
 # ============================================================
-
-
-@triton.jit
-def _compute_rms_2d_kernel(
-    grad_ptr,
-    row_rsqrt_ptr,
-    col_rsqrt_ptr,
-    update_sq_sum_ptr,
-    n_elements,
-    N_COLS: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """Compute sum of update^2 for RMS calculation (2D)."""
-    block_start = tl.program_id(0) * BLOCK_SIZE
-    offs = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offs < n_elements
-
-    row_idx = offs // N_COLS
-    col_idx = offs % N_COLS
-
-    grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
-    r_rs = tl.load(row_rsqrt_ptr + row_idx, mask=mask, other=0.0)
-    c_rs = tl.load(col_rsqrt_ptr + col_idx, mask=mask, other=0.0)
-
-    update = grad * r_rs * c_rs
-    sq_sum = tl.sum(tl.where(mask, update * update, 0.0))
-    tl.atomic_add(update_sq_sum_ptr, sq_sum)
 
 
 @triton.jit
@@ -240,17 +172,16 @@ def _apply_update_2d_kernel(
     grad_ptr,
     row_rsqrt_ptr,
     col_rsqrt_ptr,
-    update_sq_sum_ptr,
+    clip_scale_ptr,
     n_elements,
     N_COLS: tl.constexpr,
     lr,
     weight_decay,
-    clip_threshold,
     seed,
     BLOCK_SIZE: tl.constexpr,
     BF16_STOCHASTIC_ROUND: tl.constexpr,
 ):
-    """Apply clipped update to parameters (2D). Reads clip info from device memory."""
+    """Apply clipped update to parameters (2D). Reads precomputed clip_scale."""
     block_start = tl.program_id(0) * BLOCK_SIZE
     offs = block_start + tl.arange(0, BLOCK_SIZE)
     mask = offs < n_elements
@@ -258,10 +189,7 @@ def _apply_update_2d_kernel(
     row_idx = offs // N_COLS
     col_idx = offs % N_COLS
 
-    total_sq = tl.load(update_sq_sum_ptr)
-    n_elements_f = n_elements.to(tl.float32)
-    rms = tl.sqrt(total_sq / n_elements_f)
-    clip_scale = tl.maximum(1.0, rms / clip_threshold)
+    clip_scale = tl.load(clip_scale_ptr)
 
     grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
     r_rs = tl.load(row_rsqrt_ptr + row_idx, mask=mask, other=0.0)
@@ -277,29 +205,8 @@ def _apply_update_2d_kernel(
 
 
 # ============================================================
-# 1D kernels (biases, layernorm params)
+# 1D kernel (biases, layernorm params)
 # ============================================================
-
-
-@triton.jit
-def _compute_rms_1d_kernel(
-    grad_ptr,
-    state_ptr,
-    update_sq_sum_ptr,
-    n_elements,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """Compute sum of update^2 for RMS calculation (1D)."""
-    block_start = tl.program_id(0) * BLOCK_SIZE
-    offs = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offs < n_elements
-
-    grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
-    state = tl.load(state_ptr + offs, mask=mask, other=1.0)
-
-    update = grad * tl.rsqrt(state)
-    sq_sum = tl.sum(tl.where(mask, update * update, 0.0))
-    tl.atomic_add(update_sq_sum_ptr, sq_sum)
 
 
 @triton.jit
@@ -307,24 +214,20 @@ def _apply_update_1d_kernel(
     param_ptr,
     grad_ptr,
     state_ptr,
-    update_sq_sum_ptr,
+    clip_scale_ptr,
     n_elements,
     lr,
     weight_decay,
-    clip_threshold,
     seed,
     BLOCK_SIZE: tl.constexpr,
     BF16_STOCHASTIC_ROUND: tl.constexpr,
 ):
-    """Apply clipped update to parameters (1D). Reads clip info from device memory."""
+    """Apply clipped update to parameters (1D). Reads precomputed clip_scale."""
     block_start = tl.program_id(0) * BLOCK_SIZE
     offs = block_start + tl.arange(0, BLOCK_SIZE)
     mask = offs < n_elements
 
-    total_sq = tl.load(update_sq_sum_ptr)
-    n_elements_f = n_elements.to(tl.float32)
-    rms = tl.sqrt(total_sq / n_elements_f)
-    clip_scale = tl.maximum(1.0, rms / clip_threshold)
+    clip_scale = tl.load(clip_scale_ptr)
 
     grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
     state = tl.load(state_ptr + offs, mask=mask, other=1.0)
@@ -361,9 +264,9 @@ def adafactor_step_2d_triton(
     """
     Speed-optimized 2D Adafactor step.
 
-    Uses Triton reduction kernels (same style as original, no grad_sq
-    materialization), then a persistent Triton kernel for the fused
-    RMS + clip + parameter update with zero CPU-GPU synchronization.
+    Uses Triton reduction kernels for row/col sums, then deterministic
+    PyTorch reductions for RMS/clip_scale (no atomic_add non-determinism),
+    followed by a Triton kernel for the parameter update.
     """
     n_rows, n_cols = grad.shape
     n_elements = n_rows * n_cols
@@ -381,10 +284,19 @@ def adafactor_step_2d_triton(
     BLOCK_COL = 1024
     BLOCK_ROW = 256
     _row_reduction_kernel[(n_rows,)](
-        grad_f32, row_sums, n_cols, eps1, BLOCK_COL,
+        grad_f32,
+        row_sums,
+        n_cols,
+        eps1,
+        BLOCK_COL,
     )
     _col_reduction_kernel[(n_cols,)](
-        grad_f32, col_sums, n_rows, n_cols, eps1, BLOCK_ROW,
+        grad_f32,
+        col_sums,
+        n_rows,
+        n_cols,
+        eps1,
+        BLOCK_ROW,
     )
 
     # EMA state update (small vectors, fast PyTorch ops)
@@ -402,15 +314,21 @@ def adafactor_step_2d_triton(
     row_rsqrt = torch.rsqrt(row_f32 / row_sum).contiguous()
     col_rsqrt = torch.rsqrt(col_f32).contiguous()
 
+    # Deterministic RMS computation using factored form:
+    # sum(update^2) = sum_{i,j} grad[i,j]^2 * row_rsqrt[i]^2 * col_rsqrt[j]^2
+    #              = dot(row_rsqrt^2, grad^2 @ col_rsqrt^2)
+    grad_2d = grad_f32.reshape(n_rows, n_cols)
+    per_row = torch.mv(grad_2d.square(), col_rsqrt.square())
+    total_sq = torch.dot(row_rsqrt.square(), per_row)
+    rms_val = (total_sq / n_elements).sqrt()
+    clip_scale = torch.clamp(rms_val / clip_threshold, min=1.0)
+
     # Flatten for 1D kernel indexing
     grad_flat = grad_f32.reshape(-1)
     if param.dtype == torch.float32:
         param_flat = param.reshape(-1)
     else:
         param_flat = param.float().reshape(-1)
-
-    # Scratch tensors
-    update_sq_sum = torch.zeros(1, device=grad.device, dtype=torch.float32)
 
     # Stochastic rounding only applies when converting f32 -> bf16
     do_stochastic_round = bf16_stochastic_round and param.dtype != torch.float32
@@ -421,46 +339,33 @@ def adafactor_step_2d_triton(
     n_blocks = triton.cdiv(n_elements, BLOCK_SIZE)
 
     if n_elements >= _PERSISTENT_THRESHOLD:
-        counter = torch.zeros(1, device=grad.device, dtype=torch.int32)
         grid_size = min(num_sms, n_blocks)
-        _persistent_update_2d_kernel[(grid_size,)](
+        _persistent_apply_2d_kernel[(grid_size,)](
             param_flat,
             grad_flat,
             row_rsqrt,
             col_rsqrt,
-            update_sq_sum,
-            counter,
+            clip_scale,
             n_elements,
             n_cols,
             lr,
             weight_decay,
-            clip_threshold,
             seed,
             grid_size,
             BLOCK_SIZE,
             do_stochastic_round,
         )
     else:
-        _compute_rms_2d_kernel[(n_blocks,)](
-            grad_flat,
-            row_rsqrt,
-            col_rsqrt,
-            update_sq_sum,
-            n_elements,
-            n_cols,
-            BLOCK_SIZE,
-        )
         _apply_update_2d_kernel[(n_blocks,)](
             param_flat,
             grad_flat,
             row_rsqrt,
             col_rsqrt,
-            update_sq_sum,
+            clip_scale,
             n_elements,
             n_cols,
             lr,
             weight_decay,
-            clip_threshold,
             seed,
             BLOCK_SIZE,
             do_stochastic_round,
@@ -485,8 +390,8 @@ def adafactor_step_1d_triton(
     """
     Speed-optimized 1D Adafactor step.
 
-    Uses PyTorch for state update, two small Triton kernels for
-    update computation with no CPU-GPU sync.
+    Uses PyTorch for state update and deterministic RMS computation,
+    then a single Triton kernel for the parameter update.
     """
     n_elements = grad.numel()
 
@@ -501,14 +406,16 @@ def adafactor_step_1d_triton(
     if state.dtype != torch.float32:
         state.copy_(state_f32)
 
+    # Deterministic RMS computation in PyTorch
+    total_sq = (grad_f32.square() / state_f32).sum()
+    rms_val = (total_sq / n_elements).sqrt()
+    clip_scale = torch.clamp(rms_val / clip_threshold, min=1.0)
+
     # Param in f32
     if param.dtype == torch.float32:
         param_f32 = param.contiguous()
     else:
         param_f32 = param.float().contiguous()
-
-    # Compute RMS then apply (two kernels, no CPU sync)
-    update_sq_sum = torch.zeros(1, device=grad.device, dtype=torch.float32)
 
     # Stochastic rounding only applies when converting f32 -> bf16
     do_stochastic_round = bf16_stochastic_round and param.dtype != torch.float32
@@ -517,23 +424,14 @@ def adafactor_step_1d_triton(
     BLOCK_SIZE = 1024
     n_blocks = triton.cdiv(n_elements, BLOCK_SIZE)
 
-    _compute_rms_1d_kernel[(n_blocks,)](
-        grad_f32,
-        state_f32,
-        update_sq_sum,
-        n_elements,
-        BLOCK_SIZE,
-    )
-
     _apply_update_1d_kernel[(n_blocks,)](
         param_f32,
         grad_f32,
         state_f32,
-        update_sq_sum,
+        clip_scale,
         n_elements,
         lr,
         weight_decay,
-        clip_threshold,
         seed,
         BLOCK_SIZE,
         do_stochastic_round,

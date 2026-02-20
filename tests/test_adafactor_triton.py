@@ -3,14 +3,17 @@ Test script for Adafactor Triton implementation.
 
 Tests:
 1. Correctness: Compare Triton vs PyTorch outputs
-2. Memory usage: Measure peak memory with both implementations
-3. Performance: Compare execution time
+2. Determinism: Verify bitwise-identical results across runs
+3. Memory usage: Measure peak memory with both implementations
 """
 
 import torch
 import torch.nn as nn
 
-from src.forgather.ml.optim.adafactor import Adafactor
+try:
+    from src.forgather.ml.optim.adafactor import Adafactor
+except ModuleNotFoundError:
+    from forgather.ml.optim.adafactor import Adafactor
 
 
 def create_test_model():
@@ -110,6 +113,60 @@ def test_correctness():
     return max_diff < 1e-3
 
 
+def _run_triton_steps(n_steps=10):
+    """Run Triton optimizer for n_steps and return final parameter state dicts."""
+    torch.manual_seed(42)
+    model = create_test_model().cuda()
+    opt = Adafactor(
+        model.parameters(),
+        lr=1e-3,
+        weight_decay=0.001,
+        use_triton=True,
+    )
+
+    for step in range(n_steps):
+        torch.manual_seed(42 + step)
+        x = torch.randn(32, 1024).cuda()
+        target = torch.randn(32, 512).cuda()
+
+        opt.zero_grad()
+        out = model(x)
+        loss = ((out - target) ** 2).mean()
+        loss.backward()
+        opt.step()
+
+    # Collect final parameters as detached clones
+    params = {name: p.detach().clone() for name, p in model.named_parameters()}
+    return params
+
+
+def test_determinism():
+    """Test that the Triton optimizer produces bitwise-identical results across runs."""
+    print("\n" + "=" * 60)
+    print("Testing Determinism")
+    print("=" * 60)
+
+    params_a = _run_triton_steps(n_steps=10)
+    params_b = _run_triton_steps(n_steps=10)
+
+    all_identical = True
+    for name in params_a:
+        identical = torch.equal(params_a[name], params_b[name])
+        if not identical:
+            diff = (params_a[name] - params_b[name]).abs().max().item()
+            print(f"  {name}: NOT identical (max diff: {diff:.6e})")
+            all_identical = False
+        else:
+            print(f"  {name}: identical")
+
+    if all_identical:
+        print("PASSED: Triton optimizer is bitwise deterministic")
+    else:
+        print("FAILED: Triton optimizer is NOT deterministic")
+
+    return all_identical
+
+
 def test_memory_usage():
     """Test memory usage of both implementations."""
     print("\n" + "=" * 60)
@@ -202,16 +259,23 @@ def main():
         # Test correctness
         correctness_passed = test_correctness()
 
+        # Test determinism
+        determinism_passed = test_determinism()
+
         # Test memory usage
         test_memory_usage()
 
         print("\n" + "=" * 60)
         print("Test Summary")
         print("=" * 60)
-        if correctness_passed:
-            print("✓ All tests passed")
+        all_passed = correctness_passed and determinism_passed
+        if all_passed:
+            print("All tests passed")
         else:
-            print("✗ Some tests failed")
+            if not correctness_passed:
+                print("FAILED: Correctness test")
+            if not determinism_passed:
+                print("FAILED: Determinism test")
 
     except Exception as e:
         print(f"\n✗ Error during testing: {e}")
