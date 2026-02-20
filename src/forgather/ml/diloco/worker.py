@@ -77,11 +77,14 @@ class DiLoCoWorker:
             computes a recommended sync interval proportional to this worker's
             speed relative to the fastest worker. Requires periodic heartbeats.
         heartbeat_interval: Seconds between heartbeat messages to the server.
-            Heartbeats report training speed and receive DyLU recommendations.
-            Only active when dylu=True. Set to 0 to disable.
+            Heartbeats report training speed, enable server-side health
+            monitoring, and receive DyLU recommendations. Set to 0 to disable.
         num_fragments: Number of fragments for streaming sync. When > 1,
             enables streaming mode where fragments sync at staggered intervals
             in background threads. Default 1 (standard non-streaming mode).
+        max_sync_retries: Maximum retry attempts for sync failures. On
+            connection error, the worker will re-register with the server
+            and retry the sync. 0 means no retries (fail immediately).
     """
 
     def __init__(
@@ -96,6 +99,7 @@ class DiLoCoWorker:
         dylu: bool = False,
         heartbeat_interval: float = 30.0,
         num_fragments: int = 1,
+        max_sync_retries: int = 3,
     ):
         self.model = model
         self.optimizer = optimizer
@@ -106,6 +110,7 @@ class DiLoCoWorker:
         self.dylu = dylu
         self.heartbeat_interval = heartbeat_interval
         self.num_fragments = num_fragments
+        self.max_sync_retries = max_sync_retries
 
         self.client = DiLoCoClient(server_addr, timeout=timeout)
 
@@ -130,8 +135,10 @@ class DiLoCoWorker:
         self._last_staleness: int = 0
         self._dylu_adjustments: int = 0
         self._fragment_syncs: int = 0
+        self._sync_retries: int = 0
+        self._reconnections: int = 0
 
-        # Heartbeat thread (for DyLU speed reporting)
+        # Heartbeat thread (for health monitoring and DyLU)
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop = threading.Event()
 
@@ -178,8 +185,9 @@ class DiLoCoWorker:
         self._active = True
         self._local_step = 0
 
-        # Start heartbeat thread if DyLU is enabled
-        if self.dylu and self.heartbeat_interval > 0:
+        # Start heartbeat thread (enables server-side health monitoring
+        # and DyLU speed reporting)
+        if self.heartbeat_interval > 0:
             self._heartbeat_stop.clear()
             self._heartbeat_thread = threading.Thread(
                 target=self._heartbeat_loop, daemon=True
@@ -316,7 +324,12 @@ class DiLoCoWorker:
                 self._step_timestamps.clear()
 
     def _sync(self):
-        """Perform a sync round with the server."""
+        """Perform a sync round with the server, with retry on failure.
+
+        On connection error, attempts to re-register with the server and
+        retry the sync up to max_sync_retries times. If all retries fail,
+        logs the error and continues training (the sync is skipped).
+        """
         t0 = time.time()
 
         logger.info(
@@ -333,35 +346,81 @@ class DiLoCoWorker:
         )
         self._last_sync_send_bytes = send_bytes
 
-        # Submit and receive updated global params
-        new_global_params = self.client.submit_pseudogradients(
-            self.worker_id, pseudograds
-        )
+        # Submit with retry on connection failure
+        new_global_params = None
+        retry_delay = 2.0
+        for attempt in range(self.max_sync_retries + 1):
+            try:
+                new_global_params = self.client.submit_pseudogradients(
+                    self.worker_id, pseudograds
+                )
+                break
+            except ConnectionError as e:
+                if attempt < self.max_sync_retries:
+                    self._sync_retries += 1
+                    logger.warning(
+                        f"DiLoCoWorker {self.worker_id}: sync failed "
+                        f"(attempt {attempt + 1}/{self.max_sync_retries + 1}): {e}. "
+                        f"Reconnecting in {retry_delay:.0f}s..."
+                    )
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                    self._reconnect()
+                    # Recompute pseudo-gradients (params may have changed
+                    # after reconnect)
+                    pseudograds = self._compute_pseudogradients()
+                else:
+                    logger.error(
+                        f"DiLoCoWorker {self.worker_id}: sync failed after "
+                        f"{self.max_sync_retries + 1} attempts: {e}. "
+                        f"Skipping this sync round."
+                    )
 
-        # Track receive size
-        recv_bytes = sum(
-            p.numel() * p.element_size() for p in new_global_params.values()
-        )
-        self._last_sync_recv_bytes = recv_bytes
+        if new_global_params is not None:
+            # Track receive size
+            recv_bytes = sum(
+                p.numel() * p.element_size() for p in new_global_params.values()
+            )
+            self._last_sync_recv_bytes = recv_bytes
 
-        # Apply new global params to model
-        self._apply_global_params(new_global_params)
-        self._save_global_params_snapshot()
+            # Apply new global params to model
+            self._apply_global_params(new_global_params)
+            self._save_global_params_snapshot()
 
-        # Reset local step counter
+            elapsed = time.time() - t0
+            self._last_sync_time = elapsed
+            self._total_sync_time += elapsed
+
+            logger.info(
+                f"DiLoCoWorker {self.worker_id}: sync round {self._sync_count + 1} complete. "
+                f"Sent {send_bytes / 1e6:.1f} MB, received {recv_bytes / 1e6:.1f} MB, "
+                f"took {elapsed:.1f}s"
+            )
+
+        # Reset local step counter (even on failure, to avoid repeated sync attempts)
         self._local_step = 0
         self._sync_count += 1
         self._step_timestamps.clear()
 
-        elapsed = time.time() - t0
-        self._last_sync_time = elapsed
-        self._total_sync_time += elapsed
+    def _reconnect(self):
+        """Re-register with the server after a connection failure.
 
-        logger.info(
-            f"DiLoCoWorker {self.worker_id}: sync round {self._sync_count} complete. "
-            f"Sent {send_bytes / 1e6:.1f} MB, received {recv_bytes / 1e6:.1f} MB, "
-            f"took {elapsed:.1f}s"
-        )
+        Fetches the current global parameters and updates the local
+        snapshot. This handles server restarts where the server may have
+        a newer state than this worker's snapshot.
+        """
+        logger.info(f"DiLoCoWorker {self.worker_id}: attempting reconnection...")
+        try:
+            worker_info = self._get_worker_info()
+            global_params = self.client.register(self.worker_id, worker_info)
+            self._apply_global_params(global_params)
+            self._save_global_params_snapshot()
+            self._reconnections += 1
+            logger.info(f"DiLoCoWorker {self.worker_id}: reconnected successfully")
+        except Exception as e:
+            logger.warning(
+                f"DiLoCoWorker {self.worker_id}: reconnection failed: {e}"
+            )
 
     # --- Streaming fragment methods ---
 
@@ -495,6 +554,10 @@ class DiLoCoWorker:
         if self._fragment_manager is not None:
             metrics["diloco/num_fragments"] = self.num_fragments
             metrics["diloco/fragment_syncs"] = self._fragment_syncs
+        if self._sync_retries > 0:
+            metrics["diloco/sync_retries"] = self._sync_retries
+        if self._reconnections > 0:
+            metrics["diloco/reconnections"] = self._reconnections
         return metrics
 
     def force_sync(self):

@@ -115,6 +115,25 @@ def create_diloco_parser(global_args):
         default=500,
         help="DyLU base sync_every for the fastest worker (default: 500)",
     )
+    server_parser.add_argument(
+        "--heartbeat-timeout",
+        type=float,
+        default=120.0,
+        help=(
+            "Seconds since last heartbeat before a worker is considered dead\n"
+            "and evicted. Set to 0 to disable health monitoring. (default: 120)"
+        ),
+    )
+    server_parser.add_argument(
+        "--min-workers",
+        type=int,
+        default=1,
+        help=(
+            "Minimum workers required to proceed with sync. If the number\n"
+            "of registered workers drops below this, the barrier will not\n"
+            "release. (default: 1)"
+        ),
+    )
 
     # status subcommand
     status_parser = subparsers.add_parser(
@@ -167,7 +186,11 @@ def create_diloco_parser(global_args):
         "--heartbeat-interval",
         type=float,
         default=30.0,
-        help="Seconds between heartbeats to server (for DyLU speed reporting, default: 30)",
+        help=(
+            "Seconds between heartbeats to server. Enables server-side\n"
+            "health monitoring and DyLU speed reporting. 0 = disabled.\n"
+            "(default: 30)"
+        ),
     )
     worker_parser.add_argument(
         "-d",

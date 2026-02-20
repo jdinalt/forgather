@@ -133,6 +133,12 @@ class DiLoCoServer:
         dylu_base_sync_every: Base sync_every for the fastest worker (H in paper).
             Slower workers get proportionally smaller values. Only used when
             dylu_enabled=True.
+        heartbeat_timeout: Seconds since last heartbeat before a worker is
+            considered dead and evicted. Set to 0 to disable health monitoring.
+            Default: 120 seconds.
+        min_workers: Minimum number of workers required to apply the outer
+            optimizer in sync mode. If the number of registered workers drops
+            below this value, the sync barrier will not release. Default: 1.
     """
 
     def __init__(
@@ -148,11 +154,16 @@ class DiLoCoServer:
         dn_buffer_size: int = 0,
         dylu_enabled: bool = False,
         dylu_base_sync_every: int = 500,
+        heartbeat_timeout: float = 120.0,
+        min_workers: int = 1,
     ):
         if num_workers < 1:
             raise ValueError(f"num_workers must be >= 1, got {num_workers}")
+        if min_workers < 1:
+            raise ValueError(f"min_workers must be >= 1, got {min_workers}")
 
         self.num_workers = num_workers
+        self.min_workers = min_workers
         self.host = host
         self.port = port or self._find_available_port()
         self.save_dir = save_dir
@@ -161,6 +172,7 @@ class DiLoCoServer:
         self.dn_buffer_size = dn_buffer_size
         self.dylu_enabled = dylu_enabled
         self.dylu_base_sync_every = dylu_base_sync_every
+        self.heartbeat_timeout = heartbeat_timeout
 
         # Global parameters - stored as nn.Parameters for the optimizer
         self._param_names: List[str] = list(model_state_dict.keys())
@@ -208,6 +220,21 @@ class DiLoCoServer:
         self._completed_fragment_rounds: Dict[Tuple[int, int], Dict[str, torch.Tensor]] = {}
         # Reuse _sync_cond for fragment barrier notifications
         self._fragment_submissions = 0  # Total fragment submissions
+
+        # Fault tolerance: dynamic barrier tracking.
+        # _round_expected_workers is the set of worker IDs the sync barrier
+        # expects for the current round. It is snapshotted from _workers at
+        # the start of each round. Workers that join mid-round are NOT added
+        # to the current round's expected set (they participate starting next
+        # round). Workers that die are removed from this set, which may
+        # cause the barrier to release early.
+        self._round_expected_workers: Optional[set] = None
+
+        # Health monitor (created on start/run if heartbeat_timeout > 0)
+        self._health_monitor = None
+
+        # Track worker deaths for status reporting
+        self._total_worker_deaths = 0
 
         # Server state
         self._server: Optional[HTTPServer] = None
@@ -365,6 +392,99 @@ class DiLoCoServer:
         self.outer_optimizer.step()
         self.outer_optimizer.zero_grad()
 
+    def _get_expected_worker_count(self) -> int:
+        """
+        Get the number of workers the sync barrier should wait for.
+
+        In the first round (before any workers have submitted), uses the
+        initial num_workers. After that, uses the size of
+        _round_expected_workers, which is snapshotted from registered
+        workers at the start of each round.
+        """
+        if self._round_expected_workers is not None:
+            return len(self._round_expected_workers)
+        return self.num_workers
+
+    def _snapshot_round_expected_workers(self):
+        """
+        Snapshot the current set of registered workers as the expected
+        participants for the next sync round. Called when a round completes
+        and when the first submission of a round arrives (lazy init).
+        """
+        with self._workers_lock:
+            self._round_expected_workers = set(self._workers.keys())
+
+    def _handle_worker_death(self, worker_id: str):
+        """
+        Handle a dead worker: remove from registry, unblock barriers.
+
+        This method is called by the HealthMonitor when a worker's heartbeat
+        times out, or during explicit deregistration. It must handle both
+        sync and async modes, full-model and fragment barriers.
+
+        Lock ordering: _sync_cond -> _workers_lock (same as submit handlers).
+        """
+        with self._sync_cond:
+            with self._workers_lock:
+                if worker_id not in self._workers:
+                    return
+                del self._workers[worker_id]
+                remaining = len(self._workers)
+
+            self._total_worker_deaths += 1
+
+            # Update num_workers (but respect min_workers floor)
+            self.num_workers = max(self.min_workers, remaining)
+
+            logger.warning(
+                f"Worker {worker_id} died. "
+                f"Remaining: {remaining}, num_workers now {self.num_workers}"
+            )
+
+            # --- Full-model sync barrier ---
+            # Remove dead worker's pending submission (if any) and update
+            # the expected workers set.
+            self._pending_pseudograds.pop(worker_id, None)
+            if self._round_expected_workers is not None:
+                self._round_expected_workers.discard(worker_id)
+
+            expected = self._get_expected_worker_count()
+            submitted = len(self._pending_pseudograds)
+
+            if expected > 0 and submitted >= expected:
+                # Enough workers have submitted - release the barrier
+                my_round = self._sync_round
+                self._apply_outer_optimizer()
+                self._completed_rounds[my_round] = self.get_global_params()
+                self._snapshot_round_expected_workers()
+
+            # --- Per-fragment sync barriers ---
+            # For each active fragment, remove the dead worker's pending
+            # submission and check if the barrier should release.
+            for frag_id in list(self._fragment_pending.keys()):
+                self._fragment_pending[frag_id].pop(worker_id, None)
+
+                frag_expected = expected  # Same expected count
+                frag_submitted = len(self._fragment_pending[frag_id])
+
+                if frag_expected > 0 and frag_submitted >= frag_expected:
+                    my_frag_round = self._fragment_rounds[frag_id]
+                    pg_list = list(self._fragment_pending[frag_id].values())
+                    if pg_list:
+                        self._apply_fragment_outer_optimizer(pg_list)
+
+                        frag_param_names = list(pg_list[0].keys())
+                        result = self._get_params_by_names(frag_param_names)
+                        self._completed_fragment_rounds[(frag_id, my_frag_round)] = result
+
+                        self._fragment_rounds[frag_id] += 1
+                        self._fragment_pending[frag_id].clear()
+                        self._fragment_submissions += len(pg_list)
+                        self._sync_round += 1
+
+            # Wake all waiting threads so they re-evaluate their conditions
+            self._sync_cond.notify_all()
+
     def _compute_dylu_sync_every(self, worker_id: str) -> Optional[int]:
         """
         Compute recommended sync_every for a worker using Dynamic Local Updates.
@@ -398,14 +518,22 @@ class DiLoCoServer:
         return recommended
 
     def _handle_register(self, handler: BaseHTTPRequestHandler):
-        """Handle worker registration."""
+        """Handle worker registration.
+
+        Supports dynamic joining: new workers can register at any time and
+        receive the current global parameters. If the number of registered
+        workers exceeds num_workers, num_workers is increased. The new worker
+        will NOT be expected for the current sync round (only for the next one).
+        Re-registering workers (e.g., after a restart) replace their old entry.
+        """
         body = _read_request_body(handler)
         info = json.loads(body.decode("utf-8"))
         worker_id = info["worker_id"]
 
         with self._workers_lock:
-            if worker_id in self._workers:
-                logger.warning(f"Worker {worker_id} re-registering (replacing old entry)")
+            is_reregistration = worker_id in self._workers
+            if is_reregistration:
+                logger.info(f"Worker {worker_id} re-registering (reconnection)")
 
             self._workers[worker_id] = WorkerInfo(
                 worker_id=worker_id,
@@ -415,6 +543,14 @@ class DiLoCoServer:
                 extra=info.get("extra", {}),
             )
             num_registered = len(self._workers)
+
+        # If more workers than expected, grow the expected count
+        if num_registered > self.num_workers:
+            self.num_workers = num_registered
+            logger.info(
+                f"Worker {worker_id} joined dynamically, "
+                f"num_workers raised to {self.num_workers}"
+            )
 
         logger.info(f"Worker {worker_id} registered ({num_registered}/{self.num_workers})")
 
@@ -451,9 +587,19 @@ class DiLoCoServer:
             self._handle_submit_sync(handler, worker_id, pseudograds)
 
     def _handle_submit_sync(self, handler, worker_id, pseudograds):
-        """Synchronous pseudo-gradient submission with barrier."""
+        """Synchronous pseudo-gradient submission with fault-tolerant barrier.
+
+        The barrier target is _round_expected_workers (snapshotted at round
+        start) rather than the fixed num_workers. If a worker dies mid-round,
+        _handle_worker_death removes it from the expected set and may release
+        the barrier early.
+        """
         with self._sync_cond:
             my_round = self._sync_round
+
+            # Lazy-init expected workers for the first round
+            if self._round_expected_workers is None:
+                self._snapshot_round_expected_workers()
 
             self._pending_pseudograds[worker_id] = pseudograds
 
@@ -463,15 +609,19 @@ class DiLoCoServer:
                     self._workers[worker_id].sync_round += 1
                     self._workers[worker_id].last_sync_server_round = my_round + 1
 
+            expected = self._get_expected_worker_count()
             submitted = len(self._pending_pseudograds)
             logger.info(
                 f"Worker {worker_id} submitted pseudograds "
-                f"({submitted}/{self.num_workers}) for round {my_round}"
+                f"({submitted}/{expected}) for round {my_round}"
             )
 
-            if submitted >= self.num_workers:
+            if submitted >= expected:
                 self._apply_outer_optimizer()
                 self._completed_rounds[my_round] = self.get_global_params()
+
+                # Snapshot expected workers for the next round
+                self._snapshot_round_expected_workers()
 
                 old_rounds = [r for r in self._completed_rounds if r < my_round - 1]
                 for r in old_rounds:
@@ -541,7 +691,7 @@ class DiLoCoServer:
             self._handle_submit_fragment_sync(handler, worker_id, fragment_id, pseudograds)
 
     def _handle_submit_fragment_sync(self, handler, worker_id, fragment_id, pseudograds):
-        """Per-fragment synchronous submission with barrier."""
+        """Per-fragment synchronous submission with fault-tolerant barrier."""
         with self._sync_cond:
             my_round = self._fragment_rounds[fragment_id]
 
@@ -551,14 +701,15 @@ class DiLoCoServer:
                 if worker_id in self._workers:
                     self._workers[worker_id].last_heartbeat = time.time()
 
+            expected = self._get_expected_worker_count()
             submitted = len(self._fragment_pending[fragment_id])
             logger.info(
                 f"Worker {worker_id} submitted fragment {fragment_id} pseudograds "
-                f"({submitted}/{self.num_workers}) for fragment round {my_round}"
+                f"({submitted}/{expected}) for fragment round {my_round}"
             )
 
-            if submitted >= self.num_workers:
-                # All workers submitted for this fragment - apply outer optimizer
+            if submitted >= expected:
+                # All expected workers submitted for this fragment
                 pg_list = list(self._fragment_pending[fragment_id].values())
                 self._apply_fragment_outer_optimizer(pg_list)
 
@@ -656,15 +807,17 @@ class DiLoCoServer:
         _send_json_response(handler, response)
 
     def _handle_deregister(self, handler: BaseHTTPRequestHandler):
-        """Handle worker deregistration."""
+        """Handle worker deregistration.
+
+        Uses _handle_worker_death for proper barrier cleanup so that
+        remaining workers are not blocked waiting for the departed worker.
+        """
         body = _read_request_body(handler)
         info = json.loads(body.decode("utf-8"))
         worker_id = info["worker_id"]
 
-        with self._workers_lock:
-            if worker_id in self._workers:
-                del self._workers[worker_id]
-                logger.info(f"Worker {worker_id} deregistered")
+        logger.info(f"Worker {worker_id} deregistering")
+        self._handle_worker_death(worker_id)
 
         _send_json_response(handler, {"status": "ok"})
 
@@ -714,6 +867,12 @@ class DiLoCoServer:
 
         if self._fragment_submissions > 0:
             response["fragment_submissions"] = self._fragment_submissions
+
+        if self._total_worker_deaths > 0:
+            response["total_worker_deaths"] = self._total_worker_deaths
+
+        response["heartbeat_timeout"] = self.heartbeat_timeout
+        response["min_workers"] = self.min_workers
 
         _send_json_response(handler, response)
 
@@ -804,6 +963,23 @@ class DiLoCoServer:
         self._total_submissions = state.get("total_submissions", 0)
         logger.info(f"Server state loaded from {path}, at round {self._sync_round}")
 
+    def _start_health_monitor(self):
+        """Start the health monitor if heartbeat_timeout > 0."""
+        if self.heartbeat_timeout > 0:
+            from .health import HealthMonitor
+
+            self._health_monitor = HealthMonitor(
+                self,
+                heartbeat_timeout=self.heartbeat_timeout,
+            )
+            self._health_monitor.start()
+
+    def _stop_health_monitor(self):
+        """Stop the health monitor if running."""
+        if self._health_monitor is not None:
+            self._health_monitor.stop()
+            self._health_monitor = None
+
     def run(self):
         """Run the server (blocking). Call this from the main process."""
         handler_class = self._create_handler()
@@ -814,17 +990,22 @@ class DiLoCoServer:
 
         mode = "async" if self.async_mode else "sync"
         logger.info(f"DiLoCo server starting on {self.host}:{self.port} (mode={mode})")
-        logger.info(f"Expecting {self.num_workers} worker(s)")
+        logger.info(f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}")
+        if self.heartbeat_timeout > 0:
+            logger.info(f"Health monitoring: timeout={self.heartbeat_timeout}s")
         if self.async_mode and self.dn_buffer_size > 0:
             logger.info(f"Delayed Nesterov: buffer_size={self.dn_buffer_size}")
         if self.dylu_enabled:
             logger.info(f"DyLU enabled: base_sync_every={self.dylu_base_sync_every}")
+
+        self._start_health_monitor()
 
         try:
             self._server.serve_forever()
         except KeyboardInterrupt:
             logger.info("Server interrupted")
         finally:
+            self._stop_health_monitor()
             self._running = False
             self._server.server_close()
             logger.info("Server stopped")
@@ -840,12 +1021,15 @@ class DiLoCoServer:
         self._server_thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._server_thread.start()
 
+        self._start_health_monitor()
+
         mode = "async" if self.async_mode else "sync"
         logger.info(f"DiLoCo server started on {self.host}:{self.port} (mode={mode}, background)")
-        logger.info(f"Expecting {self.num_workers} worker(s)")
+        logger.info(f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}")
 
     def stop(self):
         """Stop the background server."""
+        self._stop_health_monitor()
         if self._server:
             self._server.shutdown()
             self._running = False

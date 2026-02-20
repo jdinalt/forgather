@@ -91,6 +91,15 @@ def _server_cmd(args):
     else:
         print("Mode: sync")
 
+    # Fault tolerance settings
+    heartbeat_timeout = getattr(args, "heartbeat_timeout", 120.0)
+    min_workers = getattr(args, "min_workers", 1)
+
+    if heartbeat_timeout > 0:
+        print(f"Health monitoring: timeout={heartbeat_timeout}s, min_workers={min_workers}")
+    else:
+        print("Health monitoring: disabled")
+
     # Create server
     server = DiLoCoServer(
         model_state_dict=state_dict,
@@ -104,6 +113,8 @@ def _server_cmd(args):
         dn_buffer_size=dn_buffer_size,
         dylu_enabled=dylu,
         dylu_base_sync_every=dylu_base,
+        heartbeat_timeout=heartbeat_timeout,
+        min_workers=min_workers,
     )
 
     # Resume from saved state if requested
@@ -150,6 +161,14 @@ def _status_cmd(args):
             print(f"  DN buffer:     {status.get('dn_buffered', 0)}/{dn_buf}")
         if status.get("dylu_enabled"):
             print(f"  DyLU base H:   {status.get('dylu_base_sync_every', '?')}")
+
+    # Fault tolerance
+    deaths = status.get("total_worker_deaths", 0)
+    if deaths > 0:
+        print(f"  Worker deaths: {deaths}")
+    hb_timeout = status.get("heartbeat_timeout", 0)
+    if hb_timeout > 0:
+        print(f"  HB timeout:    {hb_timeout}s")
 
     pending = status.get("pending_submissions", [])
     if pending:

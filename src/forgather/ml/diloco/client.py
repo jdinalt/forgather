@@ -114,24 +114,43 @@ class DiLoCoClient:
         path: str,
         body: Optional[bytes] = None,
         content_type: str = "application/octet-stream",
+        retries: Optional[int] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Make a request and return deserialized tensor response."""
+        """Make a request and return deserialized tensor response.
+
+        Args:
+            retries: Number of retries on connection failure. Defaults to 0
+                (no retries) for backward compatibility. Set to a positive
+                value for fault-tolerant reconnection scenarios.
+        """
         url = self._url(path)
+        max_retries = retries if retries is not None else 0
+        delay = self.retry_delay
 
-        req = urllib.request.Request(
-            url,
-            data=body,
-            method=method,
-            headers={"Content-Type": content_type} if body else {},
-        )
-
-        # No retries for tensor requests - they can be large and stateful
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = resp.read()
-                return self._deserialize_state_dict(data)
-        except urllib.error.URLError as e:
-            raise ConnectionError(f"Failed to connect to DiLoCo server at {url}: {e}") from e
+        for attempt in range(max_retries + 1):
+            req = urllib.request.Request(
+                url,
+                data=body,
+                method=method,
+                headers={"Content-Type": content_type} if body else {},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    data = resp.read()
+                    return self._deserialize_state_dict(data)
+            except urllib.error.URLError as e:
+                if attempt < max_retries:
+                    logger.warning(
+                        f"Tensor request to {url} failed "
+                        f"(attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                        f"Retrying in {delay:.1f}s..."
+                    )
+                    time.sleep(delay)
+                    delay *= 2
+                else:
+                    raise ConnectionError(
+                        f"Failed to connect to DiLoCo server at {url}: {e}"
+                    ) from e
 
     def register(self, worker_id: str, worker_info: Optional[dict] = None) -> Dict[str, torch.Tensor]:
         """

@@ -18,6 +18,7 @@ For user-facing documentation (CLI usage, quick start, API examples), see
 - [Streaming DiLoCo (Fragments)](#streaming-diloco-fragments)
 - [Outer Optimizer Integration](#outer-optimizer-integration)
 - [Lifecycle and Data Flow](#lifecycle-and-data-flow)
+- [Fault Tolerance](#fault-tolerance)
 - [Server State Persistence](#server-state-persistence)
 - [CLI Layer](#cli-layer)
 - [Testing](#testing)
@@ -72,11 +73,12 @@ The system has three operating dimensions that can be combined:
 
 ```
 src/forgather/ml/diloco/
-  __init__.py        Exports: DiLoCoServer, DiLoCoClient, DiLoCoWorker, FragmentManager
-  server.py          HTTP server, outer optimizer, sync barrier, fragment handling
-  client.py          HTTP client, tensor serialization, request construction
-  worker.py          Optimizer hook, pseudo-gradient computation, streaming logic
+  __init__.py        Exports: DiLoCoServer, DiLoCoClient, DiLoCoWorker, FragmentManager, HealthMonitor
+  server.py          HTTP server, outer optimizer, sync barrier, fragment handling, fault tolerance
+  client.py          HTTP client, tensor serialization, request construction, retry logic
+  worker.py          Optimizer hook, pseudo-gradient computation, streaming, reconnection
   fragments.py       FragmentManager: parameter splitting, scheduling
+  health.py          HealthMonitor: background worker liveness detection
 
 src/forgather/cli/
   diloco.py          CLI command handlers (_server_cmd, _status_cmd, _worker_cmd)
@@ -88,6 +90,7 @@ tests/unit/ml/diloco/
   test_worker.py          Worker: pseudo-gradients, optimizer hooks, full sync cycle
   test_async.py           Async mode, DN momentum, DyLU
   test_streaming.py       FragmentManager, fragment server/client, streaming worker
+  test_fault_tolerance.py Health monitor, worker death, barrier release, reconnection
 
 docs/trainers/
   diloco.md               User-facing documentation
@@ -150,6 +153,23 @@ _completed_fragment_rounds: Dict[Tuple[int,int], Dict[str, Tensor]]  # (frag_id,
 _fragment_submissions: int                                     # Total fragment submissions
 ```
 
+**Fault tolerance state:**
+
+```python
+_round_expected_workers: Optional[set]          # Worker IDs expected for current sync round (None before first submission)
+_health_monitor: Optional[HealthMonitor]        # Background health checker (None if heartbeat_timeout=0)
+_total_worker_deaths: int                       # Cumulative dead worker count
+heartbeat_timeout: float                        # Seconds before a worker is considered dead (0 = disabled)
+min_workers: int                                # Floor for num_workers during death handling
+```
+
+`_round_expected_workers` is the key data structure for fault-tolerant barriers.
+It is snapshotted from `_workers.keys()` when a sync round completes (or lazily
+on the first submission of a round). Workers that join mid-round are not added
+to the current snapshot -- they participate starting next round. When a worker
+dies, it is removed from this set, which may cause the barrier to release early
+if the remaining submissions satisfy the reduced expected count.
+
 ### Worker (`DiLoCoWorker`)
 
 ```python
@@ -163,6 +183,9 @@ _hooks: List                          # Optimizer post-step hook handles
 _fragment_manager: Optional[FragmentManager]  # None when num_fragments <= 1
 _inflight_thread: Optional[Thread]    # Background thread for current fragment
 _inflight_result: Optional[Tuple[int, Optional[Dict[str, Tensor]]]]  # (frag_id, result)
+max_sync_retries: int                 # Max retry attempts per sync (default: 3)
+_sync_retries: int                    # Cumulative sync retry count
+_reconnections: int                   # Cumulative reconnection count
 ```
 
 ### FragmentManager
@@ -220,7 +243,9 @@ Response payloads use `Content-Type: application/octet-stream`.
 - JSON requests (`register`, `heartbeat`, `deregister`): retried up to
   `max_retries` times with exponential backoff (default: 3 retries, 1s base)
 - Tensor requests (`submit_pseudograd`, `submit_fragment_pseudograd`,
-  `get_global_params`): no retries (large, stateful payloads)
+  `get_global_params`): configurable retries via the `retries` parameter on
+  `_request_tensor()`. Default is 0 (no retries). The worker's `_sync()` method
+  handles retry at a higher level via `_reconnect()` + resubmit.
 - Default timeout: 600 seconds (sync submissions may block for a long time at
   the server barrier)
 
@@ -252,13 +277,25 @@ not just a lock. In async mode, `_async_lock` is a simple `Lock` (no wait
 needed). The two modes are mutually exclusive; the server either uses
 `_sync_cond` or `_async_lock`, never both for the same submission type.
 
+### Server health monitor thread
+
+When `heartbeat_timeout > 0`, the server creates a `HealthMonitor` (from
+`health.py`) that runs a daemon thread checking worker liveness every
+`check_interval` seconds (default: `heartbeat_timeout / 3`). On each check it
+reads `_workers` under `_workers_lock`, compares `last_heartbeat` timestamps to
+the current time, and calls `_handle_worker_death()` for any worker that
+exceeds the timeout. The health monitor is started in `start()` / `run()` and
+stopped in `stop()`.
+
 ### Worker threads
 
 The worker has up to two background threads:
 
-1. **Heartbeat thread** (optional, for DyLU): sends periodic heartbeats to the
-   server to report training speed. Runs when `dylu=True` and
-   `heartbeat_interval > 0`. Stopped via `_heartbeat_stop` Event.
+1. **Heartbeat thread**: sends periodic heartbeats to the server to report
+   training speed and maintain liveness. Runs when `heartbeat_interval > 0`
+   (default: 30s). Stopped via `_heartbeat_stop` Event. When DyLU is enabled,
+   the worker also reads back `recommended_sync_every` from the heartbeat
+   response and adjusts its `sync_every`.
 
 2. **Fragment inflight thread** (streaming mode only): submits one fragment's
    pseudo-gradients to the server in the background. At most one inflight thread
@@ -515,7 +552,7 @@ Worker                                  Server
 3. Copy global params into model (`_apply_global_params`)
 4. Save CPU snapshot (`_save_global_params_snapshot`)
 5. Register optimizer post-step hook
-6. Start heartbeat thread if DyLU enabled
+6. Start heartbeat thread if `heartbeat_interval > 0` (default: 30s)
 
 ### Worker shutdown (`stop()` / `__exit__`)
 
@@ -523,6 +560,131 @@ Worker                                  Server
 2. Stop heartbeat thread
 3. Remove optimizer hooks
 4. Send deregistration request to server
+
+---
+
+## Fault Tolerance
+
+The system handles four fault scenarios: worker death, dynamic joining, worker
+reconnection after transient failures, and server restart recovery.
+
+### Worker death detection
+
+The `HealthMonitor` (in `health.py`) runs a background daemon thread on the
+server. Every `check_interval` seconds (default: `heartbeat_timeout / 3`) it
+scans all registered workers:
+
+```
+for each worker in _workers:
+    if now - worker.last_heartbeat > heartbeat_timeout:
+        server._handle_worker_death(worker_id)
+```
+
+Workers update `last_heartbeat` via the `/heartbeat` endpoint. The heartbeat
+thread runs unconditionally on workers when `heartbeat_interval > 0` (default
+30s), regardless of DyLU setting.
+
+### Worker death handling (`_handle_worker_death`)
+
+When a worker is declared dead (by HealthMonitor or explicit deregistration):
+
+```
+1. Acquire _sync_cond -> _workers_lock (lock ordering preserved)
+2. Remove worker from _workers registry
+3. Increment _total_worker_deaths
+4. Update num_workers = max(min_workers, remaining)
+5. Remove worker's pending pseudo-gradients (if any)
+6. Remove worker from _round_expected_workers set
+
+7. Re-evaluate full-model sync barrier:
+   - expected = len(_round_expected_workers)
+   - if submitted >= expected: apply outer optimizer, complete round
+
+8. Re-evaluate per-fragment barriers (for each active fragment):
+   - Remove dead worker's fragment submission
+   - If remaining submissions satisfy expected count: apply and complete
+
+9. notify_all() to wake waiting threads
+```
+
+This ensures that a worker dying mid-sync doesn't deadlock the remaining
+workers. The barrier dynamically adjusts to the reduced worker count.
+
+**`min_workers` floor:** The `num_workers` field never drops below
+`min_workers` (default 1). This prevents a scenario where all workers die and
+the barrier releases with zero submissions.
+
+### Dynamic worker joining
+
+New workers can register at any time via `/register`. The registration handler:
+
+1. If `_round_expected_workers` already exists (mid-round), the new worker is
+   **not** added to it. The new worker participates starting the next round.
+2. If more workers register than the current `num_workers`, `num_workers` is
+   increased to accommodate them.
+3. The new worker receives the current global parameters and begins local
+   training immediately.
+
+This design prevents a new worker from blocking the current round's barrier
+(which would deadlock because existing workers already have the expected count
+computed).
+
+### Worker reconnection
+
+Workers handle transient connection failures via retry with reconnection:
+
+```python
+# In _sync() - retry loop
+for attempt in range(max_sync_retries + 1):
+    try:
+        new_global = client.submit_pseudogradients(worker_id, pseudograds)
+        break
+    except ConnectionError:
+        if attempt < max_sync_retries:
+            sleep(retry_delay)  # exponential backoff: 2s, 4s, 8s, ...
+            retry_delay *= 2
+            self._reconnect()   # re-register, get fresh global params
+            pseudograds = self._compute_pseudogradients()  # recompute
+        else:
+            # Skip this sync round, continue training
+```
+
+The `_reconnect()` method re-registers the worker with the server, receives
+the current global parameters, and updates the local snapshot. This handles:
+
+- **Server restart:** Server comes back with saved state, worker re-registers
+  and gets the latest global params.
+- **Network partition:** Temporary disconnection resolves, worker re-registers.
+- **Worker eviction:** If the server's HealthMonitor evicted this worker,
+  re-registration adds it back.
+
+After reconnection, pseudo-gradients are recomputed against the new global
+params snapshot to avoid stale deltas.
+
+### Client tensor retry
+
+The `DiLoCoClient._request_tensor()` method accepts an optional `retries`
+parameter. When set (used by internal reconnection logic), failed tensor
+requests are retried with exponential backoff before raising `ConnectionError`.
+By default (retries=0), tensor requests fail immediately (they are large,
+stateful payloads where blind retry is not always appropriate).
+
+### Interaction with async mode
+
+In async mode, there is no barrier to deadlock, so worker death is less
+critical. The `_handle_worker_death()` method still removes the worker from the
+registry and adjusts `num_workers`. The HealthMonitor runs identically in both
+modes.
+
+### Status monitoring
+
+The `/status` endpoint includes fault tolerance fields:
+
+- `heartbeat_timeout`: configured timeout value
+- `min_workers`: configured minimum workers
+- `total_worker_deaths`: cumulative death count
+
+Worker `sync_metrics` include `sync_retries` and `reconnections` counters.
 
 ---
 
@@ -599,6 +761,7 @@ reimplementing training logic.
 | `test_worker.py` | Pseudo-gradient computation, hook lifecycle | Full server + worker integration |
 | `test_async.py` | Async mode, DN momentum, DyLU | Multi-threaded workers against real server |
 | `test_streaming.py` | FragmentManager, fragment endpoints, streaming worker | Unit + integration |
+| `test_fault_tolerance.py` | Health monitor, worker death, barrier release, reconnection | Unit + integration |
 
 ### Test patterns
 
@@ -622,13 +785,14 @@ have submitted.
 ### Running tests
 
 ```bash
-# All DiLoCo tests (75 tests)
+# All DiLoCo tests (102 tests)
 pytest tests/unit/ml/diloco/ -v
 
 # By phase
 pytest tests/unit/ml/diloco/test_server.py tests/unit/ml/diloco/test_server_client.py tests/unit/ml/diloco/test_worker.py -v  # Phase 1 (32)
-pytest tests/unit/ml/diloco/test_async.py -v   # Phase 2 (18)
-pytest tests/unit/ml/diloco/test_streaming.py -v  # Phase 3 (25)
+pytest tests/unit/ml/diloco/test_async.py -v               # Phase 2 (18)
+pytest tests/unit/ml/diloco/test_streaming.py -v            # Phase 3 (25)
+pytest tests/unit/ml/diloco/test_fault_tolerance.py -v      # Phase 4 (27)
 
 # Quick smoke test
 pytest tests/unit/ml/diloco/test_server.py::TestOuterOptimizer::test_single_worker_outer_step -v
@@ -640,22 +804,25 @@ pytest tests/unit/ml/diloco/test_server.py::TestOuterOptimizer::test_single_work
 
 ### Worker hangs at sync (synchronous mode)
 
-**Symptom:** One or more workers block indefinitely at `submit_pseudogradients`.
+**Symptom:** One or more workers block at `submit_pseudogradients` for a long
+time.
 
-**Cause:** The server barrier requires exactly `num_workers` submissions per
-round. If a worker crashes or network drops, the remaining workers wait forever.
+**Cause:** The server barrier waits for all expected workers to submit. If a
+worker crashes and health monitoring is disabled (or timeout is too long), the
+remaining workers wait until the 600-second HTTP timeout.
 
 **Diagnosis:**
 1. Check server status: `forgather diloco status --server host:port`
 2. Look at `pending_submissions` in the response. If it lists some workers but
    not all, a worker has failed to submit.
-3. Check server logs for error messages.
+3. Check `total_worker_deaths` to see if the HealthMonitor has already
+   evicted the dead worker.
+4. Check server logs for health monitor warnings.
 
-**Mitigation:** The barrier has a 600-second timeout (hardcoded in
-`_handle_submit_sync`). After timeout, the worker gets a 504 response.
-
-**Future fix:** Phase 4 (fault tolerance) will add heartbeat-based dead worker
-detection and dynamic barrier adjustment.
+**Mitigation:** Ensure `--heartbeat-timeout` is set (default: 120s). The
+HealthMonitor will detect dead workers and release the barrier within
+approximately one timeout period. The `min_workers` setting prevents the
+system from continuing with zero workers.
 
 ### Server port already in use
 
@@ -791,28 +958,30 @@ The current architecture is client-server. To add peer-to-peer allreduce:
 
 ## Known Limitations
 
-1. **No fault tolerance (yet).** A crashed worker in sync mode blocks all others
-   until the 600s timeout. No automatic re-registration or barrier adjustment.
-
-2. **Single-threaded outer optimizer.** The server applies the outer optimizer
+1. **Single-threaded outer optimizer.** The server applies the outer optimizer
    step in the HTTP handler thread. For very large models, this could delay
    response time.
 
-3. **Fragment split by parameter count, not size.** Two fragments may have very
+2. **Fragment split by parameter count, not size.** Two fragments may have very
    different total tensor sizes if parameter dimensions vary (e.g., embedding
    layer vs attention layers). A size-balanced split would improve streaming
    overlap.
 
-4. **No gradient compression beyond bf16.** Int8, sparse, or top-k compression
+3. **No gradient compression beyond bf16.** Int8, sparse, or top-k compression
    could further reduce bandwidth for larger models.
 
-5. **DN direct gradient step uses single LR.** The `_outer_lr` is extracted
+4. **DN direct gradient step uses single LR.** The `_outer_lr` is extracted
    from the first param group. Multiple param groups with different LRs would
    need per-group direct steps.
 
-6. **No per-worker weighting.** All workers' pseudo-gradients are equally
+5. **No per-worker weighting.** All workers' pseudo-gradients are equally
    averaged. Workers with more data or better hardware could be weighted
    proportionally.
 
-7. **`ThreadingHTTPServer` scalability.** One thread per request is fine for
+6. **`ThreadingHTTPServer` scalability.** One thread per request is fine for
    2-10 workers but would need replacement (asyncio, gRPC) for hundreds.
+
+7. **No fragment-level reconnection.** Worker reconnection (`_reconnect()`)
+   re-registers and fetches full global params. If a streaming sync was
+   in-flight when the connection dropped, the fragment result is lost and the
+   fragment re-syncs from scratch on the next cycle.

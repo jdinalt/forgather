@@ -10,11 +10,19 @@ Key components:
 - DiLoCoClient: HTTP client for server communication
 - DiLoCoWorker: Composable wrapper that hooks into any optimizer for periodic sync
 - FragmentManager: Splits model into fragments for streaming sync
+- HealthMonitor: Background worker health checker for fault tolerance
 """
 
 from .client import DiLoCoClient
 from .fragments import FragmentManager
+from .health import HealthMonitor
 from .server import DiLoCoServer
 from .worker import DiLoCoWorker
 
-__all__ = ["DiLoCoServer", "DiLoCoClient", "DiLoCoWorker", "FragmentManager"]
+__all__ = [
+    "DiLoCoServer",
+    "DiLoCoClient",
+    "DiLoCoWorker",
+    "FragmentManager",
+    "HealthMonitor",
+]

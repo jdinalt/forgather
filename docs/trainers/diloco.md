@@ -469,6 +469,107 @@ with pipeline stages where adjacent layers are on the same rank.
   parameters with `None` grad, so momentum buffers for other fragments remain
   untouched.
 
+## Fault Tolerance
+
+The DiLoCo system includes fault tolerance features to handle worker failures,
+dynamic membership changes, and server restarts.
+
+### Health Monitoring
+
+The server runs a background **HealthMonitor** thread that periodically checks
+worker heartbeat timestamps. Workers that haven't sent a heartbeat within the
+`heartbeat_timeout` window are considered dead and automatically evicted.
+
+```bash
+# Server with health monitoring (default: 120s timeout)
+forgather diloco server -m model -n 3 --heartbeat-timeout 120
+
+# Disable health monitoring
+forgather diloco server -m model -n 3 --heartbeat-timeout 0
+
+# Require at least 2 workers to proceed
+forgather diloco server -m model -n 3 --min-workers 2
+```
+
+Workers send heartbeats automatically (default: every 30 seconds). This is
+independent of DyLU -- heartbeats are always active unless explicitly disabled
+with `--heartbeat-interval 0`.
+
+### Worker Death and Barrier Release
+
+When a worker dies (heartbeat timeout or explicit deregistration):
+
+1. The worker is removed from the registry
+2. `num_workers` is decremented (but never below `min_workers`)
+3. Any pending pseudo-gradient submissions from the dead worker are removed
+4. The sync barrier is re-evaluated -- if the remaining workers have all
+   submitted, the barrier releases and training continues
+
+This prevents a dead worker from blocking all other workers indefinitely in
+synchronous mode.
+
+### Dynamic Worker Joining
+
+New workers can join an active training run at any time:
+
+1. The new worker registers with the server and receives the current global
+   parameters
+2. It begins training from the latest global state
+3. `num_workers` is automatically increased if more workers than initially
+   expected are registered
+4. The new worker is not expected to submit for the current sync round --
+   it participates starting from the next round
+
+This enables elastic scaling: start with a few workers and add more as machines
+become available.
+
+### Worker Reconnection
+
+Workers automatically retry sync operations on connection failure:
+
+```python
+# Worker with retry configuration
+with DiLoCoWorker(
+    model=model,
+    optimizer=optimizer,
+    server_addr="host:8512",
+    sync_every=500,
+    max_sync_retries=3,     # Retry sync up to 3 times on failure
+) as diloco:
+    trainer.train()
+```
+
+On connection failure, the worker:
+1. Waits with exponential backoff
+2. Re-registers with the server (getting fresh global params)
+3. Recomputes pseudo-gradients against the new global state
+4. Retries the sync submission
+
+If all retries fail, the sync is skipped and training continues. This handles
+transient network failures and server restarts gracefully.
+
+### Server Restart Recovery
+
+The server's `save_state` / `load_state` mechanism (see
+[Server State Persistence](#server-state-persistence)) enables recovery from
+server crashes. After restart:
+
+1. The server loads the latest saved state (`--resume`)
+2. Workers detect the connection failure and enter their retry loop
+3. Workers re-register and receive the saved global parameters
+4. Training continues from the last saved checkpoint
+
+### Monitoring Fault Tolerance
+
+The status endpoint includes fault tolerance fields:
+
+```bash
+forgather diloco status --server host:8512
+```
+
+Shows `heartbeat_timeout`, `min_workers`, and `total_worker_deaths` (if any
+workers have been evicted).
+
 ## How Pseudo-Gradients Work
 
 The pseudo-gradient computation follows the TorchFt approach:
