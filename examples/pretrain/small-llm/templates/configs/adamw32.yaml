@@ -1,0 +1,16 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "AdamW32"
+    -- set ns.config_description = "Train in float32 with AdamW"
+    -- set ns.model_name = "adamw32"
+
+[trainer_args]
+    == super()
+    float32_matmul_precision: "medium"
+    default_dtype: "float32"
+
+[optimizer]
+optimizer: &optimizer !partial:torch.optim:AdamW
+    lr: {{ (ns.base_learning_rate * ns.lr_scale) | toyaml }}

@@ -39,7 +39,7 @@
     -- set ns.cooldown_ratio = 0.7
 
     ## Imposes a lower limit on cooldown_steps
-    -- set ns.min_cooldown_tokens = (min_cooldown_tokens | default(100)) * 1000 * 1000 * 1000
+    -- set ns.min_cooldown_tokens = (min_cooldown_tokens | default(30)) * 1000 * 1000 * 1000
     
     ## Shard the dataset, rather than dispatching from rank0
     -- set ns.dispatch_batches = False
