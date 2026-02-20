@@ -224,6 +224,11 @@ class PipelineTrainer(
         self.model_splitter = model_splitter
         self.pipe_schedule_factory = pipe_schedule_factory
 
+        assert self.args.mixed_precision != "fp16", (
+            "PipelineTrainer does not support fp16 mixed precision (GradScaler is incompatible "
+            "with pipeline scheduler's internal backward). Use mixed_precision='bf16' instead."
+        )
+
         if self.args.debug_pipeline:
             logger.setLevel(logging.DEBUG)
 
@@ -745,14 +750,15 @@ class PipelineTrainer(
         # See: https://github.com/pytorch/torchtitan/blob/main/torchtitan/train.py#L377
         targets, losses = (labels, []) if self.pp_has_last_stage else (None, None)
         assert self.scheduler
-        if self.pp_has_first_stage:
-            self.scheduler.step(
-                *inputs, **extra_kwargs, target=targets, losses=cast(list, losses)
-            )
-        else:
-            self.scheduler.step(
-                **extra_kwargs, target=targets, losses=cast(list, losses)
-            )
+        with self.amp_context.autocast():
+            if self.pp_has_first_stage:
+                self.scheduler.step(
+                    *inputs, **extra_kwargs, target=targets, losses=cast(list, losses)
+                )
+            else:
+                self.scheduler.step(
+                    **extra_kwargs, target=targets, losses=cast(list, losses)
+                )
 
         if self.pp_has_last_stage:
             assert losses
@@ -838,7 +844,7 @@ class PipelineTrainer(
         assert self.scheduler
         loss_fn = self.loss_fn
         assert isinstance(loss_fn, RescaleLoss)
-        with loss_fn.no_rescale():
+        with loss_fn.no_rescale(), self.amp_context.autocast():
             if self.pp_has_first_stage:
                 self.scheduler.eval(*inputs, **extra_kwargs)
             else:

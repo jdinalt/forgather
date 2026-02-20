@@ -44,6 +44,7 @@ from ..sharded_checkpoint import (
     retie_parameters,
     save_checkpoint_metrics,
 )
+from .amp import AMPContext
 from .base_trainer import BaseTrainer, BaseTrainingArguments, logits_from_outputs
 from .callbacks.default_callbacks import InfoCallback, ProgressCallback
 from .checkpoint_manager import CheckpointConfig, CheckpointManager
@@ -334,6 +335,14 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         ), "gradient_accumulation_steps={self.args.gradient_accumulation_steps} is incompatible with fuse_optim_with_backward"
 
         assert (
+            self.args.mixed_precision != "fp16"
+            or not self.args.fuse_optim_with_backward
+        ), (
+            "fp16 mixed precision with GradScaler is incompatible with fuse_optim_with_backward. "
+            "Use mixed_precision='bf16' instead (no GradScaler needed)."
+        )
+
+        assert (
             self.loss_fn or self.args.gradient_accumulation_steps == 1
         ), f"gradient_accumulation_steps [{self.args.gradient_accumulation_steps}] > 1 requires loss_fn"
 
@@ -440,6 +449,23 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         """
         self._init_distributed()
         self._init_device()
+
+        # Initialize AMP context for mixed precision training
+        device_type = (
+            self.args.device
+            if isinstance(self.args.device, str)
+            else str(self.args.device)
+        )
+        if "cuda" in device_type:
+            device_type = "cuda"
+        self.amp_context = AMPContext(
+            mixed_precision=self.args.mixed_precision,
+            device_type=device_type,
+        )
+        if self.amp_context.enabled:
+            logger.info(
+                f"Mixed precision training enabled: {self.args.mixed_precision}"
+            )
 
         # Set the random seed
         if self.args.seed != -1:
@@ -1132,9 +1158,11 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         assert self._should_sync_gradients()
         assert self.optimizer is not None
 
+        # Unscale gradients before clipping (no-op when not using fp16 GradScaler)
+        self.amp_context.unscale_(self.optimizer)
         total_norm = self._clip_grad_norm(self.args.max_grad_norm)
         if not self.args.fuse_optim_with_backward:
-            self.optimizer.step()
+            self.amp_context.optimizer_step(self.optimizer)
             self.optimizer.zero_grad()
         self._dispatch_event("on_optimizer_step")
         if self.lr_scheduler is not None:
@@ -1171,9 +1199,10 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         assert self.loss_fn is not None
         if self.use_fused_loss:
             input_dict["return_hidden_states"] = True  # type: ignore[assignment]
-        outputs = self.model(**input_dict)
-        logits = logits_from_outputs(outputs)
-        loss = self.loss_fn(logits, labels)
+        with self.amp_context.autocast():
+            outputs = self.model(**input_dict)
+            logits = logits_from_outputs(outputs)
+            loss = self.loss_fn(logits, labels)
         self._backward(loss)
         return loss.detach()
 
@@ -1181,12 +1210,15 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         """
         Execute backward pass to compute gradients.
 
+        When fp16 mixed precision is active, the loss is scaled by GradScaler
+        before backward to prevent gradient underflow.
+
         Subclasses may override to customize backward behavior (e.g., for pipeline parallelism).
 
         Args:
             loss: Loss tensor to backpropagate
         """
-        loss.backward()
+        self.amp_context.scale_loss(loss).backward()
 
     def _should_sync_gradients(self) -> bool:
         """
@@ -1405,7 +1437,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         assert isinstance(self.loss_fn, RescaleLoss)
         if self.use_fused_loss:
             input_dict["return_hidden_states"] = True  # type: ignore[assignment]
-        with self.loss_fn.no_rescale():
+        with self.loss_fn.no_rescale(), self.amp_context.autocast():
             outputs = self.model(**input_dict)
             logits = logits_from_outputs(outputs)
             loss = self.loss_fn(logits, labels)

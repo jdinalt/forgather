@@ -295,7 +295,7 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
                     # per-step all_reduce).
                     if self.use_fused_loss:
                         input_dict["return_hidden_states"] = True  # type: ignore[assignment]
-                    with self.loss_fn.no_rescale():
+                    with self.loss_fn.no_rescale(), self.amp_context.autocast():
                         outputs = self.model(**input_dict)
                         logits = logits_from_outputs(outputs)
                         loss = self.loss_fn(logits, labels)

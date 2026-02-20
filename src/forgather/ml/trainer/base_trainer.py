@@ -116,6 +116,12 @@ class BaseTrainingArguments(MinimalTrainingArguments):
     # Increase if seeing frequent recompilations with torch.compile().
     dynamo_recompile_limit: int | None = None
 
+    # Automatic Mixed Precision mode.
+    # None or "no": disabled (default)
+    # "bf16": bfloat16 autocast, no loss scaling (recommended for Ampere+ GPUs)
+    # "fp16": float16 autocast with GradScaler loss scaling
+    mixed_precision: str | None = None
+
     def __post_init__(self):
         if self.logging_dir is None:
             self.logging_dir = os.path.join(
@@ -132,6 +138,16 @@ class BaseTrainingArguments(MinimalTrainingArguments):
 
         if self.lr_scheduler_kwargs is None:
             self.lr_scheduler_kwargs = {}
+
+        # Validate mixed_precision
+        if self.mixed_precision is not None:
+            if self.mixed_precision == "no":
+                self.mixed_precision = None
+            elif self.mixed_precision not in ("bf16", "fp16"):
+                raise ValueError(
+                    f"mixed_precision must be None, 'no', 'bf16', or 'fp16', "
+                    f"got '{self.mixed_precision}'"
+                )
 
 
 TBaseTrainingArguments = TypeVar("TBaseTrainingArguments", bound=BaseTrainingArguments)
@@ -702,6 +718,10 @@ class BaseTrainer(
         self.state.num_input_tokens_seen = state_dict["num_input_tokens_seen"]
         self.state.total_flos = state_dict["total_flos"]
 
+        # Restore GradScaler state if present and AMP is active
+        if "grad_scaler" in state_dict and hasattr(self, "amp_context"):
+            self.amp_context.load_state_dict(state_dict["grad_scaler"])
+
     # Stateful
     @override
     def state_dict(self):
@@ -719,13 +739,21 @@ class BaseTrainer(
             - num_input_tokens_seen: Total tokens processed (for logging)
             - total_flos: Total floating point operations (for efficiency metrics)
         """
-        return {
+        state = {
             "global_step": self.state.global_step,
             "epoch_start_step": self.state.epoch_start_step,
             "raw_epoch": self.state.raw_epoch,
             "num_input_tokens_seen": self.state.num_input_tokens_seen,
             "total_flos": self.state.total_flos,
         }
+
+        # Save GradScaler state if AMP fp16 is active
+        if hasattr(self, "amp_context"):
+            scaler_state = self.amp_context.state_dict()
+            if scaler_state:
+                state["grad_scaler"] = scaler_state
+
+        return state
 
     @abstractmethod
     def _prepare(

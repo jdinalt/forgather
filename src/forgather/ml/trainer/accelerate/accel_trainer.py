@@ -68,6 +68,14 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
             not self.args.fuse_optim_with_backward
         ), "AccelTrainer does not support option fuse_optim_with_backward"
 
+        if self.args.mixed_precision is not None:
+            logger.warning(
+                "AccelTrainer ignores args.mixed_precision. "
+                "Configure mixed precision via Accelerator(mixed_precision=...) instead. "
+                f"Ignoring mixed_precision='{self.args.mixed_precision}'"
+            )
+            self.args.mixed_precision = None
+
     @override
     def _init_distributed(self):
         self.is_local_process_zero = self.accelerator.is_local_main_process
