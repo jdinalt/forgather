@@ -80,6 +80,7 @@ def get_subcommand_registry():
     )
     from .checkpoint_args import create_checkpoint_parser
     from .control_args import create_control_parser
+    from .diloco_args import create_diloco_parser
     from .dataset_args import create_dataset_parser
     from .logs_args import create_logs_parser
     from .model_args import create_model_parser
@@ -116,6 +117,7 @@ def get_subcommand_registry():
         "update-vocab": create_update_vocab_parser,
         "checkpoint": create_checkpoint_parser,
         "logs": create_logs_parser,
+        "diloco": create_diloco_parser,
     }
 
 
@@ -389,6 +391,10 @@ def main():
                 from .logs import logs_cmd
 
                 logs_cmd(args)
+            case "diloco":
+                from .diloco import diloco_cmd
+
+                diloco_cmd(args)
             case _:
                 index_cmd(args)
     except SystemExit:

@@ -6,6 +6,7 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 
 - **[Interactive CLI](guides/interactive-cli.md)** - Interactive CLI
 - **[Training Performance Metrics](trainers/training-performance-metrics.md)** - Token throughput, FLOP tracking, and MFU
+- **[DiLoCo](trainers/diloco.md)** - Distributed Local-SGD training across heterogeneous machines on LAN
 - **[Configuration Overview](configuration/README.md)** - Template system and YAML configuration
 - **[Syntax Reference](configuration/syntax-reference.md)** - Complete syntax reference
 - **[Model Initialization](configuration/model-initialization.md)** - Regex-based parameter initialization
