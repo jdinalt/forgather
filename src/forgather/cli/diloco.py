@@ -100,6 +100,9 @@ def _server_cmd(args):
     else:
         print("Health monitoring: disabled")
 
+    # Dashboard
+    dashboard_enabled = not getattr(args, "no_dashboard", False)
+
     # Create server
     server = DiLoCoServer(
         model_state_dict=state_dict,
@@ -115,6 +118,7 @@ def _server_cmd(args):
         dylu_base_sync_every=dylu_base,
         heartbeat_timeout=heartbeat_timeout,
         min_workers=min_workers,
+        dashboard_enabled=dashboard_enabled,
     )
 
     # Resume from saved state if requested
@@ -123,6 +127,8 @@ def _server_cmd(args):
         server.load_state(args.resume)
 
     print(f"Starting DiLoCo server on {args.host}:{args.port}")
+    if dashboard_enabled:
+        print(f"Dashboard: http://{args.host}:{args.port}/dashboard")
     print(f"Waiting for {args.num_workers} worker(s)...")
 
     server.run()

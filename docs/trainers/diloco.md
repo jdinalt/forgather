@@ -599,6 +599,8 @@ The server exposes these HTTP endpoints:
 | POST | `/heartbeat` | Worker heartbeat with training speed; returns DyLU recommendation if enabled |
 | POST | `/deregister` | Worker departure |
 | GET | `/status` | Server status (mode, workers, sync round, fragment/async fields) |
+| GET | `/dashboard` | Web dashboard UI (HTML page) |
+| POST | `/control/{action}` | Control endpoints: `save_state`, `kick_worker`, `update_optimizer`, `update_num_workers`, `shutdown` |
 
 Tensor data is serialized using `torch.save` to `BytesIO` and sent as
 `application/octet-stream`. The pseudo-gradient submission uses a
@@ -693,6 +695,83 @@ manager automatically saves and restores its state:
 On checkpoint resume, the callback's `load_state_dict` is called during
 `_prepare()` (before the worker exists). The state is deferred and applied
 in `on_train_begin` after the worker is created and registered with the server.
+
+## Dashboard
+
+The DiLoCo server includes a built-in web dashboard for real-time monitoring and
+control. Navigate to the server's address in a browser to access it.
+
+### Accessing the Dashboard
+
+When the server starts, it logs the dashboard URL:
+
+```
+Dashboard: http://0.0.0.0:8512/dashboard
+```
+
+Open this URL (or `http://localhost:8512/dashboard`) in any browser. The root
+URL (`/`) also serves the dashboard.
+
+### Dashboard Panels
+
+The dashboard has four sections:
+
+1. **Header**: Server mode (sync/async), sync round counter, uptime, model size,
+   and a configurable refresh interval (1s to 30s).
+
+2. **Worker Table**: Shows all connected workers with their ID, hostname, sync
+   round, training speed (steps/s), last heartbeat (as relative time), and a
+   health indicator (green/yellow/red based on heartbeat recency). Each row has
+   a "Kick" button to evict a worker.
+
+3. **Server Metrics**: Outer optimizer hyperparameters (LR, momentum), pending
+   submission progress, DN buffer status (async mode), DyLU status, worker
+   death count, and fragment submission count.
+
+4. **Control Panel**: Interactive controls for:
+   - **Save State**: Save a checkpoint on demand (disabled if no `--save-dir`)
+   - **Optimizer**: Adjust outer LR and momentum in real time
+   - **Workers**: Change the expected worker count
+   - **Shutdown**: Gracefully stop the server (with confirmation dialog)
+
+### Control Endpoints
+
+The dashboard uses these HTTP endpoints, which can also be called directly:
+
+| Endpoint | Body | Action |
+|----------|------|--------|
+| `POST /control/save_state` | `{}` | Save server state to disk |
+| `POST /control/kick_worker` | `{"worker_id": "..."}` | Evict a worker |
+| `POST /control/update_optimizer` | `{"lr": 0.5, "momentum": 0.8}` | Update optimizer hyperparameters |
+| `POST /control/update_num_workers` | `{"num_workers": 4}` | Change expected worker count |
+| `POST /control/shutdown` | `{}` | Save state (if configured) and stop |
+
+All endpoints return `{"status": "ok", ...}` on success or `{"error": "..."}` on
+failure.
+
+### Disabling the Dashboard
+
+The dashboard is enabled by default. To disable it:
+
+```bash
+forgather diloco server -m model -n 2 --no-dashboard
+```
+
+Or in the programmatic API:
+
+```python
+server = DiLoCoServer(model_state_dict, num_workers=2, dashboard_enabled=False)
+```
+
+When disabled, `GET /dashboard` returns a 404 response.
+
+### Security Note
+
+The dashboard has no authentication. It provides full control over the training
+run, including the ability to shut down the server or modify optimizer
+hyperparameters. Only expose the server on trusted networks. Do not expose the
+server port to the public internet without additional access controls (e.g., a
+reverse proxy with authentication).
 
 ## References
 

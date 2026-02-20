@@ -134,6 +134,11 @@ def create_diloco_parser(global_args):
             "release. (default: 1)"
         ),
     )
+    server_parser.add_argument(
+        "--no-dashboard",
+        action="store_true",
+        help="Disable the web dashboard (served at /dashboard by default)",
+    )
 
     # status subcommand
     status_parser = subparsers.add_parser(

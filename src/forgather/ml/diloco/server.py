@@ -139,6 +139,8 @@ class DiLoCoServer:
         min_workers: Minimum number of workers required to apply the outer
             optimizer in sync mode. If the number of registered workers drops
             below this value, the sync barrier will not release. Default: 1.
+        dashboard_enabled: If True, serve the web dashboard at /dashboard.
+            Default: True.
     """
 
     def __init__(
@@ -156,6 +158,7 @@ class DiLoCoServer:
         dylu_base_sync_every: int = 500,
         heartbeat_timeout: float = 120.0,
         min_workers: int = 1,
+        dashboard_enabled: bool = True,
     ):
         if num_workers < 1:
             raise ValueError(f"num_workers must be >= 1, got {num_workers}")
@@ -173,6 +176,13 @@ class DiLoCoServer:
         self.dylu_enabled = dylu_enabled
         self.dylu_base_sync_every = dylu_base_sync_every
         self.heartbeat_timeout = heartbeat_timeout
+        self.dashboard_enabled = dashboard_enabled
+
+        # Model metadata (computed before parameters are wrapped)
+        self._model_params = sum(v.numel() for v in model_state_dict.values())
+        self._model_size_mb = sum(
+            v.numel() * v.element_size() for v in model_state_dict.values()
+        ) / (1024 * 1024)
 
         # Global parameters - stored as nn.Parameters for the optimizer
         self._param_names: List[str] = list(model_state_dict.keys())
@@ -874,7 +884,117 @@ class DiLoCoServer:
         response["heartbeat_timeout"] = self.heartbeat_timeout
         response["min_workers"] = self.min_workers
 
+        # Dashboard-related fields
+        pg = self.outer_optimizer.param_groups[0]
+        response["outer_lr"] = pg.get("lr", 0)
+        response["outer_momentum"] = pg.get("momentum", 0)
+        response["save_dir"] = self.save_dir
+        response["model_params"] = self._model_params
+        response["model_size_mb"] = round(self._model_size_mb, 2)
+        response["dashboard_enabled"] = self.dashboard_enabled
+
         _send_json_response(handler, response)
+
+    def _handle_dashboard(self, handler: BaseHTTPRequestHandler):
+        """Serve the web dashboard HTML page."""
+        if not self.dashboard_enabled:
+            _send_json_response(handler, {"error": "Dashboard disabled"}, 404)
+            return
+        from .dashboard import send_dashboard_response
+
+        send_dashboard_response(handler)
+
+    def _handle_control(self, handler: BaseHTTPRequestHandler, action: str):
+        """Dispatch control actions."""
+        try:
+            body = _read_request_body(handler)
+            try:
+                data = json.loads(body.decode("utf-8")) if body else {}
+            except json.JSONDecodeError:
+                _send_json_response(handler, {"error": "Invalid JSON"}, 400)
+                return
+
+            if action == "save_state":
+                self._handle_control_save(handler, data)
+            elif action == "kick_worker":
+                self._handle_control_kick(handler, data)
+            elif action == "update_optimizer":
+                self._handle_control_update_optimizer(handler, data)
+            elif action == "update_num_workers":
+                self._handle_control_update_num_workers(handler, data)
+            elif action == "shutdown":
+                self._handle_control_shutdown(handler, data)
+            else:
+                _send_json_response(handler, {"error": f"Unknown control action: {action}"}, 404)
+        except Exception as e:
+            logger.error(f"Error handling control/{action}: {e}", exc_info=True)
+            _send_json_response(handler, {"error": str(e)}, 500)
+
+    def _handle_control_save(self, handler, data):
+        """Save server state on demand."""
+        if not self.save_dir:
+            _send_json_response(handler, {"error": "No save_dir configured"}, 400)
+            return
+        self.save_state()
+        _send_json_response(handler, {"status": "ok", "sync_round": self._sync_round})
+
+    def _handle_control_kick(self, handler, data):
+        """Evict a worker."""
+        worker_id = data.get("worker_id")
+        if not worker_id:
+            _send_json_response(handler, {"error": "worker_id required"}, 400)
+            return
+        with self._workers_lock:
+            if worker_id not in self._workers:
+                _send_json_response(handler, {"error": f"Worker {worker_id} not found"}, 404)
+                return
+        self._handle_worker_death(worker_id)
+        logger.info(f"Worker {worker_id} kicked via control endpoint")
+        _send_json_response(handler, {"status": "ok", "worker_id": worker_id})
+
+    def _handle_control_update_optimizer(self, handler, data):
+        """Update outer optimizer hyperparameters in-place."""
+        pg = self.outer_optimizer.param_groups[0]
+        updated = {}
+        if "lr" in data:
+            pg["lr"] = float(data["lr"])
+            self._outer_lr = pg["lr"]
+            updated["lr"] = pg["lr"]
+        if "momentum" in data:
+            pg["momentum"] = float(data["momentum"])
+            updated["momentum"] = pg["momentum"]
+        if not updated:
+            _send_json_response(handler, {"error": "No parameters to update (provide lr and/or momentum)"}, 400)
+            return
+        logger.info(f"Outer optimizer updated via control: {updated}")
+        _send_json_response(handler, {"status": "ok", **updated})
+
+    def _handle_control_update_num_workers(self, handler, data):
+        """Update the expected number of workers."""
+        num_workers = data.get("num_workers")
+        if num_workers is None:
+            _send_json_response(handler, {"error": "num_workers required"}, 400)
+            return
+        num_workers = int(num_workers)
+        if num_workers < self.min_workers:
+            _send_json_response(
+                handler,
+                {"error": f"num_workers must be >= min_workers ({self.min_workers})"},
+                400,
+            )
+            return
+        self.num_workers = num_workers
+        logger.info(f"num_workers updated to {num_workers} via control")
+        _send_json_response(handler, {"status": "ok", "num_workers": self.num_workers})
+
+    def _handle_control_shutdown(self, handler, data):
+        """Gracefully shut down the server."""
+        logger.info("Shutdown requested via control endpoint")
+        if self.save_dir:
+            self.save_state()
+        _send_json_response(handler, {"status": "ok", "message": "Shutting down"})
+        # Stop in a separate thread so the response can be sent first
+        threading.Thread(target=self.stop, daemon=True).start()
 
     def _create_handler(self):
         """Create a request handler class bound to this server instance."""
@@ -898,6 +1018,9 @@ class DiLoCoServer:
                         server_ref._handle_heartbeat(self)
                     elif path == "/deregister":
                         server_ref._handle_deregister(self)
+                    elif path.startswith("/control/"):
+                        action = path[len("/control/"):]
+                        server_ref._handle_control(self, action)
                     else:
                         _send_json_response(self, {"error": f"Unknown endpoint: {path}"}, 404)
                 except Exception as e:
@@ -911,6 +1034,8 @@ class DiLoCoServer:
                         server_ref._handle_get_global_params(self)
                     elif path == "/status":
                         server_ref._handle_status(self)
+                    elif path == "/dashboard" or path == "":
+                        server_ref._handle_dashboard(self)
                     else:
                         _send_json_response(self, {"error": f"Unknown endpoint: {path}"}, 404)
                 except Exception as e:
@@ -991,6 +1116,8 @@ class DiLoCoServer:
         mode = "async" if self.async_mode else "sync"
         logger.info(f"DiLoCo server starting on {self.host}:{self.port} (mode={mode})")
         logger.info(f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}")
+        if self.dashboard_enabled:
+            logger.info(f"Dashboard: http://{self.host}:{self.port}/dashboard")
         if self.heartbeat_timeout > 0:
             logger.info(f"Health monitoring: timeout={self.heartbeat_timeout}s")
         if self.async_mode and self.dn_buffer_size > 0:
@@ -1026,6 +1153,8 @@ class DiLoCoServer:
         mode = "async" if self.async_mode else "sync"
         logger.info(f"DiLoCo server started on {self.host}:{self.port} (mode={mode}, background)")
         logger.info(f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}")
+        if self.dashboard_enabled:
+            logger.info(f"Dashboard: http://{self.host}:{self.port}/dashboard")
 
     def stop(self):
         """Stop the background server."""
