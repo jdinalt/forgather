@@ -27,8 +27,8 @@
         names: "--diloco-worker-id"
         type: str
         help: "Unique DiLoCo worker ID"
-    diloco_bf16_comm:
-        names: "--diloco-bf16"
+    diloco_no_bf16:
+        names: "--diloco-no-bf16"
         action: "store_true"
         help: "Cast pseudo-gradients to bfloat16"
     diloco_dylu:
@@ -50,10 +50,10 @@
 [callback_list]
     == super()
     diloco_callback: !singleton:forgather.ml.trainer.callbacks:DiLoCoCallback
-        server_addr: {{ diloco_server | default(None) }}
-        sync_every: {{ diloco_sync_every | default(None) }}
-        worker_id: {{ diloco_worker_id | default(None) }}
-        bf16_comm: {{ diloco_bf16_comm | default(None) }}
-        dylu: {{ diloco_dylu | default(None) }}
-        heartbeat_interval: {{ diloco_heartbeat_interval | default(None) }}
-        num_fragments: {{ diloco_num_fragments | default(None) }}
+        server_addr: {{ diloco_server | toyaml("0.0.0.0:8512") }}
+        sync_every: {{ diloco_sync_every | toyaml(500) }}
+        worker_id: {{ diloco_worker_id | toyaml(None) }}
+        bf16_comm: {{ not (diloco_no_bf16 | toyaml(True)) }}
+        dylu: {{ diloco_dylu | toyaml(False) }}
+        heartbeat_interval: {{ diloco_heartbeat_interval | toyaml(30.0) }}
+        num_fragments: {{ diloco_num_fragments | toyaml(1) }}
