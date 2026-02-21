@@ -235,6 +235,47 @@ except AssertionError as e:
 
 ---
 
+## `_pos_ids_from_boundaries` crashes when boundary values exceed sequence length
+
+**File:** `src/forgather/ml/data_collator.py:19-28`
+**Severity:** Medium (runtime crash with truncation + packed sequences)
+
+### Description
+
+When `document_starts` contains boundary values >= `T` (the sequence length),
+`_pos_ids_from_boundaries` computes `end = starts[i+1]` without clamping to `T`.
+This causes `torch.arange(doc_length)` to produce more elements than the slice
+`pos_ids[batch_idx, start:end]` can hold, resulting in a `RuntimeError`.
+
+This is triggered in practice when `truncation=True` and `packed_sequences=True`
+are used together: truncation slices `document_starts` by index position but does
+not filter out boundary *values* that exceed the new (truncated) sequence length.
+
+```python
+end = starts[i + 1] if i + 1 < len(starts) else T
+doc_length = end - start
+pos_ids[batch_idx, start:end] = torch.arange(doc_length, device=device)
+# If start or end > T, arange produces more elements than the slice accepts
+```
+
+### Fix
+
+Clamp `start` and `end` to `T`:
+
+```python
+start_clamped = min(int(start), T)
+end = min(int(starts[i + 1]), T) if i + 1 < len(starts) else T
+doc_length = end - start_clamped
+if doc_length > 0:
+    pos_ids[batch_idx, start_clamped:end] = torch.arange(doc_length, device=device)
+```
+
+### Test
+
+`tests/unit/ml/test_data_collator.py::TestDataCollatorPackedSequences::test_truncation_with_out_of_bounds_document_starts_bug`
+
+---
+
 ## Summary Table
 
 | # | File | Severity | Description |
@@ -246,3 +287,4 @@ except AssertionError as e:
 | 4 | `tokenizer.py:65` | Low | Empty sequence `[]` raises TypeError |
 | 5 | `data_collator.py:228` | Low | `__repr__` has misplaced `)` and extra space |
 | 6 | `test_build_sync_distributed.py:254` | Medium | `AssertionError` typo makes except clause dead code |
+| 7 | `data_collator.py:19-28` | Medium | `_pos_ids_from_boundaries` crashes when boundaries exceed sequence length |
