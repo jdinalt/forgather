@@ -275,7 +275,9 @@ class LinearCrossEntropyLoss:
         if self.compile:
             self._compute_fn = torch.compile(self._compute_fn)
 
-    def _select_implementation(self, impl: str, **kwargs) -> tuple[str, Callable[..., Any]]:
+    def _select_implementation(
+        self, impl: str, **kwargs
+    ) -> tuple[str, Callable[..., Any]]:
         """
         Select and initialize the loss implementation.
 
@@ -366,9 +368,7 @@ class LinearCrossEntropyLoss:
                 "Must be one of: 'auto', 'cce', 'liger', 'pytorch'"
             )
 
-    def _compute_cce(
-        self, hidden_states: Tensor, labels: Tensor
-    ) -> Tensor:
+    def _compute_cce(self, hidden_states: Tensor, labels: Tensor) -> Tensor:
         """Use Apple's CCE implementation."""
         from cut_cross_entropy import linear_cross_entropy
 
@@ -385,9 +385,7 @@ class LinearCrossEntropyLoss:
             **self.kwargs,
         )
 
-    def _compute_liger(
-        self, hidden_states: Tensor, labels: Tensor
-    ) -> Tensor:
+    def _compute_liger(self, hidden_states: Tensor, labels: Tensor) -> Tensor:
         """Use Liger Kernel implementation."""
         # Liger expects: loss_fn(weight, input, target)
         # Shift for causal prediction
@@ -400,9 +398,7 @@ class LinearCrossEntropyLoss:
 
         return self._liger_loss(self.weight, flat_hidden, flat_labels)
 
-    def _compute_pytorch(
-        self, hidden_states: Tensor, labels: Tensor
-    ) -> Tensor:
+    def _compute_pytorch(self, hidden_states: Tensor, labels: Tensor) -> Tensor:
         """Use pure PyTorch chunked implementation."""
         # Shift for causal prediction
         shift_hidden = hidden_states[..., :-1, :].contiguous()
@@ -488,7 +484,7 @@ class LinearCrossEntropyLoss:
 
             # Accumulate exp(logit - max)
             chunk_exp = torch.exp(chunk_logits - max_logit.unsqueeze(-1))
-            sum_exp += chunk_exp.sum(dim=-1)
+            sum_exp += chunk_exp.sum(dim=-1).to(sum_exp.dtype)
 
             # Extract target logits for labels in this chunk
             chunk_labels = labels - start_idx
@@ -499,7 +495,7 @@ class LinearCrossEntropyLoss:
                 selected_logits = torch.gather(
                     chunk_logits[in_chunk], dim=-1, index=indices
                 ).squeeze(-1)
-                target_logits[in_chunk] = selected_logits
+                target_logits[in_chunk] = selected_logits.to(target_logits.dtype)
 
         # Step 3: Compute cross-entropy
         log_sum_exp = max_logit + torch.log(sum_exp)

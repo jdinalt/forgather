@@ -71,6 +71,9 @@
     # PP does not have 'dispatch_batches'
     dispatch_batches: null
 
+    # We must use the same batch size to train and eval, so we may as well disable dynamic shapes.
+    torch_compile_dynamic: False
+
 [trainer_callbacks]
     -- include 'pp.logger_config'
 

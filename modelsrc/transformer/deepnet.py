@@ -1,5 +1,6 @@
 from typing import Callable, Optional
 
+import torch
 from torch import FloatTensor, nn
 
 
@@ -38,7 +39,14 @@ class DeepnetLayer(nn.Module):
             self.residual_dropout = nn.Identity()
         else:
             self.residual_dropout = nn.Dropout(residual_dropout)
-        self.alpha = alpha
+        self._alpha = alpha
+        self.alpha = nn.Buffer(torch.empty((1,)))
+
+    def reset_parameters(self):
+        self.alpha.fill_(float(self._alpha))
+
+    def extra_repr(self):
+        return f"alpha={self._alpha}"
 
     def forward(self, x: FloatTensor, **kwargs) -> FloatTensor:
         residual = self.residual_dropout(x)

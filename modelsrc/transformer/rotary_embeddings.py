@@ -98,7 +98,9 @@ class RotaryPE:
         max_sequence_length: int = 2048,
         rope_parameters: Optional[Dict[str, Any]] = None,
         rope_theta: Optional[float] = None,  # Deprecated: use rope_parameters
-        rope_scaling: Optional[Dict[str, Any]] = None,  # Deprecated: use rope_parameters
+        rope_scaling: Optional[
+            Dict[str, Any]
+        ] = None,  # Deprecated: use rope_parameters
         use_liger: bool = False,
         cache_embeddings: bool = True,
         compile_on_demand: bool = True,
@@ -115,16 +117,24 @@ class RotaryPE:
         # Extract parameters from rope_parameters dict (v5.0 format)
         # Or fall back to legacy rope_theta/rope_scaling params
         if rope_parameters is not None:
-            extracted_theta = rope_parameters.get('rope_theta', 10000.0)
+            extracted_theta = rope_parameters.get("rope_theta", 10000.0)
 
             # Build rope_scaling dict from rope_parameters
             # (Internal implementation still uses separate rope_scaling)
             extracted_scaling = {}
-            if 'rope_type' in rope_parameters:
-                extracted_scaling['rope_type'] = rope_parameters['rope_type']
-            for key in ['factor', 'low_freq_factor', 'high_freq_factor',
-                       'original_max_position_embeddings', 'attention_factor',
-                       'beta_fast', 'beta_slow', 'short_factor', 'long_factor']:
+            if "rope_type" in rope_parameters:
+                extracted_scaling["rope_type"] = rope_parameters["rope_type"]
+            for key in [
+                "factor",
+                "low_freq_factor",
+                "high_freq_factor",
+                "original_max_position_embeddings",
+                "attention_factor",
+                "beta_fast",
+                "beta_slow",
+                "short_factor",
+                "long_factor",
+            ]:
                 if key in rope_parameters:
                     extracted_scaling[key] = rope_parameters[key]
 
@@ -451,4 +461,5 @@ class RotaryPE:
 
         q_embed = (q * cos) + (rotate_half(q) * sin)
         k_embed = (k * cos) + (rotate_half(k) * sin)
-        return q_embed, k_embed
+
+        return q_embed.to(dtype=q.dtype), k_embed.to(dtype=q.dtype)
