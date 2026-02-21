@@ -149,14 +149,9 @@ class TestTensorTrackerTrack(unittest.TestCase):
         self.assertEqual(tracker.tensor_info[id(t)][3], "tracked")
 
     def test_track_cleanup_on_gc(self):
-        """BUG: track_tensor's weakref callback captures `tensor` by reference,
-        which keeps the tensor alive and prevents garbage collection.
-
-        The lambda `lambda ref: self.tensor_finalizer(id(tensor))` holds a
-        reference to the `tensor` local variable. This means the weakref's
-        callback itself prevents the tensor from being collected. The fix
-        would be to capture `tensor_id = id(tensor)` before the lambda and
-        use that instead.
+        """track_tensor's weakref callback correctly cleans up when the tensor
+        is garbage collected. The lambda captures tensor_id (an int) rather
+        than the tensor itself, so the weakref does not prevent collection.
         """
         tracker = TensorTracker()
         t = torch.zeros(5)
@@ -168,10 +163,8 @@ class TestTensorTrackerTrack(unittest.TestCase):
         del t
         gc.collect()
 
-        # BUG: tensor is NOT collected because the weakref callback lambda
-        # captures `tensor` by reference, keeping it alive.
-        # The tensor remains in tracking despite being "deleted" locally.
-        self.assertIn(tid, tracker.tensors)
+        # Tensor should be collected and removed from tracking
+        self.assertNotIn(tid, tracker.tensors)
 
 
 class TestTensorTrackerStep(unittest.TestCase):

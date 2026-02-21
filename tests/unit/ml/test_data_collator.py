@@ -494,26 +494,16 @@ class TestDataCollatorForCausalLMRepr(unittest.TestCase):
         r = repr(collator)
         self.assertIn("pad_kwargs=", r)
 
-    def test_repr_mismatched_parenthesis_bug(self):
-        """
-        BUG: The __repr__ method has a mismatched closing parenthesis.
-
-        The format string is:
-            f"...ignore_index={self.ignore_index }), pad_kwargs=..."
-        Note the extra ')' after ignore_index -- there is a ')' that closes a
-        non-existent opening paren, making the repr syntactically odd. For
-        example, the output looks like:
-            DataCollatorForCausalLM(..., ignore_index=-100), pad_kwargs={...}
-
-        This is a cosmetic bug. We test the actual (buggy) output here so
-        that the test passes against the current code.
-        """
+    def test_repr_format(self):
+        """__repr__ should have properly matched parentheses."""
         tokenizer = MockTokenizer()
         collator = DataCollatorForCausalLM(tokenizer)
         r = repr(collator)
-        # The buggy repr has "), pad_kwargs=" -- the ')' closes the class but
-        # then pad_kwargs follows outside.
-        self.assertIn("), pad_kwargs=", r)
+        # The repr should end with a closing parenthesis that matches the class name opener
+        self.assertIn("ignore_index=-100, pad_kwargs=", r)
+        self.assertTrue(r.endswith(")"))
+        # Count parens: should be balanced
+        self.assertEqual(r.count("("), r.count(")"))
 
 
 class TestDataCollatorForCausalLMCall(unittest.TestCase):
@@ -881,15 +871,9 @@ class TestDataCollatorIntegration(unittest.TestCase):
     def test_full_pipeline_with_packed_and_truncation(self):
         """End-to-end: truncation + packed sequences with document_starts.
 
-        NOTE: Truncation slices document_starts with the same max_length as
-        input_ids (since _truncate applies the slice to all keys). If the
-        original document_starts contain boundary positions that are >= the
-        truncated sequence length, _pos_ids_from_boundaries will raise a
-        RuntimeError because it does not clamp 'end' to T. This is a latent
-        BUG: when truncation is combined with packed sequences, document
-        boundary values that exceed the truncated length are not filtered out
-        or clamped. The workaround (tested here) is to ensure document
-        boundaries are compatible with the truncated length.
+        Out-of-bounds document boundaries are clamped to T in
+        _pos_ids_from_boundaries, so this works even if truncation reduces
+        the sequence length below some boundary positions.
         """
         tokenizer = MockTokenizer()
         collator = DataCollatorForCausalLM(
@@ -910,18 +894,10 @@ class TestDataCollatorIntegration(unittest.TestCase):
             f"Expected {expected_pos}, got {batch['position_ids']}",
         )
 
-    def test_truncation_with_out_of_bounds_document_starts_bug(self):
-        """
-        BUG: When truncation reduces sequence length, document_starts values
-        that are >= the new length cause _pos_ids_from_boundaries to fail.
-
-        _pos_ids_from_boundaries computes doc_length = end - start where
-        end = starts[i+1], but does not clamp end to T. When a boundary
-        position exceeds T, torch.arange(doc_length) produces more elements
-        than fit in pos_ids[batch_idx, start:end] (which is clamped by tensor
-        bounds), causing a RuntimeError.
-
-        This test documents the bug by verifying the exception is raised.
+    def test_truncation_with_out_of_bounds_document_starts(self):
+        """When truncation reduces sequence length, out-of-bounds document_starts
+        values are clamped to T. Boundaries >= T produce zero-length documents
+        and are safely skipped.
         """
         tokenizer = MockTokenizer()
         collator = DataCollatorForCausalLM(
@@ -931,9 +907,19 @@ class TestDataCollatorIntegration(unittest.TestCase):
             {"input_ids": [1, 2, 3, 4, 5, 6], "document_starts": [0, 3, 5]},
         ]
         # After truncation: input_ids=[1,2,3,4] (len 4), document_starts=[0,3,5]
-        # (3 elements, all kept by [:4] slice). Boundary 5 > T=4 causes crash.
-        with self.assertRaises(RuntimeError):
-            collator(features)
+        # (3 elements, all kept by [:4] slice).
+        # Boundary 5 > T=4 is clamped: start_clamped=4, end=4, doc_length=0 -> skipped.
+        # Boundary 3: start_clamped=3, end=min(5,4)=4, doc_length=1 -> pos 0 at index 3.
+        batch = collator(features)
+        self.assertIn("position_ids", batch)
+        # doc1: [0,3) -> positions [0,1,2]
+        # doc2: [3,4) -> position [0]
+        # doc3: [5,T=4) -> clamped, zero-length, skipped
+        expected_pos = torch.tensor([[0, 1, 2, 0]])
+        self.assertTrue(
+            torch.equal(batch["position_ids"], expected_pos),
+            f"Expected {expected_pos}, got {batch['position_ids']}",
+        )
 
     def test_batch_with_mixed_doc_counts(self):
         """Batch where different sequences have different numbers of documents."""
