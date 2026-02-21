@@ -4,7 +4,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from pprint import pformat
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from jinja2 import Environment, meta
 from platformdirs import user_config_dir
@@ -214,8 +214,8 @@ class ConfigEnvironment:
     def __init__(
         self,
         searchpath: Iterable[str | os.PathLike] | str | os.PathLike = tuple("."),
-        pp_environment: Environment = None,
-        global_vars: Dict[str, Any] = None,
+        pp_environment: Optional[Environment] = None,
+        global_vars: Optional[Dict[str, Any]] = None,
     ):
         if global_vars is None:
             global_vars = {}
@@ -249,7 +249,7 @@ class ConfigEnvironment:
 
         returns: ConfigText, a 'str' sub-type with a 'with_line_numbers()' method.
         """
-        template = self.pp_environment.get_template(config_path)
+        template = self.pp_environment.get_template(str(config_path))
         return ConfigText(template.render(**kwargs))
 
     def preprocess_from_string(
@@ -334,7 +334,7 @@ class ConfigEnvironment:
         return self._trace_template_rendering(template_name)
 
     def _trace_template_rendering(
-        self, template_name: str
+        self, template_name: os.PathLike | str
     ) -> Tuple[List[Tuple[str, str]], Dict[str, Set[str]]]:
         """
         Trace all templates loaded during rendering using a tracing loader
@@ -363,23 +363,23 @@ class ConfigEnvironment:
                 # Also track static relationships from original method
                 self.static_dependencies = {}
 
-            def get_source(self, environment, template_name):
-                result = super().get_source(environment, template_name)
+            def get_source(self, environment, template):
+                result = super().get_source(environment, template)
 
                 if self.is_tracing:
                     source, filename, uptodate = result
-                    self.load_trace.append((template_name, filename))
+                    self.load_trace.append((template, filename))
 
                     # Analyze the source to understand relationship types
                     static_refs = self._get_static_references(
-                        source, environment, template_name, filename
+                        source, environment, template, filename
                     )
 
                     # Store static relationships for this template (these are the real dependencies)
                     if static_refs:
-                        self.static_dependencies[template_name] = set(static_refs)
+                        self.static_dependencies[template] = set(static_refs)
 
-                    self.load_stack.append(template_name)
+                    self.load_stack.append(template)
 
                 return result
 
@@ -392,8 +392,10 @@ class ConfigEnvironment:
                         source, name=template_name, filename=filename
                     )
                     return sorted(
-                        filter(
-                            lambda x: x is not None, meta.find_referenced_templates(ast)
+                        (
+                            x
+                            for x in meta.find_referenced_templates(ast)
+                            if x is not None
                         ),
                         key=lambda a: 1 if a.endswith(".yaml") else -1,
                     )

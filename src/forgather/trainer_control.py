@@ -11,11 +11,12 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:
-    import requests
+    import requests as _requests_check
 
+    del _requests_check
     REQUESTS_AVAILABLE = True
 except ImportError:
     REQUESTS_AVAILABLE = False
@@ -56,8 +57,8 @@ class ControlResponse:
 
     success: bool
     message: str
-    data: Dict[str, Any] = None
-    timestamp: float = None
+    data: Optional[Dict[str, Any]] = None
+    timestamp: Optional[float] = None
 
     def __post_init__(self):
         if self.timestamp is None:
@@ -69,7 +70,7 @@ class TrainerControlClient(ABC):
 
     @abstractmethod
     def send_command(
-        self, job_id: str, command: str, data: Dict[str, Any] = None
+        self, job_id: str, command: str, data: Optional[Dict[str, Any]] = None
     ) -> ControlResponse:
         """Send a control command to a training job."""
         pass
@@ -114,6 +115,8 @@ class HTTPTrainerControlClient(TrainerControlClient):
         if not REQUESTS_AVAILABLE:
             raise ImportError("requests library required for HTTPTrainerControlClient")
 
+        import requests
+
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update(
@@ -140,7 +143,7 @@ class HTTPTrainerControlClient(TrainerControlClient):
             raise ValueError(f"Failed to read job endpoint info: {e}")
 
     def send_command(
-        self, job_id: str, command: str, data: Dict[str, Any] = None
+        self, job_id: str, command: str, data: Optional[Dict[str, Any]] = None
     ) -> ControlResponse:
         """Send a control command via HTTP."""
         try:
@@ -243,7 +246,7 @@ class FileBasedTrainerControlClient(TrainerControlClient):
         self.control_dir = Path.home() / ".forgather" / "jobs"
 
     def send_command(
-        self, job_id: str, command: str, data: Dict[str, Any] = None
+        self, job_id: str, command: str, data: Optional[Dict[str, Any]] = None
     ) -> ControlResponse:
         """Send command via file system."""
         try:

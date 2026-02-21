@@ -169,9 +169,9 @@ class PPLoader(FileSystemLoader):
         super().__init__(*args, **kwargs)
         self.templates = {}
 
-    def get_source(self, environment, template_name):
-        if (template_info := self.templates.get(template_name)) is None:
-            source, filename, uptodate = super().get_source(environment, template_name)
+    def get_source(self, environment, template):
+        if (template_info := self.templates.get(template)) is None:
+            source, filename, uptodate = super().get_source(environment, template)
             main_template = next(iter := split_templates(source))
             for sub in iter:
                 self.templates[sub[0]] = (sub[1], filename, uptodate)
@@ -229,7 +229,8 @@ class LineStatementProcessor(Extension):
     def preprocess(self, source, name, filename=None):
         source = preprocess(source)
         if LineStatementProcessor.pp_verbose:
-            print(f"{' '+name+' ':-^80}")
+            label = name or ""
+            print(f"{' '+label+' ':-^80}")
             print(format_line_numbers(source))
         return source
 

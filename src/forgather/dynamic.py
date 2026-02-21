@@ -1,4 +1,5 @@
 import importlib
+import importlib.util
 import os
 import sys
 from collections.abc import Iterable
@@ -56,19 +57,22 @@ def walk_package_modules(
                     yield from walk_package_modules(module_obj, level + 1, _visited)
 
 
-def parse_module_name_or_path(module_name_or_path: Union[os.PathLike, str]):
+def parse_module_name_or_path(
+    module_name_or_path: Union[os.PathLike, str],
+) -> tuple[str, str | None]:
     """
     module_name_or_path -> tuple(module_name, module_path)
 
     module-name-or-path ::= <module-path> | <module-name>
     module-path ::= [ <os-path> ] <module-name> '.py'
     """
-    if module_name_or_path.endswith(".py"):
-        module_path = module_name_or_path
-        module_name = os.path.basename(module_name_or_path).split(".")[0]
+    module_str = str(module_name_or_path)
+    if module_str.endswith(".py"):
+        module_path: str | None = module_str
+        module_name = os.path.basename(module_str).split(".")[0]
     else:
         module_path = None
-        module_name = module_name_or_path
+        module_name = module_str
     return module_name, module_path
 
 
@@ -145,13 +149,18 @@ def import_dynamic_module(
         if module_path is None:
             mod = importlib.import_module(module_name)
         else:
+            str_searchpath = [str(p) for p in searchpath]
             module_spec = importlib.util.spec_from_file_location(
                 module_name,
                 module_path,
-                submodule_search_locations=searchpath,
+                submodule_search_locations=str_searchpath,
             )
+            if module_spec is None:
+                raise ImportError(f"Could not create module spec for {module_path}")
             mod = importlib.util.module_from_spec(module_spec)
             sys.modules[module_name] = mod
+            if module_spec.loader is None:
+                raise ImportError(f"No loader found for module {module_path}")
             module_spec.loader.exec_module(mod)
     return mod
 

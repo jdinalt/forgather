@@ -19,7 +19,7 @@ def split_tag_idenity(tag_suffix):
 positional_re = re.compile(r"arg(\d+)")
 
 
-def split_args(kwargs) -> tuple[tuple[Any], dict[Any]]:
+def split_args(kwargs) -> tuple[tuple[Any, ...], dict[Any, Any]]:
     """
     Split out args and kwargs from kwargs, where "args" have keys matching match_positional
     and sort args. This allows encoding of both positonal and keyword args as a single dictionary,
@@ -39,13 +39,13 @@ def split_args(kwargs) -> tuple[tuple[Any], dict[Any]]:
             delete_keys.append(key)
     for k in delete_keys:
         del kwargs[k]
-    args = (v for _, v in sorted_args)
+    args = tuple(v for _, v in sorted_args)
 
     return args, kwargs
 
 
 class CallableConstructor:
-    def __init__(self, node_type: CallableNode):
+    def __init__(self, node_type: type[CallableNode]):
         self.node_type = node_type
 
     def __call__(self, loader, tag_suffix, node):
@@ -73,10 +73,14 @@ class CallableConstructor:
             args = loader.construct_sequence(node, deep=True)
             kwargs = {}
         else:
-            args = loader.construct_scalar(node)
+            scalar = loader.construct_scalar(node)
+            args = (scalar,) if scalar else ()
             kwargs = {}
 
         assert isinstance(kwargs, dict), f"Expected dict, but found {type(kwargs)}"
+        assert (
+            constructor is not None
+        ), f"Empty constructor in YAML tag suffix: {repr(tag_suffix)}"
         return self.node_type(constructor, *args, _identity=identity, **kwargs)
 
 
@@ -141,7 +145,7 @@ def tuple_constructor(loader, tag_suffix, node):
             raise TypeError(
                 f"tuple node must be mapping or empty. Found {type(value)}={value}"
             )
-        return SingletonNode("named_list", _identity=identity)
+        return SingletonNode("named_tuple", _identity=identity)
     else:
         raise TypeError(f"tuple nodes must be sequencess. Found {node}")
 

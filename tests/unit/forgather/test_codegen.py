@@ -244,28 +244,17 @@ class TestGenerateCode:
 
 
 class TestGetItemBug:
-    @pytest.mark.xfail(
-        reason=(
-            "codegen.py defines _getitem() twice. The first definition (line 207) "
-            "uses repr(key) which correctly stringifies non-string keys; the second "
-            "definition (line 245) uses self._encode(key) and shadows the first. "
-            "Python only keeps the last definition, so the first is never callable."
-        ),
-        strict=True,
-    )
-    def test_first_getitem_definition_is_unreachable(self):
-        # The first _getitem() used `repr(key)` for a mapping key from obj.args[1].
-        # The second definition is what Python actually uses.
-        # This test documents that the first definition is dead code (shadowed).
-        # If this test passes unexpectedly, the bug has been fixed.
-
-        # We verify the active _getitem uses self._encode(key), not repr(key):
+    def test_single_getitem_definition_uses_encode(self):
+        # The duplicate first _getitem() definition (which used repr(key)) has been removed.
+        # The active _getitem uses self._encode(key) for recursive encoding.
         import inspect
 
         import forgather.codegen as codegen_module
 
         src = inspect.getsource(codegen_module.PyEncoder._getitem)
-        # The FIRST definition used f"[{repr(key)}]" - if that's in the active source, bug is fixed
         assert (
-            "repr(key)" in src
-        ), "The active _getitem() now uses repr(key) from the first definition - bug is fixed!"
+            "self._encode(key)" in src
+        ), "Active _getitem should use self._encode(key)"
+        assert (
+            "repr(key)" not in src
+        ), "Dead-code _getitem using repr(key) should be gone"

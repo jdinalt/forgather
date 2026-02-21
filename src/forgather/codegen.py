@@ -16,13 +16,15 @@ from .utils import track_depth
 
 
 class PyEncoder(GraphEncoder):
-    def init(self, obj: Any, name_policy):
+    def init(self, obj: Any, name_policy, prune_meta=False):
         super().init(obj, name_policy, True)
         self.imports = set()
         self.dynamic_imports = set()
         self.vars = set()
 
-    def __call__(self, obj: Any, name_policy=None) -> dict:
+    def __call__(
+        self, obj: Any, name_policy: Optional[str | NamePolicy] = None
+    ) -> dict:
         self.init(obj, name_policy)
         self.level = 0
         definitions = self._encode_definitions(obj).strip()
@@ -162,7 +164,7 @@ class PyEncoder(GraphEncoder):
                 case "keys":
                     return self._keys(obj)
                 case "items":
-                    return self._items(obj)
+                    return self._encode_items(obj)
                 case "getitem":
                     return self._getitem(obj)
                 case "named_list":
@@ -202,12 +204,6 @@ class PyEncoder(GraphEncoder):
         for key, value in obj.kwargs.items():
             s += self._indent() + str(key) + "=" + self._encode(value) + ",\n"
         s += self._indent(-1) + ")"
-        return s
-
-    def _getitem(self, obj):
-        mapping = obj.args[0]
-        key = obj.args[1]
-        s = self._encode(mapping) + f"[{repr(key)}]"
         return s
 
     def _call(self, obj):
@@ -359,7 +355,7 @@ def generate_code(
     template_str: Optional[str] = None,
     searchpath: Optional[List[str | os.PathLike] | str | os.PathLike] = ".",
     env=None,  # jinja2 environment or compatible API
-    name_policy: str | NamePolicy = None,
+    name_policy: Optional[str | NamePolicy] = None,
     **kwargs,
 ) -> Any:
     """
@@ -409,14 +405,14 @@ def generate_code(
             searchpath = [searchpath]
 
         # Removes paths which don't exist
-        searchpath = list(filter(lambda path: os.path.isdir(path), searchpath))
+        searchpath = list(filter(lambda path: os.path.isdir(path), searchpath or []))
         env = PPEnvironment(searchpath=searchpath)
 
     if template_name is None:
         if template_str is None:
             template = env.from_string(DEFAULT_CODE_TEMPLATE)
         else:
-            template = template_str
+            template = env.from_string(template_str)
     else:
         template = env.get_template(template_name)
 

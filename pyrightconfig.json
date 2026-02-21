@@ -1,0 +1,11 @@
+{
+  "include": [
+    "src/forgather"
+  ],
+  "exclude": [
+    "src/forgather/ml",
+    "src/forgather/tools"
+  ],
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Linux"
+}

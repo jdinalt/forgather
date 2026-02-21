@@ -3,7 +3,7 @@ from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from enum import Enum
 from types import NoneType
-from typing import Any
+from typing import Any, Optional
 
 from .latent import CallableNode, Latent, MetaNode, VarNode, prune_node_type
 from .utils import AutoName, track_depth
@@ -23,7 +23,7 @@ class NodeNameDict(dict):
     Generates a human-readable map of node.identity -> str
     """
 
-    def __init__(self, obj, name_policy: NamePolicy = None, prune_meta=False):
+    def __init__(self, obj, name_policy: Optional[NamePolicy] = None, prune_meta=False):
         # If str, convert to enum
         if isinstance(name_policy, str):
             match name_policy:
@@ -99,7 +99,7 @@ class GraphEncoder(metaclass=ABCMeta):
     """
 
     @abstractmethod
-    def __call__(self, obj: Any, name_policy=None) -> Any: ...
+    def __call__(self, obj: Any, name_policy: Optional[NamePolicy] = None) -> Any: ...
 
     def _indent(self, offset: int = 0) -> str:
         """
@@ -159,6 +159,8 @@ class GraphEncoder(metaclass=ABCMeta):
         elif isinstance(obj, CallableNode):
             return self._callable(obj)
 
+        raise TypeError(f"Unsupported type in graph: {type(obj)}")
+
     """
     Enocde the specified type
 
@@ -167,31 +169,31 @@ class GraphEncoder(metaclass=ABCMeta):
     """
 
     @abstractmethod
-    def _list(self, obj: list): ...
+    def _list(self, obj: list) -> str: ...
 
     @abstractmethod
-    def _dict(self, obj: dict): ...
+    def _dict(self, obj: dict) -> str: ...
 
     @abstractmethod
-    def _tuple(self, obj: tuple): ...
+    def _tuple(self, obj: tuple) -> str: ...
 
     @abstractmethod
-    def _var(self, obj: VarNode): ...
+    def _var(self, obj: VarNode) -> str: ...
 
     @abstractmethod
-    def _callable(self, obj: CallableNode): ...
+    def _callable(self, obj: CallableNode) -> str: ...
 
     @abstractmethod
-    def _none(self): ...
+    def _none(self) -> str: ...
 
     @abstractmethod
-    def _str(self, obj: str): ...
+    def _str(self, obj: str) -> str: ...
 
     @abstractmethod
-    def _int(self, obj: int): ...
+    def _int(self, obj: int) -> str: ...
 
     @abstractmethod
-    def _float(self, obj: float): ...
+    def _float(self, obj: float) -> str: ...
 
     @abstractmethod
-    def _bool(self, obj: bool): ...
+    def _bool(self, obj: bool) -> str: ...

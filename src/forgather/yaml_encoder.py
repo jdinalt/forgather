@@ -57,28 +57,28 @@ class YamlEncoder(GraphEncoder):
         return s
 
     @track_depth
-    def _list(self, obj: list):
+    def _list(self, obj: list | tuple) -> str:
         s = ""
         for value in obj:
             s += "\n" + self._indent() + "- " + self._encode(value)
         return s
 
     @track_depth
-    def _dict(self, obj: dict):
+    def _dict(self, obj: dict) -> str:
         s = ""
         for key, value in obj.items():
             s += "\n" + self._indent() + str(key) + ": " + self._encode(value)
         return s
 
     @track_depth
-    def _tuple(self, obj: tuple):
+    def _tuple(self, obj: tuple | list) -> str:
         s = "!tuple"
         for value in obj:
             s += "\n" + self._indent() + "- " + self._encode(value)
         return s
 
     @track_depth
-    def _var(self, obj: VarNode):
+    def _var(self, obj: VarNode) -> str:
         if obj.value is Undefined:
             return f"!var {repr(obj.constructor)}"
         else:
@@ -86,7 +86,7 @@ class YamlEncoder(GraphEncoder):
                 f"!var {{ name: {repr(obj.constructor)}, default: {repr(obj.value)} }}"
             )
 
-    def _callable(self, obj: CallableNode):
+    def _callable(self, obj: CallableNode) -> str:
         if obj.identity in self.defined_ids:
             return self._identity(obj)
         elif obj.identity in self.name_map:
@@ -155,14 +155,14 @@ class YamlEncoder(GraphEncoder):
         return s
 
     @track_depth
-    def _none(self):
+    def _none(self) -> str:
         return "null"
 
-    def _textblock(self, obj):
+    def _textblock(self, obj: str) -> str:
         return "".join(map(lambda line: self._indent() + line, self.split_text(obj)))
 
     @track_depth
-    def _str(self, obj: str):
+    def _str(self, obj: str) -> str:
         if "\n" in obj:
             s = "|\n"
             s += self._textblock(obj)
@@ -171,15 +171,15 @@ class YamlEncoder(GraphEncoder):
             return repr(obj)
 
     @track_depth
-    def _int(self, obj: int):
+    def _int(self, obj: int) -> str:
         return repr(obj)
 
     @track_depth
-    def _float(self, obj: float):
+    def _float(self, obj: float) -> str:
         return repr(obj)
 
     @track_depth
-    def _bool(self, obj: bool):
+    def _bool(self, obj: bool) -> str:
         return repr(obj)
 
 

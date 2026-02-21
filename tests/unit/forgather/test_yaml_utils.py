@@ -262,11 +262,8 @@ class TestTupleConstructor:
         assert isinstance(result, SingletonNode)
         assert result.constructor == "named_tuple"
 
-    @pytest.mark.xfail(
-        reason="Known bug: empty !tuple scalar creates 'named_list' instead of 'named_tuple'"
-    )
     def test_empty_scalar_creates_named_tuple_not_named_list(self):
-        """An empty !tuple scalar should create a 'named_tuple', but currently creates 'named_list'."""
+        """An empty !tuple scalar should create a 'named_tuple'."""
         result = self._load("!tuple")
         assert isinstance(result, SingletonNode)
         assert result.constructor == "named_tuple"

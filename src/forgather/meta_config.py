@@ -2,7 +2,7 @@ import os
 import platform
 from dataclasses import dataclass, field
 from importlib.metadata import version
-from typing import Any, List
+from typing import Any, List, Optional
 
 from .config import ConfigDict, ConfigEnvironment
 from .preprocess import forgather_config_dir
@@ -39,10 +39,10 @@ class MetaConfig:
     name: str
 
     # The name of the current project
-    project_name: str
+    project_name: Optional[str]
 
     # The description of the current project
-    description: str
+    description: Optional[str]
 
     # The path to the meta file
     meta_path: str
@@ -51,13 +51,13 @@ class MetaConfig:
     searchpath: List[str]
 
     # The value of the system_path from the meta-config
-    system_path: str
+    system_path: Optional[str]
 
     # The name of the sub-directory in which leaf configurations are located
     config_prefix: str
 
     # The default configuration
-    default_cfg: str
+    default_cfg: Optional[str]
 
     # The raw config dictionary
     config_dict: dict
@@ -142,7 +142,7 @@ class MetaConfig:
     def _load_config(self, config_path: str | os.PathLike, /, **kwargs) -> ConfigDict:
         project_directory, template_name = os.path.split(config_path)
         if not os.path.exists(project_directory):
-            raise ValueError("fThe directory, '{project_directory}', does not exist.")
+            raise ValueError(f"The directory, '{project_directory}', does not exist.")
         elif not os.path.isdir(project_directory):
             raise ValueError(f"The directory, '{project_directory}', does not exist.")
         elif not os.path.isfile(config_path):
