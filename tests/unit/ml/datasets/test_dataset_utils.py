@@ -937,7 +937,7 @@ class TestLengthSyncCallback(unittest.TestCase):
 
     @patch("forgather.ml.datasets.dataloader_utils.sync_dataset_state_from_dataloader")
     def test_on_step_end_passes_correct_args(self, mock_sync):
-        """on_step_end should call sync with the callback's dataloader and dataset."""
+        """on_step_end should call sync with the callback's dataloader."""
         cb, dl, ds = self._make_callback(sync_every=1)
         mock_state = MagicMock()
         mock_state.global_step = 1
@@ -945,8 +945,7 @@ class TestLengthSyncCallback(unittest.TestCase):
         mock_control = MagicMock()
 
         cb.on_step_end(mock_args, mock_state, mock_control)
-        # The callback passes (self.dataloader, self.dataset) to sync
-        mock_sync.assert_called_once_with(dl, ds)
+        mock_sync.assert_called_once_with(dl)
 
     # -- on_evaluate ---------------------------------------------------------
 
@@ -959,7 +958,7 @@ class TestLengthSyncCallback(unittest.TestCase):
         mock_control = MagicMock()
 
         cb.on_evaluate(mock_args, mock_state, mock_control)
-        mock_sync.assert_called_once_with(dl, ds)
+        mock_sync.assert_called_once_with(dl)
 
 
 # ===========================================================================
