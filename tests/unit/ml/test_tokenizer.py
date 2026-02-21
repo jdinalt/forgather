@@ -15,20 +15,15 @@ from forgather.ml.tokenizer import normalize_range
 class TestNormalizeRangeNoneInput(unittest.TestCase):
     """Test normalize_range with None input."""
 
-    def test_none_returns_none(self):
-        """BUG: normalize_range(1000, None) returns None, not range(0, 1000).
-
-        The docstring says None means 'use the full dataset' and shows
-        normalize_range(1000, None) -> range(0, 1000), but the code does
-        'return select_range' when select_range is None, which returns None.
-        """
+    def test_none_returns_full_range(self):
+        """normalize_range(1000, None) returns range(0, 1000) -- full dataset."""
         result = normalize_range(1000, None)
-        self.assertIsNone(result)
+        self.assertEqual(result, range(0, 1000))
 
     def test_none_with_zero_length(self):
-        """None input returns None regardless of length."""
+        """None input with length=0 returns range(0, 0)."""
         result = normalize_range(0, None)
-        self.assertIsNone(result)
+        self.assertEqual(result, range(0, 0))
 
 
 class TestNormalizeRangeRangeInput(unittest.TestCase):
@@ -123,30 +118,22 @@ class TestNormalizeRangeIntInput(unittest.TestCase):
         self.assertEqual(result, range(0, 1000))
 
     def test_negative_int_behavior(self):
-        """BUG: Negative int handling is incorrect.
+        """Negative int uses Python-style indexing: length + value.
 
-        The code does: value = length - value (where value is negative)
-        For value=-10, length=1000: length - (-10) = 1010, clamped to 1000.
-
-        The likely intent was Python-style negative indexing: length + value = 990.
-        But the code uses subtraction, and since value is already negative,
-        'length - value' becomes 'length - (-10)' = 'length + 10' = 1010.
-
-        This means ALL negative int values get clamped to length (the max).
+        For value=-10, length=1000: length + (-10) = 990.
         """
         result = normalize_range(1000, -10)
-        # Actual behavior: length - (-10) = 1010, clamped to 1000
-        self.assertEqual(result, range(0, 1000))
+        self.assertEqual(result, range(0, 990))
 
     def test_negative_int_large(self):
-        """Large negative int: length - (-500) = 1500, clamped to 1000."""
+        """Large negative int: length + (-500) = 500."""
         result = normalize_range(1000, -500)
-        self.assertEqual(result, range(0, 1000))
+        self.assertEqual(result, range(0, 500))
 
     def test_negative_int_minus_one(self):
-        """value=-1: length - (-1) = 1001, clamped to 1000."""
+        """value=-1: length + (-1) = 999."""
         result = normalize_range(1000, -1)
-        self.assertEqual(result, range(0, 1000))
+        self.assertEqual(result, range(0, 999))
 
 
 class TestNormalizeRangeSequenceInput(unittest.TestCase):
@@ -197,29 +184,22 @@ class TestNormalizeRangeSequenceInput(unittest.TestCase):
         self.assertEqual(result, range(0, 500))
 
     def test_sequence_negative_int_in_sequence(self):
-        """BUG: Negative int in sequence follows the same buggy path.
+        """Negative int in sequence uses Python-style indexing: length + value.
 
-        normalize_value(-10) with length=1000:
-          value is int and < 0, so value = length - value = 1000 - (-10) = 1010.
-          Clamped to 1000.
-
-        The docstring claims: normalize_range(1000, (-10, 2.0)) -> range(0, 1000)
-        but that is because the clamping to 0 and 1000 happens to produce the same
-        result. The start would be 1010 (clamped to 1000), not 0 as the docstring implies.
+        normalize_value(-10) with length=1000: 1000 + (-10) = 990, clamped to [0, 1000].
+        The docstring shows: normalize_range(1000, (-10, 2.0)) -> range(0, 1000).
+        With the fix, start = max(0, 1000 + (-10)) = 990 (not 0 as docstring says,
+        but docstring used a different example value). end = min(2000, 1000) = 1000.
         """
         result = normalize_range(1000, (-10, 2.0))
-        # start: -10 -> length - (-10) = 1010, clamped to 1000
+        # start: -10 -> length + (-10) = 990
         # end: 2.0 -> int(2.0 * 1000) = 2000, clamped to 1000
-        self.assertEqual(result, range(1000, 1000))
+        self.assertEqual(result, range(990, 1000))
 
     def test_empty_sequence(self):
-        """Empty sequence raises TypeError because range() requires at least 1 argument.
-
-        BUG: normalize_range does not guard against empty sequences. Passing []
-        results in `range(*())` which raises TypeError.
-        """
-        with self.assertRaises(TypeError):
-            normalize_range(1000, [])
+        """Empty sequence returns range(length) -- treated as 'use full dataset'."""
+        result = normalize_range(1000, [])
+        self.assertEqual(result, range(0, 1000))
 
 
 class TestNormalizeRangeUnsupportedTypes(unittest.TestCase):

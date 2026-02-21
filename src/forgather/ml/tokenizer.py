@@ -48,7 +48,7 @@ def normalize_range(
             value = int(value * length)
         elif isinstance(value, int):
             if value < 0:
-                value = length - value
+                value = length + value
         else:
             raise ValueError(
                 f"Unsupported data-type for dataset range value: {type(value)}"
@@ -57,11 +57,15 @@ def normalize_range(
         value = min(value, length)
         return value
 
-    if select_range is None or isinstance(select_range, range):
+    if select_range is None:
+        return range(length)
+    elif isinstance(select_range, range):
         return select_range
     elif isinstance(select_range, float) or isinstance(select_range, int):
         return range(normalize_value(select_range))
     elif isinstance(select_range, Sequence):
+        if len(select_range) == 0:
+            return range(length)
         return range(*tuple(normalize_value(value) for value in select_range))
     else:
         raise ValueError(
