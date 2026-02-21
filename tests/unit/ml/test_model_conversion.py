@@ -1378,28 +1378,15 @@ class TestModuleExports(unittest.TestCase):
         self.assertTrue(hasattr(discovery, "discover_builtin_converters"))
         self.assertTrue(hasattr(discovery, "discover_from_paths"))
 
-    def test_vllm_functions_in_all(self):
+    def test_vllm_functions_not_in_all(self):
         """validate_vllm_plans, validate_tp_plan, validate_pp_plan, and print_model_structure
-        should be listed in __all__ even though they may not yet be implemented."""
+        are not yet implemented, so they should not be in __all__."""
         import forgather.ml.model_conversion as mc_pkg
 
         all_exports = mc_pkg.__all__
 
-        self.assertIn("validate_vllm_plans", all_exports)
-        self.assertIn("validate_tp_plan", all_exports)
-        self.assertIn("validate_pp_plan", all_exports)
-        self.assertIn("print_model_structure", all_exports)
-
-    def test_vllm_functions_not_yet_importable(self):
-        """validate_vllm_plans etc. are listed in __all__ but not actually defined.
-        Attempting to import them should raise ImportError (or AttributeError)."""
-        # These are in __all__ but never actually imported or defined in __init__.py.
-        # Accessing them on the module should raise AttributeError.
-        import forgather.ml.model_conversion as mc_pkg
-
         for name in ("validate_vllm_plans", "validate_tp_plan", "validate_pp_plan", "print_model_structure"):
-            with self.assertRaises(AttributeError, msg=f"Expected {name} to raise AttributeError"):
-                getattr(mc_pkg, name)
+            self.assertNotIn(name, all_exports)
 
 
 # ---------------------------------------------------------------------------

@@ -70,7 +70,7 @@ class JsonLogger(TrainerCallback):
     def _write_log(self, state, data: dict):
         assert self.log_file is not None
         new_fields = dict(
-            timestamp=datetime.datetime.utcnow().timestamp(),
+            timestamp=datetime.datetime.now(datetime.UTC).timestamp(),
             global_step=state.global_step,
             epoch=state.epoch,
         )

@@ -319,9 +319,9 @@ class LengthSyncCallback:
 
         # Sync at specified intervals
         if current_step - self._last_sync_step >= self.sync_every_n_steps:
-            sync_dataset_state_from_dataloader(self.dataloader, self.dataset)
+            sync_dataset_state_from_dataloader(self.dataloader)
             self._last_sync_step = current_step
 
     def on_evaluate(self, args, state, control, **kwargs):
         """Called before evaluation - sync to get accurate length."""
-        sync_dataset_state_from_dataloader(self.dataloader, self.dataset)
+        sync_dataset_state_from_dataloader(self.dataloader)
