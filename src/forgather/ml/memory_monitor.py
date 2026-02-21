@@ -88,7 +88,7 @@ class TensorTracker:
 
     def get_stats(self):
         """Get current tensor statistics"""
-        device_stats = defaultdict(lambda: {"count": 0, "memory_mb": 0})
+        device_stats: defaultdict[str, dict[str, float]] = defaultdict(lambda: {"count": 0, "memory_mb": 0.0})
         dtype_stats = defaultdict(int)
         shape_stats = defaultdict(int)
 
@@ -186,6 +186,8 @@ class ComprehensiveMemoryMonitor:
             "vms_mb": memory_info.vms / 1024 / 1024,
         }
 
+        if self.initial_memory is None:
+            self.initial_memory = current_memory
         growth = {
             "rss_growth": current_memory["rss_mb"] - self.initial_memory["rss_mb"],
             "vms_growth": current_memory["vms_mb"] - self.initial_memory["vms_mb"],

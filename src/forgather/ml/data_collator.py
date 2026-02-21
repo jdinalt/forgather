@@ -170,7 +170,7 @@ class DataCollatorForCausalLM:
         labels_name: str | None = "labels",
         packed_sequences: Optional[bool] = None,
         **pad_kwargs,
-    ) -> dict[str, Tensor] | Tuple[dict[str, Tensor], Tensor]:
+    ) -> None:
         """
         Initializes the data collator with tokenizer and padding/truncation options.
         Args:
@@ -230,7 +230,7 @@ class DataCollatorForCausalLM:
             f"ignore_index={self.ignore_index}, pad_kwargs={self.pad_kwargs})"
         )
 
-    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any] | Tuple[Dict[str, Any], Tensor]:
         # print(f"{type(features)=}")
         # print(f"{len(features)=}")
         # print(f"{type(features[0])=}")
