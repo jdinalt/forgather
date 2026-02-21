@@ -11,7 +11,7 @@ name = "forgather"
 description = "ML project configuration framework."
 #readme = "README.md"
 license = {text = "MIT License"}
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 
 dependencies = [
     "accelerate ~= 1.11",
