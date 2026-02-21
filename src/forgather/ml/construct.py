@@ -510,7 +510,7 @@ def load_from_config(
     return proj(targets, **config_kwargs)
 
 
-def _should_write_file(file_path: str, exists: str) -> bool:
+def _should_write_file(file_path: str | os.PathLike, exists: Optional[str]) -> bool:
     """
     Process file overwriting policy
 
@@ -586,10 +586,10 @@ def copy_package_files(
             pkg = sys.modules[obj.__module__]
             for level, value in walk_package_modules(pkg):
                 # Ignore namespaces
-                if value.__spec__.origin is None:
+                if value.__spec__ is None or value.__spec__.origin is None:
                     continue
                 origin = value.__spec__.origin
-                package_name = value.__package__
+                package_name = value.__package__ or ""
 
                 file_name = os.path.basename(origin)
                 module_prefix = package_name.split(".")[1:]
@@ -630,7 +630,7 @@ def dependency_list(*args):
     return args[0]
 
 
-def _compare_file_to_str(file_path: str, string: str):
+def _compare_file_to_str(file_path: str | os.PathLike, string: str):
     """
     Compare the contents of a file and a string for equality
     """

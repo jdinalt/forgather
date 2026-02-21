@@ -25,7 +25,7 @@ import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol, cast
 
 import torch
 from torch import accelerator
@@ -188,7 +188,7 @@ def get_local_process_group() -> ProcessGroup | None:
 
         # Cache the group if this rank belongs to it
         if rank in node_ranks:
-            _local_process_group = group
+            _local_process_group = cast(ProcessGroup, group)
             # Don't break - must continue creating all groups (collective operation)
 
     return _local_process_group
@@ -231,7 +231,7 @@ def get_global_process_group() -> ProcessGroup | None:
     logger.debug(
         f"[Rank {get_rank()}] get_global_process_group: creating new gloo group"
     )
-    _global_process_group = dist.new_group(backend="gloo", group_desc="global-gloo")
+    _global_process_group = cast(ProcessGroup, dist.new_group(backend="gloo", group_desc="global-gloo"))
     logger.debug(
         f"[Rank {get_rank()}] get_global_process_group: group created successfully"
     )
@@ -294,7 +294,10 @@ def main_process_first(group: Optional[ProcessGroup] = None):
     else:
         barrier = get_barrier_fn(group=group)
 
-    local_rank = torch.distributed.get_group_rank(group, get_rank())
+    if group is None:
+        local_rank = get_rank()
+    else:
+        local_rank = torch.distributed.get_group_rank(group, get_rank())
     mpf_recursion_level += 1
     try:
         if local_rank != 0:
@@ -425,7 +428,7 @@ def get_barrier_fn(group: Optional[ProcessGroup] = None) -> Callable[[], None | 
         if group is None:
             group = dist.distributed_c10d._get_default_group()
 
-        barrier_kwargs = dict(group=group)
+        barrier_kwargs: dict[str, Any] = {"group": group}
 
         # Non-gloo backends (nccl, etc.) require device_ids for GPU synchronization
         if dist.get_backend(group) != "gloo":
@@ -629,6 +632,7 @@ class DistributedEnvironment(DistributedEnvInterface):
             else:
                 accelerator.set_device_index(self.local_rank)
             acc = accelerator.current_accelerator()
+            assert acc is not None, "accelerator.current_accelerator() returned None despite is_available() being True"
             if self.backend is None:
                 self.backend = dist.get_default_backend_for_device(acc)
             idx = accelerator.current_device_index()

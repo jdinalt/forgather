@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from torch.distributed.elastic.multiprocessing.errors import record
 
@@ -23,7 +23,7 @@ class TrainingScript:
     trainer methods.
     """
 
-    meta: dict
+    meta: DotDict
     do_save: bool = False
     do_train: bool = True
     do_eval: bool = False
@@ -89,7 +89,7 @@ def training_loop(project_directory, config_template=""):
     proj = Project(config_template, project_directory)
 
     # Materialize the config
-    training_script = proj()
+    training_script = cast(TrainingScript, proj())
 
     # Run it!
     training_script.run()

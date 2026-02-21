@@ -152,7 +152,7 @@ class TokenizerTrainer:
         print(f"runtime: {runtime}")
         print(f"samples_per_second: {samples_per_second}")
 
-    def save_model(self, output_dir: str | os.PathLike = None):
+    def save_model(self, output_dir: str | os.PathLike | None = None):
         if output_dir is None:
             output_dir = self.output_dir
         assert output_dir is not None

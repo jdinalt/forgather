@@ -1,12 +1,12 @@
 import contextlib
 import functools
 import logging
-from typing import Optional
+from typing import Any, Callable, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch import FloatTensor, LongTensor, Tensor
+from torch import Tensor
 from torch.nn.functional import cross_entropy
 
 from forgather.ml.distributed import prefix_logger_rank
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 prefix_logger_rank(logger)
 
 
-def _causal_loss_fn(logits: FloatTensor, labels: LongTensor) -> FloatTensor:
+def _causal_loss_fn(logits: Tensor, labels: Tensor) -> Tensor:
     # Shift so that tokens < n predict n
     shift_logits = logits[..., :-1, :].contiguous()
     shift_labels = labels[..., 1:].contiguous()
@@ -32,11 +32,11 @@ def _causal_loss_fn(logits: FloatTensor, labels: LongTensor) -> FloatTensor:
 
 
 def _chunked_causal_loss_fn(
-    logits: FloatTensor,
-    labels: LongTensor,
+    logits: Tensor,
+    labels: Tensor,
     chunk_size: int = 4096,
     ignore_index: int = -100,
-) -> FloatTensor:
+) -> Tensor:
     """
     Compute causal cross-entropy loss with chunked vocabulary processing.
 
@@ -136,7 +136,7 @@ class CausalLoss:
     def __repr__(self):
         return f"{type(self).__name__}(compile={self.compile})"
 
-    def __call__(self, logits: FloatTensor, labels: LongTensor) -> FloatTensor:
+    def __call__(self, logits: Tensor, labels: Tensor) -> Tensor:
         return self.loss_fn(logits, labels)
 
 
@@ -180,7 +180,7 @@ class ChunkedCausalLoss:
     def __repr__(self):
         return f"{type(self).__name__}(chunk_size={self.chunk_size}, compile={self.compile})"
 
-    def __call__(self, logits: FloatTensor, labels: LongTensor) -> FloatTensor:
+    def __call__(self, logits: Tensor, labels: Tensor) -> Tensor:
         return self.loss_fn(logits, labels)
 
 
@@ -242,6 +242,9 @@ class LinearCrossEntropyLoss:
         3. Loss is computed directly: loss_fn(hidden_states, labels)
     """
 
+    weight: Tensor
+    bias: Optional[Tensor]
+
     def __init__(
         self,
         output_embeddings: nn.Module,
@@ -259,7 +262,12 @@ class LinearCrossEntropyLoss:
         self.kwargs = kwargs
 
         # Extract weight and bias from output embeddings
-        self.weight = output_embeddings.weight
+        _weight = output_embeddings.weight
+        if not isinstance(_weight, Tensor):
+            raise TypeError(
+                f"Expected output_embeddings.weight to be a Tensor, got {type(_weight)}"
+            )
+        self.weight = _weight
         self.bias = getattr(output_embeddings, "bias", None)
 
         # Select and initialize implementation
@@ -267,7 +275,7 @@ class LinearCrossEntropyLoss:
         if self.compile:
             self._compute_fn = torch.compile(self._compute_fn)
 
-    def _select_implementation(self, impl: str, **kwargs) -> tuple[str, callable]:
+    def _select_implementation(self, impl: str, **kwargs) -> tuple[str, Callable[..., Any]]:
         """
         Select and initialize the loss implementation.
 
@@ -359,8 +367,8 @@ class LinearCrossEntropyLoss:
             )
 
     def _compute_cce(
-        self, hidden_states: FloatTensor, labels: LongTensor
-    ) -> FloatTensor:
+        self, hidden_states: Tensor, labels: Tensor
+    ) -> Tensor:
         """Use Apple's CCE implementation."""
         from cut_cross_entropy import linear_cross_entropy
 
@@ -370,7 +378,7 @@ class LinearCrossEntropyLoss:
             labels,
             # Bias is not supported by v25.1.1
             # bias=self.bias,
-            shift=1,  # Automatic causal shifting
+            shift=True,  # Automatic causal shifting
             ignore_index=self.ignore_index,
             impl=self.cce_impl,
             reduction="mean",
@@ -378,8 +386,8 @@ class LinearCrossEntropyLoss:
         )
 
     def _compute_liger(
-        self, hidden_states: FloatTensor, labels: LongTensor
-    ) -> FloatTensor:
+        self, hidden_states: Tensor, labels: Tensor
+    ) -> Tensor:
         """Use Liger Kernel implementation."""
         # Liger expects: loss_fn(weight, input, target)
         # Shift for causal prediction
@@ -393,8 +401,8 @@ class LinearCrossEntropyLoss:
         return self._liger_loss(self.weight, flat_hidden, flat_labels)
 
     def _compute_pytorch(
-        self, hidden_states: FloatTensor, labels: LongTensor
-    ) -> FloatTensor:
+        self, hidden_states: Tensor, labels: Tensor
+    ) -> Tensor:
         """Use pure PyTorch chunked implementation."""
         # Shift for causal prediction
         shift_hidden = hidden_states[..., :-1, :].contiguous()
@@ -416,13 +424,13 @@ class LinearCrossEntropyLoss:
 
     def _fused_linear_cross_entropy_pytorch(
         self,
-        hidden_states: FloatTensor,
-        labels: LongTensor,
+        hidden_states: Tensor,
+        labels: Tensor,
         weight: Tensor,
         bias: Optional[Tensor],
         chunk_size: int,
         ignore_index: int,
-    ) -> FloatTensor:
+    ) -> Tensor:
         """
         Pure PyTorch implementation of fused linear + cross-entropy.
 
@@ -503,7 +511,7 @@ class LinearCrossEntropyLoss:
 
         return loss
 
-    def __call__(self, hidden_states: FloatTensor, labels: LongTensor) -> FloatTensor:
+    def __call__(self, hidden_states: Tensor, labels: Tensor) -> Tensor:
         """
         Compute fused loss from hidden states.
 
@@ -516,7 +524,7 @@ class LinearCrossEntropyLoss:
         """
         return self._compute_fn(hidden_states, labels)
 
-    def forward_logits(self, hidden_states: FloatTensor) -> FloatTensor:
+    def forward_logits(self, hidden_states: Tensor) -> Tensor:
         """
         Inference mode: materialize logits for generation.
 
