@@ -37,6 +37,7 @@ dependencies = [
     "huggingface_hub[cli]",
     "pytest",
     "black",
+    "isort",
     "cut-cross-entropy",
     "liger-kernel",
     "triton",
