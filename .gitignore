@@ -4,7 +4,7 @@
 /tutorial
 /tokenizers
 .forgather_history
-.claude
+.claude/settings.local.json
 forgather.code-workspace
 output_models/
 tmp/
@@ -12,6 +12,7 @@ data
 .env
 .vscode
 settings.json
+!.claude/settings.json
 
 # Vim swap files
 *.swp
