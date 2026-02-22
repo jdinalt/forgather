@@ -8,12 +8,7 @@
 
 [trainer_args]
     == super()
-    float32_matmul_precision: "high"
     default_dtype: "float32"
-
-    # Always compile
-    torch_compile: True
-    torch_compile_dynamic: True
 
 [optimizer]
 optimizer: &optimizer !partial:torch.optim:AdamW

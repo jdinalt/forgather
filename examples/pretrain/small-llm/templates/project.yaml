@@ -192,7 +192,8 @@ model: &model !call:getitem [ *model_dict, 'model' ]
 data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
     tokenizer: *tokenizer
     # Pad to max-length. This maintains a constant input shape
-    # With packed examples, there should be very little p5adding and this can speed things up a little.
+    # With packed examples, there should be very little padding and this can speed things up a little.
+    # This also happens to be required for pipeline parallel training.
     padding: "max_length"
     max_length: {{ ns.max_length }}
     packed_sequences: True
@@ -204,6 +205,7 @@ optimizer: &optimizer !partial:forgather.ml.optim:Adafactor
     lr: {{ (ns.base_learning_rate * ns.lr_scale) | toyaml }}
     bf16_stochastic_round: True
     use_triton: True
+    torch_compile: {{ compile | default(False) }}
 
 [lr_scheduler]
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
@@ -215,6 +217,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
 [fused_loss_factory]
 # Fused output-linear x cross-entropy-loss kernel
 .define: &fused_loss_factory !partial:forgather.ml.loss:LinearCrossEntropyLoss
+    compile: {{ compile | default(False) }}
 
 [trainer_callbacks]
     -- include 'project.logger_config'

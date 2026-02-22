@@ -9,20 +9,10 @@
 [trainer_args]
     == super()
     # **AMP**
-    float32_matmul_precision: "high"
     default_dtype: "float32"
     mixed_precision: "bf16"
-
-    # Always compile
-    torch_compile: True
-    torch_compile_dynamic: True
 
 [optimizer]
     == super()
     # **AMP**
     bf16_stochastic_round: False
-    torch_compile: True
-
-[fused_loss_factory]
-    == super()
-    compile: True
