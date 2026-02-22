@@ -9,6 +9,275 @@ logger = logging.getLogger(__name__)
 
 """ Real-valued RoPE implementation (vs. complex) """
 
+# ============================================================
+# Triton kernels for fused RoPE rotation
+# ============================================================
+
+_HAS_TRITON = False
+try:
+    import triton
+    import triton.language as tl
+
+    _HAS_TRITON = True
+except ImportError:
+    pass
+
+
+if _HAS_TRITON:
+
+    @triton.jit
+    def _rope_fwd_kernel(
+        x_ptr,
+        cos_ptr,
+        sin_ptr,
+        out_ptr,
+        # Dimensions
+        seq_len,
+        num_heads,
+        d_head,
+        half_dim,
+        # Strides for x/out: [batch, seq, heads, d_head]
+        stride_x_batch,
+        stride_x_seq,
+        stride_x_head,
+        # Stride for cos/sin: [batch*seq, half_dim]
+        stride_cs_row,
+        n_pairs,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Fused RoPE rotation forward.
+
+        For each pair (i, i+half_dim) in d_head:
+            out[i]          = x[i] * cos[i] - x[i+half] * sin[i]
+            out[i+half]     = x[i+half] * cos[i] + x[i] * sin[i]
+        """
+        pid = tl.program_id(0)
+        offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offs < n_pairs
+
+        # Decompose pair index: idx -> (batch, seq, head, dim)
+        # Layout: adjacent dim values for memory coalescing
+        dim_idx = offs % half_dim
+        remaining = offs // half_dim
+        head_idx = remaining % num_heads
+        remaining = remaining // num_heads
+        seq_idx = remaining % seq_len
+        batch_idx = remaining // seq_len
+
+        # Compute offsets into x (contiguous [batch, seq, heads, d_head])
+        x_base = (
+            batch_idx * stride_x_batch
+            + seq_idx * stride_x_seq
+            + head_idx * stride_x_head
+        )
+        x_first_offs = x_base + dim_idx
+        x_second_offs = x_base + dim_idx + half_dim
+
+        # Compute offsets into cos/sin (contiguous [batch*seq, half_dim])
+        bs_idx = batch_idx * seq_len + seq_idx
+        cs_offs = bs_idx * stride_cs_row + dim_idx
+
+        # Load values
+        x1 = tl.load(x_ptr + x_first_offs, mask=mask, other=0.0).to(tl.float32)
+        x2 = tl.load(x_ptr + x_second_offs, mask=mask, other=0.0).to(tl.float32)
+        c = tl.load(cos_ptr + cs_offs, mask=mask, other=0.0).to(tl.float32)
+        s = tl.load(sin_ptr + cs_offs, mask=mask, other=0.0).to(tl.float32)
+
+        # Apply rotation
+        out1 = x1 * c - x2 * s
+        out2 = x2 * c + x1 * s
+
+        # Store
+        tl.store(out_ptr + x_first_offs, out1, mask=mask)
+        tl.store(out_ptr + x_second_offs, out2, mask=mask)
+
+    @triton.jit
+    def _rope_bwd_kernel(
+        grad_out_ptr,
+        cos_ptr,
+        sin_ptr,
+        grad_x_ptr,
+        # Dimensions
+        seq_len,
+        num_heads,
+        d_head,
+        half_dim,
+        # Strides for grad_out/grad_x: [batch, seq, heads, d_head]
+        stride_x_batch,
+        stride_x_seq,
+        stride_x_head,
+        # Stride for cos/sin: [batch*seq, half_dim]
+        stride_cs_row,
+        n_pairs,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Fused RoPE rotation backward (inverse rotation).
+
+        grad_x[i]      = grad_out[i] * cos[i] + grad_out[i+half] * sin[i]
+        grad_x[i+half] = -grad_out[i] * sin[i] + grad_out[i+half] * cos[i]
+        """
+        pid = tl.program_id(0)
+        offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offs < n_pairs
+
+        dim_idx = offs % half_dim
+        remaining = offs // half_dim
+        head_idx = remaining % num_heads
+        remaining = remaining // num_heads
+        seq_idx = remaining % seq_len
+        batch_idx = remaining // seq_len
+
+        x_base = (
+            batch_idx * stride_x_batch
+            + seq_idx * stride_x_seq
+            + head_idx * stride_x_head
+        )
+        x_first_offs = x_base + dim_idx
+        x_second_offs = x_base + dim_idx + half_dim
+
+        bs_idx = batch_idx * seq_len + seq_idx
+        cs_offs = bs_idx * stride_cs_row + dim_idx
+
+        g1 = tl.load(grad_out_ptr + x_first_offs, mask=mask, other=0.0).to(tl.float32)
+        g2 = tl.load(grad_out_ptr + x_second_offs, mask=mask, other=0.0).to(tl.float32)
+        c = tl.load(cos_ptr + cs_offs, mask=mask, other=0.0).to(tl.float32)
+        s = tl.load(sin_ptr + cs_offs, mask=mask, other=0.0).to(tl.float32)
+
+        # Inverse rotation (transpose of orthogonal rotation matrix)
+        grad_x1 = g1 * c + g2 * s
+        grad_x2 = -g1 * s + g2 * c
+
+        tl.store(grad_x_ptr + x_first_offs, grad_x1, mask=mask)
+        tl.store(grad_x_ptr + x_second_offs, grad_x2, mask=mask)
+
+
+def _prepare_cos_sin_for_triton(
+    cos: Tensor, sin: Tensor, batch_size: int, seq_len: int, d_head: int
+) -> Tuple[Tensor, Tensor]:
+    """Prepare cos/sin tensors for the Triton kernel.
+
+    Converts from various broadcast shapes to contiguous [batch*seq, half_dim].
+    cos/sin have repeated values in d_head (first half == second half),
+    so we only need the first half_dim values.
+    """
+    half_dim = d_head // 2
+
+    # Handle various input shapes
+    # cos could be: [1, seq, 1, d_head], [batch, seq, 1, d_head],
+    #               [seq, d_head], [batch, seq, d_head]
+    if cos.dim() == 4:
+        # [batch_or_1, seq, 1, d_head] -> squeeze head dim
+        cos = cos.squeeze(2)
+        sin = sin.squeeze(2)
+
+    if cos.dim() == 2:
+        # [seq, d_head] -> expand to [batch*seq, d_head]
+        cos = cos.unsqueeze(0).expand(batch_size, -1, -1)
+        sin = sin.unsqueeze(0).expand(batch_size, -1, -1)
+    elif cos.shape[0] == 1 and batch_size > 1:
+        # [1, seq, d_head] -> expand to [batch, seq, d_head]
+        cos = cos.expand(batch_size, -1, -1)
+        sin = sin.expand(batch_size, -1, -1)
+
+    # Take only first half_dim (second half is identical)
+    cos = cos[..., :half_dim].contiguous().reshape(-1, half_dim)
+    sin = sin[..., :half_dim].contiguous().reshape(-1, half_dim)
+
+    return cos, sin
+
+
+def _triton_rope_apply(x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
+    """Apply fused RoPE rotation using Triton kernel.
+
+    Args:
+        x: [batch, seq, heads, d_head] contiguous
+        cos: [batch*seq, half_dim] contiguous
+        sin: [batch*seq, half_dim] contiguous
+
+    Returns:
+        Rotated tensor with same shape as x
+    """
+    batch, seq_len, num_heads, d_head = x.shape
+    half_dim = d_head // 2
+    n_pairs = batch * seq_len * num_heads * half_dim
+
+    out = torch.empty_like(x)
+    BLOCK_SIZE = 1024
+    grid = (triton.cdiv(n_pairs, BLOCK_SIZE),)
+
+    _rope_fwd_kernel[grid](
+        x,
+        cos,
+        sin,
+        out,
+        seq_len,
+        num_heads,
+        d_head,
+        half_dim,
+        x.stride(0),
+        x.stride(1),
+        x.stride(2),
+        cos.stride(0),
+        n_pairs,
+        BLOCK_SIZE,
+    )
+    return out
+
+
+def _triton_rope_backward(grad_out: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
+    """Apply fused RoPE backward (inverse rotation) using Triton kernel."""
+    batch, seq_len, num_heads, d_head = grad_out.shape
+    half_dim = d_head // 2
+    n_pairs = batch * seq_len * num_heads * half_dim
+
+    grad_x = torch.empty_like(grad_out)
+    BLOCK_SIZE = 1024
+    grid = (triton.cdiv(n_pairs, BLOCK_SIZE),)
+
+    _rope_bwd_kernel[grid](
+        grad_out,
+        cos,
+        sin,
+        grad_x,
+        seq_len,
+        num_heads,
+        d_head,
+        half_dim,
+        grad_out.stride(0),
+        grad_out.stride(1),
+        grad_out.stride(2),
+        cos.stride(0),
+        n_pairs,
+        BLOCK_SIZE,
+    )
+    return grad_x
+
+
+if _HAS_TRITON:
+
+    class _FusedRoPERotation(torch.autograd.Function):
+        """Fused RoPE rotation with custom backward (inverse rotation)."""
+
+        @staticmethod
+        def forward(ctx, x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
+            """
+            Args:
+                x: [batch, seq, heads, d_head] contiguous
+                cos: [batch*seq, half_dim] contiguous (preprocessed)
+                sin: [batch*seq, half_dim] contiguous (preprocessed)
+            """
+            out = _triton_rope_apply(x, cos, sin)
+            ctx.save_for_backward(cos, sin)
+            return out
+
+        @staticmethod
+        def backward(ctx, grad_out: Tensor) -> tuple:
+            cos, sin = ctx.saved_tensors
+            grad_out = grad_out.contiguous()
+            grad_x = _triton_rope_backward(grad_out, cos, sin)
+            # No gradient for cos, sin (they are fixed embeddings)
+            return grad_x, None, None
+
 
 def rotate_half(x: Tensor) -> Tensor:
     """Rotates half the hidden dimensions of the input."""
@@ -102,6 +371,7 @@ class RotaryPE:
             Dict[str, Any]
         ] = None,  # Deprecated: use rope_parameters
         use_liger: bool = False,
+        use_triton: bool = False,
         cache_embeddings: bool = True,
         compile_on_demand: bool = True,
     ):
@@ -113,6 +383,7 @@ class RotaryPE:
                                      'factor': 32.0, 'low_freq_factor': 1.0, ...}
             rope_theta: (Deprecated) Use rope_parameters instead
             rope_scaling: (Deprecated) Use rope_parameters instead
+            use_triton: Use fused Triton RoPE rotation kernel (requires triton)
         """
         # Extract parameters from rope_parameters dict (v5.0 format)
         # Or fall back to legacy rope_theta/rope_scaling params
@@ -178,6 +449,7 @@ class RotaryPE:
             self._compute_fn = torch.compile(self._compute_embeddings_core)
 
         self.liger_kernel = None
+        self._use_triton = False
 
         if use_liger:
             try:
@@ -192,6 +464,16 @@ class RotaryPE:
                     "Using eager RoPE implementation as fallback"
                 )
 
+        if use_triton and not self.liger_kernel:
+            if _HAS_TRITON:
+                self._use_triton = True
+                logger.debug("Using Triton fused kernel for RoPE rotation")
+            else:
+                logger.info(
+                    "Triton not installed. Using PyTorch fallback for RoPE. "
+                    "Install with: pip install triton"
+                )
+
     def __repr__(self):
         rope_type = "default"
         if self.rope_scaling:
@@ -202,7 +484,8 @@ class RotaryPE:
             f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, "
             f"rope_theta={self.rope_theta}, rope_type={rope_type}, "
             f"cache_embeddings={self.cache_embeddings}, compile_on_demand={self.compile_on_demand}, "
-            f"liger_kernel={self.liger_kernel is not None}"
+            f"liger_kernel={self.liger_kernel is not None}, "
+            f"use_triton={self._use_triton}"
         )
 
     def _compute_inv_freq(self) -> Tensor:
@@ -396,6 +679,33 @@ class RotaryPE:
 
         return self.cos_cached, self.sin_cached
 
+    def _apply_triton_rope(
+        self, q: Tensor, k: Tensor, cos: Tensor, sin: Tensor
+    ) -> Tuple[Tensor, Tensor]:
+        """Apply RoPE using fused Triton kernel.
+
+        Args:
+            q: [batch, seq, heads, d_head]
+            k: [batch, seq, heads, d_head]
+            cos: cos tensor (various shapes, will be preprocessed)
+            sin: sin tensor (various shapes, will be preprocessed)
+
+        Returns:
+            Tuple of (rotated_q, rotated_k)
+        """
+        batch_size = q.shape[0]
+        seq_len = q.shape[1]
+
+        # Prepare cos/sin for Triton kernel: [batch*seq, half_dim]
+        cos_t, sin_t = _prepare_cos_sin_for_triton(
+            cos, sin, batch_size, seq_len, self.d_head
+        )
+
+        q_rot = _FusedRoPERotation.apply(q.contiguous(), cos_t, sin_t)
+        k_rot = _FusedRoPERotation.apply(k.contiguous(), cos_t, sin_t)
+
+        return q_rot.to(dtype=q.dtype), k_rot.to(dtype=k.dtype)
+
     def __call__(
         self, q: Tensor, k: Tensor, position_ids: Tensor = None
     ) -> Tuple[Tensor, Tensor]:
@@ -433,6 +743,10 @@ class RotaryPE:
             cos = cos.unsqueeze(2)  # [batch_size, seq_len, 1, d_head]
             sin = sin.unsqueeze(2)  # [batch_size, seq_len, 1, d_head]
 
+            # Use Triton if enabled
+            if self._use_triton and q.is_cuda:
+                return self._apply_triton_rope(q, k, cos, sin)
+
             # Apply rotation
             q_embed = (q * cos) + (rotate_half(q) * sin)
             k_embed = (k * cos) + (rotate_half(k) * sin)
@@ -458,6 +772,10 @@ class RotaryPE:
         else:
             cos = cos_cached[position_ids].unsqueeze(2)
             sin = sin_cached[position_ids].unsqueeze(2)
+
+        # Use Triton if enabled
+        if self._use_triton and q.is_cuda:
+            return self._apply_triton_rope(q, k, cos, sin)
 
         q_embed = (q * cos) + (rotate_half(q) * sin)
         k_embed = (k * cos) + (rotate_half(k) * sin)
