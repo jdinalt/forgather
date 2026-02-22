@@ -78,6 +78,60 @@ if _HAS_TRITON:
         tl.store(grad_gate_ptr + offs, g_gate, mask=mask)
 
     @triton.jit
+    def _relu_mul_fwd_kernel(
+        gate_ptr,
+        up_ptr,
+        out_ptr,
+        n_elements,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Fused ReLU(gate) * up forward kernel."""
+        pid = tl.program_id(0)
+        offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offs < n_elements
+
+        gate = tl.load(gate_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+        up = tl.load(up_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+
+        # relu(gate) = max(0, gate)
+        relu_gate = tl.maximum(gate, 0.0)
+        out = up * relu_gate
+
+        tl.store(out_ptr + offs, out, mask=mask)
+
+    @triton.jit
+    def _relu_mul_bwd_kernel(
+        gate_ptr,
+        up_ptr,
+        grad_out_ptr,
+        grad_gate_ptr,
+        grad_up_ptr,
+        n_elements,
+        BLOCK_SIZE: tl.constexpr,
+    ):
+        """Fused backward for ReLU(gate) * up.
+
+        d(out)/d(up) = relu(gate) = max(0, gate)
+        d(out)/d(gate) = up * d(relu)/d(gate) = up * (gate > 0)
+        """
+        pid = tl.program_id(0)
+        offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offs < n_elements
+
+        gate = tl.load(gate_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+        up = tl.load(up_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+        grad_out = tl.load(grad_out_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+
+        relu_gate = tl.maximum(gate, 0.0)
+        gate_positive = (gate > 0.0).to(tl.float32)
+
+        g_up = grad_out * relu_gate
+        g_gate = grad_out * up * gate_positive
+
+        tl.store(grad_up_ptr + offs, g_up, mask=mask)
+        tl.store(grad_gate_ptr + offs, g_gate, mask=mask)
+
+    @triton.jit
     def _gelu_mul_fwd_kernel(
         gate_ptr,
         up_ptr,
@@ -172,6 +226,35 @@ class _FusedSiLUMul(torch.autograd.Function):
         return grad_gate, grad_up
 
 
+class _FusedReLUMul(torch.autograd.Function):
+    """Fused ReLU(gate) * up with custom backward."""
+
+    @staticmethod
+    def forward(ctx, gate: Tensor, up: Tensor) -> Tensor:
+        assert gate.is_contiguous() and up.is_contiguous()
+        out = torch.empty_like(gate)
+        n_elements = gate.numel()
+        BLOCK_SIZE = 1024
+        grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
+        _relu_mul_fwd_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE)
+        ctx.save_for_backward(gate, up)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out: Tensor) -> tuple:
+        gate, up = ctx.saved_tensors
+        grad_out = grad_out.contiguous()
+        grad_gate = torch.empty_like(gate)
+        grad_up = torch.empty_like(up)
+        n_elements = gate.numel()
+        BLOCK_SIZE = 1024
+        grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
+        _relu_mul_bwd_kernel[grid](
+            gate, up, grad_out, grad_gate, grad_up, n_elements, BLOCK_SIZE
+        )
+        return grad_gate, grad_up
+
+
 class _FusedGELUMul(torch.autograd.Function):
     """Fused GELU(gate) * up with custom backward."""
 
@@ -206,6 +289,7 @@ _TRITON_FUSED_OPS = {}
 if _HAS_TRITON:
     _TRITON_FUSED_OPS = {
         nn.SiLU: _FusedSiLUMul,
+        nn.ReLU: _FusedReLUMul,
         nn.GELU: _FusedGELUMul,
     }
 

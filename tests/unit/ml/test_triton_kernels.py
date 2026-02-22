@@ -28,13 +28,13 @@ if not torch.cuda.is_available():
 # Import modelsrc modules -- add to path since they're not a package
 sys.path.insert(0, "modelsrc/transformer")
 
-from glu_feedforward import GLUFeedforwardLayer, _HAS_TRITON
+from glu_feedforward import _HAS_TRITON, GLUFeedforwardLayer
 
 if _HAS_TRITON:
-    from glu_feedforward import _FusedSiLUMul, _FusedGELUMul
+    from glu_feedforward import _FusedSiLUMul, _FusedReLUMul, _FusedGELUMul
 
-from rotary_embeddings import RotaryPE, rotate_half
 from rotary_embeddings import _HAS_TRITON as _ROPE_HAS_TRITON
+from rotary_embeddings import RotaryPE, rotate_half
 
 if _ROPE_HAS_TRITON:
     from rotary_embeddings import (
@@ -189,6 +189,146 @@ class TestFusedSiLUMul(unittest.TestCase):
                 )
 
 
+class TestFusedReLUMul(unittest.TestCase):
+    """Tests for the fused ReLU(gate) * up Triton kernel."""
+
+    def setUp(self):
+        torch.manual_seed(42)
+        self.device = torch.device("cuda")
+
+    def _reference_relu_mul(self, gate, up):
+        """PyTorch reference: up * relu(gate)."""
+        return up * F.relu(gate)
+
+    @_skip_no_triton
+    def test_matches_pytorch_float32(self):
+        """Fused ReLU*up matches PyTorch reference in float32."""
+        gate = torch.randn(4, 128, 1024, device=self.device, dtype=torch.float32)
+        up = torch.randn(4, 128, 1024, device=self.device, dtype=torch.float32)
+
+        ref = self._reference_relu_mul(gate, up)
+        fused = _FusedReLUMul.apply(gate.contiguous(), up.contiguous())
+
+        self.assertTrue(
+            torch.allclose(ref, fused, atol=1e-5, rtol=1e-5),
+            f"Max diff: {(ref - fused).abs().max().item():.2e}",
+        )
+
+    @_skip_no_triton
+    def test_matches_pytorch_bfloat16(self):
+        """Fused ReLU*up matches PyTorch reference in bfloat16."""
+        gate = torch.randn(4, 128, 1024, device=self.device, dtype=torch.bfloat16)
+        up = torch.randn(4, 128, 1024, device=self.device, dtype=torch.bfloat16)
+
+        ref = self._reference_relu_mul(gate, up)
+        fused = _FusedReLUMul.apply(gate.contiguous(), up.contiguous())
+
+        self.assertTrue(
+            torch.allclose(ref, fused, atol=1e-2, rtol=1e-2),
+            f"Max diff: {(ref - fused).abs().max().item():.2e}",
+        )
+
+    @_skip_no_triton
+    def test_matches_pytorch_float16(self):
+        """Fused ReLU*up matches PyTorch reference in float16."""
+        gate = torch.randn(4, 128, 1024, device=self.device, dtype=torch.float16)
+        up = torch.randn(4, 128, 1024, device=self.device, dtype=torch.float16)
+
+        ref = self._reference_relu_mul(gate, up)
+        fused = _FusedReLUMul.apply(gate.contiguous(), up.contiguous())
+
+        self.assertTrue(
+            torch.allclose(ref, fused, atol=1e-2, rtol=1e-2),
+            f"Max diff: {(ref - fused).abs().max().item():.2e}",
+        )
+
+    @_skip_no_triton
+    def test_backward_matches_pytorch(self):
+        """Gradient of fused ReLU*up matches PyTorch autograd."""
+        gate = torch.randn(
+            2, 64, 512, device=self.device, dtype=torch.float32, requires_grad=True
+        )
+        up = torch.randn(
+            2, 64, 512, device=self.device, dtype=torch.float32, requires_grad=True
+        )
+
+        # Reference backward
+        gate_ref = gate.detach().clone().requires_grad_(True)
+        up_ref = up.detach().clone().requires_grad_(True)
+        ref_out = self._reference_relu_mul(gate_ref, up_ref)
+        grad_out = torch.randn_like(ref_out)
+        ref_out.backward(grad_out)
+
+        # Fused backward
+        gate_fused = gate.detach().clone().requires_grad_(True)
+        up_fused = up.detach().clone().requires_grad_(True)
+        fused_out = _FusedReLUMul.apply(gate_fused.contiguous(), up_fused.contiguous())
+        fused_out.backward(grad_out)
+
+        self.assertTrue(
+            torch.allclose(gate_ref.grad, gate_fused.grad, atol=1e-5, rtol=1e-5),
+            f"Gate grad max diff: {(gate_ref.grad - gate_fused.grad).abs().max().item():.2e}",
+        )
+        self.assertTrue(
+            torch.allclose(up_ref.grad, up_fused.grad, atol=1e-5, rtol=1e-5),
+            f"Up grad max diff: {(up_ref.grad - up_fused.grad).abs().max().item():.2e}",
+        )
+
+    @_skip_no_triton
+    def test_backward_bfloat16(self):
+        """Gradient correctness in bfloat16."""
+        gate = torch.randn(
+            2, 64, 512, device=self.device, dtype=torch.bfloat16, requires_grad=True
+        )
+        up = torch.randn(
+            2, 64, 512, device=self.device, dtype=torch.bfloat16, requires_grad=True
+        )
+
+        gate_ref = gate.detach().clone().requires_grad_(True)
+        up_ref = up.detach().clone().requires_grad_(True)
+        ref_out = self._reference_relu_mul(gate_ref, up_ref)
+        grad_out = torch.randn_like(ref_out)
+        ref_out.backward(grad_out)
+
+        gate_fused = gate.detach().clone().requires_grad_(True)
+        up_fused = up.detach().clone().requires_grad_(True)
+        fused_out = _FusedReLUMul.apply(gate_fused.contiguous(), up_fused.contiguous())
+        fused_out.backward(grad_out)
+
+        self.assertTrue(
+            torch.allclose(gate_ref.grad, gate_fused.grad, atol=1e-1, rtol=1e-1),
+            f"Gate grad max diff: {(gate_ref.grad - gate_fused.grad).abs().max().item():.2e}",
+        )
+        self.assertTrue(
+            torch.allclose(up_ref.grad, up_fused.grad, atol=1e-1, rtol=1e-1),
+            f"Up grad max diff: {(up_ref.grad - up_fused.grad).abs().max().item():.2e}",
+        )
+
+    @_skip_no_triton
+    def test_various_shapes(self):
+        """Test with various tensor shapes."""
+        shapes = [
+            (1, 1, 64),
+            (1, 32, 128),
+            (2, 64, 256),
+            (4, 128, 1024),
+            (8, 256, 4096),
+            (1, 1, 11008),  # Llama d_ff
+        ]
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                gate = torch.randn(shape, device=self.device, dtype=torch.float32)
+                up = torch.randn(shape, device=self.device, dtype=torch.float32)
+
+                ref = self._reference_relu_mul(gate, up)
+                fused = _FusedReLUMul.apply(gate.contiguous(), up.contiguous())
+
+                self.assertTrue(
+                    torch.allclose(ref, fused, atol=1e-5, rtol=1e-5),
+                    f"Shape {shape}: max diff {(ref - fused).abs().max().item():.2e}",
+                )
+
+
 class TestFusedGELUMul(unittest.TestCase):
     """Tests for the fused GELU(gate) * up Triton kernel."""
 
@@ -270,8 +410,12 @@ class TestFusedRoPERotation(unittest.TestCase):
         self, batch=2, seq_len=64, num_heads=8, d_head=64, dtype=torch.float32
     ):
         """Create test inputs for RoPE."""
-        q = torch.randn(batch, seq_len, num_heads, d_head, device=self.device, dtype=dtype)
-        k = torch.randn(batch, seq_len, num_heads, d_head, device=self.device, dtype=dtype)
+        q = torch.randn(
+            batch, seq_len, num_heads, d_head, device=self.device, dtype=dtype
+        )
+        k = torch.randn(
+            batch, seq_len, num_heads, d_head, device=self.device, dtype=dtype
+        )
 
         # Create cos/sin of shape [1, seq_len, 1, d_head]
         half_dim = d_head // 2
@@ -360,9 +504,7 @@ class TestFusedRoPERotation(unittest.TestCase):
 
         # Fused backward
         q_fused = q.detach().clone().requires_grad_(True)
-        cos_t, sin_t = _prepare_cos_sin_for_triton(
-            cos, sin, batch, seq_len, d_head
-        )
+        cos_t, sin_t = _prepare_cos_sin_for_triton(cos, sin, batch, seq_len, d_head)
         fused_out = _FusedRoPERotation.apply(q_fused.contiguous(), cos_t, sin_t)
         fused_out.backward(grad_out)
 
@@ -377,7 +519,10 @@ class TestFusedRoPERotation(unittest.TestCase):
         batch, seq_len, num_heads, d_head = 2, 32, 4, 64
 
         q, _, cos, sin = self._create_rope_inputs(
-            batch=batch, seq_len=seq_len, num_heads=num_heads, d_head=d_head,
+            batch=batch,
+            seq_len=seq_len,
+            num_heads=num_heads,
+            d_head=d_head,
             dtype=torch.bfloat16,
         )
 
@@ -400,17 +545,20 @@ class TestFusedRoPERotation(unittest.TestCase):
     def test_various_shapes(self):
         """Test with various tensor shapes."""
         configs = [
-            (1, 1, 1, 64),      # Single token, single head
-            (1, 32, 4, 64),     # Small batch
-            (2, 128, 8, 64),    # Typical
+            (1, 1, 1, 64),  # Single token, single head
+            (1, 32, 4, 64),  # Small batch
+            (2, 128, 8, 64),  # Typical
             (4, 256, 32, 128),  # Large model (Llama d_head=128)
-            (1, 1, 32, 128),    # Single token decode, many heads
-            (2, 512, 8, 64),    # Long sequence
+            (1, 1, 32, 128),  # Single token decode, many heads
+            (2, 512, 8, 64),  # Long sequence
         ]
         for batch, seq_len, num_heads, d_head in configs:
             with self.subTest(shape=(batch, seq_len, num_heads, d_head)):
                 q, _, cos, sin = self._create_rope_inputs(
-                    batch=batch, seq_len=seq_len, num_heads=num_heads, d_head=d_head,
+                    batch=batch,
+                    seq_len=seq_len,
+                    num_heads=num_heads,
+                    d_head=d_head,
                 )
 
                 ref = self._reference_rope(q, cos, sin)
@@ -502,12 +650,18 @@ class TestGLUFeedforwardIntegration(unittest.TestCase):
         d_model, d_ff = 256, 512
 
         layer_ref = GLUFeedforwardLayer(
-            d_model, d_ff, activation_factory=lambda: nn.GELU(),
-            dropout=0.0, use_triton=False,
+            d_model,
+            d_ff,
+            activation_factory=lambda: nn.GELU(),
+            dropout=0.0,
+            use_triton=False,
         ).to(self.device)
         layer_triton = GLUFeedforwardLayer(
-            d_model, d_ff, activation_factory=lambda: nn.GELU(),
-            dropout=0.0, use_triton=True,
+            d_model,
+            d_ff,
+            activation_factory=lambda: nn.GELU(),
+            dropout=0.0,
+            use_triton=True,
         ).to(self.device)
 
         layer_triton.load_state_dict(layer_ref.state_dict())
@@ -551,14 +705,49 @@ class TestGLUFeedforwardIntegration(unittest.TestCase):
         )
 
     @_skip_no_triton
+    def test_use_triton_flag_relu(self):
+        """GLUFeedforwardLayer with use_triton=True (ReLU) matches PyTorch."""
+        d_model, d_ff = 256, 512
+
+        layer_ref = GLUFeedforwardLayer(
+            d_model,
+            d_ff,
+            activation_factory=lambda: nn.ReLU(),
+            dropout=0.0,
+            use_triton=False,
+        ).to(self.device)
+        layer_triton = GLUFeedforwardLayer(
+            d_model,
+            d_ff,
+            activation_factory=lambda: nn.ReLU(),
+            dropout=0.0,
+            use_triton=True,
+        ).to(self.device)
+
+        layer_triton.load_state_dict(layer_ref.state_dict())
+
+        x = torch.randn(2, 32, d_model, device=self.device)
+
+        ref_out = layer_ref(x)
+        triton_out = layer_triton(x)
+
+        self.assertTrue(
+            torch.allclose(ref_out, triton_out, atol=1e-5, rtol=1e-5),
+            f"Max diff: {(ref_out - triton_out).abs().max().item():.2e}",
+        )
+
+    @_skip_no_triton
     def test_unsupported_activation_fallback(self):
         """Unsupported activation with use_triton=True falls back to PyTorch."""
         d_model, d_ff = 256, 512
 
-        # ReLU is not supported by Triton kernels
+        # Tanh is not supported by Triton kernels
         layer = GLUFeedforwardLayer(
-            d_model, d_ff, activation_factory=lambda: nn.ReLU(),
-            dropout=0.0, use_triton=True,
+            d_model,
+            d_ff,
+            activation_factory=lambda: nn.Tanh(),
+            dropout=0.0,
+            use_triton=True,
         ).to(self.device)
 
         # Should fallback (no _fused_op set)
@@ -574,9 +763,9 @@ class TestGLUFeedforwardIntegration(unittest.TestCase):
         d_model, d_ff = 256, 512
 
         # use_triton=True but module should handle gracefully
-        layer = GLUFeedforwardLayer(
-            d_model, d_ff, dropout=0.0, use_triton=False
-        ).to(self.device)
+        layer = GLUFeedforwardLayer(d_model, d_ff, dropout=0.0, use_triton=False).to(
+            self.device
+        )
 
         x = torch.randn(2, 32, d_model, device=self.device)
         out = layer(x)
@@ -599,7 +788,10 @@ class TestRoPEIntegration(unittest.TestCase):
 
         rope_ref = RotaryPE(hidden_size, num_heads, max_sequence_length=256)
         rope_triton = RotaryPE(
-            hidden_size, num_heads, max_sequence_length=256, use_triton=True,
+            hidden_size,
+            num_heads,
+            max_sequence_length=256,
+            use_triton=True,
         )
 
         q = torch.randn(2, seq_len, num_heads, d_head, device=self.device)
@@ -625,11 +817,17 @@ class TestRoPEIntegration(unittest.TestCase):
         seq_len = 128
 
         rope_ref = RotaryPE(
-            hidden_size, num_heads, cache_embeddings=False, compile_on_demand=False,
+            hidden_size,
+            num_heads,
+            cache_embeddings=False,
+            compile_on_demand=False,
         )
         rope_triton = RotaryPE(
-            hidden_size, num_heads, cache_embeddings=False,
-            compile_on_demand=False, use_triton=True,
+            hidden_size,
+            num_heads,
+            cache_embeddings=False,
+            compile_on_demand=False,
+            use_triton=True,
         )
 
         q = torch.randn(2, seq_len, num_heads, d_head, device=self.device)
@@ -652,7 +850,10 @@ class TestRoPEIntegration(unittest.TestCase):
 
         rope_ref = RotaryPE(hidden_size, num_heads, max_sequence_length=64)
         rope_triton = RotaryPE(
-            hidden_size, num_heads, max_sequence_length=64, use_triton=True,
+            hidden_size,
+            num_heads,
+            max_sequence_length=64,
+            use_triton=True,
         )
 
         q = torch.randn(
