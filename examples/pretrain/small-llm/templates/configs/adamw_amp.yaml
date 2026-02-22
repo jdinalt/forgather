@@ -1,0 +1,17 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "AdamW AMP"
+    -- set ns.config_description = "AdamW with Automatic Mixed Precision"
+    -- set ns.model_name = "adamw_amp"
+
+[trainer_args]
+    == super()
+    # **AMP**
+    default_dtype: "float32"
+    mixed_precision: "bf16"
+
+[optimizer]
+optimizer: &optimizer !partial:torch.optim:AdamW
+    lr: {{ (ns.base_learning_rate * ns.lr_scale) | toyaml }}
