@@ -371,7 +371,7 @@ class RotaryPE:
             Dict[str, Any]
         ] = None,  # Deprecated: use rope_parameters
         use_liger: bool = False,
-        use_triton: bool = False,
+        use_triton: bool = True,
         cache_embeddings: bool = True,
         compile_on_demand: bool = True,
     ):
@@ -385,6 +385,9 @@ class RotaryPE:
             rope_scaling: (Deprecated) Use rope_parameters instead
             use_triton: Use fused Triton RoPE rotation kernel (requires triton)
         """
+        if not _HAS_TRITON:
+            use_triton = False
+        
         # Extract parameters from rope_parameters dict (v5.0 format)
         # Or fall back to legacy rope_theta/rope_scaling params
         if rope_parameters is not None:

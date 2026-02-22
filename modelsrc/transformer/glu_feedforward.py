@@ -220,10 +220,12 @@ class GLUFeedforwardLayer(nn.Module):
         *,
         activation_factory: Optional[Callable] = lambda: nn.SiLU(),
         dropout: Optional[float] = 0.1,
-        use_triton: bool = False,
+        use_triton: bool = True,
         **kwargs,
     ):
         super().__init__()
+        if not _HAS_TRITON:
+            use_triton = False
         self.d_model = d_model
         self.d_feedforward = d_feedforward
 
