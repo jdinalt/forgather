@@ -565,8 +565,7 @@ def load_sharded_checkpoint(
 
     shard_files = set()
 
-    # Get uniqe fille names from intersection. All of this moduele's weights
-    # should be in this sub-set.
+    # Get unique file names from intersection. All of this module's weights should be in this sub-set.
     for weight_name in intersection:
         file_name = weight_map[weight_name]
         shard_files.add(file_name)
@@ -576,7 +575,8 @@ def load_sharded_checkpoint(
         shard_file_path = os.path.join(model_dir, shard_file_name)
         if safetensors:
             state_dict = safetensors_load(
-                shard_file_path, device=device,
+                shard_file_path,
+                device=device,
             )
         else:
             state_dict = torch.load(
@@ -734,7 +734,10 @@ def load_checkpoint_metrics(checkpoint_path: str) -> Dict[str, float] | None:
 
 
 def maybe_delete_oldest_checkpoint(
-    model_dir: str, max_checkpoints: int, best_checkpoint: str | None = None, preserved_checkpoints: List[str] | None = None
+    model_dir: str,
+    max_checkpoints: int,
+    best_checkpoint: str | None = None,
+    preserved_checkpoints: List[str] | None = None,
 ) -> None:
     """
     Delete oldest checkpoints, preserving specified checkpoints.
@@ -773,7 +776,9 @@ def maybe_delete_oldest_checkpoint(
         # Sort by modification time and delete the oldest
         checkpoints_to_consider.sort(key=lambda path: os.path.getmtime(path))
         for checkpoint_path in checkpoints_to_consider[:num_to_delete]:
-            logger.info(f"Deleting checkpoint at {checkpoint_path} (preserved: {preserved_set})")
+            logger.info(
+                f"Deleting checkpoint at {checkpoint_path} (preserved: {preserved_set})"
+            )
             shutil.rmtree(checkpoint_path)
 
 
