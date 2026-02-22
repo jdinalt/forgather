@@ -41,6 +41,7 @@ class DeepnetLayer(nn.Module):
             self.residual_dropout = nn.Dropout(residual_dropout)
         self._alpha = alpha
         self.alpha = nn.Buffer(torch.empty((1,)))
+        self.reset_parameters()
 
     def reset_parameters(self):
         self.alpha.fill_(float(self._alpha))
