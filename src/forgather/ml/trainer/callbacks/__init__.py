@@ -7,6 +7,7 @@ from .divergence_detector import (
 )
 from .json_logger import JsonLogger
 from .peak_memory import PeakMemory
+from .resumable_summary_writer import ResumableSummaryWriter
 from .tb_logger import TBLogger
 from .textgen_callback import TextgenCallback
 from .weight_norm_logger import WeightNormLogger

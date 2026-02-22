@@ -1,9 +1,9 @@
 -- extends 'callbacks/base_callbacks.yaml'
 
 [callback_dependencies]
-# Experiment tracking: Tensorboard SummaryWriter
-.define: &summary_writer !singleton:torch.utils.tensorboard:SummaryWriter
-    - "{{ ns.logging_dir }}"
+# Resumable TensorBoard SummaryWriter wrapper
+.define: &summary_writer !singleton:forgather.ml.trainer.callbacks:ResumableSummaryWriter
+    log_dir: "{{ ns.logging_dir }}"
 
     [experiment_info]
 # Additional data to record to experiment loggers
@@ -16,6 +16,9 @@ experiment_info: &experiment_info !dict:@experiment_info
 
 [callback_list]
     => super()
+    # ResumableSummaryWriter registered as callback for checkpoint state persistence
+    resumable_writer: *summary_writer
+
     # Log all training output to JSON
     json_logger: !singleton:forgather.ml.trainer.callbacks:JsonLogger
         <<: *experiment_info
