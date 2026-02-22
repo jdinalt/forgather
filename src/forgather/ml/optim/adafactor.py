@@ -71,11 +71,15 @@ class Adafactor(Optimizer):
     def _init_state(self, state, group, p, grad):
         state["step"] = torch.tensor(0.0, dtype=torch.float32)
         if grad.dim() <= 1:
-            state["row"] = torch.zeros_like(grad, dtype=p.dtype)
+            state["row"] = torch.zeros_like(grad, dtype=torch.float32)
             state["col"] = None
         else:
-            state["row"] = torch.zeros(grad.shape[0], dtype=p.dtype, device=grad.device)
-            state["col"] = torch.zeros(grad.shape[1], dtype=p.dtype, device=grad.device)
+            state["row"] = torch.zeros(
+                grad.shape[0], dtype=torch.float32, device=grad.device
+            )
+            state["col"] = torch.zeros(
+                grad.shape[1], dtype=torch.float32, device=grad.device
+            )
 
     @torch.no_grad()
     def step(self, closure: Callable = None):
