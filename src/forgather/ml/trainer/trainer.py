@@ -491,8 +491,8 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         self._prepare_model()
         if self.args.torch_compile:
             logger.info(
-                f"Compiling model: backend={self.args.torch_compile_backend}, mode={self.args.torch_compile_mode},"
-                f"dynamic={self.args.torch_compile_dynamic}, fullgraph={self.args.torch_compile_full_graph},"
+                f"Compiling model: backend={self.args.torch_compile_backend}, mode={self.args.torch_compile_mode}, "
+                f"dynamic={self.args.torch_compile_dynamic}, fullgraph={self.args.torch_compile_full_graph}, "
                 f"activation_memory_budget={self.args.activation_memory_budget}"
             )
 
