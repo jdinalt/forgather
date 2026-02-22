@@ -576,7 +576,7 @@ def load_sharded_checkpoint(
         shard_file_path = os.path.join(model_dir, shard_file_name)
         if safetensors:
             state_dict = safetensors_load(
-                shard_file_path, device=torch.device(device).index
+                shard_file_path, device=device,
             )
         else:
             state_dict = torch.load(

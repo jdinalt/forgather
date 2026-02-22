@@ -45,10 +45,18 @@ def create_model_parser(global_args):
         action="store_true",
         help="Combine backward with optimizer step to save memory",
     )
+    parser.add_argument(
+        "--refresh-model",
+        "-r",
+        action="store_true",
+        help="Force regeneration of fresh model from sources by deleting output_dir"
+    )
 
     subparsers = parser.add_subparsers(
         dest="model_subcommand", help="Model subcommands"
     )
+    parser.add_argument("--save-checkpoint", action="store_true", help="Save model checkpoint")
+    parser.add_argument("--safetensors", action="store_true", help="Save using safetensors")
 
     # construct subcommand
     construct_parser = subparsers.add_parser(

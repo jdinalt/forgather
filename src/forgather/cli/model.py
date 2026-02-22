@@ -1,6 +1,8 @@
 from contextlib import ExitStack
 from functools import partial
 from pprint import pformat
+import os
+import shutil
 
 import torch
 from torch.optim import SGD
@@ -10,7 +12,7 @@ from forgather import Project, from_project
 from forgather.ml.construct import torch_dtype
 from forgather.ml.data_collator import DataCollatorForCausalLM
 from forgather.ml.no_init_weights import no_init_weights
-from forgather.ml.sharded_checkpoint import load_checkpoint
+from forgather.ml.sharded_checkpoint import load_checkpoint, save_checkpoint
 from forgather.ml.utils import count_parameters, default_dtype
 
 from .dynamic_args import get_dynamic_args
@@ -36,7 +38,17 @@ def load_model(args):
     if config_class != "type.model":
         raise TypeError(f"Expected class type.model, found {config_class}")
 
-    return proj("pretrained_config", "pretrained_tokenizer", "model")
+    output_dir = proj_meta["output_dir"]
+    if os.path.exists(output_dir):
+        if args.refresh_model:
+            if not os.path.isdir(output_dir):
+                raise NotADirectoryError("The model's output path is not a directory!?")
+            print(f"Deleting output directory at '{output_dir}'")
+            shutil.rmtree(output_dir)
+        else:
+            print(f"Model definition already exist at '{output_dir}'. If you wish to rebuild the model from source code, pass '--refresh-model'")
+    
+    return proj("pretrained_config", "pretrained_tokenizer", "model"), proj_meta
 
 
 def model_cmd(args):
@@ -52,7 +64,9 @@ def model_cmd(args):
                 model_test_cmd(args)
 
 
-def construct_model(model_ctor, args):
+def construct_model(model_ctor, args, meta):
+    output_dir = meta["output_dir"]
+
     with ExitStack() as exit_stack:
         exit_stack.enter_context(torch.device(args.device))
         if args.dtype:
@@ -63,11 +77,18 @@ def construct_model(model_ctor, args):
     if args.load_from_checkpoint:
         assert (
             args.device != "meta"
-        ), "Load from checkpoint not supported on meta device"
-        print("Loading model from checkpoint {args.load_from_checkpoint}...")
+        ), "Load from checkpoint is not supported on meta device. Please specify a real device. e.g. '--device cpu'"
+        print(f"Loading model from checkpoint {args.load_from_checkpoint}...")
         load_checkpoint(
             args.load_from_checkpoint, model, device=args.dtype, strict=True
         )
+    if args.save_checkpoint:
+        assert (
+            args.device != "meta"
+        ), "Saving model from meta device is unsupported. Please specify a real device. e.g. '--device cpu'"
+        print("Saving model weights...")
+        save_checkpoint(output_dir, module=model, safetensors=args.safetensors)
+    
     if args.gradient_checkpointing:
         assert hasattr(model, "gradient_checkpointing_enable")
         print(f"Enabling gradient checkpointing")
@@ -76,11 +97,11 @@ def construct_model(model_ctor, args):
 
 
 def model_construct_cmd(args):
-    config, tokenizer, model_ctor = load_model(args)
+    (config, tokenizer, model_ctor), meta = load_model(args)
     data = f"{'Model Configuration':-^80}\n" + pformat(config) + "\n\n"
     data += f"{'Model Tokenizer':-^80}\n" + pformat(tokenizer) + "\n\n"
 
-    model = construct_model(model_ctor, args)
+    model = construct_model(model_ctor, args, meta)
     model_header = f"Model on '{args.device}' device"
     data += f"{model_header:-^80}\n" + pformat(model) + "\n\n"
     data += f"parameters={count_parameters(model)}\n"
@@ -110,9 +131,9 @@ class RandomDatasetIterator(IterableDataset):
 def model_test_cmd(args):
     torch.autograd.set_detect_anomaly(True)
     torch._dynamo.config.recompile_limit = 32
-    config, tokenizer, model_ctor = load_model(args)
+    (config, tokenizer, model_ctor), meta = load_model(args)
 
-    model = construct_model(model_ctor, args)
+    model = construct_model(model_ctor, args, meta)
     print(f"Setting learning-rate={args.lr}")
     optimizer = SGD(model.parameters(), lr=args.lr)
 
