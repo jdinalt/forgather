@@ -29,10 +29,21 @@ At the end of training, the following metrics are added to the output dict and l
 
 ### Per-interval metrics (ProgressCallback)
 
-The `ProgressCallback` computes throughput from the **wall-clock delta between log steps**,
-giving a current-interval rate rather than a cumulative average. These are display-only;
-they are not written to `trainer_logs.json`. The underlying token and FLOP values in
-`trainer_logs.json` can be used to reproduce these calculations offline.
+The `ProgressCallback` computes two types of per-interval speed metrics:
+
+- **tok/s** (token throughput): Uses wall-clock time between log steps, capturing
+  real end-to-end throughput including optimizer updates, data loading, gradient
+  synchronization, and all other overhead. This gives an accurate picture of actual
+  training speed and is useful for comparing different optimizers or configurations.
+
+- **MFU** (Model FLOPs Utilization): Uses accumulated pure training step time
+  (forward + backward pass only, from `on_step_begin` to `on_step_end`), excluding
+  evaluation, optimizer, and data loading time. This measures how efficiently the
+  hardware is utilized during the compute-bound portion of training.
+
+Both are display-only; they are not written to `trainer_logs.json`. The underlying
+token and FLOP values in `trainer_logs.json` can be used to reproduce these
+calculations offline.
 
 ## ProgressCallback options
 
@@ -68,7 +79,7 @@ When `peak_hardware_flops` is also set, an `mfu` column appears alongside it:
 | `show_epoch` | `True` | Display epoch |
 | `show_grad_norm` | `True` | Display gradient norm |
 | `show_tokens` | `False` | Display token count for the log interval |
-| `show_tokens_per_second` | `False` | Display tokens/sec for the log interval |
+| `show_tokens_per_second` | `False` | Display tokens/sec from wall-clock time (real throughput) |
 | `peak_hardware_flops` | `None` | Aggregate peak BF16 FLOP/s across all GPUs; enables MFU display |
 
 ## Setting `peak_hardware_flops`

@@ -31,9 +31,14 @@ class ProgressCallback:
     Controls which metrics are displayed in console logs during training.
     All metrics are still logged to JsonLogger regardless of display settings.
 
-    Speed metrics (tokens_per_second, mfu) are computed from the wall-clock delta
-    between consecutive log steps and the delta in token/FLOP counts, giving
-    throughput over the logged interval rather than a cumulative average.
+    Token throughput (tok/s) is computed from the wall-clock delta between
+    consecutive log steps, capturing real end-to-end throughput including
+    optimizer, data loading, and other overhead.
+
+    FLOPs and MFU are computed from accumulated pure training step time
+    (on_step_begin to on_step_end), excluding evaluation and other non-
+    forward/backward time, giving a measure of hardware utilization during
+    the compute-bound portion of training.
     """
 
     def __init__(
@@ -59,8 +64,9 @@ class ProgressCallback:
             show_learning_rate: Display learning rate in console logs (default: True)
             show_tokens: Display token count for the log interval (default: False)
             show_epoch: Display epoch in console logs (default: True)
-            show_tokens_per_second: Display tokens/sec computed from the log interval
-                wall-clock time and token delta (default: False)
+            show_tokens_per_second: Display tokens/sec computed from wall-clock time
+                between log steps, reflecting real end-to-end throughput including
+                optimizer, data loading, and all other overhead (default: False)
             peak_hardware_flops: Aggregate peak BF16 FLOP/s across all GPUs used in
                 training, used to compute MFU (Model FLOPs Utilization). Must be the
                 total across all ranks since total_flos accounts for tokens processed
@@ -94,9 +100,12 @@ class ProgressCallback:
         self.header_interval = header_interval
 
         # Tracking for per-interval speed metrics.
+        # _last_log_time records the wall-clock time at each log step, used for
+        # tok/s which should reflect real end-to-end throughput.
         # _step_start_time is set at on_step_begin and cleared at on_step_end.
         # _accumulated_train_time sums pure training step durations between log calls,
-        # so evaluation time is excluded from throughput calculations.
+        # used only for FLOPs/MFU (excludes evaluation, optimizer, data loading time).
+        self._last_log_time: Optional[float] = None
         self._step_start_time: Optional[float] = None
         self._accumulated_train_time: float = 0.0
         self._last_total_flos: float = 0.0
@@ -151,6 +160,7 @@ class ProgressCallback:
             return
         self.last_step = state.global_step
         # Initialize speed metric tracking; use state values to handle checkpoint resume
+        self._last_log_time = None
         self._last_total_flos = state.total_flos
         self._accumulated_train_time = 0.0
         self._step_start_time = None
@@ -256,21 +266,29 @@ class ProgressCallback:
         if self.show_tokens and "total_tokens" in logs:
             display_logs["total_tokens"] = logs["total_tokens"]
 
-        # Compute per-interval speed metrics from accumulated pure training time.
-        # Using on_step_begin/on_step_end timestamps excludes evaluation time, so
-        # throughput is not deflated when evaluation runs between log steps.
+        # Compute per-interval speed metrics.
+        # tok/s uses wall-clock time between log steps for real end-to-end throughput
+        # (includes optimizer, data loading, and all other overhead).
+        # FLOPs/MFU uses accumulated pure training step time (on_step_begin to
+        # on_step_end) to measure hardware utilization during forward/backward only.
+        now = time.monotonic()
         if self.show_tokens_per_second and "tokens" in logs:
-            elapsed = self._accumulated_train_time
-            if elapsed > 0:
-                delta_tokens = logs["tokens"]
-                tps = delta_tokens / elapsed
-                display_logs["tok/s"] = round(tps)
+            if self._last_log_time is not None:
+                wall_elapsed = now - self._last_log_time
+                if wall_elapsed > 0:
+                    delta_tokens = logs["tokens"]
+                    tps = delta_tokens / wall_elapsed
+                    display_logs["tok/s"] = round(tps)
 
-                # MFU requires knowing the hardware's peak FLOP/s
-                if self.peak_hardware_flops is not None and "total_flos" in logs:
+            # MFU requires knowing the hardware's peak FLOP/s
+            # Uses accumulated train time (forward/backward only) for accurate
+            # hardware utilization measurement.
+            train_elapsed = self._accumulated_train_time
+            if self.peak_hardware_flops is not None and "total_flos" in logs:
+                if train_elapsed > 0:
                     delta_flos = logs["total_flos"] - self._last_total_flos
                     if delta_flos > 0:
-                        achieved_flops = delta_flos / elapsed
+                        achieved_flops = delta_flos / train_elapsed
                         mfu = achieved_flops / self.peak_hardware_flops
                         display_logs["mfu"] = f"{mfu:.1%}"
 
@@ -282,7 +300,8 @@ class ProgressCallback:
                 gib = 1024**3
                 display_logs["peak_mem"] = f"{peak_mem / gib:.3f} GiB"
 
-        # Reset accumulated training time for the next interval
+        # Reset interval tracking for the next log period
+        self._last_log_time = now
         self._accumulated_train_time = 0.0
         self._last_total_flos = logs.get("total_flos", self._last_total_flos)
 

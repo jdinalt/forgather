@@ -29,6 +29,7 @@ from forgather.ml.trainer.base_trainer import (
     loss_and_logits_from_outputs,
     loss_from_outputs,
 )
+from forgather.ml.trainer.callbacks.default_callbacks import ProgressCallback
 from forgather.ml.trainer.callbacks.json_logger import JsonLogger
 from forgather.ml.trainer.periodic_function import PeriodicFunction
 from forgather.ml.trainer.trainer_types import (
@@ -38,7 +39,6 @@ from forgather.ml.trainer.trainer_types import (
     TrainerControl,
     TrainerState,
 )
-
 
 # ---------------------------------------------------------------------------
 # PeriodicFunction tests
@@ -107,17 +107,23 @@ class TestPeriodicFunctionStepsStrategy:
                 pf.reset()
         # Should trigger at steps 3, 6, 9, 12 (every 3 steps)
         assert triggers == [
-            False, False, True,   # trigger at step 3
-            False, False, True,   # trigger at step 6
-            False, False, True,   # trigger at step 9
-            False, False, True,   # trigger at step 12
+            False,
+            False,
+            True,  # trigger at step 3
+            False,
+            False,
+            True,  # trigger at step 6
+            False,
+            False,
+            True,  # trigger at step 9
+            False,
+            False,
+            True,  # trigger at step 12
         ]
 
     def test_period_of_one_triggers_every_step(self):
         """A period of 1 triggers on every step."""
-        pf = PeriodicFunction(
-            global_step=0, strategy="steps", period=1, epoch_period=1
-        )
+        pf = PeriodicFunction(global_step=0, strategy="steps", period=1, epoch_period=1)
         for _ in range(10):
             assert pf.step() is True
             pf.reset()
@@ -135,9 +141,7 @@ class TestPeriodicFunctionStepsStrategy:
 
     def test_rel_step_increments_and_resets(self):
         """rel_step increments on step() and resets to 0 on reset()."""
-        pf = PeriodicFunction(
-            global_step=0, strategy="steps", period=5, epoch_period=1
-        )
+        pf = PeriodicFunction(global_step=0, strategy="steps", period=5, epoch_period=1)
         pf.step()
         pf.step()
         assert pf.rel_step == 2
@@ -157,16 +161,12 @@ class TestPeriodicFunctionStepsStrategy:
 
     def test_reset_at_zero(self):
         """reset() returns 0 when no steps have been taken."""
-        pf = PeriodicFunction(
-            global_step=0, strategy="steps", period=5, epoch_period=1
-        )
+        pf = PeriodicFunction(global_step=0, strategy="steps", period=5, epoch_period=1)
         assert pf.reset() == 0
 
     def test_enabled_is_true_for_steps(self):
         """enabled flag is True for steps strategy."""
-        pf = PeriodicFunction(
-            global_step=0, strategy="steps", period=5, epoch_period=1
-        )
+        pf = PeriodicFunction(global_step=0, strategy="steps", period=5, epoch_period=1)
         assert pf.enabled is True
 
 
@@ -193,7 +193,7 @@ class TestPeriodicFunctionFirstStep:
             global_step=0, strategy="steps", period=2, epoch_period=1, first_step=0
         )
         assert pf.step() is False  # rel_step=1, period=2
-        assert pf.step() is True   # rel_step=2, period=2
+        assert pf.step() is True  # rel_step=2, period=2
 
     def test_first_step_with_nonzero_global_step(self):
         """first_step interacts correctly with a non-zero initial global_step."""
@@ -222,7 +222,7 @@ class TestPeriodicFunctionEpochStrategy:
             global_step=0, strategy="epoch", period=99, epoch_period=2
         )
         assert pf.step() is False  # rel_step=1
-        assert pf.step() is True   # rel_step=2 >= period=2
+        assert pf.step() is True  # rel_step=2 >= period=2
 
     def test_epoch_strategy_enabled(self):
         """epoch strategy sets enabled=True."""
@@ -245,23 +245,17 @@ class TestPeriodicFunctionEdgeCases:
     def test_zero_period_raises_assertion(self):
         """period=0 raises AssertionError."""
         with pytest.raises(AssertionError):
-            PeriodicFunction(
-                global_step=0, strategy="steps", period=0, epoch_period=1
-            )
+            PeriodicFunction(global_step=0, strategy="steps", period=0, epoch_period=1)
 
     def test_negative_period_raises_assertion(self):
         """Negative period raises AssertionError."""
         with pytest.raises(AssertionError):
-            PeriodicFunction(
-                global_step=0, strategy="steps", period=-1, epoch_period=1
-            )
+            PeriodicFunction(global_step=0, strategy="steps", period=-1, epoch_period=1)
 
     def test_zero_epoch_period_raises_assertion(self):
         """epoch_period=0 raises AssertionError for epoch strategy."""
         with pytest.raises(AssertionError):
-            PeriodicFunction(
-                global_step=0, strategy="epoch", period=5, epoch_period=0
-            )
+            PeriodicFunction(global_step=0, strategy="epoch", period=5, epoch_period=0)
 
     def test_str_representation(self):
         """__str__ returns a descriptive string."""
@@ -274,9 +268,7 @@ class TestPeriodicFunctionEdgeCases:
 
     def test_step_accepts_extra_args_and_kwargs(self):
         """step() accepts and ignores extra positional and keyword arguments."""
-        pf = PeriodicFunction(
-            global_step=0, strategy="steps", period=1, epoch_period=1
-        )
+        pf = PeriodicFunction(global_step=0, strategy="steps", period=1, epoch_period=1)
         # Should not raise
         result = pf.step("extra_arg", key="value")
         assert result is True
@@ -1201,9 +1193,7 @@ class TestJsonLoggerFullLifecycle:
             # Evaluate
             state.global_step = 100
             state.epoch = 1.0
-            logger.on_evaluate(
-                args, state, control, metrics={"eval_loss": 0.45}
-            )
+            logger.on_evaluate(args, state, control, metrics={"eval_loss": 0.45})
 
             # End training
             logger.on_train_end(args, state, control)
@@ -1222,6 +1212,196 @@ class TestJsonLoggerFullLifecycle:
             assert data[1]["global_step"] == 100
             # Third entry: evaluation
             assert data[2]["eval_loss"] == 0.45
+
+
+# ---------------------------------------------------------------------------
+# ProgressCallback speed metric tests
+# ---------------------------------------------------------------------------
+
+
+class TestProgressCallbackSpeedMetrics:
+    """Tests for ProgressCallback tok/s and MFU computation.
+
+    tok/s should use wall-clock time between log steps (real throughput).
+    MFU should use accumulated train step time (forward/backward only).
+    """
+
+    def _make_callback(self, **kwargs):
+        defaults = dict(
+            use_tqdm=False,
+            show_tokens_per_second=True,
+            show_loss=False,
+            show_grad_norm=False,
+            show_learning_rate=False,
+            show_epoch=False,
+            output_stream="stdout",
+        )
+        defaults.update(kwargs)
+        return ProgressCallback(**defaults)
+
+    def _make_state(self, global_step=0, max_steps=100, total_flos=0.0):
+        state = MagicMock()
+        state.is_world_process_zero = True
+        state.global_step = global_step
+        state.max_steps = max_steps
+        state.total_flos = total_flos
+        return state
+
+    def _make_args(self):
+        return MagicMock()
+
+    def test_tok_s_uses_wall_clock_time(self):
+        """tok/s should reflect wall-clock delta between log steps, not just
+        forward/backward time."""
+        cb = self._make_callback()
+        args = self._make_args()
+        state = self._make_state()
+        control = MagicMock()
+
+        cb.on_train_begin(args, state, control)
+
+        # Simulate first log step to initialize _last_log_time
+        with patch(
+            "forgather.ml.trainer.callbacks.default_callbacks.time"
+        ) as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            cb.on_log(args, state, control, logs={"tokens": 1000, "total_flos": 0.0})
+
+        # Simulate a training step that takes 0.5s (forward/backward)
+        with patch(
+            "forgather.ml.trainer.callbacks.default_callbacks.time"
+        ) as mock_time:
+            mock_time.monotonic.return_value = 101.0
+            cb.on_step_begin(args, state, control)
+            mock_time.monotonic.return_value = 101.5
+            cb.on_step_end(args, state, control)
+
+        # But wall-clock has advanced 2.0s total (optimizer + data loading = 1.5s extra)
+        state.global_step = 10
+        display_logs = {}
+        with patch(
+            "forgather.ml.trainer.callbacks.default_callbacks.time"
+        ) as mock_time:
+            mock_time.monotonic.return_value = 102.0
+            # Capture the display_logs by intercepting the format call
+            with patch(
+                "forgather.ml.trainer.callbacks.default_callbacks.format_train_log"
+            ) as mock_fmt:
+                mock_fmt.return_value = ""
+                cb.on_log(
+                    args, state, control, logs={"tokens": 2000, "total_flos": 0.0}
+                )
+                if mock_fmt.called:
+                    display_logs = mock_fmt.call_args[0][1]
+
+        # Wall-clock delta = 102.0 - 100.0 = 2.0s, tokens = 2000
+        # Expected tok/s = 2000 / 2.0 = 1000
+        assert "tok/s" in display_logs
+        assert display_logs["tok/s"] == 1000
+
+    def test_mfu_uses_train_step_time(self):
+        """MFU should use accumulated on_step_begin/on_step_end time, not
+        wall-clock time."""
+        peak_flops = 1000.0  # Simplified peak for easy math
+        cb = self._make_callback(peak_hardware_flops=peak_flops)
+        args = self._make_args()
+        state = self._make_state()
+        control = MagicMock()
+
+        cb.on_train_begin(args, state, control)
+
+        # First log step to initialize tracking
+        with patch(
+            "forgather.ml.trainer.callbacks.default_callbacks.time"
+        ) as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            cb.on_log(args, state, control, logs={"tokens": 0, "total_flos": 0.0})
+
+        # Simulate training step: 0.5s of forward/backward
+        with patch(
+            "forgather.ml.trainer.callbacks.default_callbacks.time"
+        ) as mock_time:
+            mock_time.monotonic.return_value = 101.0
+            cb.on_step_begin(args, state, control)
+            mock_time.monotonic.return_value = 101.5
+            cb.on_step_end(args, state, control)
+
+        # Wall-clock is 2.0s but train time is only 0.5s
+        # delta_flos = 500, so achieved = 500 / 0.5 = 1000 FLOP/s
+        # MFU = 1000 / 1000 = 100%
+        display_logs = {}
+        with patch(
+            "forgather.ml.trainer.callbacks.default_callbacks.time"
+        ) as mock_time:
+            mock_time.monotonic.return_value = 102.0
+            with patch(
+                "forgather.ml.trainer.callbacks.default_callbacks.format_train_log"
+            ) as mock_fmt:
+                mock_fmt.return_value = ""
+                cb.on_log(
+                    args, state, control, logs={"tokens": 2000, "total_flos": 500.0}
+                )
+                if mock_fmt.called:
+                    display_logs = mock_fmt.call_args[0][1]
+
+        assert "mfu" in display_logs
+        assert display_logs["mfu"] == "100.0%"
+
+    def test_no_tok_s_on_first_log(self):
+        """tok/s should not appear on the very first log step since there is
+        no previous wall-clock reference."""
+        cb = self._make_callback()
+        args = self._make_args()
+        state = self._make_state()
+        control = MagicMock()
+
+        cb.on_train_begin(args, state, control)
+
+        display_logs = {}
+        with patch(
+            "forgather.ml.trainer.callbacks.default_callbacks.time"
+        ) as mock_time:
+            mock_time.monotonic.return_value = 100.0
+            with patch(
+                "forgather.ml.trainer.callbacks.default_callbacks.format_train_log"
+            ) as mock_fmt:
+                mock_fmt.return_value = ""
+                cb.on_log(
+                    args, state, control, logs={"tokens": 5000, "total_flos": 0.0}
+                )
+                if mock_fmt.called:
+                    display_logs = mock_fmt.call_args[0][1]
+
+        assert "tok/s" not in display_logs
+
+    def test_accumulated_train_time_resets_between_intervals(self):
+        """_accumulated_train_time should reset after each on_log call."""
+        cb = self._make_callback()
+        args = self._make_args()
+        state = self._make_state()
+        control = MagicMock()
+
+        cb.on_train_begin(args, state, control)
+
+        # Simulate a step
+        with patch(
+            "forgather.ml.trainer.callbacks.default_callbacks.time"
+        ) as mock_time:
+            mock_time.monotonic.return_value = 0.0
+            cb.on_step_begin(args, state, control)
+            mock_time.monotonic.return_value = 1.0
+            cb.on_step_end(args, state, control)
+
+        assert cb._accumulated_train_time == 1.0
+
+        # Log step resets it
+        with patch(
+            "forgather.ml.trainer.callbacks.default_callbacks.time"
+        ) as mock_time:
+            mock_time.monotonic.return_value = 2.0
+            cb.on_log(args, state, control, logs={"tokens": 100, "total_flos": 0.0})
+
+        assert cb._accumulated_train_time == 0.0
 
 
 if __name__ == "__main__":
