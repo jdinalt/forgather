@@ -80,7 +80,7 @@ def construct_model(model_ctor, args, meta):
         ), "Load from checkpoint is not supported on meta device. Please specify a real device. e.g. '--device cpu'"
         print(f"Loading model from checkpoint {args.load_from_checkpoint}...")
         load_checkpoint(
-            args.load_from_checkpoint, model, device=args.dtype, strict=True
+            args.load_from_checkpoint, model, device=args.device, strict=False
         )
     if args.save_checkpoint:
         assert (
