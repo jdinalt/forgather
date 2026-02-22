@@ -36,7 +36,8 @@ def _load_model_state_dict(model_path: str, from_checkpoint: bool = False):
 
         print(f"Loading model from {model_path}...")
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, torch_dtype="auto", device_map="cpu"
+            model_path, torch_dtype="auto", device_map="cpu",
+            trust_remote_code=True,
         )
         state_dict = model.state_dict()
         del model
@@ -227,7 +228,14 @@ def _worker_cmd(args):
         env["CUDA_VISIBLE_DEVICES"] = args.devices
 
     # Build the forgather train command from remaining args
-    cmd_args = [sys.executable, "-m", "forgather"]
+    import shutil
+    forgather_bin = shutil.which("forgather")
+    if forgather_bin is None:
+        # Fallback: use the entry point module directly
+        forgather_bin = [sys.executable, "-c", "from forgather.cli import main; main()"]
+    else:
+        forgather_bin = [forgather_bin]
+    cmd_args = list(forgather_bin)
 
     # Pass through project dir and config template from global args
     if hasattr(args, "project_dir") and args.project_dir != ".":
@@ -241,6 +249,9 @@ def _worker_cmd(args):
     # Forward remaining arguments
     remainder = args.remainder
     if remainder and remainder[0] == "--":
+        remainder = remainder[1:]
+    # Strip leading "train" if user passed it (we already add it above)
+    if remainder and remainder[0] == "train":
         remainder = remainder[1:]
     cmd_args.extend(remainder)
 
