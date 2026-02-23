@@ -59,20 +59,23 @@ and assign each worker a different `--shard-index`.
 
 **Option A: Using `forgather diloco worker` CLI** (recommended):
 
+Note that the `-d N` arguments are equivalent to `CUDA_VISIBLE_DEVICES=N`, which controls
+which GPUs are avaialble to each worker.
+
 ```bash
 # Worker A (shard 0)
 forgather diloco worker \
     --server localhost:8512 \
     --sync-every 500 \
     -t default.yaml \
-    train --num-shards 2 --shard-index 0
+    train --num-shards 2 --shard-index 0 -d 0
 
 # Worker B (shard 1)
 forgather diloco worker \
     --server localhost:8512 \
     --sync-every 500 \
     -t default.yaml \
-    train --num-shards 2 --shard-index 1
+    train --num-shards 2 --shard-index 1 -d 1
 ```
 
 **Option B: Using dynamic args** (configuration-level control):
