@@ -333,7 +333,8 @@ class DynamicCasualLM(GenerationMixin, PreTrainedModel):
     
     @override
     def _init_weights(self, module: torch.nn.Module):
-        self.causal_lm.init_weights(module)
+        """ Initialize the weights of the specified module; delegated to causal_lm """
+        self.causal_lm._init_weights_fn(module)
     
     @override
     def get_attn_mask_fn(self):
