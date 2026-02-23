@@ -33,6 +33,11 @@ pytest tests/unit/ml/test_checkpoints.py
 # Run with coverage
 pytest tests/unit/ --cov=forgather --cov-report=term-missing
 
+# Integration tests (require GPU -- see docs/development/integration-testing.md)
+pytest tests/integration/ -m smoke                        # Smoke test (~40s)
+pytest tests/integration/ -m "integration and not slow"   # Training tests (~75s)
+pytest tests/integration/ -m integration                  # Full suite incl. inference (~2 min)
+
 # Run distributed tests (require torchrun)
 torchrun --nproc_per_node=2 tests/test_checkpoint_integration.py
 ./tests/run_dataloader_dispatcher_tests.sh
@@ -52,7 +57,10 @@ tests/
 │       ├── datasets/                  # Dataset loading and processing
 │       └── diloco/                    # Distributed local-compute optimization
 │
-├── integration/                       # Integration tests (placeholder)
+├── integration/                       # Integration tests (spec-driven, see integration-testing.md)
+│   ├── specs/                         # YAML test specifications
+│   ├── test_training.py               # Training project tests
+│   └── test_inference.py              # Inference + perplexity tests
 ├── pipeline_split/                    # Pipeline parallelism tests (torchrun)
 ├── fixtures/                          # Test fixtures (placeholder)
 ├── utils/                             # Test utilities (placeholder)
@@ -67,8 +75,9 @@ The following pytest markers are defined in `pytest.ini`:
 | Marker | Meaning |
 |---|---|
 | `unit` | Unit tests |
-| `integration` | Integration tests |
-| `slow` | Slow-running tests |
+| `integration` | Integration tests (end-to-end training projects) |
+| `slow` | Slow-running tests (inference + perplexity, multi-GPU) |
+| `smoke` | Fast smoke tests (subset of integration) |
 
 Use `-m` to filter by marker:
 
@@ -292,10 +301,17 @@ python tests/test_adafactor_triton.py
 
 ### Before Submitting a PR
 
-Run the full unit test suite to catch regressions:
+Run the full unit test suite and integration smoke test to catch regressions:
 
 ```bash
 pytest tests/unit/
+pytest tests/integration/ -m "integration and not slow"
+```
+
+If your changes touch model code generation or templates:
+
+```bash
+pytest tests/integration/ -m smoke
 ```
 
 If your changes touch data loading or packing:
