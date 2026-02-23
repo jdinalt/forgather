@@ -1,0 +1,23 @@
+test_id: tiny_experiment_smoke
+project_dir: examples/tiny_experiments/tiny_experiment
+config: default.yaml
+dynamic_args:
+  max_steps: 150
+  save_strategy: "no"
+loss:
+  final_max: 9.0
+  no_nan: true
+stderr:
+  forbidden_patterns:
+    - "RuntimeError"
+    - "CUDA error"
+    - "Traceback"
+  warn_patterns: []
+expected_files:
+  - trainer_logs.json
+min_steps_logged: 1
+timeout: 300
+gpu_requirement: 1
+markers:
+  - integration
+  - smoke
