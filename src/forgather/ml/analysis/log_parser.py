@@ -14,16 +14,31 @@ class TrainingLog:
     log_path: Path
     records: List[Dict[str, Any]]
     run_name: Optional[str] = None
+    model_name: Optional[str] = None
+    label: Optional[str] = None
 
     def __post_init__(self):
-        """Extract run name from path if not provided."""
-        if self.run_name is None:
-            # Extract from path: .../runs/RUN_NAME/trainer_logs.json
-            parts = self.log_path.parts
-            if "runs" in parts:
-                runs_idx = parts.index("runs")
-                if runs_idx + 1 < len(parts):
-                    self.run_name = parts[runs_idx + 1]
+        """Extract run name and model name from path if not provided."""
+        parts = self.log_path.parts
+        if "runs" in parts:
+            runs_idx = parts.index("runs")
+            if self.run_name is None and runs_idx + 1 < len(parts):
+                self.run_name = parts[runs_idx + 1]
+            if self.model_name is None and runs_idx > 0:
+                self.model_name = parts[runs_idx - 1]
+
+    def get_label(self, index: int = 0) -> str:
+        """Get a human-readable label for this log.
+
+        Priority: explicit label > model_name > run_name > 'Run N'
+        """
+        if self.label:
+            return self.label
+        if self.model_name:
+            return self.model_name
+        if self.run_name:
+            return self.run_name
+        return f"Run {index + 1}"
 
     @classmethod
     def from_file(cls, log_path: str | Path) -> "TrainingLog":

@@ -106,6 +106,17 @@ def create_logs_parser(global_args):
         help="Compare multiple runs (provide paths)",
     )
     plot_parser.add_argument(
+        "--labels",
+        nargs="+",
+        type=str,
+        help="Custom labels for runs (one per log path, in same order)",
+    )
+    plot_parser.add_argument(
+        "--title",
+        type=str,
+        help="Custom plot title",
+    )
+    plot_parser.add_argument(
         "--loss-curves",
         action="store_true",
         help="Generate loss curves plot with LR on secondary axis",

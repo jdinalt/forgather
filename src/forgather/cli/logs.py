@@ -126,12 +126,16 @@ def plot_cmd(args):
 
     # Load logs
     logs = []
-    for log_path in log_paths:
+    labels = getattr(args, "labels", None) or []
+    for idx, log_path in enumerate(log_paths):
         try:
             if log_path.is_dir():
                 log = TrainingLog.from_run_dir(log_path)
             else:
                 log = TrainingLog.from_file(log_path)
+            # Apply custom label if provided
+            if idx < len(labels):
+                log.label = labels[idx]
             logs.append(log)
         except Exception as e:
             print(f"Error loading log {log_path}: {e}")
@@ -177,6 +181,7 @@ def plot_cmd(args):
         output_path = os.path.join(temp_dir, f"{base_name}.{args.format}")
 
     # Generate plot (never show interactively - doesn't work on remote SSH)
+    plot_title = getattr(args, "title", None)
     try:
         if args.loss_curves:
             # Special loss curves plot with LR on secondary axis
@@ -186,6 +191,7 @@ def plot_cmd(args):
                 smooth_window=args.smooth,
                 output_path=output_path,
                 show=False,  # Never show - use editor instead
+                title=plot_title,
             )
         else:
             # General metrics plot
@@ -197,6 +203,7 @@ def plot_cmd(args):
                 log_scale=args.log_scale,
                 output_path=output_path,
                 show=False,  # Never show - use editor instead
+                title=plot_title,
             )
 
         print(f"Plot saved to: {output_path}")
