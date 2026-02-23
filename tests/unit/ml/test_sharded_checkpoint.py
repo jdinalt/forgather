@@ -30,18 +30,23 @@ from forgather.ml.sharded_checkpoint import (
     CheckpointMeta,
     _intersect_weight_map,
     _make_shard_dictionaries,
+    _resolve_state_dict,
     create_sharing_metadata,
     get_all_fqns,
     get_checkpoint_metadata,
     id_to_fqn,
     index_file_name,
+    load_checkpoint,
     load_checkpoint_metrics,
+    load_sharded_checkpoint,
     make_cannonical_names,
     make_shard_index,
     map_cannonical_names,
     maybe_delete_oldest_checkpoint,
     next_checkpoint_path,
+    save_checkpoint,
     save_checkpoint_metrics,
+    save_sharded_checkpoint,
 )
 
 
@@ -829,6 +834,285 @@ class TestMaybeDeleteOldestCheckpoint(unittest.TestCase):
         # Both non-preserved checkpoints are deleted (num_to_delete=2)
         self.assertFalse(os.path.exists(cp3))
         self.assertFalse(os.path.exists(cp4))
+
+
+class TestResolveStateDict(unittest.TestCase):
+    """Test _resolve_state_dict helper."""
+
+    def test_module_input(self):
+        """Should return state_dict from nn.Module."""
+        model = SimpleModel()
+        sd = _resolve_state_dict(model)
+        self.assertIsInstance(sd, dict)
+        self.assertIn("linear1.weight", sd)
+
+    def test_dict_input(self):
+        """Should return the dict as-is."""
+        d = {"w": torch.randn(3)}
+        result = _resolve_state_dict(d)
+        self.assertIs(result, d)
+
+
+class TestSaveLoadCheckpointWithDict(unittest.TestCase):
+    """Test save_checkpoint and load_checkpoint with raw state dicts."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_state_dict(self):
+        return {
+            "layer1.weight": torch.randn(4, 3),
+            "layer1.bias": torch.randn(4),
+            "layer2.weight": torch.randn(2, 4),
+            "layer2.bias": torch.randn(2),
+        }
+
+    def test_save_dict_load_dict_pytorch(self):
+        """Round-trip: save raw dict, load as dict (pytorch format)."""
+        original = self._make_state_dict()
+        save_checkpoint(self.tmpdir, original, safetensors=False)
+        loaded = load_checkpoint(self.tmpdir, module=None, device="cpu")
+
+        self.assertIsInstance(loaded, dict)
+        for key in original:
+            self.assertIn(key, loaded)
+            torch.testing.assert_close(loaded[key], original[key])
+
+    def test_save_dict_load_dict_safetensors(self):
+        """Round-trip: save raw dict, load as dict (safetensors format)."""
+        original = self._make_state_dict()
+        save_checkpoint(self.tmpdir, original, safetensors=True)
+        loaded = load_checkpoint(self.tmpdir, module=None, device="cpu")
+
+        self.assertIsInstance(loaded, dict)
+        for key in original:
+            self.assertIn(key, loaded)
+            torch.testing.assert_close(loaded[key], original[key])
+
+    def test_save_dict_load_module(self):
+        """Save raw dict, load into nn.Module."""
+        model = SimpleModel()
+        original_sd = model.state_dict()
+
+        # Save the state dict directly
+        save_checkpoint(self.tmpdir, original_sd, safetensors=False)
+
+        # Create fresh model and load
+        model2 = SimpleModel()
+        load_checkpoint(self.tmpdir, model2, device="cpu")
+
+        for key in original_sd:
+            torch.testing.assert_close(
+                model2.state_dict()[key], original_sd[key]
+            )
+
+    def test_save_module_load_dict(self):
+        """Save nn.Module, load as raw dict."""
+        model = SimpleModel()
+        original_sd = {k: v.clone() for k, v in model.state_dict().items()}
+
+        save_checkpoint(self.tmpdir, model, safetensors=False)
+        loaded = load_checkpoint(self.tmpdir, module=None, device="cpu")
+
+        self.assertIsInstance(loaded, dict)
+        for key in original_sd:
+            torch.testing.assert_close(loaded[key], original_sd[key])
+
+    def test_load_dict_with_keys_filter(self):
+        """Load only specific keys when module=None."""
+        original = self._make_state_dict()
+        save_checkpoint(self.tmpdir, original, safetensors=False)
+
+        wanted_keys = {"layer1.weight", "layer1.bias"}
+        loaded = load_checkpoint(
+            self.tmpdir, module=None, device="cpu", keys=wanted_keys
+        )
+
+        self.assertEqual(set(loaded.keys()), wanted_keys)
+        for key in wanted_keys:
+            torch.testing.assert_close(loaded[key], original[key])
+
+    def test_save_dict_no_param_sharing_autodetect(self):
+        """When saving a dict, param sharing auto-detection is skipped."""
+        sd = self._make_state_dict()
+        # Should not raise even though dict has no parameter sharing info
+        save_checkpoint(self.tmpdir, sd, safetensors=False)
+        loaded = load_checkpoint(self.tmpdir, module=None, device="cpu")
+        self.assertEqual(set(loaded.keys()), set(sd.keys()))
+
+    def test_save_dict_with_explicit_param_sharing(self):
+        """Can provide explicit param_sharing_metadata with a dict."""
+        sd = {"embed.weight": torch.randn(10, 4), "head.weight": torch.randn(10, 4)}
+        sharing = [["embed.weight", "head.weight"]]
+        save_checkpoint(
+            self.tmpdir, sd, safetensors=False, param_sharing_metadata=sharing
+        )
+        loaded = load_checkpoint(self.tmpdir, module=None, device="cpu")
+        self.assertIn("embed.weight", loaded)
+        self.assertIn("head.weight", loaded)
+
+
+class TestSaveShardedCheckpointWithDict(unittest.TestCase):
+    """Test save_sharded_checkpoint with raw state dicts."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_save_dict_pytorch(self):
+        """save_sharded_checkpoint with raw dict (pytorch format)."""
+        sd = {"a.weight": torch.randn(5, 3), "b.weight": torch.randn(2, 5)}
+        shard_index = make_shard_index([sd], safetensors=False)
+        save_sharded_checkpoint(self.tmpdir, shard_index, sd, safetensors=False)
+
+        # Verify shard files were written
+        weight_map = shard_index["weight_map"]
+        for shard_file in set(weight_map.values()):
+            self.assertTrue(
+                os.path.exists(os.path.join(self.tmpdir, shard_file))
+            )
+
+    def test_save_dict_safetensors(self):
+        """save_sharded_checkpoint with raw dict (safetensors format)."""
+        sd = {"a.weight": torch.randn(5, 3), "b.weight": torch.randn(2, 5)}
+        shard_index = make_shard_index([sd], safetensors=True)
+        save_sharded_checkpoint(self.tmpdir, shard_index, sd, safetensors=True)
+
+        weight_map = shard_index["weight_map"]
+        for shard_file in set(weight_map.values()):
+            self.assertTrue(
+                os.path.exists(os.path.join(self.tmpdir, shard_file))
+            )
+
+
+class TestLoadShardedCheckpointWithDict(unittest.TestCase):
+    """Test load_sharded_checkpoint with module=None."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _save_sharded(self, sd, safetensors=False):
+        shard_index = make_shard_index([sd], safetensors=safetensors)
+        from forgather.ml.sharded_checkpoint import save_shard_index, index_file_name
+
+        save_shard_index(
+            shard_index,
+            self.tmpdir,
+            index_file_name(safetensors),
+        )
+        save_sharded_checkpoint(
+            self.tmpdir, shard_index, sd, safetensors=safetensors
+        )
+        return shard_index
+
+    def test_load_all_keys_pytorch(self):
+        """load_sharded_checkpoint with module=None returns all tensors (pytorch)."""
+        original = {"x": torch.randn(3, 2), "y": torch.randn(4)}
+        shard_index = self._save_sharded(original, safetensors=False)
+
+        loaded = load_sharded_checkpoint(
+            self.tmpdir, shard_index, module=None, device="cpu"
+        )
+
+        self.assertIsInstance(loaded, dict)
+        for key in original:
+            torch.testing.assert_close(loaded[key], original[key])
+
+    def test_load_all_keys_safetensors(self):
+        """load_sharded_checkpoint with module=None returns all tensors (safetensors)."""
+        original = {"x": torch.randn(3, 2), "y": torch.randn(4)}
+        shard_index = self._save_sharded(original, safetensors=True)
+
+        loaded = load_sharded_checkpoint(
+            self.tmpdir, shard_index, module=None, device="cpu", safetensors=True
+        )
+
+        self.assertIsInstance(loaded, dict)
+        for key in original:
+            torch.testing.assert_close(loaded[key], original[key])
+
+    def test_load_with_keys_filter(self):
+        """load_sharded_checkpoint with module=None and keys filters results."""
+        original = {"a": torch.randn(3), "b": torch.randn(4), "c": torch.randn(5)}
+        shard_index = self._save_sharded(original, safetensors=False)
+
+        wanted = {"a", "c"}
+        loaded = load_sharded_checkpoint(
+            self.tmpdir, shard_index, module=None, device="cpu", keys=wanted
+        )
+
+        self.assertEqual(set(loaded.keys()), wanted)
+        for key in wanted:
+            torch.testing.assert_close(loaded[key], original[key])
+
+    def test_load_module_still_works(self):
+        """Existing module-based loading still works after refactor."""
+        model = SimpleModel()
+        original_sd = {k: v.clone() for k, v in model.state_dict().items()}
+        shard_index = self._save_sharded(original_sd, safetensors=False)
+
+        model2 = SimpleModel()
+        unloaded = load_sharded_checkpoint(
+            self.tmpdir, shard_index, module=model2, device="cpu"
+        )
+
+        self.assertIsInstance(unloaded, set)
+        self.assertEqual(len(unloaded), 0)
+        for key in original_sd:
+            torch.testing.assert_close(
+                model2.state_dict()[key], original_sd[key]
+            )
+
+
+class TestLoadCheckpointNonShardedDict(unittest.TestCase):
+    """Test load_checkpoint with module=None for non-sharded checkpoints."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_single_pytorch_file(self):
+        """load_checkpoint with module=None for single pytorch file."""
+        original = {"w": torch.randn(3, 2), "b": torch.randn(3)}
+        torch.save(original, os.path.join(self.tmpdir, "pytorch_model.bin"))
+
+        loaded = load_checkpoint(self.tmpdir, module=None, device="cpu")
+        self.assertIsInstance(loaded, dict)
+        for key in original:
+            torch.testing.assert_close(loaded[key], original[key])
+
+    def test_single_safetensors_file(self):
+        """load_checkpoint with module=None for single safetensors file."""
+        from safetensors.torch import save_file
+
+        original = {"w": torch.randn(3, 2), "b": torch.randn(3)}
+        save_file(original, os.path.join(self.tmpdir, "model.safetensors"))
+
+        loaded = load_checkpoint(self.tmpdir, module=None, device="cpu")
+        self.assertIsInstance(loaded, dict)
+        for key in original:
+            torch.testing.assert_close(loaded[key], original[key])
+
+    def test_single_file_with_keys_filter(self):
+        """load_checkpoint with module=None and keys for single file."""
+        original = {"w": torch.randn(3, 2), "b": torch.randn(3)}
+        torch.save(original, os.path.join(self.tmpdir, "pytorch_model.bin"))
+
+        loaded = load_checkpoint(
+            self.tmpdir, module=None, device="cpu", keys={"w"}
+        )
+        self.assertEqual(set(loaded.keys()), {"w"})
+        torch.testing.assert_close(loaded["w"], original["w"])
 
 
 if __name__ == "__main__":

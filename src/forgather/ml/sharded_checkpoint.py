@@ -8,7 +8,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pprint import pp
-from typing import Dict, List, Optional, Set, TypeAlias
+from typing import Dict, List, Optional, Set, TypeAlias, Union, overload
 
 import torch
 from safetensors.torch import load_file as safetensors_load
@@ -107,6 +107,15 @@ SAFE_WEIGHTS_NAME = "model.safetensors"
 ShardIndex = Dict[str, Dict[str, str]]
 
 SharingMetadataT: TypeAlias = List[List[str]]
+
+StateDictLike = Union[Module, Dict[str, Tensor]]
+
+
+def _resolve_state_dict(source: StateDictLike) -> Dict[str, Tensor]:
+    """Resolve a Module or raw state dict to a state dict."""
+    if isinstance(source, Module):
+        return source.state_dict()
+    return source
 
 
 def id_to_fqn(module: nn.Module) -> Dict[int, Set[str]]:
@@ -363,28 +372,34 @@ def _make_shard_dictionaries(
 
 def save_checkpoint(
     output_dir: str,
-    module: Module,
+    module: StateDictLike,
     metadata: Optional[Dict] = None,
     safetensors: bool = False,
     max_shard_size: int = 2**31,
     debug: bool = False,
     include_param_sharing: bool = True,
+    param_sharing_metadata: Optional[SharingMetadataT] = None,
 ) -> None:
     """
-    Save a sharded checkpoint for the whole model.
+    Save a sharded checkpoint for the whole model or a raw state dict.
 
     Args:
-        include_param_sharing: If True, detect and include buffer sharing metadata
+        module: An nn.Module or a raw Dict[str, Tensor] state dictionary.
+        include_param_sharing: If True and module is an nn.Module, detect and
+            include buffer sharing metadata automatically.
+        param_sharing_metadata: Explicit sharing metadata. When provided, skips
+            auto-detection even if module is an nn.Module.
     """
-    # Detect buffer sharing if requested
-    param_sharing_metadata = None
-    if include_param_sharing:
+    state_dict = _resolve_state_dict(module)
+
+    # Detect buffer sharing if requested and not explicitly provided
+    if param_sharing_metadata is None and include_param_sharing and isinstance(module, Module):
         param_sharing_metadata = create_sharing_metadata(module)
         if param_sharing_metadata:
             logger.debug(f"Detected {len(param_sharing_metadata)} shared buffer groups")
 
     shard_index = make_shard_index(
-        [module.state_dict()],
+        [state_dict],
         metadata=metadata,
         safetensors=safetensors,
         max_shard_size=max_shard_size,
@@ -398,7 +413,7 @@ def save_checkpoint(
     save_sharded_checkpoint(
         output_dir,
         shard_index,
-        module,
+        state_dict,
         safetensors=safetensors,
         debug=debug,
     )
@@ -407,7 +422,7 @@ def save_checkpoint(
 def save_sharded_checkpoint(
     output_dir: str,
     shard_index: ShardIndex,
-    module: Module,
+    module: StateDictLike,
     safetensors: bool = False,
     debug: bool = False,
 ) -> None:
@@ -418,12 +433,16 @@ def save_sharded_checkpoint(
     model, and 'module' may only we a sub-set of those weights -- this is the use-case
     this was written for, but it can be used to save complete model as well.
 
+    Args:
+        module: An nn.Module or a raw Dict[str, Tensor] state dictionary.
+
     See "save_checkpoint" if you only wish to save the complete model.
     """
     weight_map = shard_index["weight_map"]
+    state_dict = _resolve_state_dict(module)
 
     os.makedirs(output_dir, exist_ok=True)
-    shard_files = _make_shard_dictionaries(weight_map, module.state_dict())
+    shard_files = _make_shard_dictionaries(weight_map, state_dict)
     for shard_file_name, state_dict in shard_files.items():
         logger.info(f"Writing File: {shard_file_name}")
         total_size = 0
@@ -487,18 +506,47 @@ def load_shard_index(
     return shard_index
 
 
+@overload
 def load_checkpoint(
     model_dir: str,
     module: Module,
     device: str,
     strict: bool = True,
     assign: bool = False,
-) -> None:
+    keys: Optional[Set[str]] = None,
+) -> None: ...
+
+
+@overload
+def load_checkpoint(
+    model_dir: str,
+    module: None,
+    device: str,
+    strict: bool = True,
+    assign: bool = False,
+    keys: Optional[Set[str]] = None,
+) -> Dict[str, Tensor]: ...
+
+
+def load_checkpoint(
+    model_dir: str,
+    module: Optional[Module] = None,
+    device: str = "cpu",
+    strict: bool = True,
+    assign: bool = False,
+    keys: Optional[Set[str]] = None,
+) -> Union[None, Dict[str, Tensor]]:
     """
     Automatically detects checkpoint type and loads accordingly.
 
     This should work for both sharded and normal checkpoint with either PyTorch
     or safetensor formats.
+
+    Args:
+        module: An nn.Module to load weights into. If None, returns a raw
+            Dict[str, Tensor] instead of loading into a module.
+        keys: When module is None, optionally restrict which keys to load.
+            Ignored when module is provided.
 
     See:
     https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.load_state_dict
@@ -510,7 +558,7 @@ def load_checkpoint(
 
     if checkpoint_meta.is_index:
         shard_index = load_shard_index(model_dir, checkpoint_meta.file_name)
-        load_sharded_checkpoint(
+        return load_sharded_checkpoint(
             model_dir,
             shard_index,
             module,
@@ -518,8 +566,8 @@ def load_checkpoint(
             safetensors=checkpoint_meta.safetensors,
             strict=strict,
             assign=assign,
+            keys=keys,
         )
-        return
 
     state_dict_path = os.path.join(model_dir, checkpoint_meta.file_name)
     if checkpoint_meta.safetensors:
@@ -530,11 +578,19 @@ def load_checkpoint(
         state_dict = torch.load(
             state_dict_path, map_location=device, weights_only=True, mmap=True
         )
+
+    if module is None:
+        if keys is not None:
+            return {k: v for k, v in state_dict.items() if k in keys}
+        return state_dict
+
     # TODO: Properly handle strict, in this case?
     # We wish to ensure that all model weights were loaded, but ignore any other weights, like we do in load_sharded_checkpoint()
     module.load_state_dict(state_dict, strict=strict, assign=assign)
+    return None
 
 
+@overload
 def load_sharded_checkpoint(
     model_dir: str,
     shard_index: ShardIndex,
@@ -544,33 +600,107 @@ def load_sharded_checkpoint(
     strict: bool = True,
     assign: bool = False,
     debug: bool = False,
-) -> Set[str]:
+    keys: Optional[Set[str]] = None,
+) -> Set[str]: ...
+
+
+@overload
+def load_sharded_checkpoint(
+    model_dir: str,
+    shard_index: ShardIndex,
+    module: None,
+    device: str,
+    safetensors: bool = False,
+    strict: bool = True,
+    assign: bool = False,
+    debug: bool = False,
+    keys: Optional[Set[str]] = None,
+) -> Dict[str, Tensor]: ...
+
+
+def load_sharded_checkpoint(
+    model_dir: str,
+    shard_index: ShardIndex,
+    module: Optional[Module] = None,
+    device: str = "cpu",
+    safetensors: bool = False,
+    strict: bool = True,
+    assign: bool = False,
+    debug: bool = False,
+    keys: Optional[Set[str]] = None,
+) -> Union[Set[str], Dict[str, Tensor]]:
     """
-    Load a sharded checkpoint
+    Load a sharded checkpoint.
 
     The weight_map may be a super-set of the weights in weight_map, which is useful for
     loading only the relevant weights for a sharded model.
+
+    Args:
+        module: An nn.Module to load weights into. If None, returns a raw
+            Dict[str, Tensor] instead of loading into a module.
+        keys: When module is None, optionally restrict which keys to load
+            from the weight map. Ignored when module is provided.
+
+    Returns:
+        When module is provided: Set[str] of keys that were NOT loaded (unloaded keys).
+        When module is None: Dict[str, Tensor] of loaded tensors.
     """
     weight_map = shard_index["weight_map"]
 
-    # Get intersection of weights in map and our state dictionary
-    intersection = _intersect_weight_map(weight_map, module.state_dict())
+    if module is not None:
+        # Module mode: load into module (existing behavior)
+        intersection = _intersect_weight_map(weight_map, module.state_dict())
 
-    all_module_keys = set(module.state_dict().keys())
-    missing_keys = all_module_keys - intersection
-    if strict and len(missing_keys):
-        raise Exception(
-            f"Index file does not contain mappings for the following keys {missing_keys} "
-        )
+        all_module_keys = set(module.state_dict().keys())
+        missing_keys = all_module_keys - intersection
+        if strict and len(missing_keys):
+            raise Exception(
+                f"Index file does not contain mappings for the following keys {missing_keys} "
+            )
+
+        shard_files = set()
+        for weight_name in intersection:
+            shard_files.add(weight_map[weight_name])
+
+        for shard_file_name in shard_files:
+            shard_file_path = os.path.join(model_dir, shard_file_name)
+            if safetensors:
+                state_dict = safetensors_load(
+                    shard_file_path,
+                    device=device,
+                )
+            else:
+                state_dict = torch.load(
+                    shard_file_path, map_location=device, weights_only=True, mmap=True
+                )
+
+            all_module_keys = all_module_keys - set(state_dict.keys())
+            logger.debug(f"loading state_dict in '{shard_file_name}'")
+
+            module.load_state_dict(state_dict, strict=False, assign=assign)
+            for weight_name, p in module.state_dict(keep_vars=True).items():
+                logger.debug(f"{weight_name} : {p.shape=}, {p.dtype=}, {p.requires_grad=}")
+            state_dict = None
+            gc.collect()
+
+        if len(all_module_keys):
+            msg = f"The following keys were not found in the shards {all_module_keys}"
+            if strict:
+                raise Exception(msg)
+            else:
+                logger.warning(msg)
+
+        return all_module_keys
+
+    # Dict mode: accumulate tensors into a dict and return
+    target_keys = keys if keys is not None else set(weight_map.keys())
+    loadable_keys = target_keys.intersection(set(weight_map.keys()))
 
     shard_files = set()
+    for weight_name in loadable_keys:
+        shard_files.add(weight_map[weight_name])
 
-    # Get unique file names from intersection. All of this module's weights should be in this sub-set.
-    for weight_name in intersection:
-        file_name = weight_map[weight_name]
-        shard_files.add(file_name)
-
-    # Load shards into module, one at a time
+    result: Dict[str, Tensor] = {}
     for shard_file_name in shard_files:
         shard_file_path = os.path.join(model_dir, shard_file_name)
         if safetensors:
@@ -583,27 +713,16 @@ def load_sharded_checkpoint(
                 shard_file_path, map_location=device, weights_only=True, mmap=True
             )
 
-        # Keep track of which keys we have yet to load
-        all_module_keys = all_module_keys - set(state_dict.keys())
-
         logger.debug(f"loading state_dict in '{shard_file_name}'")
 
-        # Load state dictionary into model.
-        module.load_state_dict(state_dict, strict=False, assign=assign)
-        for weight_name, p in module.state_dict(keep_vars=True).items():
-            logger.debug(f"{weight_name} : {p.shape=}, {p.dtype=}, {p.requires_grad=}")
-        # Evict shard from memory
+        for key, tensor in state_dict.items():
+            if key in loadable_keys:
+                result[key] = tensor
+
         state_dict = None
         gc.collect()
 
-    if len(all_module_keys):
-        msg = f"The following keys were not found in the shards {all_module_keys}"
-        if strict:
-            raise Exception(msg)
-        else:
-            logger.warning(msg)
-
-    return all_module_keys
+    return result
 
 
 @dataclass
