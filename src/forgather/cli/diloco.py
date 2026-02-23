@@ -11,25 +11,11 @@ logger = logging.getLogger(__name__)
 
 def _load_model_state_dict(model_path: str, from_checkpoint: bool = False):
     """Load a model state_dict from a path."""
-    import torch
-
     if from_checkpoint:
-        # Load from Forgather checkpoint format - look for model.safetensors or model state files
-        from safetensors.torch import load_file
+        # Load from Forgather checkpoint format (safetensors, sharded, or pytorch)
+        from forgather.ml.sharded_checkpoint import load_checkpoint
 
-        safetensors_path = os.path.join(model_path, "model.safetensors")
-        if os.path.exists(safetensors_path):
-            return load_file(safetensors_path)
-
-        # Try pytorch format
-        pt_path = os.path.join(model_path, "pytorch_model.bin")
-        if os.path.exists(pt_path):
-            return torch.load(pt_path, map_location="cpu", weights_only=True)
-
-        raise FileNotFoundError(
-            f"No model weights found in checkpoint at {model_path}. "
-            f"Expected model.safetensors or pytorch_model.bin"
-        )
+        return load_checkpoint(model_path, module=None, device="cpu")
     else:
         # Load using AutoModelForCausalLM
         from transformers import AutoModelForCausalLM
@@ -104,6 +90,8 @@ def _server_cmd(args):
     # Dashboard
     dashboard_enabled = not getattr(args, "no_dashboard", False)
 
+    save_total_limit = getattr(args, "save_total_limit", 3)
+
     # Create server
     server = DiLoCoServer(
         model_state_dict=state_dict,
@@ -113,6 +101,7 @@ def _server_cmd(args):
         host=args.host,
         save_dir=args.save_dir,
         save_every_n_rounds=args.save_every,
+        save_total_limit=save_total_limit,
         async_mode=async_mode,
         dn_buffer_size=dn_buffer_size,
         dylu_enabled=dylu,
@@ -122,10 +111,20 @@ def _server_cmd(args):
         dashboard_enabled=dashboard_enabled,
     )
 
-    # Resume from saved state if requested
-    if args.resume:
-        print(f"Resuming from {args.resume}")
-        server.load_state(args.resume)
+    # Auto-discover and resume from existing checkpoints
+    from forgather.ml.sharded_checkpoint import find_latest_checkpoint
+
+    checkpoint_search_dir = args.save_dir if args.save_dir else args.model_path
+    latest = find_latest_checkpoint(checkpoint_search_dir)
+
+    if latest is not None:
+        server_state_path = os.path.join(latest, "server_state.pt")
+        if os.path.exists(server_state_path):
+            print(f"Resuming from checkpoint: {latest}")
+            server.load_state(latest)
+            print(f"Resumed at round {server._sync_round}")
+        else:
+            logger.info(f"No server state found in {latest}, starting fresh")
 
     print(f"Starting DiLoCo server on {args.host}:{args.port}")
     if dashboard_enabled:

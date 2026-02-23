@@ -71,10 +71,13 @@ def create_diloco_parser(global_args):
         help="Save server state every N sync rounds (default: 10)",
     )
     server_parser.add_argument(
-        "--resume",
-        type=str,
-        default=None,
-        help="Path to server state file to resume from",
+        "--save-total-limit",
+        type=int,
+        default=3,
+        help=(
+            "Maximum number of checkpoints to keep. Oldest are deleted\n"
+            "when the limit is exceeded. 0 = keep all. (default: 3)"
+        ),
     )
     server_parser.add_argument(
         "--from-checkpoint",

@@ -133,11 +133,13 @@ class TestControlEndpoints:
         status, data = _post_json(f"http://localhost:{srv.port}/control/save_state")
         assert status == 200
         assert data["status"] == "ok"
-        # Check that a state file was saved
+        # Check that a checkpoint directory was saved
         import os
 
-        files = os.listdir(str(tmp_path))
-        assert any("diloco_server_state" in f for f in files)
+        checkpoints_dir = os.path.join(str(tmp_path), "checkpoints")
+        assert os.path.isdir(checkpoints_dir)
+        checkpoint_dirs = os.listdir(checkpoints_dir)
+        assert any(d.startswith("checkpoint-") for d in checkpoint_dirs)
 
     def test_kick_worker(self, server):
         """Kick a registered worker."""

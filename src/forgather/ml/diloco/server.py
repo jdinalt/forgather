@@ -27,6 +27,7 @@ Usage:
 import io
 import json
 import logging
+import os
 import socket
 import struct
 import threading
@@ -37,6 +38,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
+
+from forgather.ml.sharded_checkpoint import (
+    save_checkpoint as save_model_checkpoint,
+    load_checkpoint as load_model_checkpoint,
+    find_latest_checkpoint,
+    next_checkpoint_path,
+    maybe_delete_oldest_checkpoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +130,8 @@ class DiLoCoServer:
         host: Host address to bind to. Defaults to "127.0.0.1".
         save_dir: Directory for periodic server state saves. None disables.
         save_every_n_rounds: Save server state every N sync rounds.
+        save_total_limit: Maximum number of checkpoints to keep. Oldest are
+            deleted when the limit is exceeded. 0 means keep all.
         async_mode: If True, apply pseudo-gradients immediately without barrier.
         dn_buffer_size: Delayed Nesterov buffer size. In async mode, buffer this
             many pseudo-gradient submissions before applying the outer optimizer
@@ -152,6 +163,7 @@ class DiLoCoServer:
         host: str = "127.0.0.1",
         save_dir: Optional[str] = None,
         save_every_n_rounds: int = 10,
+        save_total_limit: int = 3,
         async_mode: bool = False,
         dn_buffer_size: int = 0,
         dylu_enabled: bool = False,
@@ -171,6 +183,7 @@ class DiLoCoServer:
         self.port = port or self._find_available_port()
         self.save_dir = save_dir
         self.save_every_n_rounds = save_every_n_rounds
+        self.save_total_limit = save_total_limit
         self.async_mode = async_mode
         self.dn_buffer_size = dn_buffer_size
         self.dylu_enabled = dylu_enabled
@@ -1099,18 +1112,31 @@ class DiLoCoServer:
         return DiLoCoRequestHandler
 
     def save_state(self, path: Optional[str] = None):
-        """Save server state (global params + outer optimizer) to disk."""
-        import os
+        """Save server state (global params + outer optimizer) to disk.
 
-        save_path = path or self.save_dir
-        if save_path is None:
+        Uses HF-compatible sharded checkpoint format for model weights and a
+        separate server_state.pt for optimizer, round counter, and metadata.
+
+        Args:
+            path: Explicit directory to save into. When provided, saves directly
+                there without checkpoint rotation. When None, uses save_dir with
+                automatic checkpoint-{round} naming and rotation.
+        """
+        if path is not None:
+            checkpoint_dir = path
+        elif self.save_dir is not None:
+            checkpoint_dir = next_checkpoint_path(self.save_dir, self._sync_round)
+        else:
             logger.warning("No save path specified, skipping save")
             return
 
-        os.makedirs(save_path, exist_ok=True)
+        os.makedirs(checkpoint_dir, exist_ok=True)
 
-        state = {
-            "global_params": self.get_global_params(),
+        # Save model weights as HF-compatible sharded checkpoint
+        save_model_checkpoint(checkpoint_dir, self.get_global_params(), safetensors=True)
+
+        # Save server state (optimizer, round, metadata) separately
+        server_state = {
             "outer_optimizer": self.outer_optimizer.state_dict(),
             "sync_round": self._sync_round,
             "num_workers": self.num_workers,
@@ -1118,17 +1144,54 @@ class DiLoCoServer:
             "async_mode": self.async_mode,
             "total_submissions": self._total_submissions,
         }
+        torch.save(server_state, os.path.join(checkpoint_dir, "server_state.pt"))
 
-        save_file = os.path.join(save_path, f"diloco_server_state_round{self._sync_round}.pt")
-        torch.save(state, save_file)
-        logger.info(f"Server state saved to {save_file}")
+        logger.info(f"Server state saved to {checkpoint_dir}")
 
-        # Also save a "latest" copy
-        latest_file = os.path.join(save_path, "diloco_server_state_latest.pt")
-        torch.save(state, latest_file)
+        # Rotate checkpoints (only in standard mode, not explicit path)
+        if path is None and self.save_dir and self.save_total_limit > 0:
+            maybe_delete_oldest_checkpoint(self.save_dir, self.save_total_limit)
 
     def load_state(self, path: str):
-        """Load server state from disk."""
+        """Load server state from a checkpoint directory or legacy .pt file.
+
+        Checkpoint directory layout (new format):
+            checkpoint_dir/
+                model.safetensors (or sharded)  -- model weights
+                server_state.pt                 -- optimizer, round, metadata
+
+        Legacy format:
+            diloco_server_state_*.pt            -- monolithic torch.save file
+
+        Args:
+            path: Path to a checkpoint directory or a legacy .pt file.
+        """
+        if os.path.isfile(path):
+            self._load_state_legacy(path)
+            return
+
+        # New format: directory with model weights + server_state.pt
+        # Load model weights via sharded checkpoint API
+        state_dict = load_model_checkpoint(path, module=None, device="cpu")
+        for i, name in enumerate(self._param_names):
+            if name in state_dict:
+                self._param_list[i].data.copy_(state_dict[name].float())
+
+        # Load server state if present
+        server_state_path = os.path.join(path, "server_state.pt")
+        if os.path.exists(server_state_path):
+            server_state = torch.load(server_state_path, map_location="cpu", weights_only=False)
+            self.outer_optimizer.load_state_dict(server_state["outer_optimizer"])
+            self._sync_round = server_state["sync_round"]
+            self._total_submissions = server_state.get("total_submissions", 0)
+            logger.info(f"Server state loaded from {path}, at round {self._sync_round}")
+        else:
+            logger.warning(
+                f"No server_state.pt found in {path}, loaded model weights only (starting fresh)"
+            )
+
+    def _load_state_legacy(self, path: str):
+        """Load server state from a legacy monolithic .pt file."""
         state = torch.load(path, map_location="cpu", weights_only=False)
 
         # Restore global params
@@ -1140,7 +1203,7 @@ class DiLoCoServer:
 
         self._sync_round = state["sync_round"]
         self._total_submissions = state.get("total_submissions", 0)
-        logger.info(f"Server state loaded from {path}, at round {self._sync_round}")
+        logger.info(f"Server state loaded from legacy file {path}, at round {self._sync_round}")
 
     def _start_health_monitor(self):
         """Start the health monitor if heartbeat_timeout > 0."""
