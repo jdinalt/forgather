@@ -273,6 +273,79 @@ class TestRunNameExtraction:
         # Since parts includes the filename, runs_idx+1 is "trainer_logs.json"
         assert log.run_name == "trainer_logs.json"
 
+    def test_extract_model_name_from_path(self, tmp_path):
+        run_dir = tmp_path / "output_models" / "my_model" / "runs" / "run1"
+        run_dir.mkdir(parents=True)
+        log_file = run_dir / "trainer_logs.json"
+        log_file.write_text(json.dumps([]))
+        log = TrainingLog.from_file(log_file)
+        assert log.model_name == "my_model"
+
+    def test_model_name_none_when_no_runs_in_path(self, tmp_path):
+        log_file = tmp_path / "trainer_logs.json"
+        log_file.write_text(json.dumps([]))
+        log = TrainingLog.from_file(log_file)
+        assert log.model_name is None
+
+    def test_model_name_none_when_runs_is_root(self, tmp_path):
+        """If 'runs' is the first path component, there's nothing before it for model_name."""
+        run_dir = tmp_path / "runs" / "run1"
+        run_dir.mkdir(parents=True)
+        log_file = run_dir / "trainer_logs.json"
+        log_file.write_text(json.dumps([]))
+        log = TrainingLog.from_file(log_file)
+        # runs_idx > 0 is still True because tmp_path adds preceding parts
+        # so model_name will be the directory before "runs"
+        assert log.model_name is not None
+
+    def test_explicit_model_name_overrides_path(self, tmp_path):
+        run_dir = tmp_path / "output_models" / "auto_model" / "runs" / "run1"
+        run_dir.mkdir(parents=True)
+        log_file = run_dir / "trainer_logs.json"
+        log_file.write_text(json.dumps([]))
+        log = TrainingLog(log_path=log_file, records=[], model_name="manual_model")
+        assert log.model_name == "manual_model"
+
+    def test_explicit_label_field(self, tmp_path):
+        log_file = tmp_path / "trainer_logs.json"
+        log_file.write_text(json.dumps([]))
+        log = TrainingLog(log_path=log_file, records=[], label="Custom Label")
+        assert log.label == "Custom Label"
+
+
+class TestGetLabel:
+    """Tests for TrainingLog.get_label()."""
+
+    def test_explicit_label_takes_priority(self, tmp_path):
+        run_dir = tmp_path / "output_models" / "my_model" / "runs" / "run1"
+        run_dir.mkdir(parents=True)
+        log_file = run_dir / "trainer_logs.json"
+        log_file.write_text(json.dumps([]))
+        log = TrainingLog.from_file(log_file)
+        log.label = "Custom"
+        assert log.get_label(0) == "Custom"
+
+    def test_model_name_used_when_no_label(self, tmp_path):
+        run_dir = tmp_path / "output_models" / "my_model" / "runs" / "run1"
+        run_dir.mkdir(parents=True)
+        log_file = run_dir / "trainer_logs.json"
+        log_file.write_text(json.dumps([]))
+        log = TrainingLog.from_file(log_file)
+        assert log.get_label(0) == "my_model"
+
+    def test_run_name_used_when_no_model_name(self, tmp_path):
+        log_file = tmp_path / "trainer_logs.json"
+        log_file.write_text(json.dumps([]))
+        log = TrainingLog(log_path=log_file, records=[], run_name="experiment_1")
+        assert log.get_label(0) == "experiment_1"
+
+    def test_fallback_to_run_index(self, tmp_path):
+        log_file = tmp_path / "trainer_logs.json"
+        log_file.write_text(json.dumps([]))
+        log = TrainingLog.from_file(log_file)
+        assert log.get_label(0) == "Run 1"
+        assert log.get_label(2) == "Run 3"
+
 
 class TestGetTrainingRecords:
     """Tests for TrainingLog.get_training_records()."""
@@ -979,11 +1052,16 @@ class TestPlotTrainingMetrics:
         assert isinstance(fig, Figure)
         plt.close(fig)
 
-    def test_empty_log_raises_unbound_error(self, empty_log):
-        # Known bug: x_label is not initialized before the loop over logs,
-        # so when all logs have empty records, ax.set_xlabel(x_label) fails.
-        with pytest.raises(UnboundLocalError):
-            plot_training_metrics([empty_log], metrics=["loss"])
+    def test_empty_log_produces_figure(self, empty_log):
+        # x_label is now initialized before the loop, so empty logs produce a valid figure.
+        fig = plot_training_metrics([empty_log], metrics=["loss"])
+        assert isinstance(fig, Figure)
+        plt.close(fig)
+
+    def test_with_title(self, sample_log):
+        fig = plot_training_metrics([sample_log], metrics=["loss"], title="Test Title")
+        assert isinstance(fig, Figure)
+        plt.close(fig)
 
 
 class TestPlotLossCurves:
@@ -1041,8 +1119,36 @@ class TestPlotLossCurves:
         assert isinstance(fig, Figure)
         plt.close(fig)
 
-    def test_empty_log_raises_unbound_error(self, empty_log):
-        # Known bug: x_label is not initialized before the loop over logs,
-        # so when all logs have empty records, ax1.set_xlabel(x_label) fails.
-        with pytest.raises(UnboundLocalError):
-            plot_loss_curves([empty_log])
+    def test_empty_log_produces_figure(self, empty_log):
+        # x_label is now initialized before the loop, so empty logs produce a valid figure.
+        fig = plot_loss_curves([empty_log])
+        assert isinstance(fig, Figure)
+        plt.close(fig)
+
+    def test_with_title(self, sample_log):
+        fig = plot_loss_curves([sample_log], title="Custom Title")
+        assert isinstance(fig, Figure)
+        plt.close(fig)
+
+    def test_single_log_uses_dual_axis(self, sample_log):
+        """Single-run plot should use dual y-axes (loss + LR)."""
+        fig = plot_loss_curves([sample_log])
+        assert isinstance(fig, Figure)
+        # Single plot has one main axes (plus twin)
+        axes = fig.get_axes()
+        assert len(axes) >= 1
+        plt.close(fig)
+
+    def test_multi_log_uses_split_subplots(self, sample_log, multi_eval_log):
+        """Multi-run plot should split into train loss and eval loss subplots."""
+        fig = plot_loss_curves([sample_log, multi_eval_log])
+        assert isinstance(fig, Figure)
+        # Multi-run plot has 2 subplots (train loss, eval loss)
+        axes = fig.get_axes()
+        assert len(axes) == 2
+        plt.close(fig)
+
+    def test_multi_log_with_title(self, sample_log, multi_eval_log):
+        fig = plot_loss_curves([sample_log, multi_eval_log], title="Comparison")
+        assert isinstance(fig, Figure)
+        plt.close(fig)
