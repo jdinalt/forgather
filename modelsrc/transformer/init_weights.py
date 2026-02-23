@@ -1,7 +1,7 @@
 import math
 import re
 from functools import partial
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
@@ -13,7 +13,7 @@ def has_local_state(module: nn.Module) -> bool:
     has_params = sum(1 for _ in module.parameters(recurse=False))
     # Check for direct buffers
     has_buffers = sum(1 for _ in module.buffers(recurse=False))
-    return has_params or has_buffers
+    return bool(has_params or has_buffers)
 
 
 def _get_callable_name(fn: Callable) -> str:
@@ -39,13 +39,13 @@ def simple_weight_init(
     if scale_rsqrt_d_model and isinstance(module, nn.Embedding):
         init_embeddings(
             module.weight,
-            module.padding_idx,
+            padding_index=module.padding_idx,
             scale_rsqrt_d_model=True,
         )
         return
 
     if hasattr(module, "reset_parameters"):
-        module.reset_parameters()
+        module.reset_parameters()  # type: ignore[operator]
         return
 
     raise ValueError(
@@ -192,7 +192,7 @@ def init_weights_by_regex(
         # Try next init method
 
     if hasattr(module, "reset_parameters"):
-        module.reset_parameters()
+        module.reset_parameters()  # type: ignore[operator]
         return
 
     raise ValueError(
@@ -221,7 +221,7 @@ def init_torch_linear_default(weight: Tensor, gain: float = 1.0):
 @torch.no_grad()
 def init_embeddings(
     weight: Tensor,
-    padding_index: int = None,
+    padding_index: Optional[int] = None,
     std: float = 1.0,
     scale_rsqrt_d_model: bool = True,
 ):

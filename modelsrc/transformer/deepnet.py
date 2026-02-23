@@ -29,13 +29,13 @@ class DeepnetLayer(nn.Module):
         self.attention = attention_factory(**kwargs)
         self.norm1 = norm_factory()
         self.norm2 = norm_factory()
-        if dropout == 0.0:
+        if not dropout:
             self.dropout = nn.Identity()
         else:
             self.dropout = nn.Dropout(dropout)
         # Residual Dropout:A Simple Approach to Improve Transformer’s Data Efficiency
         # https://aclanthology.org/2024.sigul-1.35.pdf
-        if residual_dropout == 0.0:
+        if not residual_dropout:
             self.residual_dropout = nn.Identity()
         else:
             self.residual_dropout = nn.Dropout(residual_dropout)
@@ -61,7 +61,9 @@ class DeepnetLayer(nn.Module):
         return x
 
 
-def deepnet_alpha(n_decoder_layers: int, n_encoder_layers: int, which: str = None):
+def deepnet_alpha(
+    n_decoder_layers: int, n_encoder_layers: int, which: Optional[str] = None
+):
     """
     Compute deeepnet "alpha", which is passed to DeepnetLayer.
     The residuals are scaled by this value.
@@ -91,7 +93,9 @@ def deepnet_alpha(n_decoder_layers: int, n_encoder_layers: int, which: str = Non
                 raise Exception("Which argument must be either encoder or decoder")
 
 
-def deepnet_beta(n_decoder_layers: int, n_encoder_layers: int, which: str = None):
+def deepnet_beta(
+    n_decoder_layers: int, n_encoder_layers: int, which: Optional[str] = None
+):
     """
     Compute deeepnet "beta", which passed as "std" or "gain" when
     initialiizing feedforard, value_projection, and out_projection weights.

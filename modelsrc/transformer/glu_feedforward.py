@@ -1,3 +1,4 @@
+# pyright: reportPossiblyUnboundVariable=false
 import logging
 from typing import Callable, Optional
 
@@ -17,7 +18,7 @@ try:
 
     _HAS_TRITON = True
 except ImportError:
-    pass
+    pass  # Triton kernels guarded by _HAS_TRITON checks
 
 
 if _HAS_TRITON:
@@ -197,96 +198,95 @@ if _HAS_TRITON:
         tl.store(grad_gate_ptr + offs, g_gate, mask=mask)
 
 
-class _FusedSiLUMul(torch.autograd.Function):
-    """Fused SiLU(gate) * up with custom backward."""
-
-    @staticmethod
-    def forward(ctx, gate: Tensor, up: Tensor) -> Tensor:
-        assert gate.is_contiguous() and up.is_contiguous()
-        out = torch.empty_like(gate)
-        n_elements = gate.numel()
-        BLOCK_SIZE = 1024
-        grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
-        _silu_mul_fwd_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE)
-        ctx.save_for_backward(gate, up)
-        return out
-
-    @staticmethod
-    def backward(ctx, grad_out: Tensor) -> tuple:
-        gate, up = ctx.saved_tensors
-        grad_out = grad_out.contiguous()
-        grad_gate = torch.empty_like(gate)
-        grad_up = torch.empty_like(up)
-        n_elements = gate.numel()
-        BLOCK_SIZE = 1024
-        grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
-        _silu_mul_bwd_kernel[grid](
-            gate, up, grad_out, grad_gate, grad_up, n_elements, BLOCK_SIZE
-        )
-        return grad_gate, grad_up
-
-
-class _FusedReLUMul(torch.autograd.Function):
-    """Fused ReLU(gate) * up with custom backward."""
-
-    @staticmethod
-    def forward(ctx, gate: Tensor, up: Tensor) -> Tensor:
-        assert gate.is_contiguous() and up.is_contiguous()
-        out = torch.empty_like(gate)
-        n_elements = gate.numel()
-        BLOCK_SIZE = 1024
-        grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
-        _relu_mul_fwd_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE)
-        ctx.save_for_backward(gate, up)
-        return out
-
-    @staticmethod
-    def backward(ctx, grad_out: Tensor) -> tuple:
-        gate, up = ctx.saved_tensors
-        grad_out = grad_out.contiguous()
-        grad_gate = torch.empty_like(gate)
-        grad_up = torch.empty_like(up)
-        n_elements = gate.numel()
-        BLOCK_SIZE = 1024
-        grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
-        _relu_mul_bwd_kernel[grid](
-            gate, up, grad_out, grad_gate, grad_up, n_elements, BLOCK_SIZE
-        )
-        return grad_gate, grad_up
-
-
-class _FusedGELUMul(torch.autograd.Function):
-    """Fused GELU(gate) * up with custom backward."""
-
-    @staticmethod
-    def forward(ctx, gate: Tensor, up: Tensor) -> Tensor:
-        assert gate.is_contiguous() and up.is_contiguous()
-        out = torch.empty_like(gate)
-        n_elements = gate.numel()
-        BLOCK_SIZE = 1024
-        grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
-        _gelu_mul_fwd_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE)
-        ctx.save_for_backward(gate, up)
-        return out
-
-    @staticmethod
-    def backward(ctx, grad_out: Tensor) -> tuple:
-        gate, up = ctx.saved_tensors
-        grad_out = grad_out.contiguous()
-        grad_gate = torch.empty_like(gate)
-        grad_up = torch.empty_like(up)
-        n_elements = gate.numel()
-        BLOCK_SIZE = 1024
-        grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
-        _gelu_mul_bwd_kernel[grid](
-            gate, up, grad_out, grad_gate, grad_up, n_elements, BLOCK_SIZE
-        )
-        return grad_gate, grad_up
-
-
 # Map activation types to their fused implementations
-_TRITON_FUSED_OPS = {}
+_TRITON_FUSED_OPS: dict = {}
+
 if _HAS_TRITON:
+
+    class _FusedSiLUMul(torch.autograd.Function):
+        """Fused SiLU(gate) * up with custom backward."""
+
+        @staticmethod
+        def forward(ctx, gate: Tensor, up: Tensor) -> Tensor:  # type: ignore[override]
+            assert gate.is_contiguous() and up.is_contiguous()
+            out = torch.empty_like(gate)
+            n_elements = gate.numel()
+            BLOCK_SIZE = 1024
+            grid = (triton.cdiv(n_elements, BLOCK_SIZE),)  # type: ignore[union-attr]
+            _silu_mul_fwd_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE)
+            ctx.save_for_backward(gate, up)
+            return out
+
+        @staticmethod
+        def backward(ctx, grad_out: Tensor) -> tuple:  # type: ignore[override]
+            gate, up = ctx.saved_tensors
+            grad_out = grad_out.contiguous()
+            grad_gate = torch.empty_like(gate)
+            grad_up = torch.empty_like(up)
+            n_elements = gate.numel()
+            BLOCK_SIZE = 1024
+            grid = (triton.cdiv(n_elements, BLOCK_SIZE),)  # type: ignore[union-attr]
+            _silu_mul_bwd_kernel[grid](
+                gate, up, grad_out, grad_gate, grad_up, n_elements, BLOCK_SIZE
+            )
+            return grad_gate, grad_up
+
+    class _FusedReLUMul(torch.autograd.Function):
+        """Fused ReLU(gate) * up with custom backward."""
+
+        @staticmethod
+        def forward(ctx, gate: Tensor, up: Tensor) -> Tensor:  # type: ignore[override]
+            assert gate.is_contiguous() and up.is_contiguous()
+            out = torch.empty_like(gate)
+            n_elements = gate.numel()
+            BLOCK_SIZE = 1024
+            grid = (triton.cdiv(n_elements, BLOCK_SIZE),)  # type: ignore[union-attr]
+            _relu_mul_fwd_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE)
+            ctx.save_for_backward(gate, up)
+            return out
+
+        @staticmethod
+        def backward(ctx, grad_out: Tensor) -> tuple:  # type: ignore[override]
+            gate, up = ctx.saved_tensors
+            grad_out = grad_out.contiguous()
+            grad_gate = torch.empty_like(gate)
+            grad_up = torch.empty_like(up)
+            n_elements = gate.numel()
+            BLOCK_SIZE = 1024
+            grid = (triton.cdiv(n_elements, BLOCK_SIZE),)  # type: ignore[union-attr]
+            _relu_mul_bwd_kernel[grid](
+                gate, up, grad_out, grad_gate, grad_up, n_elements, BLOCK_SIZE
+            )
+            return grad_gate, grad_up
+
+    class _FusedGELUMul(torch.autograd.Function):
+        """Fused GELU(gate) * up with custom backward."""
+
+        @staticmethod
+        def forward(ctx, gate: Tensor, up: Tensor) -> Tensor:  # type: ignore[override]
+            assert gate.is_contiguous() and up.is_contiguous()
+            out = torch.empty_like(gate)
+            n_elements = gate.numel()
+            BLOCK_SIZE = 1024
+            grid = (triton.cdiv(n_elements, BLOCK_SIZE),)  # type: ignore[union-attr]
+            _gelu_mul_fwd_kernel[grid](gate, up, out, n_elements, BLOCK_SIZE)
+            ctx.save_for_backward(gate, up)
+            return out
+
+        @staticmethod
+        def backward(ctx, grad_out: Tensor) -> tuple:  # type: ignore[override]
+            gate, up = ctx.saved_tensors
+            grad_out = grad_out.contiguous()
+            grad_gate = torch.empty_like(gate)
+            grad_up = torch.empty_like(up)
+            n_elements = gate.numel()
+            BLOCK_SIZE = 1024
+            grid = (triton.cdiv(n_elements, BLOCK_SIZE),)  # type: ignore[union-attr]
+            _gelu_mul_bwd_kernel[grid](
+                gate, up, grad_out, grad_gate, grad_up, n_elements, BLOCK_SIZE
+            )
+            return grad_gate, grad_up
+
     _TRITON_FUSED_OPS = {
         nn.SiLU: _FusedSiLUMul,
         nn.ReLU: _FusedReLUMul,
@@ -302,7 +302,7 @@ class GLUFeedforwardLayer(nn.Module):
         d_model: int,
         d_feedforward: int,
         *,
-        activation_factory: Optional[Callable] = lambda: nn.SiLU(),
+        activation_factory: Callable = lambda: nn.SiLU(),
         dropout: Optional[float] = 0.1,
         use_triton: bool = True,
         **kwargs,
@@ -320,7 +320,7 @@ class GLUFeedforwardLayer(nn.Module):
         self.down_proj = nn.Linear(self.d_feedforward, self.d_model, bias=False)
         setattr(self.down_proj, "init_prefix", "ff.down_proj")
         self.activation = activation_factory()
-        if dropout == 0.0:
+        if not dropout:
             self.dropout = nn.Identity()
         else:
             self.dropout = nn.Dropout(dropout)

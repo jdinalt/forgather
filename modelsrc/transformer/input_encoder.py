@@ -60,13 +60,13 @@ class InputEncoder(nn.Module):
         self.embedding = new_embeddings
 
     def resize_position_embeddings(self, new_num_position_embeddings: int):
-        if self.positional_encoder:
-            self.positional_encoder.resize_position_embeddings(
+        if self.positional_encoder is not None:
+            self.positional_encoder.resize_position_embeddings(  # type: ignore[union-attr]
                 new_num_position_embeddings
             )
 
     def get_position_embeddings(self):
-        if self.positional_encoder:
-            return self.positional_encoder.get_position_embeddings()
+        if self.positional_encoder is not None:
+            return self.positional_encoder.get_position_embeddings()  # type: ignore[union-attr]
         else:
             return None

@@ -11,9 +11,9 @@ class FeedforwardLayer(nn.Module):
         d_model: int,
         d_feedforward: int,
         *,
-        activation_factory: Optional[Callable] = lambda: nn.ReLU(),
+        activation_factory: Callable = lambda: nn.ReLU(),
         dropout: Optional[float] = 0.0,
-        bias: Optional[bool] = True,
+        bias: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -22,7 +22,7 @@ class FeedforwardLayer(nn.Module):
 
         self.linear1 = nn.Linear(self.d_model, self.d_feedforward, bias=bias)
         setattr(self.linear1, "init_prefix", "ff.up_proj")
-        self.dropout = nn.Dropout(dropout) if dropout != 0.0 else nn.Identity()
+        self.dropout = nn.Dropout(dropout) if dropout else nn.Identity()
         self.activation = activation_factory()
         self.linear2 = nn.Linear(self.d_feedforward, self.d_model, bias=bias)
         setattr(self.linear2, "init_prefix", "ff.down_proj")

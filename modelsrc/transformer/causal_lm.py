@@ -1,8 +1,8 @@
 from functools import partial
-from typing import Callable, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 import torch
-from torch import FloatTensor, nn
+from torch import nn
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import BaseModelOutputWithPast
 
@@ -18,7 +18,7 @@ class CasualLM(nn.Module):
         layer_stack: Callable,
         init_weights: Callable,
         attn_mask_fn: Callable,
-        config=None,
+        config: Any = None,
     ):
         super().__init__()
         self.config = config
@@ -30,36 +30,36 @@ class CasualLM(nn.Module):
             config=self.config,
             dtype=torch.get_default_dtype(),
         )
-        self.init_weights = init_weights
+        self._init_weights_fn = init_weights
 
     def initialize_weights(self):
-        self.init_weights(self)
+        self._init_weights_fn(self)
 
     def get_attn_mask_fn(self):
         self.use_internal_mask = False
         return self.attn_mask_fn
 
     def get_input_embeddings(self) -> nn.Embedding:
-        return self.input_encoder.get_input_embeddings()
+        return self.input_encoder.get_input_embeddings()  # type: ignore[union-attr]
 
     def set_input_embeddings(self, value: nn.Embedding):
-        self.input_encoder.set_input_embeddings(value)
+        self.input_encoder.set_input_embeddings(value)  # type: ignore[union-attr]
 
     def resize_position_embeddings(self, new_num_position_embeddings: int):
-        self.model.resize_position_embeddings(new_num_position_embeddings)
+        self.input_encoder.resize_position_embeddings(new_num_position_embeddings)  # type: ignore[union-attr]
 
     def get_position_embeddings(self) -> Union[nn.Embedding, tuple[nn.Embedding]]:
-        return self.model.get_position_embeddings()
+        return self.input_encoder.get_position_embeddings()  # type: ignore[union-attr]
 
     def forward(
         self,
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
         past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
         use_cache: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
+        cache_position: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> BaseModelOutputWithPast:
         """
@@ -112,6 +112,6 @@ class CasualLM(nn.Module):
             )
 
         return BaseModelOutputWithPast(
-            last_hidden_state=hidden_states,
+            last_hidden_state=hidden_states,  # type: ignore[arg-type]
             past_key_values=past_key_values,
         )

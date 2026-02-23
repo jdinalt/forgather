@@ -147,6 +147,8 @@ def flex_attention_forward(
         kernel_options=kernel_options,
     )
 
+    if isinstance(attention_output, tuple):
+        attention_output = attention_output[0]
     attention_output = attention_output.transpose(1, 2).contiguous()
     return attention_output, None
 
@@ -259,4 +261,4 @@ def flash_attn_2_forward(
         window_size=window_size,
         alibi_slopes=alibi_slopes,
     )
-    return attn_output.transpose(1, 2), None
+    return attn_output.transpose(1, 2), None  # type: ignore[union-attr]

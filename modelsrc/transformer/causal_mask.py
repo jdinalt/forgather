@@ -12,12 +12,12 @@ from transformers.masking_utils import (
 def causal_mask(
     config: PretrainedConfig,
     dtype: torch.dtype,
-    input_ids: torch.LongTensor = None,
+    input_ids: Optional[torch.Tensor] = None,
     attention_mask: Optional[torch.Tensor] = None,
-    position_ids: Optional[torch.LongTensor] = None,
+    position_ids: Optional[torch.Tensor] = None,
     input_embeds: Optional[torch.Tensor] = None,
     past_key_values: Optional[Cache] = None,
-    cache_position: Optional[torch.LongTensor] = None,
+    cache_position: Optional[torch.Tensor] = None,
 ):
     """
     Create an attention mask fn for the model
@@ -55,6 +55,7 @@ def causal_mask(
     if input_embeds is None:
         # Create a dummy input_embeds tensor for shape inference
         # We only need batch_size and dtype, not actual embeddings
+        assert input_ids is not None
         batch_size, seq_length = input_ids.shape
 
         input_embeds = torch.empty(
@@ -80,6 +81,7 @@ def causal_mask(
         cache_position = torch.arange(0, seq_length, device=device)
 
     # Use HuggingFace's create_causal_mask utility
+    assert cache_position is not None
     mask_fn = create_sliding_window_causal_mask if window_size else create_causal_mask
     attention_mask = mask_fn(
         config=config,

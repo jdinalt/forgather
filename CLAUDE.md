@@ -16,6 +16,10 @@ This directory contains development notes, implementation summaries, and progres
 
 **Examples**: PHASE1_IMPLEMENTATION_SUMMARY.md, CHECKPOINT_INTEGRATION_SUMMARY.md
 
+## Testing
+
+See `docs/development/testing.md` for the complete testing guide, including test organization, running tests, shared fixtures, and recommended workflows.
+
 ## Development Commands
 
 ### Forgather CLI (forgather) - Primary Interface

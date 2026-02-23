@@ -21,13 +21,13 @@ class PreLNLayer(nn.Module):
         self.attention = attention_factory(**kwargs)
         self.norm1 = norm_factory()
         self.norm2 = norm_factory()
-        if dropout == 0.0:
+        if not dropout:
             self.dropout = nn.Identity()
         else:
             self.dropout = nn.Dropout(dropout)
         # Residual Dropout:A Simple Approach to Improve Transformer’s Data Efficiency
         # https://aclanthology.org/2024.sigul-1.35.pdf
-        if residual_dropout == 0.0:
+        if not residual_dropout:
             self.residual_dropout = nn.Identity()
         else:
             self.residual_dropout = nn.Dropout(residual_dropout)

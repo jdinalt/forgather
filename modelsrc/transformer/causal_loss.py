@@ -1,4 +1,4 @@
-from torch import FloatTensor, LongTensor
+import torch
 from torch.nn.functional import cross_entropy
 
 
@@ -7,7 +7,7 @@ class CausalLoss:
         return f"{type(self).__name__}()"
 
     @staticmethod
-    def __call__(logits: FloatTensor, labels: LongTensor, **kwargs) -> FloatTensor:
+    def __call__(logits: torch.Tensor, labels: torch.Tensor, **kwargs) -> torch.Tensor:
         # Shift so that tokens < n predict n
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()

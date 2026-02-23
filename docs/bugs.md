@@ -114,6 +114,53 @@ timestamp=datetime.datetime.now(datetime.UTC).timestamp(),
 
 ---
 
+## ~`CasualLM` references non-existent `self.model`~ (Fixed)
+
+**File**: `modelsrc/transformer/causal_lm.py`
+**Severity**: High (runtime AttributeError)
+
+### Description
+
+`resize_position_embeddings()` and `get_position_embeddings()` referenced
+`self.model` which does not exist on `CasualLM`. The class has `self.input_encoder`
+and `self.layer_stack`, but no `self.model` attribute.
+
+Calling either method would raise `AttributeError: 'CasualLM' object has no attribute 'model'`.
+
+### Fix
+
+Changed `self.model` to `self.input_encoder` in both methods, which is the correct
+attribute that wraps the embedding and positional encoding components.
+
+---
+
+## `SinusoidalPE.resize_position_embeddings()` crashes
+
+**File**: `modelsrc/transformer/sinusoidal_pe.py`
+**Severity**: Medium (runtime error if called)
+
+### Description
+
+`resize_position_embeddings()` updates `self.max_sequence_length` then calls
+`reset_parameters()`, but `reset_parameters()` writes into `self.weight[:, ...]`
+using the new `max_sequence_length` against the old buffer size. This causes a
+`RuntimeError` due to shape mismatch.
+
+### Fix
+
+Resize the buffer before calling `reset_parameters()`:
+
+```python
+def resize_position_embeddings(self, new_num_position_embeddings: int):
+    self.max_sequence_length = new_num_position_embeddings
+    self.weight = Buffer(
+        torch.zeros(self.max_sequence_length, self.d_model), persistent=False
+    )
+    self.reset_parameters()
+```
+
+---
+
 ## Summary Table
 
 | # | File | Severity | Description |
@@ -122,3 +169,4 @@ timestamp=datetime.datetime.now(datetime.UTC).timestamp(),
 | 1 | `dataloader_utils.py` | Medium | LengthSyncCallback passes dataset as debug parameter |
 | 2 | `model_conversion/__init__.py` | Low | __all__ exports undefined symbols |
 | 3 | `json_logger.py` | Low | Uses deprecated `datetime.utcnow()` |
+| 4 | `sinusoidal_pe.py` | Medium | `resize_position_embeddings()` crashes due to buffer size mismatch |

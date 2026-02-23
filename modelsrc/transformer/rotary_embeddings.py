@@ -1,6 +1,7 @@
+# pyright: reportPossiblyUnboundVariable=false
 import logging
 import math
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 from torch import Tensor
@@ -271,7 +272,7 @@ if _HAS_TRITON:
             return out
 
         @staticmethod
-        def backward(ctx, grad_out: Tensor) -> tuple:
+        def backward(ctx, grad_out: Tensor) -> tuple:  # type: ignore[override]
             cos, sin = ctx.saved_tensors
             grad_out = grad_out.contiguous()
             grad_x = _triton_rope_backward(grad_out, cos, sin)
@@ -387,7 +388,7 @@ class RotaryPE:
         """
         if not _HAS_TRITON:
             use_triton = False
-        
+
         # Extract parameters from rope_parameters dict (v5.0 format)
         # Or fall back to legacy rope_theta/rope_scaling params
         if rope_parameters is not None:
@@ -534,6 +535,7 @@ class RotaryPE:
         """
         # Get cached inv_freq, moving to the correct device if needed
         inv_freq = self._inv_freq_cached
+        assert inv_freq is not None, "cache_embeddings=True requires _inv_freq_cached"
         if inv_freq.device == torch.device("meta"):
             # Need to initialize on a real device
             inv_freq = self._compute_inv_freq()
@@ -663,6 +665,10 @@ class RotaryPE:
                 "Use compute_embeddings_on_demand() instead."
             )
 
+        assert (
+            self.cos_cached is not None and self.sin_cached is not None
+        ), "embeddings() requires cache_embeddings=True"
+
         if device == self.cos_cached.device:
             return self.cos_cached, self.sin_cached
 
@@ -707,10 +713,10 @@ class RotaryPE:
         q_rot = _FusedRoPERotation.apply(q.contiguous(), cos_t, sin_t)
         k_rot = _FusedRoPERotation.apply(k.contiguous(), cos_t, sin_t)
 
-        return q_rot.to(dtype=q.dtype), k_rot.to(dtype=k.dtype)
+        return q_rot.to(dtype=q.dtype), k_rot.to(dtype=k.dtype)  # type: ignore[union-attr]
 
     def __call__(
-        self, q: Tensor, k: Tensor, position_ids: Tensor = None
+        self, q: Tensor, k: Tensor, position_ids: Optional[Tensor] = None
     ) -> Tuple[Tensor, Tensor]:
         """
         Apply RoPE embedding to query and key
@@ -758,8 +764,10 @@ class RotaryPE:
         # Use cached embeddings
         cos_cached, sin_cached = self.embeddings(k.device)
 
-        if self.liger_kernel and q.is_cuda:
-            return self.liger_kernel(q, k, cos_cached, sin_cached, position_ids)
+        if self.liger_kernel is not None and q.is_cuda:
+            result = self.liger_kernel(q, k, cos_cached, sin_cached, position_ids)
+            assert result is not None
+            return result
 
         if position_ids is None:
             # Default behavior: use sequential positions

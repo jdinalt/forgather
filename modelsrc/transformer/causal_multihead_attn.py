@@ -3,6 +3,7 @@ from typing import Any, Callable, Optional
 
 import torch
 from torch import FloatTensor, nn
+from transformers.cache_utils import Cache
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
 
@@ -114,7 +115,7 @@ class CausalMultiheadAttn(nn.Module):
         self,
         hidden_states: FloatTensor,
         attention_mask: Optional[torch.Tensor] = None,
-        past_key_values: Optional["Cache"] = None,
+        past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         **kwargs,
