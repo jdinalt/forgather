@@ -1,0 +1,26 @@
+-- extends "configs/default.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Tiny LlamaCanon 4M"
+    -- set ns.config_description = "A tiny LlamaCanon with ~4M parameters"
+    -- set ns.model_name = "llama_canon_4m"
+
+[model_definition]
+    -- include "config.4M.model"
+
+#------------- config.4M.model --------------
+-- extends "config.default.model"
+
+[model_tokenizer]
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "2k.yaml"
+    pp_debug: False
+
+[model_config]
+    == super()
+    hidden_size: {{ hidden_size | toyaml(256) }}
+    intermediate_size: {{ intermediate_size | toyaml(768) }}
+    num_attention_heads: {{ num_attention_heads | toyaml(4) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(4) }}

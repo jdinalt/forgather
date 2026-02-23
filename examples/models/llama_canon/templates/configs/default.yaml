@@ -1,0 +1,118 @@
+-- extends "projects/causal_lm_def.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Default LlamaCanon"
+    -- set ns.config_description = "Llama with Canon layers for local token mixing"
+    -- set ns.model_name = model_name | default("llama_canon")
+
+[model_definition]
+    -- include "config.default.model"
+
+#------------- config.default.model --------------
+-- extends "models/transformers/dynamic_llama.yaml"
+
+[model_meta_config]
+    == super()
+    -- set ns.model_name = ns.config_name
+    -- set ns.model_description = ns.config_description
+    -- set ns.model_short_name = "llama_canon"
+
+[model_submodule_searchpath]
+    - "{{ joinpath(project_dir, 'modelsrc') }}"
+    == super()
+
+[model_tokenizer]
+tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
+    arg0: {{ tokenizer_id_or_path | toyaml('meta-llama/Llama-2-7b') }}
+    legacy: False
+    max_position_embeddings: {{ max_position_embeddings | toyaml(4096) }}
+    trust_remote_code: True
+
+[model_bits]
+    [loss_fn]
+    == super()
+
+    [layer_norm_factory]
+    == super()
+
+    [rel_positional_encoder]
+    == super()
+
+    [qk_norm_factory]
+    == super()
+
+    [flex_attn_kernel_options]
+    == super()
+
+    [attn_functions]
+    == super()
+
+    [feedforward_factory]
+.define: &feedforward_factory !partial:.canon_glu_feedforward:CanonGLUFeedforwardLayer@feedforward_factory
+    d_model: !var "hidden_size"
+    d_feedforward: !var "intermediate_size"
+    activation_factory: !partial:torch.nn.SiLU
+    dropout: !var "activation_dropout"
+    canon_kernel: !var "canon_kernel"
+    canon_residual: !var "canon_residual"
+
+    [attention_factory]
+.define: &attention_factory !partial:.canon_causal_multihead_attn:CanonCausalMultiheadAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    num_kv_heads: !var "num_key_value_heads"
+    dropout: !var "attention_dropout"
+    pos_encoder: *relative_pe
+    attn_implementation: !var "attn_implementation"
+    attn_functions: *attn_functions
+    qk_norm_factory: *qk_norm_factory
+    sliding_window: !var "sliding_window"
+    config: !var "config"
+    canon_kernel: !var "canon_kernel"
+    canon_residual: !var "canon_residual"
+
+    [layer_factory]
+.define: &layer_factory !partial:.canon_pre_ln_layer:CanonPreLNLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+    dropout: !var "layer_dropout"
+    residual_dropout: !var "residual_dropout"
+    canon_kernel: !var "canon_kernel"
+    canon_residual: !var "canon_residual"
+    d_model: !var "hidden_size"
+
+    [layer_stack]
+    == super()
+
+    [output_decoder]
+    == super()
+
+    [abs_positional_encoder]
+    == super()
+
+    [embedding]
+    == super()
+
+    [input_encoder]
+    == super()
+
+    [init_weights]
+    == super()
+
+    [attn_mask_fn]
+    == super()
+
+    [model_factory]
+    == super()
+
+[model_config]
+    == super()
+    # Canon layer hyperparameters
+    canon_kernel: {{ canon_kernel | toyaml(4) }}
+    canon_residual: {{ canon_residual | toyaml(True) }}
+
+[model_code_generator]
+    == super()
+    no_split_modules: ["CanonPreLNLayer"]
