@@ -994,7 +994,7 @@ class PipelineTrainer(
         return total_norm
 
     @override
-    def _count_batch_tokens(self, input_dict: dict[str, Tensor], labels: Tensor) -> int:
+    def _count_batch_tokens(self, input_dict: dict[str, Tensor], labels: Tensor) -> Tensor:
         """
         Count tokens in pipeline parallel training.
 
@@ -1006,10 +1006,10 @@ class PipelineTrainer(
             labels: Target labels (only first stage has meaningful labels for counting)
 
         Returns:
-            Token count if first stage, 0 otherwise
+            Tensor with token count if first stage, zero tensor otherwise
         """
         if not self.pp_has_first_stage:
-            return 0
+            return torch.tensor(0, device=self.args.device, dtype=torch.int64)
         return super()._count_batch_tokens(input_dict, labels)
 
     @override

@@ -370,22 +370,25 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         # More precise: 6N forward + 12N backward = 18N
         return 18.0 * num_params
 
-    def _count_batch_tokens(self, input_dict: dict[str, Tensor], labels: Tensor) -> int:
+    def _count_batch_tokens(self, input_dict: dict[str, Tensor], labels: Tensor) -> Tensor:
         """
         Count non-padding tokens using labels tensor.
 
         Uses labels as the primary source since the cross-entropy ignore_index (-100)
         marks padding and special tokens that should not be counted.
 
+        Returns a GPU tensor to avoid forcing a GPU-CPU synchronization via .item(),
+        which would stall the CPU waiting for any pending compiled graph execution.
+
         Args:
             input_dict: Batch input dictionary (unused in base, available for overrides)
             labels: Target labels with -100 (ignore_index) for positions to ignore
 
         Returns:
-            Number of non-ignored tokens in the batch
+            Tensor with count of non-ignored tokens in the batch
         """
         # Labels have -100 for padding/special tokens; count only real target tokens
-        return int((labels != -100).sum().item())
+        return (labels != -100).sum()
 
     def _distributed_tokens(self, tokens: Tensor) -> Tensor:
         """
@@ -1145,15 +1148,16 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             tokens is the total non-padding tokens processed in this step.
         """
         accumulated_losses = []
-        accumulated_tokens = 0
+        accumulated_tokens: Tensor | int = 0
 
         for gradient_step in range(self.args.gradient_accumulation_steps):
             self.gradient_accumulation_step = gradient_step + 1
             input_dict, labels = self._prepare_batch(next(data_iterator))
             loss = self._forward_backward_step(input_dict, labels)
             accumulated_losses.append(loss)
-            # Count tokens in this micro-batch (local, not yet synchronized across ranks)
-            accumulated_tokens += self._count_batch_tokens(input_dict, labels)
+            # Count tokens in this micro-batch (local, not yet synchronized across ranks).
+            # _count_batch_tokens returns a GPU tensor to avoid forcing GPU-CPU sync.
+            accumulated_tokens = accumulated_tokens + self._count_batch_tokens(input_dict, labels)
 
         assert self._should_sync_gradients()
         assert self.optimizer is not None
@@ -1173,9 +1177,12 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
 
         # Return local token count as tensor; synchronization deferred to _log_step()
         # to amortize the cost of all_reduce across many steps
-        tokens_tensor = torch.tensor(
-            accumulated_tokens, device=self.args.device, dtype=torch.int64
-        )
+        if isinstance(accumulated_tokens, Tensor):
+            tokens_tensor = accumulated_tokens.to(dtype=torch.int64)
+        else:
+            tokens_tensor = torch.tensor(
+                accumulated_tokens, device=self.args.device, dtype=torch.int64
+            )
         return loss, total_norm, tokens_tensor
 
     def _forward_backward_step(
