@@ -355,7 +355,11 @@ class GLUFeedforwardLayer(nn.Module):
     def forward(self, x: FloatTensor, **kwargs) -> FloatTensor:
         gate = self.gate_proj(x)
         up = self.up_proj(x)
-        if self._fused_op is not None and gate.is_cuda:
+        if (
+            self._fused_op is not None
+            and gate.is_cuda
+            and not torch.compiler.is_compiling()
+        ):
             x = self._fused_op.apply(gate.contiguous(), up.contiguous())
         else:
             x = up * self.activation(gate)
