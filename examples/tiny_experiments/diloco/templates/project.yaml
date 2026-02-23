@@ -19,7 +19,8 @@
 
 [datasets_definition]
     [dataset_project_pp_args]
-    == super()
+.define: &dataset_project_pp_args !dict
+    shard_eval: False
 
     [dataset_project]
 -- set _shard_dataset = False

@@ -131,6 +131,15 @@ def _server_cmd(args):
     if dashboard_enabled:
         print(f"Dashboard: http://{args.host}:{args.port}/dashboard")
     print(f"Waiting for {args.num_workers} worker(s)...")
+    print()
+    print("To stop the server:")
+    print("  Ctrl-C              Stop server" + (
+        " (saves state automatically)" if args.save_dir else ""
+    ))
+    if dashboard_enabled:
+        print(f"  Dashboard           Use the Shutdown button at http://localhost:{args.port}/dashboard")
+    print(f"  curl -X POST        http://localhost:{args.port}/control/shutdown")
+    print()
 
     server.run()
 

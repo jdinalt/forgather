@@ -773,6 +773,48 @@ hyperparameters. Only expose the server on trusted networks. Do not expose the
 server port to the public internet without additional access controls (e.g., a
 reverse proxy with authentication).
 
+## Network Configuration
+
+By default, the server binds to `127.0.0.1` (localhost only). This is the safest
+configuration when workers run on the same machine.
+
+### Remote Workers via SSH Port Forwarding
+
+For remote workers, the recommended approach is SSH port forwarding. This avoids
+exposing the server on all interfaces and provides encrypted communication:
+
+```bash
+# On each remote worker machine, forward the server port:
+ssh -L 8512:localhost:8512 server-machine
+
+# Then start the worker pointing to localhost:
+forgather diloco worker --server localhost:8512 ...
+```
+
+The `-L 8512:localhost:8512` flag forwards the worker's local port 8512 to port
+8512 on the server machine. The worker connects to `localhost:8512` as if the
+server were local.
+
+For persistent tunnels (e.g., in tmux), add `-N` to keep the SSH connection
+open without a shell:
+
+```bash
+ssh -N -L 8512:localhost:8512 server-machine &
+```
+
+### Binding to All Interfaces
+
+If SSH tunneling is impractical (e.g., trusted LAN with many workers), you can
+bind to all interfaces:
+
+```bash
+forgather diloco server -m model -n 4 --host 0.0.0.0
+```
+
+**Warning**: This exposes the server (including the dashboard with full control
+capabilities) to any machine on the network. Only use this on trusted networks
+with appropriate firewall rules.
+
 ## References
 
 - Douillard et al., "DiLoCo: Distributed Low-Communication Training of Language Models" (2024)

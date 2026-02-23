@@ -4,17 +4,37 @@ This project demonstrates DiLoCo (Distributed Local-SGD) integration with the
 Forgather trainer via `DiLoCoCallback`. It uses a tiny 4M parameter transformer
 model on TinyStories for quick iteration.
 
+All commands below assume you are in the project directory:
+
+```bash
+cd examples/tiny_experiments/diloco
+```
+
 ## Quick Start
+
+For a fully automated run, use the launch script:
+
+```bash
+./run_diloco.sh                    # 2 workers, default settings
+./run_diloco.sh -n 4 -s 100       # 4 workers, sync every 100 steps
+```
+
+The script handles model construction, server startup, worker launch, and
+cleanup on Ctrl-C. See below for the manual step-by-step process.
 
 ### 1. Construct the Model (First Time Only)
 
 The DiLoCo server needs a model with saved weights. Build and save weights using
-a model project:
+the model project (not this training project):
 
 ```bash
-forgather -p examples/models/causal_lm -t 4M.yaml \
+# To start fresh, delete any existing models
+rm -rf output_models
+
+# Create a freshly initialized model instance
+forgather -p ../../models/causal_lm -t 4M.yaml \
     model --device cpu --save-checkpoint --safetensors \
-    --output-dir examples/tiny_experiments/diloco/output_models/default_model \
+    --output-dir output_models/default_model \
     construct
 ```
 
@@ -24,10 +44,13 @@ On any reachable machine (GPU not required):
 
 ```bash
 forgather diloco server \
-    -m examples/tiny_experiments/diloco/output_models/default_model \
+    -m output_models/default_model \
     -n 2 \
     --port 8512
 ```
+
+The server binds to localhost by default. For remote workers, use SSH port
+forwarding or `--host 0.0.0.0` (see `docs/trainers/diloco.md` for details).
 
 ### 3. Start Workers
 
@@ -41,7 +64,6 @@ and assign each worker a different `--shard-index`.
 forgather diloco worker \
     --server localhost:8512 \
     --sync-every 500 \
-    -p examples/tiny_experiments/diloco \
     -t default.yaml \
     train --num-shards 2 --shard-index 0
 
@@ -49,7 +71,6 @@ forgather diloco worker \
 forgather diloco worker \
     --server localhost:8512 \
     --sync-every 500 \
-    -p examples/tiny_experiments/diloco \
     -t default.yaml \
     train --num-shards 2 --shard-index 1
 ```
@@ -58,23 +79,44 @@ forgather diloco worker \
 
 ```bash
 DILOCO_SERVER=localhost:8512 DILOCO_SYNC_EVERY=500 \
-forgather -p examples/tiny_experiments/diloco -t default.yaml \
+forgather -t default.yaml \
     train --num-shards 2 --shard-index 0
 ```
 
 **Option C: Standalone** (no server, callback is a no-op):
 
 ```bash
-forgather -p examples/tiny_experiments/diloco -t default.yaml train
+forgather -t default.yaml train
 ```
 
 ### 4. Monitor
 
 ```bash
-forgather diloco status --server localhost:8512
+watch -n 1 forgather diloco status --server localhost:8512
 ```
 
 Or visit `http://localhost:8512/dashboard` in a browser.
+
+### 5. Stopping
+
+Workers stop automatically when training completes (reaching `max_steps`). They
+deregister from the server on exit, so the server updates its worker count.
+
+The server runs until explicitly stopped. There are three ways to stop it:
+
+- **Ctrl-C** in the server terminal. If `--save-dir` is configured, server state
+  is saved automatically before shutdown.
+- **Dashboard**: Click the Shutdown button at `http://localhost:8512/dashboard`.
+- **HTTP API**: `curl -X POST http://localhost:8512/control/shutdown`
+
+To save server state on demand (without stopping):
+
+```bash
+curl -X POST http://localhost:8512/control/save_state
+```
+
+If you used the launch script (`run_diloco.sh`), Ctrl-C stops all processes
+(server and workers) together.
 
 ## Configuration Files
 
@@ -113,6 +155,15 @@ When no server address is configured (no `--diloco-server`, no `DILOCO_SERVER`
 env var), the callback does nothing, allowing the same configuration for
 standalone training.
 
+## Dataset Sharding
+
+Training data is sharded across workers so each sees a unique subset. Evaluation
+data is **not** sharded -- each worker evaluates on the full validation set,
+producing comparable eval loss values across workers.
+
+This is configured in `project.yaml` via the `shard_eval: False` pp_kwarg
+passed to the dataset sub-project.
+
 ## Streaming Mode
 
 The `streaming.yaml` config splits the model into 4 fragments. Each fragment
@@ -146,3 +197,6 @@ preventing checkpoint race conditions.
 - When using `forgather diloco worker`, DiLoCo parameters (sync_every, bf16, etc.)
   are passed via environment variables. All DiLoCo callback parameters default to
   `null` in the config, so env var values take effect automatically.
+- The server must use the same model architecture as the training project. If the
+  worker uses a different model, the server will return a clear error identifying
+  the parameter name mismatch.

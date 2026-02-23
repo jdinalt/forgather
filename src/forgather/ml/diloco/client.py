@@ -138,6 +138,16 @@ class DiLoCoClient:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     data = resp.read()
                     return self._deserialize_state_dict(data)
+            except urllib.error.HTTPError as e:
+                # HTTP error (4xx/5xx) - read the response body for diagnostics
+                try:
+                    error_body = e.read().decode("utf-8", errors="replace")
+                    error_detail = json.loads(error_body).get("error", error_body)
+                except Exception:
+                    error_detail = str(e)
+                raise ConnectionError(
+                    f"Server returned HTTP {e.code} for {url}: {error_detail}"
+                ) from e
             except urllib.error.URLError as e:
                 if attempt < max_retries:
                     logger.warning(
@@ -225,17 +235,7 @@ class DiLoCoClient:
 
         body = struct.pack("!I", len(header)) + header + tensor_data
 
-        t0 = time.time()
         params = self._request_tensor("POST", "/submit_pseudograd", body=body)
-        elapsed = time.time() - t0
-
-        logger.info(
-            f"Sync complete for {worker_id}: "
-            f"sent {len(tensor_data) / 1e6:.1f} MB, "
-            f"received {sum(p.numel() * p.element_size() for p in params.values()) / 1e6:.1f} MB params, "
-            f"took {elapsed:.1f}s"
-        )
-
         return params
 
     def submit_fragment_pseudogradients(

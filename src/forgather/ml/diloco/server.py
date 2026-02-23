@@ -118,7 +118,7 @@ class DiLoCoServer:
         port: HTTP server port. If None, auto-selects an available port.
         outer_optimizer_factory: Callable that takes a parameter list and returns
             a torch.optim.Optimizer. Defaults to SGD(lr=0.7, momentum=0.9, nesterov=True).
-        host: Host address to bind to. Defaults to "0.0.0.0".
+        host: Host address to bind to. Defaults to "127.0.0.1".
         save_dir: Directory for periodic server state saves. None disables.
         save_every_n_rounds: Save server state every N sync rounds.
         async_mode: If True, apply pseudo-gradients immediately without barrier.
@@ -149,7 +149,7 @@ class DiLoCoServer:
         num_workers: int,
         port: Optional[int] = None,
         outer_optimizer_factory: Optional[Callable] = None,
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         save_dir: Optional[str] = None,
         save_every_n_rounds: int = 10,
         async_mode: bool = False,
@@ -571,6 +571,39 @@ class DiLoCoServer:
         else:
             _send_tensor_response(handler, self.get_global_params())
 
+    def _validate_pseudograd_params(self, worker_id: str, pseudograds: Dict[str, torch.Tensor]) -> Optional[str]:
+        """Validate pseudo-gradient parameter names match global params.
+
+        Returns an error message string if there's a mismatch, None if valid.
+        """
+        pg_names = set(pseudograds.keys())
+        global_names = set(self._param_names)
+
+        if pg_names == global_names:
+            return None
+
+        missing = global_names - pg_names
+        extra = pg_names - global_names
+
+        parts = [f"Parameter name mismatch from worker {worker_id}."]
+        if missing:
+            sample = sorted(missing)[:5]
+            parts.append(
+                f"  Missing {len(missing)} params (expected by server): "
+                f"{sample}{'...' if len(missing) > 5 else ''}"
+            )
+        if extra:
+            sample = sorted(extra)[:5]
+            parts.append(
+                f"  Unexpected {len(extra)} params (sent by worker): "
+                f"{sample}{'...' if len(extra) > 5 else ''}"
+            )
+        parts.append(
+            "  This usually means the worker is using a different model "
+            "architecture than the server."
+        )
+        return "\n".join(parts)
+
     def _handle_submit_pseudograd(self, handler: BaseHTTPRequestHandler):
         """
         Handle pseudo-gradient submission.
@@ -590,6 +623,13 @@ class DiLoCoServer:
 
         worker_id = header["worker_id"]
         pseudograds = _deserialize_state_dict(tensor_data)
+
+        # Validate parameter names match
+        error = self._validate_pseudograd_params(worker_id, pseudograds)
+        if error:
+            logger.error(error)
+            _send_json_response(handler, {"error": error}, 400)
+            return
 
         if self.async_mode:
             self._handle_submit_async(handler, worker_id, pseudograds)
@@ -694,6 +734,20 @@ class DiLoCoServer:
         worker_id = header["worker_id"]
         fragment_id = header["fragment_id"]
         pseudograds = _deserialize_state_dict(tensor_data)
+
+        # Validate all submitted param names exist in the global model
+        unknown = set(pseudograds.keys()) - set(self._param_names)
+        if unknown:
+            sample = sorted(unknown)[:5]
+            error = (
+                f"Fragment {fragment_id} from worker {worker_id} contains "
+                f"{len(unknown)} unknown parameter names: {sample}"
+                f"{'...' if len(unknown) > 5 else ''}. "
+                f"This usually means the worker is using a different model."
+            )
+            logger.error(error)
+            _send_json_response(handler, {"error": error}, 400)
+            return
 
         if self.async_mode:
             self._handle_submit_fragment_async(handler, worker_id, fragment_id, pseudograds)
@@ -1130,7 +1184,10 @@ class DiLoCoServer:
         try:
             self._server.serve_forever()
         except KeyboardInterrupt:
-            logger.info("Server interrupted")
+            logger.info("Server interrupted by Ctrl-C")
+            if self.save_dir:
+                logger.info("Saving server state before shutdown...")
+                self.save_state()
         finally:
             self._stop_health_monitor()
             self._running = False

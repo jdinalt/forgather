@@ -62,11 +62,17 @@ train_dataset: &train_dataset !singleton:{{ ns.preprocess_method }}@train_datase
     [eval_dataset]
 eval_dataset: &eval_dataset !singleton:{{ ns.preprocess_method }}@eval_dataset
     <<: *dataset_args
+-- if shard_eval is defined and not shard_eval
+    shard_dataset: False
+-- endif
     dataset: *validation_dataset_split
     desc: "Validation"
 
     [test_dataset]
 test_dataset: &test_dataset !singleton:{{ ns.preprocess_method }}@test_dataset
     <<: *dataset_args
+-- if shard_eval is defined and not shard_eval
+    shard_dataset: False
+-- endif
     dataset: *test_dataset_split
     desc: "Test"

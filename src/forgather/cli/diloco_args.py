@@ -85,8 +85,8 @@ def create_diloco_parser(global_args):
     server_parser.add_argument(
         "--host",
         type=str,
-        default="0.0.0.0",
-        help="Host address to bind to (default: 0.0.0.0)",
+        default="127.0.0.1",
+        help="Host address to bind to (default: 127.0.0.1). Use 0.0.0.0 for remote access.",
     )
     server_parser.add_argument(
         "--async",
