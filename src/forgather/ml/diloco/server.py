@@ -1328,7 +1328,7 @@ class DiLoCoServer:
             self._server.serve_forever()
         except KeyboardInterrupt:
             logger.info("Server interrupted by Ctrl-C")
-            if self.output_dir:
+            if self.save_every_n_rounds > 0:
                 logger.info("Saving server state before shutdown...")
                 self.save_state()
         finally:
