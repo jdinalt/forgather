@@ -94,13 +94,13 @@ on any reachable machine (it does not need a GPU):
 ```bash
 # Synchronous mode (default)
 forgather diloco server \
-    -m path/to/model \
+    -o path/to/model \
     -n 2 \
     --port 8512
 
 # Asynchronous mode (for heterogeneous hardware)
 forgather diloco server \
-    -m path/to/model \
+    -o path/to/model \
     -n 3 \
     --async \
     --dn-buffer-size 3 \
@@ -109,18 +109,18 @@ forgather diloco server \
 ```
 
 Server arguments:
-- `-m`: Path to a model directory (loaded via `AutoModelForCausalLM.from_pretrained`)
+- `-o`: Path to a model/output directory
 - `-n`: Number of expected workers
 - `--port`: Server port (default: 8512)
 - `--async`: Enable asynchronous mode
 - `--dn-buffer-size N`: Delayed Nesterov buffer size (async only, default: 0 = disabled)
 - `--dylu`: Enable Dynamic Local Updates (async only)
 - `--dylu-base-sync-every N`: Base sync interval for the fastest worker (default: 500)
-
-For Forgather checkpoint format, add `-c`:
+- `--from-checkpoint FROM_CHECKPOINT`: Load model from specified checkpoint path. Overrides loading from newest.
 
 ```bash
-forgather diloco server -c -m output_models/my_model/checkpoint-1000 -n 2
+# Load a specific checkpoint and save checkpoints to specified directory.
+forgather diloco server -o path/to/output --from-checkpoint output_models/my_model/checkpoint-1000 -n 2
 ```
 
 ### 2. Start Workers
@@ -128,22 +128,20 @@ forgather diloco server -c -m output_models/my_model/checkpoint-1000 -n 2
 On each machine, launch a worker that wraps the normal training command:
 
 ```bash
-# Machine A (sync mode)
+# sync mode
 forgather diloco worker \
-    --server 192.168.1.100:8512 \
     --sync-every 500 \
     -p my_project -t train.yaml \
-    train
+    train --num-shards 2 --shard-index 0 -d 0
 
-# Machine B (with DyLU - server adjusts sync frequency dynamically)
+# with DyLU - server adjusts sync frequency dynamically
 forgather diloco worker \
     --server 192.168.1.100:8512 \
     --sync-every 500 \
     --dylu \
     --heartbeat-interval 30 \
-    -d 0 \
     -p my_project -t train.yaml \
-    train
+    train --num-shards 2 --shard-index 1 -d 1
 ```
 
 Worker arguments:
@@ -153,12 +151,14 @@ Worker arguments:
 - `--no-bf16`: Send full-precision pseudo-gradients instead of bfloat16
 - `--dylu`: Enable dynamic sync frequency adjustment from server
 - `--heartbeat-interval`: Seconds between heartbeats for speed reporting (default: 30)
+- `--num-shards`: Number of shards to split the dataset into
+- `--shard-index`: Which shard to train on
 - `-d`: CUDA visible devices
 
 ### 3. Monitor
 
 ```bash
-forgather diloco status --server 192.168.1.100:8512
+watch -n 1 forgather diloco status --server localhost:8512
 ```
 
 Shows sync round, registered workers, their hostnames, training speeds, and
@@ -214,13 +214,9 @@ Key parameters:
 ```python
 from forgather.ml.diloco import DiLoCoServer
 
-# Load initial model state
-model = AutoModelForCausalLM.from_pretrained("my_model")
-state_dict = model.state_dict()
-
 # Synchronous server (default)
 server = DiLoCoServer(
-    model_state_dict=state_dict,
+    "path/to/model",
     num_workers=3,
     port=8512,
     outer_optimizer_factory=lambda p: torch.optim.SGD(p, lr=0.7, momentum=0.9, nesterov=True),
@@ -229,7 +225,7 @@ server.run()
 
 # Asynchronous server with DN momentum and DyLU
 server = DiLoCoServer(
-    model_state_dict=state_dict,
+    "path/to/model",
     num_workers=3,
     port=8512,
     async_mode=True,
@@ -276,10 +272,10 @@ function:
 
 ```bash
 # CLI
-forgather diloco server -m model -n 2 --outer-lr 0.5 --outer-momentum 0.95
+forgather diloco server -o path/to/model -n 2 --outer-lr 0.5 --outer-momentum 0.95
 
 # Or disable Nesterov
-forgather diloco server -m model -n 2 --no-nesterov
+forgather diloco server -o path/to/model -n 2 --no-nesterov
 ```
 
 Any `torch.optim.Optimizer` can be used as the outer optimizer via the
@@ -292,13 +288,19 @@ The server can periodically save its state (global params + outer optimizer
 state) for crash recovery:
 
 ```bash
-forgather diloco server -m model -n 2 --save-dir /path/to/saves --save-every 10
+forgather diloco server -o path/to/model -n 2 --save-every 10
 ```
 
 To resume a server from saved state:
 
 ```bash
-forgather diloco server -m model -n 2 --resume /path/to/saves/diloco_server_state_latest.pt
+forgather diloco server -o path/to/model -n 2
+```
+
+To resume from a specific checkpoint:
+
+```bash
+forgather diloco server -o ./model -n 2 --from-checkpoint ./model/checkpoints/checkpoint-25
 ```
 
 ## Async Mode
@@ -329,7 +331,7 @@ updates while still benefiting from momentum's acceleration over longer windows.
 
 ```bash
 # Buffer 3 submissions, then apply momentum
-forgather diloco server -m model -n 3 --async --dn-buffer-size 3
+forgather diloco server -o ./model -n 3 --async --dn-buffer-size 3
 ```
 
 When `dn_buffer_size=0` (the default), the outer optimizer with momentum is
@@ -362,7 +364,7 @@ Workers adjust their `sync_every` dynamically.
 
 ```bash
 # Server with DyLU
-forgather diloco server -m model -n 3 --async --dylu --dylu-base-sync-every 500
+forgather diloco server -o ./model -n 3 --async --dylu --dylu-base-sync-every 500
 
 # Worker with DyLU enabled
 forgather diloco worker --server host:8512 --sync-every 500 --dylu -- train
@@ -482,13 +484,13 @@ worker heartbeat timestamps. Workers that haven't sent a heartbeat within the
 
 ```bash
 # Server with health monitoring (default: 120s timeout)
-forgather diloco server -m model -n 3 --heartbeat-timeout 120
+forgather diloco server -o ./model -n 3 --heartbeat-timeout 120
 
 # Disable health monitoring
-forgather diloco server -m model -n 3 --heartbeat-timeout 0
+forgather diloco server -o ./model -n 3 --heartbeat-timeout 0
 
 # Require at least 2 workers to proceed
-forgather diloco server -m model -n 3 --min-workers 2
+forgather diloco server -o ./model -n 3 --min-workers 2
 ```
 
 Workers send heartbeats automatically (default: every 30 seconds). This is
@@ -554,7 +556,7 @@ The server's `save_state` / `load_state` mechanism (see
 [Server State Persistence](#server-state-persistence)) enables recovery from
 server crashes. After restart:
 
-1. The server loads the latest saved state (`--resume`)
+1. The server loads the latest saved state from `output_dir` (or from `--from-checkpoint` if specified)
 2. Workers detect the connection failure and enter their retry loop
 3. Workers re-register and receive the saved global parameters
 4. Training continues from the last saved checkpoint
@@ -706,10 +708,10 @@ control. Navigate to the server's address in a browser to access it.
 When the server starts, it logs the dashboard URL:
 
 ```
-Dashboard: http://0.0.0.0:8512/dashboard
+Dashboard: http://localhost:8512/dashboard
 ```
 
-Open this URL (or `http://localhost:8512/dashboard`) in any browser. The root
+Open this URL in any browser. The root
 URL (`/`) also serves the dashboard.
 
 ### Dashboard Panels
@@ -754,13 +756,13 @@ failure.
 The dashboard is enabled by default. To disable it:
 
 ```bash
-forgather diloco server -m model -n 2 --no-dashboard
+forgather diloco server -o ./model -n 2 --no-dashboard
 ```
 
 Or in the programmatic API:
 
 ```python
-server = DiLoCoServer(model_state_dict, num_workers=2, dashboard_enabled=False)
+server = DiLoCoServer("path/to/model", num_workers=2, dashboard_enabled=False)
 ```
 
 When disabled, `GET /dashboard` returns a 404 response.
@@ -808,7 +810,7 @@ If SSH tunneling is impractical (e.g., trusted LAN with many workers), you can
 bind to all interfaces:
 
 ```bash
-forgather diloco server -m model -n 4 --host 0.0.0.0
+forgather diloco server -o ./model -n 4 --host 0.0.0.0
 ```
 
 **Warning**: This exposes the server (including the dashboard with full control

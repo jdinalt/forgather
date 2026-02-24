@@ -9,27 +9,6 @@ import sys
 logger = logging.getLogger(__name__)
 
 
-def _load_model_state_dict(model_path: str, from_checkpoint: bool = False):
-    """Load a model state_dict from a path."""
-    if from_checkpoint:
-        # Load from Forgather checkpoint format (safetensors, sharded, or pytorch)
-        from forgather.ml.sharded_checkpoint import load_checkpoint
-
-        return load_checkpoint(model_path, module=None, device="cpu")
-    else:
-        # Load using AutoModelForCausalLM
-        from transformers import AutoModelForCausalLM
-
-        print(f"Loading model from {model_path}...")
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path, torch_dtype="auto", device_map="cpu",
-            trust_remote_code=True,
-        )
-        state_dict = model.state_dict()
-        del model
-        return state_dict
-
-
 def _server_cmd(args):
     """Start DiLoCo parameter server."""
     import torch
@@ -40,13 +19,6 @@ def _server_cmd(args):
         level=logging.INFO,
         format="%(asctime)s [DiLoCo Server] %(levelname)s: %(message)s",
     )
-
-    # Load model
-    state_dict = _load_model_state_dict(args.model_path, args.from_checkpoint)
-
-    num_params = sum(p.numel() for p in state_dict.values())
-    param_bytes = sum(p.numel() * p.element_size() for p in state_dict.values())
-    print(f"Model loaded: {num_params:,} parameters ({param_bytes / 1e6:.1f} MB)")
 
     # Build outer optimizer factory
     nesterov = not args.no_nesterov
@@ -83,7 +55,9 @@ def _server_cmd(args):
     min_workers = getattr(args, "min_workers", 1)
 
     if heartbeat_timeout > 0:
-        print(f"Health monitoring: timeout={heartbeat_timeout}s, min_workers={min_workers}")
+        print(
+            f"Health monitoring: timeout={heartbeat_timeout}s, min_workers={min_workers}"
+        )
     else:
         print("Health monitoring: disabled")
 
@@ -94,12 +68,12 @@ def _server_cmd(args):
 
     # Create server
     server = DiLoCoServer(
-        model_state_dict=state_dict,
+        output_dir=args.output_dir,
         num_workers=args.num_workers,
+        from_checkpoint=args.from_checkpoint,
         port=args.port,
         outer_optimizer_factory=outer_optimizer_factory,
         host=args.host,
-        save_dir=args.save_dir,
         save_every_n_rounds=args.save_every,
         save_total_limit=save_total_limit,
         async_mode=async_mode,
@@ -111,32 +85,20 @@ def _server_cmd(args):
         dashboard_enabled=dashboard_enabled,
     )
 
-    # Auto-discover and resume from existing checkpoints
-    from forgather.ml.sharded_checkpoint import find_latest_checkpoint
-
-    checkpoint_search_dir = args.save_dir if args.save_dir else args.model_path
-    latest = find_latest_checkpoint(checkpoint_search_dir)
-
-    if latest is not None:
-        server_state_path = os.path.join(latest, "server_state.pt")
-        if os.path.exists(server_state_path):
-            print(f"Resuming from checkpoint: {latest}")
-            server.load_state(latest)
-            print(f"Resumed at round {server._sync_round}")
-        else:
-            logger.info(f"No server state found in {latest}, starting fresh")
-
     print(f"Starting DiLoCo server on {args.host}:{args.port}")
     if dashboard_enabled:
         print(f"Dashboard: http://{args.host}:{args.port}/dashboard")
     print(f"Waiting for {args.num_workers} worker(s)...")
     print()
     print("To stop the server:")
-    print("  Ctrl-C              Stop server" + (
-        " (saves state automatically)" if args.save_dir else ""
-    ))
+    print(
+        "  Ctrl-C              Stop server"
+        + (" (saves state automatically)" if args.output_dir else "")
+    )
     if dashboard_enabled:
-        print(f"  Dashboard           Use the Shutdown button at http://localhost:{args.port}/dashboard")
+        print(
+            f"  Dashboard           Use the Shutdown button at http://localhost:{args.port}/dashboard"
+        )
     print(f"  curl -X POST        http://localhost:{args.port}/control/shutdown")
     print()
 
@@ -160,7 +122,9 @@ def _status_cmd(args):
     print(f"  Status:        {status.get('status', 'unknown')}")
     print(f"  Mode:          {status.get('mode', 'sync')}")
     print(f"  Sync round:    {status.get('sync_round', 0)}")
-    print(f"  Workers:       {status.get('num_registered', 0)}/{status.get('num_workers', '?')}")
+    print(
+        f"  Workers:       {status.get('num_registered', 0)}/{status.get('num_workers', '?')}"
+    )
 
     if status.get("uptime_seconds"):
         uptime = status["uptime_seconds"]
@@ -237,6 +201,7 @@ def _worker_cmd(args):
 
     # Build the forgather train command from remaining args
     import shutil
+
     forgather_bin = shutil.which("forgather")
     if forgather_bin is None:
         # Fallback: use the entry point module directly
@@ -285,6 +250,7 @@ def _worker_cmd(args):
 
 def diloco_cmd(args):
     """Handle diloco subcommands."""
+
     subcmd = getattr(args, "diloco_subcommand", None)
 
     if subcmd == "server":

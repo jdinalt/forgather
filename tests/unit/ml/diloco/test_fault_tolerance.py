@@ -1,6 +1,7 @@
 """Tests for DiLoCo fault tolerance (Phase 4): health monitoring, dead worker
 eviction, barrier release, dynamic joining, and worker reconnection."""
 
+import tempfile
 import threading
 import time
 import unittest
@@ -14,13 +15,12 @@ from forgather.ml.diloco.health import HealthMonitor
 from forgather.ml.diloco.server import DiLoCoServer
 from forgather.ml.diloco.worker import DiLoCoWorker
 
+from .conftest import make_initial_checkpoint
+
 
 def _make_state_dict(dim=8, num_layers=2, seed=42):
     torch.manual_seed(seed)
-    return {
-        f"layer{i}.weight": torch.randn(dim, dim)
-        for i in range(num_layers)
-    }
+    return {f"layer{i}.weight": torch.randn(dim, dim) for i in range(num_layers)}
 
 
 class TinyModel(nn.Module):
@@ -33,12 +33,31 @@ class TinyModel(nn.Module):
         return self.linear2(self.linear1(x))
 
 
+def _make_server_from_sd(sd, output_dir, **kwargs):
+    """Create a DiLoCoServer from a state dict via a temp checkpoint."""
+    ckpt = make_initial_checkpoint(sd, output_dir)
+    return DiLoCoServer(output_dir=str(output_dir), from_checkpoint=ckpt, **kwargs)
+
+
+class _ServerTestBase(unittest.TestCase):
+    """Base class providing setUp/tearDown for tests that create DiLoCoServer instances."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _make_server(self, sd, **kwargs):
+        return _make_server_from_sd(sd, self._tmpdir.name, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # HealthMonitor unit tests
 # ---------------------------------------------------------------------------
 
 
-class TestHealthMonitor(unittest.TestCase):
+class TestHealthMonitor(_ServerTestBase):
     """Test HealthMonitor background thread."""
 
     def test_health_monitor_start_stop(self):
@@ -61,6 +80,7 @@ class TestHealthMonitor(unittest.TestCase):
 
         # Worker with very old heartbeat
         from forgather.ml.diloco.server import WorkerInfo
+
         server._workers = {
             "alive": WorkerInfo("alive", "h1", time.time(), time.time()),
             "dead": WorkerInfo("dead", "h2", time.time(), time.time() - 200),
@@ -80,6 +100,7 @@ class TestHealthMonitor(unittest.TestCase):
         server._workers_lock = threading.Lock()
 
         from forgather.ml.diloco.server import WorkerInfo
+
         server._workers = {
             "alive": WorkerInfo("alive", "h1", time.time(), time.time()),
         }
@@ -94,7 +115,7 @@ class TestHealthMonitor(unittest.TestCase):
     def test_health_monitor_disabled_when_timeout_zero(self):
         """Server with heartbeat_timeout=0 does not start a monitor."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=1, heartbeat_timeout=0.0)
+        server = self._make_server(sd, num_workers=1, heartbeat_timeout=0.0)
         server.start()
         time.sleep(0.1)
 
@@ -107,13 +128,13 @@ class TestHealthMonitor(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestWorkerDeath(unittest.TestCase):
+class TestWorkerDeath(_ServerTestBase):
     """Test _handle_worker_death barrier release logic."""
 
     def test_death_removes_worker_from_registry(self):
         """Dead worker is removed from the server's worker registry."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=2, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=2, heartbeat_timeout=0)
         server.start()
         try:
             client = DiLoCoClient(f"localhost:{server.port}")
@@ -133,7 +154,7 @@ class TestWorkerDeath(unittest.TestCase):
     def test_death_decrements_num_workers(self):
         """num_workers is decreased when a worker dies."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=3, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=3, heartbeat_timeout=0)
         server.start()
         try:
             client = DiLoCoClient(f"localhost:{server.port}")
@@ -153,7 +174,9 @@ class TestWorkerDeath(unittest.TestCase):
     def test_death_respects_min_workers(self):
         """num_workers does not drop below min_workers."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=3, min_workers=2, heartbeat_timeout=0)
+        server = self._make_server(
+            sd, num_workers=3, min_workers=2, heartbeat_timeout=0
+        )
         server.start()
         try:
             client = DiLoCoClient(f"localhost:{server.port}")
@@ -173,7 +196,7 @@ class TestWorkerDeath(unittest.TestCase):
     def test_death_tracks_total_deaths(self):
         """Server tracks total worker deaths for status reporting."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=2, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=2, heartbeat_timeout=0)
         server.start()
         try:
             client = DiLoCoClient(f"localhost:{server.port}")
@@ -193,7 +216,7 @@ class TestWorkerDeath(unittest.TestCase):
     def test_death_idempotent(self):
         """Calling _handle_worker_death twice for the same worker is safe."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=2, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=2, heartbeat_timeout=0)
         server.start()
         try:
             client = DiLoCoClient(f"localhost:{server.port}")
@@ -207,13 +230,13 @@ class TestWorkerDeath(unittest.TestCase):
             server.stop()
 
 
-class TestBarrierRelease(unittest.TestCase):
+class TestBarrierRelease(_ServerTestBase):
     """Test that the sync barrier releases when a worker dies mid-sync."""
 
     def test_sync_barrier_releases_after_worker_death(self):
         """Worker A submits, worker B dies -> barrier releases for A."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=2, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=2, heartbeat_timeout=0)
         server.start()
         try:
             client_a = DiLoCoClient(f"localhost:{server.port}", timeout=10)
@@ -227,10 +250,7 @@ class TestBarrierRelease(unittest.TestCase):
 
             def submit_a():
                 try:
-                    pseudograds = {
-                        name: torch.zeros_like(p)
-                        for name, p in sd.items()
-                    }
+                    pseudograds = {name: torch.zeros_like(p) for name, p in sd.items()}
                     result["params"] = client_a.submit_pseudogradients(
                         "worker_a", pseudograds
                     )
@@ -248,7 +268,9 @@ class TestBarrierRelease(unittest.TestCase):
 
             t.join(timeout=10)
             self.assertFalse(t.is_alive(), "Worker A should not be blocked")
-            self.assertNotIn("e", error, f"Worker A submission failed: {error.get('e')}")
+            self.assertNotIn(
+                "e", error, f"Worker A submission failed: {error.get('e')}"
+            )
             self.assertIn("params", result)
         finally:
             server.stop()
@@ -256,7 +278,7 @@ class TestBarrierRelease(unittest.TestCase):
     def test_deregister_releases_barrier(self):
         """Deregistration uses _handle_worker_death and releases barrier."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=2, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=2, heartbeat_timeout=0)
         server.start()
         try:
             client_a = DiLoCoClient(f"localhost:{server.port}", timeout=10)
@@ -267,9 +289,7 @@ class TestBarrierRelease(unittest.TestCase):
             result = {}
 
             def submit_a():
-                pseudograds = {
-                    name: torch.zeros_like(p) for name, p in sd.items()
-                }
+                pseudograds = {name: torch.zeros_like(p) for name, p in sd.items()}
                 result["params"] = client_a.submit_pseudogradients(
                     "worker_a", pseudograds
                 )
@@ -293,13 +313,13 @@ class TestBarrierRelease(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestDynamicJoining(unittest.TestCase):
+class TestDynamicJoining(_ServerTestBase):
     """Test workers joining an active training run."""
 
     def test_new_worker_gets_current_global_params(self):
         """A new worker joining mid-training gets the latest global params."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=1, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=1, heartbeat_timeout=0)
         server.start()
         try:
             client = DiLoCoClient(f"localhost:{server.port}")
@@ -308,10 +328,7 @@ class TestDynamicJoining(unittest.TestCase):
             params1 = client.register("w1", {})
 
             # Submit pseudo-gradients to change global params
-            pseudograds = {
-                name: torch.ones_like(p) * 0.1
-                for name, p in sd.items()
-            }
+            pseudograds = {name: torch.ones_like(p) * 0.1 for name, p in sd.items()}
             new_params = client.submit_pseudogradients("w1", pseudograds)
 
             # Worker 2 joins after the sync - should get updated params
@@ -321,7 +338,7 @@ class TestDynamicJoining(unittest.TestCase):
             for name in sd:
                 self.assertTrue(
                     torch.allclose(params2[name], new_params[name], atol=1e-5),
-                    f"New worker got stale params for {name}"
+                    f"New worker got stale params for {name}",
                 )
         finally:
             server.stop()
@@ -329,7 +346,7 @@ class TestDynamicJoining(unittest.TestCase):
     def test_dynamic_join_increases_num_workers(self):
         """When more workers join than expected, num_workers increases."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=1, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=1, heartbeat_timeout=0)
         server.start()
         try:
             client = DiLoCoClient(f"localhost:{server.port}")
@@ -350,7 +367,7 @@ class TestDynamicJoining(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestWorkerReconnection(unittest.TestCase):
+class TestWorkerReconnection(_ServerTestBase):
     """Test worker reconnection after server restart or network failure."""
 
     def test_worker_reconnect_re_registers(self):
@@ -360,11 +377,12 @@ class TestWorkerReconnection(unittest.TestCase):
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         sd = model.state_dict()
-        server = DiLoCoServer(sd, num_workers=1, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=1, heartbeat_timeout=0)
         server.start()
         try:
             worker = DiLoCoWorker(
-                model, optimizer,
+                model,
+                optimizer,
                 server_addr=f"localhost:{server.port}",
                 sync_every=100,
                 heartbeat_interval=0,
@@ -384,7 +402,7 @@ class TestWorkerReconnection(unittest.TestCase):
     def test_re_registration_replaces_old_entry(self):
         """Re-registering a worker replaces its old entry (no duplicates)."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=1, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=1, heartbeat_timeout=0)
         server.start()
         try:
             client = DiLoCoClient(f"localhost:{server.port}")
@@ -405,11 +423,12 @@ class TestWorkerReconnection(unittest.TestCase):
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         sd = model.state_dict()
-        server = DiLoCoServer(sd, num_workers=1, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=1, heartbeat_timeout=0)
         server.start()
         try:
             worker = DiLoCoWorker(
-                model, optimizer,
+                model,
+                optimizer,
                 server_addr=f"localhost:{server.port}",
                 sync_every=5,
                 heartbeat_interval=0,
@@ -439,7 +458,7 @@ class TestWorkerReconnection(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestUnconditionalHeartbeat(unittest.TestCase):
+class TestUnconditionalHeartbeat(_ServerTestBase):
     """Test that heartbeats are sent regardless of DyLU setting."""
 
     def test_heartbeat_starts_without_dylu(self):
@@ -449,11 +468,12 @@ class TestUnconditionalHeartbeat(unittest.TestCase):
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         sd = model.state_dict()
-        server = DiLoCoServer(sd, num_workers=1, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=1, heartbeat_timeout=0)
         server.start()
         try:
             worker = DiLoCoWorker(
-                model, optimizer,
+                model,
+                optimizer,
                 server_addr=f"localhost:{server.port}",
                 sync_every=100,
                 dylu=False,
@@ -476,11 +496,12 @@ class TestUnconditionalHeartbeat(unittest.TestCase):
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         sd = model.state_dict()
-        server = DiLoCoServer(sd, num_workers=1, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=1, heartbeat_timeout=0)
         server.start()
         try:
             worker = DiLoCoWorker(
-                model, optimizer,
+                model,
+                optimizer,
                 server_addr=f"localhost:{server.port}",
                 sync_every=100,
                 heartbeat_interval=0,
@@ -500,11 +521,12 @@ class TestUnconditionalHeartbeat(unittest.TestCase):
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         sd = model.state_dict()
-        server = DiLoCoServer(sd, num_workers=1, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=1, heartbeat_timeout=0)
         server.start()
         try:
             worker = DiLoCoWorker(
-                model, optimizer,
+                model,
+                optimizer,
                 server_addr=f"localhost:{server.port}",
                 sync_every=100,
                 heartbeat_interval=0.1,
@@ -530,14 +552,15 @@ class TestUnconditionalHeartbeat(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestHealthMonitorIntegration(unittest.TestCase):
+class TestHealthMonitorIntegration(_ServerTestBase):
     """Test full health monitor integration with server."""
 
     def test_server_evicts_dead_worker_via_health_monitor(self):
         """Health monitor detects and evicts a worker that stops heartbeating."""
         sd = _make_state_dict()
-        server = DiLoCoServer(
-            sd, num_workers=2,
+        server = self._make_server(
+            sd,
+            num_workers=2,
             heartbeat_timeout=2.0,  # Short for testing but long enough for alive worker
         )
         server.start()
@@ -563,10 +586,7 @@ class TestHealthMonitorIntegration(unittest.TestCase):
     def test_health_monitor_barrier_release_integration(self):
         """Full integration: worker A submits, worker B times out, A unblocks."""
         sd = _make_state_dict()
-        server = DiLoCoServer(
-            sd, num_workers=2,
-            heartbeat_timeout=0.5,
-        )
+        server = self._make_server(sd, num_workers=2, heartbeat_timeout=0.5)
         server.start()
         try:
             client_a = DiLoCoClient(f"localhost:{server.port}", timeout=10)
@@ -582,9 +602,7 @@ class TestHealthMonitorIntegration(unittest.TestCase):
 
             def submit_a():
                 try:
-                    pseudograds = {
-                        name: torch.zeros_like(p) for name, p in sd.items()
-                    }
+                    pseudograds = {name: torch.zeros_like(p) for name, p in sd.items()}
                     result["params"] = client_a.submit_pseudogradients(
                         "worker_a", pseudograds
                     )
@@ -609,14 +627,15 @@ class TestHealthMonitorIntegration(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestStatusFaultTolerance(unittest.TestCase):
+class TestStatusFaultTolerance(_ServerTestBase):
     """Test that status endpoint includes fault tolerance fields."""
 
     def test_status_includes_fault_tolerance_fields(self):
         """Status response includes heartbeat_timeout and min_workers."""
         sd = _make_state_dict()
-        server = DiLoCoServer(
-            sd, num_workers=2,
+        server = self._make_server(
+            sd,
+            num_workers=2,
             heartbeat_timeout=120.0,
             min_workers=1,
         )
@@ -633,7 +652,7 @@ class TestStatusFaultTolerance(unittest.TestCase):
     def test_status_shows_worker_deaths(self):
         """Status shows total worker deaths after eviction."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=2, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=2, heartbeat_timeout=0)
         server.start()
         try:
             client = DiLoCoClient(f"localhost:{server.port}")
@@ -653,19 +672,19 @@ class TestStatusFaultTolerance(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestEdgeCases(unittest.TestCase):
+class TestEdgeCases(_ServerTestBase):
     """Test edge cases in fault tolerance."""
 
     def test_min_workers_validation(self):
         """min_workers must be >= 1."""
-        sd = _make_state_dict()
+        # ValueError raised before checkpoint loading, so output_dir doesn't need to be real
         with self.assertRaises(ValueError):
-            DiLoCoServer(sd, num_workers=2, min_workers=0)
+            DiLoCoServer("any_output_dir", num_workers=2, min_workers=0)
 
     def test_single_worker_death_does_not_prevent_sync(self):
         """After a death, remaining single worker can still sync."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=2, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=2, heartbeat_timeout=0)
         server.start()
         try:
             client = DiLoCoClient(f"localhost:{server.port}")
@@ -676,10 +695,7 @@ class TestEdgeCases(unittest.TestCase):
             server._handle_worker_death("w2")
 
             # w1 should be able to sync alone (num_workers is now 1)
-            pseudograds = {
-                name: torch.ones_like(p) * 0.01
-                for name, p in sd.items()
-            }
+            pseudograds = {name: torch.ones_like(p) * 0.01 for name, p in sd.items()}
             result = client.submit_pseudogradients("w1", pseudograds)
             self.assertIsNotNone(result)
             self.assertEqual(len(result), len(sd))
@@ -689,7 +705,7 @@ class TestEdgeCases(unittest.TestCase):
     def test_worker_death_during_no_pending_is_safe(self):
         """Worker death when no submissions are pending is handled gracefully."""
         sd = _make_state_dict()
-        server = DiLoCoServer(sd, num_workers=2, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=2, heartbeat_timeout=0)
         server.start()
         try:
             client = DiLoCoClient(f"localhost:{server.port}")
@@ -709,11 +725,12 @@ class TestEdgeCases(unittest.TestCase):
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         sd = model.state_dict()
-        server = DiLoCoServer(sd, num_workers=1, heartbeat_timeout=0)
+        server = self._make_server(sd, num_workers=1, heartbeat_timeout=0)
         server.start()
         try:
             worker = DiLoCoWorker(
-                model, optimizer,
+                model,
+                optimizer,
                 server_addr=f"localhost:{server.port}",
                 sync_every=100,
                 heartbeat_interval=0,

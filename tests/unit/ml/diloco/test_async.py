@@ -11,13 +11,12 @@ from forgather.ml.diloco.client import DiLoCoClient
 from forgather.ml.diloco.server import DiLoCoServer
 from forgather.ml.diloco.worker import DiLoCoWorker
 
+from .conftest import make_initial_checkpoint
+
 
 def _make_state_dict(dim=8, num_layers=2, seed=42):
     torch.manual_seed(seed)
-    return {
-        f"layer{i}.weight": torch.randn(dim, dim)
-        for i in range(num_layers)
-    }
+    return {f"layer{i}.weight": torch.randn(dim, dim) for i in range(num_layers)}
 
 
 class TinyModel(nn.Module):
@@ -38,7 +37,7 @@ class TinyModel(nn.Module):
 class TestAsyncServerDirect:
     """Test async server logic directly (without HTTP)."""
 
-    def test_async_apply_immediate(self):
+    def test_async_apply_immediate(self, tmp_path):
         """In async mode, each submission should update params immediately."""
         dim = 4
         sd = {"w": torch.zeros(dim)}
@@ -46,8 +45,12 @@ class TestAsyncServerDirect:
         def simple_sgd(params):
             return torch.optim.SGD(params, lr=1.0, momentum=0.0)
 
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=2, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=2,
+            port=0,
             outer_optimizer_factory=simple_sgd,
             async_mode=True,
         )
@@ -64,15 +67,19 @@ class TestAsyncServerDirect:
 
         assert server._sync_round == 2
 
-    def test_async_no_barrier(self):
+    def test_async_no_barrier(self, tmp_path):
         """Async mode should not block waiting for other workers."""
         sd = _make_state_dict(dim=4)
 
         def simple_sgd(params):
             return torch.optim.SGD(params, lr=1.0, momentum=0.0)
 
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=3, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=3,
+            port=0,
             outer_optimizer_factory=simple_sgd,
             async_mode=True,
         )
@@ -96,15 +103,19 @@ class TestAsyncServerDirect:
         finally:
             server.stop()
 
-    def test_async_staleness_tracking(self):
+    def test_async_staleness_tracking(self, tmp_path):
         """Server should track staleness (server rounds since worker's last sync)."""
         sd = {"w": torch.zeros(4)}
 
         def simple_sgd(params):
             return torch.optim.SGD(params, lr=0.1, momentum=0.0)
 
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=2, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=2,
+            port=0,
             outer_optimizer_factory=simple_sgd,
             async_mode=True,
         )
@@ -146,7 +157,7 @@ class TestAsyncServerDirect:
 class TestDelayedNesterov:
     """Test DN momentum buffering."""
 
-    def test_dn_buffer_fills_and_applies(self):
+    def test_dn_buffer_fills_and_applies(self, tmp_path):
         """DN should buffer pseudo-gradients and apply momentum every N submissions."""
         dim = 4
         sd = {"w": torch.zeros(dim)}
@@ -155,8 +166,12 @@ class TestDelayedNesterov:
         def sgd_momentum(params):
             return torch.optim.SGD(params, lr=1.0, momentum=0.9, nesterov=True)
 
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=2, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=2,
+            port=0,
             outer_optimizer_factory=sgd_momentum,
             async_mode=True,
             dn_buffer_size=3,
@@ -188,7 +203,7 @@ class TestDelayedNesterov:
         assert params[0].item() != 0.0  # Params changed
         assert server._sync_round == 3
 
-    def test_dn_disabled_applies_every_step(self):
+    def test_dn_disabled_applies_every_step(self, tmp_path):
         """With dn_buffer_size=0, momentum is applied on every submission."""
         dim = 4
         sd = {"w": torch.zeros(dim)}
@@ -196,8 +211,12 @@ class TestDelayedNesterov:
         def sgd_momentum(params):
             return torch.optim.SGD(params, lr=1.0, momentum=0.9, nesterov=True)
 
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=1, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=1,
+            port=0,
             outer_optimizer_factory=sgd_momentum,
             async_mode=True,
             dn_buffer_size=0,
@@ -212,11 +231,11 @@ class TestDelayedNesterov:
         # With momentum accumulating over 3 steps, should move further
         # than 3 * lr * grad = 3.0
         params = server.get_global_params()["w"]
-        assert abs(params[0].item()) > 3.0, (
-            f"With momentum, should move more than 3.0, got {params[0].item()}"
-        )
+        assert (
+            abs(params[0].item()) > 3.0
+        ), f"With momentum, should move more than 3.0, got {params[0].item()}"
 
-    def test_dn_direct_vs_momentum_difference(self):
+    def test_dn_direct_vs_momentum_difference(self, tmp_path):
         """
         DN should produce different results from no-DN because intermediate
         steps use direct GD (no momentum) instead of full optimizer steps.
@@ -229,8 +248,12 @@ class TestDelayedNesterov:
             return torch.optim.SGD(params, lr=0.5, momentum=0.9, nesterov=True)
 
         # Without DN: momentum every step
+        ckpt0 = make_initial_checkpoint(sd, tmp_path / "no_dn")
         server_no_dn = DiLoCoServer(
-            sd, num_workers=1, port=0,
+            output_dir=str(tmp_path / "no_dn"),
+            from_checkpoint=ckpt0,
+            num_workers=1,
+            port=0,
             outer_optimizer_factory=sgd_momentum,
             async_mode=True,
             dn_buffer_size=0,
@@ -240,8 +263,12 @@ class TestDelayedNesterov:
         params_no_dn = server_no_dn.get_global_params()["w"]
 
         # With DN buffer=3: momentum every 3rd step
+        ckpt1 = make_initial_checkpoint(sd, tmp_path / "dn")
         server_dn = DiLoCoServer(
-            sd, num_workers=1, port=0,
+            output_dir=str(tmp_path / "dn"),
+            from_checkpoint=ckpt1,
+            num_workers=1,
+            port=0,
             outer_optimizer_factory=sgd_momentum,
             async_mode=True,
             dn_buffer_size=3,
@@ -251,9 +278,9 @@ class TestDelayedNesterov:
         params_dn = server_dn.get_global_params()["w"]
 
         # Results should differ
-        assert not torch.allclose(params_no_dn, params_dn), (
-            "DN and non-DN should produce different results"
-        )
+        assert not torch.allclose(
+            params_no_dn, params_dn
+        ), "DN and non-DN should produce different results"
 
 
 # ---------------------------------------------------------------------------
@@ -264,11 +291,15 @@ class TestDelayedNesterov:
 class TestDynamicLocalUpdates:
     """Test DyLU per-worker sync frequency adaptation."""
 
-    def test_dylu_recommendation_proportional_to_speed(self):
+    def test_dylu_recommendation_proportional_to_speed(self, tmp_path):
         """Faster workers should get higher recommended sync_every."""
         sd = _make_state_dict(dim=4)
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=3, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=3,
+            port=0,
             async_mode=True,
             dylu_enabled=True,
             dylu_base_sync_every=500,
@@ -276,17 +307,27 @@ class TestDynamicLocalUpdates:
 
         # Register workers with different speeds
         from forgather.ml.diloco.server import WorkerInfo
+
         server._workers["fast"] = WorkerInfo(
-            worker_id="fast", hostname="a", registered_at=0,
-            last_heartbeat=0, steps_per_second=10.0,
+            worker_id="fast",
+            hostname="a",
+            registered_at=0,
+            last_heartbeat=0,
+            steps_per_second=10.0,
         )
         server._workers["medium"] = WorkerInfo(
-            worker_id="medium", hostname="b", registered_at=0,
-            last_heartbeat=0, steps_per_second=5.0,
+            worker_id="medium",
+            hostname="b",
+            registered_at=0,
+            last_heartbeat=0,
+            steps_per_second=5.0,
         )
         server._workers["slow"] = WorkerInfo(
-            worker_id="slow", hostname="c", registered_at=0,
-            last_heartbeat=0, steps_per_second=2.0,
+            worker_id="slow",
+            hostname="c",
+            registered_at=0,
+            last_heartbeat=0,
+            steps_per_second=2.0,
         )
 
         fast_h = server._compute_dylu_sync_every("fast")
@@ -300,35 +341,50 @@ class TestDynamicLocalUpdates:
         # slow gets proportional (2/10 * 500 = 100)
         assert slow_h == 100
 
-    def test_dylu_minimum_one(self):
+    def test_dylu_minimum_one(self, tmp_path):
         """DyLU should never recommend sync_every < 1."""
         sd = _make_state_dict(dim=4)
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=2, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=2,
+            port=0,
             async_mode=True,
             dylu_enabled=True,
             dylu_base_sync_every=10,
         )
 
         from forgather.ml.diloco.server import WorkerInfo
+
         server._workers["fast"] = WorkerInfo(
-            worker_id="fast", hostname="a", registered_at=0,
-            last_heartbeat=0, steps_per_second=100.0,
+            worker_id="fast",
+            hostname="a",
+            registered_at=0,
+            last_heartbeat=0,
+            steps_per_second=100.0,
         )
         server._workers["very_slow"] = WorkerInfo(
-            worker_id="very_slow", hostname="b", registered_at=0,
-            last_heartbeat=0, steps_per_second=0.01,
+            worker_id="very_slow",
+            hostname="b",
+            registered_at=0,
+            last_heartbeat=0,
+            steps_per_second=0.01,
         )
 
         # very_slow: 0.01/100 * 10 = 0.001 -> floor = 0 -> clamp to 1
         slow_h = server._compute_dylu_sync_every("very_slow")
         assert slow_h == 1
 
-    def test_dylu_no_speed_data_returns_none(self):
+    def test_dylu_no_speed_data_returns_none(self, tmp_path):
         """DyLU should return None when speed data is unavailable."""
         sd = _make_state_dict(dim=4)
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=1, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=1,
+            port=0,
             async_mode=True,
             dylu_enabled=True,
             dylu_base_sync_every=500,
@@ -337,29 +393,41 @@ class TestDynamicLocalUpdates:
         result = server._compute_dylu_sync_every("nonexistent")
         assert result is None
 
-    def test_dylu_disabled_returns_none(self):
+    def test_dylu_disabled_returns_none(self, tmp_path):
         """When DyLU is disabled, should always return None."""
         sd = _make_state_dict(dim=4)
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=1, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=1,
+            port=0,
             async_mode=True,
             dylu_enabled=False,
         )
 
         from forgather.ml.diloco.server import WorkerInfo
+
         server._workers["w0"] = WorkerInfo(
-            worker_id="w0", hostname="a", registered_at=0,
-            last_heartbeat=0, steps_per_second=10.0,
+            worker_id="w0",
+            hostname="a",
+            registered_at=0,
+            last_heartbeat=0,
+            steps_per_second=10.0,
         )
 
         result = server._compute_dylu_sync_every("w0")
         assert result is None
 
-    def test_dylu_via_heartbeat(self):
+    def test_dylu_via_heartbeat(self, tmp_path):
         """DyLU recommendation should be returned in heartbeat response."""
         sd = _make_state_dict(dim=4)
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=2, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=2,
+            port=0,
             async_mode=True,
             dylu_enabled=True,
             dylu_base_sync_every=100,
@@ -394,7 +462,7 @@ class TestAsyncEndToEnd:
     """End-to-end tests with async server and workers."""
 
     @pytest.fixture
-    def async_server_with_model(self):
+    def async_server_with_model(self, tmp_path):
         torch.manual_seed(42)
         model = TinyModel(dim=8)
         sd = model.state_dict()
@@ -402,8 +470,12 @@ class TestAsyncEndToEnd:
         def simple_sgd(params):
             return torch.optim.SGD(params, lr=1.0, momentum=0.0)
 
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=2, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=2,
+            port=0,
             outer_optimizer_factory=simple_sgd,
             async_mode=True,
         )
@@ -414,7 +486,7 @@ class TestAsyncEndToEnd:
 
         server.stop()
 
-    def test_single_worker_async_training(self):
+    def test_single_worker_async_training(self, tmp_path):
         """Single worker training in async mode - should not block."""
         torch.manual_seed(42)
         model = TinyModel(dim=8)
@@ -423,8 +495,12 @@ class TestAsyncEndToEnd:
         def simple_sgd(params):
             return torch.optim.SGD(params, lr=1.0, momentum=0.0)
 
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=1, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=1,
+            port=0,
             outer_optimizer_factory=simple_sgd,
             async_mode=True,
         )
@@ -438,7 +514,8 @@ class TestAsyncEndToEnd:
             target = torch.randn(4, 8)
 
             with DiLoCoWorker(
-                model, optimizer,
+                model,
+                optimizer,
                 server_addr=f"localhost:{server.port}",
                 sync_every=5,
                 bf16_comm=False,
@@ -481,7 +558,8 @@ class TestAsyncEndToEnd:
         def train_worker(idx, model, optimizer, num_steps):
             try:
                 with DiLoCoWorker(
-                    model, optimizer,
+                    model,
+                    optimizer,
                     server_addr=f"localhost:{server.port}",
                     sync_every=3,
                     worker_id=f"w{idx}",
@@ -514,7 +592,7 @@ class TestAsyncEndToEnd:
         # Total server rounds = 2 + 3 = 5
         assert server._sync_round == 5
 
-    def test_async_with_dn(self):
+    def test_async_with_dn(self, tmp_path):
         """Async mode with Delayed Nesterov - training should work."""
         torch.manual_seed(42)
         model = TinyModel(dim=8)
@@ -523,8 +601,12 @@ class TestAsyncEndToEnd:
         def sgd_momentum(params):
             return torch.optim.SGD(params, lr=0.5, momentum=0.9, nesterov=True)
 
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=1, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=1,
+            port=0,
             outer_optimizer_factory=sgd_momentum,
             async_mode=True,
             dn_buffer_size=2,
@@ -539,7 +621,8 @@ class TestAsyncEndToEnd:
             target = torch.randn(4, 8)
 
             with DiLoCoWorker(
-                model, optimizer,
+                model,
+                optimizer,
                 server_addr=f"localhost:{server.port}",
                 sync_every=3,
                 bf16_comm=False,
@@ -562,10 +645,14 @@ class TestAsyncEndToEnd:
 class TestAsyncStatus:
     """Test status endpoint in async mode."""
 
-    def test_status_shows_async_fields(self):
+    def test_status_shows_async_fields(self, tmp_path):
         sd = _make_state_dict(dim=4)
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=2, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=2,
+            port=0,
             async_mode=True,
             dn_buffer_size=3,
             dylu_enabled=True,
@@ -587,9 +674,15 @@ class TestAsyncStatus:
         finally:
             server.stop()
 
-    def test_status_shows_sync_mode(self):
+    def test_status_shows_sync_mode(self, tmp_path):
         sd = _make_state_dict(dim=4)
-        server = DiLoCoServer(sd, num_workers=1, port=0)
+        ckpt = make_initial_checkpoint(sd, tmp_path)
+        server = DiLoCoServer(
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=1,
+            port=0,
+        )
         server.start()
         time.sleep(0.2)
 
@@ -606,7 +699,7 @@ class TestAsyncStatus:
 class TestWorkerDyLU:
     """Test worker-side DyLU adaptation."""
 
-    def test_worker_dylu_adjusts_sync_every(self):
+    def test_worker_dylu_adjusts_sync_every(self, tmp_path):
         """Worker with DyLU should adjust sync_every from heartbeat responses."""
         torch.manual_seed(42)
         model = TinyModel(dim=8)
@@ -615,8 +708,12 @@ class TestWorkerDyLU:
         def simple_sgd(params):
             return torch.optim.SGD(params, lr=1.0, momentum=0.0)
 
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=2, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=2,
+            port=0,
             outer_optimizer_factory=simple_sgd,
             async_mode=True,
             dylu_enabled=True,
@@ -630,7 +727,8 @@ class TestWorkerDyLU:
 
             # Create worker WITHOUT heartbeat thread so we control timing exactly
             worker = DiLoCoWorker(
-                model, optimizer,
+                model,
+                optimizer,
                 server_addr=f"localhost:{server.port}",
                 sync_every=100,
                 worker_id="slow_worker",
@@ -642,9 +740,12 @@ class TestWorkerDyLU:
 
             # Register a "fast" worker with higher speed directly on server
             from forgather.ml.diloco.server import WorkerInfo
+
             server._workers["fast_worker"] = WorkerInfo(
-                worker_id="fast_worker", hostname="fast-host",
-                registered_at=time.time(), last_heartbeat=time.time(),
+                worker_id="fast_worker",
+                hostname="fast-host",
+                registered_at=time.time(),
+                last_heartbeat=time.time(),
                 steps_per_second=20.0,
             )
 
@@ -666,7 +767,7 @@ class TestWorkerDyLU:
         finally:
             server.stop()
 
-    def test_worker_heartbeat_thread_updates_sync_every(self):
+    def test_worker_heartbeat_thread_updates_sync_every(self, tmp_path):
         """Heartbeat thread should automatically apply DyLU recommendations."""
         torch.manual_seed(42)
         model = TinyModel(dim=8)
@@ -675,8 +776,12 @@ class TestWorkerDyLU:
         def simple_sgd(params):
             return torch.optim.SGD(params, lr=1.0, momentum=0.0)
 
+        ckpt = make_initial_checkpoint(sd, tmp_path)
         server = DiLoCoServer(
-            sd, num_workers=2, port=0,
+            output_dir=str(tmp_path),
+            from_checkpoint=ckpt,
+            num_workers=2,
+            port=0,
             outer_optimizer_factory=simple_sgd,
             async_mode=True,
             dylu_enabled=True,
@@ -689,7 +794,8 @@ class TestWorkerDyLU:
             optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
             worker = DiLoCoWorker(
-                model, optimizer,
+                model,
+                optimizer,
                 server_addr=f"localhost:{server.port}",
                 sync_every=1000,
                 worker_id="slow_worker",
@@ -707,9 +813,12 @@ class TestWorkerDyLU:
 
             # Register a "fast" worker on the server
             from forgather.ml.diloco.server import WorkerInfo
+
             server._workers["fast_worker"] = WorkerInfo(
-                worker_id="fast_worker", hostname="fast-host",
-                registered_at=time.time(), last_heartbeat=time.time(),
+                worker_id="fast_worker",
+                hostname="fast-host",
+                registered_at=time.time(),
+                last_heartbeat=time.time(),
                 steps_per_second=100.0,
             )
 
@@ -718,9 +827,9 @@ class TestWorkerDyLU:
             # DyLU: 10/100 * 1000 = 100
             time.sleep(1.0)
 
-            assert worker.sync_every == 100, (
-                f"Expected sync_every=100, got {worker.sync_every}"
-            )
+            assert (
+                worker.sync_every == 100
+            ), f"Expected sync_every=100, got {worker.sync_every}"
             assert worker._dylu_adjustments >= 1
 
             worker.stop()

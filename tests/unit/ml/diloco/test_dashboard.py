@@ -2,13 +2,15 @@
 
 import json
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 
 import pytest
 import torch
 
 from forgather.ml.diloco.server import DiLoCoServer
+
+from .conftest import make_initial_checkpoint
 
 
 def _make_state_dict(dim=8, num_layers=2, seed=42):
@@ -47,11 +49,13 @@ def _post_json(url, data=None):
 
 
 @pytest.fixture
-def server():
+def server(tmp_path):
     """Create a dashboard-enabled server on a random port."""
     sd = _make_state_dict()
+    ckpt = make_initial_checkpoint(sd, tmp_path / "initial")
     srv = DiLoCoServer(
-        sd,
+        output_dir=str(tmp_path),
+        from_checkpoint=str(ckpt),
         num_workers=2,
         port=0,
         outer_optimizer_factory=_simple_sgd,
@@ -60,15 +64,18 @@ def server():
     srv.start()
     time.sleep(0.2)
     yield srv
-    srv.stop()
+    if srv._running:
+        srv.stop()
 
 
 @pytest.fixture
-def server_no_dashboard():
+def server_no_dashboard(tmp_path):
     """Create a server with dashboard disabled."""
     sd = _make_state_dict()
+    ckpt = make_initial_checkpoint(sd, tmp_path / "initial")
     srv = DiLoCoServer(
-        sd,
+        output_dir=str(tmp_path),
+        from_checkpoint=str(ckpt),
         num_workers=1,
         port=0,
         outer_optimizer_factory=_simple_sgd,
@@ -77,24 +84,28 @@ def server_no_dashboard():
     srv.start()
     time.sleep(0.2)
     yield srv
-    srv.stop()
+    if srv._running:
+        srv.stop()
 
 
 @pytest.fixture
 def server_with_save(tmp_path):
-    """Create a server with save_dir configured."""
+    """Create a server with output_dir configured for checkpoint saving."""
     sd = _make_state_dict()
+    ckpt = make_initial_checkpoint(sd, tmp_path / "initial")
     srv = DiLoCoServer(
-        sd,
+        output_dir=str(tmp_path),
+        from_checkpoint=str(ckpt),
         num_workers=1,
         port=0,
         outer_optimizer_factory=_simple_sgd,
-        save_dir=str(tmp_path),
+        save_every_n_rounds=0,  # Disable periodic saves; only save on demand
     )
     srv.start()
     time.sleep(0.2)
     yield srv, tmp_path
-    srv.stop()
+    if srv._running:
+        srv.stop()
 
 
 class TestDashboardServing:
@@ -122,20 +133,31 @@ class TestDashboardServing:
 
 
 class TestControlEndpoints:
-    def test_save_state_no_save_dir(self, server):
-        """save_state fails when no save_dir is configured."""
+    def test_save_state_not_dirty_is_noop(self, server):
+        """save_state is a no-op when state hasn't changed (dirty=False)."""
+        import os
+
         status, data = _post_json(f"http://localhost:{server.port}/control/save_state")
-        assert status == 400
-        assert "error" in data
+        assert status == 200
+        assert data["status"] == "ok"
+        # No checkpoints should have been written because _dirty is False
+        assert not os.path.isdir(os.path.join(server.output_dir, "checkpoints"))
 
     def test_save_state_with_save_dir(self, server_with_save):
+        import os
+
         srv, tmp_path = server_with_save
+        # Dirty the server state by running an outer optimizer step
+        params = srv.get_global_params()
+        srv._pending_pseudograds["w0"] = {
+            k: torch.zeros_like(v) for k, v in params.items()
+        }
+        srv._apply_outer_optimizer()
+
         status, data = _post_json(f"http://localhost:{srv.port}/control/save_state")
         assert status == 200
         assert data["status"] == "ok"
         # Check that a checkpoint directory was saved
-        import os
-
         checkpoints_dir = os.path.join(str(tmp_path), "checkpoints")
         assert os.path.isdir(checkpoints_dir)
         checkpoint_dirs = os.listdir(checkpoints_dir)
@@ -235,14 +257,15 @@ class TestControlEndpoints:
         status, data = _post_json(f"http://localhost:{server.port}/control/shutdown")
         assert status == 200
         assert data["status"] == "ok"
-        # Give the background shutdown thread time to run
-        time.sleep(0.5)
-        assert not server._running
+        # Wait for the background shutdown thread to finish; serve_forever() has a
+        # 0.5s poll interval so it may take up to ~1s to fully stop.
+        deadline = time.time() + 5.0
+        while server._running and time.time() < deadline:
+            time.sleep(0.1)
+        assert not server._running, "Server failed to stop within timeout"
 
     def test_unknown_action_returns_404(self, server):
-        status, data = _post_json(
-            f"http://localhost:{server.port}/control/nonexistent"
-        )
+        status, data = _post_json(f"http://localhost:{server.port}/control/nonexistent")
         assert status == 404
 
     def test_invalid_json_returns_400(self, server):

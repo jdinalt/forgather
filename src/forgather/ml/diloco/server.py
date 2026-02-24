@@ -40,14 +40,17 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import torch
 
 from forgather.ml.sharded_checkpoint import (
-    save_checkpoint as save_model_checkpoint,
-    load_checkpoint as load_model_checkpoint,
     find_latest_checkpoint,
-    next_checkpoint_path,
-    maybe_delete_oldest_checkpoint,
 )
+from forgather.ml.sharded_checkpoint import load_checkpoint as load_model_checkpoint
+from forgather.ml.sharded_checkpoint import (
+    maybe_delete_oldest_checkpoint,
+    next_checkpoint_path,
+)
+from forgather.ml.sharded_checkpoint import save_checkpoint as save_model_checkpoint
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 @dataclass
@@ -98,7 +101,9 @@ def _send_json_response(handler: BaseHTTPRequestHandler, data: dict, status: int
     handler.wfile.write(body)
 
 
-def _send_tensor_response(handler: BaseHTTPRequestHandler, state_dict: Dict[str, torch.Tensor]):
+def _send_tensor_response(
+    handler: BaseHTTPRequestHandler, state_dict: Dict[str, torch.Tensor]
+):
     """Send a state dict as an octet-stream response."""
     data = _serialize_state_dict(state_dict)
     handler.send_response(200)
@@ -122,17 +127,18 @@ class DiLoCoServer:
     per-worker sync frequencies based on relative training speeds.
 
     Args:
-        model_state_dict: Initial model parameters (e.g., from model.state_dict()).
+        output_dir: Directory in which to save logs and checkpoints.
         num_workers: Expected number of workers.
+        from_checkpoint: Path to specific model checkpoint to load. Defaults to searching output_dir.
         port: HTTP server port. If None, auto-selects an available port.
         outer_optimizer_factory: Callable that takes a parameter list and returns
             a torch.optim.Optimizer. Defaults to SGD(lr=0.7, momentum=0.9, nesterov=True).
         host: Host address to bind to. Defaults to "127.0.0.1".
-        save_dir: Directory for periodic server state saves. None disables.
-        save_every_n_rounds: Save server state every N sync rounds.
+        save_every_n_rounds: Save server state every N sync rounds. Set to = 0 to disable save.
         save_total_limit: Maximum number of checkpoints to keep. Oldest are
             deleted when the limit is exceeded. 0 means keep all.
         async_mode: If True, apply pseudo-gradients immediately without barrier.
+        safetensors: Save using saftetensor, else torch.save()
         dn_buffer_size: Delayed Nesterov buffer size. In async mode, buffer this
             many pseudo-gradient submissions before applying the outer optimizer
             with momentum. Between buffered steps, apply simple gradient descent
@@ -156,15 +162,16 @@ class DiLoCoServer:
 
     def __init__(
         self,
-        model_state_dict: Dict[str, torch.Tensor],
+        output_dir: str,
         num_workers: int,
+        from_checkpoint: Optional[str] = None,
         port: Optional[int] = None,
         outer_optimizer_factory: Optional[Callable] = None,
         host: str = "127.0.0.1",
-        save_dir: Optional[str] = None,
         save_every_n_rounds: int = 10,
         save_total_limit: int = 3,
         async_mode: bool = False,
+        safetensors: bool = True,
         dn_buffer_size: int = 0,
         dylu_enabled: bool = False,
         dylu_base_sync_every: int = 500,
@@ -181,31 +188,47 @@ class DiLoCoServer:
         self.min_workers = min_workers
         self.host = host
         self.port = port or self._find_available_port()
-        self.save_dir = save_dir
+        self.output_dir = output_dir
         self.save_every_n_rounds = save_every_n_rounds
         self.save_total_limit = save_total_limit
         self.async_mode = async_mode
+        self.safetensors = safetensors
         self.dn_buffer_size = dn_buffer_size
         self.dylu_enabled = dylu_enabled
         self.dylu_base_sync_every = dylu_base_sync_every
         self.heartbeat_timeout = heartbeat_timeout
         self.dashboard_enabled = dashboard_enabled
+        self.outer_optimizer_factory = (
+            outer_optimizer_factory or _default_outer_optimizer_factory
+        )
+        self._running = False
+        self.load_state(from_checkpoint)
 
+    def _initialize(self, model_state_dict: Dict[str, torch.Tensor]):
+        assert self._running == False
         # Model metadata (computed before parameters are wrapped)
         self._model_params = sum(v.numel() for v in model_state_dict.values())
         self._model_size_mb = sum(
             v.numel() * v.element_size() for v in model_state_dict.values()
         ) / (1024 * 1024)
 
+        logger.info(
+            f"Model loaded: {self._model_params:,} parameters ({self._model_size_mb:.1f} MB)"
+        )
+
         # Global parameters - stored as nn.Parameters for the optimizer
         self._param_names: List[str] = list(model_state_dict.keys())
         self._param_list = torch.nn.ParameterList(
-            [torch.nn.Parameter(v.clone().float().cpu(), requires_grad=False) for v in model_state_dict.values()]
+            [
+                torch.nn.Parameter(v.clone().float().cpu(), requires_grad=False)
+                for v in model_state_dict.values()
+            ]
         )
 
         # Outer optimizer
-        factory = outer_optimizer_factory or _default_outer_optimizer_factory
-        self.outer_optimizer = factory(self._param_list.parameters())
+        self.outer_optimizer = self.outer_optimizer_factory(
+            self._param_list.parameters()
+        )
 
         # Extract outer LR for use in DN direct gradient steps
         self._outer_lr = self.outer_optimizer.param_groups[0]["lr"]
@@ -238,9 +261,13 @@ class DiLoCoServer:
         }
         # Per-fragment sync tracking (sync mode):
         # (fragment_id, round) -> worker_id -> pseudograds
-        self._fragment_pending: Dict[int, Dict[str, Dict[str, torch.Tensor]]] = defaultdict(dict)
+        self._fragment_pending: Dict[int, Dict[str, Dict[str, torch.Tensor]]] = (
+            defaultdict(dict)
+        )
         self._fragment_rounds: Dict[int, int] = defaultdict(int)
-        self._completed_fragment_rounds: Dict[Tuple[int, int], Dict[str, torch.Tensor]] = {}
+        self._completed_fragment_rounds: Dict[
+            Tuple[int, int], Dict[str, torch.Tensor]
+        ] = {}
         # Reuse _sync_cond for fragment barrier notifications
         self._fragment_submissions = 0  # Total fragment submissions
 
@@ -262,10 +289,12 @@ class DiLoCoServer:
         # Server state
         self._server: Optional[HTTPServer] = None
         self._server_thread: Optional[threading.Thread] = None
-        self._running = False
         self._started_at: Optional[float] = None
+        self._dirty = False
 
-    def _find_available_port(self, start_port: int = 8512, max_attempts: int = 100) -> int:
+    def _find_available_port(
+        self, start_port: int = 8512, max_attempts: int = 100
+    ) -> int:
         """Find an available port."""
         for i in range(max_attempts):
             port = start_port + i
@@ -275,7 +304,9 @@ class DiLoCoServer:
                     return port
             except OSError:
                 continue
-        raise RuntimeError(f"No available port in range {start_port}-{start_port + max_attempts}")
+        raise RuntimeError(
+            f"No available port in range {start_port}-{start_port + max_attempts}"
+        )
 
     def get_global_params(self) -> Dict[str, torch.Tensor]:
         """Get current global parameters as a state dict."""
@@ -307,14 +338,20 @@ class DiLoCoServer:
 
         self._sync_round += 1
         self._pending_pseudograds.clear()
+        self._dirty = True
 
         logger.info(f"Outer optimizer step complete. Sync round: {self._sync_round}")
 
         # Periodic save
-        if self.save_dir and self._sync_round % self.save_every_n_rounds == 0:
+        if (
+            self.save_every_n_rounds > 0
+            and self._sync_round % self.save_every_n_rounds == 0
+        ):
             self.save_state()
 
-    def _apply_async_pseudograd(self, worker_id: str, pseudograds: Dict[str, torch.Tensor]):
+    def _apply_async_pseudograd(
+        self, worker_id: str, pseudograds: Dict[str, torch.Tensor]
+    ):
         """
         Apply a single worker's pseudo-gradients in async mode.
 
@@ -363,9 +400,13 @@ class DiLoCoServer:
 
         self._sync_round += 1
         self._total_submissions += 1
+        self._dirty = True
 
         # Periodic save
-        if self.save_dir and self._sync_round % self.save_every_n_rounds == 0:
+        if (
+            self.save_every_n_rounds > 0
+            and self._sync_round % self.save_every_n_rounds == 0
+        ):
             self.save_state()
 
     def _get_params_by_names(self, param_names) -> Dict[str, torch.Tensor]:
@@ -414,6 +455,7 @@ class DiLoCoServer:
         # step() skips params with None grad; only fragment params updated
         self.outer_optimizer.step()
         self.outer_optimizer.zero_grad()
+        self._dirty = True
 
     def _get_expected_worker_count(self) -> int:
         """
@@ -498,7 +540,9 @@ class DiLoCoServer:
 
                         frag_param_names = list(pg_list[0].keys())
                         result = self._get_params_by_names(frag_param_names)
-                        self._completed_fragment_rounds[(frag_id, my_frag_round)] = result
+                        self._completed_fragment_rounds[(frag_id, my_frag_round)] = (
+                            result
+                        )
 
                         self._fragment_rounds[frag_id] += 1
                         self._fragment_pending[frag_id].clear()
@@ -537,7 +581,9 @@ class DiLoCoServer:
             return None
 
         worker_speed = speeds[worker_id]
-        recommended = max(1, int((worker_speed / max_speed) * self.dylu_base_sync_every))
+        recommended = max(
+            1, int((worker_speed / max_speed) * self.dylu_base_sync_every)
+        )
         return recommended
 
     def _handle_register(self, handler: BaseHTTPRequestHandler):
@@ -575,7 +621,9 @@ class DiLoCoServer:
                 f"num_workers raised to {self.num_workers}"
             )
 
-        logger.info(f"Worker {worker_id} registered ({num_registered}/{self.num_workers})")
+        logger.info(
+            f"Worker {worker_id} registered ({num_registered}/{self.num_workers})"
+        )
 
         # Return global params
         if self.async_mode:
@@ -584,7 +632,9 @@ class DiLoCoServer:
         else:
             _send_tensor_response(handler, self.get_global_params())
 
-    def _validate_pseudograd_params(self, worker_id: str, pseudograds: Dict[str, torch.Tensor]) -> Optional[str]:
+    def _validate_pseudograd_params(
+        self, worker_id: str, pseudograds: Dict[str, torch.Tensor]
+    ) -> Optional[str]:
         """Validate pseudo-gradient parameter names match global params.
 
         Returns an error message string if there's a mismatch, None if valid.
@@ -763,11 +813,17 @@ class DiLoCoServer:
             return
 
         if self.async_mode:
-            self._handle_submit_fragment_async(handler, worker_id, fragment_id, pseudograds)
+            self._handle_submit_fragment_async(
+                handler, worker_id, fragment_id, pseudograds
+            )
         else:
-            self._handle_submit_fragment_sync(handler, worker_id, fragment_id, pseudograds)
+            self._handle_submit_fragment_sync(
+                handler, worker_id, fragment_id, pseudograds
+            )
 
-    def _handle_submit_fragment_sync(self, handler, worker_id, fragment_id, pseudograds):
+    def _handle_submit_fragment_sync(
+        self, handler, worker_id, fragment_id, pseudograds
+    ):
         """Per-fragment synchronous submission with fault-tolerant barrier."""
         with self._sync_cond:
             my_round = self._fragment_rounds[fragment_id]
@@ -801,7 +857,8 @@ class DiLoCoServer:
 
                 # Clean up old fragment rounds
                 old = [
-                    k for k in self._completed_fragment_rounds
+                    k
+                    for k in self._completed_fragment_rounds
                     if k[0] == fragment_id and k[1] < my_round - 1
                 ]
                 for k in old:
@@ -813,14 +870,18 @@ class DiLoCoServer:
             key = (fragment_id, my_round)
             while key not in self._completed_fragment_rounds:
                 if not self._sync_cond.wait(timeout=600):
-                    _send_json_response(handler, {"error": "Fragment sync timeout"}, 504)
+                    _send_json_response(
+                        handler, {"error": "Fragment sync timeout"}, 504
+                    )
                     return
 
             result = self._completed_fragment_rounds[key]
 
         _send_tensor_response(handler, result)
 
-    def _handle_submit_fragment_async(self, handler, worker_id, fragment_id, pseudograds):
+    def _handle_submit_fragment_async(
+        self, handler, worker_id, fragment_id, pseudograds
+    ):
         """Asynchronous fragment submission - apply immediately."""
         with self._async_lock:
             with self._workers_lock:
@@ -844,6 +905,7 @@ class DiLoCoServer:
             self._sync_round += 1
             self._total_submissions += 1
             self._fragment_submissions += 1
+            self._dirty = True
 
             result = self._get_params_by_names(frag_param_names)
 
@@ -955,7 +1017,7 @@ class DiLoCoServer:
         pg = self.outer_optimizer.param_groups[0]
         response["outer_lr"] = pg.get("lr", 0)
         response["outer_momentum"] = pg.get("momentum", 0)
-        response["save_dir"] = self.save_dir
+        response["save_dir"] = self.output_dir
         response["model_params"] = self._model_params
         response["model_size_mb"] = round(self._model_size_mb, 2)
         response["dashboard_enabled"] = self.dashboard_enabled
@@ -992,16 +1054,16 @@ class DiLoCoServer:
             elif action == "shutdown":
                 self._handle_control_shutdown(handler, data)
             else:
-                _send_json_response(handler, {"error": f"Unknown control action: {action}"}, 404)
+                _send_json_response(
+                    handler, {"error": f"Unknown control action: {action}"}, 404
+                )
         except Exception as e:
             logger.error(f"Error handling control/{action}: {e}", exc_info=True)
             _send_json_response(handler, {"error": str(e)}, 500)
 
     def _handle_control_save(self, handler, data):
         """Save server state on demand."""
-        if not self.save_dir:
-            _send_json_response(handler, {"error": "No save_dir configured"}, 400)
-            return
+        # Unconditional save
         self.save_state()
         _send_json_response(handler, {"status": "ok", "sync_round": self._sync_round})
 
@@ -1013,7 +1075,9 @@ class DiLoCoServer:
             return
         with self._workers_lock:
             if worker_id not in self._workers:
-                _send_json_response(handler, {"error": f"Worker {worker_id} not found"}, 404)
+                _send_json_response(
+                    handler, {"error": f"Worker {worker_id} not found"}, 404
+                )
                 return
         self._handle_worker_death(worker_id)
         logger.info(f"Worker {worker_id} kicked via control endpoint")
@@ -1031,7 +1095,11 @@ class DiLoCoServer:
             pg["momentum"] = float(data["momentum"])
             updated["momentum"] = pg["momentum"]
         if not updated:
-            _send_json_response(handler, {"error": "No parameters to update (provide lr and/or momentum)"}, 400)
+            _send_json_response(
+                handler,
+                {"error": "No parameters to update (provide lr and/or momentum)"},
+                400,
+            )
             return
         logger.info(f"Outer optimizer updated via control: {updated}")
         _send_json_response(handler, {"status": "ok", **updated})
@@ -1057,7 +1125,7 @@ class DiLoCoServer:
     def _handle_control_shutdown(self, handler, data):
         """Gracefully shut down the server."""
         logger.info("Shutdown requested via control endpoint")
-        if self.save_dir:
+        if self.save_every_n_rounds > 0:
             self.save_state()
         _send_json_response(handler, {"status": "ok", "message": "Shutting down"})
         # Stop in a separate thread so the response can be sent first
@@ -1086,10 +1154,12 @@ class DiLoCoServer:
                     elif path == "/deregister":
                         server_ref._handle_deregister(self)
                     elif path.startswith("/control/"):
-                        action = path[len("/control/"):]
+                        action = path[len("/control/") :]
                         server_ref._handle_control(self, action)
                     else:
-                        _send_json_response(self, {"error": f"Unknown endpoint: {path}"}, 404)
+                        _send_json_response(
+                            self, {"error": f"Unknown endpoint: {path}"}, 404
+                        )
                 except Exception as e:
                     logger.error(f"Error handling POST {self.path}: {e}", exc_info=True)
                     _send_json_response(self, {"error": str(e)}, 500)
@@ -1104,7 +1174,9 @@ class DiLoCoServer:
                     elif path == "/dashboard" or path == "":
                         server_ref._handle_dashboard(self)
                     else:
-                        _send_json_response(self, {"error": f"Unknown endpoint: {path}"}, 404)
+                        _send_json_response(
+                            self, {"error": f"Unknown endpoint: {path}"}, 404
+                        )
                 except Exception as e:
                     logger.error(f"Error handling GET {self.path}: {e}", exc_info=True)
                     _send_json_response(self, {"error": str(e)}, 500)
@@ -1122,18 +1194,24 @@ class DiLoCoServer:
                 there without checkpoint rotation. When None, uses save_dir with
                 automatic checkpoint-{round} naming and rotation.
         """
-        if path is not None:
-            checkpoint_dir = path
-        elif self.save_dir is not None:
-            checkpoint_dir = next_checkpoint_path(self.save_dir, self._sync_round)
-        else:
-            logger.warning("No save path specified, skipping save")
+        if not self._running:
+            raise RuntimeError("Server is not running.")
+
+        if not self._dirty:
+            logger.info("State is clean. Skipping save.")
             return
 
-        os.makedirs(checkpoint_dir, exist_ok=True)
+        if path is not None:
+            checkpoint_path = path
+        else:
+            checkpoint_path = next_checkpoint_path(self.output_dir, self._sync_round)
+
+        os.makedirs(checkpoint_path, exist_ok=True)
 
         # Save model weights as HF-compatible sharded checkpoint
-        save_model_checkpoint(checkpoint_dir, self.get_global_params(), safetensors=True)
+        save_model_checkpoint(
+            checkpoint_path, self.get_global_params(), safetensors=self.safetensors
+        )
 
         # Save server state (optimizer, round, metadata) separately
         server_state = {
@@ -1144,66 +1222,64 @@ class DiLoCoServer:
             "async_mode": self.async_mode,
             "total_submissions": self._total_submissions,
         }
-        torch.save(server_state, os.path.join(checkpoint_dir, "server_state.pt"))
+        torch.save(server_state, os.path.join(checkpoint_path, "server_state.pt"))
 
-        logger.info(f"Server state saved to {checkpoint_dir}")
+        logger.info(f"Server state saved to {checkpoint_path}")
 
         # Rotate checkpoints (only in standard mode, not explicit path)
-        if path is None and self.save_dir and self.save_total_limit > 0:
-            maybe_delete_oldest_checkpoint(self.save_dir, self.save_total_limit)
+        if path is None and self.output_dir and self.save_total_limit > 0:
+            maybe_delete_oldest_checkpoint(self.output_dir, self.save_total_limit)
+        self._dirty = False
 
-    def load_state(self, path: str):
-        """Load server state from a checkpoint directory or legacy .pt file.
-
-        Checkpoint directory layout (new format):
-            checkpoint_dir/
-                model.safetensors (or sharded)  -- model weights
-                server_state.pt                 -- optimizer, round, metadata
-
-        Legacy format:
-            diloco_server_state_*.pt            -- monolithic torch.save file
-
+    def load_state(self, checkpoint_path: Optional[str] = None):
+        """Load server state from a checkpoint directory and reset internal
         Args:
-            path: Path to a checkpoint directory or a legacy .pt file.
+            checkpoint_path: Path to a checkpoint directory; defaults to searching output_dir.
         """
-        if os.path.isfile(path):
-            self._load_state_legacy(path)
-            return
+        if self._running:
+            raise RuntimeError(
+                "Server can't load a checkpoint while running. Stop it first!"
+            )
 
-        # New format: directory with model weights + server_state.pt
+        if checkpoint_path is None:
+            checkpoint_path = find_latest_checkpoint(self.output_dir)
+            if not checkpoint_path:
+                raise ValueError(
+                    f"No checkpoints found in {self.output_dir}. Please provide a valid model directory."
+                )
+
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(
+                f"The checkpoint path, {checkpoint_path}, does not exist"
+            )
+        if not os.path.isdir(checkpoint_path):
+            raise NotADirectoryError(
+                f"The checkpoint path, {checkpoint_path}, is not a directory"
+            )
+
         # Load model weights via sharded checkpoint API
-        state_dict = load_model_checkpoint(path, module=None, device="cpu")
-        for i, name in enumerate(self._param_names):
-            if name in state_dict:
-                self._param_list[i].data.copy_(state_dict[name].float())
+        logger.info(f"Loading model from checkpoint at {checkpoint_path}")
+        state_dict = load_model_checkpoint(checkpoint_path, module=None, device="cpu")
+
+        # Initialize from state-dictionary
+        self._initialize(state_dict)
 
         # Load server state if present
-        server_state_path = os.path.join(path, "server_state.pt")
+        server_state_path = os.path.join(checkpoint_path, "server_state.pt")
         if os.path.exists(server_state_path):
-            server_state = torch.load(server_state_path, map_location="cpu", weights_only=False)
+            server_state = torch.load(
+                server_state_path, map_location="cpu", weights_only=False
+            )
             self.outer_optimizer.load_state_dict(server_state["outer_optimizer"])
             self._sync_round = server_state["sync_round"]
             self._total_submissions = server_state.get("total_submissions", 0)
-            logger.info(f"Server state loaded from {path}, at round {self._sync_round}")
+            logger.info(
+                f"Server state loaded from {checkpoint_path}, at round {self._sync_round}"
+            )
         else:
             logger.warning(
-                f"No server_state.pt found in {path}, loaded model weights only (starting fresh)"
+                f"No server_state.pt found in {checkpoint_path}, loaded model weights only (starting fresh)"
             )
-
-    def _load_state_legacy(self, path: str):
-        """Load server state from a legacy monolithic .pt file."""
-        state = torch.load(path, map_location="cpu", weights_only=False)
-
-        # Restore global params
-        for i, name in enumerate(self._param_names):
-            self._param_list[i].data.copy_(state["global_params"][name])
-
-        # Restore outer optimizer
-        self.outer_optimizer.load_state_dict(state["outer_optimizer"])
-
-        self._sync_round = state["sync_round"]
-        self._total_submissions = state.get("total_submissions", 0)
-        logger.info(f"Server state loaded from legacy file {path}, at round {self._sync_round}")
 
     def _start_health_monitor(self):
         """Start the health monitor if heartbeat_timeout > 0."""
@@ -1224,6 +1300,8 @@ class DiLoCoServer:
 
     def run(self):
         """Run the server (blocking). Call this from the main process."""
+        if self._running:
+            raise RuntimeError("Run cannot be called, if already running.")
         handler_class = self._create_handler()
         self._server = ThreadingHTTPServer((self.host, self.port), handler_class)
         self._server.daemon_threads = True
@@ -1232,7 +1310,9 @@ class DiLoCoServer:
 
         mode = "async" if self.async_mode else "sync"
         logger.info(f"DiLoCo server starting on {self.host}:{self.port} (mode={mode})")
-        logger.info(f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}")
+        logger.info(
+            f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}"
+        )
         if self.dashboard_enabled:
             logger.info(f"Dashboard: http://{self.host}:{self.port}/dashboard")
         if self.heartbeat_timeout > 0:
@@ -1248,7 +1328,7 @@ class DiLoCoServer:
             self._server.serve_forever()
         except KeyboardInterrupt:
             logger.info("Server interrupted by Ctrl-C")
-            if self.save_dir:
+            if self.output_dir:
                 logger.info("Saving server state before shutdown...")
                 self.save_state()
         finally:
@@ -1259,25 +1339,35 @@ class DiLoCoServer:
 
     def start(self):
         """Start the server in a background thread (non-blocking)."""
+        if self._running:
+            raise RuntimeError("Start cannot be called, if already running.")
         handler_class = self._create_handler()
         self._server = ThreadingHTTPServer((self.host, self.port), handler_class)
         self._server.daemon_threads = True
         self._running = True
         self._started_at = time.time()
 
-        self._server_thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._server_thread = threading.Thread(
+            target=self._server.serve_forever, daemon=True
+        )
         self._server_thread.start()
 
         self._start_health_monitor()
 
         mode = "async" if self.async_mode else "sync"
-        logger.info(f"DiLoCo server started on {self.host}:{self.port} (mode={mode}, background)")
-        logger.info(f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}")
+        logger.info(
+            f"DiLoCo server started on {self.host}:{self.port} (mode={mode}, background)"
+        )
+        logger.info(
+            f"Expecting {self.num_workers} worker(s), min_workers={self.min_workers}"
+        )
         if self.dashboard_enabled:
             logger.info(f"Dashboard: http://{self.host}:{self.port}/dashboard")
 
     def stop(self):
         """Stop the background server."""
+        if not self._running:
+            raise RuntimeError("Stop cannot be called, unless we are already running.")
         self._stop_health_monitor()
         if self._server:
             self._server.shutdown()

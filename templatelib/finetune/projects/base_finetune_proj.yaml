@@ -194,7 +194,7 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     output_dir:
         names: "--output-dir"
         type: "path"
-        help: "Training output director. Defaults to model_id_or_path"
+        help: "Training output directory. Defaults to model_id_or_path"
     gradient_checkpointing:
         names: [ "--gradient-checkpointing", "-G"]
         action: "store_true"

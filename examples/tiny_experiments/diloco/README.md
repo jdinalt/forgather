@@ -44,7 +44,7 @@ On any reachable machine (GPU not required):
 
 ```bash
 forgather diloco server \
-    -m output_models/default_model \
+    -o output_models/default_model \
     -n 2 \
     --port 8512
 ```
@@ -78,6 +78,8 @@ forgather diloco worker \
     train --num-shards 2 --shard-index 1 -d 1
 ```
 
+Note: If you only have a single GPU, you can run both workers on the same GPU by setting `-d 0` on both. It will not train any faster than with a single GPU, but it at least allows for testing.
+
 **Option B: Using dynamic args** (configuration-level control):
 
 ```bash
@@ -107,8 +109,7 @@ deregister from the server on exit, so the server updates its worker count.
 
 The server runs until explicitly stopped. There are three ways to stop it:
 
-- **Ctrl-C** in the server terminal. If `--save-dir` is configured, server state
-  is saved automatically before shutdown.
+- **Ctrl-C** in the server terminal.
 - **Dashboard**: Click the Shutdown button at `http://localhost:8512/dashboard`.
 - **HTTP API**: `curl -X POST http://localhost:8512/control/shutdown`
 
@@ -120,6 +121,19 @@ curl -X POST http://localhost:8512/control/save_state
 
 If you used the launch script (`run_diloco.sh`), Ctrl-C stops all processes
 (server and workers) together.
+
+## Test the Model
+
+For a quick inference test:
+
+```bash
+# Link the model base model weights to the weights in the latest checkpoint
+# Note that `-f` will force-overwrite the original initialization weights.
+forgather checkpoint link -f
+
+# Test model inference with tiny-stories prompts.
+../../snippets/prompt_test.py output_models/default_model ../../../prompts/tiny_stories.yaml
+```
 
 ## Configuration Files
 

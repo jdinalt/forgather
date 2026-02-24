@@ -5,7 +5,3 @@
     -- set ns.config_name = "DiLoCo Default"
     -- set ns.config_description = "Basic DiLoCo training with default settings"
     -- set ns.log_name = "diloco_default"
-
-[trainer_args]
-    == super()
-    save_strategy: "steps"

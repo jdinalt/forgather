@@ -1,6 +1,7 @@
 """Argument parser for diloco command."""
 
 import argparse
+import os
 from argparse import RawTextHelpFormatter
 
 
@@ -22,11 +23,11 @@ def create_diloco_parser(global_args):
         formatter_class=RawTextHelpFormatter,
     )
     server_parser.add_argument(
-        "-m",
-        "--model-path",
-        type=str,
+        "--output-dir",
+        "-o",
+        type=os.path.expanduser,
         required=True,
-        help="Path to model directory (loads state_dict for initial global params)",
+        help="Training output directory. This should be a model directory, if not --from-checkpoint",
     )
     server_parser.add_argument(
         "--port",
@@ -59,16 +60,10 @@ def create_diloco_parser(global_args):
         help="Disable Nesterov momentum for outer optimizer",
     )
     server_parser.add_argument(
-        "--save-dir",
-        type=str,
-        default=None,
-        help="Directory for periodic server state saves",
-    )
-    server_parser.add_argument(
         "--save-every",
         type=int,
         default=10,
-        help="Save server state every N sync rounds (default: 10)",
+        help="Save server state every N sync rounds (default: 10); set to 0 to disable automatic save",
     )
     server_parser.add_argument(
         "--save-total-limit",
@@ -82,8 +77,9 @@ def create_diloco_parser(global_args):
     server_parser.add_argument(
         "--from-checkpoint",
         "-c",
-        action="store_true",
-        help="Load model from Forgather checkpoint format",
+        default=None,
+        type=os.path.expanduser,
+        help="Load model from specified checkpoint path. Overrides loading from newest.",
     )
     server_parser.add_argument(
         "--host",

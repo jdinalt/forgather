@@ -1,6 +1,7 @@
 """Tests for Streaming DiLoCo (Phase 3): FragmentManager, fragment server
 endpoints, and end-to-end streaming worker sync."""
 
+import tempfile
 import threading
 import time
 import unittest
@@ -13,6 +14,8 @@ from forgather.ml.diloco.client import DiLoCoClient
 from forgather.ml.diloco.fragments import FragmentManager
 from forgather.ml.diloco.server import DiLoCoServer
 from forgather.ml.diloco.worker import DiLoCoWorker
+
+from .conftest import make_initial_checkpoint
 
 
 def _make_model(num_params=6):
@@ -131,7 +134,7 @@ class TestFragmentManager(unittest.TestCase):
 
         self.assertFalse(fm.is_last_fragment(200, 600))  # fragment 0
         self.assertFalse(fm.is_last_fragment(400, 600))  # fragment 1
-        self.assertTrue(fm.is_last_fragment(600, 600))   # fragment 2 (last)
+        self.assertTrue(fm.is_last_fragment(600, 600))  # fragment 2 (last)
 
     def test_compute_fragment_pseudogradients(self):
         """Pseudo-gradients computed only for fragment's parameters."""
@@ -140,8 +143,7 @@ class TestFragmentManager(unittest.TestCase):
 
         # Simulate global params (snapshot before training)
         global_params = {
-            name: p.data.detach().clone().cpu()
-            for name, p in model.named_parameters()
+            name: p.data.detach().clone().cpu() for name, p in model.named_parameters()
         }
 
         # Simulate training: modify all model params
@@ -170,15 +172,13 @@ class TestFragmentManager(unittest.TestCase):
 
         # Save initial state
         global_params = {
-            name: p.data.detach().clone().cpu()
-            for name, p in model.named_parameters()
+            name: p.data.detach().clone().cpu() for name, p in model.named_parameters()
         }
 
         # New params for fragment 0
         frag0_names = fm.fragments[0]
         new_params = {
-            name: torch.ones_like(global_params[name]) * 99.0
-            for name in frag0_names
+            name: torch.ones_like(global_params[name]) * 99.0 for name in frag0_names
         }
 
         fm.apply_fragment_global_params(0, new_params, model, global_params)
@@ -210,11 +210,19 @@ class TestFragmentManager(unittest.TestCase):
 class TestFragmentServerDirect(unittest.TestCase):
     """Test server-side fragment handling without HTTP."""
 
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
     def _make_server(self, num_workers=1, async_mode=False):
         model = _make_model(6)
         state_dict = model.state_dict()
+        ckpt = make_initial_checkpoint(state_dict, self._tmpdir.name)
         server = DiLoCoServer(
-            model_state_dict=state_dict,
+            output_dir=self._tmpdir.name,
+            from_checkpoint=ckpt,
             num_workers=num_workers,
             outer_optimizer_factory=lambda p: torch.optim.SGD(p, lr=0.1, momentum=0.0),
             async_mode=async_mode,
@@ -241,7 +249,9 @@ class TestFragmentServerDirect(unittest.TestCase):
 
         # Create pseudo-grads for first 2 params only
         frag_names = all_names[:2]
-        pseudograds = {name: torch.ones_like(state_dict[name]) * 0.5 for name in frag_names}
+        pseudograds = {
+            name: torch.ones_like(state_dict[name]) * 0.5 for name in frag_names
+        }
 
         server._apply_fragment_outer_optimizer([pseudograds])
 
@@ -255,7 +265,8 @@ class TestFragmentServerDirect(unittest.TestCase):
         # Non-fragment params should be unchanged
         for name in all_names[2:]:
             torch.testing.assert_close(
-                updated[name], initial[name],
+                updated[name],
+                initial[name],
                 msg=f"Non-fragment param {name} should not change",
             )
 
@@ -263,13 +274,21 @@ class TestFragmentServerDirect(unittest.TestCase):
 class TestFragmentServerClient(unittest.TestCase):
     """Test fragment endpoints via HTTP server + client."""
 
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
     def _start_server(self, num_workers=1, async_mode=False):
         model = _make_model(6)
         state_dict = model.state_dict()
+        ckpt = make_initial_checkpoint(state_dict, self._tmpdir.name)
         server = DiLoCoServer(
-            model_state_dict=state_dict,
+            output_dir=self._tmpdir.name,
+            from_checkpoint=ckpt,
             num_workers=num_workers,
-            port=None,  # auto-select
+            port=0,
             outer_optimizer_factory=lambda p: torch.optim.SGD(p, lr=0.1, momentum=0.0),
             async_mode=async_mode,
         )
@@ -287,7 +306,9 @@ class TestFragmentServerClient(unittest.TestCase):
             # Submit fragment (first 2 params)
             all_names = list(state_dict.keys())
             frag_names = all_names[:2]
-            pseudograds = {name: torch.ones_like(state_dict[name]) * 0.1 for name in frag_names}
+            pseudograds = {
+                name: torch.ones_like(state_dict[name]) * 0.1 for name in frag_names
+            }
 
             result = client.submit_fragment_pseudogradients("w0", 0, pseudograds)
 
@@ -309,7 +330,9 @@ class TestFragmentServerClient(unittest.TestCase):
 
             all_names = list(state_dict.keys())
             frag_names = all_names[:2]
-            pseudograds = {name: torch.ones_like(state_dict[name]) * 0.1 for name in frag_names}
+            pseudograds = {
+                name: torch.ones_like(state_dict[name]) * 0.1 for name in frag_names
+            }
 
             result = client.submit_fragment_pseudogradients("w0", 0, pseudograds)
             self.assertEqual(set(result.keys()), set(frag_names))
@@ -367,12 +390,16 @@ class TestFragmentServerClient(unittest.TestCase):
             frag1_names = all_names[mid:]
 
             # Submit fragment 0
-            pg0 = {name: torch.ones_like(state_dict[name]) * 0.1 for name in frag0_names}
+            pg0 = {
+                name: torch.ones_like(state_dict[name]) * 0.1 for name in frag0_names
+            }
             result0 = client.submit_fragment_pseudogradients("w0", 0, pg0)
             self.assertEqual(set(result0.keys()), set(frag0_names))
 
             # Submit fragment 1
-            pg1 = {name: torch.ones_like(state_dict[name]) * 0.2 for name in frag1_names}
+            pg1 = {
+                name: torch.ones_like(state_dict[name]) * 0.2 for name in frag1_names
+            }
             result1 = client.submit_fragment_pseudogradients("w0", 1, pg1)
             self.assertEqual(set(result1.keys()), set(frag1_names))
         finally:
@@ -399,13 +426,21 @@ class TestFragmentServerClient(unittest.TestCase):
 class TestStreamingWorker(unittest.TestCase):
     """End-to-end tests for streaming DiLoCo worker."""
 
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
     def _start_server(self, num_workers=1, async_mode=False):
         model = _make_model(6)
         state_dict = model.state_dict()
+        ckpt = make_initial_checkpoint(state_dict, self._tmpdir.name)
         server = DiLoCoServer(
-            model_state_dict=state_dict,
+            output_dir=self._tmpdir.name,
+            from_checkpoint=ckpt,
             num_workers=num_workers,
-            port=None,
+            port=0,
             outer_optimizer_factory=lambda p: torch.optim.SGD(p, lr=0.1, momentum=0.0),
             async_mode=async_mode,
         )
@@ -521,8 +556,7 @@ class TestStreamingWorker(unittest.TestCase):
             try:
                 # Record state before training
                 pre_train = {
-                    name: p.data.clone()
-                    for name, p in model.named_parameters()
+                    name: p.data.clone() for name, p in model.named_parameters()
                 }
 
                 # Train fragment_interval steps to trigger first fragment
@@ -647,14 +681,22 @@ class TestStreamingWorker(unittest.TestCase):
 class TestStreamingBackgroundOverlap(unittest.TestCase):
     """Tests verifying that communication happens in background threads."""
 
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
     def test_inflight_thread_created(self):
         """Verify that fragment sync creates a background thread."""
         server_model = _make_model(6)
         state_dict = server_model.state_dict()
+        ckpt = make_initial_checkpoint(state_dict, self._tmpdir.name)
         server = DiLoCoServer(
-            model_state_dict=state_dict,
+            output_dir=self._tmpdir.name,
+            from_checkpoint=ckpt,
             num_workers=1,
-            port=None,
+            port=0,
             outer_optimizer_factory=lambda p: torch.optim.SGD(p, lr=0.1, momentum=0.0),
         )
         server.start()

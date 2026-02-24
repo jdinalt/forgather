@@ -1,7 +1,7 @@
 """Tests for DiLoCoWorker - pseudo-gradient computation and sync logic."""
 
-import time
 import threading
+import time
 
 import pytest
 import torch
@@ -10,6 +10,8 @@ import torch.nn as nn
 from forgather.ml.diloco.client import DiLoCoClient
 from forgather.ml.diloco.server import DiLoCoServer
 from forgather.ml.diloco.worker import DiLoCoWorker
+
+from .conftest import make_initial_checkpoint
 
 
 class TinyModel(nn.Module):
@@ -25,7 +27,7 @@ class TinyModel(nn.Module):
 
 
 @pytest.fixture
-def server_with_model():
+def server_with_model(tmp_path):
     """Create a server initialized with a TinyModel's state dict."""
     torch.manual_seed(42)
     model = TinyModel(dim=8)
@@ -34,7 +36,14 @@ def server_with_model():
     def simple_sgd(params):
         return torch.optim.SGD(params, lr=1.0, momentum=0.0)
 
-    server = DiLoCoServer(sd, num_workers=1, port=0, outer_optimizer_factory=simple_sgd)
+    ckpt = make_initial_checkpoint(sd, tmp_path)
+    server = DiLoCoServer(
+        output_dir=str(tmp_path),
+        from_checkpoint=ckpt,
+        num_workers=1,
+        port=0,
+        outer_optimizer_factory=simple_sgd,
+    )
     server.start()
     time.sleep(0.2)
 
@@ -44,7 +53,7 @@ def server_with_model():
 
 
 @pytest.fixture
-def two_worker_server_with_model():
+def two_worker_server_with_model(tmp_path):
     """Create a server expecting 2 workers."""
     torch.manual_seed(42)
     model = TinyModel(dim=8)
@@ -53,7 +62,14 @@ def two_worker_server_with_model():
     def simple_sgd(params):
         return torch.optim.SGD(params, lr=1.0, momentum=0.0)
 
-    server = DiLoCoServer(sd, num_workers=2, port=0, outer_optimizer_factory=simple_sgd)
+    ckpt = make_initial_checkpoint(sd, tmp_path)
+    server = DiLoCoServer(
+        output_dir=str(tmp_path),
+        from_checkpoint=ckpt,
+        num_workers=2,
+        port=0,
+        outer_optimizer_factory=simple_sgd,
+    )
     server.start()
     time.sleep(0.2)
 
@@ -69,7 +85,8 @@ class TestPseudoGradientComputation:
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         worker = DiLoCoWorker(
-            model, optimizer,
+            model,
+            optimizer,
             server_addr="dummy:8512",
             sync_every=100,
             bf16_comm=False,
@@ -77,8 +94,7 @@ class TestPseudoGradientComputation:
 
         # Manually set global params snapshot
         worker._global_params = {
-            name: torch.ones_like(p.data)
-            for name, p in model.named_parameters()
+            name: torch.ones_like(p.data) for name, p in model.named_parameters()
         }
 
         # Model params are random (different from ones)
@@ -86,9 +102,9 @@ class TestPseudoGradientComputation:
 
         for name, p in model.named_parameters():
             expected = torch.ones_like(p.data) - p.data.cpu()
-            assert torch.allclose(pseudograds[name], expected), (
-                f"Pseudo-gradient mismatch for {name}"
-            )
+            assert torch.allclose(
+                pseudograds[name], expected
+            ), f"Pseudo-gradient mismatch for {name}"
 
     def test_pseudograd_bf16_casting(self):
         """Verify pseudo-gradients are cast to bf16 when bf16_comm=True."""
@@ -96,15 +112,15 @@ class TestPseudoGradientComputation:
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         worker = DiLoCoWorker(
-            model, optimizer,
+            model,
+            optimizer,
             server_addr="dummy:8512",
             sync_every=100,
             bf16_comm=True,
         )
 
         worker._global_params = {
-            name: p.data.clone().cpu()
-            for name, p in model.named_parameters()
+            name: p.data.clone().cpu() for name, p in model.named_parameters()
         }
 
         pseudograds = worker._compute_pseudogradients()
@@ -118,15 +134,15 @@ class TestPseudoGradientComputation:
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         worker = DiLoCoWorker(
-            model, optimizer,
+            model,
+            optimizer,
             server_addr="dummy:8512",
             sync_every=100,
             bf16_comm=False,
         )
 
         worker._global_params = {
-            name: p.data.clone().cpu()
-            for name, p in model.named_parameters()
+            name: p.data.clone().cpu() for name, p in model.named_parameters()
         }
 
         pseudograds = worker._compute_pseudogradients()
@@ -140,7 +156,8 @@ class TestPseudoGradientComputation:
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         worker = DiLoCoWorker(
-            model, optimizer,
+            model,
+            optimizer,
             server_addr="dummy:8512",
             sync_every=100,
             bf16_comm=False,
@@ -148,16 +165,15 @@ class TestPseudoGradientComputation:
 
         # Global params = current model params
         worker._global_params = {
-            name: p.data.clone().cpu()
-            for name, p in model.named_parameters()
+            name: p.data.clone().cpu() for name, p in model.named_parameters()
         }
 
         pseudograds = worker._compute_pseudogradients()
 
         for name, pg in pseudograds.items():
-            assert torch.allclose(pg, torch.zeros_like(pg)), (
-                f"Pseudo-gradient for {name} should be zero"
-            )
+            assert torch.allclose(
+                pg, torch.zeros_like(pg)
+            ), f"Pseudo-gradient for {name} should be zero"
 
 
 class TestApplyGlobalParams:
@@ -167,23 +183,23 @@ class TestApplyGlobalParams:
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         worker = DiLoCoWorker(
-            model, optimizer,
+            model,
+            optimizer,
             server_addr="dummy:8512",
             sync_every=100,
         )
 
         # Create new params (all ones)
         new_params = {
-            name: torch.ones_like(p.data)
-            for name, p in model.named_parameters()
+            name: torch.ones_like(p.data) for name, p in model.named_parameters()
         }
 
         worker._apply_global_params(new_params)
 
         for name, p in model.named_parameters():
-            assert torch.allclose(p.data, torch.ones_like(p.data)), (
-                f"Parameter {name} should be all ones after apply"
-            )
+            assert torch.allclose(
+                p.data, torch.ones_like(p.data)
+            ), f"Parameter {name} should be all ones after apply"
 
 
 class TestOptimizerHook:
@@ -195,7 +211,8 @@ class TestOptimizerHook:
 
         # Use a large sync_every so we don't trigger sync
         with DiLoCoWorker(
-            model, optimizer,
+            model,
+            optimizer,
             server_addr=f"localhost:{server.port}",
             sync_every=1000,
             bf16_comm=False,
@@ -217,7 +234,8 @@ class TestOptimizerHook:
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         with DiLoCoWorker(
-            model, optimizer,
+            model,
+            optimizer,
             server_addr=f"localhost:{server.port}",
             sync_every=3,
             bf16_comm=False,
@@ -247,7 +265,8 @@ class TestEndToEndSync:
         x = torch.randn(4, 8)
 
         with DiLoCoWorker(
-            model, optimizer,
+            model,
+            optimizer,
             server_addr=f"localhost:{server.port}",
             sync_every=5,
             bf16_comm=False,
@@ -265,7 +284,9 @@ class TestEndToEndSync:
             assert worker._sync_count == 3
 
         # Loss should generally decrease (may not be monotonic due to syncs)
-        assert losses[-1] < losses[0], f"Loss didn't decrease: {losses[0]:.4f} -> {losses[-1]:.4f}"
+        assert (
+            losses[-1] < losses[0]
+        ), f"Loss didn't decrease: {losses[0]:.4f} -> {losses[-1]:.4f}"
 
     def test_two_worker_sync(self, two_worker_server_with_model):
         """Two workers training and synchronizing."""
@@ -294,7 +315,8 @@ class TestEndToEndSync:
         def train_worker(idx, model, optimizer, sync_count_expected):
             try:
                 with DiLoCoWorker(
-                    model, optimizer,
+                    model,
+                    optimizer,
                     server_addr=f"localhost:{server.port}",
                     sync_every=sync_every,
                     worker_id=f"worker_{idx}",
@@ -326,9 +348,9 @@ class TestEndToEndSync:
         for (name0, p0), (name1, p1) in zip(
             model0.named_parameters(), model1.named_parameters()
         ):
-            assert torch.allclose(p0.data, p1.data, atol=1e-5), (
-                f"After sync, {name0} should match between workers"
-            )
+            assert torch.allclose(
+                p0.data, p1.data, atol=1e-5
+            ), f"After sync, {name0} should match between workers"
 
         # And the server should be at sync_round 1
         assert server._sync_round == 1
@@ -341,7 +363,8 @@ class TestWorkerMetrics:
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         with DiLoCoWorker(
-            model, optimizer,
+            model,
+            optimizer,
             server_addr=f"localhost:{server.port}",
             sync_every=3,
             bf16_comm=False,
@@ -364,7 +387,8 @@ class TestWorkerMetrics:
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
         with DiLoCoWorker(
-            model, optimizer,
+            model,
+            optimizer,
             server_addr=f"localhost:{server.port}",
             sync_every=1000,
             bf16_comm=False,

@@ -9,24 +9,30 @@ import torch
 from forgather.ml.diloco.client import DiLoCoClient
 from forgather.ml.diloco.server import DiLoCoServer
 
+from .conftest import make_initial_checkpoint
+
 
 def _make_state_dict(dim=8, num_layers=2, seed=42):
     torch.manual_seed(seed)
-    return {
-        f"layer{i}.weight": torch.randn(dim, dim)
-        for i in range(num_layers)
-    }
+    return {f"layer{i}.weight": torch.randn(dim, dim) for i in range(num_layers)}
 
 
 @pytest.fixture
-def server_and_client():
+def server_and_client(tmp_path):
     """Create a server with 1 worker and a connected client."""
     sd = _make_state_dict()
+    ckpt = make_initial_checkpoint(sd, tmp_path)
 
     def simple_sgd(params):
         return torch.optim.SGD(params, lr=1.0, momentum=0.0)
 
-    server = DiLoCoServer(sd, num_workers=1, port=0, outer_optimizer_factory=simple_sgd)
+    server = DiLoCoServer(
+        output_dir=str(tmp_path),
+        from_checkpoint=ckpt,
+        num_workers=1,
+        port=0,
+        outer_optimizer_factory=simple_sgd,
+    )
     server.start()
 
     time.sleep(0.2)  # Let server start
@@ -39,14 +45,21 @@ def server_and_client():
 
 
 @pytest.fixture
-def two_worker_server():
+def two_worker_server(tmp_path):
     """Create a server expecting 2 workers."""
     sd = _make_state_dict()
+    ckpt = make_initial_checkpoint(sd, tmp_path)
 
     def simple_sgd(params):
         return torch.optim.SGD(params, lr=1.0, momentum=0.0)
 
-    server = DiLoCoServer(sd, num_workers=2, port=0, outer_optimizer_factory=simple_sgd)
+    server = DiLoCoServer(
+        output_dir=str(tmp_path),
+        from_checkpoint=ckpt,
+        num_workers=2,
+        port=0,
+        outer_optimizer_factory=simple_sgd,
+    )
     server.start()
 
     time.sleep(0.2)
@@ -94,9 +107,9 @@ class TestPseudogradientSubmission:
         # With SGD(lr=1.0): new_param = old_param - 1.0 * pseudo_grad
         for key in sd:
             expected = sd[key].float() - 0.1
-            assert torch.allclose(new_params[key], expected, atol=1e-5), (
-                f"Key {key}: expected {expected.flatten()[:4]}, got {new_params[key].flatten()[:4]}"
-            )
+            assert torch.allclose(
+                new_params[key], expected, atol=1e-5
+            ), f"Key {key}: expected {expected.flatten()[:4]}, got {new_params[key].flatten()[:4]}"
 
     def test_two_worker_sync(self, two_worker_server):
         """Test two workers synchronizing pseudo-gradients."""
@@ -148,7 +161,9 @@ class TestPseudogradientSubmission:
         client.register("worker_0")
 
         # Send bf16 pseudo-gradients
-        pseudograds = {k: torch.full_like(v, 0.5).to(torch.bfloat16) for k, v in sd.items()}
+        pseudograds = {
+            k: torch.full_like(v, 0.5).to(torch.bfloat16) for k, v in sd.items()
+        }
 
         new_params = client.submit_pseudogradients("worker_0", pseudograds)
 
