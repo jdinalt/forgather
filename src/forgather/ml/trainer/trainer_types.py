@@ -395,173 +395,43 @@ class AbstractBaseTrainer(Protocol):
         pass
 
 
-class TrainerCallback(Protocol):
+class TrainerCallback:
     """
-    Protocol for trainer event callbacks.
+    Base class for trainer event callbacks.
 
-    Callbacks receive notifications at key points during training and can modify
-    trainer behavior by returning an updated TrainerControl.
+    Subclasses implement only the event methods they need. Any method not
+    defined is simply never called for that callback. The trainer maintains
+    a lazy index mapping event names to the callbacks that define handlers,
+    so only relevant callbacks are invoked per event.
 
-    All methods are optional - implement only the events you need.
+    Available events (each receives args, state, control, **kwargs and
+    may return None or an updated TrainerControl):
 
-    Common event hooks:
-    - on_init_end: After trainer initialization
-    - on_train_begin/on_train_end: Training loop boundaries
-    - on_epoch_begin/on_epoch_end: Epoch boundaries
-    - on_step_begin/on_step_end: Training step boundaries
-    - on_log: After logging metrics (use for TensorBoard, wandb, etc.)
-    - on_evaluate: After evaluation (access metrics via kwargs)
-    - on_save: After checkpoint save
-    - on_optimizer_step: After optimizer update
+        on_init_end          - After trainer initialization
+        on_train_begin       - Before training loop starts
+        on_train_end         - After training loop ends
+        on_epoch_begin       - Before each epoch
+        on_epoch_end         - After each epoch
+        on_step_begin        - Before each training step
+        on_step_end          - After each training step
+        on_substep_end       - After each gradient-accumulation sub-step
+        on_optimizer_step    - After optimizer.step()
+        on_pre_optimizer_step - Before optimizer.step()
+        on_evaluate          - After evaluation
+        on_predict           - After prediction (also receives metrics)
+        on_prediction_step   - After each prediction batch
+        on_save              - After checkpoint save
+        on_log               - After metric logging (also receives logs)
 
-    Each method receives:
-    - args: Training arguments
-    - state: Current trainer state (global_step, epoch, log_history, etc.)
-    - control: Control flags (can modify to influence trainer)
-    - **kwargs: Additional context (model, metrics, logs, etc.)
-
-    Returns:
-    - None or updated TrainerControl to modify trainer behavior
+    kwargs always include:
+        model, processing_class, optimizer, lr_scheduler,
+        train_dataloader, eval_dataloader, trainer
 
     Compatible with HuggingFace TrainerCallback for easier porting.
     See: https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_callback.py
     """
 
-    def on_init_end(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_train_begin(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_train_end(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_epoch_begin(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_epoch_end(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_step_begin(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_optimizer_step(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_substep_end(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_step_end(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_evaluate(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_predict(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        metrics,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_save(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_log(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_prediction_step(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
-
-    def on_pre_optimizer_step(
-        self,
-        args: MinimalTrainingArguments,
-        state: TrainerState,
-        control: TrainerControl,
-        **kwargs,
-    ) -> Optional[TrainerControl]:
-        pass
+    pass
 
 
 class ExtensibleTrainer(AbstractBaseTrainer):

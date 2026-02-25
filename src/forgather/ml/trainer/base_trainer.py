@@ -292,6 +292,10 @@ class BaseTrainer(
             )
             torch.set_float32_matmul_precision(self.args.float32_matmul_precision)
 
+        # Lazy index: event name -> list of callbacks that define that handler.
+        # Built on first dispatch of each event, invalidated on callback add/remove.
+        self._event_index: dict[str, list[TrainerCallback]] = {}
+
     def __repr__(self):
         return (
             f"{type(self).__name__}("
@@ -356,6 +360,7 @@ class BaseTrainer(
         if isinstance(callback, type):
             callback = callback()
         self.callbacks.append(callback)
+        self._event_index.clear()
 
     # AbstractBaseTrainer
     @override
@@ -366,6 +371,7 @@ class BaseTrainer(
             compare = lambda a, b: id(a) == id(b)
         for i, cb in enumerate(self.callbacks):
             if compare(cb, callback):
+                self._event_index.clear()
                 return self.callbacks.pop(i)
         return None
 
@@ -437,20 +443,11 @@ class BaseTrainer(
 
     def _dispatch_event(self, event: str, **kwargs):
         """
-        Dispatch event to all registered callbacks.
+        Dispatch event to callbacks that define a handler for it.
 
-        Calls the named event handler method on each callback (if defined).
-        Callbacks can return a new TrainerControl to modify trainer behavior
-        (e.g., trigger early stopping, force checkpoint save).
-
-        Common events:
-        - on_init_end: After trainer initialization
-        - on_train_begin/on_train_end: Training loop boundaries
-        - on_epoch_begin/on_epoch_end: Epoch boundaries
-        - on_step_begin/on_step_end: Training step boundaries
-        - on_log: After logging metrics
-        - on_evaluate: After evaluation
-        - on_save: After checkpoint save
+        Uses a lazy index (built on first dispatch of each event) to skip
+        callbacks that don't implement the requested handler.  The index is
+        invalidated whenever callbacks are added or removed.
 
         Args:
             event: Name of callback method to invoke (e.g., "on_train_begin")
@@ -459,15 +456,19 @@ class BaseTrainer(
         Returns:
             Updated TrainerControl (last non-None return from callbacks)
         """
-        # Dispatch to call callbacks in list
-        unwrapped_model = self.unwrapped_model()
-        for callback in self.callbacks:
-            event_handler = getattr(callback, event, None)
-            # If handler is undefined, skip to next.
-            if event_handler is None:
-                continue
+        handlers = self._event_index.get(event)
+        if handlers is None:
+            handlers = [
+                cb for cb in self.callbacks if callable(getattr(cb, event, None))
+            ]
+            self._event_index[event] = handlers
 
-            new_control = event_handler(
+        if not handlers:
+            return self.control
+
+        unwrapped_model = self.unwrapped_model()
+        for callback in handlers:
+            new_control = getattr(callback, event)(
                 self.args,
                 self.state,
                 self.control,

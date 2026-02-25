@@ -7,10 +7,8 @@ from typing import Any, Callable, Dict, Iterable, Optional
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
-from ..trainer_types import TrainerCallback
 
-
-class GradLogger(TrainerCallback):
+class GradLogger:
     def __init__(self, summary_writer, neg_re, pos_re, log_steps, **kwargs):
         super().__init__()
         self.summary_writer = summary_writer
