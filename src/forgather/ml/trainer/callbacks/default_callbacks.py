@@ -259,6 +259,8 @@ class ProgressCallback:
             display_logs["grad_norm"] = logs["grad_norm"]
         if self.show_grad_norm and "max_grad_norm" in logs:
             display_logs["max_grad_norm"] = logs["max_grad_norm"]
+        if self.show_grad_norm and "grad_norm_std" in logs:
+            display_logs["grad_norm_std"] = logs["grad_norm_std"]
         if self.show_learning_rate and "learning_rate" in logs:
             display_logs["learning_rate"] = logs["learning_rate"]
         if self.show_tokens and "tokens" in logs:

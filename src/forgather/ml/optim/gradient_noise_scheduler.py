@@ -175,6 +175,11 @@ class GradientNoiseScheduler(LRScheduler, TrainerCallback):
         if grad_norm is not None:
             self.update_grad_norm(grad_norm)
 
+    def on_log_step(self, args, state, control, *, logs=None, **kwargs):
+        """TrainerCallback: inject gradient norm std into training logs."""
+        if logs is not None and self._feedback_step > 0:
+            logs["grad_norm_std"] = self._current_std()
+
     def _update_feedback(self, gn: float):
         """Update EMA statistics and integral controller.
 

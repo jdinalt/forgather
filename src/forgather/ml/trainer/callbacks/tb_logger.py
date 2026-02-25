@@ -44,6 +44,7 @@ class TBLogger(TrainerCallback):
                 ("learning_rate", "learning-rate"),
                 ("grad_norm", "grad-norm"),
                 ("max_grad_norm", "grad-norm[max]"),
+                ("grad_norm_std", "grad-norm-std"),
                 ("eval_accuracy", "eval-accuracy"),
                 ("eval_loss", "eval-loss"),
                 ("eval_loss", "eval-perplexity", get_perplexity),
