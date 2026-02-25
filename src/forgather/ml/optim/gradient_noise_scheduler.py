@@ -8,6 +8,11 @@ grow over training, eventually degrading the signal-to-noise ratio. This
 scheduler implements an integral feedback controller in log-LR space that
 slowly adjusts the learning rate to keep the gradient norm std near a target.
 
+An optional linear LR warmup ramps the learning rate from 0 to the base LR
+(scaled by the feedback controller) over ``warmup_steps`` training steps.
+This is independent of the ``calibration_steps`` phase that collects gradient
+norm statistics before the feedback controller activates.
+
 Gradient spikes can corrupt the EMA statistics and cause the controller to
 overreact. An optional spike filter (enabled by default) discards samples
 that exceed ``current_mean + spike_threshold_std * current_std``. The filter
@@ -19,7 +24,9 @@ itself as a ``TrainerCallback`` and receives gradient norms via the
 ``on_train_metrics`` event -- no manual wiring is needed.
 
 Usage (standalone):
-    scheduler = GradientNoiseScheduler(optimizer, warmup_steps=5000)
+    scheduler = GradientNoiseScheduler(
+        optimizer, calibration_steps=5000, warmup_steps=1000,
+    )
 
     for step in training_loop:
         loss.backward()
@@ -43,28 +50,42 @@ class GradientNoiseScheduler(LRScheduler, TrainerCallback):
     """
     LR scheduler with integral feedback on gradient norm standard deviation.
 
-    Operates in two phases:
+    Operates in phases:
 
-    1. **Warmup** (first ``warmup_steps`` calls with a grad_norm value):
-       Collects gradient norm statistics via EMA without modifying the LR.
-       At the end of warmup, if ``target_std`` was not provided, it is
-       automatically calibrated from the accumulated statistics.
+    1. **Linear warmup** (optional, first ``warmup_steps`` scheduler steps):
+       Ramps the LR linearly from 0 to the base LR (scaled by feedback).
+       Controlled by the ``warmup_steps`` parameter. Disabled when
+       ``warmup_steps=0`` (the default).
 
-    2. **Active** (after warmup): Uses an integral controller in log-LR space
-       to adjust the LR multiplicatively. When the current gradient norm std
-       exceeds the target, the LR is gradually reduced. When it is below the
-       target, the LR is gradually increased (if ``max_lr_scale`` allows).
+    2. **Calibration** (first ``calibration_steps`` calls with a grad_norm
+       value): Collects gradient norm statistics via EMA without modifying
+       the feedback LR scale. At the end of calibration, if ``target_std``
+       was not provided, it is automatically set from the accumulated
+       statistics.
+
+    3. **Active** (after calibration): Uses an integral controller in log-LR
+       space to adjust the LR multiplicatively. When the current gradient
+       norm std exceeds the target, the LR is gradually reduced. When it is
+       below the target, the LR is gradually increased (if ``max_lr_scale``
+       allows).
+
+    Linear warmup and calibration run independently and may overlap.
 
     The feedback operates on a very slow timescale (thousands of steps) to
     avoid destabilizing training from abrupt LR changes.
 
     Args:
         optimizer: Wrapped optimizer.
-        warmup_steps: Number of steps (with grad_norm provided) to collect
-            statistics before activating feedback. LR is unchanged during
-            this window.
+        warmup_steps: Number of scheduler steps for linear LR warmup from 0
+            to the base LR. Set to ``0`` (default) to disable warmup and
+            start at the full base LR immediately.
+        calibration_steps: Number of steps (with grad_norm provided) to
+            collect gradient norm statistics before activating the feedback
+            controller. The feedback LR scale is unchanged during this
+            window.
         target_std: Target gradient norm standard deviation. If ``None``,
-            auto-calibrated from the EMA statistics at the end of warmup.
+            auto-calibrated from the EMA statistics at the end of
+            calibration.
         ema_decay: Decay rate for exponential moving averages. Values close
             to 1.0 give longer smoothing windows. Default ``0.9999`` gives
             an effective window of ~10,000 steps.
@@ -89,7 +110,7 @@ class GradientNoiseScheduler(LRScheduler, TrainerCallback):
     def __init__(
         self,
         optimizer: Optimizer,
-        warmup_steps: int = 5000,
+        calibration_steps: int = 5000,
         target_std: Optional[float] = None,
         ema_decay: float = 0.9999,
         feedback_strength: float = 1e-5,
@@ -97,8 +118,12 @@ class GradientNoiseScheduler(LRScheduler, TrainerCallback):
         max_lr_scale: Optional[float] = None,
         spike_threshold_std: Optional[float] = 1.645,
         min_samples_for_spike_filter: int = 100,
+        warmup_steps: int = 0,
         last_epoch: int = -1,
     ):
+        assert (
+            calibration_steps >= 0
+        ), f"calibration_steps must be >= 0, got {calibration_steps}"
         assert warmup_steps >= 0, f"warmup_steps must be >= 0, got {warmup_steps}"
         assert 0.0 < ema_decay < 1.0, f"ema_decay must be in (0, 1), got {ema_decay}"
         assert (
@@ -120,6 +145,7 @@ class GradientNoiseScheduler(LRScheduler, TrainerCallback):
             min_samples_for_spike_filter >= 0
         ), f"min_samples_for_spike_filter must be >= 0, got {min_samples_for_spike_filter}"
 
+        self.calibration_steps = calibration_steps
         self.warmup_steps = warmup_steps
         self._target_std = target_std
         self.ema_decay = ema_decay
@@ -202,12 +228,12 @@ class GradientNoiseScheduler(LRScheduler, TrainerCallback):
         self._gn_ema = beta * self._gn_ema + (1.0 - beta) * gn
         self._gn_sq_ema = beta * self._gn_sq_ema + (1.0 - beta) * gn * gn
 
-        # Auto-calibrate target at end of warmup
-        if self._feedback_step == self.warmup_steps and self._target_std is None:
+        # Auto-calibrate target at end of calibration
+        if self._feedback_step == self.calibration_steps and self._target_std is None:
             self._target_std = self._current_std()
 
-        # No feedback during warmup
-        if self._feedback_step <= self.warmup_steps:
+        # No feedback during calibration
+        if self._feedback_step <= self.calibration_steps:
             return
 
         # Need a valid target to apply feedback
@@ -261,8 +287,12 @@ class GradientNoiseScheduler(LRScheduler, TrainerCallback):
         return self._spike_threshold()
 
     def get_lr(self):
-        """Compute LRs with adaptive feedback scale applied."""
+        """Compute LRs with adaptive feedback scale and optional linear warmup."""
         scale = math.exp(self._log_lr_scale)
+        # Linear warmup: ramp from 0 to full LR
+        if self.warmup_steps > 0 and self.last_epoch < self.warmup_steps:
+            warmup_factor = self.last_epoch / self.warmup_steps
+            scale *= warmup_factor
         return [base_lr * scale for base_lr in self.base_lrs]
 
     @property
@@ -298,6 +328,7 @@ class GradientNoiseScheduler(LRScheduler, TrainerCallback):
         state["target_std"] = self._target_std
         state["spike_threshold_std"] = self.spike_threshold_std
         state["min_samples_for_spike_filter"] = self.min_samples_for_spike_filter
+        state["warmup_steps"] = self.warmup_steps
         return state
 
     def load_state_dict(self, state_dict):
@@ -313,4 +344,5 @@ class GradientNoiseScheduler(LRScheduler, TrainerCallback):
         self.min_samples_for_spike_filter = state_dict.pop(
             "min_samples_for_spike_filter", self.min_samples_for_spike_filter
         )
+        self.warmup_steps = state_dict.pop("warmup_steps", self.warmup_steps)
         super().load_state_dict(state_dict)

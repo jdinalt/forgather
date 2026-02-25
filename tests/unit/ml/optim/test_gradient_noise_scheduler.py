@@ -33,7 +33,7 @@ def test_warmup_lr_unchanged():
     base_lr = 1e-3
     warmup = 100
     opt = _make_optimizer(lr=base_lr)
-    sched = GradientNoiseScheduler(opt, warmup_steps=warmup)
+    sched = GradientNoiseScheduler(opt, calibration_steps=warmup)
 
     for i in range(warmup):
         _step(sched, 5.0 + random.gauss(0, 1.0))
@@ -48,7 +48,7 @@ def test_auto_calibration():
     warmup = 200
     opt = _make_optimizer()
     sched = GradientNoiseScheduler(
-        opt, warmup_steps=warmup, ema_decay=0.99, spike_threshold_std=None
+        opt, calibration_steps=warmup, ema_decay=0.99, spike_threshold_std=None
     )
 
     assert sched.target_std is None
@@ -70,7 +70,9 @@ def test_manual_target_not_overridden():
     manual_target = 3.14
     warmup = 50
     opt = _make_optimizer()
-    sched = GradientNoiseScheduler(opt, warmup_steps=warmup, target_std=manual_target)
+    sched = GradientNoiseScheduler(
+        opt, calibration_steps=warmup, target_std=manual_target
+    )
 
     rng = random.Random(42)
     for _ in range(warmup + 50):
@@ -86,7 +88,7 @@ def test_feedback_reduces_lr():
     opt = _make_optimizer(lr=base_lr)
     sched = GradientNoiseScheduler(
         opt,
-        warmup_steps=warmup,
+        calibration_steps=warmup,
         target_std=1.0,
         feedback_strength=1e-3,  # Strong for fast test response
         ema_decay=0.99,
@@ -116,7 +118,7 @@ def test_feedback_increases_lr():
     opt = _make_optimizer(lr=base_lr)
     sched = GradientNoiseScheduler(
         opt,
-        warmup_steps=warmup,
+        calibration_steps=warmup,
         target_std=5.0,  # High target
         feedback_strength=1e-3,
         ema_decay=0.99,
@@ -147,7 +149,7 @@ def test_min_lr_scale_respected():
     opt = _make_optimizer(lr=base_lr)
     sched = GradientNoiseScheduler(
         opt,
-        warmup_steps=10,
+        calibration_steps=10,
         target_std=0.01,  # Very low target
         feedback_strength=0.1,  # Very aggressive
         ema_decay=0.9,
@@ -175,7 +177,7 @@ def test_max_lr_scale_respected():
     opt = _make_optimizer(lr=base_lr)
     sched = GradientNoiseScheduler(
         opt,
-        warmup_steps=10,
+        calibration_steps=10,
         target_std=100.0,  # Very high target
         feedback_strength=0.1,
         ema_decay=0.9,
@@ -201,7 +203,7 @@ def test_no_ceiling_allows_increase():
     opt = _make_optimizer(lr=base_lr)
     sched = GradientNoiseScheduler(
         opt,
-        warmup_steps=10,
+        calibration_steps=10,
         target_std=100.0,  # Very high target
         feedback_strength=0.1,
         ema_decay=0.9,
@@ -226,7 +228,7 @@ def test_smoothness():
     opt = _make_optimizer(lr=base_lr)
     sched = GradientNoiseScheduler(
         opt,
-        warmup_steps=warmup,
+        calibration_steps=warmup,
         feedback_strength=1e-4,
         ema_decay=0.999,
     )
@@ -258,7 +260,7 @@ def test_state_dict_round_trip():
     warmup = 50
     opt1 = _make_optimizer(lr=1e-3)
     sched1 = GradientNoiseScheduler(
-        opt1, warmup_steps=warmup, feedback_strength=1e-3, ema_decay=0.99
+        opt1, calibration_steps=warmup, feedback_strength=1e-3, ema_decay=0.99
     )
 
     rng = random.Random(42)
@@ -274,7 +276,7 @@ def test_state_dict_round_trip():
     # Create new scheduler and load state
     opt2 = _make_optimizer(lr=1e-3)
     sched2 = GradientNoiseScheduler(
-        opt2, warmup_steps=warmup, feedback_strength=1e-3, ema_decay=0.99
+        opt2, calibration_steps=warmup, feedback_strength=1e-3, ema_decay=0.99
     )
     sched2.load_state_dict(state)
 
@@ -297,7 +299,7 @@ def test_no_grad_norm_step():
     warmup = 50
     opt = _make_optimizer(lr=1e-3)
     sched = GradientNoiseScheduler(
-        opt, warmup_steps=warmup, target_std=1.0, feedback_strength=1e-3
+        opt, calibration_steps=warmup, target_std=1.0, feedback_strength=1e-3
     )
 
     rng = random.Random(42)
@@ -318,7 +320,7 @@ def test_no_grad_norm_step():
 def test_tensor_input():
     """update_grad_norm() should accept torch.Tensor grad norms."""
     opt = _make_optimizer()
-    sched = GradientNoiseScheduler(opt, warmup_steps=10)
+    sched = GradientNoiseScheduler(opt, calibration_steps=10)
 
     for i in range(20):
         gn = torch.tensor(5.0 + i * 0.1)
@@ -338,7 +340,7 @@ def test_multiple_param_groups():
     )
     sched = GradientNoiseScheduler(
         opt,
-        warmup_steps=10,
+        calibration_steps=10,
         target_std=0.1,
         feedback_strength=1e-2,
         ema_decay=0.9,
@@ -360,12 +362,12 @@ def test_multiple_param_groups():
 
 
 def test_zero_warmup_with_manual_target():
-    """warmup_steps=0 with manual target should activate immediately."""
+    """calibration_steps=0 with manual target should activate immediately."""
     base_lr = 1e-3
     opt = _make_optimizer(lr=base_lr)
     sched = GradientNoiseScheduler(
         opt,
-        warmup_steps=0,
+        calibration_steps=0,
         target_std=0.1,
         feedback_strength=1e-2,
         ema_decay=0.9,
@@ -385,7 +387,7 @@ def test_spike_filtering_skips_outliers():
     opt = _make_optimizer()
     sched = GradientNoiseScheduler(
         opt,
-        warmup_steps=0,
+        calibration_steps=0,
         target_std=1.0,
         spike_threshold_std=1.645,
         min_samples_for_spike_filter=min_samples,
@@ -424,7 +426,7 @@ def test_spike_filtering_inactive_before_min_samples():
     opt = _make_optimizer()
     sched = GradientNoiseScheduler(
         opt,
-        warmup_steps=0,
+        calibration_steps=0,
         target_std=1.0,
         spike_threshold_std=1.645,
         min_samples_for_spike_filter=min_samples,
@@ -452,7 +454,7 @@ def test_spike_filtering_disabled_when_none():
     opt = _make_optimizer()
     sched = GradientNoiseScheduler(
         opt,
-        warmup_steps=0,
+        calibration_steps=0,
         target_std=1.0,
         spike_threshold_std=None,
         min_samples_for_spike_filter=10,
@@ -479,7 +481,7 @@ def test_spike_threshold_property():
     opt = _make_optimizer()
     sched = GradientNoiseScheduler(
         opt,
-        warmup_steps=0,
+        calibration_steps=0,
         target_std=1.0,
         spike_threshold_std=2.0,
         min_samples_for_spike_filter=20,
@@ -504,7 +506,7 @@ def test_spike_threshold_property():
 
     # With filtering disabled: always 0
     opt2 = _make_optimizer()
-    sched2 = GradientNoiseScheduler(opt2, warmup_steps=0, spike_threshold_std=None)
+    sched2 = GradientNoiseScheduler(opt2, calibration_steps=0, spike_threshold_std=None)
     for _ in range(50):
         _step(sched2, 10.0)
     assert sched2.spike_threshold == 0.0
@@ -515,7 +517,7 @@ def test_spike_filtering_state_dict_round_trip():
     opt1 = _make_optimizer()
     sched1 = GradientNoiseScheduler(
         opt1,
-        warmup_steps=10,
+        calibration_steps=10,
         spike_threshold_std=2.5,
         min_samples_for_spike_filter=50,
         ema_decay=0.99,
@@ -532,7 +534,7 @@ def test_spike_filtering_state_dict_round_trip():
     opt2 = _make_optimizer()
     sched2 = GradientNoiseScheduler(
         opt2,
-        warmup_steps=10,
+        calibration_steps=10,
         spike_threshold_std=1.0,  # Different from saved
         min_samples_for_spike_filter=10,  # Different from saved
         ema_decay=0.99,
@@ -552,7 +554,7 @@ def test_on_train_metrics_callback():
     opt = _make_optimizer()
     sched = GradientNoiseScheduler(
         opt,
-        warmup_steps=0,
+        calibration_steps=0,
         target_std=1.0,
         feedback_strength=1e-3,
         ema_decay=0.99,
@@ -571,6 +573,42 @@ def test_on_train_metrics_callback():
 
     assert sched.current_mean > 0.0
     assert sched.current_std > 0.0
+
+
+def test_linear_warmup():
+    """LR should ramp linearly from 0 during warmup."""
+    base_lr = 1e-3
+    warmup = 100
+    opt = _make_optimizer(lr=base_lr)
+    sched = GradientNoiseScheduler(
+        opt,
+        warmup_steps=warmup,
+        calibration_steps=warmup + 100,  # Keep feedback inactive during warmup
+        target_std=1.0,
+        spike_threshold_std=None,
+    )
+
+    # LR at step 0 should be 0
+    assert _get_lr(sched) == 0.0
+
+    # Step through warmup
+    for i in range(1, warmup + 1):
+        _step(sched, 10.0)
+        lr = _get_lr(sched)
+        expected = base_lr * (i / warmup)
+        assert abs(lr - expected) < 1e-12, f"Step {i}: LR {lr} != expected {expected}"
+
+    # After warmup, LR should be at base_lr (feedback hasn't kicked in yet)
+    _step(sched, 10.0)
+    assert abs(_get_lr(sched) - base_lr) < 1e-12
+
+
+def test_no_warmup_default():
+    """With warmup_steps=0 (default), LR starts at base_lr."""
+    base_lr = 1e-3
+    opt = _make_optimizer(lr=base_lr)
+    sched = GradientNoiseScheduler(opt, calibration_steps=10, target_std=1.0)
+    assert abs(_get_lr(sched) - base_lr) < 1e-12
 
 
 if __name__ == "__main__":
@@ -633,5 +671,11 @@ if __name__ == "__main__":
 
     test_on_train_metrics_callback()
     print("PASS: test_on_train_metrics_callback")
+
+    test_linear_warmup()
+    print("PASS: test_linear_warmup")
+
+    test_no_warmup_default()
+    print("PASS: test_no_warmup_default")
 
     print("\nAll tests passed.")
