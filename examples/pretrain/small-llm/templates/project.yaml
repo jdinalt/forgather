@@ -208,7 +208,7 @@ optimizer: &optimizer !partial:forgather.ml.optim:Adafactor
     torch_compile: {{ compile | default(False) }}
 
 [lr_scheduler]
-lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:InfiniteLRScheduler@lr_scheduler
     warmup_steps: {{ ns.warmup_steps }}
     cooldown_steps: {{ [ns.min_cooldown_steps, ns.cooldown_ratio * ns.total_steps] | max | int }}
     constant_lr: {{ (ns.base_constant_lr * ns.lr_scale) | toyaml }}

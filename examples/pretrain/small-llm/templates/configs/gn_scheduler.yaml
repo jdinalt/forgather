@@ -1,0 +1,12 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "GradientNoiseScheduler"
+    -- set ns.config_description = "Test case for experimental GradientNoiseScheduler"
+    -- set ns.model_name = "gns"
+    -- set ns.warmup_tokens = 100 * 1000 * 1000
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:GradientNoiseScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
