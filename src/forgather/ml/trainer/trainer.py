@@ -59,6 +59,7 @@ from .trainer_types import (
     LRSchedulerFactoryT,
     OptimizerFactoryT,
     OptimizerT,
+    TrainerCallback,
 )
 from .trainer_types import TrainerState as BaseTrainerState
 from .trainer_types import (
@@ -822,6 +823,12 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                     num_training_steps=self.max_steps,
                     scheduler_specific_kwargs=self.args.lr_scheduler_kwargs,
                 )
+
+            # Auto-register scheduler as callback if it derives from TrainerCallback.
+            # This allows schedulers like GradientNoiseScheduler to receive
+            # training metrics (grad_norm, loss, etc.) via on_train_metrics.
+            if isinstance(self.lr_scheduler, TrainerCallback):
+                self.add_callback(self.lr_scheduler)
 
     def _maybe_log_save_evaluate(
         self,

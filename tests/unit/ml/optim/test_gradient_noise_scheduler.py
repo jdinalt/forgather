@@ -22,6 +22,12 @@ def _get_lr(scheduler):
     return scheduler.get_last_lr()[0]
 
 
+def _step(sched, grad_norm):
+    """Feed a grad norm and advance the scheduler by one step."""
+    sched.update_grad_norm(grad_norm)
+    sched.step()
+
+
 def test_warmup_lr_unchanged():
     """During warmup, LR should remain at base_lr."""
     base_lr = 1e-3
@@ -30,7 +36,7 @@ def test_warmup_lr_unchanged():
     sched = GradientNoiseScheduler(opt, warmup_steps=warmup)
 
     for i in range(warmup):
-        sched.step(grad_norm=5.0 + random.gauss(0, 1.0))
+        _step(sched, 5.0 + random.gauss(0, 1.0))
         lr = _get_lr(sched)
         assert (
             abs(lr - base_lr) < 1e-12
@@ -51,7 +57,7 @@ def test_auto_calibration():
     rng = random.Random(42)
     for _ in range(warmup):
         gn = 10.0 + rng.gauss(0, 2.0)
-        sched.step(grad_norm=gn)
+        _step(sched, gn)
 
     assert sched.target_std is not None
     assert sched.target_std > 0.0
@@ -68,7 +74,7 @@ def test_manual_target_not_overridden():
 
     rng = random.Random(42)
     for _ in range(warmup + 50):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 1.0))
+        _step(sched, 10.0 + rng.gauss(0, 1.0))
 
     assert sched.target_std == manual_target
 
@@ -89,13 +95,13 @@ def test_feedback_reduces_lr():
     # Warmup with moderate noise
     rng = random.Random(42)
     for _ in range(warmup):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 1.0))
+        _step(sched, 10.0 + rng.gauss(0, 1.0))
 
     lr_after_warmup = _get_lr(sched)
 
     # Now feed grad norms with much higher std than target
     for _ in range(500):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 5.0))
+        _step(sched, 10.0 + rng.gauss(0, 5.0))
 
     lr_after_noise = _get_lr(sched)
     assert (
@@ -120,13 +126,13 @@ def test_feedback_increases_lr():
     # Warmup
     rng = random.Random(42)
     for _ in range(warmup):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 5.0))
+        _step(sched, 10.0 + rng.gauss(0, 5.0))
 
     lr_after_warmup = _get_lr(sched)
 
     # Feed with very low std (well below target of 5.0)
     for _ in range(500):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 0.1))
+        _step(sched, 10.0 + rng.gauss(0, 0.1))
 
     lr_after = _get_lr(sched)
     assert (
@@ -151,11 +157,11 @@ def test_min_lr_scale_respected():
     rng = random.Random(42)
     # Warmup
     for _ in range(10):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 1.0))
+        _step(sched, 10.0 + rng.gauss(0, 1.0))
 
     # Drive with extreme noise to push LR down hard
     for _ in range(1000):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 50.0))
+        _step(sched, 10.0 + rng.gauss(0, 50.0))
 
     lr = _get_lr(sched)
     floor = base_lr * min_scale
@@ -178,11 +184,11 @@ def test_max_lr_scale_respected():
 
     rng = random.Random(42)
     for _ in range(10):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 1.0))
+        _step(sched, 10.0 + rng.gauss(0, 1.0))
 
     # Feed with very low std (far below target) to push LR up
     for _ in range(1000):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 0.001))
+        _step(sched, 10.0 + rng.gauss(0, 0.001))
 
     lr = _get_lr(sched)
     ceiling = base_lr * max_scale
@@ -204,10 +210,10 @@ def test_no_ceiling_allows_increase():
 
     rng = random.Random(42)
     for _ in range(10):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 1.0))
+        _step(sched, 10.0 + rng.gauss(0, 1.0))
 
     for _ in range(1000):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 0.001))
+        _step(sched, 10.0 + rng.gauss(0, 0.001))
 
     lr = _get_lr(sched)
     assert lr > base_lr, f"LR {lr} should exceed base_lr {base_lr}"
@@ -228,7 +234,7 @@ def test_smoothness():
     rng = random.Random(42)
     # Warmup
     for _ in range(warmup):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 1.0))
+        _step(sched, 10.0 + rng.gauss(0, 1.0))
 
     # Active phase with varying noise
     prev_lr = _get_lr(sched)
@@ -236,7 +242,7 @@ def test_smoothness():
     for i in range(1000):
         # Gradually increase std
         std = 1.0 + i * 0.01
-        sched.step(grad_norm=10.0 + rng.gauss(0, std))
+        _step(sched, 10.0 + rng.gauss(0, std))
         lr = _get_lr(sched)
         if prev_lr > 0:
             ratio = abs(lr - prev_lr) / prev_lr
@@ -257,7 +263,7 @@ def test_state_dict_round_trip():
 
     rng = random.Random(42)
     for _ in range(warmup + 100):
-        sched1.step(grad_norm=10.0 + rng.gauss(0, 2.0))
+        _step(sched1, 10.0 + rng.gauss(0, 2.0))
 
     state = sched1.state_dict()
     lr_before = _get_lr(sched1)
@@ -281,13 +287,13 @@ def test_state_dict_round_trip():
     rng2 = random.Random(99)
     for _ in range(50):
         gn = 10.0 + rng2.gauss(0, 2.0)
-        sched1.step(grad_norm=gn)
-        sched2.step(grad_norm=gn)
+        _step(sched1, gn)
+        _step(sched2, gn)
         assert abs(_get_lr(sched1) - _get_lr(sched2)) < 1e-15
 
 
-def test_none_grad_norm():
-    """step(None) should not change feedback state."""
+def test_no_grad_norm_step():
+    """step() without prior update_grad_norm should not change feedback state."""
     warmup = 50
     opt = _make_optimizer(lr=1e-3)
     sched = GradientNoiseScheduler(
@@ -296,27 +302,27 @@ def test_none_grad_norm():
 
     rng = random.Random(42)
     for _ in range(warmup + 10):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 1.0))
+        _step(sched, 10.0 + rng.gauss(0, 1.0))
 
     scale_before = sched.lr_scale
     std_before = sched.current_std
 
     # Steps without grad norm should not change feedback state
     for _ in range(100):
-        sched.step(grad_norm=None)
+        sched.step()
 
     assert sched.lr_scale == scale_before
     assert sched.current_std == std_before
 
 
 def test_tensor_input():
-    """step() should accept torch.Tensor grad norms."""
+    """update_grad_norm() should accept torch.Tensor grad norms."""
     opt = _make_optimizer()
     sched = GradientNoiseScheduler(opt, warmup_steps=10)
 
     for i in range(20):
         gn = torch.tensor(5.0 + i * 0.1)
-        sched.step(grad_norm=gn)
+        _step(sched, gn)
 
     assert sched.current_mean > 0.0
 
@@ -340,10 +346,10 @@ def test_multiple_param_groups():
 
     rng = random.Random(42)
     for _ in range(10):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 1.0))
+        _step(sched, 10.0 + rng.gauss(0, 1.0))
 
     for _ in range(100):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 5.0))
+        _step(sched, 10.0 + rng.gauss(0, 5.0))
 
     lrs = sched.get_last_lr()
     assert len(lrs) == 2
@@ -368,7 +374,7 @@ def test_zero_warmup_with_manual_target():
     rng = random.Random(42)
     # First step should already trigger feedback
     for _ in range(100):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 5.0))
+        _step(sched, 10.0 + rng.gauss(0, 5.0))
 
     assert sched.lr_scale < 1.0, "Feedback should have reduced LR"
 
@@ -390,7 +396,7 @@ def test_spike_filtering_skips_outliers():
     # Accumulate enough clean samples to activate filtering
     rng = random.Random(42)
     for _ in range(min_samples + 50):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 0.5))
+        _step(sched, 10.0 + rng.gauss(0, 0.5))
 
     # Record state before spike
     mean_before = sched.current_mean
@@ -398,7 +404,7 @@ def test_spike_filtering_skips_outliers():
     scale_before = sched.lr_scale
 
     # Inject a massive spike (far above any reasonable threshold)
-    sched.step(grad_norm=10000.0)
+    _step(sched, 10000.0)
 
     # State should be unchanged -- spike was discarded
     assert (
@@ -429,12 +435,12 @@ def test_spike_filtering_inactive_before_min_samples():
     # Feed some normal samples (fewer than min_samples)
     rng = random.Random(42)
     for _ in range(50):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 0.5))
+        _step(sched, 10.0 + rng.gauss(0, 0.5))
 
     mean_before = sched.current_mean
 
     # Inject a large value -- should NOT be filtered (below min_samples)
-    sched.step(grad_norm=1000.0)
+    _step(sched, 1000.0)
 
     assert (
         sched.current_mean != mean_before
@@ -456,12 +462,12 @@ def test_spike_filtering_disabled_when_none():
 
     rng = random.Random(42)
     for _ in range(50):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 0.5))
+        _step(sched, 10.0 + rng.gauss(0, 0.5))
 
     mean_before = sched.current_mean
 
     # Spike should be accepted since filtering is disabled
-    sched.step(grad_norm=10000.0)
+    _step(sched, 10000.0)
 
     assert (
         sched.current_mean != mean_before
@@ -482,13 +488,13 @@ def test_spike_threshold_property():
 
     # Before min_samples: threshold should be 0 (inactive)
     for _ in range(10):
-        sched.step(grad_norm=10.0)
+        _step(sched, 10.0)
     assert sched.spike_threshold == 0.0
 
     # After min_samples: threshold should be mean + 2*std
     rng = random.Random(42)
     for _ in range(20):
-        sched.step(grad_norm=10.0 + rng.gauss(0, 1.0))
+        _step(sched, 10.0 + rng.gauss(0, 1.0))
 
     threshold = sched.spike_threshold
     expected = sched.current_mean + 2.0 * sched.current_std
@@ -500,7 +506,7 @@ def test_spike_threshold_property():
     opt2 = _make_optimizer()
     sched2 = GradientNoiseScheduler(opt2, warmup_steps=0, spike_threshold_std=None)
     for _ in range(50):
-        sched2.step(grad_norm=10.0)
+        _step(sched2, 10.0)
     assert sched2.spike_threshold == 0.0
 
 
@@ -517,7 +523,7 @@ def test_spike_filtering_state_dict_round_trip():
 
     rng = random.Random(42)
     for _ in range(100):
-        sched1.step(grad_norm=10.0 + rng.gauss(0, 1.0))
+        _step(sched1, 10.0 + rng.gauss(0, 1.0))
 
     state = sched1.state_dict()
     threshold_before = sched1.spike_threshold
@@ -537,6 +543,34 @@ def test_spike_filtering_state_dict_round_trip():
     assert sched2.spike_threshold_std == 2.5
     assert sched2.min_samples_for_spike_filter == 50
     assert abs(sched2.spike_threshold - threshold_before) < 1e-10
+
+
+def test_on_train_metrics_callback():
+    """on_train_metrics callback should feed grad_norm to the scheduler."""
+    from forgather.ml.trainer.trainer_types import TrainerCallback
+
+    opt = _make_optimizer()
+    sched = GradientNoiseScheduler(
+        opt,
+        warmup_steps=0,
+        target_std=1.0,
+        feedback_strength=1e-3,
+        ema_decay=0.99,
+        spike_threshold_std=None,
+    )
+
+    # Verify it is a TrainerCallback
+    assert isinstance(sched, TrainerCallback)
+
+    # Feed grad_norm via on_train_metrics, then step
+    rng = random.Random(42)
+    for _ in range(50):
+        gn = 10.0 + rng.gauss(0, 1.0)
+        sched.on_train_metrics(None, None, None, grad_norm=gn)
+        sched.step()
+
+    assert sched.current_mean > 0.0
+    assert sched.current_std > 0.0
 
 
 if __name__ == "__main__":
@@ -570,8 +604,8 @@ if __name__ == "__main__":
     test_state_dict_round_trip()
     print("PASS: test_state_dict_round_trip")
 
-    test_none_grad_norm()
-    print("PASS: test_none_grad_norm")
+    test_no_grad_norm_step()
+    print("PASS: test_no_grad_norm_step")
 
     test_tensor_input()
     print("PASS: test_tensor_input")
@@ -596,5 +630,8 @@ if __name__ == "__main__":
 
     test_spike_filtering_state_dict_round_trip()
     print("PASS: test_spike_filtering_state_dict_round_trip")
+
+    test_on_train_metrics_callback()
+    print("PASS: test_on_train_metrics_callback")
 
     print("\nAll tests passed.")

@@ -14,14 +14,19 @@ that exceed ``current_mean + spike_threshold_std * current_std``. The filter
 only activates after ``min_samples_for_spike_filter`` steps have been
 collected, so that early noisy statistics don't cause false positives.
 
-Usage:
+When used with the Forgather trainer, the scheduler automatically registers
+itself as a ``TrainerCallback`` and receives gradient norms via the
+``on_train_metrics`` event -- no manual wiring is needed.
+
+Usage (standalone):
     scheduler = GradientNoiseScheduler(optimizer, warmup_steps=5000)
 
     for step in training_loop:
         loss.backward()
         grad_norm = clip_grad_norm_(model.parameters(), max_norm)
         optimizer.step()
-        scheduler.step(grad_norm)
+        scheduler.update_grad_norm(grad_norm)
+        scheduler.step()
 """
 
 import math
@@ -31,8 +36,10 @@ import torch
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
+from forgather.ml.trainer.trainer_types import TrainerCallback
 
-class GradientNoiseScheduler(LRScheduler):
+
+class GradientNoiseScheduler(LRScheduler, TrainerCallback):
     """
     LR scheduler with integral feedback on gradient norm standard deviation.
 
@@ -127,26 +134,46 @@ class GradientNoiseScheduler(LRScheduler):
         self._gn_sq_ema = 0.0
         self._log_lr_scale = 0.0
         self._feedback_step = 0
+        self._pending_grad_norm: float | None = None
 
         # Must be set before super().__init__() which calls get_lr()
         super().__init__(optimizer, last_epoch)
 
-    def step(self, grad_norm=None, epoch=None):
+    def step(self, epoch=None):
         """
         Advance the scheduler by one step.
 
+        Consumes any pending gradient norm fed via ``update_grad_norm()``
+        (or the ``on_train_metrics`` callback) and applies feedback before
+        advancing the base LR scheduler bookkeeping.
+
         Args:
-            grad_norm: The total gradient norm for this step (pre-clipping
-                recommended). Accepts float or scalar tensor. If ``None``,
-                the feedback state is not updated but the base class
-                bookkeeping (last_epoch, etc.) still advances.
             epoch: Deprecated PyTorch scheduler parameter.
         """
-        if grad_norm is not None:
-            if isinstance(grad_norm, torch.Tensor):
-                grad_norm = grad_norm.item()
-            self._update_feedback(grad_norm)
+        if self._pending_grad_norm is not None:
+            self._update_feedback(self._pending_grad_norm)
+            self._pending_grad_norm = None
         super().step(epoch)
+
+    def update_grad_norm(self, grad_norm: float | torch.Tensor):
+        """
+        Feed a gradient norm sample for the next ``step()`` call.
+
+        This is the standalone API for providing gradient norms. When used
+        with the Forgather trainer, this is called automatically via the
+        ``on_train_metrics`` callback.
+
+        Args:
+            grad_norm: The total gradient norm (float or scalar tensor).
+        """
+        if isinstance(grad_norm, torch.Tensor):
+            grad_norm = grad_norm.item()
+        self._pending_grad_norm = grad_norm
+
+    def on_train_metrics(self, args, state, control, *, grad_norm=None, **kwargs):
+        """TrainerCallback: receive gradient norm from the trainer."""
+        if grad_norm is not None:
+            self.update_grad_norm(grad_norm)
 
     def _update_feedback(self, gn: float):
         """Update EMA statistics and integral controller.
