@@ -421,7 +421,15 @@ class TrainerCallback:
         on_predict           - After prediction (also receives metrics)
         on_prediction_step   - After each prediction batch
         on_save              - After checkpoint save
-        on_log               - After metric logging (also receives logs)
+        on_log               - After metric logging (receives logs kwarg)
+
+    Forgather extensions (not in HF Trainer):
+
+        on_log_step          - Called before on_log; receives the mutable logs dict
+                               so callbacks can inject custom metrics before logging
+        on_train_metrics     - Called each training step with per-step metrics
+                               (loss, grad_norm, tokens, etc.) for fine-grained
+                               monitoring or adaptive control
 
     kwargs always include:
         model, processing_class, optimizer, lr_scheduler,

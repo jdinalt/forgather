@@ -370,7 +370,9 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         # More precise: 6N forward + 12N backward = 18N
         return 18.0 * num_params
 
-    def _count_batch_tokens(self, input_dict: dict[str, Tensor], labels: Tensor) -> Tensor:
+    def _count_batch_tokens(
+        self, input_dict: dict[str, Tensor], labels: Tensor
+    ) -> Tensor:
         """
         Count non-padding tokens using labels tensor.
 
@@ -971,6 +973,12 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
 
                     try:
                         loss, total_norm, tokens = self._train_step(data_iterator)
+                        self._dispatch_event(
+                            "on_train_metrics",
+                            loss=loss,
+                            grad_norm=total_norm,
+                            tokens=tokens,
+                        )
                     except StopIteration:
                         self.state.raw_epoch += 1
                         self.state.epoch_start_step = self.state.global_step
@@ -1157,7 +1165,9 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             accumulated_losses.append(loss)
             # Count tokens in this micro-batch (local, not yet synchronized across ranks).
             # _count_batch_tokens returns a GPU tensor to avoid forcing GPU-CPU sync.
-            accumulated_tokens = accumulated_tokens + self._count_batch_tokens(input_dict, labels)
+            accumulated_tokens = accumulated_tokens + self._count_batch_tokens(
+                input_dict, labels
+            )
 
         assert self._should_sync_gradients()
         assert self.optimizer is not None
@@ -1532,7 +1542,13 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             logs["peak_mem_allocated"] = torch.cuda.max_memory_allocated(device=device)
             torch.cuda.reset_peak_memory_stats(device=device)
 
-        # Capture control object from log callbacks for trainer control
+        # Allow callbacks to add entries to the logs before on_log fires
+        self._dispatch_event(
+            "on_log_step",
+            logs=logs,
+        )
+
+        # Dispatch on_log to all logging callbacks
         return self.log(logs)
 
     def _prepare_batch(
