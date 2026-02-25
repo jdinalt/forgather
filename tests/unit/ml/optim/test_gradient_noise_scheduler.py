@@ -41,7 +41,9 @@ def test_auto_calibration():
     """target_std should be set from EMA at end of warmup when not specified."""
     warmup = 200
     opt = _make_optimizer()
-    sched = GradientNoiseScheduler(opt, warmup_steps=warmup, ema_decay=0.99)
+    sched = GradientNoiseScheduler(
+        opt, warmup_steps=warmup, ema_decay=0.99, spike_threshold_std=None
+    )
 
     assert sched.target_std is None
 
@@ -371,6 +373,172 @@ def test_zero_warmup_with_manual_target():
     assert sched.lr_scale < 1.0, "Feedback should have reduced LR"
 
 
+def test_spike_filtering_skips_outliers():
+    """Spikes above threshold should be discarded after min_samples."""
+    min_samples = 50
+    opt = _make_optimizer()
+    sched = GradientNoiseScheduler(
+        opt,
+        warmup_steps=0,
+        target_std=1.0,
+        spike_threshold_std=1.645,
+        min_samples_for_spike_filter=min_samples,
+        feedback_strength=1e-3,
+        ema_decay=0.99,
+    )
+
+    # Accumulate enough clean samples to activate filtering
+    rng = random.Random(42)
+    for _ in range(min_samples + 50):
+        sched.step(grad_norm=10.0 + rng.gauss(0, 0.5))
+
+    # Record state before spike
+    mean_before = sched.current_mean
+    std_before = sched.current_std
+    scale_before = sched.lr_scale
+
+    # Inject a massive spike (far above any reasonable threshold)
+    sched.step(grad_norm=10000.0)
+
+    # State should be unchanged -- spike was discarded
+    assert (
+        sched.current_mean == mean_before
+    ), f"Mean changed after spike: {sched.current_mean} != {mean_before}"
+    assert (
+        sched.current_std == std_before
+    ), f"Std changed after spike: {sched.current_std} != {std_before}"
+    assert (
+        sched.lr_scale == scale_before
+    ), f"LR scale changed after spike: {sched.lr_scale} != {scale_before}"
+
+
+def test_spike_filtering_inactive_before_min_samples():
+    """Before min_samples, spikes should be incorporated normally."""
+    min_samples = 200
+    opt = _make_optimizer()
+    sched = GradientNoiseScheduler(
+        opt,
+        warmup_steps=0,
+        target_std=1.0,
+        spike_threshold_std=1.645,
+        min_samples_for_spike_filter=min_samples,
+        feedback_strength=1e-3,
+        ema_decay=0.99,
+    )
+
+    # Feed some normal samples (fewer than min_samples)
+    rng = random.Random(42)
+    for _ in range(50):
+        sched.step(grad_norm=10.0 + rng.gauss(0, 0.5))
+
+    mean_before = sched.current_mean
+
+    # Inject a large value -- should NOT be filtered (below min_samples)
+    sched.step(grad_norm=1000.0)
+
+    assert (
+        sched.current_mean != mean_before
+    ), "Spike should have been incorporated before min_samples"
+
+
+def test_spike_filtering_disabled_when_none():
+    """With spike_threshold_std=None, all samples are accepted."""
+    opt = _make_optimizer()
+    sched = GradientNoiseScheduler(
+        opt,
+        warmup_steps=0,
+        target_std=1.0,
+        spike_threshold_std=None,
+        min_samples_for_spike_filter=10,
+        feedback_strength=1e-3,
+        ema_decay=0.99,
+    )
+
+    rng = random.Random(42)
+    for _ in range(50):
+        sched.step(grad_norm=10.0 + rng.gauss(0, 0.5))
+
+    mean_before = sched.current_mean
+
+    # Spike should be accepted since filtering is disabled
+    sched.step(grad_norm=10000.0)
+
+    assert (
+        sched.current_mean != mean_before
+    ), "Spike should have been incorporated when filtering is disabled"
+
+
+def test_spike_threshold_property():
+    """spike_threshold property should return expected values."""
+    opt = _make_optimizer()
+    sched = GradientNoiseScheduler(
+        opt,
+        warmup_steps=0,
+        target_std=1.0,
+        spike_threshold_std=2.0,
+        min_samples_for_spike_filter=20,
+        ema_decay=0.99,
+    )
+
+    # Before min_samples: threshold should be 0 (inactive)
+    for _ in range(10):
+        sched.step(grad_norm=10.0)
+    assert sched.spike_threshold == 0.0
+
+    # After min_samples: threshold should be mean + 2*std
+    rng = random.Random(42)
+    for _ in range(20):
+        sched.step(grad_norm=10.0 + rng.gauss(0, 1.0))
+
+    threshold = sched.spike_threshold
+    expected = sched.current_mean + 2.0 * sched.current_std
+    assert (
+        abs(threshold - expected) < 1e-10
+    ), f"Threshold {threshold} != expected {expected}"
+
+    # With filtering disabled: always 0
+    opt2 = _make_optimizer()
+    sched2 = GradientNoiseScheduler(opt2, warmup_steps=0, spike_threshold_std=None)
+    for _ in range(50):
+        sched2.step(grad_norm=10.0)
+    assert sched2.spike_threshold == 0.0
+
+
+def test_spike_filtering_state_dict_round_trip():
+    """Spike filtering params should survive state_dict save/load."""
+    opt1 = _make_optimizer()
+    sched1 = GradientNoiseScheduler(
+        opt1,
+        warmup_steps=10,
+        spike_threshold_std=2.5,
+        min_samples_for_spike_filter=50,
+        ema_decay=0.99,
+    )
+
+    rng = random.Random(42)
+    for _ in range(100):
+        sched1.step(grad_norm=10.0 + rng.gauss(0, 1.0))
+
+    state = sched1.state_dict()
+    threshold_before = sched1.spike_threshold
+
+    # Load into a new scheduler (with different constructor defaults)
+    opt2 = _make_optimizer()
+    sched2 = GradientNoiseScheduler(
+        opt2,
+        warmup_steps=10,
+        spike_threshold_std=1.0,  # Different from saved
+        min_samples_for_spike_filter=10,  # Different from saved
+        ema_decay=0.99,
+    )
+    sched2.load_state_dict(state)
+
+    # Should have restored the saved values, not the constructor defaults
+    assert sched2.spike_threshold_std == 2.5
+    assert sched2.min_samples_for_spike_filter == 50
+    assert abs(sched2.spike_threshold - threshold_before) < 1e-10
+
+
 if __name__ == "__main__":
     test_warmup_lr_unchanged()
     print("PASS: test_warmup_lr_unchanged")
@@ -413,5 +581,20 @@ if __name__ == "__main__":
 
     test_zero_warmup_with_manual_target()
     print("PASS: test_zero_warmup_with_manual_target")
+
+    test_spike_filtering_skips_outliers()
+    print("PASS: test_spike_filtering_skips_outliers")
+
+    test_spike_filtering_inactive_before_min_samples()
+    print("PASS: test_spike_filtering_inactive_before_min_samples")
+
+    test_spike_filtering_disabled_when_none()
+    print("PASS: test_spike_filtering_disabled_when_none")
+
+    test_spike_threshold_property()
+    print("PASS: test_spike_threshold_property")
+
+    test_spike_filtering_state_dict_round_trip()
+    print("PASS: test_spike_filtering_state_dict_round_trip")
 
     print("\nAll tests passed.")

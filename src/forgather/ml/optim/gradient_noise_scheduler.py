@@ -8,6 +8,12 @@ grow over training, eventually degrading the signal-to-noise ratio. This
 scheduler implements an integral feedback controller in log-LR space that
 slowly adjusts the learning rate to keep the gradient norm std near a target.
 
+Gradient spikes can corrupt the EMA statistics and cause the controller to
+overreact. An optional spike filter (enabled by default) discards samples
+that exceed ``current_mean + spike_threshold_std * current_std``. The filter
+only activates after ``min_samples_for_spike_filter`` steps have been
+collected, so that early noisy statistics don't cause false positives.
+
 Usage:
     scheduler = GradientNoiseScheduler(optimizer, warmup_steps=5000)
 
@@ -62,6 +68,14 @@ class GradientNoiseScheduler(LRScheduler):
         max_lr_scale: Ceiling on the multiplicative LR scale factor. ``None``
             means no ceiling (LR can increase if std < target). Set to ``1.0``
             to prevent the LR from exceeding the base LR.
+        spike_threshold_std: Number of standard deviations above the EMA mean
+            beyond which a gradient norm sample is considered a spike and
+            discarded. Default ``1.645`` corresponds to the ~95th percentile
+            of a normal distribution. Set to ``None`` to disable spike
+            filtering entirely.
+        min_samples_for_spike_filter: Minimum number of feedback steps before
+            spike filtering activates. Early statistics are too noisy for
+            reliable outlier detection. Default ``100``.
         last_epoch: Standard PyTorch scheduler parameter for resuming.
     """
 
@@ -74,6 +88,8 @@ class GradientNoiseScheduler(LRScheduler):
         feedback_strength: float = 1e-5,
         min_lr_scale: float = 0.01,
         max_lr_scale: Optional[float] = None,
+        spike_threshold_std: Optional[float] = 1.645,
+        min_samples_for_spike_filter: int = 100,
         last_epoch: int = -1,
     ):
         assert warmup_steps >= 0, f"warmup_steps must be >= 0, got {warmup_steps}"
@@ -89,6 +105,13 @@ class GradientNoiseScheduler(LRScheduler):
             ), f"max_lr_scale ({max_lr_scale}) must be >= min_lr_scale ({min_lr_scale})"
         if target_std is not None:
             assert target_std > 0.0, f"target_std must be > 0, got {target_std}"
+        if spike_threshold_std is not None:
+            assert (
+                spike_threshold_std > 0.0
+            ), f"spike_threshold_std must be > 0, got {spike_threshold_std}"
+        assert (
+            min_samples_for_spike_filter >= 0
+        ), f"min_samples_for_spike_filter must be >= 0, got {min_samples_for_spike_filter}"
 
         self.warmup_steps = warmup_steps
         self._target_std = target_std
@@ -96,6 +119,8 @@ class GradientNoiseScheduler(LRScheduler):
         self.feedback_strength = feedback_strength
         self.min_lr_scale = min_lr_scale
         self.max_lr_scale = max_lr_scale
+        self.spike_threshold_std = spike_threshold_std
+        self.min_samples_for_spike_filter = min_samples_for_spike_filter
 
         # EMA state
         self._gn_ema = 0.0
@@ -124,7 +149,20 @@ class GradientNoiseScheduler(LRScheduler):
         super().step(epoch)
 
     def _update_feedback(self, gn: float):
-        """Update EMA statistics and integral controller."""
+        """Update EMA statistics and integral controller.
+
+        If spike filtering is active and the sample exceeds the spike
+        threshold, the sample is discarded entirely -- no state is updated.
+        """
+        # Spike filtering: discard outliers once sufficient samples exist
+        if (
+            self.spike_threshold_std is not None
+            and self._feedback_step >= self.min_samples_for_spike_filter
+        ):
+            threshold = self._spike_threshold()
+            if threshold > 0.0 and gn > threshold:
+                return
+
         self._feedback_step += 1
         beta = self.ema_decay
 
@@ -173,6 +211,23 @@ class GradientNoiseScheduler(LRScheduler):
             return 0.0
         return math.sqrt(variance)
 
+    def _spike_threshold(self) -> float:
+        """Compute the spike detection threshold from current EMA statistics."""
+        mean = self.current_mean
+        std = self._current_std()
+        if std <= 0.0:
+            return 0.0
+        return mean + self.spike_threshold_std * std
+
+    @property
+    def spike_threshold(self) -> float:
+        """Current spike detection threshold, or 0.0 if filtering is inactive."""
+        if self.spike_threshold_std is None:
+            return 0.0
+        if self._feedback_step < self.min_samples_for_spike_filter:
+            return 0.0
+        return self._spike_threshold()
+
     def get_lr(self):
         """Compute LRs with adaptive feedback scale applied."""
         scale = math.exp(self._log_lr_scale)
@@ -209,6 +264,8 @@ class GradientNoiseScheduler(LRScheduler):
         state["log_lr_scale"] = self._log_lr_scale
         state["feedback_step"] = self._feedback_step
         state["target_std"] = self._target_std
+        state["spike_threshold_std"] = self.spike_threshold_std
+        state["min_samples_for_spike_filter"] = self.min_samples_for_spike_filter
         return state
 
     def load_state_dict(self, state_dict):
@@ -218,4 +275,10 @@ class GradientNoiseScheduler(LRScheduler):
         self._log_lr_scale = state_dict.pop("log_lr_scale", 0.0)
         self._feedback_step = state_dict.pop("feedback_step", 0)
         self._target_std = state_dict.pop("target_std", self._target_std)
+        self.spike_threshold_std = state_dict.pop(
+            "spike_threshold_std", self.spike_threshold_std
+        )
+        self.min_samples_for_spike_filter = state_dict.pop(
+            "min_samples_for_spike_filter", self.min_samples_for_spike_filter
+        )
         super().load_state_dict(state_dict)
