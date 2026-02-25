@@ -583,7 +583,7 @@ def test_linear_warmup():
     sched = GradientNoiseScheduler(
         opt,
         warmup_steps=warmup,
-        calibration_steps=warmup + 100,  # Keep feedback inactive during warmup
+        calibration_steps=0,
         target_std=1.0,
         spike_threshold_std=None,
     )
@@ -601,6 +601,35 @@ def test_linear_warmup():
     # After warmup, LR should be at base_lr (feedback hasn't kicked in yet)
     _step(sched, 10.0)
     assert abs(_get_lr(sched) - base_lr) < 1e-12
+
+
+def test_warmup_skips_stats_tracking():
+    """Grad norm statistics should not be tracked during LR warmup."""
+    warmup = 50
+    opt = _make_optimizer()
+    sched = GradientNoiseScheduler(
+        opt,
+        warmup_steps=warmup,
+        calibration_steps=10,
+        target_std=1.0,
+        spike_threshold_std=None,
+        ema_decay=0.99,
+    )
+
+    # Feed grad norms during LR warmup -- they should be ignored
+    rng = random.Random(42)
+    for _ in range(warmup):
+        _step(sched, 10.0 + rng.gauss(0, 5.0))
+
+    assert (
+        sched._feedback_step == 0
+    ), f"Stats tracked during warmup: {sched._feedback_step} steps"
+
+    # After warmup, stats should start tracking
+    for _ in range(20):
+        _step(sched, 10.0 + rng.gauss(0, 1.0))
+
+    assert sched._feedback_step == 20
 
 
 def test_no_warmup_default():
@@ -677,5 +706,8 @@ if __name__ == "__main__":
 
     test_no_warmup_default()
     print("PASS: test_no_warmup_default")
+
+    test_warmup_skips_stats_tracking()
+    print("PASS: test_warmup_skips_stats_tracking")
 
     print("\nAll tests passed.")

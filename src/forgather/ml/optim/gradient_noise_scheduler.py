@@ -177,7 +177,10 @@ class GradientNoiseScheduler(LRScheduler, TrainerCallback):
             epoch: Deprecated PyTorch scheduler parameter.
         """
         if self._pending_grad_norm is not None:
-            self._update_feedback(self._pending_grad_norm)
+            # Skip stats tracking during LR warmup -- gradients are unstable
+            # while the LR is ramping from zero.
+            if self.warmup_steps == 0 or self.last_epoch >= self.warmup_steps:
+                self._update_feedback(self._pending_grad_norm)
             self._pending_grad_norm = None
         super().step(epoch)
 
