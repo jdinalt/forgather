@@ -27,6 +27,8 @@ class CanonPreLNLayer(nn.Module):
         residual_dropout: Optional[float] = 0.0,
         d_model: int,
         canon_factory: Callable,
+        canon_a_factory: Optional[Callable] = None,
+        canon_c_factory: Optional[Callable] = None,
         **kwargs,
     ):
         super().__init__()
@@ -44,9 +46,9 @@ class CanonPreLNLayer(nn.Module):
             self.residual_dropout = nn.Dropout(residual_dropout)
 
         # Canon-A: after norm1, before attention
-        self.canon_a = canon_factory(dim=d_model)
+        self.canon_a = (canon_a_factory or canon_factory)(dim=d_model)
         # Canon-C: after norm2, before feedforward
-        self.canon_c = canon_factory(dim=d_model)
+        self.canon_c = (canon_c_factory or canon_factory)(dim=d_model)
 
     def forward(self, x: FloatTensor, **kwargs) -> FloatTensor:
         residual = self.residual_dropout(x)

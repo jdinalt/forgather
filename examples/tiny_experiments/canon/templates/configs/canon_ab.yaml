@@ -1,0 +1,40 @@
+-- extends "configs/baseline.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Canon-AB 4M"
+    -- set ns.config_description = "LlamaCanon 4M with Canon-A (pre-attn) and Canon-B (attn QKV)"
+    -- set ns.model_name = "canon_ab_4m"
+
+[model_definition]
+    -- include "config.canon_ab.model"
+
+#------------- config.canon_ab.model --------------
+-- extends "config.baseline.model"
+
+## Canon-AB: Pre-attention convolution (A) plus QKV convolution (B).
+## Standard feedforward (no D), no pre-FFN conv (no C).
+
+[feedforward_factory]
+.define: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
+    d_model: !var "hidden_size"
+    d_feedforward: !var "intermediate_size"
+    activation_factory: !partial:torch.nn.SiLU
+    dropout: !var "activation_dropout"
+
+    [canon_factory_def]
+.define: &canon_factory !partial:.canon_layer:CanonLayer@canon_factory
+    kernel_size: !var "canon_kernel"
+    residual: !var "canon_residual"
+
+[layer_factory]
+.define: &layer_factory !partial:.canon_pre_ln_layer:CanonPreLNLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+    dropout: !var "layer_dropout"
+    residual_dropout: !var "residual_dropout"
+    d_model: !var "hidden_size"
+    canon_factory: *canon_factory
+    # Disable Canon-C: use Identity (no-op) for the pre-FFN position
+    canon_c_factory: !partial:torch.nn:Identity
