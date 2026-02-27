@@ -59,7 +59,11 @@ class LayerStack(nn.Module):
             self.layer_norm = post_norm_factory()
 
     def extra_repr(self):
-        return f"gradient_checkpointing={self.gradient_checkpointing}, checkpoint_stride={self.checkpoint_stride}"
+        return (
+            f"gradient_checkpointing={self.gradient_checkpointing}, "
+            f"checkpoint_stride={self.checkpoint_stride}, "
+            f"checkpoint_kwargs={self.checkpoint_kwargs}"
+        )
 
     def forward(
         self,

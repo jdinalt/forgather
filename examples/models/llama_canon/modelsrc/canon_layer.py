@@ -262,12 +262,15 @@ class CanonLayer(nn.Module):
         kernel_size: int = 4,
         bias: bool = False,
         residual: bool = True,
+        use_triton: bool = True,
         **kwargs,
     ):
         super().__init__()
         self.dim = dim
         self.kernel_size = kernel_size
+        self.bias = bias
         self.residual = residual
+        self.use_triton = use_triton
 
         self.conv = nn.Conv1d(
             in_channels=dim,
@@ -278,6 +281,15 @@ class CanonLayer(nn.Module):
             padding=kernel_size - 1,
         )
 
+    def extra_repr(self):
+        return (
+            f"dim={self.dim}, "
+            f"kernel_size={self.kernel_size}, "
+            f"bias={self.bias}, "
+            f"residual={self.residual}, "
+            f"use_triton={self.use_triton}"
+        )
+
     def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
         """
         Args:
@@ -285,7 +297,7 @@ class CanonLayer(nn.Module):
         Returns:
             [batch_size, seq_len, dim]
         """
-        if _HAS_TRITON and x.is_cuda and x.shape[-1] >= 384:
+        if self.use_triton and _HAS_TRITON and x.is_cuda and x.shape[-1] >= 384:
             return _causal_dconv1d(x, self.conv.weight.squeeze(1), self.residual)
 
         # Fallback: Conv1d expects [B, C, T]

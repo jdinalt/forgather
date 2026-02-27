@@ -30,7 +30,10 @@ class InputEncoder(nn.Module):
         scale_sqrt_d_model: bool = False,
     ):
         super().__init__()
+        self.d_model = d_model
+        self.scale_sqrt_d_model = scale_sqrt_d_model
         self.scale = math.sqrt(d_model) if scale_sqrt_d_model else scale
+        self.dropout_p = dropout
         self.dropout = nn.Identity() if dropout == 0.0 else nn.Dropout(dropout)
         self.embedding = embedding
         setattr(self.embedding, "init_prefix", "embedding")
@@ -41,7 +44,12 @@ class InputEncoder(nn.Module):
             self.positional_encoder = None
 
     def extra_repr(self):
-        return f"scale={self.scale}"
+        return (
+            f"d_model={self.d_model}, "
+            f"dropout={self.dropout_p}, "
+            f"scale={self.scale}, "
+            f"scale_sqrt_d_model={self.scale_sqrt_d_model}"
+        )
 
     def forward(
         self, input_ids: LongTensor, position_ids: Optional[LongTensor] = None

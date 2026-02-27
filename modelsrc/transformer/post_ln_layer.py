@@ -12,7 +12,7 @@ class PostLNLayer(nn.Module):
         feedforward_factory: Callable,
         attention_factory: Callable,
         norm_factory: Callable,
-        dropout: Optional[float] = 0.1,
+        dropout: Optional[float] = 0.0,
         residual_dropout: Optional[float] = 0.0,
         **kwargs,
     ):
@@ -21,6 +21,8 @@ class PostLNLayer(nn.Module):
         self.attention = attention_factory(**kwargs)
         self.norm1 = norm_factory()
         self.norm2 = norm_factory()
+        self.dropout_p = dropout
+        self.residual_dropout_p = residual_dropout
         if not dropout:
             self.dropout = nn.Identity()
         else:
@@ -32,6 +34,12 @@ class PostLNLayer(nn.Module):
         else:
             self.residual_dropout = nn.Dropout(residual_dropout)
 
+    def extra_repr(self):
+        return (
+            f"dropout={self.dropout_p}, "
+            f"residual_dropout={self.residual_dropout_p}"
+        )
+    
     def forward(self, x: FloatTensor, **kwargs) -> FloatTensor:
         residual = self.residual_dropout(x)
         x = self.attention(x, **kwargs)

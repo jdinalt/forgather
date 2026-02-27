@@ -303,7 +303,7 @@ class GLUFeedforwardLayer(nn.Module):
         d_feedforward: int,
         *,
         activation_factory: Callable = lambda: nn.SiLU(),
-        dropout: Optional[float] = 0.1,
+        dropout: Optional[float] = 0.0,
         use_triton: bool = True,
         **kwargs,
     ):
@@ -320,6 +320,7 @@ class GLUFeedforwardLayer(nn.Module):
         self.down_proj = nn.Linear(self.d_feedforward, self.d_model, bias=False)
         setattr(self.down_proj, "init_prefix", "ff.down_proj")
         self.activation = activation_factory()
+        self.dropout_p = dropout
         if not dropout:
             self.dropout = nn.Identity()
         else:
@@ -349,6 +350,7 @@ class GLUFeedforwardLayer(nn.Module):
     def extra_repr(self):
         return (
             f"d_model={self.d_model}, d_feedforward={self.d_feedforward}, "
+            f"dropout={self.dropout_p}, "
             f"use_triton={self._fused_op is not None}"
         )
 

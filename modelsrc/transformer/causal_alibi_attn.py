@@ -42,6 +42,7 @@ class CausalAlibiAttn(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads or num_heads  # Default to MHA
+        self.bias = bias
         self.trainable_alibi = trainable_alibi
         self.alt_alibi_init = alt_alibi_init
         self.layer_idx = layer_idx
@@ -122,6 +123,7 @@ class CausalAlibiAttn(nn.Module):
     def extra_repr(self):
         return (
             f"d_model={self.d_model}, num_heads={self.num_heads}, num_kv_heads={self.num_kv_heads}, "
+            f"bias={self.bias}, dropout={self.dropout_p}, "
             f"trainable_alibi={self.trainable_alibi}, alt_alibi_init={self.alt_alibi_init}, "
             f"attn_implementation={self.attn_implementation}, sliding_window={self.sliding_window}"
         )

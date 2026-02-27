@@ -55,6 +55,7 @@ class SingleHeadAlibiAttn(nn.Module):
         else:
             self.alibi_slope = self.slope_init
         self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
+        self.dropout_p = dropout
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -64,7 +65,7 @@ class SingleHeadAlibiAttn(nn.Module):
 
     def extra_repr(self):
         return (
-            f"d_model={self.d_model}, slope_init={self.slope_init}, trainable_alibi={self.trainable_alibi} "
+            f"d_model={self.d_model}, dropout={self.dropout_p}, slope_init={self.slope_init}, trainable_alibi={self.trainable_alibi} "
             f"bias={self.bias}"
         )
 

@@ -193,7 +193,9 @@ class RotaryPE:
             )
         return (
             f"ComplexRotaryPE(d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, "
-            f"rope_theta={self.rope_theta}, rope_type={rope_type})"
+            f"rope_theta={self.rope_theta}, "
+            f"rope_type={rope_type}, "
+            f"rope_scaling={self.rope_scaling}"
         )
 
     def _compute_embeddings(

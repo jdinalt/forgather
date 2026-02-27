@@ -45,6 +45,7 @@ class CausalMultiheadAttn(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads or num_heads  # Default to MHA
+        self.bias = bias
         self.pos_encoder = pos_encoder
 
         # TODO: Temporary hack for flash-attention-2. Do this right!
@@ -107,8 +108,10 @@ class CausalMultiheadAttn(nn.Module):
             f"d_model={self.d_model}, "
             f"num_heads={self.num_heads}, "
             f"num_kv_heads={self.num_kv_heads}, "
+            f"bias={self.bias}, "
             f"attn_implementation={self.attn_implementation}, "
-            f"dropout_p={self.dropout_p}"
+            f"dropout_p={self.dropout_p}, "
+            f"sliding_window={self.sliding_window}"
         )
 
     def forward(
