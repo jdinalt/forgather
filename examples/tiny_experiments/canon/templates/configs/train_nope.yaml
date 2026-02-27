@@ -1,0 +1,8 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Train Canon NoPE"
+    -- set ns.config_description = "Train the Canon 4M model without positional encoding"
+    -- set ns.model_name = "canon_nope_4m"
+    -- set ns.model_project_config = "nope.yaml"

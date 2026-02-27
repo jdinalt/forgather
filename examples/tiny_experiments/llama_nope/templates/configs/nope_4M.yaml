@@ -1,0 +1,16 @@
+-- extends "configs/4M.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Llama NoPE 4M"
+    -- set ns.config_description = "Plain Llama 4M without positional encoding"
+    -- set ns.model_name = "llama_nope_4m"
+
+[model_definition]
+    -- include "config.llama_nope.model"
+
+#------------- config.llama_nope.model --------------
+-- extends "config.4M.model"
+
+[rel_positional_encoder]
+.define: &relative_pe null

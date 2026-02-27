@@ -9,4 +9,4 @@
 name: "Canon Experiments"
 description: "Experiments with Canon layer configurations"
 config_prefix: "configs"
-default_config: "baseline.yaml"
+default_config: "train_baseline.yaml"

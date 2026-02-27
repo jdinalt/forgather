@@ -1,0 +1,6 @@
+-- extends 'projects/tiny.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.model_project_dir = project_dir
+    -- set ns.model_project_config = "baseline.yaml"

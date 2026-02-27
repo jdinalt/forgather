@@ -336,6 +336,47 @@ When creating a project that builds on an existing model project (e.g., experime
 
 See `examples/tiny_experiments/canon/` for a complete example of a project extending `examples/models/llama_canon/`, and `examples/pretrain/small-llm/custom_deepone/` for a simpler case where no modelsrc override is needed.
 
+#### Adding Training to a Model Experiment Project
+
+A single project can contain both model configs and training configs. The pattern:
+
+1. **Create a training project template** (`templates/project.yaml`) that extends the base training template and points to the current project for model loading:
+   ```yaml
+   -- extends 'projects/tiny.yaml'
+   [config_metadata]
+       == super()
+       -- set ns.model_project_dir = project_dir
+       -- set ns.model_project_config = "baseline.yaml"
+   ```
+
+2. **Create training configs** (`configs/train_*.yaml`) that extend the project template and select which model config to train:
+   ```yaml
+   -- extends 'project.yaml'
+   [config_metadata]
+       == super()
+       -- set ns.config_name = "Train My Variant"
+       -- set ns.model_name = "my_variant"
+       -- set ns.model_project_config = "variant.yaml"
+   ```
+
+3. **Create model variant configs** using inline model templates to override specific blocks. For example, to remove RoPE:
+   ```yaml
+   -- extends "configs/baseline.yaml"
+   [config_metadata]
+       == super()
+       -- set ns.model_name = "nope_variant"
+   [model_definition]
+       -- include "config.nope.model"
+   #------------- config.nope.model --------------
+   -- extends "config.baseline.model"
+   [rel_positional_encoder]
+   .define: &relative_pe null
+   ```
+
+Model configs (`forgather model test`) and training configs (`forgather train`) coexist in the same `configs/` directory. Use `forgather ls` to see both.
+
+See `examples/tiny_experiments/canon/` for a working example with baseline and NoPE model variants plus their training configs.
+
 ### Project Installation
 ```bash
 pip install -e .
@@ -665,12 +706,21 @@ Refer to these when creating new projects.
 - Cross-project model inheritance (with modelsrc) : "examples/tiny_experiments/canon/"
 - Cross-project model inheritance (without modelsrc) : "examples/pretrain/small-llm/custom_deepone/"
 
+**Common Template Override Patterns**
+- To override a block in the model template chain (e.g., `[rel_positional_encoder]`, `[attention_factory]`), you must do it in an **inline model template** (after `#--- config.*.model ---`), not in the main config section
+- To disable RoPE: override `[rel_positional_encoder]` with `.define: &relative_pe null` — attention modules guard with `if self.pos_encoder:`
+- To disable a factory-based component: set the anchor to `null` in the appropriate block
+- The `projects/tiny.yaml` template provides a complete training setup for small model experiments (TinyStories dataset, 1 epoch, AdamW + InfiniteLR scheduler)
+- Use `-- set ns.model_project_dir = project_dir` to reference the current project as a model project from a training config
+
 **Common Issues and Solutions**
 - Missing import errors (e.g., `Callable` not imported): Add missing imports to affected files
 - YAML tag errors: Use `!partial` for function objects, `!singleton`/`!factory` for function calls
 - Configuration validation: Run `forgather ls` to check all configs parse correctly
 - Complex64 serialization: RoPE models may fail to save due to safetensors limitations with complex tensors
 - `ModuleNotFoundError` when extending model projects with `modelsrc/`: The `project_dir` variable in `[model_submodule_searchpath]` resolves to the current project, not the base model project. Override the search path to point to the base model's modelsrc directory. See "Creating a Project That Extends Another Model Project" above.
+- **Template name shadowing / RecursionError**: When multiple model projects are in the search path, their config files may shadow each other (e.g., both `llama/` and `llama_canon/` have `configs/4M.yaml`). A child config named `4M.yaml` that extends `configs/4M.yaml` will resolve to itself, causing infinite recursion. Fix: use a distinct config name (e.g., `nope_4M.yaml`) or create a separate model project for each base model you extend.
+- **Extending multiple model projects**: When experiments need model variants from different base models (e.g., Canon + plain Llama), create a separate model project for each base rather than adding all templates to one search path. This avoids name shadowing and keeps template resolution predictable. Example: `examples/tiny_experiments/llama_nope/` is a separate project for the plain Llama NoPE variant, referenced from canon training configs via `ns.model_project_dir`.
 
 **Style**
 

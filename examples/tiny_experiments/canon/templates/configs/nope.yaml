@@ -1,0 +1,16 @@
+-- extends "configs/baseline.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Canon NoPE 4M"
+    -- set ns.config_description = "LlamaCanon 4M without positional encoding (NoPE)"
+    -- set ns.model_name = "canon_nope_4m"
+
+[model_definition]
+    -- include "config.nope.model"
+
+#------------- config.nope.model --------------
+-- extends "config.baseline.model"
+
+[rel_positional_encoder]
+.define: &relative_pe null
