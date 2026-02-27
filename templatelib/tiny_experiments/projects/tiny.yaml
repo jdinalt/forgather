@@ -88,6 +88,7 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     num_train_epochs: 1
     dataloader_num_workers: 1
     torch_compile: {{ compile | default(False) }}
+    float32_matmul_precision: "high"
 
 [trainer_callbacks]
     ## See definition below
