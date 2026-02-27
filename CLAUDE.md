@@ -258,32 +258,32 @@ forgather -t train_tiny_llama.yaml train            # Train with selected config
 
 ### Workspace and Project Creation
 
-Forgather uses a two-level structure: **Workspaces** contain **Projects**. Use the `forgather ws` commands to create and manage both.
+Forgather uses a two-level structure: **Workspaces** contain **Projects**. Use `forgather ws create` for workspaces and `forgather project create` for projects.
 
 #### Creating a New Workspace
 ```bash
 # Basic workspace creation
-forgather ws init --name "My ML Workspace" --description "Machine learning research experiments" --forgather-dir /path/to/forgather
+forgather ws create --name "My ML Workspace" --description "Machine learning research experiments" --forgather-dir /path/to/forgather
 
 # With additional template search paths
-forgather ws init --name "Advanced Workspace" --description "Advanced ML experiments" --forgather-dir /path/to/forgather /extra/templates/path /another/path
-
-# With no default search paths (minimal workspace)
-forgather ws init --name "Minimal Workspace" --description "Clean minimal setup" --forgather-dir /path/to/forgather --no-defaults
+forgather ws create --name "Advanced Workspace" --description "Advanced ML experiments" --forgather-dir /path/to/forgather --search-path /extra/templates/path
 ```
 
 This creates a `forgather_workspace/` directory containing:
 - `README.md` - Workspace documentation
-- `base_directories.yaml` - Base directory configuration  
+- `base_directories.yaml` - Base directory configuration
 - `meta_defaults.yaml` - Template search paths and workspace metadata
 
 #### Creating a New Project in a Workspace
 ```bash
-# Basic project creation (directory name auto-generated from project name)
-forgather ws project --name "Sentiment Analysis" --description "BERT-based sentiment analysis experiments"
+# Basic project creation (run from inside a workspace directory)
+forgather project create --name "Sentiment Analysis" --description "BERT-based sentiment analysis experiments"
 
 # With custom settings
-forgather ws project --name "Image Classification" --description "CNN experiments" --config-prefix "experiments" --default-config "baseline.yaml" custom_directory_name
+forgather project create --name "Image Classification" --description "CNN experiments" --config-prefix "experiments" --default-config "baseline.yaml" --project-dir-name custom_directory_name
+
+# Copy default config from an existing configuration file
+forgather project create --name "Custom Model" --description "Customized model" path/to/source_config.yaml
 ```
 
 This creates a project directory with:
@@ -292,12 +292,49 @@ This creates a project directory with:
 - `templates/configs/{default_config}` - Default configuration template
 
 #### Typical Workspace Setup Workflow
-1. **Create workspace**: `forgather ws init --name "My Research" --description "ML experiments" --forgather-dir /path/to/forgather`
-2. **Create project(s)**: `forgather ws project --name "Project 1" --description "First experiment"`
+1. **Create workspace**: `forgather ws create --name "My Research" --description "ML experiments" --forgather-dir /path/to/forgather`
+2. **Create project(s)**: `forgather project create --name "Project 1" --description "First experiment"`
 3. **Navigate to project**: `cd project_1`
 4. **List configurations**: `forgather ls`
-5. **Test configuration**: `forgather pp` 
+5. **Test configuration**: `forgather pp`
 6. **Train model**: `forgather train`
+
+#### Creating a Project That Extends Another Model Project
+
+When creating a project that builds on an existing model project (e.g., experimenting with a model defined in `examples/models/`), you need to:
+
+1. **Add the base model's templates to the search path** in `meta.yaml`:
+   ```yaml
+   -- extends "meta_defaults.yaml"
+   [searchdir_project]
+       == super()
+       - "{{ joinpath(ns.forgather_dir, 'examples/models/base_model/templates') }}"
+   ```
+
+2. **Override `[model_submodule_searchpath]`** if the base model has a `modelsrc/` directory. The base model's config typically uses `{{ joinpath(project_dir, 'modelsrc') }}` which resolves to the *current* project's directory, not the base model's. Fix this by adding an inline model template that points to the correct modelsrc path:
+   ```yaml
+   -- extends "configs/base_config.yaml"
+
+   [config_metadata]
+       == super()
+       -- set ns.model_name = "my_experiment"
+
+   [model_definition]
+       -- include "config.my_experiment.model"
+
+   #------------- config.my_experiment.model --------------
+   -- extends "config.base.model"
+
+   [model_submodule_searchpath]
+       - "{{ joinpath(ns.forgather_dir, 'examples/models/base_model/modelsrc') }}"
+       == super()
+   ```
+
+   Without this override, the model code generator will fail to find the base model's Python source files (e.g., `ModuleNotFoundError`).
+
+3. **Check if the base model has `modelsrc/`**: If it does not (e.g., models that only use standard `modelsrc/transformer/` components), no search path override is needed.
+
+See `examples/tiny_experiments/canon/` for a complete example of a project extending `examples/models/llama_canon/`, and `examples/pretrain/small-llm/custom_deepone/` for a simpler case where no modelsrc override is needed.
 
 ### Project Installation
 ```bash
@@ -622,15 +659,18 @@ The framework emphasizes systematic experimentation through template-based confi
 Refer to these when creating new projects.
 - A template project to copy for starting a new one : "examples/template_project/"
 - Projects overview : "examples/tutorials/projects_overview/"
-- Forgather project structure : "examples/tutorials/project_composition/" 
+- Forgather project structure : "examples/tutorials/project_composition/"
 - Model training tutorial project : "examples/tutorials/tiny_llama/"
 - Attention mechanisms testing project : "examples/tiny_experiments/attention/"
+- Cross-project model inheritance (with modelsrc) : "examples/tiny_experiments/canon/"
+- Cross-project model inheritance (without modelsrc) : "examples/pretrain/small-llm/custom_deepone/"
 
 **Common Issues and Solutions**
 - Missing import errors (e.g., `Callable` not imported): Add missing imports to affected files
 - YAML tag errors: Use `!partial` for function objects, `!singleton`/`!factory` for function calls
 - Configuration validation: Run `forgather ls` to check all configs parse correctly
 - Complex64 serialization: RoPE models may fail to save due to safetensors limitations with complex tensors
+- `ModuleNotFoundError` when extending model projects with `modelsrc/`: The `project_dir` variable in `[model_submodule_searchpath]` resolves to the current project, not the base model project. Override the search path to point to the base model's modelsrc directory. See "Creating a Project That Extends Another Model Project" above.
 
 **Style**
 

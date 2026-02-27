@@ -186,6 +186,48 @@ The modules support several optimization strategies, enabled via constructor fla
 
 All optimizations fall back gracefully when dependencies are unavailable.
 
+## Project-Specific modelsrc
+
+Model projects can define their own custom modules alongside the shared `modelsrc/transformer/` components. These live in a `modelsrc/` directory within the model project:
+
+```
+examples/models/llama_canon/
+├── modelsrc/                        # Project-specific model modules
+│   ├── canon_layer.py               # Custom Canon layer with Triton kernels
+│   ├── canon_pre_ln_layer.py        # Canon-enhanced transformer layer
+│   ├── canon_causal_multihead_attn.py
+│   └── canon_glu_feedforward.py
+└── templates/
+    └── configs/
+        └── default.yaml             # Adds modelsrc/ to submodule search path
+```
+
+The model config registers these modules via `[model_submodule_searchpath]`:
+
+```yaml
+[model_submodule_searchpath]
+    - "{{ joinpath(project_dir, 'modelsrc') }}"
+    == super()
+```
+
+The **import constraint** applies equally to project-specific modules: each file must be self-contained (no local imports), depending only on PyTorch, HF Transformers, and pip-installed packages.
+
+### Cross-Project Inheritance Caveat
+
+The `project_dir` variable resolves to the **current** project's directory, not the template's originating directory. When a child project extends a model project that has its own `modelsrc/`, the search path will point to the wrong location.
+
+For example, if `examples/tiny_experiments/canon/` extends `examples/models/llama_canon/`, the `project_dir` in the inherited template resolves to `.../canon/`, which has no `modelsrc/` directory. The code generator will fail with `ModuleNotFoundError` when trying to import the custom modules.
+
+**Fix**: Override `[model_submodule_searchpath]` in the child project's config to explicitly reference the base model's modelsrc directory:
+
+```yaml
+[model_submodule_searchpath]
+    - "{{ joinpath(ns.forgather_dir, 'examples/models/llama_canon/modelsrc') }}"
+    == super()
+```
+
+This override must be placed in the child project's **inline model template** (the section after the `#--- config.*.model ---` separator), not in the main config section, because `[model_submodule_searchpath]` is defined within the model template inheritance chain. See `examples/tiny_experiments/canon/templates/configs/baseline.yaml` for a working example.
+
 ## File Reference
 
 ```
