@@ -54,8 +54,9 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
     d_feedforward: !var "intermediate_size"
     activation_factory: !partial:torch.nn.SiLU
     dropout: !var "activation_dropout"
-    canon_kernel: !var "canon_kernel"
-    canon_residual: !var "canon_residual"
+    canon_factory: &canon_factory !partial:.canon_layer:CanonLayer@canon_factory
+        kernel_size: !var "canon_kernel"
+        residual: !var "canon_residual"
 
     [attention_factory]
 .define: &attention_factory !partial:.canon_causal_multihead_attn:CanonCausalMultiheadAttn@attention_factory
@@ -69,8 +70,7 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
     qk_norm_factory: *qk_norm_factory
     sliding_window: !var "sliding_window"
     config: !var "config"
-    canon_kernel: !var "canon_kernel"
-    canon_residual: !var "canon_residual"
+    canon_factory: *canon_factory
 
     [layer_factory]
 .define: &layer_factory !partial:.canon_pre_ln_layer:CanonPreLNLayer@layer_factory
@@ -80,8 +80,8 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
     dropout: !var "layer_dropout"
     residual_dropout: !var "residual_dropout"
     canon_kernel: !var "canon_kernel"
-    canon_residual: !var "canon_residual"
     d_model: !var "hidden_size"
+    canon_factory: *canon_factory
 
     [layer_stack]
     == super()
