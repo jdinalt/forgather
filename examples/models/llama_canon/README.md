@@ -65,7 +65,7 @@ All models trained on Tiny Stories (abridged) for 1 epoch with identical hyperpa
 
 | Model          | Params | Final Loss | Eval Loss | Avg Loss | Tok/s   | Memory |
 |----------------|--------|------------|-----------|----------|---------|--------|
-| **LlamaCanon** | 4.48M  | **1.2954** | **1.2258**| 1.6905   | 158,811 | 2.24G  |
+| **LlamaCanon** | 4.48M  | **1.2954** | **1.2258**| 1.6905   | 204,240 | 2.12G  |
 | DeepOne        | 4.16M  | 1.3445     | 1.2814    | 1.7528   | 239,274 | 1.50G  |
 | Llama          | 4.16M  | 1.3733     | 1.3028    | 1.8061   | 287,678 | 1.50G  |
 | Causal (Post-LN)| 3.88M | 1.3940     | 1.3262    | 1.8541   | 301,521 | 1.19G  |
@@ -88,19 +88,47 @@ All models trained on Tiny Stories (abridged) for 1 epoch with identical hyperpa
    average loss (1.6905 vs 1.8061 for Llama), suggesting the Canon layers help the model
    learn more efficiently from the start.
 
-3. **Throughput tradeoff**: Canon layers add ~1.8x wall-clock overhead compared to
-   standard Llama (417s vs 230s), primarily from the additional Conv1d operations and
-   tensor concatenation/splitting. This is expected to improve with the `causal-conv1d`
-   CUDA kernel (not used in this benchmark).
+3. **Throughput tradeoff**: Canon layers add ~1.4x wall-clock overhead compared to
+   standard Llama (324s vs 230s). A custom Triton streaming kernel for larger dimensions
+   (Canon-B, Canon-D) and elimination of tensor concatenation/splitting reduced the
+   overhead from the original 1.8x (417s). For larger model dimensions the Triton kernel
+   speedup increases (up to 3x for d=1536).
 
-4. **Memory overhead**: Canon layers increase peak memory by ~49% (2.24G vs 1.50G),
-   largely due to intermediate activations from the concatenated QKV and gate/up tensors.
+4. **Memory overhead**: Canon layers increase peak memory by ~41% (2.12G vs 1.50G),
+   reduced from 49% by eliminating concatenated QKV and gate/up intermediate tensors.
 
 5. **Gradient stability**: LlamaCanon shows the lowest average gradient norm (0.3696),
    suggesting the Canon layers' residual connections contribute to training stability.
 
 6. **DeepOne is a strong baseline**: The DeepNet architecture with ALiBi attention
    places second, outperforming standard Llama by a meaningful margin.
+
+## Performance Optimizations
+
+### Triton Streaming Kernel
+
+The Canon layers include a custom Triton kernel for the depthwise causal Conv1d
+operation. Instead of the default PyTorch path (transpose -> Conv1d -> slice -> transpose
+-> residual add), the Triton kernel processes all time steps sequentially with a
+register-based sliding window, operating directly on the [B, T, C] tensor layout.
+
+The kernel is used automatically on CUDA when `C >= 384` (where it outperforms cuDNN).
+For smaller dimensions, the standard Conv1d path is used.
+
+Microbenchmarks (RTX 3090, B=32, T=512, K=4, bf16, fwd+bwd):
+
+| Dimension | Conv1d | Triton | Speedup |
+|-----------|--------|--------|---------|
+| C=256     | 0.34ms | 0.44ms | 0.77x (Conv1d used) |
+| C=768     | 1.05ms | 0.52ms | 2.0x |
+| C=1536    | 2.10ms | 0.66ms | 3.2x |
+
+### Cat/Split Elimination
+
+Canon-B and Canon-D originally concatenated sub-tensors (Q/K/V or gate/up) before
+applying the convolution. Since depthwise conv is channel-independent, the conv is
+applied to each sub-tensor separately using weight slices, eliminating the concatenation
+memory overhead.
 
 ## Project Structure
 
