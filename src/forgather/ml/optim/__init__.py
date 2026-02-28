@@ -4,6 +4,7 @@ from .apollo import Apollo
 from .infinite_lr_scheduler import InfiniteLRScheduler
 from .multiopt import Multiopt
 from .sgd import SGD
+from .sinkgd import SinkGD
 
 __all__ = [
     "Adafactor",
@@ -12,4 +13,5 @@ __all__ = [
     "SGD",
     "Apollo",
     "Multiopt",
+    "SinkGD",
 ]
