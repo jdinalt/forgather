@@ -752,8 +752,11 @@ class RotaryPE:
             cos = cos.unsqueeze(2)  # [batch_size, seq_len, 1, d_head]
             sin = sin.unsqueeze(2)  # [batch_size, seq_len, 1, d_head]
 
-            # Use Triton if enabled
-            if self._use_triton and q.is_cuda:
+            # Use Triton in eager mode only. Under torch.compile the eager
+            # element-wise ops get fused into a single kernel that is faster
+            # than the opaque autograd.Function Triton wrapper at all sizes.
+            _use_triton = self._use_triton and not torch.compiler.is_compiling()
+            if _use_triton and q.is_cuda:
                 return self._apply_triton_rope(q, k, cos, sin)
 
             # Apply rotation
@@ -761,8 +764,24 @@ class RotaryPE:
             k_embed = (k * cos) + (rotate_half(k) * sin)
             return q_embed, k_embed
 
-        # Use cached embeddings
-        cos_cached, sin_cached = self.embeddings(k.device)
+        # Use cached embeddings.
+        assert self.cos_cached is not None and self.sin_cached is not None
+        cos_cached = self.cos_cached
+        sin_cached = self.sin_cached
+        # Ensure cached embeddings are on the input tensor's device.
+        # This conditional is torch.compile-safe: Dynamo adds a guard on the
+        # device comparison. After the first eager call moves tensors to GPU,
+        # subsequent compiled calls skip this branch entirely (no DeviceCopy
+        # ops, no CUDA graph partitioning).
+        if cos_cached.device != q.device:
+            if cos_cached.device == torch.device("meta"):
+                cos_cached, sin_cached = self._precompute_with_cached_inv_freq(
+                    self.max_sequence_length, self.dtype
+                )
+            cos_cached = cos_cached.to(q.device)
+            sin_cached = sin_cached.to(q.device)
+            self.cos_cached = cos_cached
+            self.sin_cached = sin_cached
 
         if self.liger_kernel is not None and q.is_cuda:
             result = self.liger_kernel(q, k, cos_cached, sin_cached, position_ids)
@@ -784,8 +803,9 @@ class RotaryPE:
             cos = cos_cached[position_ids].unsqueeze(2)
             sin = sin_cached[position_ids].unsqueeze(2)
 
-        # Use Triton if enabled
-        if self._use_triton and q.is_cuda:
+        # Use Triton in eager mode only (see comment above).
+        _use_triton = self._use_triton and not torch.compiler.is_compiling()
+        if _use_triton and q.is_cuda:
             return self._apply_triton_rope(q, k, cos, sin)
 
         q_embed = (q * cos) + (rotate_half(q) * sin)
