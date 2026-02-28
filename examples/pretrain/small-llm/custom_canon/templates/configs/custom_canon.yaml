@@ -1,9 +1,10 @@
--- extends "configs/4M.yaml"
+-- extends "configs/canon.yaml"
+## See https://arxiv.org/pdf/2512.17351
 
 [config_metadata]
     == super()
     -- set ns.config_name = "Custom Canon"
-    -- set ns.config_description = "LlamaCanon"
+    -- set ns.config_description = "LlamaCanon -- Canon-A only with NoPE"
     -- set ns.model_name = "custom_canon"
 
 [model_definition]

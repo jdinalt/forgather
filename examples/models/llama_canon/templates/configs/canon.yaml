@@ -1,4 +1,7 @@
 -- extends "projects/causal_lm_def.yaml"
+## See: "Physics of Language Models: Part 4.1,
+## Architecture Design and the Magic of Canon Layers"
+## https://arxiv.org/pdf/2512.17351
 
 [config_metadata]
     == super()
