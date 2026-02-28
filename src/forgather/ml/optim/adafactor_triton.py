@@ -268,6 +268,8 @@ def adafactor_step_2d_triton(
     PyTorch reductions for RMS/clip_scale (no atomic_add non-determinism),
     followed by a Triton kernel for the parameter update.
     """
+    if grad.dim() > 2:
+        grad = grad.reshape(-1, grad.shape[-1])
     n_rows, n_cols = grad.shape
     n_elements = n_rows * n_cols
 

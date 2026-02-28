@@ -16,15 +16,29 @@ except ModuleNotFoundError:
     from forgather.ml.optim.adafactor import Adafactor
 
 
+class _TestModel(nn.Module):
+    """Test model with 1D (LayerNorm), 2D (Linear), and 3D (Conv1d) parameters."""
+
+    def __init__(self):
+        super().__init__()
+        self.linear1 = nn.Linear(1024, 2048)
+        self.relu = nn.ReLU()
+        self.linear2 = nn.Linear(2048, 512)
+        self.norm = nn.LayerNorm(512)
+        # Conv1d weight is 3D: (out_channels, in_channels/groups, kernel_size)
+        self.conv = nn.Conv1d(512, 512, kernel_size=4, padding="same")
+
+    def forward(self, x):
+        # x: (batch, 1024)
+        x = self.norm(self.linear2(self.relu(self.linear1(x))))
+        # Conv1d expects (batch, channels, length) — treat each sample as length-1
+        x = self.conv(x.unsqueeze(-1)).squeeze(-1)
+        return x
+
+
 def create_test_model():
     """Create a simple model for testing."""
-    model = nn.Sequential(
-        nn.Linear(1024, 2048),  # 2D weight matrix
-        nn.ReLU(),
-        nn.Linear(2048, 512),
-        nn.LayerNorm(512),  # Has 1D parameters
-    )
-    return model
+    return _TestModel()
 
 
 def test_correctness():

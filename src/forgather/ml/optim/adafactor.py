@@ -75,10 +75,10 @@ class Adafactor(Optimizer):
             state["col"] = None
         else:
             state["row"] = torch.zeros(
-                grad.shape[0], dtype=torch.float32, device=grad.device
+                grad[..., 0].numel(), dtype=torch.float32, device=grad.device
             )
             state["col"] = torch.zeros(
-                grad.shape[1], dtype=torch.float32, device=grad.device
+                grad.shape[-1], dtype=torch.float32, device=grad.device
             )
 
     @torch.no_grad()
@@ -406,10 +406,16 @@ def _adafactor(
     # Matrix
     else:
         c32 = c.float()
+        orig_shape = grad32.shape
+        if grad32.dim() > 2:
+            grad32 = grad32.reshape(-1, grad32.shape[-1])
+            update = update.reshape_as(grad32)
         # See adagrad_update_ref() for explanation of this implementation
         r32.lerp_(update.sum(dim=-1), 1.0 - beta2t)
         c32.lerp_(update.sum(dim=-2), 1.0 - beta2t)
         update = grad32 * torch.outer(torch.rsqrt(r32 / r32.sum()), torch.rsqrt(c32))
+        if update.shape != orig_shape:
+            update = update.reshape(orig_shape)
         if c32.dtype != c.dtype:
             c.copy_(c32)
 
