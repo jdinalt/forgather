@@ -216,9 +216,9 @@ The **import constraint** applies equally to project-specific modules: each file
 
 The `project_dir` variable resolves to the **current** project's directory, not the template's originating directory. When a child project extends a model project that has its own `modelsrc/`, the search path will point to the wrong location.
 
-For example, if `examples/tiny_experiments/canon/` extends `examples/models/llama_canon/`, the `project_dir` in the inherited template resolves to `.../canon/`, which has no `modelsrc/` directory. The code generator will fail with `ModuleNotFoundError` when trying to import the custom modules.
+For example, if `examples/tiny_experiments/canon/models/` extends `examples/models/llama_canon/`, the `project_dir` in the inherited template resolves to `.../canon/models/`, which has no `modelsrc/` directory. The code generator will fail with `ModuleNotFoundError` when trying to import the custom modules.
 
-**Fix**: Override `[model_submodule_searchpath]` in the child project's config to explicitly reference the base model's modelsrc directory:
+**Fix**: Override `[model_submodule_searchpath]` in the model sub-project's baseline config to explicitly reference the base model's modelsrc directory:
 
 ```yaml
 [model_submodule_searchpath]
@@ -226,7 +226,9 @@ For example, if `examples/tiny_experiments/canon/` extends `examples/models/llam
     == super()
 ```
 
-This override must be placed in the child project's **inline model template** (the section after the `#--- config.*.model ---` separator), not in the main config section, because `[model_submodule_searchpath]` is defined within the model template inheritance chain. See `examples/tiny_experiments/canon/templates/configs/baseline.yaml` for a working example.
+This override must be placed in an **inline model template** (the section after the `#--- config.*.model ---` separator), not in the main config section, because `[model_submodule_searchpath]` is defined within the model template inheritance chain.
+
+**Recommended project structure**: Separate model definitions into a `models/` sub-project within your experiment directory. This isolates the model template search path from the training template search path. See `examples/tiny_experiments/canon/models/` for a working example, and the CLAUDE.md section "Creating an Experiment Project That Extends a Model Project" for the full pattern.
 
 ## File Reference
 

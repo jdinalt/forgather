@@ -299,83 +299,89 @@ This creates a project directory with:
 5. **Test configuration**: `forgather pp`
 6. **Train model**: `forgather train`
 
-#### Creating a Project That Extends Another Model Project
+#### Creating an Experiment Project That Extends a Model Project
 
-When creating a project that builds on an existing model project (e.g., experimenting with a model defined in `examples/models/`), you need to:
+When creating an experiment project that builds on an existing model project (e.g., running experiments with a model defined in `examples/models/`), the recommended structure separates model definitions from training configs using a **models sub-project**:
 
-1. **Add the base model's templates to the search path** in `meta.yaml`:
-   ```yaml
-   -- extends "meta_defaults.yaml"
-   [searchdir_project]
-       == super()
-       - "{{ joinpath(ns.forgather_dir, 'examples/models/base_model/templates') }}"
-   ```
+```
+my_experiment/
+├── meta.yaml                    # Training project metadata
+├── templates/
+│   ├── project.yaml             # Training base (extends projects/tiny.yaml)
+│   └── configs/
+│       ├── train_baseline.yaml  # Training configs reference model configs by name
+│       └── train_variant.yaml
+└── models/                      # Separate model definitions sub-project
+    ├── meta.yaml                # Adds base model templates to search path
+    └── templates/
+        └── configs/
+            ├── baseline.yaml    # Extends base model's config
+            └── variant.yaml     # Model variants with inline templates
+```
 
-2. **Override `[model_submodule_searchpath]`** if the base model has a `modelsrc/` directory. The base model's config typically uses `{{ joinpath(project_dir, 'modelsrc') }}` which resolves to the *current* project's directory, not the base model's. Fix this by adding an inline model template that points to the correct modelsrc path:
-   ```yaml
-   -- extends "configs/base_config.yaml"
+**Step 1: Create the models sub-project** (`models/meta.yaml`):
+```yaml
+-- extends "meta_defaults.yaml"
+[searchdir_project]
+    == super()
+    ## Include base model templates in search path
+    - "{{ joinpath(ns.forgather_dir, 'examples/models/base_model/templates') }}"
+[configs]
+name: "models"
+description: "Model definitions for experiments"
+config_prefix: "configs"
+default_config: "baseline.yaml"
+```
 
-   [config_metadata]
-       == super()
-       -- set ns.model_name = "my_experiment"
+**Step 2: Create model configs** in `models/templates/configs/`. If the base model has a `modelsrc/` directory, the baseline config must override `[model_submodule_searchpath]` because `project_dir` resolves to the *current* project, not the base model:
+```yaml
+-- extends "configs/base_config.yaml"
+[config_metadata]
+    == super()
+    -- set ns.model_name = "my_baseline"
+[model_definition]
+    -- include "config.baseline.model"
+#------------- config.baseline.model --------------
+-- extends "config.base.model"
+[model_submodule_searchpath]
+    - "{{ joinpath(ns.forgather_dir, 'examples/models/base_model/modelsrc') }}"
+    == super()
+```
 
-   [model_definition]
-       -- include "config.my_experiment.model"
+Without this override, the code generator will fail with `ModuleNotFoundError`. If the base model has no `modelsrc/` (only uses standard `modelsrc/transformer/` components), no override is needed.
 
-   #------------- config.my_experiment.model --------------
-   -- extends "config.base.model"
+**Step 3: Create the training project** (`meta.yaml` at the experiment root):
+```yaml
+-- extends "meta_defaults.yaml"
+[configs]
+name: "My Experiment"
+description: "Experiments with base_model variants"
+config_prefix: "configs"
+default_config: "train_baseline.yaml"
+```
 
-   [model_submodule_searchpath]
-       - "{{ joinpath(ns.forgather_dir, 'examples/models/base_model/modelsrc') }}"
-       == super()
-   ```
+**Step 4: Create a training project template** (`templates/project.yaml`) that points to the models sub-project:
+```yaml
+-- extends 'projects/tiny.yaml'
+[config_metadata]
+    == super()
+    -- set ns.model_project_dir = abspath(joinpath(project_dir, "models"))
+    -- set ns.model_project_config = "baseline.yaml"
+```
 
-   Without this override, the model code generator will fail to find the base model's Python source files (e.g., `ModuleNotFoundError`).
+**Step 5: Create training configs** (`configs/train_*.yaml`) that select which model to train:
+```yaml
+-- extends 'project.yaml'
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Train My Variant"
+    -- set ns.model_name = "my_variant"
+    -- set ns.model_project_config = "variant.yaml"
+```
 
-3. **Check if the base model has `modelsrc/`**: If it does not (e.g., models that only use standard `modelsrc/transformer/` components), no search path override is needed.
+**Why a separate models sub-project?** Model configs that extend other projects inherit templates from those projects. Mixing model configs and training configs in the same project's search path gets messy when they inherit from different base projects. A sub-project cleanly isolates the model template search path from the training template search path.
 
-See `examples/tiny_experiments/canon/` for a complete example of a project extending `examples/models/llama_canon/`, and `examples/pretrain/small-llm/custom_deepone/` for a simpler case where no modelsrc override is needed.
-
-#### Adding Training to a Model Experiment Project
-
-A single project can contain both model configs and training configs. The pattern:
-
-1. **Create a training project template** (`templates/project.yaml`) that extends the base training template and points to the current project for model loading:
-   ```yaml
-   -- extends 'projects/tiny.yaml'
-   [config_metadata]
-       == super()
-       -- set ns.model_project_dir = project_dir
-       -- set ns.model_project_config = "baseline.yaml"
-   ```
-
-2. **Create training configs** (`configs/train_*.yaml`) that extend the project template and select which model config to train:
-   ```yaml
-   -- extends 'project.yaml'
-   [config_metadata]
-       == super()
-       -- set ns.config_name = "Train My Variant"
-       -- set ns.model_name = "my_variant"
-       -- set ns.model_project_config = "variant.yaml"
-   ```
-
-3. **Create model variant configs** using inline model templates to override specific blocks. For example, to remove RoPE:
-   ```yaml
-   -- extends "configs/baseline.yaml"
-   [config_metadata]
-       == super()
-       -- set ns.model_name = "nope_variant"
-   [model_definition]
-       -- include "config.nope.model"
-   #------------- config.nope.model --------------
-   -- extends "config.baseline.model"
-   [rel_positional_encoder]
-   .define: &relative_pe null
-   ```
-
-Model configs (`forgather model test`) and training configs (`forgather train`) coexist in the same `configs/` directory. Use `forgather ls` to see both.
-
-See `examples/tiny_experiments/canon/` for a working example with baseline and NoPE model variants plus their training configs.
+See `examples/tiny_experiments/canon/` for a complete example: model variants in `canon/models/`, training configs in `canon/templates/configs/`, with models extending `examples/models/llama_canon/`.
 
 ### Project Installation
 ```bash
@@ -711,15 +717,15 @@ Refer to these when creating new projects.
 - To disable RoPE: override `[rel_positional_encoder]` with `.define: &relative_pe null` — attention modules guard with `if self.pos_encoder:`
 - To disable a factory-based component: set the anchor to `null` in the appropriate block
 - The `projects/tiny.yaml` template provides a complete training setup for small model experiments (TinyStories dataset, 1 epoch, AdamW + InfiniteLR scheduler)
-- Use `-- set ns.model_project_dir = project_dir` to reference the current project as a model project from a training config
+- Use `-- set ns.model_project_dir = abspath(joinpath(project_dir, "models"))` to reference a models sub-project from a training project template
 
 **Common Issues and Solutions**
 - Missing import errors (e.g., `Callable` not imported): Add missing imports to affected files
 - YAML tag errors: Use `!partial` for function objects, `!singleton`/`!factory` for function calls
 - Configuration validation: Run `forgather ls` to check all configs parse correctly
 - Complex64 serialization: RoPE models may fail to save due to safetensors limitations with complex tensors
-- `ModuleNotFoundError` when extending model projects with `modelsrc/`: The `project_dir` variable in `[model_submodule_searchpath]` resolves to the current project, not the base model project. Override the search path to point to the base model's modelsrc directory. See "Creating a Project That Extends Another Model Project" above.
-- **Template name shadowing / RecursionError**: When multiple model projects are in the search path, their config files may shadow each other (e.g., both `llama/` and `llama_canon/` have `configs/4M.yaml`). A child config named `4M.yaml` that extends `configs/4M.yaml` will resolve to itself, causing infinite recursion. Fix: use a distinct config name (e.g., `nope_4M.yaml`) or create a separate model project for each base model you extend.
+- `ModuleNotFoundError` when extending model projects with `modelsrc/`: The `project_dir` variable in `[model_submodule_searchpath]` resolves to the current project, not the base model project. Override the search path in the models sub-project's baseline config to point to the base model's modelsrc directory. See "Creating an Experiment Project That Extends a Model Project" above.
+- **Template name shadowing / RecursionError**: When multiple model projects are in the search path, their config files may shadow each other (e.g., both `llama/` and `llama_canon/` have `configs/4M.yaml`). A child config named `4M.yaml` that extends `configs/4M.yaml` will resolve to itself, causing infinite recursion. Fix: use a distinct config name (e.g., `nope_4M.yaml`) or use a separate models sub-project with its own search path.
 - **Extending multiple model projects**: When experiments need model variants from different base models (e.g., Canon + plain Llama), create a separate model project for each base rather than adding all templates to one search path. This avoids name shadowing and keeps template resolution predictable. Example: `examples/tiny_experiments/llama_nope/` is a separate project for the plain Llama NoPE variant, referenced from canon training configs via `ns.model_project_dir`.
 
 **Style**
