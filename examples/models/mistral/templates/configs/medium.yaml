@@ -2,28 +2,28 @@
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Mistral 119M"
-    -- set ns.config_description = "A Mistral with 119M parameters"
-    -- set ns.model_name = "mistral_119m"
+    -- set ns.config_name = "Mistral Medium"
+    -- set ns.config_description = "A Mistral with 123M parameters"
+    -- set ns.model_name = "mistral_medium"
 
 [model_definition]
-    -- include "config.119m.model"
+    -- include "config.medium.model"
 
-#------------- config.119m.model --------------
+#------------- config.medium.model --------------
 -- extends "config.default.model"
 
 [model_tokenizer]
 tokenizer: &tokenizer !call:forgather:from_project
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
-    config_template: "8k.yaml"
+    config_template: "16k.yaml"
     pp_debug: False
 
 [model_config]
     == super()
-    # **119M**
-    hidden_size: {{ hidden_size | toyaml(1024) }}
-    intermediate_size: {{ intermediate_size | toyaml(3328) }}
+    # **Mistral medium**
+    hidden_size: {{ hidden_size | toyaml(768) }}
+    intermediate_size: {{ intermediate_size | toyaml(2048) }}
     num_attention_heads: {{ num_attention_heads | toyaml(8) }}
-    num_hidden_layers: {{ num_hidden_layers | toyaml(8) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(16) }}
     num_key_value_heads: {{ num_key_value_heads | toyaml(2) }}
     sliding_window: {{ sliding_window | toyaml(4096) }}

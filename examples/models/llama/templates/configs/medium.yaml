@@ -1,0 +1,27 @@
+-- extends "configs/default.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Llama Medium"
+    -- set ns.config_description = "A Llama with 138M parameters"
+    -- set ns.model_name = "llama_medium"
+
+[model_definition]
+    -- include "config.117M.model"
+
+#------------- config.117M.model --------------
+-- extends "config.default.model"
+
+[model_tokenizer]
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "16k.yaml"
+    pp_debug: False
+
+[model_config]
+    == super()
+    # **Medium Overrides**
+    hidden_size: 768
+    intermediate_size: 2048
+    num_attention_heads: 8
+    num_hidden_layers: 16

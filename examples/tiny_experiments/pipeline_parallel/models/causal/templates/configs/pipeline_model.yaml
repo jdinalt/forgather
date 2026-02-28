@@ -1,4 +1,4 @@
--- extends "configs/117M.yaml"
+-- extends "configs/medium.yaml"
 
 [config_metadata]
     == super()
@@ -10,7 +10,7 @@
     -- include "config.pipeline_model.model"
 
 #------------- config.pipeline_model.model --------------
--- extends "config.117M.model"
+-- extends "config.medium.model"
 
 [model_config]
     == super()

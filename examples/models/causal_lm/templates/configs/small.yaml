@@ -2,14 +2,14 @@
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Causal LM 23M"
+    -- set ns.config_name = "Causal LM Small"
     -- set ns.config_description = "A very vanilla transformer model with 23M parameters"
-    -- set ns.model_name = "23m"
+    -- set ns.model_name = "small"
 
 [model_definition]
-    -- include "config.23M.model"
+    -- include "config.small.model"
 
-#------------- config.23M.model --------------
+#------------- config.small.model --------------
 -- extends "models/transformers/dynamic_causal_transformer.yaml"
 
 ## This model does not have a default tokenizer, so add one.
@@ -17,4 +17,3 @@
 tokenizer: &tokenizer !call:forgather:from_project
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
     config_template: "4k.yaml"
-    pp_debug: False
