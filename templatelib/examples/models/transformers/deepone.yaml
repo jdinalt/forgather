@@ -10,6 +10,8 @@
     -- include 'tokenizers/wikitext/32k.yaml'
 
 [model_bits]
+    [deepone_bits]
+## Override to add more bits to the base model
     [loss_fn]
 .define: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn
 

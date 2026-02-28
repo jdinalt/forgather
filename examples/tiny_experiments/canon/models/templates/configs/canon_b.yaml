@@ -16,35 +16,8 @@
 ## Standard transformer layer (no A/C) and standard feedforward (no D).
 
 [feedforward_factory]
-.define: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
-    d_model: !var "hidden_size"
-    d_feedforward: !var "intermediate_size"
-    activation_factory: !partial:torch.nn.SiLU
-    dropout: !var "activation_dropout"
-
-    [canon_factory_def]
-.define: &canon_factory !partial:.canon_layer:CanonLayer@canon_factory
-    kernel_size: !var "canon_kernel"
-    residual: !var "canon_residual"
-
-[attention_factory]
-.define: &attention_factory !partial:.canon_causal_multihead_attn:CanonCausalMultiheadAttn@attention_factory
-    d_model: !var "hidden_size"
-    num_heads: !var "num_attention_heads"
-    num_kv_heads: !var "num_key_value_heads"
-    dropout: !var "attention_dropout"
-    pos_encoder: *relative_pe
-    attn_implementation: !var "attn_implementation"
-    attn_functions: *attn_functions
-    qk_norm_factory: *qk_norm_factory
-    sliding_window: !var "sliding_window"
-    config: !var "config"
-    canon_factory: *canon_factory
+    == super.super()
 
 [layer_factory]
-.define: &layer_factory !partial:.pre_ln_layer:PreLNLayer@layer_factory
-    feedforward_factory: *feedforward_factory
-    attention_factory: *attention_factory
-    norm_factory: *layer_norm_factory
-    dropout: !var "layer_dropout"
-    residual_dropout: !var "residual_dropout"
+    == super.super()
+

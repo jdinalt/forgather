@@ -10,6 +10,8 @@
     ## Default tokenizer
 
 [model_bits]
+    [llama_bits]
+## Override to add more bits to the base model
     [loss_fn]
 .define: &loss_fn !call:.causal_loss:CausalLoss@loss_fn
 

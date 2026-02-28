@@ -4,5 +4,5 @@
 name: "LlamaCanon"
 description: "Llama with Canon layers (depthwise causal convolutions for local token mixing)"
 config_prefix: "configs"
-default_config: "default.yaml"
+default_config: "canon.yaml"
 << endblock configs

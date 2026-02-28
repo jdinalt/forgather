@@ -35,7 +35,7 @@ class CanonCausalMultiheadAttn(nn.Module):
         qk_norm_factory: Optional[Callable] = None,
         layer_idx: int,
         sliding_window: Optional[int] = None,
-        canon_factory: Callable,
+        canon_b_factory: Callable,
         **kwargs,
     ):
         super().__init__()
@@ -89,9 +89,9 @@ class CanonCausalMultiheadAttn(nn.Module):
         # Canon-B: applied to Q, K, V projections separately
         # (depthwise conv is channel-independent, so separate layers are
         # mathematically equivalent to a single layer on concatenated QKV)
-        self.canon_b_q = canon_factory(dim=self.num_heads * self.d_head)
-        self.canon_b_k = canon_factory(dim=self.num_kv_heads * self.d_head)
-        self.canon_b_v = canon_factory(dim=self.num_kv_heads * self.d_head)
+        self.canon_b_q = canon_b_factory(dim=self.num_heads * self.d_head)
+        self.canon_b_k = canon_b_factory(dim=self.num_kv_heads * self.d_head)
+        self.canon_b_v = canon_b_factory(dim=self.num_kv_heads * self.d_head)
 
     def extra_repr(self):
         return (

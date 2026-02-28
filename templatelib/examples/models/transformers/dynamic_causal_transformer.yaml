@@ -20,6 +20,8 @@
 ## transformer archetecture, Attention is All You Need, obviously
 ## excepting this being a causal LM.
 [model_bits]
+    [causal_bits]
+## Override to add more bits to the base model
     [loss_fn]
 .define: &loss_fn !call:.causal_loss:CausalLoss@loss_fn
 

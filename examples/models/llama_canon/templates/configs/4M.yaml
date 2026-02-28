@@ -1,4 +1,4 @@
--- extends "configs/default.yaml"
+-- extends "configs/canon.yaml"
 
 [config_metadata]
     == super()

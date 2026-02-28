@@ -29,36 +29,24 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
     max_position_embeddings: {{ max_position_embeddings | toyaml(4096) }}
     trust_remote_code: True
 
-[model_bits]
-    [loss_fn]
-    == super()
+[llama_bits]
+    [canon_bits]
+## Reserved for extension
+    [canon_factory_def]
+.define: &canon_factory !partial:.canon_layer:CanonLayer@canon_factory
+    kernel_size: !var "canon_kernel"
+    residual: !var "canon_residual"
 
-    [layer_norm_factory]
-    == super()
-
-    [rel_positional_encoder]
-    == super()
-
-    [qk_norm_factory]
-    == super()
-
-    [flex_attn_kernel_options]
-    == super()
-
-    [attn_functions]
-    == super()
-
-    [feedforward_factory]
+[feedforward_factory]
 .define: &feedforward_factory !partial:.canon_glu_feedforward:CanonGLUFeedforwardLayer@feedforward_factory
     d_model: !var "hidden_size"
     d_feedforward: !var "intermediate_size"
     activation_factory: !partial:torch.nn.SiLU
     dropout: !var "activation_dropout"
-    canon_factory: &canon_factory !partial:.canon_layer:CanonLayer@canon_factory
-        kernel_size: !var "canon_kernel"
-        residual: !var "canon_residual"
+    # Cannon D
+    canon_d_factory: *canon_factory
 
-    [attention_factory]
+[attention_factory]
 .define: &attention_factory !partial:.canon_causal_multihead_attn:CanonCausalMultiheadAttn@attention_factory
     d_model: !var "hidden_size"
     num_heads: !var "num_attention_heads"
@@ -70,42 +58,21 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
     qk_norm_factory: *qk_norm_factory
     sliding_window: !var "sliding_window"
     config: !var "config"
-    canon_factory: *canon_factory
+    # Canon B
+    canon_b_factory: *canon_factory
 
-    [layer_factory]
+[layer_factory]
 .define: &layer_factory !partial:.canon_pre_ln_layer:CanonPreLNLayer@layer_factory
     feedforward_factory: *feedforward_factory
     attention_factory: *attention_factory
     norm_factory: *layer_norm_factory
     dropout: !var "layer_dropout"
     residual_dropout: !var "residual_dropout"
-    canon_kernel: !var "canon_kernel"
     d_model: !var "hidden_size"
-    canon_factory: *canon_factory
-
-    [layer_stack]
-    == super()
-
-    [output_decoder]
-    == super()
-
-    [abs_positional_encoder]
-    == super()
-
-    [embedding]
-    == super()
-
-    [input_encoder]
-    == super()
-
-    [init_weights]
-    == super()
-
-    [attn_mask_fn]
-    == super()
-
-    [model_factory]
-    == super()
+    # Canon A
+    canon_a_factory: *canon_factory
+    # Canon C
+    canon_c_factory: *canon_factory
 
 [model_config]
     == super()

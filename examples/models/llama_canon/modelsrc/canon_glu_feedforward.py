@@ -107,7 +107,7 @@ class CanonGLUFeedforwardLayer(nn.Module):
         activation_factory: Optional[Callable] = lambda: nn.SiLU(),
         dropout: Optional[float] = 0.1,
         use_triton: bool = True,
-        canon_factory: Callable,
+        canon_d_factory: Callable,
         **kwargs,
     ):
         super().__init__()
@@ -137,8 +137,8 @@ class CanonGLUFeedforwardLayer(nn.Module):
         # Canon-D: applied to gate and up projections separately
         # (depthwise conv is channel-independent, so separate layers are
         # mathematically equivalent to a single layer on concatenated gate+up)
-        self.canon_d_gate = canon_factory(dim=d_feedforward)
-        self.canon_d_up = canon_factory(dim=d_feedforward)
+        self.canon_d_gate = canon_d_factory(dim=d_feedforward)
+        self.canon_d_up = canon_d_factory(dim=d_feedforward)
 
     def extra_repr(self):
         return (
