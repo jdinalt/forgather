@@ -5,7 +5,7 @@
     ## Overrides
     -- set ns.config_name = "Pretrain Small-LLM"
     -- set ns.config_description = "Pretrain a small LLM"
-    -- set ns.model_name = "default"
+    -- set ns.model_name = model_name | default("default")
 
     ## Use all available GPUs
     -- set ns.nproc_per_node = "gpu"
@@ -280,6 +280,9 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:InfiniteLRScheduler@lr_s
         names: "--peak-hardware-flops"
         type: float
         help: "See docs/trainers/training-performance-metrics.md"
+    model_name:
+        names: "--model-name"
+        help: "Set custom model name"
 
 #-------------------- project.logger_config --------------------
 -- extends 'callbacks/loggers.yaml'

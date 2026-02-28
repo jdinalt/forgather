@@ -16,7 +16,6 @@
 tokenizer: &tokenizer !call:forgather:from_project
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
     config_template: "32k.yaml"
-    pp_debug: False
 
 [rel_positional_encoder]
 .define: &relative_pe !singleton:.rotary_embeddings:RotaryPE@relative_pe

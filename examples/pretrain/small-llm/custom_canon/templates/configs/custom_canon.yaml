@@ -1,0 +1,54 @@
+-- extends "configs/4M.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Custom Canon"
+    -- set ns.config_description = "LlamaCanon"
+    -- set ns.model_name = "custom_canon"
+
+[model_definition]
+    -- include "config.model"
+
+#------------- config.model --------------
+-- extends "config.default.model"
+
+## Canon-A only: Depthwise causal convolution before attention.
+## Mixes adjacent token representations before attention sees them,
+## facilitating induction head formation.
+
+[model_submodule_searchpath]
+    - "{{ joinpath(ns.forgather_dir, 'examples/models/llama_canon/modelsrc') }}"
+    == super()
+
+[model_tokenizer]
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "32k.yaml"
+
+[rel_positional_encoder]
+# Use NoPE
+.define: &relative_pe null
+
+[qk_norm_factory]
+# Add QK Norm -- Like Qwen3
+.define: &qk_norm_factory !partial:torch.nn:RMSNorm@qk_norm_factory
+    eps: !var "rms_norm_eps"
+
+[feedforward_factory]
+    == super.super()
+
+[attention_factory]
+    == super.super()
+
+[layer_factory]
+    == super()
+    # Disable Canon-C: use Identity (no-op) for the pre-FFN position
+    canon_c_factory: null
+
+[model_config]
+    == super()
+    # **Custom Canon Overrides**
+    hidden_size: 768
+    intermediate_size: 2048
+    num_attention_heads: 8
+    num_hidden_layers: 16
