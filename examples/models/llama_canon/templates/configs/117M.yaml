@@ -1,10 +1,10 @@
--- extends "configs/default.yaml"
+-- extends "configs/canon.yaml"
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Llama 117M"
-    -- set ns.config_description = "A Llama with 117M parameters"
-    -- set ns.model_name = "llama_117m"
+    -- set ns.config_name = "LlamaCanon 117M"
+    -- set ns.config_description = "A LlamaCanon with 117M parameters"
+    -- set ns.model_name = "llama_canon_117m"
 
 [model_definition]
     -- include "config.117M.model"
