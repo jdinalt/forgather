@@ -4,8 +4,7 @@
     == super()
     -- set ns.config_name = "Adafactor"
     -- set ns.config_description = "Torch Adafactor"
-    -- set ns.model_name = "tiny_causal"
-    -- set ns.log_name = "adafactor"
+    -- set ns.log_name = log_name | default("adafactor")
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.Adafactor

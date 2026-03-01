@@ -140,7 +140,7 @@ class BaseTrainingArguments(MinimalTrainingArguments):
             self.lr_scheduler_kwargs = {}
 
         # Validate mixed_precision
-        if self.mixed_precision is not None:
+        if self.mixed_precision is not None and self.mixed_precision != "none":
             if self.mixed_precision == "no":
                 self.mixed_precision = None
             elif self.mixed_precision not in ("bf16", "fp16"):

@@ -4,7 +4,7 @@
     == super()
     -- set ns.config_name = "multiopt"
     -- set ns.config_description = "Demonstrates using multiple optimizers"
-    -- set ns.log_name = "multiopt"
+    -- set ns.log_name = log_name | default("multiopt")
 
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt

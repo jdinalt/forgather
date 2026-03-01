@@ -4,7 +4,7 @@
     == super()
     -- set ns.config_name = "HF Adafactor"
     -- set ns.config_description = "HF Adafactor"
-    -- set ns.log_name = "hf_adafactor"
+    -- set ns.log_name = log_name | default("hf_adafactor")
 
 [optimizer]
 optimizer: &optimizer !partial:transformers:Adafactor

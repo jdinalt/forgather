@@ -4,7 +4,7 @@
     == super()
     -- set ns.config_name = "SGD"
     -- set ns.config_description = "Torch SGD"
-    -- set ns.log_name = "sgd"
+    -- set ns.log_name = log_name | default("sgd")
 
 [optimizer]
 optimizer: &optimizer !lambda:torch:optim.SGD

@@ -4,7 +4,7 @@
     == super()
     -- set ns.config_name = "FG Apollo PCA"
     -- set ns.config_description = "Forgather Apollo with online PCA"
-    -- set ns.log_name = "apollo_r64_pca"
+    -- set ns.log_name = log_name | default("apollo_r64_pca")
 
 [projector_factory]
 .define: &projector_factory !partial:forgather.ml.optim.subspace_proj:OnlinePCAProjector

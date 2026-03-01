@@ -3,8 +3,8 @@
 [config_metadata]
     == super()
     -- set ns.config_name = "SinkGD"
-    -- set ns.config_description = "SinkGD."
-    -- set ns.log_name = "sinkgd"
+    -- set ns.config_description = "SinkGD"
+    -- set ns.log_name = log_name | default("sinkgd")
     -- set ns.global_lr = 0.02
     -- set ns.sinkgd_alpha = 0.05
 

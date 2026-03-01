@@ -4,7 +4,7 @@
     == super()
     -- set ns.config_name = "Torch AdamW"
     -- set ns.config_description = "Torch AdamW; the baseline control"
-    -- set ns.log_name = "adamw"
+    -- set ns.log_name = log_name | default("adamw")
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW

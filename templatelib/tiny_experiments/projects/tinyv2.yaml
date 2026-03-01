@@ -27,10 +27,15 @@
 
 [trainer_args]
     == super()
-    # **Tiny Project**
+    # **Tiny**
     save_strategy: {{ save_strategy | toyaml('no') }}
-    float32_matmul_precision: "high"
-    mixed_precision: "bf16"
+    float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
+    default_dtype: {{ default_dtype | toyaml("float32") }}
+    mixed_precision: {{ mixed_precision | toyaml("bf16") }}
+
+[fused_loss_factory]
+# Disable fused loss; it's slower on small models and has edge-case compatibility issues.
+.define: &fused_loss_factory null
 
 [trainer_callbacks]
     ## See definition below

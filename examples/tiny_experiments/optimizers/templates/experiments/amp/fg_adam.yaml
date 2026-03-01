@@ -4,7 +4,7 @@
     == super()
     -- set ns.config_name = "FG Adam"
     -- set ns.config_description = "Forgather Adam Implementation"
-    -- set ns.log_name = "fg_adam"
+    -- set ns.log_name = log_name | default("fg_adam")
 
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.adamw:AdamW

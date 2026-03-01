@@ -4,7 +4,7 @@
     == super()
     -- set ns.config_name = "FG Apollo"
     -- set ns.config_description = "Forgather Apollo implementation"
-    -- set ns.log_name = "apollo_r64"
+    -- set ns.log_name = log_name | default("apollo_r64")
 
 [optimizer]
     [projector_factory]
