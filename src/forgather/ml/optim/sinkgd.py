@@ -2,9 +2,8 @@ import math
 from typing import Callable, Iterable
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 from torch.optim import Optimizer
-from torch import nn
 
 
 def sr_sinkhorn(X: Tensor, num_iters: int, eps: float = 1e-8) -> Tensor:
@@ -76,7 +75,7 @@ class SinkGD(Optimizer):
         params: Iterable[nn.Parameter],
         lr: float = 1e-3,
         num_iters: int = 5,
-        weight_decay: float = 0.0,
+        weight_decay: float = 0.01,
         eps: float = 1e-8,
         normalize_output: bool = True,
     ):

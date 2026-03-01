@@ -1,4 +1,4 @@
--- extends 'experiments/fg_apollo.yaml'
+-- extends 'experiments/amp/fg_apollo.yaml'
 
 [config_metadata]
     == super()

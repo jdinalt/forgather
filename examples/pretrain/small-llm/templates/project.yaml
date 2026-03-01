@@ -217,7 +217,6 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:InfiniteLRScheduler@lr_s
 [fused_loss_factory]
 # Fused output-linear x cross-entropy-loss kernel
 .define: &fused_loss_factory !partial:forgather.ml.loss:LinearCrossEntropyLoss
-    compile: {{ compile | default(False) }}
 
 [trainer_callbacks]
     -- include 'project.logger_config'

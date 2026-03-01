@@ -1,33 +1,38 @@
--- extends 'projects/tiny.yaml'
+-- extends 'projects/tinyv2_packed.yaml'
 
 [config_metadata]
     == super()
-    -- set ns.create_new_model = False
-    -- set ns.save_model = False
-    -- set ns.model_name = "tiny_causal"
-
+    -- set ns.dataset_proj = dataset_project | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
+    -- set ns.dataset_config = dataset_config | default("fast-iter-packed.yaml")
+    -- set ns.nproc_per_node = 1
+    -- set ns.default_attn_implementation = "sdpa"
+    
     ## Use a bigger model, to reduce impact of execution latency
-    -- set ns.model_project_config = "117M.yaml"
-    -- set ns.adam_lr = 5.0e-4
-    -- set ns.adafactor_lr = 5.0e-4
-    -- set ns.sgd_lr = 1.0e0
-    -- set ns.apollo_lr = 5.0e-4
+    ## This model has 28 parameters, thus Chinchilla optimal is 560M tokens
+    ## Set predefined model project to import
+    -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "llama"))))
+    -- set ns.model_project_config = model_config | default("small.yaml")
 
-[trainer_args]
+    -- set ns.total_tokens = total_tokens | default(560)
+    -- set ns.warmup_tokens = warmup_tokens | default(56)
+    -- set ns.min_cooldown_tokens = min_cooldown_tokens | default(0)
+
+    -- set ns.seq_len = seq_len | default(512)
+    -- set ns.per_device_train_batch_size = batch_size | default(32)
+
+    -- set ns.base_lr = base_lr | default(3.0e-6)
+    -- set ns.base_linear_lr = 1.0e-2
+
+[globals]
     == super()
-    # project overrides
-    logging_steps: 50
-    eval_steps: 200
-    default_dtype: bfloat16
+    -- set ns.effective_linear_lr = ns.base_linear_lr * ns.global_batch_size
 
-[trainer_definition]
-    -- include 'project.trainer_config'
+[variable_listing]
+    == super()
+# ns.effective_linear_lr: {{ ns.effective_linear_lr }}
 
 [trainer_callbacks]
     -- include 'project.callbacks'
-
-#-------------------- project.trainer_config --------------------
--- extends 'tiny.trainer_config'
 
 #-------------------- project.callbacks --------------------
 -- extends 'tiny.callbacks'

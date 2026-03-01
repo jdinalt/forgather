@@ -1,0 +1,247 @@
+-- extends "training_script/causal_lm/causal_lm.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Auto LM Project"
+    -- set ns.config_description = ""
+    -- set ns.model_name = model_name | default("default")
+
+    ## Set default dataset
+    -- set ns.dataset_proj = dataset_project | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
+    -- set ns.dataset_config = dataset_config | default("tinystories.yaml")
+    -- set ns.dispatch_batches = dispatch_batches | default(True)
+
+    ## This is an estimate of the ratio of non-pad tokens per batch, which is used to correct token count estimations.
+    -- set ns.batch_density = 0.60
+
+    ## Set default model
+    -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "llama"))))
+    -- set ns.model_project_config = model_config | default("small.yaml")
+
+    ## Set total tokens (Millions)
+    -- set ns.total_tokens = total_tokens | default(1000)
+
+    ## Set warmup tokens (Millions)
+    -- set ns.warmup_tokens = warmup_tokens | default(100)
+
+    ## Set minimum cooldown tokens (Millions)
+    -- set ns.min_cooldown_tokens = min_cooldown_tokens | default(1000)
+
+    ## Set maximum sequence length
+    -- set ns.seq_len = seq_len | default(512)
+    -- set ns.per_device_train_batch_size =  batch_size | default(32)
+    -- set ns.gradient_accumulation_steps = gradient_accumulation_steps | default(1)
+    -- set ns.base_lr = base_lr | default(3.0e-6)
+
+    -- set ns.peak_hardware_flops = peak_hardware_flops | default(165.2e12)
+
+    ## Tokens between logging, validation, and save steps
+    ## This scales the number of tokens (millions) per log/eval/save cycle
+    -- set ns.step_cadence = step_cadence | default(1.0)
+    -- set ns.base_logging_tokens = 1
+    -- set ns.base_validation_tokens = 25
+    -- set ns.base_save_tokens = 500
+
+    ## Safe-default to SDPA -- it has fast startup and tends to have relatively few issues.
+    -- set ns.default_attn_implementation = "sdpa"
+
+[globals]
+    == super()
+    -- set ns.total_tokens = ns.total_tokens * 1000 * 1000
+    -- set ns.warmup_tokens = ns.warmup_tokens * 1000 * 1000
+    -- set ns.min_cooldown_tokens = ns.min_cooldown_tokens * 1000 * 1000
+
+    -- set ns.logging_tokens = ns.base_logging_tokens * 1000 * 1000 * ns.step_cadence
+    -- set ns.validation_tokens = ns.base_validation_tokens * 1000 * 1000 * ns.step_cadence
+    -- set ns.save_tokens = ns.base_save_tokens * 1000 * 1000 * ns.step_cadence
+
+    -- set ns.world_size = (getenv("WORLD_SIZE", "1") | int)
+    -- set ns.effective_per_device_batch_size = ns.gradient_accumulation_steps * ns.per_device_train_batch_size
+    -- set ns.global_batch_size = ns.effective_per_device_batch_size * ns.world_size
+    -- set ns.tokens_per_step = (ns.seq_len * ns.global_batch_size * ns.batch_density) | int
+    -- set ns.lr_scale = ns.tokens_per_step ** 0.5
+    -- set ns.effective_lr = ns.base_lr * ns.lr_scale
+    -- set ns.min_cooldown_steps = ns.min_cooldown_tokens // ns.tokens_per_step
+    -- set ns.warmup_steps = ns.warmup_tokens // ns.tokens_per_step
+    -- set ns.total_steps = ns.total_tokens // ns.tokens_per_step
+    -- set ns.total_peak_hardware_flops = ns.world_size * ns.peak_hardware_flops
+
+[variable_listing]
+    == super()
+# **Auto LM**
+# ns.per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
+# ns.gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
+# ns.effective_per_device_batch_size: {{ ns.effective_per_device_batch_size }}
+# ns.global_batch_size: {{ ns.global_batch_size }}
+# ns.seq_len: {{ ns.seq_len }} tokens
+# ns.total_steps: {{ ns.total_steps }} steps
+# ns.warmup_steps: {{ ns.warmup_steps }}
+# ns.min_cooldown_steps: {{ ns.min_cooldown_steps }}
+# ns.total_tokens: {{ ns.total_tokens // (1000 * 1000)}}M
+# ns.tokens_per_step: {{ ns.tokens_per_step }} tokens
+# ns.total_peak_hardware_flops: {{ ns.total_peak_hardware_flops / 1e12 }} TFLOPS
+
+# ns.base_lr: {{ ns.base_lr }}
+# ns.lr_scale: {{ ns.lr_scale }}
+# ns.effective_lr: {{ ns.effective_lr }}
+
+[datasets_preprocessor_args]
+.define: &tokenizer_args !dict
+    truncation: True
+    max_length: {{ ns.seq_len }}
+
+[datasets_definition]
+   [dataset_project_pp_args]
+.define: &dataset_project_pp_args !dict
+
+    [dataset_project]
+.define: &dataset_dict !call:forgather:from_project
+    project_dir: "{{ ns.dataset_proj }}"
+    config_template: "{{ ns.dataset_config }}"
+    targets: [ "train_dataset", "eval_dataset" ]
+    # These are passed to the project preprocessor
+    pp_kwargs: *dataset_project_pp_args
+    # These are injected as variables as runtime
+    preprocess_args: *tokenizer_args
+    tokenizer: *tokenizer
+    shard_dataset: {{ ns.dispatch_batches == False }}
+    eval_strategy: "steps"
+
+    [dataset_splits]
+train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
+eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
+
+[model_constructor_args]
+.define: &model_constructor_args
+    attn_implementation: "{{ attn_implementation | default(ns.default_attn_implementation) }}"
+
+[construct_new_model]
+    [model_project_pp_args]
+.define: &model_project_pp_args
+    output_dir: "{{ ns.output_dir }}"
+
+    [model_project]
+.define: &model_dict !call:forgather:from_project
+    project_dir: "{{ ns.model_project_dir }}"
+    config_template: "{{ ns.model_project_config }}"
+    targets: [ "pretrained_tokenizer", "model" ] 
+    pp_kwargs: *model_project_pp_args
+    model_constructor_args: *model_constructor_args
+
+    [model_assets]
+tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
+model: &model !call:getitem [ *model_dict, 'model' ]
+
+[trainer_args]
+    == super()
+    # **Auto LM**
+    seed: 42
+    eval_strategy: "steps"
+    save_strategy: {{ save_strategy | toyaml('steps') }}
+
+    logging_steps: {{ (ns.logging_tokens // ns.tokens_per_step) | int }}
+    eval_steps: {{ (ns.validation_tokens // ns.tokens_per_step) | int }}
+    save_steps: {{ (ns.save_tokens // ns.tokens_per_step) | int }}
+    max_steps: {{ max_steps | toyaml(ns.total_steps) }}
+
+    per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
+    per_device_eval_batch_size: {{ ns.per_device_train_batch_size * 2 }}
+    gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
+    
+    resume_from_checkpoint: {{ resume | default(False) }}
+    torch_compile: {{ compile | default(False) }}
+    dispatch_batches: {{ ns.dispatch_batches }}
+    
+
+[datacollator]
+data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
+    tokenizer: *tokenizer
+    max_length: {{ ns.seq_len }}
+    return_tensors: pt
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:CosineLRScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    total_steps: {{ [ns.min_cooldown_steps, ns.total_steps] | max | int }}
+
+[fused_loss_factory]
+# Fused output-linear x cross-entropy-loss kernel
+.define: &fused_loss_factory !partial:forgather.ml.loss:LinearCrossEntropyLoss
+    compile: {{ compile | default(False) }}
+
+[optimizer]
+optimizer: &optimizer !partial:torch:optim.AdamW
+    lr: {{ ns.effective_lr | toyaml }}
+
+[dynamic_args]
+    == super()
+    # **Auto LM**
+    model_project:
+        names: "--model-project"
+        type: path
+        help: "Path to model project for model initialization"
+    model_config:
+        names: "--model-config"
+        help: "Model project configuration for model init"
+    dataset_proj:
+        names: "--dataset-project"
+        type: path
+        help: "Path to dataset project"
+    dataset_config:
+        names: "--dataset-config"
+        help: "Dataset project configuration"
+    resume:
+        names: "--resume"
+        action: "store_true"
+        help: "Resume from checkpoint"
+    batch_size:
+        names: "--batch-size"
+        type: int
+        help: "Set the per-device-training batch size"
+    gradient_accumulation_steps:
+        names: "--gradient-accumulation-steps"
+        type: int
+        help: "Set the number of gradient accumulation steps"
+    total_tokens:
+        names: "--total-tokens"
+        type: int
+        help: "Total training tokens (millions)"
+    warmup_tokens:
+        names: "--warmup-tokens"
+        type: int
+        help: "Total warmup tokens (millions)"
+    min_cooldown_tokens:
+        names: "--min-cooldown-tokens"
+        type: int
+        help: "Minimum tokens (millions) for LR decay phase"
+    model_project:
+        names: "--model-project"
+        type: path
+        help: "Path to model project for model initialization"
+    model_config:
+        names: "--model-config"
+        help: "Model project configuration for model init"
+    seq_len:
+        names: "--seq-len"
+        type: int
+        help: "Set maximum sequence length"
+    base_lr:
+        names: "--base-lr"
+        type: float
+        help: "Base LR, scaled by sqrt(tokens_per_step)"
+    step_cadence:
+        names: "--step-cadence"
+        type: float
+        default: 1.0
+        help: "Scale size of train/eval/save steps by this factor"
+    peak_hardware_flops:
+        names: "--peak-hardware-flops"
+        type: float
+        help: "See docs/trainers/training-performance-metrics.md"
+    compile:
+        names: "--compile"
+        action: "store_true"
+        help: "Enable Torch compile"
+    model_name:
+        names: "--model-name"
+        help: "Set custom model name"

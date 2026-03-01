@@ -6,4 +6,4 @@
 
 [train_dataset_split]
     == super()
-    split: "train[:10%]"
+    split: "train[:15%]"

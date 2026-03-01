@@ -8,4 +8,4 @@
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW
-    lr: {{ ns.adam_lr | toyaml }}
+    lr: {{ ns.effective_lr | toyaml }}

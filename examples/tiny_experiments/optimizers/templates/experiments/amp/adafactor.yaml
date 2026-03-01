@@ -9,4 +9,4 @@
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.Adafactor
-    lr: {{ ns.adafactor_lr | toyaml }}
+    lr: {{ ns.effective_lr | toyaml }}

@@ -8,4 +8,4 @@
 
 [optimizer]
 optimizer: &optimizer !lambda:torch:optim.SGD
-    lr: {{ ns.sgd_lr | toyaml }}
+    lr: {{ ns.effective_linear_lr | toyaml }}

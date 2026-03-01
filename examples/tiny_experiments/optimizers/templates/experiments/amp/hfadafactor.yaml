@@ -8,6 +8,6 @@
 
 [optimizer]
 optimizer: &optimizer !partial:transformers:Adafactor
-    lr: {{ ns.adafactor_lr | toyaml }}
+    lr: {{ ns.effective_lr | toyaml }}
     scale_parameter: False
     relative_step: False

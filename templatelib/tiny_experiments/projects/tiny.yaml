@@ -102,17 +102,13 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     max_length: 512
 
 [lr_scheduler]
-##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
-# https://arxiv.org/html/2503.02844v1
-lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:CosineLRScheduler@lr_scheduler
     # Linear warm-up steps
     warmup_steps: 500
 
     # Cosine decay from end of warmp-up to constant-lr
-    cooldown_steps: 50000
-
-    # See paper for experimentally derived values.
-    constant_lr: 1.0e-4
+    # Tiny Stories, with a batch-size of 32, takes 66,241 steps to finish. 
+    total_steps: 67000
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW

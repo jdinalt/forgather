@@ -1,0 +1,27 @@
+-- extends "projects/tinyv2.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Tiny Experiments v2 Packed"
+    -- set ns.config_description = "Tiny v2 with packed tokens and DDP trainer"
+
+    -- set ns.dataset_config = dataset_config | default("fast-iter-packed.yaml")
+    -- set ns.batch_density = 0.97
+    -- set ns.dispatch_batches = dispatch_batches | default(False)
+    -- set ns.seq_len = seq_len | default(2048)
+    -- set ns.per_device_train_batch_size =  batch_size | default(8)
+
+    -- set ns.nproc_per_node = "gpu"
+    -- set ns.default_attn_implementation = "flex_attention"
+
+[datacollator]
+    == super()
+    padding: "max_length"
+
+[trainer_definition]
+    -- include 'trainers/ddp_trainer.yaml'
+
+[fused_loss_factory]
+# Fused output-linear x cross-entropy-loss kernel
+.define: &fused_loss_factory !partial:forgather.ml.loss:LinearCrossEntropyLoss
+    compile: {{ compile | default(False) }}

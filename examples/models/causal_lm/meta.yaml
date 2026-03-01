@@ -4,5 +4,5 @@
 name: "Causal LM"
 description: "A vanilla transformer"
 config_prefix: "configs"
-default_config: "23M.yaml"
+default_config: "small.yaml"
 << endblock configs

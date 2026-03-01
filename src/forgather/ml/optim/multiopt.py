@@ -9,13 +9,15 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 
 
-def make_re_multiopt(named_parameters, optimizer_map, factories):
+def make_re_multiopt(named_parameters, optimizer_map, factories, debug=False):
     groups = {group_name: [] for regex, group_name in optimizer_map}
 
     for param_name, param_value in named_parameters:
         for regex, group_name in optimizer_map:
             m = re.search(regex, param_name)
             if m is not None:
+                if debug:
+                    print(f"param group: {group_name} <- {param_name}")
                 groups[group_name].append((param_name, param_value))
                 break
     optimizers = [

@@ -1,0 +1,29 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "SinkGD"
+    -- set ns.config_description = "SinkGD."
+    -- set ns.log_name = "sinkgd"
+    -- set ns.global_lr = 0.02
+    -- set ns.sinkgd_alpha = 0.05
+
+[trainer_args]
+    == super()
+    gradient_accumulation_steps: 8
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
+    optimizer_map:
+        - [ "embed|lm_head|norm|bias", "adam" ]
+        - [ ".*", "sinkgd" ]
+    factories:
+        sinkgd: !partial:forgather.ml.optim:SinkGD
+            lr: {{ (ns.global_lr * ns.sinkgd_alpha ) | toyaml }}
+            normalize_output: False
+            weight_decay: !!float 0.0
+        adam: !partial:torch:optim.AdamW
+            lr: {{ ns.global_lr | toyaml }}
+            weight_decay: !!float 0.0
+    debug: True
+

@@ -1,0 +1,12 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "FG Adam bf16"
+    -- set ns.config_description = "Forgather Adam Implementation bf16 with stochastic rounding"
+    -- set ns.log_name = "fg_adam_bf16"
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim.adamw:AdamW
+    lr: {{ ns.effective_lr | toyaml }}
+    bf16_stochastic_round: True

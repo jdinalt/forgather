@@ -8,6 +8,4 @@
 
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
-    lr: {{ ns.adafactor_lr | toyaml }}
-    use_triton: False
-    bf16_stochastic_round: True
+    lr: {{ ns.effective_lr | toyaml }}

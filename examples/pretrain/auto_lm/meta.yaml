@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+[configs]
+name: "Auto LM"
+description: "Test harness for Auto LM project definition"
+config_prefix: "configs"
+default_config: "default.yaml"
