@@ -5,6 +5,7 @@ Unit tests for the forgather ML optim module components.
 Tests cover:
 - opt_utils: make_regex_optimizer_groups, make_grouped_optimizer
 - rounding_utils: fp32_to_bf16_stochastic_round
+- cosine_lr_scheduler: CosineLRScheduler (warmup, cosine decay)
 - infinite_lr_scheduler: InfiniteLRScheduler (warmup, cooldown, constant, annealing)
 - sequential_lr_factory: sequential_lr_factory
 - subspace_proj: OnlinePCAProjector, RandProjector
@@ -21,25 +22,26 @@ import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import SequentialLR, StepLR
 
+from forgather.ml.optim.adamw import AdamW
+from forgather.ml.optim.cosine_lr_scheduler import CosineLRScheduler
+from forgather.ml.optim.infinite_lr_scheduler import InfiniteLRScheduler
 from forgather.ml.optim.opt_utils import (
     make_grouped_optimizer,
     make_regex_optimizer_groups,
 )
 from forgather.ml.optim.rounding_utils import fp32_to_bf16_stochastic_round
-from forgather.ml.optim.infinite_lr_scheduler import InfiniteLRScheduler
 from forgather.ml.optim.sequential_lr_factory import sequential_lr_factory
+from forgather.ml.optim.sgd import SGD
 from forgather.ml.optim.subspace_proj import (
     OnlinePCAProjector,
     RandProjector,
     SubspaceProjector,
 )
-from forgather.ml.optim.adamw import AdamW
-from forgather.ml.optim.sgd import SGD
-
 
 # ---------------------------------------------------------------------------
 # Helper: simple multi-layer model for optimizer grouping tests
 # ---------------------------------------------------------------------------
+
 
 class TwoLayerModel(nn.Module):
     """A simple model with distinct weight and bias parameters for grouping tests."""
@@ -56,6 +58,7 @@ class TwoLayerModel(nn.Module):
 # ===========================================================================
 # Tests for opt_utils.py
 # ===========================================================================
+
 
 class TestMakeRegexOptimizerGroups:
     """Tests for make_regex_optimizer_groups."""
@@ -266,6 +269,7 @@ class TestMakeGroupedOptimizer:
 # Tests for rounding_utils.py
 # ===========================================================================
 
+
 class TestFp32ToBf16StochasticRound:
     """Tests for fp32_to_bf16_stochastic_round."""
 
@@ -293,9 +297,9 @@ class TestFp32ToBf16StochasticRound:
         # bf16 has 7-8 bit mantissa, so max rounding error per value is bounded
         # by the ULP (unit in the last place) of bfloat16, roughly |x| * 2^-7
         # For standard normal values most are < 4, so max error ~ 0.03
-        assert diff.max().item() < 0.1, (
-            f"Maximum rounding error {diff.max().item()} exceeds tolerance"
-        )
+        assert (
+            diff.max().item() < 0.1
+        ), f"Maximum rounding error {diff.max().item()} exceeds tolerance"
 
     def test_determinism_with_seeded_generator(self):
         """Using the same generator seed should produce identical results."""
@@ -309,7 +313,9 @@ class TestFp32ToBf16StochasticRound:
         gen2.manual_seed(42)
         result2 = fp32_to_bf16_stochastic_round(x, generator=gen2)
 
-        assert torch.equal(result1, result2), "Results should be identical with same seed"
+        assert torch.equal(
+            result1, result2
+        ), "Results should be identical with same seed"
 
     def test_different_seeds_differ(self):
         """Different generator seeds should (very likely) produce different results."""
@@ -325,9 +331,9 @@ class TestFp32ToBf16StochasticRound:
 
         # Not all values will differ (many fp32 values round exactly to bf16)
         # but with 1024 elements some should differ.
-        assert not torch.equal(result1, result2), (
-            "Results with different seeds should differ for a large enough tensor"
-        )
+        assert not torch.equal(
+            result1, result2
+        ), "Results with different seeds should differ for a large enough tensor"
 
     def test_zero_input(self):
         """Zero should round to zero."""
@@ -341,9 +347,9 @@ class TestFp32ToBf16StochasticRound:
         x = torch.tensor([1.0, 2.0, -4.0, 0.5, 0.25], dtype=torch.float32)
         result = fp32_to_bf16_stochastic_round(x)
         expected = x.bfloat16()
-        assert torch.equal(result, expected), (
-            f"Exact bf16 values should be unchanged: got {result}, expected {expected}"
-        )
+        assert torch.equal(
+            result, expected
+        ), f"Exact bf16 values should be unchanged: got {result}, expected {expected}"
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     def test_cuda_tensor(self):
@@ -373,14 +379,15 @@ class TestFp32ToBf16StochasticRound:
 
         mean_rounded = sum(results) / len(results)
         # Mean should be close to the original value (unbiased)
-        assert abs(mean_rounded - val) < 0.005, (
-            f"Mean of stochastic rounding {mean_rounded} too far from true value {val}"
-        )
+        assert (
+            abs(mean_rounded - val) < 0.005
+        ), f"Mean of stochastic rounding {mean_rounded} too far from true value {val}"
 
 
 # ===========================================================================
 # Tests for infinite_lr_scheduler.py
 # ===========================================================================
+
 
 class TestInfiniteLRScheduler:
     """Tests for InfiniteLRScheduler with 4 phases: warmup, cooldown, constant, annealing."""
@@ -395,7 +402,9 @@ class TestInfiniteLRScheduler:
     def test_warmup_starts_at_zero(self):
         """At step 0, LR should be 0 during warmup phase."""
         opt = self._make_optimizer(lr=1.0)
-        sched = InfiniteLRScheduler(opt, warmup_steps=10, cooldown_steps=0, constant_lr=0.5)
+        sched = InfiniteLRScheduler(
+            opt, warmup_steps=10, cooldown_steps=0, constant_lr=0.5
+        )
 
         # After __init__, last_epoch=0 and get_lr has been called once
         lr = sched.get_last_lr()[0]
@@ -417,9 +426,9 @@ class TestInfiniteLRScheduler:
         # LR at step i = base_lr * i / warmup_steps
         for i in range(warmup_steps + 1):
             expected = 1.0 * i / warmup_steps
-            assert lrs[i] == pytest.approx(expected, abs=1e-7), (
-                f"Step {i}: expected LR={expected}, got {lrs[i]}"
-            )
+            assert lrs[i] == pytest.approx(
+                expected, abs=1e-7
+            ), f"Step {i}: expected LR={expected}, got {lrs[i]}"
 
     def test_warmup_end_matches_base_lr(self):
         """At the last warmup step, LR should equal base_lr."""
@@ -433,9 +442,9 @@ class TestInfiniteLRScheduler:
             sched.step()
 
         lr = sched.get_last_lr()[0]
-        assert lr == pytest.approx(0.5, abs=1e-7), (
-            f"LR at end of warmup should equal base_lr=0.5, got {lr}"
-        )
+        assert lr == pytest.approx(
+            0.5, abs=1e-7
+        ), f"LR at end of warmup should equal base_lr=0.5, got {lr}"
 
     # --- cooldown phase ---
 
@@ -457,9 +466,9 @@ class TestInfiniteLRScheduler:
 
         lr = sched.get_last_lr()[0]
         # At step=warmup_steps, cosine term: cos(0) = 1, so lr = constant_lr + (base_lr - constant_lr)/2 * 2 = base_lr
-        assert lr == pytest.approx(1.0, abs=1e-6), (
-            f"LR at start of cooldown should be base_lr=1.0, got {lr}"
-        )
+        assert lr == pytest.approx(
+            1.0, abs=1e-6
+        ), f"LR at start of cooldown should be base_lr=1.0, got {lr}"
 
     def test_cooldown_ends_at_constant_lr(self):
         """At the end of cooldown, LR should be close to constant_lr."""
@@ -482,9 +491,9 @@ class TestInfiniteLRScheduler:
         # At the last cooldown step (step = warmup + cooldown - 1):
         # cosine arg = pi * (cooldown_steps - 1) / cooldown_steps ~ pi
         # So cos ~ -1, LR ~ constant_lr + 0 ~ constant_lr (approximately)
-        assert lr == pytest.approx(constant_lr, abs=0.05), (
-            f"LR at end of cooldown should approach constant_lr={constant_lr}, got {lr}"
-        )
+        assert lr == pytest.approx(
+            constant_lr, abs=0.05
+        ), f"LR at end of cooldown should approach constant_lr={constant_lr}, got {lr}"
 
     def test_cooldown_cosine_shape(self):
         """Cooldown LR follows cosine decay from base_lr to constant_lr."""
@@ -507,9 +516,9 @@ class TestInfiniteLRScheduler:
         # Verify a midpoint value: at step=cooldown_steps/2, cosine=cos(pi/2)=0
         mid = cooldown_steps // 2
         expected_mid = constant_lr + (2.0 - constant_lr) / 2.0 * (1.0 + 0.0)
-        assert lrs[mid] == pytest.approx(expected_mid, abs=0.05), (
-            f"Midpoint LR should be ~{expected_mid}, got {lrs[mid]}"
-        )
+        assert lrs[mid] == pytest.approx(
+            expected_mid, abs=0.05
+        ), f"Midpoint LR should be ~{expected_mid}, got {lrs[mid]}"
 
     # --- constant phase ---
 
@@ -534,9 +543,9 @@ class TestInfiniteLRScheduler:
         for step_i in range(20):
             sched.step()
             lr = sched.get_last_lr()[0]
-            assert lr == pytest.approx(constant_lr, abs=1e-7), (
-                f"Constant phase step {step_i}: expected {constant_lr}, got {lr}"
-            )
+            assert lr == pytest.approx(
+                constant_lr, abs=1e-7
+            ), f"Constant phase step {step_i}: expected {constant_lr}, got {lr}"
 
     def test_constant_phase_no_cooldown(self):
         """With cooldown_steps=0, constant phase should use base_lr instead."""
@@ -557,9 +566,9 @@ class TestInfiniteLRScheduler:
         for _ in range(20):
             sched.step()
             lr = sched.get_last_lr()[0]
-            assert lr == pytest.approx(0.7, abs=1e-7), (
-                f"Expected base_lr=0.7 in constant phase without cooldown, got {lr}"
-            )
+            assert lr == pytest.approx(
+                0.7, abs=1e-7
+            ), f"Expected base_lr=0.7 in constant phase without cooldown, got {lr}"
 
     # --- annealing phase ---
 
@@ -592,15 +601,15 @@ class TestInfiniteLRScheduler:
             sched.step()
             lr = sched.get_last_lr()[0]
             # LR should be decreasing
-            assert lr < prev_lr or lr == pytest.approx(min_lr, abs=1e-10), (
-                f"Annealing step {i}: LR should decrease, prev={prev_lr}, curr={lr}"
-            )
+            assert lr < prev_lr or lr == pytest.approx(
+                min_lr, abs=1e-10
+            ), f"Annealing step {i}: LR should decrease, prev={prev_lr}, curr={lr}"
             # Verify formula: min_lr + (constant_lr - min_lr) * exp(-t / tau)
             t = i
             expected = min_lr + (constant_lr - min_lr) * math.exp(-t / tau)
-            assert lr == pytest.approx(expected, abs=1e-7), (
-                f"Annealing step {i}: expected {expected}, got {lr}"
-            )
+            assert lr == pytest.approx(
+                expected, abs=1e-7
+            ), f"Annealing step {i}: expected {expected}, got {lr}"
             prev_lr = lr
 
     def test_annealing_converges_to_min_lr(self):
@@ -625,9 +634,9 @@ class TestInfiniteLRScheduler:
             sched.step()
 
         lr = sched.get_last_lr()[0]
-        assert lr == pytest.approx(min_lr, abs=1e-5), (
-            f"After many annealing steps, LR should be ~{min_lr}, got {lr}"
-        )
+        assert lr == pytest.approx(
+            min_lr, abs=1e-5
+        ), f"After many annealing steps, LR should be ~{min_lr}, got {lr}"
 
     # --- no warmup / no cooldown ---
 
@@ -686,9 +695,9 @@ class TestInfiniteLRScheduler:
         sched2.load_state_dict(saved_state)
 
         lr_after = sched2.get_last_lr()[0]
-        assert lr_before == pytest.approx(lr_after, abs=1e-10), (
-            f"LR mismatch after state_dict round-trip: {lr_before} vs {lr_after}"
-        )
+        assert lr_before == pytest.approx(
+            lr_after, abs=1e-10
+        ), f"LR mismatch after state_dict round-trip: {lr_before} vs {lr_after}"
 
         # Step both and verify they remain in sync
         for _ in range(20):
@@ -704,10 +713,12 @@ class TestInfiniteLRScheduler:
         """Scheduler should handle optimizers with multiple parameter groups."""
         p1 = nn.Parameter(torch.randn(4))
         p2 = nn.Parameter(torch.randn(4))
-        opt = torch.optim.SGD([
-            {"params": [p1], "lr": 1.0},
-            {"params": [p2], "lr": 0.5},
-        ])
+        opt = torch.optim.SGD(
+            [
+                {"params": [p1], "lr": 1.0},
+                {"params": [p2], "lr": 0.5},
+            ]
+        )
 
         sched = InfiniteLRScheduler(
             opt,
@@ -753,6 +764,7 @@ class TestInfiniteLRScheduler:
 # ===========================================================================
 # Tests for sequential_lr_factory.py
 # ===========================================================================
+
 
 class TestSequentialLRFactory:
     """Tests for sequential_lr_factory."""
@@ -802,8 +814,8 @@ class TestSequentialLRFactory:
         # Phase 1: constant (StepLR with gamma=1.0 never decays)
         # Phase 2: StepLR that decays every step
         factories = [
-            partial(StepLR, step_size=1, gamma=1.0),   # No decay
-            partial(StepLR, step_size=1, gamma=0.5),    # Halve each step
+            partial(StepLR, step_size=1, gamma=1.0),  # No decay
+            partial(StepLR, step_size=1, gamma=0.5),  # Halve each step
         ]
         milestones = [5]
 
@@ -839,6 +851,7 @@ class TestSequentialLRFactory:
 # ===========================================================================
 # Tests for subspace_proj.py
 # ===========================================================================
+
 
 class TestSubspaceProjector:
     """Tests for the SubspaceProjector base class."""
@@ -976,9 +989,9 @@ class TestOnlinePCAProjector:
             errors.append(error)
 
         # Errors should decrease as rank increases
-        assert errors[0] > errors[1] > errors[2], (
-            f"Reconstruction error should decrease with rank: {errors}"
-        )
+        assert (
+            errors[0] > errors[1] > errors[2]
+        ), f"Reconstruction error should decrease with rank: {errors}"
 
     def test_orthag_qr_left(self):
         """QR orthogonalization should produce orthonormal columns for left proj."""
@@ -992,9 +1005,9 @@ class TestOnlinePCAProjector:
         assert proj.A is not None
         AtA = proj.A.T @ proj.A
         eye = torch.eye(4)
-        assert torch.allclose(AtA, eye, atol=1e-5), (
-            "QR orthogonalized projection should have orthonormal columns"
-        )
+        assert torch.allclose(
+            AtA, eye, atol=1e-5
+        ), "QR orthogonalized projection should have orthonormal columns"
 
     def test_invalid_orthag_raises(self):
         """Unknown orthagonalization method should raise."""
@@ -1009,7 +1022,9 @@ class TestRandProjector:
 
     def test_init_lazy(self):
         """Lazy RandProjector should not allocate A until needed."""
-        proj = RandProjector(rank=4, dim=16, proj_type="left", update_steps=1, lazy=True)
+        proj = RandProjector(
+            rank=4, dim=16, proj_type="left", update_steps=1, lazy=True
+        )
         assert proj.A is None
 
     def test_init_not_lazy(self):
@@ -1085,9 +1100,9 @@ class TestRandProjector:
         proj2.step(x)
         result2 = proj2.down(x)
 
-        assert torch.allclose(result1, result2, atol=1e-6), (
-            "Identically seeded RandProjectors should produce identical results"
-        )
+        assert torch.allclose(
+            result1, result2, atol=1e-6
+        ), "Identically seeded RandProjectors should produce identical results"
 
     def test_determinism_with_seed_not_lazy(self):
         """Two non-lazy RandProjectors with the same seed should produce identical matrices."""
@@ -1125,9 +1140,9 @@ class TestRandProjector:
         proj2.step(x)
         result2 = proj2.down(x)
 
-        assert not torch.allclose(result1, result2, atol=1e-6), (
-            "Different seeds should produce different projections"
-        )
+        assert not torch.allclose(
+            result1, result2, atol=1e-6
+        ), "Different seeds should produce different projections"
 
     def test_orthogonal_init(self):
         """RandProjector with 'orthogonal' init should work."""
@@ -1187,6 +1202,7 @@ class TestRandProjector:
 # Tests for adamw.py
 # ===========================================================================
 
+
 class TestAdamW:
     """Tests for the custom AdamW optimizer."""
 
@@ -1212,9 +1228,9 @@ class TestAdamW:
             optimizer.step()
 
         final_loss = nn.functional.mse_loss(model(x), y).item()
-        assert final_loss < initial_loss, (
-            f"Loss should decrease: initial={initial_loss}, final={final_loss}"
-        )
+        assert (
+            final_loss < initial_loss
+        ), f"Loss should decrease: initial={initial_loss}, final={final_loss}"
 
     def test_weight_decay_applied(self):
         """With weight_decay > 0, weights should shrink compared to no weight decay."""
@@ -1246,9 +1262,9 @@ class TestAdamW:
 
         norm_wd = model_wd.weight.data.norm().item()
         norm_no_wd = model_no_wd.weight.data.norm().item()
-        assert norm_wd < norm_no_wd, (
-            f"Weight decay should reduce weight norm: with_wd={norm_wd}, without_wd={norm_no_wd}"
-        )
+        assert (
+            norm_wd < norm_no_wd
+        ), f"Weight decay should reduce weight norm: with_wd={norm_wd}, without_wd={norm_no_wd}"
 
     def test_state_dict_structure(self):
         """state_dict should contain expected keys: step, m, v."""
@@ -1379,6 +1395,7 @@ class TestAdamW:
 # Tests for sgd.py
 # ===========================================================================
 
+
 class TestSGD:
     """Tests for the custom SGD optimizer."""
 
@@ -1404,9 +1421,9 @@ class TestSGD:
             optimizer.step()
 
         final_loss = nn.functional.mse_loss(model(x), y).item()
-        assert final_loss < initial_loss, (
-            f"Loss should decrease: initial={initial_loss}, final={final_loss}"
-        )
+        assert (
+            final_loss < initial_loss
+        ), f"Loss should decrease: initial={initial_loss}, final={final_loss}"
 
     def test_update_direction_matches_negative_gradient(self):
         """SGD update should be in the direction of negative gradient."""
@@ -1481,9 +1498,9 @@ class TestSGD:
         optimizer.step()
 
         # Parameter without grad should be unchanged
-        assert torch.equal(layer0.weight.data, w_before), (
-            "Parameter without gradient should not be modified"
-        )
+        assert torch.equal(
+            layer0.weight.data, w_before
+        ), "Parameter without gradient should not be modified"
 
     def test_multiple_param_groups(self):
         """SGD should handle multiple parameter groups with different LRs."""
@@ -1532,9 +1549,9 @@ class TestSGD:
         w_before = model.weight.data.clone()
         optimizer.step()
 
-        assert torch.equal(model.weight.data, w_before), (
-            "With lr=0, weights should remain unchanged"
-        )
+        assert torch.equal(
+            model.weight.data, w_before
+        ), "With lr=0, weights should remain unchanged"
 
     def test_large_lr_large_update(self):
         """A larger LR should produce larger parameter updates."""
@@ -1574,6 +1591,7 @@ class TestSGD:
 # ===========================================================================
 # CUDA-specific tests
 # ===========================================================================
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 class TestAdamWCUDA:
@@ -1642,6 +1660,171 @@ class TestRoundingUtilsCUDA:
         result2 = fp32_to_bf16_stochastic_round(x, generator=gen2)
 
         assert torch.equal(result1, result2)
+
+
+# ---------------------------------------------------------------------------
+# CosineLRScheduler tests
+# ---------------------------------------------------------------------------
+
+
+class TestCosineLRScheduler:
+    """Tests for CosineLRScheduler with optional warmup and cosine decay to 0."""
+
+    def _make_optimizer(self, lr=1.0):
+        param = nn.Parameter(torch.randn(4))
+        return torch.optim.SGD([param], lr=lr)
+
+    # --- warmup ---
+
+    def test_warmup_starts_at_zero(self):
+        opt = self._make_optimizer(lr=1.0)
+        sched = CosineLRScheduler(opt, total_steps=100, warmup_steps=10)
+
+        assert sched.get_last_lr()[0] == pytest.approx(0.0)
+
+    def test_warmup_linear_ramp(self):
+        opt = self._make_optimizer(lr=1.0)
+        warmup_steps = 10
+        sched = CosineLRScheduler(opt, total_steps=100, warmup_steps=warmup_steps)
+
+        lrs = [sched.get_last_lr()[0]]
+        for _ in range(warmup_steps):
+            sched.step()
+            lrs.append(sched.get_last_lr()[0])
+
+        for i in range(warmup_steps + 1):
+            expected = 1.0 * i / warmup_steps
+            assert lrs[i] == pytest.approx(
+                expected, abs=1e-7
+            ), f"Step {i}: expected {expected}, got {lrs[i]}"
+
+    def test_warmup_end_matches_base_lr(self):
+        opt = self._make_optimizer(lr=0.5)
+        sched = CosineLRScheduler(opt, total_steps=100, warmup_steps=20)
+
+        for _ in range(20):
+            sched.step()
+
+        assert sched.get_last_lr()[0] == pytest.approx(0.5, abs=1e-7)
+
+    # --- cosine decay ---
+
+    def test_no_warmup_starts_at_base_lr(self):
+        opt = self._make_optimizer(lr=1.0)
+        sched = CosineLRScheduler(opt, total_steps=100, warmup_steps=0)
+
+        assert sched.get_last_lr()[0] == pytest.approx(1.0)
+
+    def test_decay_reaches_zero_at_total_steps(self):
+        opt = self._make_optimizer(lr=1.0)
+        total_steps = 100
+        sched = CosineLRScheduler(opt, total_steps=total_steps, warmup_steps=0)
+
+        for _ in range(total_steps):
+            sched.step()
+
+        assert sched.get_last_lr()[0] == pytest.approx(0.0, abs=1e-7)
+
+    def test_decay_midpoint_is_half(self):
+        """At the midpoint of cosine decay, LR should be 0.5 * base_lr."""
+        opt = self._make_optimizer(lr=2.0)
+        total_steps = 100
+        sched = CosineLRScheduler(opt, total_steps=total_steps, warmup_steps=0)
+
+        for _ in range(total_steps // 2):
+            sched.step()
+
+        assert sched.get_last_lr()[0] == pytest.approx(1.0, abs=1e-7)
+
+    def test_decay_cosine_shape(self):
+        """Verify LR follows cosine curve during decay."""
+        opt = self._make_optimizer(lr=1.0)
+        total_steps = 200
+        warmup_steps = 0
+        decay_steps = total_steps
+        sched = CosineLRScheduler(
+            opt, total_steps=total_steps, warmup_steps=warmup_steps
+        )
+
+        lrs = [sched.get_last_lr()[0]]
+        for _ in range(total_steps):
+            sched.step()
+            lrs.append(sched.get_last_lr()[0])
+
+        for i in range(total_steps + 1):
+            progress = i / decay_steps
+            expected = 0.5 * (1.0 + math.cos(math.pi * progress))
+            assert lrs[i] == pytest.approx(
+                expected, abs=1e-7
+            ), f"Step {i}: expected {expected}, got {lrs[i]}"
+
+    # --- warmup + decay combined ---
+
+    def test_warmup_then_decay(self):
+        """Full schedule: warmup to base_lr, then cosine decay to 0."""
+        opt = self._make_optimizer(lr=1.0)
+        warmup_steps = 20
+        total_steps = 120
+        decay_steps = total_steps - warmup_steps
+        sched = CosineLRScheduler(
+            opt, total_steps=total_steps, warmup_steps=warmup_steps
+        )
+
+        # Collect all LRs
+        lrs = [sched.get_last_lr()[0]]
+        for _ in range(total_steps):
+            sched.step()
+            lrs.append(sched.get_last_lr()[0])
+
+        # Warmup: linear from 0 to 1
+        for i in range(warmup_steps + 1):
+            expected = i / warmup_steps
+            assert lrs[i] == pytest.approx(
+                expected, abs=1e-7
+            ), f"Warmup step {i}: expected {expected}, got {lrs[i]}"
+
+        # Decay: cosine from 1 to 0
+        for i in range(warmup_steps, total_steps + 1):
+            progress = (i - warmup_steps) / decay_steps
+            expected = 0.5 * (1.0 + math.cos(math.pi * progress))
+            assert lrs[i] == pytest.approx(
+                expected, abs=1e-7
+            ), f"Decay step {i}: expected {expected}, got {lrs[i]}"
+
+    # --- multiple param groups ---
+
+    def test_multiple_param_groups(self):
+        """Each param group should use its own base_lr."""
+        p1 = nn.Parameter(torch.randn(4))
+        p2 = nn.Parameter(torch.randn(4))
+        opt = torch.optim.SGD(
+            [{"params": [p1], "lr": 1.0}, {"params": [p2], "lr": 0.1}]
+        )
+        sched = CosineLRScheduler(opt, total_steps=100, warmup_steps=10)
+
+        for _ in range(10):
+            sched.step()
+
+        lrs = sched.get_last_lr()
+        assert lrs[0] == pytest.approx(1.0, abs=1e-7)
+        assert lrs[1] == pytest.approx(0.1, abs=1e-7)
+
+    # --- validation ---
+
+    def test_total_steps_must_be_positive(self):
+        opt = self._make_optimizer()
+        with pytest.raises(AssertionError):
+            CosineLRScheduler(opt, total_steps=0)
+
+    def test_warmup_must_be_less_than_total(self):
+        opt = self._make_optimizer()
+        with pytest.raises(AssertionError):
+            CosineLRScheduler(opt, total_steps=10, warmup_steps=10)
+
+    def test_negative_warmup_rejected(self):
+        opt = self._make_optimizer()
+        with pytest.raises(AssertionError):
+            CosineLRScheduler(opt, total_steps=10, warmup_steps=-1)
 
 
 if __name__ == "__main__":
