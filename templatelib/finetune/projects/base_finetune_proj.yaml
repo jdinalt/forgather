@@ -13,7 +13,6 @@
     -- set ns.config_name = 'Finetune'
     -- set ns.config_description = 'Experiments in finetuning'
     -- set ns.trainer_class = 'trainers/trainer.yaml'
-    -- set ns.trust_remote_code = True
     -- set ns.model_name = 'default_model'
     -- set ns.log_name = log_name | default('log')
     

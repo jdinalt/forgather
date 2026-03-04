@@ -13,7 +13,6 @@
     -- set ns.config_name = 'Evaluate'
     -- set ns.config_description = 'Evaluate model performance on datasets'
     -- set ns.trainer_class = 'trainers/trainer.yaml'
-    -- set ns.trust_remote_code = True
     -- set ns.model_name = 'default_model'
     -- set ns.log_name = 'log'
 

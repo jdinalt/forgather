@@ -1,0 +1,36 @@
+-- extends 'callbacks/loggers.yaml'
+## Add experiment loggers to the callbacks list.
+## The parent creates a Tensor Board SummaryWriter, which we can use.
+
+[callback_dependencies]
+    == super()
+
+    [generation_config]
+generation_config: &generation_config !dict:@generation_config
+    do_sample: True
+    top_k: 20
+    temperature: 0.7
+    repetition_penalty: 1.15
+
+    [text_gen_callback_args]
+text_gen_callback_args: &text_gen_callback_args
+    summary_writer: *summary_writer
+    prompts: {{ abspath(joinpath(ns.forgather_dir, "prompts/tiny_stories.yaml")) }}
+    generation_config: *generation_config
+    max_new_tokens: 40
+    generation_steps: 2000
+
+## This adds a text-generationn sample every 'generation_steps'
+[callback_list]
+    == super()
+    ## Flex attention seems to occasionally crash when generating. Disabled until issue is resolved.
+    -- if (attn_implementation | default(ns.default_attn_implementation)) != "flex_attention"
+    text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
+        <<: *text_gen_callback_args
+    -- endif
+    peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
+        show_details: {{ debug_memory | toyaml(False) }}
+        do_log: {{ log_peak_memory | toyaml(False) }}
+    trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
+    progress_callback: !singleton:forgather.ml.trainer.callbacks:ProgressCallback
+        peak_hardware_flops: {{ ns.total_peak_hardware_flops | toyaml }}

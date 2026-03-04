@@ -1,0 +1,362 @@
+-- extends "training_script/causal_lm/causal_lm.yaml"
+## ---------------------------------------------------------------------------
+## LM Training Project
+##
+## A complete training project template that computes the number of training
+## steps from a target token budget. The budget is typically set relative to
+## the "Chinchilla-Optimal" ratio (see background below).
+##
+## Includes a cosine-decay LR scheduler with warmup and an AdamW optimizer.
+## For automatic LR scaling based on global batch size, extend this template
+## with 'projects/auto_lr_project.yaml'.
+##
+## ---------------------------------------------------------------------------
+## Configuration Parameters
+##
+## All token counts are specified in MILLIONS unless noted otherwise.
+##
+## Training Budget
+##   total_tokens           (int)   Total training tokens.          Default: 560
+##   warmup_tokens          (int)   LR warmup tokens.               Default: 56
+##   min_cooldown_tokens    (int)   Minimum cosine-decay window;    Default: 300
+##                                  prevents decay to 0 on short runs.
+##
+## Batching
+##   seq_len                (int)   Maximum sequence length.        Default: 512
+##   batch_size             (int)   Per-device training batch size. Default: 32
+##   gradient_accumulation_steps
+##                          (int)   Gradient accumulation steps.    Default: 1
+##   batch_density          (float) Estimated fraction of non-pad   Default: 0.90
+##                                  tokens per batch; used to
+##                                  correct token-count estimates.
+##
+## Data
+##   dataset_project        (path)  Path to dataset project.        Default: examples/datasets/HuggingFaceTB
+##   dataset_config         (str)   Dataset project configuration.  Default: smollm-corpus/fineweb-edu-packed.yaml
+##   dispatch_batches       (bool)  When True, rank-0 loads and     Default: False
+##                                  dispatches all batches (DDP).
+##                                  Use when the dataset does not
+##                                  support sharding, or to match
+##                                  single-process example ordering.
+##
+## Model
+##   model_project          (path)  Path to model project.          Default: examples/models/llama
+##   model_config           (str)   Model project configuration.    Default: small.yaml (28M parameters)
+##   attn_implementation    (str)   Attention backend.              Default: sdpa
+##
+## Optimizer / Scheduler
+##   lr                     (float) Learning rate.                  Default: 3e-4
+##
+## Step Cadence (logging / eval / save intervals)
+##   step_cadence           (float) Multiplier applied to the base  Default: 1.0
+##                                  token intervals below.
+##   base_logging_tokens    (int)   Tokens (M) between log steps.   Default: 1
+##   base_validation_tokens (int)   Tokens (M) between eval steps.  Default: 25
+##   base_save_tokens       (int)   Tokens (M) between save steps.  Default: 500
+##
+## Hardware / Performance
+##   peak_hardware_flops    (float) Peak device FLOPS for MFU       Default: 165.2e12
+##                                  computation. See
+##                                  docs/trainers/training-performance-metrics.md
+##
+## Precision / Compilation
+##   default_dtype          (str)   Torch dtype for model construction. Choices: float32, bfloat16, float16
+##   float32_matmul_precision
+##                          (str)   Approximate float32 matmul with bf16. Choices: highest, high, medium
+##   mixed_precision        (str)   AMP dtype.                      Choices: bf16, fp16, no
+##   compile                (bool)  Enable torch.compile.           Default: False
+##
+## Misc
+##   seed                   (int)   Random seed.                    Default: 42
+##   resume                 (bool)  Resume from latest checkpoint.  Default: False
+##   save_strategy          (str)   Checkpoint save strategy.       Default: steps
+##
+## ---------------------------------------------------------------------------
+## Chinchilla-Optimal Training: Background
+##
+## The "Chinchilla scaling law" (Hoffmann et al., 2022) empirically determined
+## that prior large language models were significantly *undertrained* relative
+## to their parameter count. The key finding: for a compute-optimal model,
+## training tokens should scale *linearly* with model parameters -- roughly
+## 20 tokens per parameter.
+##
+##   Optimal tokens ~ 20 x N
+##   where N = number of model parameters
+##
+## This overturned the earlier Kaplan et al. (2020) wisdom, which favoured
+## scaling parameters over data given a fixed compute budget (FLOPs).
+## Hoffmann et al. showed that halving model size while doubling tokens yields
+## equal or better loss at the same compute cost -- as demonstrated by
+## Chinchilla (70B params, 1.4T tokens) outperforming Gopher (280B params,
+## 300B tokens) despite using ~4x fewer parameters.
+##
+## Practical derivation:
+##   C ~ 6 x N x D          (approximate FLOPs for a transformer fwd+bwd pass)
+##   Minimise L(N, D) s.t. C = 6ND  =>  N_opt ~ C^0.5,  D_opt ~ C^0.5
+##   Fitted constant from Hoffmann et al.: D_opt ~ 20 x N_opt
+##
+## Caveats:
+##   - The "20x" ratio is a fitted constant; Epoch AI (2024) and others
+##     suggest the true optimum may be higher (~40-100x) once inference costs
+##     are factored in.
+##   - Assumes a fixed compute budget; if data is the bottleneck, the ratio
+##     shifts.
+##   - Applies to autoregressive transformer LLMs; may not generalise to other
+##     architectures or modalities.
+##
+## References:
+##   Hoffmann et al. (2022) "Training Compute-Optimal Large Language Models"
+##     https://arxiv.org/abs/2203.15556
+##   Kaplan et al. (2020) "Scaling Laws for Neural Language Models"
+##     https://arxiv.org/abs/2001.08361
+##   Besiroglu et al. / Epoch AI (2024) "Chinchilla Scaling: A Replication Attempt"
+##     https://arxiv.org/abs/2404.10102
+## ---------------------------------------------------------------------------
+##
+## ===== Metadata and parameter defaults ======================================
+##
+[config_metadata]
+    == super()
+    -- set ns.config_name = "LM Training Project"
+    -- set ns.config_description = "Default LM Training Project"
+
+    ## Dataset
+    -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, "examples", "datasets", "HuggingFaceTB"))
+    -- set ns.dataset_config = dataset_config | default("smollm-corpus/fineweb-edu-packed.yaml")
+    -- set ns.dispatch_batches = dispatch_batches | default(False)
+
+    ## Model
+    -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "llama"))))
+    -- set ns.model_project_config = model_config | default("small.yaml")
+
+    ## Training budget (millions of tokens)
+    -- set ns.total_tokens = total_tokens | default(560)
+    -- set ns.warmup_tokens = warmup_tokens | default(56)
+    -- set ns.min_cooldown_tokens = min_cooldown_tokens | default(300)
+
+    ## Batching
+    -- set ns.seq_len = seq_len | default(512)
+    -- set ns.per_device_train_batch_size = batch_size | default(32)
+    -- set ns.gradient_accumulation_steps = gradient_accumulation_steps | default(1)
+    -- set ns.batch_density = 0.90
+
+    ## Step cadence
+    -- set ns.step_cadence = step_cadence | default(1.0)
+    -- set ns.base_logging_tokens = 1
+    -- set ns.base_validation_tokens = 25
+    -- set ns.base_save_tokens = 500
+
+    ## Hardware
+    -- set ns.peak_hardware_flops = peak_hardware_flops | default(165.2e12)
+
+## ===== Derived globals ======================================================
+
+[globals]
+    == super()
+    ## Convert M-token inputs to raw token counts
+    -- set ns.total_tokens = ns.total_tokens * 1000 * 1000
+    -- set ns.warmup_tokens = ns.warmup_tokens * 1000 * 1000
+    -- set ns.min_cooldown_tokens = ns.min_cooldown_tokens * 1000 * 1000
+
+    ## Token intervals for logging / eval / save
+    -- set ns.logging_tokens = ns.base_logging_tokens * 1000 * 1000 * ns.step_cadence
+    -- set ns.validation_tokens = ns.base_validation_tokens * 1000 * 1000 * ns.step_cadence
+    -- set ns.save_tokens = ns.base_save_tokens * 1000 * 1000 * ns.step_cadence
+
+    ## Batch size and step calculations
+    -- set ns.world_size = (getenv("WORLD_SIZE", "1") | int)
+    -- set ns.effective_per_device_batch_size = ns.gradient_accumulation_steps * ns.per_device_train_batch_size
+    -- set ns.global_batch_size = ns.effective_per_device_batch_size * ns.world_size
+    -- set ns.tokens_per_step = (ns.seq_len * ns.global_batch_size * ns.batch_density) | int
+    -- set ns.min_cooldown_steps = ns.min_cooldown_tokens // ns.tokens_per_step
+    -- set ns.warmup_steps = ns.warmup_tokens // ns.tokens_per_step
+    -- set ns.total_steps = ns.total_tokens // ns.tokens_per_step
+    -- set ns.total_peak_hardware_flops = ns.world_size * ns.peak_hardware_flops
+
+[variable_listing]
+    == super()
+# **LM Training Project**
+# ns.per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
+# ns.gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
+# ns.effective_per_device_batch_size: {{ ns.effective_per_device_batch_size }}
+# ns.global_batch_size: {{ ns.global_batch_size }}
+# ns.seq_len: {{ ns.seq_len }} tokens
+# ns.total_steps: {{ ns.total_steps }} steps
+# ns.warmup_steps: {{ ns.warmup_steps }}
+# ns.min_cooldown_steps: {{ ns.min_cooldown_steps }}
+# ns.total_tokens: {{ ns.total_tokens // (1000 * 1000)}}M
+# ns.tokens_per_step: {{ ns.tokens_per_step }} tokens
+# ns.total_peak_hardware_flops: {{ ns.total_peak_hardware_flops / 1e12 }} TFLOPS
+
+## ===== Dataset ==============================================================
+##
+[datasets_preprocessor_args]
+.define: &tokenizer_args !dict
+    truncation: True
+    max_length: {{ ns.seq_len }}
+
+[datasets_definition]
+    [dataset_project_pp_args]
+.define: &dataset_project_pp_args !dict
+
+    [dataset_project]
+.define: &dataset_dict !call:forgather:from_project
+    project_dir: "{{ ns.dataset_proj }}"
+    config_template: "{{ ns.dataset_config }}"
+    targets: [ "train_dataset", "eval_dataset" ]
+    pp_kwargs: *dataset_project_pp_args
+    preprocess_args: *tokenizer_args
+    tokenizer: *tokenizer
+    shard_dataset: {{ ns.dispatch_batches == False }}
+
+    [dataset_splits]
+train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
+eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
+
+## ===== Model ================================================================
+##
+[model_constructor_args]
+.define: &model_constructor_args
+    attn_implementation: "{{ attn_implementation | default("sdpa") }}"
+
+[construct_new_model]
+    [model_project_pp_args]
+.define: &model_project_pp_args
+    output_dir: "{{ ns.output_dir }}"
+
+    [model_project]
+.define: &model_dict !call:forgather:from_project
+    project_dir: "{{ ns.model_project_dir }}"
+    config_template: "{{ ns.model_project_config }}"
+    targets: [ "pretrained_tokenizer", "model" ]
+    pp_kwargs: *model_project_pp_args
+    model_constructor_args: *model_constructor_args
+
+    [model_assets]
+tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
+model: &model !call:getitem [ *model_dict, 'model' ]
+
+## ===== Trainer ==============================================================
+##
+[trainer_args]
+    == super()
+    seed: {{ seed | toyaml(42) }}
+    eval_strategy: "steps"
+    save_strategy: {{ save_strategy | toyaml('steps') }}
+
+    logging_steps: {{ (ns.logging_tokens // ns.tokens_per_step) | int }}
+    eval_steps: {{ (ns.validation_tokens // ns.tokens_per_step) | int }}
+    save_steps: {{ (ns.save_tokens // ns.tokens_per_step) | int }}
+    max_steps: {{ max_steps | toyaml(ns.total_steps) }}
+
+    per_device_train_batch_size: {{ ns.per_device_train_batch_size }}
+    per_device_eval_batch_size: {{ ns.per_device_train_batch_size * 2 }}  # 2x train batch size
+    gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
+
+    resume_from_checkpoint: {{ resume | default(False) }}
+    torch_compile: {{ compile | default(False) }}
+    dispatch_batches: {{ ns.dispatch_batches }}
+    float32_matmul_precision: {{ float32_matmul_precision | toyaml(None) }}
+    default_dtype: {{ default_dtype | toyaml(None) }}
+    mixed_precision: {{ mixed_precision | toyaml(None) }}
+
+[datacollator]
+data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
+    tokenizer: *tokenizer
+    return_tensors: pt
+
+[lr_scheduler]
+# LR Scheduler (cosine decay with warmup)
+# total_steps is clamped to min_cooldown_steps ({{ ns.min_cooldown_steps }})
+# so that short runs do not decay the LR all the way to zero.
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:CosineLRScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    total_steps: {{ [ns.min_cooldown_steps, ns.total_steps] | max | int }}
+
+[optimizer]
+optimizer: &optimizer !partial:torch:optim.AdamW
+    lr: {{ lr | default(3e-4) | toyaml  }}
+
+## ===== CLI arguments ========================================================
+##
+[dynamic_args]
+    == super()
+    model_project:
+        names: "--model-project"
+        type: path
+        help: "Path to model project for model initialization"
+    model_config:
+        names: "--model-config"
+        help: "Model project configuration for model init"
+    dataset_proj:
+        names: "--dataset-project"
+        type: path
+        help: "Path to dataset project"
+    dataset_config:
+        names: "--dataset-config"
+        help: "Dataset project configuration"
+    resume:
+        names: "--resume"
+        type: bool
+        help: "Resume from checkpoint"
+    batch_size:
+        names: "--batch-size"
+        type: int
+        help: "Set the per-device training batch size"
+    gradient_accumulation_steps:
+        names: "--gradient-accumulation-steps"
+        type: int
+        help: "Set the number of gradient accumulation steps"
+    total_tokens:
+        names: "--total-tokens"
+        type: int
+        help: "Total training tokens (millions)"
+    warmup_tokens:
+        names: "--warmup-tokens"
+        type: int
+        help: "Total warmup tokens (millions)"
+    min_cooldown_tokens:
+        names: "--min-cooldown-tokens"
+        type: int
+        help: "Minimum tokens (millions) for LR decay phase"
+    seq_len:
+        names: "--seq-len"
+        type: int
+        help: "Set maximum sequence length"
+    lr:
+        names: "--lr"
+        type: float
+        help: "Learning rate"
+    step_cadence:
+        names: "--step-cadence"
+        type: float
+        default: 1.0
+        help: "Scale log/eval/save intervals by this factor"
+    peak_hardware_flops:
+        names: "--peak-hardware-flops"
+        type: float
+        help: "Peak device FLOPS for MFU computation"
+    compile:
+        names: "--compile"
+        type: bool
+        help: "Enable torch.compile"
+    dispatch_batches:
+        names: "--dispatch-batches"
+        type: bool
+        help: "Dispatch all batches from rank-0 instead of sharding (DDP)"
+    default_dtype:
+        names: "--default-dtype"
+        choices: [ "float32", "bfloat16", "float16" ]
+        help: "Default torch dtype for model construction"
+    float32_matmul_precision:
+        names: "--float32-matmul-precision"
+        choices: [ "highest", "high", "medium" ]
+        help: "Approximate float32 matmul with bf16; highest = full float32"
+    mixed_precision:
+        names: "--mixed-precision"
+        choices: [ "bf16", "fp16", "no" ]
+        help: "Automatic Mixed Precision (AMP) dtype"
+    seed:
+        names: "--seed"
+        type: int
+        help: "Random seed"

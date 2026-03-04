@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+[configs]
+name: "Base LM Project"
+description: "A test harness for the base LM project template."
+config_prefix: "configs"
+default_config: "lm_training_project.yaml"

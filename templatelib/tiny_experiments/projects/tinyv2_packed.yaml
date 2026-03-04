@@ -13,11 +13,7 @@
     -- set ns.seq_len = seq_len | default(2048)
     -- set ns.per_device_train_batch_size =  batch_size | default(8)
 
-    -- set ns.nproc_per_node = "gpu"
-
 [datacollator]
     == super()
+    max_length: {{ ns.seq_len }}
     padding: "max_length"
-
-[trainer_definition]
-    -- include 'trainers/ddp_trainer.yaml'

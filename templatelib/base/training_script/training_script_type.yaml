@@ -133,7 +133,7 @@ lr_scheduler: &lr_scheduler ~
     -- endfilter
 
 
-== h3('Trainer Args')
+== h2('Trainer Args')
 
     -- filter trim()
     -- block trainer_args

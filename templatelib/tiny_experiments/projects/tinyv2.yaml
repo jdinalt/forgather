@@ -1,7 +1,8 @@
--- extends "projects/auto_lm.yaml"
+-- extends "projects/auto_lr_project.yaml"
 
 [config_metadata]
     == super()
+    ## Tiny Experiments Overrides
     -- set ns.config_name = "Tiny Experiments v2"
     -- set ns.config_description = "A project template for running tiny model experiments."
 
@@ -9,8 +10,8 @@
     -- set ns.dataset_config = dataset_config | default("tinystories-abridged.yaml")
     -- set ns.batch_density = 0.60
 
-    -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'causal_lm')
-    -- set ns.model_project_config = "4M.yaml"
+    -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "llama"))))
+    -- set ns.model_project_config = model_config | default("4M.yaml")
 
     -- set ns.total_tokens = total_tokens | default(80)
     -- set ns.warmup_tokens = warmup_tokens | default(4)
@@ -19,7 +20,6 @@
     -- set ns.seq_len = seq_len | default(512)
     -- set ns.per_device_train_batch_size = batch_size | default(32)
     -- set ns.gradient_accumulation_steps = gradient_accumulation_steps | default(1)
-    -- set ns.base_lr = base_lr | default(3.0e-6)
 
     -- set ns.base_logging_tokens = 1
     -- set ns.base_validation_tokens = 10
@@ -33,48 +33,6 @@
     default_dtype: {{ default_dtype | toyaml("float32") }}
     mixed_precision: {{ mixed_precision | toyaml("bf16") }}
 
-[fused_loss_factory]
-# Disable fused loss; it's slower on small models and has edge-case compatibility issues.
-.define: &fused_loss_factory null
-
 [trainer_callbacks]
     ## See definition below
-    -- include 'tiny.callbacks'
-
-#-------------------- tiny.callbacks --------------------
--- extends 'callbacks/loggers.yaml'
-## Add experiment loggers to the callbacks list.
-## The parent creates a Tensor Board SummaryWriter, which we can use.
-
-[callback_dependencies]
-    == super()
-
-    [generation_config]
-generation_config: &generation_config !dict:@generation_config
-    do_sample: True
-    top_k: 20
-    temperature: 0.7
-    repetition_penalty: 1.15
-
-    [text_gen_callback_args]
-text_gen_callback_args: &text_gen_callback_args
-    summary_writer: *summary_writer
-    prompts: {{ abspath(joinpath(ns.forgather_dir, "prompts/tiny_stories.yaml")) }}
-    generation_config: *generation_config
-    max_new_tokens: 40
-    generation_steps: 2000
-
-## This adds a text-generationn sample every 'generation_steps'
-[callback_list]
-    == super()
-    ## Flex attention seems to occasionally crash when generating. Disabled until issue is resolved.
-    -- if (attn_implementation | default(ns.default_attn_implementation)) != "flex_attention"
-    text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
-        <<: *text_gen_callback_args
-    -- endif
-    peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
-        show_details: {{ debug_memory | toyaml(False) }}
-        do_log: {{ log_peak_memory | toyaml(False) }}
-    trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
-    progress_callback: !singleton:forgather.ml.trainer.callbacks:ProgressCallback
-        peak_hardware_flops: {{ ns.total_peak_hardware_flops | toyaml }}
+    -- include 'callbacks/tiny_callbacks.yaml'

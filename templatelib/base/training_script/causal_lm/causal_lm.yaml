@@ -4,13 +4,6 @@
 [config_metadata]
     == super()
     -- set ns.config_class = ns.config_class + ".causal_lm"
-    ## This needs to be set to True for a custom model.
-    -- set ns.trust_remote_code = False
-    -- set ns.load_empty_model = False
-
-[variable_listing]
-    == super()
-# ns.trust_remote_code: {{ ns.trust_remote_code }}
 
 [datasets_preprocessor_args]
 tokenizer_args: &tokenizer_args !dict
