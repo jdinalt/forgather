@@ -8,5 +8,5 @@
 
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim:Adafactor
-    lr: {{ ns.effective_lr | toyaml }}
+    lr: {{ ns.global_lr | toyaml }}
     use_triton: False

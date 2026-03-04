@@ -1,4 +1,4 @@
--- extends 'projects/tinyv2_packed.yaml'
+-- extends "projects/auto_lr_project.yaml"
 
 [config_metadata]
     == super()
@@ -6,43 +6,35 @@
     -- set ns.config_description = "Compare optimizer performance"
     -- set ns.nproc_per_node = 1
     
-    ## Use a bigger model
-    -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "llama"))))
-    -- set ns.model_project_config = model_config | default("small.yaml")
+    -- set ns.batch_density = 0.95
 
-    ## This model has 28 parameters, thus Chinchilla optimal is 560M tokens
-    -- set ns.total_tokens = total_tokens | default(560)
-    -- set ns.warmup_tokens = warmup_tokens | default(56)
-    -- set ns.min_cooldown_tokens = min_cooldown_tokens | default(0)
-
-    ## These values are tuned for the maximum (small-batch) throughput on a single GPU
-    -- set ns.seq_len = seq_len | default(512)
-    -- set ns.per_device_train_batch_size = batch_size | default(32)
-
-    ## Identical for the defaults at present
-    -- set ns.base_lr = base_lr | default(3.0e-6)
-    -- set ns.base_linear_lr = 1.0e-2
+    -- set ns.base_lr = lr | default(3e-4)
 
     ## https://arxiv.org/pdf/2507.07101
     ## beta2 is optimal for beta2_batch_size token batch-size
     -- set ns.beta2 = 0.999
-    -- set ns.beta2_batch_size = 16384
+
+    -- set ns.default_attn_implementation = attn_implementation | default("sdpa")
 
 [globals]
     == super()
-    -- set ns.effective_linear_lr = ns.base_linear_lr * ns.global_batch_size
     ## https://arxiv.org/pdf/2507.07101
     ## Scale beta2 to have constant half-life
-    -- set ns.scaled_beta2 = ns.beta2 ** (ns.tokens_per_step / ns.beta2_batch_size)
+    -- set ns.scaled_beta2 = ns.beta2 ** (ns.tokens_per_step / ns.base_batch_size)
 
 [variable_listing]
     == super()
-# ns.effective_linear_lr: {{ ns.effective_linear_lr }}
+# ns.base_lr: {{ ns.base_lr }}
 # ns.scaled_beta2: {{ ns.scaled_beta2 }}
 
 [trainer_args]
     == super()
     # **Optimizers**
+    save_strategy: {{ save_strategy | toyaml('no') }}
+    float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
+    default_dtype: {{ default_dtype | toyaml("float32") }}
+    mixed_precision: {{ mixed_precision | toyaml("bf16") }}
+    
     # Enable compile by default, with maximum performance
     torch_compile: {{ compile | default(True) }}
     torch_compile_full_graph: True

@@ -1,4 +1,4 @@
--- extends 'project.yaml'
+-- extends 'bfloat16.yaml'
 
 [config_metadata]
     == super()
@@ -8,5 +8,5 @@
 
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim:AdamW
-    lr: {{ ns.effective_lr | toyaml }}
+    lr: {{ ns.global_lr | toyaml }}
     bf16_stochastic_round: True

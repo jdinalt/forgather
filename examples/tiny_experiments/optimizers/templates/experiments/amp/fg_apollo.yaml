@@ -15,7 +15,7 @@
 
     [apollo]
 .define: &apollo !partial:forgather.ml.optim.apollo:Apollo
-    lr: {{ ns.effective_lr | toyaml }}
+    lr: {{ ns.global_lr | toyaml }}
     rank: 64
     mini: False
     projector_factory: *projector_factory
@@ -31,4 +31,4 @@ optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
     factories:
         apollo: *apollo
         default: !partial:torch:optim.Adam
-            lr: {{ ns.effective_lr | toyaml }}
+            lr: {{ ns.global_lr | toyaml }}

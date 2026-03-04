@@ -6,6 +6,9 @@
     -- set ns.config_name = "Tiny Experiments v2"
     -- set ns.config_description = "A project template for running tiny model experiments."
 
+    # Supports DDP, but defaults to single GPU
+    -- set ns.nproc_per_node = 1
+
     -- set ns.dataset_proj = dataset_project | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
     -- set ns.dataset_config = dataset_config | default("tinystories-abridged.yaml")
     -- set ns.batch_density = 0.60
@@ -15,7 +18,7 @@
 
     -- set ns.total_tokens = total_tokens | default(80)
     -- set ns.warmup_tokens = warmup_tokens | default(4)
-    -- set ns.min_cooldown_tokens = min_cooldown_tokens | default(1000)
+    -- set ns.min_cooldown_tokens = min_cooldown_tokens | default(100)
 
     -- set ns.seq_len = seq_len | default(512)
     -- set ns.per_device_train_batch_size = batch_size | default(32)
@@ -24,6 +27,12 @@
     -- set ns.base_logging_tokens = 1
     -- set ns.base_validation_tokens = 10
     -- set ns.base_save_tokens = 500
+
+    -- set ns.default_attn_implementation = attn_implementation | default("sdpa")
+
+[model_constructor_args]
+.define: &model_constructor_args
+    attn_implementation: "{{ ns.default_attn_implementation }}"
 
 [trainer_args]
     == super()

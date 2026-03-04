@@ -8,4 +8,4 @@
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.Adafactor
-    lr: {{ ns.effective_lr | toyaml }}
+    lr: {{ ns.global_lr | toyaml }}

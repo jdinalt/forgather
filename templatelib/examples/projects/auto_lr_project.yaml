@@ -72,10 +72,13 @@
 
 [globals]
     == super()
-    -- set ns.global_lr = ns.base_lr * (ns.global_batch_size / ns.base_batch_size) ** ns.lr_alpha
+    -- set ns.global_lr = ns.base_lr * (ns.tokens_per_step / ns.base_batch_size) ** ns.lr_alpha
 
 [variable_listing]
     == super()
+# ns.base_lr: {{ ns.base_lr }}
+# ns.base_batch_size: {{ ns.base_batch_size }}
+# ns.lr_alpha: {{ ns.lr_alpha }}
 # ns.global_lr: {{ ns.global_lr }}
 
 [optimizer]

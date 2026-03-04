@@ -22,10 +22,8 @@ optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
         - [ ".*", "sinkgd" ]
     factories:
         sinkgd: !partial:forgather.ml.optim.sinkgd_exp:SinkGD
-            lr: {{ ns.effective_lr | toyaml }}
+            lr: {{ (ns.sinkgd_lr * ns.sinkgd_alpha) | toyaml }}
             clip_threshold: 0.5
-            #normalize_output: False
-            #weight_decay: !!float 0.0
         adam: !partial:torch.optim:Adam
             lr: {{ ns.sinkgd_lr | toyaml }}
             weight_decay: !!float 0.0

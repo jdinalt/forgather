@@ -8,8 +8,8 @@
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW
-    lr: {{ ns.effective_lr | toyaml }}
-    betas: # [ beta1, beta2 ]
-        - !!float 0.9
-        - {{ ns.scaled_beta2 | toyaml }}
+    lr: {{ ns.global_lr | toyaml }}
+    ##betas: # [ beta1, beta2 ]
+    ##    - !!float 0.9
+    ##    - {{ ns.scaled_beta2 | toyaml }}
     fused: True

@@ -5,6 +5,14 @@
     -- set ns.config_name = "multiopt"
     -- set ns.config_description = "Demonstrates using multiple optimizers"
     -- set ns.log_name = log_name | default("multiopt")
+    
+[globals]
+    == super()
+    -- set ns.sgd_lr = ns.base_lr * (ns.global_batch_size / ns.base_batch_size)
+
+[variable_listing]
+    == super()
+# ns.sgd_lr: {{ ns.sgd_lr }}
 
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
@@ -20,6 +28,6 @@ optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
         - [ ".*", "default" ]
     factories:
         default: !partial:forgather.ml.optim.sgd:SGD
-            lr: {{ ns.effective_linear_lr | toyaml }}
+            lr: {{ ns.sgd_lr | toyaml }}
         adam: !partial:forgather.ml.optim.adamw:AdamW
-            lr: {{ ns.effective_lr | toyaml }}
+            lr: {{ ns.global_lr | toyaml }}

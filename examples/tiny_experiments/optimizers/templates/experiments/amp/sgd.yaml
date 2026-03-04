@@ -5,7 +5,8 @@
     -- set ns.config_name = "SGD"
     -- set ns.config_description = "Torch SGD"
     -- set ns.log_name = log_name | default("sgd")
+    -- set ns.lr_alpha = 1.0
 
 [optimizer]
 optimizer: &optimizer !lambda:torch:optim.SGD
-    lr: {{ ns.effective_linear_lr | toyaml }}
+    lr: {{ ns.global_lr | toyaml }}

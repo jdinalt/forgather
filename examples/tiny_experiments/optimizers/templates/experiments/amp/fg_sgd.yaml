@@ -5,7 +5,8 @@
     -- set ns.config_name = "FG SGD"
     -- set ns.config_description = "Forgather SGD Implementation"
     -- set ns.log_name = log_name | default("fg_sgd")
+    -- set ns.lr_alpha = 1.0
 
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim:SGD
-    lr: {{ ns.effective_linear_lr | toyaml }}
+    lr: {{ ns.global_lr | toyaml }}

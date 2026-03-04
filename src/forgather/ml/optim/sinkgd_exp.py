@@ -20,6 +20,7 @@ class SinkGD(Optimizer):
         lr: float = 1e-3,
         eps: float = 1e-15,
         num_iters: int = 5,
+        clip_threshold: float = 1.0,
         torch_compile: bool = True,
         bf16_stochastic_round: bool = False,
     ):
@@ -29,6 +30,7 @@ class SinkGD(Optimizer):
             lr=lr,
             eps=eps,
             num_iters=num_iters,
+            clip_threshold=clip_threshold,
         )
         super().__init__(params, defaults)
         self._sr_generator = torch.Generator()
@@ -61,6 +63,7 @@ class SinkGD(Optimizer):
 
                     eps = group["eps"]
                     num_iters = group["num_iters"]
+                    clip_threshold = group["clip_threshold"]
                     bf16_sr = self.bf16_stochastic_round
 
                     # Prepare CUDA generator for PyTorch SR path
@@ -92,6 +95,7 @@ class SinkGD(Optimizer):
                         grad,
                         lr,
                         eps,
+                        clip_threshold,
                         num_iters,
                         bf16_sr,
                         sr_cuda_gen,
@@ -109,16 +113,23 @@ def _sinkgd(
     grad: Tensor,
     lr: Tensor,
     eps: float,
+    clip_threshold: float,
     num_iters: int,
     bf16_stochastic_round: bool,
     sr_generator=None,
 ):
     update = grad.float()
+    # Compute gradient magnitude before normalization
+    # grad_rms = update.square().mean().sqrt()
+
     for _ in range(num_iters):
         sq = update.square()
         r = sq.sum(dim=1) + eps
         c = sq.sum(dim=0) + eps
         update = update * torch.outer(torch.rsqrt(r / r.sum()), torch.rsqrt(c))
+
+    # Restore magnitude with optional clipping
+    # update *= grad_rms.clamp(max=clip_threshold)
 
     if p.dtype == update.dtype:
         p -= lr * update
