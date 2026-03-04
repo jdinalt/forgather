@@ -7,6 +7,6 @@
     -- set ns.log_name = log_name | default("fg_adafactor_eager")
 
 [optimizer]
-optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
+optimizer: &optimizer !partial:forgather.ml.optim:Adafactor
     lr: {{ ns.effective_lr | toyaml }}
     use_triton: False

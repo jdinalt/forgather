@@ -9,3 +9,6 @@
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     lr: {{ ns.effective_lr | toyaml }}
+    betas: # [ beta1, beta2 ]
+        - !!float 0.9
+        - {{ ns.scaled_beta2 | toyaml }}

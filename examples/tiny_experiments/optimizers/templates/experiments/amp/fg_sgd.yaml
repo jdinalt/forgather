@@ -7,5 +7,5 @@
     -- set ns.log_name = log_name | default("fg_sgd")
 
 [optimizer]
-optimizer: &optimizer !partial:forgather.ml.optim.sgd:SGD
+optimizer: &optimizer !partial:forgather.ml.optim:SGD
     lr: {{ ns.effective_linear_lr | toyaml }}

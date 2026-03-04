@@ -79,7 +79,6 @@
 # ns.total_tokens: {{ ns.total_tokens // (1000 * 1000)}}M
 # ns.tokens_per_step: {{ ns.tokens_per_step }} tokens
 # ns.total_peak_hardware_flops: {{ ns.total_peak_hardware_flops / 1e12 }} TFLOPS
-
 # ns.base_lr: {{ ns.base_lr }}
 # ns.lr_scale: {{ ns.lr_scale }}
 # ns.effective_lr: {{ ns.effective_lr }}
@@ -260,7 +259,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
         help: "Speedup float32 matrix-multiply via approximation with bf16. highest=full float32 precision"
     mixed_precision:
         names: "--mixed-precision"
-        choices: [ "bf16", "fp16", "none" ]
+        choices: [ "bf16", "fp16", "no" ]
         help: "Automatic Mixed Precision (AMP) dtype"
     seed:
         names: "--seed"

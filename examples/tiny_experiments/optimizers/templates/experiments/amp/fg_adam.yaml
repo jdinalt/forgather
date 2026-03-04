@@ -7,5 +7,5 @@
     -- set ns.log_name = log_name | default("fg_adam")
 
 [optimizer]
-optimizer: &optimizer !partial:forgather.ml.optim.adamw:AdamW
+optimizer: &optimizer !partial:forgather.ml.optim:AdamW
     lr: {{ ns.effective_lr | toyaml }}

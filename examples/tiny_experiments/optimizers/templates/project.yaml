@@ -23,17 +23,22 @@
     -- set ns.base_lr = base_lr | default(3.0e-6)
     -- set ns.base_linear_lr = 1.0e-2
 
+    ## https://arxiv.org/pdf/2507.07101
+    ## beta2 is optimal for beta2_batch_size token batch-size
+    -- set ns.beta2 = 0.999
+    -- set ns.beta2_batch_size = 16384
+
 [globals]
     == super()
     -- set ns.effective_linear_lr = ns.base_linear_lr * ns.global_batch_size
+    ## https://arxiv.org/pdf/2507.07101
+    ## Scale beta2 to have constant half-life
+    -- set ns.scaled_beta2 = ns.beta2 ** (ns.tokens_per_step / ns.beta2_batch_size)
 
 [variable_listing]
     == super()
 # ns.effective_linear_lr: {{ ns.effective_linear_lr }}
-
-[datacollator]
-    == super()
-    padding: "max_length"
+# ns.scaled_beta2: {{ ns.scaled_beta2 }}
 
 [trainer_args]
     == super()
@@ -42,7 +47,10 @@
     torch_compile: {{ compile | default(True) }}
     torch_compile_full_graph: True
     torch_compile_dynamic: False
+-- if ns.gradient_accumulation_steps == 1
+    ## This setting appears to cause issues when using gradient accumulation
     torch_compile_mode: "max-autotune"
+-- endif
 
 [trainer_callbacks]
     -- include 'project.callbacks'

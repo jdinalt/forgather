@@ -7,6 +7,6 @@
     -- set ns.log_name = log_name | default("fg_adam_bf16")
 
 [optimizer]
-optimizer: &optimizer !partial:forgather.ml.optim.adamw:AdamW
+optimizer: &optimizer !partial:forgather.ml.optim:AdamW
     lr: {{ ns.effective_lr | toyaml }}
     bf16_stochastic_round: True
