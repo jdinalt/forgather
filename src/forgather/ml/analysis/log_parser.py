@@ -1,10 +1,40 @@
 """Parse and load training logs."""
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def _try_recover_truncated_json(
+    text: str, log_path: Path, original_error: json.JSONDecodeError
+) -> List[Dict[str, Any]]:
+    """Attempt to recover records from a truncated JSON array.
+
+    Finds the last complete JSON object in the array and re-parses.
+    Raises ValueError if recovery fails.
+    """
+    # Find the last complete object (closing brace)
+    last_brace = text.rfind("}")
+    if last_brace <= 0:
+        raise ValueError(f"Invalid JSON in log file: {original_error}")
+
+    try:
+        records = json.loads(text[: last_brace + 1] + "]")
+    except json.JSONDecodeError:
+        raise ValueError(f"Invalid JSON in log file: {original_error}")
+
+    if not isinstance(records, list):
+        raise ValueError(f"Invalid JSON in log file: {original_error}")
+
+    logger.warning(
+        "Recovered %d records from truncated log file: %s", len(records), log_path
+    )
+    return records
 
 
 @dataclass
@@ -58,11 +88,13 @@ class TrainingLog:
         if not log_path.exists():
             raise FileNotFoundError(f"Log file not found: {log_path}")
 
+        with open(log_path, "r") as f:
+            text = f.read()
         try:
-            with open(log_path, "r") as f:
-                records = json.load(f)
+            records = json.loads(text)
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in log file: {e}")
+            # Attempt to recover truncated JSON (e.g., crash, still-running job)
+            records = _try_recover_truncated_json(text, log_path, e)
 
         if not isinstance(records, list):
             raise ValueError("Log file must contain a JSON array")

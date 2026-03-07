@@ -18,12 +18,6 @@
 optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
     optimizer_map:
         - [ "bias", "default" ]
-        # output_decoder : ++
-        # attention : +++
-        # feedforward : +
-        # input_encoder : +
-        # norm : -
-        # bias : -
         - [ "output_decoder|input_encoder|feedforward|attention", "adam" ]
         - [ ".*", "default" ]
     factories:

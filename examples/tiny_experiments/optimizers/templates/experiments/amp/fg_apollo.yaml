@@ -4,31 +4,56 @@
     == super()
     -- set ns.config_name = "FG Apollo"
     -- set ns.config_description = "Forgather Apollo implementation"
-    -- set ns.log_name = log_name | default("apollo_r64")
+    -- set ns.log_name = log_name | default("apollo")
+    -- set ns.apollo_lr = apollo_lr | default(0.01)
+    -- set ns.apollo_rank = apollo_rank | default(128)
+    -- set ns.apollo_scale = apollo_scale | default(1.0)
+    -- set ns.apollo_update_steps = apollo_update_steps | default(200)
+
+[variable_listing]
+    == super()
+# ns.apollo_lr: {{ ns.apollo_lr }}
+# ns.apollo_rank: {{ ns.apollo_rank }}
+# ns.apollo_scale: {{ ns.apollo_scale }}
 
 [optimizer]
     [projector_factory]
 .define: &projector_factory !partial:forgather.ml.optim.subspace_proj:RandProjector
     init: "normal"
-    update_steps: 200
+    update_steps: {{ ns.apollo_update_steps }}
     lazy: True
 
     [apollo]
 .define: &apollo !partial:forgather.ml.optim.apollo:Apollo
-    lr: {{ ns.global_lr | toyaml }}
-    rank: 64
+    lr: {{ ns.apollo_lr | toyaml }}
+    rank: {{ ns.apollo_rank }}
+    scale: {{ ns.apollo_scale | toyaml }}
     mini: False
     projector_factory: *projector_factory
 
     [optimizer_]
 optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
-    ## Protype optimizer does not handle non-projected params yet, so we
-    ## map these to torch-Adam.
     optimizer_map:
-        - [ "bias", "default" ]
-        - [ "output_decoder|input_encoder|feedforward|attention", "apollo" ]
+        - [ "bias|norm", "default" ]
+        - [ "embedding|lm_head|feedforward|attention", "apollo" ]
         - [ ".*", "default" ]
     factories:
         apollo: *apollo
         default: !partial:torch:optim.Adam
             lr: {{ ns.global_lr | toyaml }}
+    debug: True
+
+[dynamic_args]
+    == super()
+    apollo_lr:
+        names: "--apollo-lr"
+        type: float
+        help: "Apollo learning rate"
+    apollo_rank:
+        names: "--apollo-rank"
+        type: int
+        help: "Apollo projection rank"
+    apollo_scale:
+        names: "--apollo-scale"
+        type: float
+        help: "Apollo gradient scale factor (applied as sqrt)"

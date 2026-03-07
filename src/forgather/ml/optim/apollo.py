@@ -86,15 +86,14 @@ class Apollo(Optimizer):
                 beta1, beta2 = group["betas"]
                 M, V = state["m"], state["v"]
                 lr = group["lr"]
-                alpha = group["scale"]
                 eps = group["eps"]
                 weight_decay = group["weight_decay"]
                 scale = group["scale"]
                 scale_front = group["scale_front"]
 
-                # Weight decay?
+                # Weight decay
                 if weight_decay > 0.0:
-                    p.add_(p, alpha=(-alpha * weight_decay))
+                    p.add_(p, alpha=(-lr * weight_decay))
 
                 # Apply bias correction to lr
                 lr = lr * torch.sqrt(1.0 - beta2**step) / (1.0 - beta1**step)
