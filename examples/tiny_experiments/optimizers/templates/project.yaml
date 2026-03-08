@@ -5,8 +5,6 @@
     -- set ns.config_name = "Optimizers"
     -- set ns.config_description = "Compare optimizer performance"
     -- set ns.nproc_per_node = 1
-    
-    -- set ns.batch_density = 0.95
 
     -- set ns.base_lr = lr | default(3e-4)
 

@@ -1,0 +1,15 @@
+-- extends "configs/unified.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Unified SinkGD (sparse embed)"
+    -- set ns.config_description = "SinkGD with sparse mode for embed/LM-head"
+    -- set ns.log_name = log_name | default("unified-sparse")
+
+[sinkgd]
+    == super()
+    torch_compile: False
+
+[optim_embed_grp]
+    == super()
+    mode: "sparse"

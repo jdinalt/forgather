@@ -1,0 +1,8 @@
+-- extends "configs/unified.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Unified SinkGD LR=0.04"
+    -- set ns.config_description = "Learning rate 0.04"
+    -- set ns.log_name = log_name | default("lr-04")
+    -- set ns.lr = 0.04

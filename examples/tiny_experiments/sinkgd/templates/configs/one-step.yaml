@@ -1,0 +1,11 @@
+-- extends "configs/default.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "SinkGD 1-step"
+    -- set ns.config_description = "sr-sinkhorn with 1-step"
+    -- set ns.log_name = log_name | default("sinkgd-1")
+
+[sinkgd]
+    == super()
+    num_iters: 1

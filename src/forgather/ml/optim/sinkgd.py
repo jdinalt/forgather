@@ -75,7 +75,7 @@ class SinkGD(Optimizer):
         params: Iterable[nn.Parameter],
         lr: float = 1e-3,
         num_iters: int = 5,
-        weight_decay: float = 0.01,
+        weight_decay: float = 0.00,
         eps: float = 1e-8,
         normalize_output: bool = True,
     ):

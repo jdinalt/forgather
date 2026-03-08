@@ -1,0 +1,8 @@
+-- extends "configs/unified.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Unified SinkGD Alpha=0.025"
+    -- set ns.config_description = "SinkGD alpha 0.025"
+    -- set ns.log_name = log_name | default("alpha-025")
+    -- set ns.sinkgd_alpha = 0.025

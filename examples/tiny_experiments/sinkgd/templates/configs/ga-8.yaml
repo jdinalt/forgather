@@ -1,0 +1,8 @@
+-- extends "configs/unified.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Unified SinkGD GA=8"
+    -- set ns.config_description = "Gradient accumulation 8 (128K tokens/step)"
+    -- set ns.log_name = log_name | default("ga-8")
+    -- set ns.gradient_accumulation_steps = 8

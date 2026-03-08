@@ -1,0 +1,8 @@
+-- extends "configs/unified.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Unified SinkGD WD=0.01"
+    -- set ns.config_description = "Weight decay 0.01"
+    -- set ns.log_name = log_name | default("wd-01")
+    -- set ns.weight_decay = 0.01

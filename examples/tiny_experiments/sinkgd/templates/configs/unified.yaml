@@ -1,0 +1,51 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Unified SinkGD"
+    -- set ns.config_description = "Single SinkGD for all params (no Adam split)"
+    -- set ns.log_name = log_name | default("unified")
+
+[optimizer]
+    [sinkgd]
+.define: &sinkgd !partial:forgather.ml.optim.sinkgd_exp:SinkGD
+    lr: {{ (ns.lr * ns.sinkgd_alpha) | toyaml }}
+    num_iters: 1
+    weight_decay: {{ ns.weight_decay | toyaml }}
+    normalize_output: {{ ns.normalize_output | toyaml }}
+    momentum: {{ ns.momentum | toyaml }}
+    nesterov: {{ ns.nesterov | toyaml }}
+
+    [optim_groups]
+.define: &optim_group_map
+    - [ "embed", "embed" ]
+    - [ "lm_head", "head" ]
+    - [ "norm|bias", "small" ]
+    - [ ".*", "dense" ]
+
+    [optim_embed_grp]
+.define: &optim_embed_grp
+    mode: "col_only"
+
+    [optim_head_grp]
+.define: &optimhead_grp
+    mode: "col_only"
+
+    [optim_small_grp]
+.define: &optim_small_grp
+    mode: "sgd"
+    lr: {{ ns.lr }}
+
+    [optim_dense_grp]
+.define: &optim_dense_grp !dict
+
+    [grouped_optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim.opt_utils:make_grouped_optimizer
+    optimizer_factory: *sinkgd
+    group_map: *optim_group_map
+    group_config:
+        embed: *optim_embed_grp
+        head: *optim_head_grp
+        small: *optim_small_grp
+        dense: *optim_dense_grp
+    debug: True

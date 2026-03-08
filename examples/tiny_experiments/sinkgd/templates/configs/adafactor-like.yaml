@@ -1,0 +1,14 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Adafactor SinkGD"
+    -- set ns.config_description = "Adafactor-like implementation of sr-sinkhorn"
+    -- set ns.log_name = log_name | default("ada-sinkgd")
+
+[sinkgd]
+.define: &sinkgd !partial:forgather.ml.optim.sinkgd_exp:SinkGD
+    lr: {{ (ns.lr * ns.sinkgd_alpha) | toyaml }}
+    num_iters: {{ num_iters | toyaml(5) }}
+    weight_decay: {{ ns.weight_decay | toyaml }}
+    normalize_output: {{ ns.normalize_output | toyaml }}

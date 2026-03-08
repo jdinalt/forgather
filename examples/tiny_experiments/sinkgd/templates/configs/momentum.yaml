@@ -1,0 +1,8 @@
+-- extends "configs/unified.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Unified SinkGD Momentum"
+    -- set ns.config_description = "SinkGD with momentum=0.9"
+    -- set ns.log_name = log_name | default("momentum")
+    -- set ns.momentum = 0.9
