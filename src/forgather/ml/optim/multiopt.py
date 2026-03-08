@@ -21,7 +21,9 @@ def make_re_multiopt(named_parameters, optimizer_map, factories, debug=False):
                 groups[group_name].append((param_name, param_value))
                 break
     optimizers = [
-        factories[group_name](params) for group_name, params in groups.items()
+        factories[group_name](params)
+        for group_name, params in groups.items()
+        if len(params)
     ]
 
     return Multiopt(optimizers)

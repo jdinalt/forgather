@@ -16,6 +16,7 @@ def make_regex_optimizer_groups(named_parameters, group_map, group_config, debug
     param_groups = [
         {"params": params} | group_config[group_name]
         for group_name, params in groups.items()
+        if len(params)
     ]
 
     return param_groups

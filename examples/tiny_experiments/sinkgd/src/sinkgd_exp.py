@@ -5,7 +5,7 @@ import torch
 from torch import Tensor, nn
 from torch.optim import Optimizer
 
-from .rounding_utils import fp32_to_bf16_stochastic_round
+from forgather.ml.optim.rounding_utils import fp32_to_bf16_stochastic_round
 
 
 class SinkGD(Optimizer):
@@ -34,6 +34,11 @@ class SinkGD(Optimizer):
     - 1D (biases, norms): Configurable via vector_mode ("l2_norm", "sgd", "sign").
     - 0D (scalars): Gradient used directly (no normalization).
 
+    Both mode and vector_mode support "adam" to use standard Adam updates
+    (beta1=0.9, beta2=0.999, eps=1e-8) for that parameter group. This is
+    useful for isolating the effect of normalization on specific layers
+    (e.g., keeping embeddings on Adam while testing Sinkhorn on other layers).
+
     Args:
         params: Parameters or parameter groups.
         lr: Learning rate. Roughly matches Adam when normalize_output=True.
@@ -48,10 +53,12 @@ class SinkGD(Optimizer):
             "full" - standard row+column normalization (default)
             "col_only" - column normalization only, preserves row structure
             "sparse" - normalize only active rows (nonzero energy)
+            "adam" - standard Adam update (maintains m, v state)
         vector_mode: How to handle 1D parameters:
             "l2_norm" - normalize by L2 norm (default, matches sinkgd.py)
             "sgd" - pass gradient through unchanged
             "sign" - use sign of gradient (like LION)
+            "adam" - standard Adam update (maintains m, v state)
         torch_compile: Enable torch.compile for the inner loop.
         bf16_stochastic_round: Use stochastic rounding for bf16 params.
     """
@@ -66,8 +73,8 @@ class SinkGD(Optimizer):
         normalize_output: bool = True,
         momentum: float = 0.0,
         nesterov: bool = False,
-        mode: str = "full",
-        vector_mode: str = "l2_norm",
+        mode: str = "sr_sinkhorn",
+        vector_mode: str = "adam",
         torch_compile: bool = True,
         bf16_stochastic_round: bool = False,
     ):
@@ -146,9 +153,34 @@ class SinkGD(Optimizer):
                         sr_cuda_gen = self._sr_cuda_generators[device]
                         sr_cuda_gen.manual_seed(sr_seed)
 
-                    # Handle momentum state
+                    # Check if this param uses Adam mode
+                    uses_adam = (grad.dim() >= 2 and mode == "adam") or (
+                        grad.dim() == 1 and vector_mode == "adam"
+                    )
+
+                    # Handle Adam state
+                    adam_m = None
+                    adam_v = None
+                    adam_step = None
+                    if uses_adam:
+                        state = self.state[p]
+                        if "adam_m" not in state:
+                            state["adam_m"] = torch.zeros_like(
+                                grad, dtype=torch.float32
+                            )
+                            state["adam_v"] = torch.zeros_like(
+                                grad, dtype=torch.float32
+                            )
+                            state["adam_step"] = torch.tensor(
+                                0.0, dtype=torch.float32
+                            )
+                        adam_m = state["adam_m"]
+                        adam_v = state["adam_v"]
+                        adam_step = state["adam_step"]
+
+                    # Handle momentum state (skip for adam, which has its own)
                     momentum_buffer = None
-                    if mom > 0:
+                    if mom > 0 and not uses_adam:
                         state = self.state[p]
                         if "momentum_buffer" not in state:
                             state["momentum_buffer"] = torch.zeros_like(p)
@@ -170,6 +202,9 @@ class SinkGD(Optimizer):
                         bf16_sr,
                         sr_cuda_gen,
                         momentum_buffer,
+                        adam_m,
+                        adam_v,
+                        adam_step,
                     ]
                     if self.compile:
                         torch.compile(_sinkgd, fullgraph=True, dynamic=False)(*args)
@@ -191,6 +226,23 @@ class SinkGD(Optimizer):
             self._sr_generator.set_state(sr_gen_state)
 
 
+def _adam_update(
+    grad: Tensor,
+    m: Tensor,
+    v: Tensor,
+    step: Tensor,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    eps: float = 1e-8,
+) -> Tensor:
+    """Standard Adam update with bias correction."""
+    step.add_(1)
+    m.lerp_(grad, 1.0 - beta1)
+    v.lerp_(grad.square(), 1.0 - beta2)
+    bc = torch.sqrt(1.0 - beta2**step) / (1.0 - beta1**step)
+    return bc * m / (v.sqrt() + eps)
+
+
 def _sinkgd(
     p: Tensor,
     grad: Tensor,
@@ -206,12 +258,22 @@ def _sinkgd(
     bf16_stochastic_round: bool,
     sr_generator=None,
     momentum_buffer=None,
+    adam_m=None,
+    adam_v=None,
+    adam_step=None,
 ):
     # Decoupled weight decay (AdamW-style)
     if weight_decay > 0.0:
         p.add_(p, alpha=(-lr * weight_decay))
 
-    if grad.dim() >= 2:
+    # Check if using Adam mode for this param
+    uses_adam = (grad.dim() >= 2 and mode == "adam") or (
+        grad.dim() == 1 and vector_mode == "adam"
+    )
+
+    if uses_adam:
+        update = _adam_update(grad.float(), adam_m, adam_v, adam_step)
+    elif grad.dim() >= 2:
         update = _normalize_2d(grad, eps, num_iters, normalize_output, mode)
     elif grad.dim() == 1:
         update = _normalize_1d(grad, eps, vector_mode)
@@ -219,8 +281,8 @@ def _sinkgd(
         # Scalar: use gradient directly
         update = grad.float()
 
-    # Apply momentum
-    if momentum > 0 and momentum_buffer is not None:
+    # Apply momentum (skip for adam, which has its own)
+    if momentum > 0 and momentum_buffer is not None and not uses_adam:
         momentum_buffer.lerp_(update, 1.0 - momentum)
         if nesterov:
             update = update + momentum * momentum_buffer
@@ -249,6 +311,35 @@ def _sinkgd(
         p.copy_(update)
 
 
+def sr_sinkhorn(X: Tensor, num_iters: int, eps: float = 1e-8) -> Tensor:
+    """
+    SR-Sinkhorn normalization (Algorithm 3 from the paper).
+
+    Alternates between row-wise and column-wise l2 normalization. At convergence,
+    all row l2-norms equal √n and all column l2-norms equal √m, giving a Frobenius
+    norm of √(mn).
+
+    Args:
+        X: Input matrix of shape (m, n), float32.
+        num_iters: Number of alternating normalization iterations (L).
+        eps: Small constant clamped into denominators for numerical stability.
+
+    Returns:
+        Normalized matrix with Frobenius norm ≈ √(mn).
+    """
+    m, n = X.shape
+    sqrt_n = math.sqrt(n)
+    sqrt_m = math.sqrt(m)
+    for _ in range(num_iters):
+        # P_{g1}(X) = √n * Q(X)^{-1} * X  (normalize each row by its l2-norm)
+        row_norms = X.norm(dim=1, keepdim=True).clamp(min=eps)
+        X = (sqrt_n / row_norms) * X
+        # P_{g2}(X) = √m * X * R(X)^{-1}  (normalize each column by its l2-norm)
+        col_norms = X.norm(dim=0, keepdim=True).clamp(min=eps)
+        X = X * (sqrt_m / col_norms)
+    return X
+
+
 def _normalize_2d(
     grad: Tensor, eps: float, num_iters: int, normalize_output: bool, mode: str
 ) -> Tensor:
@@ -260,7 +351,9 @@ def _normalize_2d(
     m, n = update.shape
 
     match mode:
-        case "full":
+        case "sr_sinkhorn":
+            update = sr_sinkhorn(update, num_iters, eps)
+        case "factored":
             for _ in range(num_iters):
                 sq = update.square()
                 r = sq.sum(dim=1) + eps
@@ -317,6 +410,6 @@ def _normalize_1d(grad: Tensor, eps: float, vector_mode: str) -> Tensor:
         case "sgd":
             pass
         case _:
-            raise ValueError(f"Unsupported mode: {mode}")
+            raise ValueError(f"Unsupported vector_mode: {vector_mode}")
 
     return update

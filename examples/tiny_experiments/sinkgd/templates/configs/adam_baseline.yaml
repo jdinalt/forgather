@@ -1,4 +1,4 @@
--- extends "project.yaml"
+-- extends "exp.yaml"
 
 [config_metadata]
     == super()

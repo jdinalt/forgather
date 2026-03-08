@@ -17,6 +17,17 @@ tokenizer: &tokenizer !call:forgather:from_project
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
     config_template: "4k.yaml"
 
+[init_regex_list]
+    == super()
+    # Erase head init -- embeddings and head are tied
+    head: null
+
+[init_f_map]
+    == super()
+    # When using tied embeddings, we need to change the embedding init
+    init_embeddings: !partial:.init_weights:init_embeddings { scale_rsqrt_d_model: True }
+    init_output_layer: null
+
 [model_config]
     == super()
     # **Medium Overrides**
@@ -25,3 +36,4 @@ tokenizer: &tokenizer !call:forgather:from_project
     num_attention_heads: {{ num_attention_heads | toyaml(8) }}
     num_hidden_layers: {{ num_hidden_layers | toyaml(10) }}
     num_key_value_heads: {{ num_key_value_heads | toyaml(2) }}
+    tie_word_embeddings: True

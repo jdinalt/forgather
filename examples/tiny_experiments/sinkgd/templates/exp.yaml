@@ -2,9 +2,9 @@
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "SinkGD"
-    -- set ns.config_description = "Baseline SingGD implementation"
-    -- set ns.log_name = log_name | default("sinkgd")
+    -- set ns.config_name = "Experimental SinkGD"
+    -- set ns.config_description = "Single SinkGD for all params"
+    -- set ns.log_name = log_name | default("exp")
     -- set ns.nproc_per_node = 1
 
     -- set ns.lr = lr | default(0.02)
@@ -13,9 +13,18 @@
     -- set ns.normalize_output = normalize_output | default(False)
     -- set ns.momentum = momentum | default(0.0)
     -- set ns.nesterov = nesterov | default(False)
+    -- set ns.num_iters = num_iters | default(1)
 
     ## Needed for Tiny Callbacks
     -- set ns.default_attn_implementation = attn_implementation | default("sdpa")
+
+[globals]
+    == super()
+    -- set ns.sinkgd_lr = ns.lr * ns.sinkgd_alpha
+
+[variable_listing]
+    == super()
+# ns.sinkgd_lr: {{ ns.sinkgd_lr }}
 
 [trainer_args]
     == super()
@@ -36,21 +45,59 @@
 
 [optimizer]
     [sinkgd]
-.define: &sinkgd !partial:forgather.ml.optim.sinkgd:SinkGD
-    lr: {{ (ns.lr * ns.sinkgd_alpha) | toyaml }}
-    num_iters: {{ num_iters | toyaml(5) }}
+# The optimizer factory
+# This uses the definition from the project's 'src' directory
+.define: &sinkgd !partial:./src/sinkgd_exp.py:SinkGD
+    lr: {{ ns.sinkgd_lr | toyaml }}
+    mode: "sr_sinkhorn"
+    num_iters: {{ns.num_iters | toyaml }}
+    weight_decay: {{ ns.weight_decay | toyaml }}
     normalize_output: {{ ns.normalize_output | toyaml }}
+    momentum: {{ ns.momentum | toyaml }}
+    nesterov: {{ ns.nesterov | toyaml }}
 
-    [multiopt]
-optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
-    optimizer_map:
-        - [ "embed|lm_head|norm|bias", "adam" ]
-        - [ ".*", "sinkgd" ]
-    factories:
-        sinkgd: *sinkgd
-        adam: !partial:torch.optim:Adam
-            lr: {{ ns.lr | toyaml }}
-            weight_decay: !!float 0.0
+    [optim_groups]
+# This assigns optimizer groups based upon a regex on the model's FQNs
+# They are searched in the order in which they are defined
+.define: &optim_group_map
+    - [ "norm|bias", "small" ]
+    - [ "embed", "embed" ]
+    - [ "lm_head", "head" ]
+    - [ ".*", "dense" ]
+
+    [optim_embed_grp]
+# Overrides for embedding
+.define: &optim_embed_grp
+    mode: "adam"
+    lr: {{ ns.lr }}
+
+    [optim_head_grp]
+# Overrides for language head
+.define: &optim_head_grp
+    mode: "adam"
+    lr: {{ ns.lr }}
+
+    [optim_small_grp]
+# Overrides for biases and norms
+.define: &optim_small_grp
+    mode: "adam"
+    lr: {{ ns.lr }}
+
+    [optim_dense_grp]
+# Overrides for all main transformer blocks
+.define: &optim_dense_grp !dict
+
+    [grouped_optimizer]
+# Helper for building an optimizer with groups
+optimizer: &optimizer !partial:forgather.ml.optim.opt_utils:make_grouped_optimizer
+    optimizer_factory: *sinkgd
+    group_map: *optim_group_map
+    group_config:
+        embed: *optim_embed_grp
+        head: *optim_head_grp
+        small: *optim_small_grp
+        dense: *optim_dense_grp
+    # Show FQN -> group mappings
     debug: True
 
 [trainer_callbacks]
