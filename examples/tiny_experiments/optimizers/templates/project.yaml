@@ -6,7 +6,7 @@
     -- set ns.config_description = "Compare optimizer performance"
     -- set ns.nproc_per_node = 1
 
-    -- set ns.base_lr = lr | default(3e-4)
+    -- set ns.base_lr = lr | default(5e-4)
 
     ## https://arxiv.org/pdf/2507.07101
     ## beta2 is optimal for beta2_batch_size token batch-size
@@ -51,3 +51,15 @@
 [callback_list]
     == super()
     text_gen_callback: null # Disable text gen
+    weight_norm: !call:forgather.ml.trainer.callbacks:WeightNormLogger
+
+[tb_scalars]
+    == super()
+    weight_norm: [ "weight_norm", "weight-norm" ]
+
+[step_columns]
+    == super()
+    weight_norm:
+        label: "wt-norm"
+        width: 10
+        fmt: ".2f"

@@ -469,9 +469,9 @@ class BaseTrainer(
         unwrapped_model = self.unwrapped_model()
         for callback in handlers:
             new_control = getattr(callback, event)(
-                self.args,
-                self.state,
-                self.control,
+                args=self.args,
+                state=self.state,
+                control=self.control,
                 model=unwrapped_model,
                 processing_class=self.processing_class,
                 optimizer=self.optimizer,

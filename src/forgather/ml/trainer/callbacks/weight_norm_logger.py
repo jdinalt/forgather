@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class WeightNormLogger(TrainerCallback):
     """
-    Logs the total L2 norm of all model parameters to TensorBoard after each
+    Logs the total L2 norm of all model parameters to logs after each
     evaluation step.
 
     Computed identically to the gradient norm but using the weight tensors
@@ -24,18 +24,16 @@ class WeightNormLogger(TrainerCallback):
     skips logging for the remainder of training.
     """
 
-    def __init__(self, summary_writer, tag: str = "weight_norm"):
+    def __init__(self):
         """
         Args:
             summary_writer: TensorBoard SummaryWriter instance.
             tag: TensorBoard scalar tag. Defaults to "weight_norm".
         """
         super().__init__()
-        self.summary_writer = summary_writer
-        self.tag = tag
         self._warned_meta = False
 
-    def on_evaluate(self, args, state, control, **kwargs):
+    def on_log_step(self, state, logs, **kwargs):
         if not state.is_world_process_zero:
             return
 
@@ -65,7 +63,4 @@ class WeightNormLogger(TrainerCallback):
             for p in model.parameters():
                 total_norm_sq += p.float().square().sum().item()
 
-        self.summary_writer.add_scalar(
-            self.tag, math.sqrt(total_norm_sq), global_step=state.global_step
-        )
-        self.summary_writer.flush()
+        logs["weight_norm"] = math.sqrt(total_norm_sq)

@@ -21,52 +21,6 @@ text_gen_callback_args: &text_gen_callback_args
     max_new_tokens: 40
     generation_steps: 2000
 
-    [step_columns]
-## Step-log columns: dict mapping metric key -> {label, width, fmt}.
-## fmt accepts a Python format spec (".5f", ",d"), a named formatter
-## ("si", "gib"), or a callable via !partial for custom formatting.
-## Omit step_columns entirely to use defaults (all standard columns).
-## Child templates can override individual columns via == super(), or
-## erase a column by setting its value to ~ (null).
-.define: &step_columns
-    epoch:
-        label: "epoch"
-        width: 8
-        fmt: ".4g"
-    loss:
-        label: "loss"
-        width: 8
-        fmt: ".5f"
-    grad_norm:
-        label: "grad"
-        width: 8
-        fmt: ".4f"
-    learning_rate:
-        label: "lr"
-        width: 10
-        fmt: ".2e"
-    tokens:
-        label: "tokens"
-        width: 10
-        fmt: ",d"
-    total_tokens:
-        label: "total_tok"
-        width: 10
-        fmt: "si"
-    tok_per_sec:
-        label: "tok/s"
-        width: 10
-        fmt: ",d"
-    mfu:
-        label: "mfu"
-        width: 6
-        fmt: ".1%"
-    peak_mem:
-        label: "peak_mem"
-        width: 11
-        fmt: "gib"
-
-
 ## This adds a text-generationn sample every 'generation_steps'
 [callback_list]
     == super()
