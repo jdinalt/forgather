@@ -24,7 +24,7 @@ class Adafactor(Optimizer):
         eps: Tuple[float, float] = (1e-30, 1e-3),
         weight_decay: float = 0.01,
         relative_step: bool = False,
-        torch_compile: bool = False,
+        torch_compile: bool = True,
         bf16_stochastic_round: bool = False,
         use_triton: bool = False,
     ):
@@ -68,6 +68,13 @@ class Adafactor(Optimizer):
         self._sr_generator.manual_seed(5489)
         self._sr_cuda_generators = {}  # device -> Generator, lazily created
 
+    def add_param_group(self, param_group: dict):
+        super().add_param_group(param_group)
+        if not self.use_triton:
+            group = self.param_groups[-1]
+            if not isinstance(group["lr"], Tensor):
+                group["lr"] = torch.tensor(group["lr"], dtype=torch.float32)
+
     def _init_state(self, state, group, p, grad):
         state["step"] = torch.tensor(0.0, dtype=torch.float32)
         if grad.dim() <= 1:
@@ -98,6 +105,8 @@ class Adafactor(Optimizer):
                     # Init state
                     if "step" not in state:
                         self._init_state(state, group, p, grad)
+
+                    lr = group["lr"]
 
                     state["step"] += 1
                     beta1, beta2 = group["betas"]
@@ -133,7 +142,7 @@ class Adafactor(Optimizer):
                                 state["row"],
                                 beta2t,
                                 eps1,
-                                group["lr"],
+                                lr,
                                 group["weight_decay"],
                                 group["clip_threshold"],
                                 bf16_sr,
@@ -148,13 +157,17 @@ class Adafactor(Optimizer):
                                 state["col"],
                                 beta2t,
                                 eps1,
-                                group["lr"],
+                                lr,
                                 group["weight_decay"],
                                 group["clip_threshold"],
                                 bf16_sr,
                                 sr_seed,
                             )
                     else:
+                        assert isinstance(
+                            lr, Tensor
+                        ), "Someone changed our lr to a non-Tensor!?"
+
                         # Prepare CUDA generator for PyTorch SR path
                         sr_cuda_gen = None
                         if bf16_sr and p.is_cuda:
@@ -173,7 +186,7 @@ class Adafactor(Optimizer):
                             state["step"],
                             state["row"],
                             state["col"],
-                            group["lr"],
+                            lr,
                             beta1,
                             beta2,
                             group["decay_rate"],
@@ -362,7 +375,7 @@ def _adafactor(
     step: Tensor,
     r: Tensor,
     c: Tensor,
-    lr: float,
+    lr: Tensor,
     beta1: float,
     beta2: float,
     decay_rate: float,
@@ -389,7 +402,7 @@ def _adafactor(
     We use the above method for implementing weight decay, which scales with lr.
     """
     if weight_decay > 0.0:
-        p.add_(p, alpha=(-lr * weight_decay))
+        p -= lr * weight_decay
 
     grad32 = grad.float()
     update = grad32**2 + eps1
@@ -427,7 +440,7 @@ def _adafactor(
 
     # Update parameter
     if p.dtype == update.dtype:
-        p.add_(update, alpha=-lr)
+        p -= lr * update
     else:
         update = p.float() - lr * update
         if bf16_stochastic_round:
