@@ -1229,11 +1229,6 @@ class TestProgressCallbackSpeedMetrics:
     def _make_callback(self, **kwargs):
         defaults = dict(
             use_tqdm=False,
-            show_tokens_per_second=True,
-            show_loss=False,
-            show_grad_norm=False,
-            show_learning_rate=False,
-            show_epoch=False,
             output_stream="stdout",
         )
         defaults.update(kwargs)
@@ -1292,12 +1287,12 @@ class TestProgressCallbackSpeedMetrics:
                     args, state, control, logs={"tokens": 2000, "total_flos": 0.0}
                 )
                 if mock_fmt.called:
-                    display_logs = mock_fmt.call_args[0][1]
+                    display_logs = mock_fmt.call_args[0][2]
 
         # Wall-clock delta = 102.0 - 100.0 = 2.0s, tokens = 2000
         # Expected tok/s = 2000 / 2.0 = 1000
-        assert "tok/s" in display_logs
-        assert display_logs["tok/s"] == 1000
+        assert "tok_per_sec" in display_logs
+        assert display_logs["tok_per_sec"] == 1000
 
     def test_mfu_uses_train_step_time(self):
         """MFU should use accumulated on_step_begin/on_step_end time, not
@@ -1342,10 +1337,10 @@ class TestProgressCallbackSpeedMetrics:
                     args, state, control, logs={"tokens": 2000, "total_flos": 500.0}
                 )
                 if mock_fmt.called:
-                    display_logs = mock_fmt.call_args[0][1]
+                    display_logs = mock_fmt.call_args[0][2]
 
         assert "mfu" in display_logs
-        assert display_logs["mfu"] == "100.0%"
+        assert abs(display_logs["mfu"] - 1.0) < 1e-6
 
     def test_no_tok_s_on_first_log(self):
         """tok/s should not appear on the very first log step since there is
@@ -1370,9 +1365,9 @@ class TestProgressCallbackSpeedMetrics:
                     args, state, control, logs={"tokens": 5000, "total_flos": 0.0}
                 )
                 if mock_fmt.called:
-                    display_logs = mock_fmt.call_args[0][1]
+                    display_logs = mock_fmt.call_args[0][2]
 
-        assert "tok/s" not in display_logs
+        assert "tok_per_sec" not in display_logs
 
     def test_accumulated_train_time_resets_between_intervals(self):
         """_accumulated_train_time should reset after each on_log call."""

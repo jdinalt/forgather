@@ -8,6 +8,10 @@ from typing import Literal, Optional, cast
 from tqdm.auto import tqdm
 
 from forgather.ml.trainer.logging import (
+    ColumnSpec,
+    FinalMetricSpec,
+    default_final_metrics,
+    default_step_columns,
     format_eval_log,
     format_final_metrics,
     format_mapping,
@@ -23,13 +27,46 @@ from ..trainer_types import MinimalTrainingArguments, TrainerControl, TrainerSta
 OutputStream = TextIOBase | Literal["stderr", "stdout"]
 
 
+def _normalize_columns(columns: dict | list) -> list[ColumnSpec]:
+    """Convert a dict or list of column specs into a list of ColumnSpec.
+
+    Dict form (preferred for YAML)::
+
+        {"loss": {"label": "loss", "width": 8, "fmt": ".5f"},
+         "grad_norm": None}   # None erases the column
+
+    List form::
+
+        [ColumnSpec("loss", ...), {"key": "loss", "label": "loss", ...}]
+    """
+    if isinstance(columns, dict):
+        result: list[ColumnSpec] = []
+        for key, spec in columns.items():
+            if spec is None:
+                continue
+            if isinstance(spec, ColumnSpec):
+                result.append(spec)
+            elif isinstance(spec, dict):
+                spec = dict(spec)  # copy to avoid mutating the original
+                spec["key"] = key
+                result.append(ColumnSpec(**spec))
+            else:
+                raise TypeError(
+                    f"step_columns[{key!r}]: expected dict or None, got {type(spec)}"
+                )
+        return result
+    else:
+        return [c if isinstance(c, ColumnSpec) else ColumnSpec(**c) for c in columns]
+
+
 class ProgressCallback:
     """
     A TQDM progress-bar callback class based upon:
     https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_callback.py
 
-    Controls which metrics are displayed in console logs during training.
-    All metrics are still logged to JsonLogger regardless of display settings.
+    Controls which metrics are displayed in console logs during training
+    via configurable column specifications.  All metrics are still logged
+    to JsonLogger regardless of display settings.
 
     Token throughput (tok/s) is computed from the wall-clock delta between
     consecutive log steps, capturing real end-to-end throughput including
@@ -45,33 +82,38 @@ class ProgressCallback:
         self,
         use_tqdm: Optional[bool] = None,
         output_stream: Optional[OutputStream] = None,
-        show_loss: bool = True,
-        show_grad_norm: bool = True,
-        show_learning_rate: bool = True,
-        show_tokens: bool = True,
-        show_epoch: bool = True,
-        show_tokens_per_second: bool = True,
+        step_columns: Optional[dict | list] = None,
+        final_metrics: Optional[list] = None,
         peak_hardware_flops: Optional[float] = None,
-        show_peak_memory: bool = True,
         header_interval: int = 20,
     ):
         """
         Args:
             use_tqdm: If True, use TQDM; else if False, use logging; else auto select
             output_stream: The output stream to use, if using logging
-            show_loss: Display loss in console logs (default: True)
-            show_grad_norm: Display gradient norm in console logs (default: True)
-            show_learning_rate: Display learning rate in console logs (default: True)
-            show_tokens: Display token count for the log interval (default: False)
-            show_epoch: Display epoch in console logs (default: True)
-            show_tokens_per_second: Display tokens/sec computed from wall-clock time
-                between log steps, reflecting real end-to-end throughput including
-                optimizer, data loading, and all other overhead (default: False)
+            step_columns: Column specifications controlling which metrics are
+                displayed and how they are formatted.  Accepts either:
+
+                * A **dict** mapping metric keys to column spec dicts
+                  (label, width, fmt).  This is the recommended form for
+                  YAML configs because child templates can override or
+                  erase columns via the standard merge pattern.  Set a
+                  key to ``null`` / ``~`` to remove that column.
+                * A **list** of ``ColumnSpec`` objects or dicts (must
+                  include a ``key`` field).
+
+                When ``None``, uses ``default_step_columns()``.
+                Column order follows insertion order.  Only columns whose
+                key appears in the current log entry are shown.
+            final_metrics: Metric specifications for the end-of-training
+                summary.  Each entry is a ``FinalMetricSpec`` or a dict with
+                FinalMetricSpec fields.  When ``None``, uses
+                ``default_final_metrics()``.
             peak_hardware_flops: Aggregate peak BF16 FLOP/s across all GPUs used in
                 training, used to compute MFU (Model FLOPs Utilization). Must be the
                 total across all ranks since total_flos accounts for tokens processed
-                across all ranks. If provided, MFU is displayed when
-                show_tokens_per_second is True.
+                across all ranks. If provided, MFU is computed and available for
+                display when a ``mfu`` column is in step_columns.
                 Example values (dense BF16, FP32 accumulate):
                   Single RTX 4090:  165.2e12
                   Single RTX 3090:   71.2e12
@@ -79,25 +121,31 @@ class ProgressCallback:
                   A100 SXM:         312e12
                   H100 SXM:         989e12
                 (default: None, MFU not computed)
-            show_peak_memory: Display peak CUDA memory allocated on the logging rank
-                since the last log step, formatted as GiB. Peak stats are reset after
-                each read, so the value reflects the interval high-water mark rather
-                than a cumulative maximum. Requires CUDA. (default: False)
             header_interval: Print a column header row every this many log steps, and
                 also whenever the set of active columns changes. (default: 20)
         """
         super().__init__()
         self.train_progress_bar = None
         self.eval_progress_bar = None
-        self.show_loss = show_loss
-        self.show_grad_norm = show_grad_norm
-        self.show_learning_rate = show_learning_rate
-        self.show_tokens = show_tokens
-        self.show_epoch = show_epoch
-        self.show_tokens_per_second = show_tokens_per_second
         self.peak_hardware_flops = peak_hardware_flops
-        self.show_peak_memory = show_peak_memory
         self.header_interval = header_interval
+
+        # Normalize step_columns: accept dict (recommended for YAML),
+        # list, or None (use defaults).
+        if step_columns is not None:
+            self.step_columns: list[ColumnSpec] = _normalize_columns(step_columns)
+        else:
+            self.step_columns = default_step_columns()
+
+        if final_metrics is not None:
+            self.final_metrics: list[FinalMetricSpec] | None = [
+                m if isinstance(m, FinalMetricSpec) else FinalMetricSpec(**m)
+                for m in final_metrics
+            ]
+        else:
+            self.final_metrics = None
+
+        self._column_keys: frozenset[str] = frozenset(c.key for c in self.step_columns)
 
         # Tracking for per-interval speed metrics.
         # _last_log_time records the wall-clock time at each log step, used for
@@ -239,7 +287,7 @@ class ProgressCallback:
 
         # Final training metrics get their own formatted summary
         if "train_runtime" in logs:
-            summary = format_final_metrics(logs)
+            summary = format_final_metrics(logs, self.final_metrics)
             if self.use_tqdm:
                 if self.train_progress_bar is not None:
                     self.train_progress_bar.write(format_timestamp() + summary)
@@ -249,24 +297,8 @@ class ProgressCallback:
                 self.logger.info(summary)
             return
 
-        # Filter logs based on display options
-        display_logs = {}
-        if self.show_epoch and "epoch" in logs:
-            display_logs["epoch"] = logs["epoch"]
-        if self.show_loss and "loss" in logs:
-            display_logs["loss"] = logs["loss"]
-        if self.show_grad_norm and "grad_norm" in logs:
-            display_logs["grad_norm"] = logs["grad_norm"]
-        if self.show_grad_norm and "max_grad_norm" in logs:
-            display_logs["max_grad_norm"] = logs["max_grad_norm"]
-        if self.show_grad_norm and "grad_norm_std" in logs:
-            display_logs["grad_norm_std"] = logs["grad_norm_std"]
-        if self.show_learning_rate and "learning_rate" in logs:
-            display_logs["learning_rate"] = logs["learning_rate"]
-        if self.show_tokens and "tokens" in logs:
-            display_logs["tokens"] = logs["tokens"]
-        if self.show_tokens and "total_tokens" in logs:
-            display_logs["total_tokens"] = logs["total_tokens"]
+        # Build a merged metrics dict: raw log entries + computed metrics.
+        all_metrics: dict = dict(logs)
 
         # Compute per-interval speed metrics.
         # tok/s uses wall-clock time between log steps for real end-to-end throughput
@@ -274,15 +306,13 @@ class ProgressCallback:
         # FLOPs/MFU uses accumulated pure training step time (on_step_begin to
         # on_step_end) to measure hardware utilization during forward/backward only.
         now = time.monotonic()
-        if self.show_tokens_per_second and "tokens" in logs:
+        if "tokens" in logs:
             if self._last_log_time is not None:
                 wall_elapsed = now - self._last_log_time
                 if wall_elapsed > 0:
-                    delta_tokens = logs["tokens"]
-                    tps = delta_tokens / wall_elapsed
-                    display_logs["tok/s"] = round(tps)
+                    all_metrics["tok_per_sec"] = round(logs["tokens"] / wall_elapsed)
 
-            # MFU requires knowing the hardware's peak FLOP/s
+            # MFU requires knowing the hardware's peak FLOP/s.
             # Uses accumulated train time (forward/backward only) for accurate
             # hardware utilization measurement.
             train_elapsed = self._accumulated_train_time
@@ -291,29 +321,30 @@ class ProgressCallback:
                     delta_flos = logs["total_flos"] - self._last_total_flos
                     if delta_flos > 0:
                         achieved_flops = delta_flos / train_elapsed
-                        mfu = achieved_flops / self.peak_hardware_flops
-                        display_logs["mfu"] = f"{mfu:.1%}"
+                        all_metrics["mfu"] = achieved_flops / self.peak_hardware_flops
 
-        # Peak CUDA memory on the logging rank since last log step.
-        # The value is captured and reset once in _log_step before on_log is dispatched.
-        if self.show_peak_memory:
-            peak_mem = logs.get("peak_mem_allocated")
-            if peak_mem is not None:
-                gib = 1024**3
-                display_logs["peak_mem"] = f"{peak_mem / gib:.3f} GiB"
+        # Peak CUDA memory: expose raw bytes for the column formatter.
+        peak_mem = logs.get("peak_mem_allocated")
+        if peak_mem is not None:
+            all_metrics["peak_mem"] = peak_mem
 
         # Reset interval tracking for the next log period
         self._last_log_time = now
         self._accumulated_train_time = 0.0
         self._last_total_flos = logs.get("total_flos", self._last_total_flos)
 
+        # Filter to only keys present in step_columns
+        display_metrics = {
+            k: v for k, v in all_metrics.items() if k in self._column_keys
+        }
+
         # Print a column header when the interval fires or the active column set changes
-        active_keys = frozenset(display_logs)
+        active_keys = frozenset(display_metrics)
         if (
             self._log_row_count % self.header_interval == 0
             or active_keys != self._last_active_keys
         ):
-            header_line = format_train_header(display_logs)
+            header_line = format_train_header(self.step_columns, display_metrics)
             if self.use_tqdm:
                 if self.train_progress_bar is not None:
                     self.train_progress_bar.write(format_timestamp() + header_line)
@@ -329,10 +360,13 @@ class ProgressCallback:
                     self.train_progress_bar.total = state.max_steps
                     self.train_progress_bar.refresh()
                 self.train_progress_bar.write(
-                    format_timestamp() + format_train_log(state, display_logs)
+                    format_timestamp()
+                    + format_train_log(state, self.step_columns, display_metrics)
                 )
         else:
-            self.logger.info(format_train_log(state, display_logs))
+            self.logger.info(
+                format_train_log(state, self.step_columns, display_metrics)
+            )
 
 
 class InfoCallback:

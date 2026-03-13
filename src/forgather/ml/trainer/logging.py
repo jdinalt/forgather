@@ -1,5 +1,6 @@
 import datetime
 import sys
+from dataclasses import dataclass
 from pprint import pformat
 from typing import Any, Callable, Literal
 
@@ -9,7 +10,68 @@ from forgather.ml.utils import alt_repr
 Mapping = dict[str, Any]
 
 
-def _fmt_si(v: int) -> str:
+# ---------------------------------------------------------------------------
+# Column / metric specification dataclasses
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class ColumnSpec:
+    """Specification for a single column in the step-log table.
+
+    Attributes:
+        key:   Metric key in the logs dict (e.g. ``"loss"``, ``"tok_per_sec"``).
+        label: Column header text.  Defaults to *key* when empty.
+        width: Fixed column width in characters.
+        fmt:   Formatting control -- one of:
+
+               * A Python format-spec string (``".5f"``, ``".2e"``, ``",d"``).
+                 Applied via ``format(value, spec)``.  Integer presentation
+                 types (``d``, ``o``, ``x``, ...) auto-convert the value to
+                 ``int`` first.
+               * A named formatter alias (``"si"``, ``"gib"``).
+               * A ``Callable[[Any], str]``.
+               * ``""`` for a type-based fallback (float -> ``.4g``,
+                 int -> comma-separated, else ``str``).
+    """
+
+    key: str
+    label: str = ""
+    width: int = 10
+    fmt: str | Callable[[Any], str] = ""
+
+    def __post_init__(self):
+        if not self.label:
+            self.label = self.key
+
+
+@dataclass(slots=True)
+class FinalMetricSpec:
+    """Specification for a single row in the end-of-training summary.
+
+    Attributes:
+        key:    Metric key in the final metrics dict.
+        label:  Human-readable label.  Defaults to *key* when empty.
+        fmt:    Same semantics as :class:`ColumnSpec.fmt`.
+        suffix: String appended after the formatted value (e.g. ``" s"``).
+    """
+
+    key: str
+    label: str = ""
+    fmt: str | Callable[[Any], str] = ""
+    suffix: str = ""
+
+    def __post_init__(self):
+        if not self.label:
+            self.label = self.key
+
+
+# ---------------------------------------------------------------------------
+# Public formatters
+# ---------------------------------------------------------------------------
+
+
+def fmt_si(v: int) -> str:
     """Format an integer with SI suffix (K, M, G)."""
     v = int(v)
     if v >= 1_000_000_000:
@@ -21,79 +83,104 @@ def _fmt_si(v: int) -> str:
     return str(v)
 
 
-# Per-metric display config for columnar step logs.
-# Each entry: (column_header, column_width, value_formatter)
-# column_width must accommodate both the header label and the widest formatted value.
-_STEP_METRICS: dict[str, tuple[str, int, Callable]] = {
-    "epoch": ("epoch", 8, lambda v: f"{v:.4g}"),
-    "loss": ("loss", 8, lambda v: f"{v:.5f}"),
-    "grad_norm": ("grad", 8, lambda v: f"{v:.4f}"),
-    "max_grad_norm": ("maxg", 8, lambda v: f"{v:.4f}"),
-    "grad_norm_std": ("gn_std", 8, lambda v: f"{v:.4f}"),
-    "learning_rate": ("lr", 10, lambda v: f"{v:.2e}"),
-    "tokens": ("tokens", 10, lambda v: f"{int(v):,}"),
-    "total_tokens": ("total_tok", 10, _fmt_si),
-    "total_flos": ("flos", 10, lambda v: f"{v:.3e}"),
-    "tok/s": ("tok/s", 10, lambda v: f"{int(v):,}"),
-    "mfu": ("mfu", 6, lambda v: str(v)),
-    "peak_mem": ("peak_mem", 11, lambda v: str(v)),
+def fmt_gib(v: float | int) -> str:
+    """Format a byte count as GiB."""
+    return f"{v / (1024 ** 3):.3f} GiB"
+
+
+# Named formatter registry -- looked up by format_value when *fmt* is a
+# string that matches a key here.
+_NAMED_FORMATTERS: dict[str, Callable[[Any], str]] = {
+    "si": fmt_si,
+    "gib": fmt_gib,
 }
 
-# Canonical column display order for train log rows.
-_COLUMN_ORDER: list[str] = [
-    "epoch",
-    "loss",
-    "grad_norm",
-    "max_grad_norm",
-    "grad_norm_std",
-    "learning_rate",
-    "tokens",
-    "total_tokens",
-    "tok/s",
-    "mfu",
-    "peak_mem",
-]
+
+# ---------------------------------------------------------------------------
+# Value formatting
+# ---------------------------------------------------------------------------
+
+# Integer presentation types that require an int operand.
+_INT_TYPES = frozenset("doxXbn")
+
+
+def format_value(value: Any, fmt: str | Callable[[Any], str]) -> str:
+    """Format a single metric value.
+
+    Resolution order:
+
+    1. *fmt* is callable -- call it directly.
+    2. *fmt* matches a named formatter -- delegate to it.
+    3. *fmt* is a non-empty string -- treat as a Python format spec.
+       Integer presentation types (``d``, ``o``, …) auto-convert *value*
+       to ``int``.
+    4. *fmt* is empty -- fall back to type-based defaults.
+    """
+    if callable(fmt):
+        return fmt(value)
+    if fmt in _NAMED_FORMATTERS:
+        return _NAMED_FORMATTERS[fmt](value)
+    if not fmt:
+        if isinstance(value, float):
+            return f"{value:.4g}"
+        elif isinstance(value, int):
+            return f"{value:,}"
+        return str(value)
+    if fmt[-1] in _INT_TYPES:
+        value = int(value)
+    return format(value, fmt)
+
+
+# ---------------------------------------------------------------------------
+# Default column / metric specs
+# ---------------------------------------------------------------------------
 
 # Width of the step count prefix column.
 _STEP_COL_WIDTH = 10
 
-# Ordered display labels and formatters for final training metrics.
-# Keys present in the metrics dict but not listed here are shown at the end.
-_FINAL_METRICS: dict[str, tuple[str, Callable]] = {
-    "train_runtime": ("Runtime", lambda v: f"{v:.2f} s"),
-    "step": ("Total steps", lambda v: f"{int(v):,}"),
-    "train_samples": ("Total samples", lambda v: f"{int(v):,}"),
-    "effective_batch_size": ("Effective batch size", lambda v: f"{int(v):,}"),
-    "train_samples_per_second": ("Samples/sec", lambda v: f"{v:.3f}"),
-    "train_steps_per_second": ("Steps/sec", lambda v: f"{v:.3f}"),
-    "epoch": ("Epoch", lambda v: f"{v:.6g}"),
-    "total_tokens": ("Total tokens", lambda v: f"{int(v):,}"),
-    "tokens_per_second": ("Tokens/sec", lambda v: f"{v:,.0f}"),
-    "total_flops": ("Total FLOPs", lambda v: f"{v:.3e}"),
-    "flops_per_second": ("FLOPs/sec", lambda v: f"{v:.3e}"),
-}
+
+def default_step_columns() -> list[ColumnSpec]:
+    """Return the default set of step-log columns.
+
+    Columns whose key is absent from the metrics dict are silently skipped,
+    so it is safe to include all standard columns here.
+    """
+    return [
+        ColumnSpec("epoch", "epoch", 8, ".4g"),
+        ColumnSpec("loss", "loss", 8, ".5f"),
+        ColumnSpec("grad_norm", "grad", 8, ".4f"),
+        ColumnSpec("max_grad_norm", "maxg", 8, ".4f"),
+        ColumnSpec("grad_norm_std", "gn_std", 8, ".4f"),
+        ColumnSpec("learning_rate", "lr", 10, ".2e"),
+        ColumnSpec("tokens", "tokens", 10, ",d"),
+        ColumnSpec("total_tokens", "total_tok", 10, "si"),
+        ColumnSpec("total_flos", "flos", 10, ".3e"),
+        ColumnSpec("tok_per_sec", "tok/s", 10, ",d"),
+        ColumnSpec("mfu", "mfu", 6, ".1%"),
+        ColumnSpec("peak_mem", "peak_mem", 11, "gib"),
+    ]
 
 
-def _fmt_step_value(key: str, value: Any) -> str:
-    if key in _STEP_METRICS:
-        return _STEP_METRICS[key][2](value)
-    elif isinstance(value, float):
-        return f"{value:.4g}"
-    elif isinstance(value, int):
-        return f"{value:,}"
-    return str(value)
+def default_final_metrics() -> list[FinalMetricSpec]:
+    """Return the default set of end-of-training summary metrics."""
+    return [
+        FinalMetricSpec("train_runtime", "Runtime", ".2f", " s"),
+        FinalMetricSpec("step", "Total steps", ",d"),
+        FinalMetricSpec("train_samples", "Total samples", ",d"),
+        FinalMetricSpec("effective_batch_size", "Effective batch size", ",d"),
+        FinalMetricSpec("train_samples_per_second", "Samples/sec", ".3f"),
+        FinalMetricSpec("train_steps_per_second", "Steps/sec", ".3f"),
+        FinalMetricSpec("epoch", "Epoch", ".6g"),
+        FinalMetricSpec("total_tokens", "Total tokens", ",d"),
+        FinalMetricSpec("tokens_per_second", "Tokens/sec", ",.0f"),
+        FinalMetricSpec("total_flops", "Total FLOPs", ".3e"),
+        FinalMetricSpec("flops_per_second", "FLOPs/sec", ".3e"),
+    ]
 
 
-def _fmt_step_label(key: str) -> str:
-    return _STEP_METRICS[key][0] if key in _STEP_METRICS else key
-
-
-def _col_spec(key: str) -> tuple[str, int]:
-    """Return (header_label, column_width) for a metric key."""
-    if key in _STEP_METRICS:
-        label, width, _ = _STEP_METRICS[key]
-        return label, width
-    return key, max(len(key) + 2, 8)
+# ---------------------------------------------------------------------------
+# Train info (unchanged)
+# ---------------------------------------------------------------------------
 
 
 def format_train_info(
@@ -165,6 +252,11 @@ def format_train_info(
     return info, extra_info
 
 
+# ---------------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------------
+
+
 def format_timestamp():
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return f"{timestamp:<22}"
@@ -175,74 +267,62 @@ def format_log_header(state: TrainerState):
     return s
 
 
-def format_train_header(mapping: Mapping) -> str:
-    """
-    Format a column header row for the active metrics in mapping.
+def format_train_header(columns: list[ColumnSpec], metrics: Mapping) -> str:
+    """Format a column header row for the active metrics.
 
-    Columns appear in canonical order (_COLUMN_ORDER), followed by any
-    unrecognised keys. Each label is right-aligned within its column width,
-    matching the alignment used by format_train_log.
+    Only columns whose key appears in *metrics* are included.
+    Column order follows the *columns* list.
     """
     parts = [f"{'step':>{_STEP_COL_WIDTH}}"]
-    for key in _COLUMN_ORDER:
-        if key in mapping:
-            label, width = _col_spec(key)
-            parts.append(f"{label:>{width}}")
-    for key in mapping:
-        if key not in _COLUMN_ORDER:
-            label, width = _col_spec(key)
-            parts.append(f"{label:>{width}}")
+    for col in columns:
+        if col.key in metrics:
+            parts.append(f"{col.label:>{col.width}}")
     return "  ".join(parts)
 
 
-def format_train_log(state: TrainerState, mapping: Mapping) -> str:
-    """
-    Format a single columnar training step data row.
+def format_train_log(
+    state: TrainerState, columns: list[ColumnSpec], metrics: Mapping
+) -> str:
+    """Format a single columnar training step data row.
 
     Values are right-aligned in fixed-width columns matching the header
-    produced by format_train_header. No key labels are included; the
-    header row provides those. Unknown keys are appended after the
-    canonical columns.
+    produced by :func:`format_train_header`.  Only columns whose key
+    appears in *metrics* are shown.
     """
     parts = [f"{state.global_step:>{_STEP_COL_WIDTH},d}"]
-    for key in _COLUMN_ORDER:
-        if key in mapping:
-            _, width = _col_spec(key)
-            parts.append(f"{_fmt_step_value(key, mapping[key]):>{width}}")
-    for key, value in mapping.items():
-        if key not in _COLUMN_ORDER:
-            _, width = _col_spec(key)
-            parts.append(f"{_fmt_step_value(key, value):>{width}}")
+    for col in columns:
+        if col.key in metrics:
+            formatted = format_value(metrics[col.key], col.fmt)
+            parts.append(f"{formatted:>{col.width}}")
     return "  ".join(parts)
 
 
-def format_final_metrics(metrics: Mapping) -> str:
-    """
-    Format end-of-training metrics as a multi-line human-readable summary.
+def format_final_metrics(
+    metrics: Mapping, specs: list[FinalMetricSpec] | None = None
+) -> str:
+    """Format end-of-training metrics as a multi-line human-readable summary.
 
-    Known metrics are shown first in a fixed order with descriptive labels.
-    Any remaining keys are appended at the end.
+    Known metrics (from *specs*, or :func:`default_final_metrics` when
+    *specs* is ``None``) are shown first in spec order.  Any remaining
+    keys are appended at the end.
     """
+    if specs is None:
+        specs = default_final_metrics()
+
     col_width = 28
     lines = ["Training complete:"]
     shown: set[str] = set()
 
-    for key, (label, fmt) in _FINAL_METRICS.items():
-        if key in metrics:
-            lines.append(f"  {label + ':':{col_width}} {fmt(metrics[key])}")
-            shown.add(key)
+    for spec in specs:
+        if spec.key in metrics:
+            formatted = format_value(metrics[spec.key], spec.fmt) + spec.suffix
+            lines.append(f"  {spec.label + ':':{col_width}} {formatted}")
+            shown.add(spec.key)
 
-    # Any keys not in the known list
     for key, value in metrics.items():
         if key in shown:
             continue
-        if isinstance(value, float):
-            formatted = f"{value:.4g}"
-        elif isinstance(value, int):
-            formatted = f"{value:,}"
-        else:
-            formatted = str(value)
-        lines.append(f"  {key + ':':{col_width}} {formatted}")
+        lines.append(f"  {key + ':':{col_width}} {format_value(value, '')}")
 
     return "\n".join(lines)
 
