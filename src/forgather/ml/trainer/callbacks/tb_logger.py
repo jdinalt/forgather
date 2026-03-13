@@ -24,7 +24,7 @@ class TBLogger(TrainerCallback):
     A Trainer callbacks which implements Tensorboard logging.
     summary_writer: A Tensor Board Summary Writer instance
     scalars: A list of tuples describing scalars to log.
-        (METRIC_KEY, LABLE) or (METRIC_NAME, LABEL, CALLABLE)
+        (METRIC_KEY, LABEL) or (METRIC_NAME, LABEL, CALLABLE)
         In the case of the third tuple element, this is a callable of the
         form "my_callable(value, metrics)", where value is the value from METRIC_KEY,
         and metrics is a dictionary of all the reported metrics. Returns a new value
@@ -34,7 +34,7 @@ class TBLogger(TrainerCallback):
     def __init__(
         self,
         summary_writer,
-        scalars=None,
+        scalars: Optional[list] = None,
         **kwargs,
     ):
         super().__init__()
@@ -43,9 +43,6 @@ class TBLogger(TrainerCallback):
                 ("loss", "train-loss"),
                 ("learning_rate", "learning-rate"),
                 ("grad_norm", "grad-norm"),
-                ("max_grad_norm", "grad-norm[max]"),
-                ("grad_norm_std", "grad-norm-std"),
-                ("eval_accuracy", "eval-accuracy"),
                 ("eval_loss", "eval-loss"),
                 ("eval_loss", "eval-perplexity", get_perplexity),
             ]

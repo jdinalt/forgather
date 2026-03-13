@@ -1,9 +1,21 @@
 -- extends 'callbacks/base_callbacks.yaml'
 
 [callback_dependencies]
+    [summary_writer]
 # Resumable TensorBoard SummaryWriter wrapper
 .define: &summary_writer !singleton:forgather.ml.trainer.callbacks:ResumableSummaryWriter
     log_dir: "{{ ns.logging_dir }}"
+
+    [tb_scalars]
+.define: &tb_scalars !dlist
+    loss: [ "loss", "train-loss" ]
+    lr: [ "learning_rate", "learning-rate" ]
+    grad_norm: [ "grad_norm", "grad-norm" ]
+    eval_loss: [ "eval_loss", "eval-loss" ]
+    perplexity:
+        - "eval_loss"
+        - "eval-perplexity"
+        - !partial:forgather.ml.trainer.callbacks.tb_logger:get_perplexity
 
     [experiment_info]
 # Additional data to record to experiment loggers
@@ -26,4 +38,5 @@ experiment_info: &experiment_info !dict:@experiment_info
     # Log configuration and metrics to Tensorboard file
     tb_logger: !singleton:forgather.ml.trainer.callbacks:TBLogger
         arg0: *summary_writer
+        scalars: *tb_scalars
         <<: *experiment_info
