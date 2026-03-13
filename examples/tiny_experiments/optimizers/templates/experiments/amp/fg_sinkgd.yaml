@@ -8,7 +8,6 @@
     -- set ns.log_name = log_name | default("sinkgd")
     -- set ns.sinkgd_lr = sinkgd_lr | default(0.02)
     -- set ns.sinkgd_alpha = sinkgd_alpha | default(0.05)
-    -- set ns.base_lr = base_lr | default(5.0e-2)
 
 [variable_listing]
     == super()
@@ -16,14 +15,19 @@
 # ns.sinkgd_alpha: {{ ns.sinkgd_alpha }}
 
 [optimizer]
+    [sinkgd]
+.define: &sinkgd !partial:forgather.ml.optim.sinkgd:SinkGD
+    lr: {{ (ns.sinkgd_lr * ns.sinkgd_alpha) | toyaml }}
+    num_iters: 5
+    normalize_output: False
+
+    [multiopt]
 optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
     optimizer_map:
         - [ "embed|lm_head|norm|bias", "adam" ]
         - [ ".*", "sinkgd" ]
     factories:
-        sinkgd: !partial:forgather.ml.optim.sinkgd_exp:SinkGD
-            lr: {{ (ns.sinkgd_lr * ns.sinkgd_alpha) | toyaml }}
-            clip_threshold: 0.5
+        sinkgd: *sinkgd
         adam: !partial:torch.optim:Adam
             lr: {{ ns.sinkgd_lr | toyaml }}
             weight_decay: !!float 0.0
