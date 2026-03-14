@@ -143,15 +143,31 @@ class SinkGD(Optimizer):
                     else:
                         sr_seed = 0
 
-                    sr_cuda_gen = None
-                    if bf16_sr and p.is_cuda:
+                    # Pre-generate stochastic rounding noise.
+                    # torch.Generator can't be traced by dynamo, so we
+                    # generate the random bits here (outside compile) and
+                    # pass the resulting tensor into the compiled function.
+                    sr_rand_bits = None
+                    if bf16_sr:
                         device = p.device
-                        if device not in self._sr_cuda_generators:
-                            self._sr_cuda_generators[device] = torch.Generator(
-                                device=device
-                            )
-                        sr_cuda_gen = self._sr_cuda_generators[device]
-                        sr_cuda_gen.manual_seed(sr_seed)
+                        if device.type == "cuda":
+                            if device not in self._sr_cuda_generators:
+                                self._sr_cuda_generators[device] = torch.Generator(
+                                    device=device
+                                )
+                            sr_gen = self._sr_cuda_generators[device]
+                            sr_gen.manual_seed(sr_seed)
+                        else:
+                            sr_gen = torch.Generator(device=device)
+                            sr_gen.manual_seed(sr_seed)
+                        sr_rand_bits = torch.randint(
+                            0,
+                            1 << 16,
+                            p.shape,
+                            device=device,
+                            dtype=torch.int32,
+                            generator=sr_gen,
+                        )
 
                     # Check if this param uses Adam mode
                     uses_adam = (grad.dim() >= 2 and mode == "adam") or (
@@ -198,7 +214,7 @@ class SinkGD(Optimizer):
                         mode,
                         vector_mode,
                         bf16_sr,
-                        sr_cuda_gen,
+                        sr_rand_bits,
                         momentum_buffer,
                         adam_m,
                         adam_v,
@@ -254,7 +270,7 @@ def _sinkgd(
     mode: str,
     vector_mode: str,
     bf16_stochastic_round: bool,
-    sr_generator=None,
+    sr_rand_bits: Tensor | None = None,
     momentum_buffer=None,
     adam_m=None,
     adam_v=None,
@@ -306,7 +322,7 @@ def _sinkgd(
     else:
         update = p.float() - lr * update
         if bf16_stochastic_round:
-            update = fp32_to_bf16_stochastic_round(update, generator=sr_generator)
+            update = fp32_to_bf16_stochastic_round(update, rand_bits=sr_rand_bits)
         p.copy_(update)
 
 

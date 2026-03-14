@@ -383,6 +383,197 @@ class TestFp32ToBf16StochasticRound:
             abs(mean_rounded - val) < 0.005
         ), f"Mean of stochastic rounding {mean_rounded} too far from true value {val}"
 
+    def test_rand_bits_path_matches_generator_path(self):
+        """Pre-generated rand_bits should produce identical results to generator path."""
+        x = torch.randn(256, dtype=torch.float32)
+
+        # Generator path
+        gen = torch.Generator()
+        gen.manual_seed(42)
+        result_gen = fp32_to_bf16_stochastic_round(x, generator=gen)
+
+        # rand_bits path: generate identical noise manually
+        gen2 = torch.Generator()
+        gen2.manual_seed(42)
+        rand_bits = torch.randint(
+            0, 1 << 16, x.shape, dtype=torch.int32, generator=gen2
+        )
+        result_bits = fp32_to_bf16_stochastic_round(x, rand_bits=rand_bits)
+
+        assert torch.equal(
+            result_gen, result_bits
+        ), "rand_bits path must produce identical results to generator path"
+
+    def test_rand_bits_ignores_generator(self):
+        """When rand_bits is provided, generator should be ignored."""
+        x = torch.randn(64, dtype=torch.float32)
+
+        gen = torch.Generator()
+        gen.manual_seed(42)
+        rand_bits = torch.randint(0, 1 << 16, x.shape, dtype=torch.int32, generator=gen)
+
+        # Pass a differently-seeded generator alongside rand_bits
+        gen_different = torch.Generator()
+        gen_different.manual_seed(999)
+        result = fp32_to_bf16_stochastic_round(
+            x, generator=gen_different, rand_bits=rand_bits
+        )
+
+        # Should match the rand_bits, not the generator
+        result_expected = fp32_to_bf16_stochastic_round(x, rand_bits=rand_bits)
+        assert torch.equal(result, result_expected)
+
+
+class TestStochasticRoundingCompile:
+    """Tests that stochastic rounding is compatible with torch.compile."""
+
+    def test_generator_causes_graph_break(self):
+        """Verify that passing a generator to SR causes fullgraph=True to fail.
+
+        This is the regression test: if this ever stops failing, it means
+        PyTorch added native generator support in dynamo, and the rand_bits
+        workaround can be removed.
+        """
+
+        def fn(x, gen):
+            return fp32_to_bf16_stochastic_round(x, generator=gen)
+
+        x = torch.randn(64, dtype=torch.float32)
+        gen = torch.Generator()
+        gen.manual_seed(42)
+
+        compiled = torch.compile(fn, fullgraph=True, dynamic=False)
+        with pytest.raises(torch._dynamo.exc.Unsupported):
+            compiled(x, gen)
+
+    def test_rand_bits_compiles_fullgraph(self):
+        """SR with pre-generated rand_bits compiles with fullgraph=True."""
+
+        def fn(x, rand_bits):
+            return fp32_to_bf16_stochastic_round(x, rand_bits=rand_bits)
+
+        x = torch.randn(64, dtype=torch.float32)
+        rand_bits = torch.randint(0, 1 << 16, x.shape, dtype=torch.int32)
+
+        compiled = torch.compile(fn, fullgraph=True, dynamic=False)
+        result = compiled(x, rand_bits)
+        assert result.dtype == torch.bfloat16
+        assert result.shape == x.shape
+
+    def test_compiled_sr_matches_eager(self):
+        """Compiled SR produces identical output to eager mode."""
+        x = torch.randn(128, dtype=torch.float32)
+        rand_bits = torch.randint(0, 1 << 16, x.shape, dtype=torch.int32)
+
+        eager = fp32_to_bf16_stochastic_round(x, rand_bits=rand_bits)
+
+        def fn(x, rand_bits):
+            return fp32_to_bf16_stochastic_round(x, rand_bits=rand_bits)
+
+        compiled = torch.compile(fn, fullgraph=True, dynamic=False)
+        compiled_result = compiled(x, rand_bits)
+
+        assert torch.equal(
+            eager, compiled_result
+        ), "Compiled SR must be bitwise identical to eager"
+
+    def test_adafactor_compiled_with_bf16_sr(self):
+        """Adafactor with torch_compile=True and bf16_stochastic_round=True runs without error."""
+        from forgather.ml.optim.adafactor import Adafactor
+
+        model = nn.Linear(16, 8)
+        model.weight.data = model.weight.data.to(torch.bfloat16)
+        model.bias.data = model.bias.data.to(torch.bfloat16)
+
+        opt = Adafactor(
+            model.parameters(),
+            lr=1e-3,
+            torch_compile=True,
+            bf16_stochastic_round=True,
+        )
+
+        # Run a few steps to exercise compile caching
+        for _ in range(3):
+            x = torch.randn(2, 16, dtype=torch.bfloat16)
+            loss = model(x).sum()
+            loss.backward()
+            opt.step()
+            opt.zero_grad()
+
+    def test_adamw_compiled_with_bf16_sr(self):
+        """AdamW with torch_compile=True and bf16_stochastic_round=True runs without error."""
+        model = nn.Linear(16, 8)
+        model.weight.data = model.weight.data.to(torch.bfloat16)
+        model.bias.data = model.bias.data.to(torch.bfloat16)
+
+        opt = AdamW(
+            model.parameters(),
+            lr=1e-3,
+            torch_compile=True,
+            bf16_stochastic_round=True,
+        )
+
+        for _ in range(3):
+            x = torch.randn(2, 16, dtype=torch.bfloat16)
+            loss = model(x).sum()
+            loss.backward()
+            opt.step()
+            opt.zero_grad()
+
+    def test_adafactor_compile_sr_reduces_loss(self):
+        """Adafactor with compile + SR should actually train (loss decreases)."""
+        from forgather.ml.optim.adafactor import Adafactor
+
+        torch.manual_seed(0)
+        model = nn.Linear(16, 4)
+        model.weight.data = model.weight.data.to(torch.bfloat16)
+        model.bias.data = model.bias.data.to(torch.bfloat16)
+
+        opt = Adafactor(
+            model.parameters(),
+            lr=1e-2,
+            torch_compile=True,
+            bf16_stochastic_round=True,
+        )
+
+        x = torch.randn(8, 16, dtype=torch.bfloat16)
+        y = torch.randn(8, 4, dtype=torch.bfloat16)
+
+        initial_loss = nn.functional.mse_loss(model(x), y).item()
+        for _ in range(50):
+            opt.zero_grad()
+            loss = nn.functional.mse_loss(model(x), y)
+            loss.backward()
+            opt.step()
+        final_loss = nn.functional.mse_loss(model(x), y).item()
+        assert (
+            final_loss < initial_loss
+        ), f"Loss should decrease: {initial_loss} -> {final_loss}"
+
+    def test_adafactor_compile_sr_1d_param(self):
+        """Adafactor compile + SR works for 1D parameters (bias, norms)."""
+        from forgather.ml.optim.adafactor import Adafactor
+
+        model = nn.Linear(16, 8, bias=True)
+        model.weight.data = model.weight.data.to(torch.bfloat16)
+        model.bias.data = model.bias.data.to(torch.bfloat16)
+
+        opt = Adafactor(
+            model.parameters(),
+            lr=1e-3,
+            torch_compile=True,
+            bf16_stochastic_round=True,
+        )
+
+        x = torch.randn(2, 16, dtype=torch.bfloat16)
+        loss = model(x).sum()
+        loss.backward()
+        opt.step()
+
+        # Verify both 2D (weight) and 1D (bias) were updated
+        assert model.weight.grad is not None
+        assert model.bias.grad is not None
+
 
 # ===========================================================================
 # Tests for infinite_lr_scheduler.py

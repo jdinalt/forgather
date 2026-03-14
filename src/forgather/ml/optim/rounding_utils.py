@@ -12,7 +12,9 @@ import torch
 from torch import Tensor
 
 
-def fp32_to_bf16_stochastic_round(x_f32: Tensor, generator=None) -> Tensor:
+def fp32_to_bf16_stochastic_round(
+    x_f32: Tensor, generator=None, rand_bits: Tensor | None = None
+) -> Tensor:
     """
     Convert FP32 tensor to BF16 with stochastic rounding.
 
@@ -32,16 +34,29 @@ def fp32_to_bf16_stochastic_round(x_f32: Tensor, generator=None) -> Tensor:
         generator: Optional torch.Generator for deterministic rounding.
             Must be on the same device as x_f32. When None, uses the
             default generator (WARNING: diverges across DDP ranks).
+            Not compatible with torch.compile -- use rand_bits instead.
+        rand_bits: Optional pre-generated int32 tensor of random values in
+            [0, 2^16). When provided, ``generator`` is ignored. This is the
+            torch.compile-safe path: generate the noise outside the compiled
+            region and pass it in.
 
     Returns:
         Tensor converted to BF16 with stochastic rounding
     """
-    # Generate random 16-bit integers for stochastic decision
-    # We have to use int32 since most arithmetic ops are not implemented for uint32/int16/uint16
-    rand_16bit = torch.randint(
-        0, 1 << 16, x_f32.shape, device=x_f32.device, dtype=torch.int32,
-        generator=generator,
-    )
+    if rand_bits is not None:
+        rand_16bit = rand_bits
+    else:
+        # Generate random 16-bit integers for stochastic decision
+        # We have to use int32 since most arithmetic ops are not implemented
+        # for uint32/int16/uint16
+        rand_16bit = torch.randint(
+            0,
+            1 << 16,
+            x_f32.shape,
+            device=x_f32.device,
+            dtype=torch.int32,
+            generator=generator,
+        )
 
     # View FP32 as int32 to manipulate bits
     x_f32_bits = x_f32.view(torch.int32)
@@ -52,7 +67,8 @@ def fp32_to_bf16_stochastic_round(x_f32: Tensor, generator=None) -> Tensor:
     # This is True with the probability of x_fraction / 2^16
     x_f32_bits = torch.where(
         rand_16bit < x_fraction,
-        x_bf16_towards_zero + 0x10000,  # Round away from zero (might overflow -> UB for signed int)
+        x_bf16_towards_zero
+        + 0x10000,  # Round away from zero (might overflow -> UB for signed int)
         x_bf16_towards_zero,  # Round towards zero
     )
 
