@@ -24,8 +24,8 @@ class Adafactor(Optimizer):
         eps: Tuple[float, float] = (1e-30, 1e-3),
         weight_decay: float = 0.01,
         relative_step: bool = False,
-        torch_compile: bool = True,
-        bf16_stochastic_round: bool = False,
+        torch_compile: bool = False,
+        bf16_stochastic_round: bool = True,
         use_triton: bool = False,
     ):
         self.compile = torch_compile
@@ -402,7 +402,7 @@ def _adafactor(
     We use the above method for implementing weight decay, which scales with lr.
     """
     if weight_decay > 0.0:
-        p -= lr * weight_decay
+        p.mul_(1.0 - lr * weight_decay)
 
     grad32 = grad.float()
     update = grad32**2 + eps1

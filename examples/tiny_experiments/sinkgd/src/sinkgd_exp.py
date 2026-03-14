@@ -171,9 +171,7 @@ class SinkGD(Optimizer):
                             state["adam_v"] = torch.zeros_like(
                                 grad, dtype=torch.float32
                             )
-                            state["adam_step"] = torch.tensor(
-                                0.0, dtype=torch.float32
-                            )
+                            state["adam_step"] = torch.tensor(0.0, dtype=torch.float32)
                         adam_m = state["adam_m"]
                         adam_v = state["adam_v"]
                         adam_step = state["adam_step"]
@@ -263,8 +261,9 @@ def _sinkgd(
     adam_step=None,
 ):
     # Decoupled weight decay (AdamW-style)
+    # https://arxiv.org/pdf/1711.05101
     if weight_decay > 0.0:
-        p.add_(p, alpha=(-lr * weight_decay))
+        p.mul_(1.0 - lr * weight_decay)
 
     # Check if using Adam mode for this param
     uses_adam = (grad.dim() >= 2 and mode == "adam") or (
