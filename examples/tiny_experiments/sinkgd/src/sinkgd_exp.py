@@ -76,7 +76,7 @@ class SinkGD(Optimizer):
         mode: str = "sr_sinkhorn",
         vector_mode: str = "adam",
         torch_compile: bool = True,
-        bf16_stochastic_round: bool = False,
+        bf16_stochastic_round: bool = True,
     ):
         self.compile = torch_compile
         self.bf16_stochastic_round = bf16_stochastic_round
@@ -321,7 +321,7 @@ def _sinkgd(
         p -= lr * update
     else:
         update = p.float() - lr * update
-        if bf16_stochastic_round:
+        if bf16_stochastic_round and update.dtype == torch.bfloat16:
             update = fp32_to_bf16_stochastic_round(update, rand_bits=sr_rand_bits)
         p.copy_(update)
 

@@ -19,8 +19,8 @@ class AdamW(Optimizer):
         betas: Tuple[float, float] = (0.9, 0.999),
         eps: float = 1e-6,
         weight_decay: float = 0.01,
-        torch_compile: bool = False,
-        bf16_stochastic_round: bool = False,
+        torch_compile: bool = True,
+        bf16_stochastic_round: bool = True,
     ):
         self.compile = torch_compile
         defaults = dict(
@@ -222,7 +222,7 @@ def _adam(
     # sr_rand_bits is a flat buffer of 3*numel() int32 values; we slice it
     # into three chunks for the three potential SR calls (m, v, update).
     if m32.dtype != m.dtype:
-        if bf16_stochastic_round:
+        if bf16_stochastic_round and m.dtype == torch.bfloat16:
             n = p.numel()
             m.copy_(
                 fp32_to_bf16_stochastic_round(
@@ -246,7 +246,7 @@ def _adam(
         p -= lr * update
     else:
         update = p.float() - lr * update
-        if bf16_stochastic_round:
+        if bf16_stochastic_round and m.dtype == torch.bfloat16:
             n = p.numel()
             update = fp32_to_bf16_stochastic_round(
                 update, rand_bits=sr_rand_bits[2 * n :].view(p.shape)

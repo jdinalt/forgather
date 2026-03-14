@@ -24,7 +24,7 @@ class Adafactor(Optimizer):
         eps: Tuple[float, float] = (1e-30, 1e-3),
         weight_decay: float = 0.01,
         relative_step: bool = False,
-        torch_compile: bool = False,
+        torch_compile: bool = True,
         bf16_stochastic_round: bool = True,
         use_triton: bool = False,
     ):
@@ -458,6 +458,6 @@ def _adafactor(
         p -= lr * update
     else:
         update = p.float() - lr * update
-        if bf16_stochastic_round:
+        if bf16_stochastic_round and update.dtype == torch.bfloat16:
             update = fp32_to_bf16_stochastic_round(update, rand_bits=sr_rand_bits)
         p.copy_(update)
