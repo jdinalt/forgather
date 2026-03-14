@@ -27,36 +27,62 @@ from ..trainer_types import MinimalTrainingArguments, TrainerControl, TrainerSta
 OutputStream = TextIOBase | Literal["stderr", "stdout"]
 
 
-def _normalize_columns(columns: dict | list) -> list[ColumnSpec]:
-    """Convert a dict or list of column specs into a list of ColumnSpec.
+def _merge_spec_dicts(defaults: dict, overrides: dict | None) -> dict:
+    """Merge *overrides* into *defaults*, returning a new dict.
 
-    Dict form (preferred for YAML)::
+    - New keys are added.
+    - Existing keys with dict values are shallow-merged (override fields win).
+    - Keys set to ``None`` are erased.
+    """
+    merged = {k: dict(v) if isinstance(v, dict) else v for k, v in defaults.items()}
+    if overrides is None:
+        return merged
+    for key, value in overrides.items():
+        if value is None:
+            merged.pop(key, None)
+        elif (
+            key in merged and isinstance(merged[key], dict) and isinstance(value, dict)
+        ):
+            merged[key].update(value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _normalize_columns(columns: dict) -> list[ColumnSpec]:
+    """Convert a dict of column specs into a list of ColumnSpec.
+
+    Example::
 
         {"loss": {"label": "loss", "width": 8, "fmt": ".5f"},
-         "grad_norm": None}   # None erases the column
-
-    List form::
-
-        [ColumnSpec("loss", ...), {"key": "loss", "label": "loss", ...}]
+         "grad_norm": {"label": "grad", "width": 8}}
     """
-    if isinstance(columns, dict):
-        result: list[ColumnSpec] = []
-        for key, spec in columns.items():
-            if spec is None:
-                continue
-            if isinstance(spec, ColumnSpec):
-                result.append(spec)
-            elif isinstance(spec, dict):
-                spec = dict(spec)  # copy to avoid mutating the original
-                spec["key"] = key
-                result.append(ColumnSpec(**spec))
-            else:
-                raise TypeError(
-                    f"step_columns[{key!r}]: expected dict or None, got {type(spec)}"
-                )
-        return result
-    else:
-        return [c if isinstance(c, ColumnSpec) else ColumnSpec(**c) for c in columns]
+    result: list[ColumnSpec] = []
+    for key, spec in columns.items():
+        if isinstance(spec, ColumnSpec):
+            result.append(spec)
+        elif isinstance(spec, dict):
+            spec = dict(spec)  # copy to avoid mutating the original
+            spec["key"] = key
+            result.append(ColumnSpec(**spec))
+        else:
+            raise TypeError(f"step_columns[{key!r}]: expected dict, got {type(spec)}")
+    return result
+
+
+def _normalize_final_metrics(metrics: dict) -> list[FinalMetricSpec]:
+    """Convert a dict of final metric specs into a list of FinalMetricSpec."""
+    result: list[FinalMetricSpec] = []
+    for key, spec in metrics.items():
+        if isinstance(spec, FinalMetricSpec):
+            result.append(spec)
+        elif isinstance(spec, dict):
+            spec = dict(spec)
+            spec["key"] = key
+            result.append(FinalMetricSpec(**spec))
+        else:
+            raise TypeError(f"final_metrics[{key!r}]: expected dict, got {type(spec)}")
+    return result
 
 
 class ProgressCallback:
@@ -82,8 +108,8 @@ class ProgressCallback:
         self,
         use_tqdm: Optional[bool] = None,
         output_stream: Optional[OutputStream] = None,
-        step_columns: Optional[dict | list] = None,
-        final_metrics: Optional[list] = None,
+        step_columns: Optional[dict] = None,
+        final_metrics: Optional[dict] = None,
         peak_hardware_flops: Optional[float] = None,
         header_interval: int = 20,
     ):
@@ -91,24 +117,20 @@ class ProgressCallback:
         Args:
             use_tqdm: If True, use TQDM; else if False, use logging; else auto select
             output_stream: The output stream to use, if using logging
-            step_columns: Column specifications controlling which metrics are
-                displayed and how they are formatted.  Accepts either:
-
-                * A **dict** mapping metric keys to column spec dicts
-                  (label, width, fmt).  This is the recommended form for
-                  YAML configs because child templates can override or
-                  erase columns via the standard merge pattern.  Set a
-                  key to ``null`` / ``~`` to remove that column.
-                * A **list** of ``ColumnSpec`` objects or dicts (must
-                  include a ``key`` field).
-
-                When ``None``, uses ``default_step_columns()``.
-                Column order follows insertion order.  Only columns whose
-                key appears in the current log entry are shown.
-            final_metrics: Metric specifications for the end-of-training
-                summary.  Each entry is a ``FinalMetricSpec`` or a dict with
-                FinalMetricSpec fields.  When ``None``, uses
-                ``default_final_metrics()``.
+            step_columns: A dict of column spec overrides, merged with
+                ``default_step_columns()``.  Each key maps a metric name
+                to a dict of ColumnSpec fields (label, width, fmt).
+                Set a key to ``None`` to erase that column from the
+                defaults.  Individual fields can be overridden without
+                re-specifying the entire spec.  When ``None``, uses
+                defaults unmodified.  Column order follows insertion
+                order of the merged result.  Only columns whose key
+                appears in the current log entry are shown.
+            final_metrics: A dict of final metric spec overrides, merged
+                with ``default_final_metrics()``.  Each key maps a metric
+                name to a dict of FinalMetricSpec fields (label, fmt,
+                suffix).  Set a key to ``None`` to erase that metric.
+                When ``None``, uses defaults unmodified.
             peak_hardware_flops: Aggregate peak BF16 FLOP/s across all GPUs used in
                 training, used to compute MFU (Model FLOPs Utilization). Must be the
                 total across all ranks since total_flos accounts for tokens processed
@@ -130,20 +152,15 @@ class ProgressCallback:
         self.peak_hardware_flops = peak_hardware_flops
         self.header_interval = header_interval
 
-        # Normalize step_columns: accept dict (recommended for YAML),
-        # list, or None (use defaults).
-        if step_columns is not None:
-            self.step_columns: list[ColumnSpec] = _normalize_columns(step_columns)
-        else:
-            self.step_columns = default_step_columns()
+        # Merge step_columns overrides with defaults, then convert to ColumnSpec list.
+        merged_columns = _merge_spec_dicts(default_step_columns(), step_columns)
+        self.step_columns: list[ColumnSpec] = _normalize_columns(merged_columns)
 
-        if final_metrics is not None:
-            self.final_metrics: list[FinalMetricSpec] | None = [
-                m if isinstance(m, FinalMetricSpec) else FinalMetricSpec(**m)
-                for m in final_metrics
-            ]
-        else:
-            self.final_metrics = None
+        # Merge final_metrics overrides with defaults, then convert to FinalMetricSpec list.
+        merged_final = _merge_spec_dicts(default_final_metrics(), final_metrics)
+        self.final_metrics: list[FinalMetricSpec] = _normalize_final_metrics(
+            merged_final
+        )
 
         self._column_keys: frozenset[str] = frozenset(c.key for c in self.step_columns)
 

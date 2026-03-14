@@ -139,43 +139,45 @@ def format_value(value: Any, fmt: str | Callable[[Any], str]) -> str:
 _STEP_COL_WIDTH = 10
 
 
-def default_step_columns() -> list[ColumnSpec]:
-    """Return the default set of step-log columns.
+def default_step_columns() -> dict[str, dict]:
+    """Return the default step-log columns as a dict.
 
-    Columns whose key is absent from the metrics dict are silently skipped,
-    so it is safe to include all standard columns here.
+    Each key is a metric name; each value is a dict of ColumnSpec fields
+    (label, width, fmt).  Columns whose key is absent from the metrics
+    dict are silently skipped at display time.
     """
-    return [
-        ColumnSpec("epoch", "epoch", 8, ".4g"),
-        ColumnSpec("loss", "loss", 8, ".5f"),
-        ColumnSpec("grad_norm", "grad", 8, ".4f"),
-        ColumnSpec("max_grad_norm", "maxg", 8, ".4f"),
-        ColumnSpec("grad_norm_std", "gn_std", 8, ".4f"),
-        ColumnSpec("learning_rate", "lr", 10, ".2e"),
-        ColumnSpec("tokens", "tokens", 10, ",d"),
-        ColumnSpec("total_tokens", "total_tok", 10, "si"),
-        ColumnSpec("total_flos", "flos", 10, ".3e"),
-        ColumnSpec("tok_per_sec", "tok/s", 10, ",d"),
-        ColumnSpec("mfu", "mfu", 6, ".1%"),
-        ColumnSpec("peak_mem", "peak_mem", 11, "gib"),
-    ]
+    return {
+        "epoch": {"label": "epoch", "width": 8, "fmt": ".4g"},
+        "loss": {"label": "loss", "width": 8, "fmt": ".5f"},
+        "grad_norm": {"label": "grad", "width": 8, "fmt": ".4f"},
+        "learning_rate": {"label": "lr", "width": 10, "fmt": ".2e"},
+        "tokens": {"label": "tokens", "width": 10, "fmt": ",d"},
+        "total_tokens": {"label": "total_tok", "width": 10, "fmt": "si"},
+        "tok_per_sec": {"label": "tok/s", "width": 10, "fmt": ",d"},
+        "mfu": {"label": "mfu", "width": 6, "fmt": ".1%"},
+        "peak_mem": {"label": "peak_mem", "width": 11, "fmt": "gib"},
+    }
 
 
-def default_final_metrics() -> list[FinalMetricSpec]:
-    """Return the default set of end-of-training summary metrics."""
-    return [
-        FinalMetricSpec("train_runtime", "Runtime", ".2f", " s"),
-        FinalMetricSpec("step", "Total steps", ",d"),
-        FinalMetricSpec("train_samples", "Total samples", ",d"),
-        FinalMetricSpec("effective_batch_size", "Effective batch size", ",d"),
-        FinalMetricSpec("train_samples_per_second", "Samples/sec", ".3f"),
-        FinalMetricSpec("train_steps_per_second", "Steps/sec", ".3f"),
-        FinalMetricSpec("epoch", "Epoch", ".6g"),
-        FinalMetricSpec("total_tokens", "Total tokens", ",d"),
-        FinalMetricSpec("tokens_per_second", "Tokens/sec", ",.0f"),
-        FinalMetricSpec("total_flops", "Total FLOPs", ".3e"),
-        FinalMetricSpec("flops_per_second", "FLOPs/sec", ".3e"),
-    ]
+def default_final_metrics() -> dict[str, dict]:
+    """Return the default end-of-training summary metrics as a dict.
+
+    Each key is a metric name; each value is a dict of FinalMetricSpec
+    fields (label, fmt, suffix).
+    """
+    return {
+        "train_runtime": {"label": "Runtime", "fmt": ".2f", "suffix": " s"},
+        "step": {"label": "Total steps", "fmt": ",d"},
+        "train_samples": {"label": "Total samples", "fmt": ",d"},
+        "effective_batch_size": {"label": "Effective batch size", "fmt": ",d"},
+        "train_samples_per_second": {"label": "Samples/sec", "fmt": ".3f"},
+        "train_steps_per_second": {"label": "Steps/sec", "fmt": ".3f"},
+        "epoch": {"label": "Epoch", "fmt": ".6g"},
+        "total_tokens": {"label": "Total tokens", "fmt": ",d"},
+        "tokens_per_second": {"label": "Tokens/sec", "fmt": ",.0f"},
+        "total_flops": {"label": "Total FLOPs", "fmt": ".3e"},
+        "flops_per_second": {"label": "FLOPs/sec", "fmt": ".3e"},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +309,9 @@ def format_final_metrics(
     keys are appended at the end.
     """
     if specs is None:
-        specs = default_final_metrics()
+        specs = [
+            FinalMetricSpec(key=k, **v) for k, v in default_final_metrics().items()
+        ]
 
     col_width = 28
     lines = ["Training complete:"]
