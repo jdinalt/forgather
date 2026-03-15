@@ -9,4 +9,3 @@
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim:AdamW
     lr: {{ ns.global_lr | toyaml }}
-    bf16_stochastic_round: True

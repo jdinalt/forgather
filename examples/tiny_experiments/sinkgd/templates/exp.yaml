@@ -1,47 +1,29 @@
--- extends "projects/lm_training_project.yaml"
+-- extends "projects/small.yaml"
 
 [config_metadata]
     == super()
     -- set ns.config_name = "Experimental SinkGD"
     -- set ns.config_description = "Single SinkGD for all params"
     -- set ns.log_name = log_name | default("exp")
-    -- set ns.nproc_per_node = 1
 
-    -- set ns.lr = lr | default(0.02)
-    -- set ns.sinkgd_alpha = sinkgd_alpha | default(0.05)
+    -- set ns.base_lr = lr | default(0.02)
+    ## Disable LR scaling
+    -- set ns.lr_alpha = 0.0
     -- set ns.weight_decay = weight_decay | default(0.0)
+
+    -- set ns.sinkgd_alpha = sinkgd_alpha | default(0.05)
     -- set ns.normalize_output = normalize_output | default(False)
     -- set ns.momentum = momentum | default(0.0)
     -- set ns.nesterov = nesterov | default(False)
     -- set ns.num_iters = num_iters | default(1)
 
-    ## Needed for Tiny Callbacks
-    -- set ns.default_attn_implementation = attn_implementation | default("sdpa")
-
 [globals]
     == super()
-    -- set ns.sinkgd_lr = ns.lr * ns.sinkgd_alpha
+    -- set ns.sinkgd_lr = ns.global_lr * ns.sinkgd_alpha
 
 [variable_listing]
     == super()
 # ns.sinkgd_lr: {{ ns.sinkgd_lr }}
-
-[trainer_args]
-    == super()
-    # **Optimizers**
-    save_strategy: {{ save_strategy | toyaml('no') }}
-    float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
-    default_dtype: {{ default_dtype | toyaml("float32") }}
-    mixed_precision: {{ mixed_precision | toyaml("bf16") }}
-
-    # Enable compile by default, with maximum performance
-    torch_compile: {{ compile | default(True) }}
-    torch_compile_full_graph: True
-    torch_compile_dynamic: False
--- if ns.gradient_accumulation_steps == 1
-    ## This setting appears to cause issues when using gradient accumulation
-    torch_compile_mode: "max-autotune"
--- endif
 
 [optimizer]
     [sinkgd]
@@ -69,19 +51,19 @@
 # Overrides for embedding
 .define: &optim_embed_grp
     mode: "adam"
-    lr: {{ ns.lr }}
+    lr: {{ ns.global_lr }}
 
     [optim_head_grp]
 # Overrides for language head
 .define: &optim_head_grp
     mode: "adam"
-    lr: {{ ns.lr }}
+    lr: {{ ns.global_lr }}
 
     [optim_small_grp]
 # Overrides for biases and norms
 .define: &optim_small_grp
     mode: "adam"
-    lr: {{ ns.lr }}
+    lr: {{ ns.global_lr }}
 
     [optim_dense_grp]
 # Overrides for all main transformer blocks
@@ -99,9 +81,6 @@ optimizer: &optimizer !partial:forgather.ml.optim.opt_utils:make_grouped_optimiz
         dense: *optim_dense_grp
     # Show FQN -> group mappings
     debug: True
-
-[trainer_callbacks]
-    -- include 'project.callbacks'
 
 [dynamic_args]
     == super()
@@ -125,10 +104,3 @@ optimizer: &optimizer !partial:forgather.ml.optim.opt_utils:make_grouped_optimiz
         names: "--nesterov"
         type: bool
         help: "Use Nesterov momentum"
-
-#-------------------- project.callbacks --------------------
--- extends 'callbacks/tiny_callbacks.yaml'
-
-[callback_list]
-    == super()
-    text_gen_callback: null # Disable text gen

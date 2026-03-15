@@ -288,7 +288,7 @@ def adagrad_update_ref(
     G, eps,
 ):
     # In the paper, these are 1n and 1m, where n and m are subscripts
-    # Colmun vectors of ones.
+    # Column vectors of ones.
     n, m = G.shape
     ones_n = torch.ones(n, 1, device=G.device)
     ones_m = torch.ones(m, 1, device=G.device)
@@ -304,7 +304,7 @@ Breaking this down:
     - eps * ones_n @ tones_m.T
     This is the cross-product of ones-vectors, multiplies by eps. Effectively,
     this is just a n x m matrix with 'eps' in all elements. This is equivalent to
-    'G**2 + eps,' using PyTorch broadcast symantics.
+    'G**2 + eps,' using PyTorch broadcast semantics.
     
     - X @ ones_m
     X is a (m x n) matrix and ones_m is a (m x 1) column vector of ones. This operation is
@@ -324,7 +324,7 @@ def adagrad_update_ref(
     V_hat = (R @ C) / R.sum()
     return 1. / torch.sqrt(V_hat)
 
-Finally, we can compute the reciprocol-square-roots of the rows and columns before 
+Finally, we can compute the reciprocal-square-roots of the rows and columns before 
 computing their outer product, which, in theory, saves a few floating-point ops.
 
 Also note that 'sum()' can be replaced by 'mean(),' which you see in the Huggingface implementation,
@@ -339,7 +339,7 @@ def adagrad_update_opt2(
     C_rsqrt = torch.rsqrt(G_sq.sum(dim=0))
     return torch.outer(R_rsqrt, C_rsqrt)
 
-Surprisingly, when profing the above functions, torch seems pretty good at optimization and there's much 
+Surprisingly, when profiling the above functions, torch seems pretty good at optimization and there's much 
 less difference in performance than one would think.
 
 ---
@@ -354,7 +354,7 @@ If relative_step is disabled, we just use 'lr,' as with Adam.
 
 If enabled, we use the specified 'lr' becomes the relative step size, 'p'
 
-There seems to be some confusion surounding this in the Pytoch implementation, which 
+There seems to be some confusion surrounding this in the Pytoch implementation, which 
 instead sets 'p' to min(lr, 1/sqrt(t)).
 
 As best I can tell, this appears to be a misinterpretation. In Table 2, in the relative-step-size

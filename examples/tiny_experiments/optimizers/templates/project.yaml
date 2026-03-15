@@ -1,18 +1,13 @@
--- extends "projects/auto_lr_project.yaml"
+-- extends "projects/small.yaml"
 
 [config_metadata]
     == super()
     -- set ns.config_name = "Optimizers"
     -- set ns.config_description = "Compare optimizer performance"
-    -- set ns.nproc_per_node = 1
-
-    -- set ns.base_lr = lr | default(5e-4)
 
     ## https://arxiv.org/pdf/2507.07101
     ## beta2 is optimal for beta2_batch_size token batch-size
     -- set ns.beta2 = 0.999
-
-    -- set ns.default_attn_implementation = attn_implementation | default("sdpa")
 
 [globals]
     == super()
@@ -24,44 +19,3 @@
     == super()
 # ns.base_lr: {{ ns.base_lr }}
 # ns.scaled_beta2: {{ ns.scaled_beta2 }}
-
-[trainer_args]
-    == super()
-    # **Optimizers**
-    save_strategy: {{ save_strategy | toyaml('no') }}
-    float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
-    default_dtype: {{ default_dtype | toyaml("float32") }}
-    mixed_precision: {{ mixed_precision | toyaml("bf16") }}
-    
-    # Enable compile by default, with maximum performance
-    torch_compile: {{ compile | default(True) }}
-    torch_compile_full_graph: True
-    torch_compile_dynamic: False
--- if ns.gradient_accumulation_steps == 1
-    ## This setting appears to cause issues when using gradient accumulation
-    torch_compile_mode: "max-autotune"
--- endif
-
-[trainer_callbacks]
-    -- include 'project.callbacks'
-
-#-------------------- project.callbacks --------------------
--- extends 'callbacks/tiny_callbacks.yaml'
-
-[callback_list]
-    == super()
-    text_gen_callback: null # Disable text gen
-    # Monitor weight norm -- useful for checking weight decay parameters
-    weight_norm: !call:forgather.ml.trainer.callbacks:WeightNormLogger
-
-[tb_scalars]
-.define: &tb_scalars !dict
-    weight-norm: {}
-    tok-per-sec: {}
-
-[step_columns]
-    == super()
-    weight_norm:
-        label: "wt-norm"
-        width: 10
-        fmt: ".2f"

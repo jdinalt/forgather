@@ -1,0 +1,53 @@
+-- extends "projects/auto_lr_project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Tiny Experiment (Small)"
+    -- set ns.config_description = "Tiny Experiment with Small Llama model and Fineweb-Edu Packed"
+    -- set ns.nproc_per_node = 1
+
+    ## Dataset
+    -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, "examples", "datasets", "HuggingFaceTB"))
+    -- set ns.dataset_config = dataset_config | default("smollm-corpus/fineweb-edu-packed.yaml")
+    -- set ns.dispatch_batches = dispatch_batches | default(False)
+
+    ## Model
+    -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "llama"))))
+    -- set ns.model_project_config = model_config | default("small.yaml")
+
+    -- set ns.base_lr = lr | default(5e-4)
+    -- set ns.default_attn_implementation = attn_implementation | default("sdpa")
+
+[trainer_args]
+    == super()
+    # **Optimizers**
+    save_strategy: {{ save_strategy | toyaml('no') }}
+    float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
+    default_dtype: {{ default_dtype | toyaml("float32") }}
+    mixed_precision: {{ mixed_precision | toyaml("bf16") }}
+    
+    # Enable compile by default, with maximum performance
+    torch_compile: {{ compile | default(True) }}
+    torch_compile_full_graph: True
+    torch_compile_dynamic: False
+-- if ns.gradient_accumulation_steps == 1
+    ## This setting appears to cause issues when using gradient accumulation
+    torch_compile_mode: "max-autotune"
+-- endif
+
+[trainer_callbacks]
+    -- include 'project.callbacks'
+
+#-------------------- project.callbacks --------------------
+-- extends 'callbacks/tiny_callbacks.yaml'
+
+[callback_list]
+    == super()
+    text_gen_callback: null # Disable text gen
+    # Monitor weight norm -- useful for checking weight decay parameters
+    weight_norm: !call:forgather.ml.trainer.callbacks:WeightNormLogger
+
+[tb_scalars]
+.define: &tb_scalars !dict
+    weight-norm: {}
+    tok-per-sec: {}

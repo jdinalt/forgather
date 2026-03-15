@@ -6,6 +6,7 @@
     -- set ns.config_description = "Forgather SGD Implementation"
     -- set ns.log_name = log_name | default("fg_sgd")
     -- set ns.lr_alpha = 1.0
+    -- set ns.base_lr = lr | default(1e0)
 
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim:SGD

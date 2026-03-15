@@ -5,10 +5,9 @@
     -- set ns.config_name = "Adam"
     -- set ns.config_description = "Adam baseline, for comparison"
     -- set ns.log_name = log_name | default("adam")
-    -- set ns.lr = lr | default(5e-4)
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW
-    lr: {{ ns.lr | toyaml }}
+    lr: !!float 5e-4
     weight_decay: 0.0
     fused: True
