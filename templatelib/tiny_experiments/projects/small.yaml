@@ -35,6 +35,13 @@
     torch_compile_mode: "max-autotune"
 -- endif
 
+[datacollator]
+    == super()
+    max_length: {{ ns.seq_len }}
+    ## Pad batches to 'max_length'; This minimizes recompiles, but should
+    ## may be inefficient if not using a 'packed' dataset configuration.
+    padding: "max_length"
+
 [trainer_callbacks]
     -- include 'project.callbacks'
 
