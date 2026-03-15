@@ -6,8 +6,13 @@
     -- set ns.config_name = "SinkGD"
     -- set ns.config_description = "SinkGD"
     -- set ns.log_name = log_name | default("sinkgd")
-    -- set ns.sinkgd_lr = sinkgd_lr | default(0.02)
+
+    -- set ns.base_lr = lr | default(0.02)
     -- set ns.sinkgd_alpha = sinkgd_alpha | default(0.05)
+
+[globals]
+    == super()
+    -- set ns.sinkgd_lr = ns.global_lr * ns.sinkgd_alpha
 
 [variable_listing]
     == super()
@@ -17,7 +22,7 @@
 [optimizer]
     [sinkgd]
 .define: &sinkgd !partial:forgather.ml.optim.sinkgd:SinkGD
-    lr: {{ (ns.sinkgd_lr * ns.sinkgd_alpha) | toyaml }}
+    lr: {{ ns.sinkgd_lr | toyaml }}
     num_iters: 5
     normalize_output: False
 
@@ -29,16 +34,12 @@ optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
     factories:
         sinkgd: *sinkgd
         adam: !partial:torch.optim:Adam
-            lr: {{ ns.sinkgd_lr | toyaml }}
+            lr: {{ ns.global_lr | toyaml }}
             weight_decay: !!float 0.0
     debug: True
 
 [dynamic_args]
     == super()
-    sinkgd_lr:
-        names: "--sinkgd-lr"
-        type: float
-        help: "SinkGD Global LR"
     sinkgd_alpha:
         names: "--sinkgd-alpha"
         type: float

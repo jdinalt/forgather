@@ -3,12 +3,12 @@
 [config_metadata]
     == super()
     -- set ns.config_name = "FG Adafactor"
-    -- set ns.config_description = "Forgather Triton Adafactor Implementation"
+    -- set ns.config_description = "Forgather Adafactor Implementation"
     -- set ns.log_name = log_name | default("fg_adafactor")
 
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     lr: {{ ns.global_lr | toyaml }}
-    ##betas: # [ beta1, beta2 ]
-    ##    - !!float 0.9
-    ##    - {{ ns.scaled_beta2 | toyaml }}
+    #betas: # [ beta1, beta2 ]
+    #    - !!float 0.9
+    #    - {{ ns.scaled_beta2 | toyaml }}

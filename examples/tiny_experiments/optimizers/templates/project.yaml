@@ -17,5 +17,4 @@
 
 [variable_listing]
     == super()
-# ns.base_lr: {{ ns.base_lr }}
 # ns.scaled_beta2: {{ ns.scaled_beta2 }}

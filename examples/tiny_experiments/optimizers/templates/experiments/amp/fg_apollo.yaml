@@ -34,12 +34,11 @@
     [optimizer_]
 optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
     optimizer_map:
-        - [ "bias|norm", "default" ]
-        - [ "embedding|lm_head|feedforward|attention", "apollo" ]
-        - [ ".*", "default" ]
+        - [ "embed|lm_head|norm|bias", "adam" ]
+        - [ ".*", "apollo" ]
     factories:
         apollo: *apollo
-        default: !partial:torch:optim.Adam
+        adam: !partial:torch:optim.Adam
             lr: {{ ns.global_lr | toyaml }}
     debug: True
 
@@ -57,3 +56,7 @@ optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
         names: "--apollo-scale"
         type: float
         help: "Apollo gradient scale factor (applied as sqrt)"
+    apollo_update_steps:
+        names: "--apollo-update-steps"
+        type: int
+        help: "Steps between updates to random projector"
