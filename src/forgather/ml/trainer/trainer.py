@@ -357,19 +357,14 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         """
         Estimate FLOPs per token for forward + backward pass.
 
-        Uses standard transformer formula:
-        - Forward pass: 6 * num_params FLOPs per token
-        - Backward pass: 2 * forward (approximately)
-        - Total: 6 * num_params * 3 = 18 * num_params per token
-
-        Returns:
-            Estimated FLOPs per token for forward + backward pass
+        Uses the standard C = 6N approximation where N = non-embedding parameters.
+        Counts each multiply-accumulate as 2 FLOPs, consistent with hardware specs.
+        See ModelParameterStats.flops_per_token for references.
         """
         assert self.model is not None
-        num_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        # 6N per forward token, 2x for backward (12N), total ~18N
-        # More precise: 6N forward + 12N backward = 18N
-        return 18.0 * num_params
+        from forgather.ml.utils import count_parameters
+
+        return count_parameters(self.model).flops_per_token
 
     def _count_batch_tokens(
         self, input_dict: dict[str, Tensor], labels: Tensor

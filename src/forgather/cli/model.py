@@ -1,8 +1,8 @@
+import os
+import shutil
 from contextlib import ExitStack
 from functools import partial
 from pprint import pformat
-import os
-import shutil
 
 import torch
 from torch.optim import SGD
@@ -13,7 +13,7 @@ from forgather.ml.construct import torch_dtype
 from forgather.ml.data_collator import DataCollatorForCausalLM
 from forgather.ml.no_init_weights import no_init_weights
 from forgather.ml.sharded_checkpoint import load_checkpoint, save_checkpoint
-from forgather.ml.utils import count_parameters, default_dtype
+from forgather.ml.utils import count_parameters, default_dtype, fmt_si
 
 from .dynamic_args import get_dynamic_args
 from .utils import assert_project_class, write_output_or_edit
@@ -46,8 +46,10 @@ def load_model(args):
             print(f"Deleting output directory at '{output_dir}'")
             shutil.rmtree(output_dir)
         else:
-            print(f"Model definition already exist at '{output_dir}'. If you wish to rebuild the model from source code, pass '--refresh-model'")
-    
+            print(
+                f"Model definition already exist at '{output_dir}'. If you wish to rebuild the model from source code, pass '--refresh-model'"
+            )
+
     return proj("pretrained_config", "pretrained_tokenizer", "model"), proj_meta
 
 
@@ -88,7 +90,7 @@ def construct_model(model_ctor, args, meta):
         ), "Saving model from meta device is unsupported. Please specify a real device. e.g. '--device cpu'"
         print("Saving model weights...")
         save_checkpoint(output_dir, module=model, safetensors=args.safetensors)
-    
+
     if args.gradient_checkpointing:
         assert hasattr(model, "gradient_checkpointing_enable")
         print(f"Enabling gradient checkpointing")
@@ -104,7 +106,15 @@ def model_construct_cmd(args):
     model = construct_model(model_ctor, args, meta)
     model_header = f"Model on '{args.device}' device"
     data += f"{model_header:-^80}\n" + pformat(model) + "\n\n"
-    data += f"parameters={count_parameters(model)}\n"
+    stats = count_parameters(model)
+    data += f"{'Parameters':-^80}\n"
+    data += f"  Total:            {fmt_si(stats.total)}\n"
+    data += f"  Trainable:        {fmt_si(stats.trainable)}\n"
+    data += f"  Embedding:        {fmt_si(stats.embedding)}\n"
+    data += f"  Non-embedding:    {fmt_si(stats.non_embedding)}\n"
+    data += f"  Tied embeddings:  {stats.tied_embeddings}\n"
+    data += f"  Chinchilla tokens: {fmt_si(stats.chinchilla_optimal_tokens)}\n"
+    data += f"  FLOPs/token:      {stats.flops_per_token:.2e}\n"
     write_output_or_edit(args, data, ".txt")
 
 

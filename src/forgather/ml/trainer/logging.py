@@ -5,7 +5,7 @@ from pprint import pformat
 from typing import Any, Callable, Literal
 
 from forgather.ml.trainer.trainer_types import TrainerState
-from forgather.ml.utils import alt_repr
+from forgather.ml.utils import alt_repr, count_parameters, fmt_si
 
 Mapping = dict[str, Any]
 
@@ -98,16 +98,8 @@ def _merge_spec_dicts(defaults: dict, overrides: dict | None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def fmt_si(v: int) -> str:
-    """Format an integer with SI suffix (K, M, G)."""
-    v = int(v)
-    if v >= 1_000_000_000:
-        return f"{v / 1_000_000_000:.3g}G"
-    elif v >= 1_000_000:
-        return f"{v / 1_000_000:.3g}M"
-    elif v >= 1_000:
-        return f"{v / 1_000:.3g}K"
-    return str(v)
+# Re-exported from forgather.ml.utils for backward compatibility.
+# fmt_si is imported at the top of this module.
 
 
 def fmt_gib(v: float | int) -> str:
@@ -250,11 +242,7 @@ def format_train_info(
         total_train_samples = "Unavailable"
         total_examples = "Unavailable"
 
-    total_parameters = sum(t.numel() for t in model.parameters())
-    trainable_parameters = sum(
-        t.numel() if t.requires_grad else 0 for t in model.parameters()
-    )
-    num_params = lambda x: f"{x/1000000:.1f}M"
+    stats = count_parameters(model)
 
     info = {
         "total_examples": f"{total_examples}",
@@ -263,9 +251,11 @@ def format_train_info(
         "actual_per_device_batch_size": f"{state.train_batch_size:,}",
         "total_train_batch_size": f"{total_train_batch_size}",
         "max_steps": f"{state.max_steps:,}",
-        "total_parameters": f"{num_params(total_parameters)}",
-        "trainable_parameters": f"{num_params(trainable_parameters)}",
-        "max_steps": f"{state.max_steps:,}",
+        "total_parameters": fmt_si(stats.total),
+        "trainable_parameters": fmt_si(stats.trainable),
+        "embedding_parameters": fmt_si(stats.embedding),
+        "non_embedding_parameters": fmt_si(stats.non_embedding),
+        "tied_embeddings": str(stats.tied_embeddings),
     }
 
     extra_info = {

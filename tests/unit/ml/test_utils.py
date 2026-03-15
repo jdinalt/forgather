@@ -14,9 +14,10 @@ import torch
 import torch.nn as nn
 
 from forgather.ml.utils import (
-    alt_repr,
     ConversionDescriptor,
     DiagnosticEnum,
+    ModelParameterStats,
+    alt_repr,
     count_parameters,
     default_dtype,
 )
@@ -221,66 +222,139 @@ class TestDiagnosticEnum(unittest.TestCase):
         self.assertIn("purple", str(ctx.exception))
 
 
+class _MockCausalLM(nn.Module):
+    """Minimal causal LM with HF-style embedding accessors for testing."""
+
+    def __init__(self, vocab_size, hidden, *, tie_weights=False, bias=False):
+        super().__init__()
+        self.embed = nn.Embedding(vocab_size, hidden)
+        self.linear = nn.Linear(hidden, hidden, bias=False)
+        if tie_weights:
+            self.lm_head = nn.Linear(hidden, vocab_size, bias=bias)
+            self.lm_head.weight = self.embed.weight  # tie
+        else:
+            self.lm_head = nn.Linear(hidden, vocab_size, bias=bias)
+
+    def get_input_embeddings(self):
+        return self.embed
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+
 class TestCountParameters(unittest.TestCase):
     """Test count_parameters model parameter counting."""
 
-    def test_simple_model(self):
-        """A simple model reports correct total and trainable counts."""
+    def test_return_type(self):
+        """Returns a ModelParameterStats dataclass."""
         model = nn.Linear(10, 10, bias=False)
-        # 10 * 10 = 100 parameters = 0.00M
         result = count_parameters(model)
-        self.assertIn("total", result)
-        self.assertIn("trainable", result)
-        self.assertEqual(result["total"], "0.00M")
-        self.assertEqual(result["trainable"], "0.00M")
+        self.assertIsInstance(result, ModelParameterStats)
 
-    def test_model_with_frozen_params(self):
-        """A model with some frozen params reports different total vs trainable."""
+    def test_simple_model_no_embeddings(self):
+        """A plain nn.Linear has no embedding methods; embedding=0."""
+        model = nn.Linear(10, 10, bias=False)  # 100 params
+        result = count_parameters(model)
+        self.assertEqual(result.total, 100)
+        self.assertEqual(result.trainable, 100)
+        self.assertEqual(result.embedding, 0)
+        self.assertEqual(result.non_embedding, 100)
+        self.assertEqual(result.trainable_non_embedding, 100)
+        self.assertFalse(result.tied_embeddings)
+
+    def test_frozen_params(self):
+        """Frozen params are counted in total but not trainable."""
         model = nn.Sequential(
             nn.Linear(100, 100, bias=False),  # 10000 params
             nn.Linear(100, 100, bias=False),  # 10000 params
         )
-        # Freeze the first layer
         for param in model[0].parameters():
             param.requires_grad = False
-
         result = count_parameters(model)
-        # total: 20000 params = 0.02M
-        # trainable: 10000 params = 0.01M
-        self.assertEqual(result["total"], "0.02M")
-        self.assertEqual(result["trainable"], "0.01M")
-
-    def test_all_trainable(self):
-        """When all params are trainable, total equals trainable."""
-        model = nn.Linear(1000, 1000, bias=True)
-        result = count_parameters(model)
-        self.assertEqual(result["total"], result["trainable"])
+        self.assertEqual(result.total, 20000)
+        self.assertEqual(result.trainable, 10000)
 
     def test_all_frozen(self):
-        """A fully frozen model reports 0.00M trainable."""
+        """A fully frozen model has trainable=0."""
         model = nn.Linear(100, 100, bias=False)
-        for param in model.parameters():
-            param.requires_grad = False
-
+        for p in model.parameters():
+            p.requires_grad = False
         result = count_parameters(model)
-        self.assertEqual(result["trainable"], "0.00M")
+        self.assertEqual(result.total, 10000)
+        self.assertEqual(result.trainable, 0)
 
-    def test_larger_model(self):
-        """A larger model reports parameter counts in millions."""
-        # 1000 * 1000 = 1_000_000 params = 1.00M
-        model = nn.Linear(1000, 1000, bias=False)
+    def test_tied_embeddings(self):
+        """Tied input/output embeddings: detected and counted once."""
+        model = _MockCausalLM(100, 32, tie_weights=True)
         result = count_parameters(model)
-        self.assertEqual(result["total"], "1.00M")
+        self.assertTrue(result.tied_embeddings)
+        # embed: 100*32=3200 (shared), linear: 32*32=1024, lm_head bias=0
+        # total = 3200 + 1024 = 4224  (tied weight counted once)
+        self.assertEqual(result.total, 3200 + 1024)
+        self.assertEqual(result.embedding, 3200)
+        self.assertEqual(result.non_embedding, 1024)
 
-    def test_return_type_is_dict_of_strings(self):
-        """The return value is a dict with string values."""
-        model = nn.Linear(10, 10)
+    def test_untied_embeddings(self):
+        """Untied input/output embeddings: both counted, not tied."""
+        model = _MockCausalLM(100, 32, tie_weights=False)
         result = count_parameters(model)
-        self.assertIsInstance(result, dict)
-        self.assertIsInstance(result["total"], str)
-        self.assertIsInstance(result["trainable"], str)
-        self.assertTrue(result["total"].endswith("M"))
-        self.assertTrue(result["trainable"].endswith("M"))
+        self.assertFalse(result.tied_embeddings)
+        # embed: 3200, lm_head: 3200, linear: 1024
+        self.assertEqual(result.total, 3200 + 3200 + 1024)
+        self.assertEqual(result.embedding, 3200 + 3200)
+        self.assertEqual(result.non_embedding, 1024)
+
+    def test_untied_with_bias(self):
+        """Output embedding bias is counted as embedding parameter."""
+        model = _MockCausalLM(100, 32, tie_weights=False, bias=True)
+        result = count_parameters(model)
+        # embed: 3200, lm_head weight: 3200 + bias: 100, linear: 1024
+        self.assertEqual(result.total, 3200 + 3200 + 100 + 1024)
+        self.assertEqual(result.embedding, 3200 + 3200 + 100)
+        self.assertEqual(result.non_embedding, 1024)
+
+    def test_frozen_embedding(self):
+        """Frozen embedding params excluded from trainable_non_embedding."""
+        model = _MockCausalLM(100, 32, tie_weights=True)
+        for p in model.embed.parameters():
+            p.requires_grad = False
+        result = count_parameters(model)
+        # embed weight is frozen (3200), linear (1024) trainable
+        self.assertEqual(result.trainable, 1024)
+        self.assertEqual(result.trainable_non_embedding, 1024)
+
+    def test_output_embeddings_none(self):
+        """Model whose get_output_embeddings returns None."""
+
+        class EmbedOnly(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = nn.Embedding(50, 16)
+                self.fc = nn.Linear(16, 16, bias=False)
+
+            def get_input_embeddings(self):
+                return self.embed
+
+            def get_output_embeddings(self):
+                return None
+
+        model = EmbedOnly()
+        result = count_parameters(model)
+        self.assertEqual(result.embedding, 50 * 16)
+        self.assertEqual(result.non_embedding, 16 * 16)
+        self.assertFalse(result.tied_embeddings)
+
+    def test_chinchilla_optimal_tokens(self):
+        """Chinchilla optimal = 20 * non_embedding."""
+        model = _MockCausalLM(100, 32, tie_weights=True)
+        result = count_parameters(model)
+        self.assertEqual(result.chinchilla_optimal_tokens, 20 * result.non_embedding)
+
+    def test_flops_per_token(self):
+        """FLOPs per token = 6 * non_embedding."""
+        model = _MockCausalLM(100, 32, tie_weights=True)
+        result = count_parameters(model)
+        self.assertAlmostEqual(result.flops_per_token, 6.0 * result.non_embedding)
 
 
 class TestDefaultDtype(unittest.TestCase):
