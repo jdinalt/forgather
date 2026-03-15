@@ -11,11 +11,25 @@ if TYPE_CHECKING:
     from .spec import IntegrationSpec
 
 
+def _diagnostic_info(result: TrainingResult) -> str:
+    """Return a diagnostic footer with artifact locations for failure messages."""
+    lines = [f"output_dir: {result.output_dir}"]
+    if result.log_file:
+        lines.append(f"trainer_logs: {result.log_file}")
+    stderr_file = result.output_dir / "stderr.log"
+    if stderr_file.exists():
+        lines.append(f"stderr log: {stderr_file}")
+    stdout_file = result.output_dir / "stdout.log"
+    if stdout_file.exists():
+        lines.append(f"stdout log: {stdout_file}")
+    return "\n".join(lines)
+
+
 def assert_exit_code(result: TrainingResult) -> None:
     """Assert training process exited successfully."""
     assert result.returncode == 0, (
         f"Training failed with exit code {result.returncode}.\n"
-        f"stderr (last 3000 chars):\n{result.stderr[-3000:]}"
+        f"{_diagnostic_info(result)}"
     )
 
 
@@ -24,7 +38,8 @@ def assert_no_forbidden_stderr(result: TrainingResult, spec: IntegrationSpec) ->
     for pattern in spec.stderr.forbidden_patterns:
         assert pattern not in result.stderr, (
             f"Forbidden pattern {pattern!r} found in stderr.\n"
-            f"Context: ...{_find_context(result.stderr, pattern)}..."
+            f"Context: ...{_find_context(result.stderr, pattern)}...\n"
+            f"{_diagnostic_info(result)}"
         )
 
 
@@ -33,29 +48,31 @@ def assert_expected_files(result: TrainingResult, spec: IntegrationSpec) -> None
     if not result.log_file:
         if spec.expected_files:
             raise AssertionError(
-                "No training log file found -- cannot verify expected files. "
-                f"output_root: {result.output_dir}"
+                "No training log file found -- cannot verify expected files.\n"
+                f"{_diagnostic_info(result)}"
             )
         return
 
     run_dir = result.log_file.parent
     for filename in spec.expected_files:
         path = run_dir / filename
-        assert (
-            path.exists()
-        ), f"Expected file {filename!r} not found in run directory {run_dir}"
+        assert path.exists(), (
+            f"Expected file {filename!r} not found in run directory {run_dir}\n"
+            f"{_diagnostic_info(result)}"
+        )
 
 
 def assert_log_metrics(result: TrainingResult, spec: IntegrationSpec) -> None:
     """Assert training log metrics meet spec requirements."""
     assert (
         result.training_log is not None
-    ), f"No training log found. output_root: {result.output_dir}"
+    ), f"No training log found.\n{_diagnostic_info(result)}"
 
     training_records = result.training_log.get_training_records()
     assert len(training_records) >= spec.min_steps_logged, (
         f"Expected at least {spec.min_steps_logged} training log entries, "
-        f"got {len(training_records)}"
+        f"got {len(training_records)}\n"
+        f"{_diagnostic_info(result)}"
     )
 
     losses = result.training_log.get_metric_values("loss", training_records)
@@ -67,19 +84,25 @@ def assert_log_metrics(result: TrainingResult, spec: IntegrationSpec) -> None:
             for r, loss in zip(training_records, losses)
             if math.isnan(loss)
         ]
-        assert not nan_steps, f"NaN loss detected at steps: {nan_steps}"
+        assert (
+            not nan_steps
+        ), f"NaN loss detected at steps: {nan_steps}\n{_diagnostic_info(result)}"
 
     # Final loss bounds
     if losses:
         final_loss = losses[-1]
         if spec.loss.final_max is not None:
-            assert (
-                final_loss <= spec.loss.final_max
-            ), f"Final loss {final_loss:.4f} exceeds maximum {spec.loss.final_max}"
+            assert final_loss <= spec.loss.final_max, (
+                f"Final loss {final_loss:.4f} exceeds maximum {spec.loss.final_max}\n"
+                f"All losses: {[f'{l:.4f}' for l in losses]}\n"
+                f"{_diagnostic_info(result)}"
+            )
         if spec.loss.final_min is not None:
-            assert (
-                final_loss >= spec.loss.final_min
-            ), f"Final loss {final_loss:.4f} below minimum {spec.loss.final_min}"
+            assert final_loss >= spec.loss.final_min, (
+                f"Final loss {final_loss:.4f} below minimum {spec.loss.final_min}\n"
+                f"All losses: {[f'{l:.4f}' for l in losses]}\n"
+                f"{_diagnostic_info(result)}"
+            )
 
 
 def check_warn_patterns(result: TrainingResult, spec: IntegrationSpec) -> None:

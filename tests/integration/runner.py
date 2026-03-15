@@ -35,6 +35,10 @@ def _build_command(
     spec: IntegrationSpec, project_dir: Path, output_dir: Path
 ) -> list[str]:
     """Build the forgather train CLI command from a spec."""
+    # Pin visible GPUs to exactly gpu_requirement so configs that use all
+    # available GPUs ("gpu") don't grab more than the test expects.
+    devices = ",".join(str(i) for i in range(spec.gpu_requirement))
+
     cmd = [
         "forgather",
         "-p",
@@ -42,6 +46,8 @@ def _build_command(
         "-t",
         spec.config,
         "train",
+        "-d",
+        devices,
         "--output-dir",
         str(output_dir),
     ]
@@ -80,6 +86,8 @@ def run_forgather_train(
     project_dir = FG_ROOT / spec.project_dir
     cmd = _build_command(spec, project_dir, output_dir)
 
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     start = time.monotonic()
     result = subprocess.run(
         cmd,
@@ -88,6 +96,12 @@ def run_forgather_train(
         timeout=timeout,
     )
     duration = time.monotonic() - start
+
+    # Save console output to files for post-mortem inspection.
+    stdout_file = output_dir / "stdout.log"
+    stderr_file = output_dir / "stderr.log"
+    stdout_file.write_text(result.stdout)
+    stderr_file.write_text(result.stderr)
 
     # Discover training log (most recent by mtime).
     # find_log_files looks inside output_models/ under a project dir,
