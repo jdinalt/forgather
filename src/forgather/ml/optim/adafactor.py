@@ -416,7 +416,10 @@ def _adafactor(
 
     We use the above method for implementing weight decay, which scales with lr.
     """
-    if weight_decay > 0.0:
+    # For float32 params, apply decay directly (no precision loss).
+    # For lower-precision params (bf16), decay is folded into the float32
+    # update below to avoid the small multiplicative change rounding away.
+    if weight_decay > 0.0 and p.dtype == torch.float32:
         p.mul_(1.0 - lr * weight_decay)
 
     grad32 = grad.float()
@@ -457,7 +460,13 @@ def _adafactor(
     if p.dtype == update.dtype:
         p -= lr * update
     else:
-        update = p.float() - lr * update
-        if bf16_stochastic_round and update.dtype == torch.bfloat16:
+        # Fold weight decay into float32 computation to avoid precision
+        # loss from applying decay directly to bf16 weights.
+        # Matches the Triton kernel: param = param * (1 - lr*wd) - lr*update
+        if weight_decay > 0.0:
+            update = p.float() * (1.0 - lr * weight_decay) - lr * update
+        else:
+            update = p.float() - lr * update
+        if bf16_stochastic_round and p.dtype == torch.bfloat16:
             update = fp32_to_bf16_stochastic_round(update, rand_bits=sr_rand_bits)
         p.copy_(update)

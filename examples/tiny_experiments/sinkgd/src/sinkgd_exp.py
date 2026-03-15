@@ -278,7 +278,10 @@ def _sinkgd(
 ):
     # Decoupled weight decay (AdamW-style)
     # https://arxiv.org/pdf/1711.05101
-    if weight_decay > 0.0:
+    # For float32 params, apply decay directly (no precision loss).
+    # For lower-precision params (bf16), decay is folded into the float32
+    # update below to avoid the small multiplicative change rounding away.
+    if weight_decay > 0.0 and p.dtype == torch.float32:
         p.mul_(1.0 - lr * weight_decay)
 
     # Check if using Adam mode for this param
@@ -320,8 +323,13 @@ def _sinkgd(
     if p.dtype == update.dtype:
         p -= lr * update
     else:
-        update = p.float() - lr * update
-        if bf16_stochastic_round and update.dtype == torch.bfloat16:
+        # Fold weight decay into float32 computation to avoid precision
+        # loss from applying decay directly to bf16 weights.
+        if weight_decay > 0.0:
+            update = p.float() * (1.0 - lr * weight_decay) - lr * update
+        else:
+            update = p.float() - lr * update
+        if bf16_stochastic_round and p.dtype == torch.bfloat16:
             update = fp32_to_bf16_stochastic_round(update, rand_bits=sr_rand_bits)
         p.copy_(update)
 

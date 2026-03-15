@@ -105,8 +105,10 @@ class SinkGD(Optimizer):
                 if p.grad is None:
                     continue
 
-                # Decoupled weight decay (AdamW-style)
-                if weight_decay > 0.0:
+                # Decoupled weight decay (AdamW-style).
+                # For float32, apply directly. For bf16, fold into the
+                # float32 update below to avoid rounding away the change.
+                if weight_decay > 0.0 and p.dtype == torch.float32:
                     p.mul_(1.0 - lr * weight_decay)
 
                 grad = p.grad.float()
@@ -137,6 +139,9 @@ class SinkGD(Optimizer):
                 if p.dtype == update.dtype:
                     p.add_(update, alpha=-lr)
                 else:
-                    p.copy_(p.float() - lr * update)
+                    if weight_decay > 0.0:
+                        p.copy_(p.float() * (1.0 - lr * weight_decay) - lr * update)
+                    else:
+                        p.copy_(p.float() - lr * update)
 
         return loss
