@@ -1,11 +1,12 @@
 import math
-import os
-from pprint import pformat
-from typing import Any, Callable, Dict, Iterable, Optional
+from dataclasses import dataclass
+from typing import Callable, Optional
 
-from torch.utils.tensorboard import SummaryWriter
-
-from forgather.ml.trainer.logging import format_mapping, format_train_info
+from forgather.ml.trainer.logging import (
+    _merge_spec_dicts,
+    format_mapping,
+    format_train_info,
+)
 
 from ..trainer_types import TrainerCallback
 
@@ -18,35 +19,85 @@ def get_perplexity(value, metrics):
     return pp
 
 
-# Log loss to TensorBoard
-class TBLogger(TrainerCallback):
+# ---------------------------------------------------------------------------
+# TBScalar specification
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class TBScalarSpec:
+    """Specification for a single TensorBoard scalar to log.
+
+    Attributes:
+        tag:       TensorBoard scalar tag (from dict key).
+        source:    Metric key to read from logs.  Defaults to *tag* with
+                   hyphens replaced by underscores.
+        transform: Optional ``callable(value, metrics) -> new_value``.
     """
-    A Trainer callbacks which implements Tensorboard logging.
-    summary_writer: A Tensor Board Summary Writer instance
-    scalars: A list of tuples describing scalars to log.
-        (METRIC_KEY, LABEL) or (METRIC_NAME, LABEL, CALLABLE)
-        In the case of the third tuple element, this is a callable of the
-        form "my_callable(value, metrics)", where value is the value from METRIC_KEY,
-        and metrics is a dictionary of all the reported metrics. Returns a new value
-        to log, derived from metrics.
+
+    tag: str
+    source: str = ""
+    transform: Callable | None = None
+
+    def __post_init__(self):
+        if not self.source:
+            self.source = self.tag.replace("-", "_")
+
+
+def default_tb_scalars() -> dict[str, dict]:
+    """Return the default TensorBoard scalars as a dict.
+
+    Each key is a TensorBoard tag; each value is a dict of TBScalarSpec
+    fields (source, transform).  Keys whose source metric is absent from
+    the logs dict are silently skipped at log time.
+    """
+    return {
+        "train-loss": {"source": "loss"},
+        "learning-rate": {},
+        "grad-norm": {},
+        "eval-loss": {},
+        "eval-perplexity": {"source": "eval_loss", "transform": get_perplexity},
+    }
+
+
+def _normalize_tb_scalars(scalars: dict) -> list[TBScalarSpec]:
+    """Convert a dict of TB scalar specs into a list of TBScalarSpec."""
+    result: list[TBScalarSpec] = []
+    for key, spec in scalars.items():
+        if isinstance(spec, TBScalarSpec):
+            result.append(spec)
+        elif isinstance(spec, dict):
+            spec = dict(spec)
+            spec["tag"] = key
+            result.append(TBScalarSpec(**spec))
+        else:
+            raise TypeError(f"tb_scalars[{key!r}]: expected dict, got {type(spec)}")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# TBLogger callback
+# ---------------------------------------------------------------------------
+
+
+class TBLogger(TrainerCallback):
+    """A Trainer callback that logs scalars to TensorBoard.
+
+    Scalars are configured as a dict mapping TensorBoard tags to spec
+    dicts with optional ``source`` and ``transform`` fields.  The dict
+    is merged with ``default_tb_scalars()`` so only deltas need to be
+    specified.  Set a key to ``None`` to erase a default scalar.
     """
 
     def __init__(
         self,
         summary_writer,
-        scalars: Optional[list] = None,
+        scalars: Optional[dict] = None,
         **kwargs,
     ):
         super().__init__()
-        if not scalars:
-            scalars = [
-                ("loss", "train-loss"),
-                ("learning_rate", "learning-rate"),
-                ("grad_norm", "grad-norm"),
-                ("eval_loss", "eval-loss"),
-                ("eval_loss", "eval-perplexity", get_perplexity),
-            ]
-        self.scalars = scalars
+        merged = _merge_spec_dicts(default_tb_scalars(), scalars)
+        self.scalars: list[TBScalarSpec] = _normalize_tb_scalars(merged)
         self.summary_writer = summary_writer
         self.last_step = -1
         self.kwargs = self.mapping_as_markdown(kwargs)
@@ -75,18 +126,15 @@ class TBLogger(TrainerCallback):
         return s
 
     def _log_metrics(self, global_step, metrics):
-        for scalar in self.scalars:
-            metric_key = scalar[0]
-            label = scalar[1]
-            value = metrics.get(metric_key, None)
-            if not value:
+        for spec in self.scalars:
+            value = metrics.get(spec.source)
+            if value is None:
                 continue
-            if len(scalar) > 2:
-                value = scalar[2](value, metrics)
+            if spec.transform is not None:
+                value = spec.transform(value, metrics)
                 if value is None:
                     continue
-
-            self.summary_writer.add_scalar(label, value, global_step=global_step)
+            self.summary_writer.add_scalar(spec.tag, value, global_step=global_step)
 
     def on_evaluate(self, args, state, control, **kwargs):
         metrics = kwargs.get("metrics", {})

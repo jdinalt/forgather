@@ -54,9 +54,9 @@
     weight_norm: !call:forgather.ml.trainer.callbacks:WeightNormLogger
 
 [tb_scalars]
-    == super()
-    weight_norm: [ "weight_norm", "weight-norm" ]
-    tok_per_sec: [ "tok_per_sec", tok-per-sec" ]
+.define: &tb_scalars !dict
+    weight-norm: {}
+    tok-per-sec: {}
 
 [step_columns]
     == super()

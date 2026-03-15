@@ -67,6 +67,33 @@ class FinalMetricSpec:
 
 
 # ---------------------------------------------------------------------------
+# Spec dict merging
+# ---------------------------------------------------------------------------
+
+
+def _merge_spec_dicts(defaults: dict, overrides: dict | None) -> dict:
+    """Merge *overrides* into *defaults*, returning a new dict.
+
+    - New keys are added.
+    - Existing keys with dict values are shallow-merged (override fields win).
+    - Keys set to ``None`` are erased.
+    """
+    merged = {k: dict(v) if isinstance(v, dict) else v for k, v in defaults.items()}
+    if overrides is None:
+        return merged
+    for key, value in overrides.items():
+        if value is None:
+            merged.pop(key, None)
+        elif (
+            key in merged and isinstance(merged[key], dict) and isinstance(value, dict)
+        ):
+            merged[key].update(value)
+        else:
+            merged[key] = value
+    return merged
+
+
+# ---------------------------------------------------------------------------
 # Public formatters
 # ---------------------------------------------------------------------------
 
