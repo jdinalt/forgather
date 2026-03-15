@@ -3,8 +3,6 @@
 
 == h3('Dependencies')
 
-[callback_dependencies]
-## Undefined
 [step_columns]
 ## Step-log column overrides, merged with ProgressCallback's built-in
 ## defaults (see default_step_columns() in trainer/logging.py).
@@ -28,8 +26,11 @@
 ## Aggregate peak BF16 FLOP/s across all GPUs, for MFU computation.
 ## Set via ns.total_peak_hardware_flops in project templates.
 ## null disables MFU.
+## See docs/trainers/training-performance-metrics.md
 .define: &peak_hardware_flops null
 
+[callback_dependencies]
+## Undefined
 [callback_list_definition]
 == h3('Callback List')
 

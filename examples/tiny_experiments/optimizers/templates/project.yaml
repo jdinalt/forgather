@@ -51,6 +51,7 @@
 [callback_list]
     == super()
     text_gen_callback: null # Disable text gen
+    # Monitor weight norm -- useful for checking weight decay parameters
     weight_norm: !call:forgather.ml.trainer.callbacks:WeightNormLogger
 
 [tb_scalars]

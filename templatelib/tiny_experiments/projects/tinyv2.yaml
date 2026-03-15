@@ -28,6 +28,9 @@
     -- set ns.base_validation_tokens = 10
     -- set ns.base_save_tokens = 500
 
+    -- set ns.base_lr = lr | default(1.5e-3)
+    -- set ns.base_batch_size = 16384
+
     -- set ns.default_attn_implementation = attn_implementation | default("sdpa")
 
 [model_constructor_args]

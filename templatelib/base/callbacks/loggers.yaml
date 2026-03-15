@@ -27,6 +27,8 @@ experiment_info: &experiment_info !dict:@experiment_info
     config: !var "pp_config"
     versions: {{ versions }}
 
+    [loggers_dependencies]
+## Undefined
 [callback_list]
     => super()
     # ResumableSummaryWriter registered as callback for checkpoint state persistence
@@ -38,6 +40,6 @@ experiment_info: &experiment_info !dict:@experiment_info
 
     # Log configuration and metrics to Tensorboard file
     tb_logger: !singleton:forgather.ml.trainer.callbacks:TBLogger
-        arg0: *summary_writer
+        summary_writer: *summary_writer
         scalars: *tb_scalars
         experiment_info: *experiment_info

@@ -174,7 +174,7 @@ def default_step_columns() -> dict[str, dict]:
     dict are silently skipped at display time.
     """
     return {
-        "epoch": {"label": "epoch", "width": 8, "fmt": ".4g"},
+        "epoch": {"label": "epoch", "width": 10, "fmt": ".4g"},
         "loss": {"label": "loss", "width": 8, "fmt": ".5f"},
         "grad_norm": {"label": "grad", "width": 8, "fmt": ".4f"},
         "learning_rate": {"label": "lr", "width": 10, "fmt": ".2e"},

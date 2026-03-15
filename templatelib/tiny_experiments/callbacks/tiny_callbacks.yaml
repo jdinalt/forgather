@@ -2,10 +2,7 @@
 ## Add experiment loggers to the callbacks list.
 ## The parent creates a Tensor Board SummaryWriter, which we can use.
 
-[callback_dependencies]
-    == super()
-    [tiny_callback_dependencies]
-    ## Allow extension by child templates
+[loggers_dependencies]
     [generation_config]
 generation_config: &generation_config !dict:@generation_config
     do_sample: True
@@ -21,6 +18,11 @@ text_gen_callback_args: &text_gen_callback_args
     max_new_tokens: 40
     generation_steps: 2000
 
+[tiny_callback_dependencies]
+    ## Allow extension by child templates
+[peak_hardware_flops]
+.define: &peak_hardware_flops {{ ns.total_peak_hardware_flops | toyaml }}
+
 ## This adds a text-generationn sample every 'generation_steps'
 [callback_list]
     == super()
@@ -33,8 +35,3 @@ text_gen_callback_args: &text_gen_callback_args
         show_details: {{ debug_memory | toyaml(False) }}
         do_log: {{ log_peak_memory | toyaml(False) }}
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
-    default_metrics: !singleton:forgather.ml.trainer.callbacks:DefaultMetrics
-        peak_hardware_flops: {{ ns.total_peak_hardware_flops | toyaml }}
-    progress_callback: !singleton:forgather.ml.trainer.callbacks:ProgressCallback
-        step_columns: *step_columns
-        final_metrics: *final_metrics

@@ -154,7 +154,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 ## Add experiment loggers to the callbacks list.
 ## The parent creates a Tensor Board SummaryWriter, which we can use.
 
-[callback_dependencies]
+[loggers_dependencies]
     == super()
 
     [generation_config]
@@ -172,6 +172,9 @@ text_gen_callback_args: &text_gen_callback_args
     max_new_tokens: 40
     generation_steps: 2000
 
+[peak_hardware_flops]
+.define: &peak_hardware_flops {{ ns.total_peak_hardware_flops | toyaml }}
+
 ## This adds a text-generationn sample every 'generation_steps'
 [callback_list]
     == super()
@@ -184,8 +187,3 @@ text_gen_callback_args: &text_gen_callback_args
         show_details: {{ debug_memory | toyaml(False) }}
         do_log: {{ log_peak_memory | toyaml(False) }}
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
-    default_metrics: !singleton:forgather.ml.trainer.callbacks:DefaultMetrics
-        peak_hardware_flops: {{ ns.total_peak_hardware_flops | toyaml }}
-    progress_callback: !singleton:forgather.ml.trainer.callbacks:ProgressCallback
-        use_tqdm: null
-        output_stream: "stdout"
