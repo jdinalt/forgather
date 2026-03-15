@@ -4,6 +4,7 @@
     == super()
     -- set ns.config_name = "Tiny Experiment (Small)"
     -- set ns.config_description = "Tiny Experiment with Small Llama model and Fineweb-Edu Packed"
+    -- set ns.model_name = model_name | default("small")
     -- set ns.nproc_per_node = 1
 
     ## Dataset

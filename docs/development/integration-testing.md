@@ -251,14 +251,6 @@ git status examples/
 
 ## Troubleshooting
 
-### HuggingFace Model Code Cache
-
-Forgather models use `trust_remote_code=True` and HuggingFace caches the model's Python code in `~/.cache/huggingface/modules/transformers_modules/<model_name>/`. If model source code changes (e.g. in `modelsrc/transformer/`), the cached version may be stale. Clear the relevant cache entry:
-
-```bash
-rm -rf ~/.cache/huggingface/modules/transformers_modules/<model_name>
-```
-
 ### `max_steps` vs `logging_steps`
 
 If `assert_log_metrics` fails with "Expected at least N training log entries, got 0", the spec's `max_steps` is likely smaller than the project's `logging_steps`. Training step entries in `trainer_logs.json` are only written every `logging_steps` intervals. Increase `max_steps` to be at least `logging_steps` + 1.

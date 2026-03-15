@@ -10,6 +10,7 @@
     -- set ns.config_name = "Tiny Experiments"
     -- set ns.config_description = "A project template for running tiny model experiments."
     -- set ns.trainer_class = 'trainers/trainer.yaml'
+    -- set ns.model_name = model_name | default("tiny")
 
     ## The dataset sub-project to use
     -- set ns.dataset_proj = dataset_project | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
