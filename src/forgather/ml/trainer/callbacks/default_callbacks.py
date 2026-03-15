@@ -23,9 +23,107 @@ from forgather.ml.trainer.logging import (
     get_env_type,
 )
 
-from ..trainer_types import MinimalTrainingArguments, TrainerControl, TrainerState
+from ..trainer_types import (
+    MinimalTrainingArguments,
+    TrainerCallback,
+    TrainerControl,
+    TrainerState,
+)
 
 OutputStream = TextIOBase | Literal["stderr", "stdout"]
+
+
+class DefaultMetrics(TrainerCallback):
+    """Compute derived performance metrics and inject them into logs.
+
+    Runs via ``on_log_step`` (before ``on_log``), so computed values are
+    available to all downstream loggers (ProgressCallback, TBLogger, etc.).
+
+    Computed metrics:
+        tok_per_sec   -- tokens processed per wall-clock second between log steps.
+        mfu           -- Model FLOPs Utilization (requires *peak_hardware_flops*).
+        peak_mem      -- peak CUDA memory allocated (bytes), aliased from
+                         ``peak_mem_allocated`` for display formatting.
+    """
+
+    def __init__(
+        self,
+        peak_hardware_flops: Optional[float] = None,
+    ):
+        """
+        Args:
+            peak_hardware_flops: Aggregate peak BF16 FLOP/s across all GPUs used
+                in training, used to compute MFU.  Must be the total across all
+                ranks since total_flos accounts for tokens processed across all
+                ranks.  When ``None``, MFU is not computed.
+                Example values (dense BF16, FP32 accumulate):
+                  Single RTX 4090:  165.2e12
+                  Single RTX 3090:   71.2e12
+                  4x RTX 4090:      660.8e12
+                  A100 SXM:         312e12
+                  H100 SXM:         989e12
+        """
+        super().__init__()
+        self.peak_hardware_flops = peak_hardware_flops
+
+        # Wall-clock time at each log step, for tok/s end-to-end throughput.
+        self._last_log_time: Optional[float] = None
+        # Pure training step timing (on_step_begin to on_step_end), for FLOPs/MFU.
+        self._step_start_time: Optional[float] = None
+        self._accumulated_train_time: float = 0.0
+        self._last_total_flos: float = 0.0
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        if not state.is_world_process_zero:
+            return
+        self._last_log_time = None
+        self._last_total_flos = state.total_flos
+        self._accumulated_train_time = 0.0
+        self._step_start_time = None
+
+    def on_step_begin(self, args, state, control, **kwargs):
+        if not state.is_world_process_zero:
+            return
+        self._step_start_time = time.monotonic()
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if not state.is_world_process_zero:
+            return
+        if self._step_start_time is not None:
+            self._accumulated_train_time += time.monotonic() - self._step_start_time
+            self._step_start_time = None
+
+    def on_log_step(self, state, logs, **kwargs):
+        if not state.is_world_process_zero:
+            return
+
+        now = time.monotonic()
+
+        if "tokens" in logs:
+            # tok/s: wall-clock throughput between log steps
+            if self._last_log_time is not None:
+                wall_elapsed = now - self._last_log_time
+                if wall_elapsed > 0:
+                    logs["tok_per_sec"] = round(logs["tokens"] / wall_elapsed)
+
+            # MFU: hardware utilization during forward/backward only
+            train_elapsed = self._accumulated_train_time
+            if self.peak_hardware_flops is not None and "total_flos" in logs:
+                if train_elapsed > 0:
+                    delta_flos = logs["total_flos"] - self._last_total_flos
+                    if delta_flos > 0:
+                        achieved_flops = delta_flos / train_elapsed
+                        logs["mfu"] = achieved_flops / self.peak_hardware_flops
+
+        # Peak CUDA memory: alias for display formatting
+        peak_mem = logs.get("peak_mem_allocated")
+        if peak_mem is not None:
+            logs["peak_mem"] = peak_mem
+
+        # Reset interval tracking for the next log period
+        self._last_log_time = now
+        self._accumulated_train_time = 0.0
+        self._last_total_flos = logs.get("total_flos", self._last_total_flos)
 
 
 def _normalize_columns(columns: dict) -> list[ColumnSpec]:
@@ -64,7 +162,7 @@ def _normalize_final_metrics(metrics: dict) -> list[FinalMetricSpec]:
     return result
 
 
-class ProgressCallback:
+class ProgressCallback(TrainerCallback):
     """
     A TQDM progress-bar callback class based upon:
     https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_callback.py
@@ -73,14 +171,9 @@ class ProgressCallback:
     via configurable column specifications.  All metrics are still logged
     to JsonLogger regardless of display settings.
 
-    Token throughput (tok/s) is computed from the wall-clock delta between
-    consecutive log steps, capturing real end-to-end throughput including
-    optimizer, data loading, and other overhead.
-
-    FLOPs and MFU are computed from accumulated pure training step time
-    (on_step_begin to on_step_end), excluding evaluation and other non-
-    forward/backward time, giving a measure of hardware utilization during
-    the compute-bound portion of training.
+    Derived performance metrics (tok/s, MFU, peak_mem) are computed by
+    ``DefaultMetrics`` via ``on_log_step`` and are available in the logs
+    dict by the time ``on_log`` fires.
     """
 
     def __init__(
@@ -89,7 +182,6 @@ class ProgressCallback:
         output_stream: Optional[OutputStream] = None,
         step_columns: Optional[dict] = None,
         final_metrics: Optional[dict] = None,
-        peak_hardware_flops: Optional[float] = None,
         header_interval: int = 20,
     ):
         """
@@ -110,25 +202,12 @@ class ProgressCallback:
                 name to a dict of FinalMetricSpec fields (label, fmt,
                 suffix).  Set a key to ``None`` to erase that metric.
                 When ``None``, uses defaults unmodified.
-            peak_hardware_flops: Aggregate peak BF16 FLOP/s across all GPUs used in
-                training, used to compute MFU (Model FLOPs Utilization). Must be the
-                total across all ranks since total_flos accounts for tokens processed
-                across all ranks. If provided, MFU is computed and available for
-                display when a ``mfu`` column is in step_columns.
-                Example values (dense BF16, FP32 accumulate):
-                  Single RTX 4090:  165.2e12
-                  Single RTX 3090:   71.2e12
-                  4x RTX 4090:      660.8e12
-                  A100 SXM:         312e12
-                  H100 SXM:         989e12
-                (default: None, MFU not computed)
             header_interval: Print a column header row every this many log steps, and
                 also whenever the set of active columns changes. (default: 20)
         """
         super().__init__()
         self.train_progress_bar = None
         self.eval_progress_bar = None
-        self.peak_hardware_flops = peak_hardware_flops
         self.header_interval = header_interval
 
         # Merge step_columns overrides with defaults, then convert to ColumnSpec list.
@@ -142,17 +221,6 @@ class ProgressCallback:
         )
 
         self._column_keys: frozenset[str] = frozenset(c.key for c in self.step_columns)
-
-        # Tracking for per-interval speed metrics.
-        # _last_log_time records the wall-clock time at each log step, used for
-        # tok/s which should reflect real end-to-end throughput.
-        # _step_start_time is set at on_step_begin and cleared at on_step_end.
-        # _accumulated_train_time sums pure training step durations between log calls,
-        # used only for FLOPs/MFU (excludes evaluation, optimizer, data loading time).
-        self._last_log_time: Optional[float] = None
-        self._step_start_time: Optional[float] = None
-        self._accumulated_train_time: float = 0.0
-        self._last_total_flos: float = 0.0
 
         # Column header tracking: print header every header_interval rows and
         # whenever the active column set changes.
@@ -203,11 +271,6 @@ class ProgressCallback:
         if not state.is_world_process_zero:
             return
         self.last_step = state.global_step
-        # Initialize speed metric tracking; use state values to handle checkpoint resume
-        self._last_log_time = None
-        self._last_total_flos = state.total_flos
-        self._accumulated_train_time = 0.0
-        self._step_start_time = None
         self._log_row_count = 0
         self._last_active_keys = frozenset()
         if self.use_tqdm:
@@ -226,19 +289,9 @@ class ProgressCallback:
                 self.train_progress_bar.close()
             self.train_progress_bar = None
 
-    def on_step_begin(self, args, state, control, **kwargs):
-        if not state.is_world_process_zero:
-            return
-        self._step_start_time = time.monotonic()
-
     def on_step_end(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
             return
-
-        if self._step_start_time is not None:
-            self._accumulated_train_time += time.monotonic() - self._step_start_time
-            self._step_start_time = None
-
         if self.use_tqdm:
             self.train_progress_bar.update(state.global_step - self.last_step)
         self.last_step = state.global_step
@@ -293,46 +346,11 @@ class ProgressCallback:
                 self.logger.info(summary)
             return
 
-        # Build a merged metrics dict: raw log entries + computed metrics.
-        all_metrics: dict = dict(logs)
-
-        # Compute per-interval speed metrics.
-        # tok/s uses wall-clock time between log steps for real end-to-end throughput
-        # (includes optimizer, data loading, and all other overhead).
-        # FLOPs/MFU uses accumulated pure training step time (on_step_begin to
-        # on_step_end) to measure hardware utilization during forward/backward only.
-        now = time.monotonic()
-        if "tokens" in logs:
-            if self._last_log_time is not None:
-                wall_elapsed = now - self._last_log_time
-                if wall_elapsed > 0:
-                    all_metrics["tok_per_sec"] = round(logs["tokens"] / wall_elapsed)
-
-            # MFU requires knowing the hardware's peak FLOP/s.
-            # Uses accumulated train time (forward/backward only) for accurate
-            # hardware utilization measurement.
-            train_elapsed = self._accumulated_train_time
-            if self.peak_hardware_flops is not None and "total_flos" in logs:
-                if train_elapsed > 0:
-                    delta_flos = logs["total_flos"] - self._last_total_flos
-                    if delta_flos > 0:
-                        achieved_flops = delta_flos / train_elapsed
-                        all_metrics["mfu"] = achieved_flops / self.peak_hardware_flops
-
-        # Peak CUDA memory: expose raw bytes for the column formatter.
-        peak_mem = logs.get("peak_mem_allocated")
-        if peak_mem is not None:
-            all_metrics["peak_mem"] = peak_mem
-
-        # Reset interval tracking for the next log period
-        self._last_log_time = now
-        self._accumulated_train_time = 0.0
-        self._last_total_flos = logs.get("total_flos", self._last_total_flos)
+        # Computed metrics (tok_per_sec, mfu, peak_mem, etc.) are already
+        # in logs, injected by DefaultMetrics via on_log_step.
 
         # Filter to only keys present in step_columns
-        display_metrics = {
-            k: v for k, v in all_metrics.items() if k in self._column_keys
-        }
+        display_metrics = {k: v for k, v in logs.items() if k in self._column_keys}
 
         # Print a column header when the interval fires or the active column set changes
         active_keys = frozenset(display_metrics)
@@ -365,7 +383,7 @@ class ProgressCallback:
             )
 
 
-class InfoCallback:
+class InfoCallback(TrainerCallback):
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
         self.logger = logging.getLogger("info_logger")

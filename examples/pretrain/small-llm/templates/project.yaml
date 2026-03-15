@@ -319,9 +319,10 @@ text_gen_callback_args: &text_gen_callback_args
         long_alpha: 0.01        # Slow EMA (~100 step window)
         threshold: 1.0          # Stop if short - long >= 1.0
         action: "abort"
+    default_metrics: !singleton:forgather.ml.trainer.callbacks:DefaultMetrics
+        peak_hardware_flops: {{ ns.total_peak_hardware_flops | toyaml }}
     progress_callback: !singleton:forgather.ml.trainer.callbacks:ProgressCallback
         use_tqdm: null
         output_stream: "stdout"
-        peak_hardware_flops: {{ ns.total_peak_hardware_flops | toyaml }}
     weight_norm_logger: !singleton:forgather.ml.trainer.callbacks:WeightNormLogger
         summary_writer: *summary_writer

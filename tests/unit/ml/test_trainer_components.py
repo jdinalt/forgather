@@ -29,7 +29,10 @@ from forgather.ml.trainer.base_trainer import (
     loss_and_logits_from_outputs,
     loss_from_outputs,
 )
-from forgather.ml.trainer.callbacks.default_callbacks import ProgressCallback
+from forgather.ml.trainer.callbacks.default_callbacks import (
+    DefaultMetrics,
+    ProgressCallback,
+)
 from forgather.ml.trainer.callbacks.json_logger import JsonLogger
 from forgather.ml.trainer.periodic_function import PeriodicFunction
 from forgather.ml.trainer.trainer_types import (
@@ -1215,24 +1218,19 @@ class TestJsonLoggerFullLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# ProgressCallback speed metric tests
+# DefaultMetrics speed metric tests
 # ---------------------------------------------------------------------------
 
 
-class TestProgressCallbackSpeedMetrics:
-    """Tests for ProgressCallback tok/s and MFU computation.
+class TestDefaultMetricsSpeedMetrics:
+    """Tests for DefaultMetrics tok/s and MFU computation.
 
     tok/s should use wall-clock time between log steps (real throughput).
     MFU should use accumulated train step time (forward/backward only).
     """
 
     def _make_callback(self, **kwargs):
-        defaults = dict(
-            use_tqdm=False,
-            output_stream="stdout",
-        )
-        defaults.update(kwargs)
-        return ProgressCallback(**defaults)
+        return DefaultMetrics(**kwargs)
 
     def _make_state(self, global_step=0, max_steps=100, total_flos=0.0):
         state = MagicMock()
@@ -1255,12 +1253,12 @@ class TestProgressCallbackSpeedMetrics:
 
         cb.on_train_begin(args, state, control)
 
-        # Simulate first log step to initialize _last_log_time
+        # First on_log_step to initialize _last_log_time
         with patch(
             "forgather.ml.trainer.callbacks.default_callbacks.time"
         ) as mock_time:
             mock_time.monotonic.return_value = 100.0
-            cb.on_log(args, state, control, logs={"tokens": 1000, "total_flos": 0.0})
+            cb.on_log_step(state, {"tokens": 1000, "total_flos": 0.0})
 
         # Simulate a training step that takes 0.5s (forward/backward)
         with patch(
@@ -1272,27 +1270,17 @@ class TestProgressCallbackSpeedMetrics:
             cb.on_step_end(args, state, control)
 
         # But wall-clock has advanced 2.0s total (optimizer + data loading = 1.5s extra)
-        state.global_step = 10
-        display_logs = {}
         with patch(
             "forgather.ml.trainer.callbacks.default_callbacks.time"
         ) as mock_time:
             mock_time.monotonic.return_value = 102.0
-            # Capture the display_logs by intercepting the format call
-            with patch(
-                "forgather.ml.trainer.callbacks.default_callbacks.format_train_log"
-            ) as mock_fmt:
-                mock_fmt.return_value = ""
-                cb.on_log(
-                    args, state, control, logs={"tokens": 2000, "total_flos": 0.0}
-                )
-                if mock_fmt.called:
-                    display_logs = mock_fmt.call_args[0][2]
+            logs = {"tokens": 2000, "total_flos": 0.0}
+            cb.on_log_step(state, logs)
 
         # Wall-clock delta = 102.0 - 100.0 = 2.0s, tokens = 2000
         # Expected tok/s = 2000 / 2.0 = 1000
-        assert "tok_per_sec" in display_logs
-        assert display_logs["tok_per_sec"] == 1000
+        assert "tok_per_sec" in logs
+        assert logs["tok_per_sec"] == 1000
 
     def test_mfu_uses_train_step_time(self):
         """MFU should use accumulated on_step_begin/on_step_end time, not
@@ -1305,12 +1293,12 @@ class TestProgressCallbackSpeedMetrics:
 
         cb.on_train_begin(args, state, control)
 
-        # First log step to initialize tracking
+        # First on_log_step to initialize tracking
         with patch(
             "forgather.ml.trainer.callbacks.default_callbacks.time"
         ) as mock_time:
             mock_time.monotonic.return_value = 100.0
-            cb.on_log(args, state, control, logs={"tokens": 0, "total_flos": 0.0})
+            cb.on_log_step(state, {"tokens": 0, "total_flos": 0.0})
 
         # Simulate training step: 0.5s of forward/backward
         with patch(
@@ -1324,23 +1312,15 @@ class TestProgressCallbackSpeedMetrics:
         # Wall-clock is 2.0s but train time is only 0.5s
         # delta_flos = 500, so achieved = 500 / 0.5 = 1000 FLOP/s
         # MFU = 1000 / 1000 = 100%
-        display_logs = {}
         with patch(
             "forgather.ml.trainer.callbacks.default_callbacks.time"
         ) as mock_time:
             mock_time.monotonic.return_value = 102.0
-            with patch(
-                "forgather.ml.trainer.callbacks.default_callbacks.format_train_log"
-            ) as mock_fmt:
-                mock_fmt.return_value = ""
-                cb.on_log(
-                    args, state, control, logs={"tokens": 2000, "total_flos": 500.0}
-                )
-                if mock_fmt.called:
-                    display_logs = mock_fmt.call_args[0][2]
+            logs = {"tokens": 2000, "total_flos": 500.0}
+            cb.on_log_step(state, logs)
 
-        assert "mfu" in display_logs
-        assert abs(display_logs["mfu"] - 1.0) < 1e-6
+        assert "mfu" in logs
+        assert abs(logs["mfu"] - 1.0) < 1e-6
 
     def test_no_tok_s_on_first_log(self):
         """tok/s should not appear on the very first log step since there is
@@ -1352,25 +1332,17 @@ class TestProgressCallbackSpeedMetrics:
 
         cb.on_train_begin(args, state, control)
 
-        display_logs = {}
         with patch(
             "forgather.ml.trainer.callbacks.default_callbacks.time"
         ) as mock_time:
             mock_time.monotonic.return_value = 100.0
-            with patch(
-                "forgather.ml.trainer.callbacks.default_callbacks.format_train_log"
-            ) as mock_fmt:
-                mock_fmt.return_value = ""
-                cb.on_log(
-                    args, state, control, logs={"tokens": 5000, "total_flos": 0.0}
-                )
-                if mock_fmt.called:
-                    display_logs = mock_fmt.call_args[0][2]
+            logs = {"tokens": 5000, "total_flos": 0.0}
+            cb.on_log_step(state, logs)
 
-        assert "tok_per_sec" not in display_logs
+        assert "tok_per_sec" not in logs
 
     def test_accumulated_train_time_resets_between_intervals(self):
-        """_accumulated_train_time should reset after each on_log call."""
+        """_accumulated_train_time should reset after each on_log_step call."""
         cb = self._make_callback()
         args = self._make_args()
         state = self._make_state()
@@ -1389,12 +1361,12 @@ class TestProgressCallbackSpeedMetrics:
 
         assert cb._accumulated_train_time == 1.0
 
-        # Log step resets it
+        # on_log_step resets it
         with patch(
             "forgather.ml.trainer.callbacks.default_callbacks.time"
         ) as mock_time:
             mock_time.monotonic.return_value = 2.0
-            cb.on_log(args, state, control, logs={"tokens": 100, "total_flos": 0.0})
+            cb.on_log_step(state, {"tokens": 100, "total_flos": 0.0})
 
         assert cb._accumulated_train_time == 0.0
 

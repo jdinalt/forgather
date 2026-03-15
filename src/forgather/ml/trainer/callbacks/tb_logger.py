@@ -93,20 +93,23 @@ class TBLogger(TrainerCallback):
         self,
         summary_writer,
         scalars: Optional[dict] = None,
-        **kwargs,
+        experiment_info: Optional[dict] = None,
     ):
         super().__init__()
         merged = _merge_spec_dicts(default_tb_scalars(), scalars)
         self.scalars: list[TBScalarSpec] = _normalize_tb_scalars(merged)
         self.summary_writer = summary_writer
         self.last_step = -1
-        self.kwargs = self.mapping_as_markdown(kwargs)
+        if experiment_info is not None:
+            self.experiment_info = self.mapping_as_markdown(experiment_info)
+        else:
+            self.experiment_info = None
 
     def on_train_begin(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
             return
-        if len(self.kwargs):
-            self.summary_writer.add_text("experiment", self.kwargs)
+        if self.experiment_info is not None:
+            self.summary_writer.add_text("experiment", self.experiment_info)
 
         info, extra_info = format_train_info(args, state, control, **kwargs)
         self.summary_writer.add_text(

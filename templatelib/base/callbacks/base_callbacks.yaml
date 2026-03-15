@@ -24,11 +24,19 @@
 ## Same delta semantics as step_columns above.
 .define: &final_metrics !dict
 
+[peak_hardware_flops]
+## Aggregate peak BF16 FLOP/s across all GPUs, for MFU computation.
+## Set via ns.total_peak_hardware_flops in project templates.
+## null disables MFU.
+.define: &peak_hardware_flops null
+
 [callback_list_definition]
 == h3('Callback List')
 
     [callback_list]
 trainer_callbacks: &trainer_callbacks !dlist:@trainer_callbacks
+    default_metrics: !singleton:forgather.ml.trainer.callbacks:DefaultMetrics
+        peak_hardware_flops: *peak_hardware_flops
     progress_callback: !singleton:forgather.ml.trainer.callbacks:ProgressCallback
         use_tqdm: null # Optional[bool] : Use TQDM, Auto, if unspecified
         output_stream: "stdout" #Literal["stderr", "stdout"]

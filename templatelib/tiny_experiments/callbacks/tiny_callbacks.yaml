@@ -33,7 +33,8 @@ text_gen_callback_args: &text_gen_callback_args
         show_details: {{ debug_memory | toyaml(False) }}
         do_log: {{ log_peak_memory | toyaml(False) }}
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
-    progress_callback: !singleton:forgather.ml.trainer.callbacks:ProgressCallback
+    default_metrics: !singleton:forgather.ml.trainer.callbacks:DefaultMetrics
         peak_hardware_flops: {{ ns.total_peak_hardware_flops | toyaml }}
+    progress_callback: !singleton:forgather.ml.trainer.callbacks:ProgressCallback
         step_columns: *step_columns
         final_metrics: *final_metrics

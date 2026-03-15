@@ -40,4 +40,4 @@ experiment_info: &experiment_info !dict:@experiment_info
     tb_logger: !singleton:forgather.ml.trainer.callbacks:TBLogger
         arg0: *summary_writer
         scalars: *tb_scalars
-        <<: *experiment_info
+        experiment_info: *experiment_info
