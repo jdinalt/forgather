@@ -17,7 +17,6 @@
     -- set ns.model_project_config = model_config | default("small.yaml")
 
     -- set ns.base_lr = lr | default(5e-4)
-    -- set ns.default_attn_implementation = attn_implementation | default("sdpa")
 
 [trainer_args]
     == super()

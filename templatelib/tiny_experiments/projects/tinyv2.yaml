@@ -32,12 +32,6 @@
     -- set ns.base_lr = lr | default(1.5e-3)
     -- set ns.base_batch_size = 16384
 
-    -- set ns.default_attn_implementation = attn_implementation | default("sdpa")
-
-[model_constructor_args]
-.define: &model_constructor_args
-    attn_implementation: "{{ ns.default_attn_implementation }}"
-
 [trainer_args]
     == super()
     # **Tiny**

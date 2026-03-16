@@ -1189,7 +1189,9 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         for gradient_step in range(self.args.gradient_accumulation_steps):
             self.gradient_accumulation_step = gradient_step + 1
             input_dict, labels = self._prepare_batch(next(data_iterator))
+            self._dispatch_event("on_forward_backward_begin")
             loss = self._forward_backward_step(input_dict, labels)
+            self._dispatch_event("on_forward_backward_end")
             accumulated_losses.append(loss)
             # Count tokens in this micro-batch (local, not yet synchronized across ranks).
             # _count_batch_tokens returns a GPU tensor to avoid forcing GPU-CPU sync.

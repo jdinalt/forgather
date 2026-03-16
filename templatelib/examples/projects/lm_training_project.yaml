@@ -149,6 +149,9 @@
     ## Hardware
     -- set ns.peak_hardware_flops = peak_hardware_flops | default(165.2e12)
 
+    ## Attention
+    -- set ns.attn_implementation = attn_implementation | default("sdpa")
+
 ## ===== Derived globals ======================================================
 
 [globals]
@@ -217,7 +220,7 @@ eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 ##
 [model_constructor_args]
 .define: &model_constructor_args
-    attn_implementation: "{{ attn_implementation | default("sdpa") }}"
+    attn_implementation: "{{ ns.attn_implementation }}"
 
 [construct_new_model]
     [model_project_pp_args]

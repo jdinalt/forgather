@@ -415,6 +415,12 @@ class TrainerCallback:
         on_step_begin        - Before each training step
         on_step_end          - After each training step
         on_substep_end       - After each gradient-accumulation sub-step
+        on_forward_backward_begin - Before each forward+backward micro-step
+                               (inside gradient accumulation loop, after data
+                               loading; fires once per micro-batch)
+        on_forward_backward_end   - After each forward+backward micro-step
+                               (before optimizer, grad clipping, LR scheduler;
+                               fires once per micro-batch)
         on_optimizer_step    - After optimizer.step()
         on_pre_optimizer_step - Before optimizer.step()
         on_evaluate          - After evaluation

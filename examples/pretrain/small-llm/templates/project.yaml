@@ -13,10 +13,8 @@
     -- set ns.dispatch_batches = dispatch_batches | default(False)
 
     ## Model
-    ##-- set ns.model_project_dir = abspath(model_project | default((joinpath(project_dir, "custom_deepone"))))
-    ##-- set ns.model_project_config = model_config | default("custom_deepone.yaml")
-    -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "llama"))))
-    -- set ns.model_project_config = model_config | default("medium.yaml")
+    -- set ns.model_project_dir = abspath(model_project | default((joinpath(project_dir, "custom_deepone"))))
+    -- set ns.model_project_config = model_config | default("custom_deepone.yaml")
 
     ## Training budget (millions of tokens)
     -- set ns.total_tokens = total_tokens | default(2270)
@@ -46,7 +44,9 @@
     ## Project
     -- set ns.base_constant_lr = 7.5e-6
     -- set ns.min_lr = 1.0e-6
-    -- set ns.default_attn_implementation = "flex_attention"
+    
+    ## Attention
+    -- set ns.attn_implementation = attn_implementation | default("flex_attention")
 
 [globals]
     == super()
@@ -73,25 +73,23 @@
 
     # Enable compile by default, with maximum performance
     torch_compile: {{ compile | default(True) }}
-    torch_compile_full_graph: True
     torch_compile_dynamic: False
 -- if ns.gradient_accumulation_steps == 1
     ## This setting appears to cause issues when using gradient accumulation
-    ## torch_compile_mode: "max-autotune"
+    torch_compile_mode: "max-autotune"
 -- endif
 
     # **Misc.**
     float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
     default_dtype: {{ default_dtype | toyaml("float32") }}
     mixed_precision: {{ mixed_precision | toyaml("bf16") }}
-    max_grad_norm: 4.0
+    ##max_grad_norm: 4.0
 
 [optimizer]
-##optimizer: &optimizer !partial:forgather.ml.optim:Adafactor
 optimizer: &optimizer !partial:torch:optim.AdamW
     lr: {{ ns.global_lr | toyaml }}
-    ##use_triton: True
-    fused: True
+    foreach: True
+    ##fused: True
 
 [lr_scheduler]
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:InfiniteLRScheduler@lr_scheduler
@@ -141,7 +139,7 @@ text_gen_callback_args: &text_gen_callback_args
 [callback_list]
     == super()
     ## Flex attention seems to occasionally crash when generating. Disabled until issue is resolved.
-    -- if (attn_implementation | default(ns.default_attn_implementation)) != "flex_attention"
+    -- if ns.attn_implementation != "flex_attention"
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         <<: *text_gen_callback_args
     -- endif
