@@ -188,28 +188,48 @@ def set_train(model: torch.nn.Module, mode: bool):
 
 def maybe_cleanup_memory(alloc_threshold):
     """
-    Trigger garbage collection and CUDA cache cleanup if memory usage exceeds threshold.
+    Release unused CUDA cached memory when allocation pressure is high.
 
-    Helps prevent OOM errors from memory fragmentation during long training runs.
+    The CUDA caching allocator reserves blocks for reuse. This function
+    releases those cached-but-unused blocks only when two conditions hold:
 
-    Uses ALLOCATED memory (not reserved) to decide whether cleanup is needed.
-    The CUDA caching allocator reserves large blocks that are reused across steps;
-    triggering cleanup based on reserved memory causes GC thrashing: every step
-    releases cached blocks that are immediately re-reserved, wasting ~500ms/step
-    on gc.collect() + cudaDeviceSynchronize().
+    1. Allocated memory exceeds ``alloc_threshold`` fraction of total GPU memory.
+    2. There is meaningful reclaimable memory (reserved - allocated > 10% of total).
+
+    Without condition 2, ``empty_cache()`` would call ``cudaDeviceSynchronize``
+    for nothing -- all reserved memory is actually in use.
+
+    Python ``gc.collect()`` runs only when ``empty_cache`` actually released
+    memory, since reference-cycle collection is rarely needed in training
+    loops and adds ~100-300 ms of overhead.
 
     Args:
         alloc_threshold: Ratio of allocated to total GPU memory (0.0 to 1.0).
-                        If current usage exceeds this, cleanup is triggered.
+                        Cleanup is considered when usage exceeds this.
     """
-    if torch.cuda.is_available():
-        allocated = torch.cuda.memory_allocated()
-        max_memory = torch.cuda.get_device_properties(0).total_memory
-        usage_ratio = allocated / max_memory
+    if not torch.cuda.is_available():
+        return
 
-        if usage_ratio > alloc_threshold:
-            gc.collect()
-            torch.cuda.empty_cache()
+    allocated = torch.cuda.memory_allocated()
+    max_memory = torch.cuda.get_device_properties(0).total_memory
+
+    if allocated / max_memory <= alloc_threshold:
+        return
+
+    # Only release cache when there is a meaningful amount of reclaimable
+    # memory (reserved blocks that are not currently allocated).
+    reserved = torch.cuda.memory_reserved()
+    reclaimable = reserved - allocated
+    if reclaimable / max_memory < 0.10:
+        return
+
+    torch.cuda.empty_cache()
+
+    # Run Python GC only if empty_cache actually freed something -- meaning
+    # there might be dead Python objects whose reference cycles prevented
+    # their GPU tensors from being deallocated.
+    if torch.cuda.memory_reserved() < reserved:
+        gc.collect()
 
 
 def optimizer_hook(optimizer, total_grad_squared, name, parameter):
