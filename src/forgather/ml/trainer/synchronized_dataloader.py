@@ -26,10 +26,12 @@ class SynchronizedDataLoader:
     When any rank's dataloader is exhausted, all ranks stop iterating together.
     This prevents deadlocks when dataset shards have uneven lengths.
 
-    Works by performing an all_reduce AND operation before each batch:
-    - Each rank reports: 1 if batch available, 0 if StopIteration
-    - MIN reduction acts as AND: result is 1 only if all ranks have data
-    - If any rank exhausted (result=0), all ranks raise StopIteration
+    Synchronization strategy:
+    At the start of each iteration, all ranks exchange their dataloader lengths
+    via a single all_reduce(MIN).  Each rank then iterates for exactly that
+    many batches with zero per-step synchronization.  This avoids the GPU-CPU
+    sync (.item()) that would break the CUDA pipeline and force the GPU idle
+    while the CPU prepares the next batch.
 
     Usage:
         train_dataloader = SynchronizedDataLoader(
@@ -66,12 +68,6 @@ class SynchronizedDataLoader:
                 f"SynchronizedDataLoader enabled: world_size={dist.get_world_size()}"
             )
 
-        self._has_batch_tensor = torch.empty(
-            1,
-            dtype=torch.int32,
-            device=self._device,
-        )
-
     def __iter__(self) -> Iterator:
         """Return an iterator that synchronizes across ranks."""
         if not self._enabled:
@@ -79,31 +75,23 @@ class SynchronizedDataLoader:
             yield from self._dataloader
             return
 
-        # Synchronized iteration
-        iterator = iter(self._dataloader)
-        while True:
-            # Try to get next batch
-            batch = None
-            has_batch = True
-            try:
-                batch = next(iterator)
-            except StopIteration:
-                has_batch = False
+        # Determine the minimum length across all ranks with a single
+        # all_reduce at the start of iteration.  This avoids a per-step
+        # GPU-CPU sync (.item()) that would break the CUDA pipeline.
+        local_len = len(self._dataloader)
+        len_tensor = torch.tensor(local_len, dtype=torch.int64, device=self._device)
+        dist.all_reduce(len_tensor, op=dist.ReduceOp.MIN, group=self._process_group)
+        min_len = int(len_tensor.item())
 
-            # Synchronize: all ranks must agree to continue
-            self._has_batch_tensor.fill_(1 if has_batch else 0)
-
-            dist.all_reduce(
-                self._has_batch_tensor,
-                op=dist.ReduceOp.MIN,  # MIN acts as AND for 0/1 values
-                group=self._process_group,
+        if min_len != local_len:
+            logger.debug(
+                f"SynchronizedDataLoader: local length {local_len}, "
+                f"global min {min_len} (dropping {local_len - min_len} batches)"
             )
 
-            # If any rank exhausted, all ranks stop
-            if self._has_batch_tensor.item() == 0:
-                return
-
-            yield batch
+        iterator = iter(self._dataloader)
+        for _ in range(min_len):
+            yield next(iterator)
 
     def __len__(self):
         """Return length of underlying dataloader (may differ across ranks!)."""

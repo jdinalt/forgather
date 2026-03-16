@@ -192,14 +192,20 @@ def maybe_cleanup_memory(alloc_threshold):
 
     Helps prevent OOM errors from memory fragmentation during long training runs.
 
+    Uses ALLOCATED memory (not reserved) to decide whether cleanup is needed.
+    The CUDA caching allocator reserves large blocks that are reused across steps;
+    triggering cleanup based on reserved memory causes GC thrashing: every step
+    releases cached blocks that are immediately re-reserved, wasting ~500ms/step
+    on gc.collect() + cudaDeviceSynchronize().
+
     Args:
-        alloc_threshold: Ratio of reserved to total GPU memory (0.0 to 1.0).
+        alloc_threshold: Ratio of allocated to total GPU memory (0.0 to 1.0).
                         If current usage exceeds this, cleanup is triggered.
     """
     if torch.cuda.is_available():
-        reserved = torch.cuda.memory_reserved()
+        allocated = torch.cuda.memory_allocated()
         max_memory = torch.cuda.get_device_properties(0).total_memory
-        usage_ratio = reserved / max_memory
+        usage_ratio = allocated / max_memory
 
         if usage_ratio > alloc_threshold:
             gc.collect()
@@ -1185,10 +1191,8 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             self.lr_scheduler.step()
 
         loss = torch.sum(torch.stack(accumulated_losses))
-        loss = self._distributed_loss(loss)
-
-        # Return local token count as tensor; synchronization deferred to _log_step()
-        # to amortize the cost of all_reduce across many steps
+        # Loss and token synchronization deferred to _log_step() to avoid
+        # per-step NCCL all_reduce overhead.
         if isinstance(accumulated_tokens, Tensor):
             tokens_tensor = accumulated_tokens.to(dtype=torch.int64)
         else:
@@ -1503,9 +1507,11 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             # when logging is called multiple times in the same step
             return
 
-        # Reduce loss and total_norm
-        mean_loss = torch.stack(loss_log).mean().item()
-        logs["loss"] = mean_loss
+        # Reduce loss: compute local mean then synchronize across ranks at log step
+        # (mirrors the deferred token synchronization pattern)
+        mean_loss = torch.stack(loss_log).mean()
+        mean_loss = self._distributed_loss(mean_loss)
+        logs["loss"] = mean_loss.item()
         loss_log.clear()
 
         if len(total_norm_log):
@@ -1565,7 +1571,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         Returns:
             Tuple of (input_dict, labels) where labels are separated for loss computation
         """
-        batch = {k: v.to(self.args.device) for k, v in batch.items()}
+        batch = {k: v.to(self.args.device, non_blocking=True) for k, v in batch.items()}
         labels = batch.pop("labels")
 
         return (batch, labels)
