@@ -21,7 +21,7 @@
 
 [trainer_args]
     == super()
-    # **Optimizers**
+    # **Tiny Experiment (Small)**
     save_strategy: {{ save_strategy | toyaml('no') }}
     float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
     default_dtype: {{ default_dtype | toyaml("float32") }}

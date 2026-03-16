@@ -15,7 +15,7 @@
 [model_tokenizer]
 tokenizer: &tokenizer !call:forgather:from_project
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
-    config_template: "16k.yaml"
+    config_template: "32k.yaml"
     pp_debug: False
 
 [model_config]
