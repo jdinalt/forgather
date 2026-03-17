@@ -764,7 +764,10 @@ class TestInfiniteLRScheduler:
     # --- annealing phase ---
 
     def test_annealing_exponential_decay(self):
-        """After checkpoint_step, LR should decay exponentially toward min_lr."""
+        """After checkpoint_step, LR should decay per the paper's formula (Eq. 1).
+
+        eta(n) = eta_const * (eta_min / eta_const) ^ ((n - N_d) / (t_a + N_d))
+        """
         opt = self._make_optimizer(lr=1.0)
         warmup_steps = 5
         cooldown_steps = 5
@@ -792,19 +795,20 @@ class TestInfiniteLRScheduler:
             sched.step()
             lr = sched.get_last_lr()[0]
             # LR should be decreasing
-            assert lr < prev_lr or lr == pytest.approx(
-                min_lr, abs=1e-10
+            assert (
+                lr < prev_lr
             ), f"Annealing step {i}: LR should decrease, prev={prev_lr}, curr={lr}"
-            # Verify formula: min_lr + (constant_lr - min_lr) * exp(-t / tau)
+            # Verify paper formula: eta_const * (eta_min / eta_const) ^ (t / (tau + checkpoint_step))
             t = i
-            expected = min_lr + (constant_lr - min_lr) * math.exp(-t / tau)
+            exponent = t / (tau + checkpoint_step)
+            expected = constant_lr * (min_lr / constant_lr) ** exponent
             assert lr == pytest.approx(
-                expected, abs=1e-7
+                expected, abs=1e-10
             ), f"Annealing step {i}: expected {expected}, got {lr}"
             prev_lr = lr
 
-    def test_annealing_converges_to_min_lr(self):
-        """After many annealing steps, LR should converge to min_lr."""
+    def test_annealing_reaches_min_lr(self):
+        """LR should reach exactly min_lr at n - N_d = tau + checkpoint_step."""
         opt = self._make_optimizer(lr=1.0)
         constant_lr = 0.5
         min_lr = 1e-5
@@ -820,14 +824,17 @@ class TestInfiniteLRScheduler:
             checkpoint_step=checkpoint_step,
         )
 
-        # Advance well past the checkpoint
-        for _ in range(checkpoint_step + 10000):
+        # Advance to exactly checkpoint_step + tau + checkpoint_step
+        # At this point exponent = (tau + checkpoint_step) / (tau + checkpoint_step) = 1
+        # so LR = constant_lr * (min_lr / constant_lr) ^ 1 = min_lr
+        target_step = checkpoint_step + int(tau) + checkpoint_step
+        for _ in range(target_step):
             sched.step()
 
         lr = sched.get_last_lr()[0]
         assert lr == pytest.approx(
-            min_lr, abs=1e-5
-        ), f"After many annealing steps, LR should be ~{min_lr}, got {lr}"
+            min_lr, rel=1e-7
+        ), f"At exponent=1, LR should be {min_lr}, got {lr}"
 
     # --- no warmup / no cooldown ---
 
