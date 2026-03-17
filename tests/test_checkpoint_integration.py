@@ -24,22 +24,24 @@ from torch import nn
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from forgather.ml.sharded_checkpoint import next_checkpoint_path
 from forgather.ml.trainer.base_trainer import BaseTrainingArguments
 from forgather.ml.trainer.callbacks.divergence_detector import (
-    DualTimeScaleDivergenceDetector,
+    DivergenceDetector,
 )
 from forgather.ml.trainer.checkpoint_manager import CheckpointManager
 from forgather.ml.trainer.trainer_types import TrainerControl, TrainerState
-from forgather.ml.sharded_checkpoint import next_checkpoint_path
 
 
 def find_all_checkpoints(output_dir: str) -> list[str]:
     """Find all checkpoint directories."""
     import glob
+
     checkpoints_dir = os.path.join(output_dir, "checkpoints")
     if not os.path.isdir(checkpoints_dir):
         return []
     return sorted(glob.glob(os.path.join(checkpoints_dir, "checkpoint-*")))
+
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +162,9 @@ class CheckpointTestHarness:
                 is_world_process_zero: bool = True,
             ) -> bool:
                 """Simplified version of update_best_checkpoints for testing."""
-                metric_value = metrics.get(metric_key) or metrics.get(f"eval_{metric_key}")
+                metric_value = metrics.get(metric_key) or metrics.get(
+                    f"eval_{metric_key}"
+                )
                 if metric_value is None:
                     return False
 
@@ -174,18 +178,28 @@ class CheckpointTestHarness:
                     worst_best = (max if greater_is_better else min)(
                         self.best_checkpoints, key=lambda x: x[1]
                     )
-                    is_best = (metric_value > worst_best[1]) if greater_is_better else (metric_value < worst_best[1])
+                    is_best = (
+                        (metric_value > worst_best[1])
+                        if greater_is_better
+                        else (metric_value < worst_best[1])
+                    )
 
                 if is_best:
                     if is_world_process_zero:
-                        logger.info(f"New best checkpoint: {checkpoint_path} ({metric_key}={metric_value:.4f})")
+                        logger.info(
+                            f"New best checkpoint: {checkpoint_path} ({metric_key}={metric_value:.4f})"
+                        )
                     self.best_checkpoints.append((checkpoint_path, metric_value))
-                    self.best_checkpoints.sort(key=lambda x: x[1], reverse=greater_is_better)
+                    self.best_checkpoints.sort(
+                        key=lambda x: x[1], reverse=greater_is_better
+                    )
                     self.best_checkpoints = self.best_checkpoints[:preserve_n_best]
                     if is_world_process_zero:
                         logger.info("Best checkpoints:")
                         for cp_path, cp_metric in self.best_checkpoints:
-                            logger.info(f"  {os.path.basename(cp_path)} ({metric_key}={cp_metric:.4f})")
+                            logger.info(
+                                f"  {os.path.basename(cp_path)} ({metric_key}={cp_metric:.4f})"
+                            )
                 return is_best
 
             def get_best_checkpoints_summary(self, metric_key: str = "loss") -> str:
@@ -193,7 +207,9 @@ class CheckpointTestHarness:
                     return "No best checkpoints tracked"
                 lines = [f"Best checkpoints (N={len(self.best_checkpoints)}):"]
                 for cp_path, cp_metric in self.best_checkpoints:
-                    lines.append(f"  {os.path.basename(cp_path)}: {metric_key}={cp_metric:.4f}")
+                    lines.append(
+                        f"  {os.path.basename(cp_path)}: {metric_key}={cp_metric:.4f}"
+                    )
                 return "\n".join(lines)
 
         self.checkpoint_manager = MockCheckpointManager()
@@ -204,10 +220,11 @@ class CheckpointTestHarness:
         # Create divergence detector callback
         self.divergence_detector = None
         if use_divergence_detector:
-            self.divergence_detector = DualTimeScaleDivergenceDetector(
-                short_alpha=0.2,  # Faster response for testing
-                long_alpha=0.01,
+            self.divergence_detector = DivergenceDetector(
+                smoothing=0.3,
                 threshold=0.75,  # Lower threshold for testing
+                patience=2,
+                warmup=0,
                 action="abort",
                 use_eval_loss=True,
             )
@@ -243,7 +260,7 @@ class CheckpointTestHarness:
         a spike if requested.
         """
         # Normal decreasing loss (exponential decay)
-        base_loss = 5.0 * (0.98 ** step) + 2.5
+        base_loss = 5.0 * (0.98**step) + 2.5
 
         # Inject spike if requested
         is_spike = False
@@ -298,6 +315,7 @@ class CheckpointTestHarness:
             # Save metrics
             metrics_path = os.path.join(checkpoint_path, "metrics.json")
             import json
+
             with open(metrics_path, "w") as f:
                 json.dump(metrics, f, indent=2)
 

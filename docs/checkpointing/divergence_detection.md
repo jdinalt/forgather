@@ -1,6 +1,6 @@
 # Divergence Detection and Checkpoint Preservation
 
-**Last Updated**: 2026-02-02
+**Last Updated**: 2026-03-17
 
 ## Overview
 
@@ -9,7 +9,7 @@ Forgather provides advanced checkpoint management features to prevent loss of go
 1. **Checkpoint Preservation**: Keep best checkpoints safe from cleanup
 2. **Stateful Callbacks**: Save and restore callback state with checkpoints
 3. **Decoupled Eval/Save**: Force evaluation before saving to ensure metrics available
-4. **Divergence Detection**: Catch training issues in ~10-20 eval steps vs 50,000 train steps
+4. **Divergence Detection**: Catch training divergence within a few log entries of a loss spike
 
 ## Quick Start
 
@@ -39,14 +39,13 @@ trainer.train()
 ### Detect Training Divergence
 
 ```python
-from forgather.ml.trainer.callbacks import DualTimeScaleDivergenceDetector
+from forgather.ml.trainer.callbacks import DivergenceDetector
 
-detector = DualTimeScaleDivergenceDetector(
-    short_alpha=0.1,         # Fast EMA (~10 step window)
-    long_alpha=0.01,         # Slow EMA (~100 step window)
-    threshold=2.0,           # Stop if short - long >= 2.0
+detector = DivergenceDetector(
+    smoothing=0.3,           # EMA alpha for loss smoothing
+    threshold=1.0,           # Stop if smoothed - best >= 1.0
+    patience=3,              # Require 3 consecutive observations
     action="stop",
-    use_eval_loss=True,      # Monitor eval_loss (more stable)
 )
 
 trainer = Trainer(model, args=args, callbacks=[detector], ...)
@@ -120,78 +119,77 @@ args = TrainingArguments(
 
 ## Divergence Detection
 
-### DualTimeScaleDivergenceDetector
+### DivergenceDetector
 
-Detects sustained loss increases using dual-timescale exponential moving averages:
+Detects training divergence by comparing smoothed loss against its best observed value:
 
 ```python
-from forgather.ml.trainer.callbacks import DualTimeScaleDivergenceDetector
+from forgather.ml.trainer.callbacks import DivergenceDetector
 
-detector = DualTimeScaleDivergenceDetector(
-    short_alpha=0.1,         # Fast filter (0-1, higher = faster response)
-    long_alpha=0.01,         # Slow filter (0-1, lower = slower response)
-    threshold=2.0,           # Trigger when short - long >= threshold
-    action="stop",           # "stop" (graceful) or "abort" (immediate)
-    use_eval_loss=True,      # Monitor eval_loss (vs train loss)
-    metric_key=None,         # Optional: custom metric to monitor
+detector = DivergenceDetector(
+    smoothing=0.3,                # EMA alpha for loss smoothing (0-1)
+    threshold=1.0,                # Absolute: smoothed - best >= threshold
+    relative_threshold=None,      # Relative: smoothed >= best * factor (e.g. 1.5)
+    patience=3,                   # Consecutive observations above threshold
+    warmup=10,                    # Skip first N observations
+    action="stop",                # "stop" (graceful) or "abort" (immediate)
+    use_eval_loss=False,          # Monitor train loss (more frequent)
+    metric_key=None,              # Optional: custom metric to monitor
 )
 ```
 
 **How it works**:
-- Maintains fast EMA (tracks current state) and slow EMA (tracks baseline)
-- Fast filter responds quickly to changes, slow filter stays stable
-- Triggers when fast - slow >= threshold (sustained divergence)
-- Classic signal processing approach for detecting sustained changes vs transient noise
+1. Smooths the raw loss with an EMA to reduce noise
+2. Tracks the running minimum of the smoothed loss (best observed baseline)
+3. Triggers when smoothed loss exceeds the baseline by the threshold
+4. Requires `patience` consecutive observations above threshold to avoid false positives
+5. Detects NaN/Inf values immediately (no patience required)
 
-**Effective window**: ~1/alpha steps
-- `short_alpha=0.1` → ~10 step window
-- `long_alpha=0.01` → ~100 step window
+**Why this approach?** The previous dual-EMA approach (comparing fast vs slow EMA) fails
+when loss decreases monotonically during normal training. The slow EMA lags above the fast
+EMA, creating a negative divergence buffer that masks real spikes. The "smoothed vs best"
+approach correctly handles this common training pattern.
 
-### DualWindowDivergenceDetector
+### Parameter Reference
 
-Detects divergence using finite moving average windows:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `smoothing` | float | 0.3 | EMA alpha (0-1). Higher = more responsive. Window ~ 1/alpha |
+| `threshold` | float\|None | 1.0 | Absolute threshold: smoothed - best >= threshold |
+| `relative_threshold` | float\|None | None | Relative threshold: smoothed >= best * factor |
+| `patience` | int | 3 | Consecutive observations above threshold before triggering |
+| `warmup` | int | 10 | Skip first N observations (avoids early high-loss phase) |
+| `action` | str | "stop" | "stop" (save checkpoint then stop) or "abort" (stop immediately) |
+| `use_eval_loss` | bool | False | True: monitor eval_loss, False: monitor train loss |
+| `metric_key` | str\|None | None | Custom metric key (overrides use_eval_loss) |
 
-```python
-from forgather.ml.trainer.callbacks import DualWindowDivergenceDetector
+At least one of `threshold` or `relative_threshold` must be set. Both can be set
+simultaneously; either condition firing counts toward patience.
 
-detector = DualWindowDivergenceDetector(
-    short_window=10,         # Recent average (last N steps)
-    long_window=100,         # Long-term average (last N steps)
-    threshold=2.0,
-    action="stop",
-    use_eval_loss=True,
-)
-```
+### Choosing Threshold Type
 
-**How it works**:
-- Maintains finite buffers of recent observations
-- Computes simple moving averages over windows
-- Triggers when short_avg - long_avg >= threshold
+**Absolute threshold** (`threshold=1.0`): triggers when smoothed loss rises 1.0 above
+the best. Works well when you know the expected loss scale and want a fixed tolerance.
 
-**When to use**:
-- More intuitive than EMA ("last 10 steps" vs "alpha=0.1")
-- Exact cutoff at window boundary (vs exponential decay)
-- Better for detecting gradual degradation over fixed horizons
+**Relative threshold** (`relative_threshold=1.5`): triggers when smoothed loss is 1.5x
+the best (a 50% increase). Works well across different loss scales since it adapts
+proportionally to the baseline.
 
-### Tuning for Quick Spike Detection
+**Both**: set both to catch either condition. For example, `threshold=1.0` catches
+divergence from a low baseline (e.g., best=0.5, spike to 1.5) while
+`relative_threshold=2.0` catches proportional spikes at any scale.
 
-For catching sudden spikes (e.g., loss 2.8 → 8.0):
+### Detection Speed
 
-```python
-detector = DualTimeScaleDivergenceDetector(
-    short_alpha=0.2,         # Faster response (~5 steps)
-    long_alpha=0.01,         # Stable baseline
-    threshold=1.5,           # More sensitive
-    use_eval_loss=True,
-)
+With defaults (`smoothing=0.3, threshold=1.0, patience=3`) and training logs every 32
+steps:
 
-args = TrainingArguments(
-    eval_steps=500,          # Eval every 500 steps
-    eval_on_save=True,
-)
-```
+- A spike from loss 3.8 to 9.7 is detected within **3 log entries** (~96 training steps)
+- No false positives on healthy runs with normal loss fluctuations
 
-**Detection speed**: ~10-20 eval steps (5,000-10,000 train steps) vs 50,000 train steps!
+Higher `smoothing` (e.g., 0.5) makes detection faster but more sensitive to noise.
+Lower `patience` (e.g., 1) triggers immediately but risks false positives from transient
+spikes.
 
 ### Monitoring Custom Metrics
 
@@ -199,18 +197,15 @@ Monitor gradient norms, accuracy drops, or other metrics:
 
 ```python
 # Monitor gradient norm
-detector = DualTimeScaleDivergenceDetector(
-    short_alpha=0.1,
-    long_alpha=0.01,
-    threshold=5.0,           # Higher threshold for grad norm
-    metric_key="grad_norm",  # Custom metric
+detector = DivergenceDetector(
+    threshold=5.0,
+    metric_key="grad_norm",
 )
 
-# Monitor accuracy drops
-detector = DualTimeScaleDivergenceDetector(
-    short_alpha=0.1,
-    long_alpha=0.01,
-    threshold=0.1,           # 10% accuracy drop
+# Monitor accuracy drops (use relative threshold)
+detector = DivergenceDetector(
+    threshold=None,
+    relative_threshold=1.3,    # 30% degradation from best
     metric_key="eval_accuracy",
 )
 ```
@@ -244,30 +239,25 @@ class MyDetector(TrainerCallback, Stateful):
 
 **Automatic handling**: CheckpointManager detects Stateful callbacks and saves/loads their state
 
-**Resume correctness**: Divergence detectors resume with correct EMA/buffer state after checkpoint load
+**Resume correctness**: DivergenceDetector resumes with correct smoothed loss, best baseline, observation count, and consecutive trigger count after checkpoint load
 
 ## Advanced Patterns
 
 ### Multiple Safeguards
 
-Combine multiple detection strategies:
+Combine absolute and relative thresholds:
 
 ```python
-from forgather.ml.trainer.callbacks import (
-    DualTimeScaleDivergenceDetector,
-    DualWindowDivergenceDetector,
-)
+from forgather.ml.trainer.callbacks import DivergenceDetector
 
-callbacks = [
-    # Fast spike detection (EMA)
-    DualTimeScaleDivergenceDetector(
-        short_alpha=0.2, long_alpha=0.01, threshold=1.5
-    ),
-    # Gradual degradation (window)
-    DualWindowDivergenceDetector(
-        short_window=10, long_window=100, threshold=0.5
-    ),
-]
+# Catches both absolute spikes and proportional divergence
+detector = DivergenceDetector(
+    smoothing=0.3,
+    threshold=1.0,              # Absolute: any 1.0 increase from best
+    relative_threshold=1.5,     # Relative: 50% increase from best
+    patience=3,
+    action="abort",
+)
 
 args = TrainingArguments(
     preserve_best_model=True,
@@ -275,7 +265,7 @@ args = TrainingArguments(
     eval_on_save=True,
 )
 
-trainer = Trainer(..., args=args, callbacks=callbacks)
+trainer = Trainer(..., args=args, callbacks=[detector])
 ```
 
 ### Production Configuration
@@ -283,11 +273,12 @@ trainer = Trainer(..., args=args, callbacks=callbacks)
 Balanced settings for production training:
 
 ```python
-detector = DualTimeScaleDivergenceDetector(
-    short_alpha=0.1,
-    long_alpha=0.01,
-    threshold=2.0,
-    use_eval_loss=True,
+detector = DivergenceDetector(
+    smoothing=0.3,
+    threshold=1.0,
+    patience=5,          # Higher patience for fewer false positives
+    warmup=20,           # Longer warmup for large models with noisy early loss
+    action="stop",       # Graceful stop (saves checkpoint)
 )
 
 args = TrainingArguments(
@@ -297,6 +288,20 @@ args = TrainingArguments(
     eval_on_save=True,
     eval_steps=500,
     save_steps=1000,
+)
+```
+
+### LR Sweep Configuration
+
+For learning rate sweeps where you expect some runs to diverge:
+
+```python
+detector = DivergenceDetector(
+    smoothing=0.3,
+    threshold=1.0,
+    patience=3,
+    warmup=10,
+    action="abort",      # Abort without saving (diverged checkpoints are useless)
 )
 ```
 
@@ -316,6 +321,15 @@ args = TrainingArguments(
 ```
 
 ## Backward Compatibility
+
+### Divergence Detector
+
+The old `DualTimeScaleDivergenceDetector` and `DualWindowDivergenceDetector` names are
+kept as aliases for `DivergenceDetector`. Existing imports will continue to work, but the
+parameter interface has changed. Update your code to use `DivergenceDetector` with the
+new parameters.
+
+### Checkpoint Preservation
 
 Old `load_best_model_at_end` API still works with deprecation warning:
 
@@ -351,9 +365,13 @@ args = TrainingArguments(
 
 ### "Divergence detector not triggering"
 
-**Cause**: Threshold too high or alpha too low
+**Possible causes**:
+- Threshold too high for the loss scale of your model
+- Warmup too long (detector is still skipping observations)
+- Using `use_eval_loss=True` with infrequent evaluation
 
-**Fix**: Lower threshold or increase short_alpha for faster response
+**Fix**: Lower threshold, reduce warmup, increase smoothing for faster response,
+or switch to `use_eval_loss=False` to use the more frequent train loss
 
 ### "Callback state not restored after checkpoint load"
 

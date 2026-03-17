@@ -15,34 +15,44 @@ This project trains models on the [HuggingFaceTB/smollm-corpus](https://huggingf
 - Support for multiple model architectures (DeepOne, Llama, Qwen, etc.)
 
 **Default Configuration:**
+- Precision: Automatic Mixed Precision (bf16)
 - Model: Custom DeepOne (162M parameters)
-- Token Budget: 3B tokens (Chinchilla-optimal for 150M params)
+- Token Budget: 2.3B tokens (Chinchilla-optimal for 150M params)
 - Batch Size: 4 per device (auto-scaled with world size)
 - Sequence Length: 4096 tokens
-- Optimizer: Adafactor with BF16 stochastic rounding
+- Optimizer: AdamW
 
 ## Quick Start
 
 ```bash
-# Train with defaults (DeepOne 117M, 3B tokens)
-forgather train --init-model
+# Init new model and train with defaults (DeepOne 117M, 3B tokens)
+forgather train --resume false
 
 # Resume from checkpoint
 forgather train
 
 # Train with different model
-forgather train --init-model --model-project ../../models/llama/ --model-config 124M.yaml
+rm -rf output_models # First, delete or backup old output directory
+forgather train --resume false --model-project ../../models/llama/ --model-config medium.yaml
 
-# Train for longer (10B tokens instead of 3B)
-forgather train --init-model --total-tokens 10
+# Train for longer (23B tokens instead of 2.3B)
+forgather train --init-model --total-tokens 23000
 
-# Use flex attention for better performance
-forgather train --init-model --attn-implementation flex_attention
+# Use sdpa attention for better faster startup
+forgather train --init-model --attn-implementation sdpa
 ```
 
 ## Training Configuration
 
 The training configuration is built around several interconnected parameters that together determine training dynamics, compute requirements, and final model quality.
+
+The project configuration is a derived from our base LM training templates:
+
+- [project.yaml](./templates/project.yaml)
+  - [projects/auto_lr_project.yaml](../../../templatelib/examples/projects/auto_lr_project.yaml)
+    - [projects/lm_training_project.yaml](../../../templatelib/examples/projects/lm_training_project.yaml)
+
+The full documentation for the base templates can be found [here](../../../docs/project-templates/lm-training-projects.md).
 
 ### Token Budget and Compute Allocation
 
@@ -53,12 +63,19 @@ Training is controlled by a **token budget** rather than epochs or arbitrary ste
 - `--max-steps N`: Override to limit training steps (optional)
 
 **Chinchilla Optimal:**
-The default 3B token budget follows Chinchilla scaling laws for compute-optimal training:
+The default 2.3B token budget follows Chinchilla scaling laws for compute-optimal training:
 ```
 optimal_tokens ≈ 20 × model_parameters
 ```
 
-For a 150M parameter model: `150M × 20 = 3B tokens`
+For a 113M parameter model: `113M × 20 = 2.3B tokens`
+
+Note that we only count non-embedding parameters. For forgather's models, you can get this my constructing a model on the meta device.
+
+```bash
+# From model project directory
+forgather [-t MODEL_CONFIG] model construct
+```
 
 **How it works:**
 ```python
@@ -77,7 +94,7 @@ Batch sizes and learning rates are coupled through sqrt-scaling to maintain trai
 
 **Key Parameters:**
 - `--batch-size N`: Per-device training batch size (default: 4)
-- `--learning-rate LR`: Base learning rate for batch size 1 (default: 1.4e-5)
+- `--lr LR`: Base learning rate for batch size 1 (default: 1.4e-5)
 
 **How it works:**
 ```python
@@ -103,15 +120,15 @@ The LR schedule uses the **InfiniteLRScheduler**, designed for flexible pretrain
 
 **Schedule Structure:**
 ```
-1. Warmup (500 steps): 0 → max_lr
+1. Warmup (5% of total steps): 0 → max_lr
 2. Cooldown (variable): max_lr → constant_lr (cosine decay)
 3. Constant (remaining): constant_lr
 4. Annealing (optional): constant_lr → min_lr (not used by default)
 ```
 
 **Key Parameters:**
-- `--warmup-steps N`: Steps to warm up to max_lr (default: 500)
-- `--min-cooldown-tokens N`: Minimum tokens (billions) for cooldown phase (default: 100)
+- `--warmup-tokens N`: The number of tokens (millions) for the warmup phase.
+- `--min-cooldown-tokens N`: Minimum tokens (millions) for cooldown phase.
 
 **Adaptive Cooldown Duration:**
 
@@ -119,10 +136,9 @@ The cooldown phase duration adapts to training scale:
 ```python
 # Compute both minimum and ratio-based durations
 min_cooldown_steps = min_cooldown_tokens / tokens_per_step
-ratio_cooldown_steps = 0.7 × total_steps
 
 # Use the larger value
-cooldown_steps = max(min_cooldown_steps, ratio_cooldown_steps)
+cooldown_steps = max(min_cooldown_steps, total_steps)
 ```
 
 **Why this matters:**
@@ -664,7 +680,7 @@ See [Training Log Analysis](../../../docs/logs-analysis.md) for details.
 
 **Divergence detection:**
 
-The config includes a `DualTimeScaleDivergenceDetector` that monitors loss with fast and slow EMAs. If the fast EMA diverges from slow EMA by threshold (1.0), training aborts automatically to save compute.
+The config includes a `DivergenceDetector` that monitors smoothed train loss against its best observed value. If the smoothed loss exceeds the best by threshold (1.0) for 3 consecutive observations, training aborts automatically to save compute.
 
 ### Memory Optimization
 

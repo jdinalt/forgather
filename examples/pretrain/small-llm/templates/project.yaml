@@ -140,16 +140,17 @@ text_gen_callback_args: &text_gen_callback_args
     == super()
     ## Flex attention seems to occasionally crash when generating. Disabled until issue is resolved.
     -- if ns.attn_implementation != "flex_attention"
-    text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
+    text_gen_callback: !call:forgather.ml.trainer.callbacks:TextgenCallback
         <<: *text_gen_callback_args
     -- endif
-    trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback
-    peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
+    trainer_control: !call:forgather.ml.trainer.callbacks:TrainerControlCallback
+    peak_memory: !call:forgather.ml.trainer.callbacks:PeakMemory
     # Abort training if loss diverges substantially
-    divergence_detector: !singleton:forgather.ml.trainer.callbacks:DualTimeScaleDivergenceDetector
-        short_alpha: 0.1        # Fast EMA (~10 step window)
-        long_alpha: 0.01        # Slow EMA (~100 step window)
-        threshold: 1.0          # Stop if short - long >= 1.0
+    divergence_detector: !call:forgather.ml.trainer.callbacks:DivergenceDetector
+        smoothing: 0.3          # EMA alpha for loss smoothing
+        threshold: 1.0          # Absolute: smoothed - best >= 1.0
+        patience: 3             # Require 3 consecutive observations
+        warmup: 10              # Skip first 10 observations
         action: "abort"
     weight_norm: !call:forgather.ml.trainer.callbacks:WeightNormLogger
 
