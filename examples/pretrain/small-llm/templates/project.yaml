@@ -19,7 +19,7 @@
     ## Training budget (millions of tokens)
     -- set ns.total_tokens = total_tokens | default(2270)
     -- set ns.warmup_tokens = warmup_tokens | default(114)
-    -- set ns.min_cooldown_tokens = min_cooldown_tokens | default(30000)
+    -- set ns.min_cooldown_tokens = min_cooldown_tokens | default(6800)
 
     ## Batching
     -- set ns.seq_len = seq_len | default(4096)
@@ -37,13 +37,14 @@
     -- set ns.peak_hardware_flops = peak_hardware_flops | default(165.2e12)
 
     ## LR scaling
-    -- set ns.base_lr = lr | default(1.4e-05)
+    -- set ns.base_lr = lr | default(1.5e-4)
     -- set ns.base_batch_size = 16384
     -- set ns.lr_alpha = 0.5
 
-    ## Project
-    -- set ns.base_constant_lr = 7.5e-6
-    -- set ns.min_lr = 1.0e-6
+    ## LR Scheduler
+    -- set ns.base_constant_lr = 5.0e-5
+    -- set ns.min_lr = 5.0e-6
+    -- set ns.cooldown_p = 0.3
     
     ## Attention
     -- set ns.attn_implementation = attn_implementation | default("flex_attention")
@@ -51,11 +52,14 @@
 [globals]
     == super()
     -- set ns.constant_lr = ns.base_constant_lr * (ns.tokens_per_step / ns.base_batch_size) ** ns.lr_alpha
+    -- set ns.cooldown_steps = [ns.min_cooldown_steps, ns.total_steps * ns.cooldown_p] | max | int
 
 [variable_listing]
     == super()
 # ns.constant_lr: {{ ns.constant_lr }}
 # ns.min_lr: {{ ns.min_lr }}
+# ns.cooldown_p: {{ ns.cooldown_p }}
+# ns.cooldown_steps: {{ ns.cooldown_steps }}
 
 [trainer_args]
     == super()
@@ -94,7 +98,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 [lr_scheduler]
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:InfiniteLRScheduler@lr_scheduler
     warmup_steps: {{ ns.warmup_steps }}
-    cooldown_steps: {{ [ns.min_cooldown_steps, ns.total_steps] | max | int }}
+    cooldown_steps: {{ ns.cooldown_steps }}
     constant_lr: {{ ns.constant_lr | toyaml }}
     min_lr: {{ ns.min_lr | toyaml }}
 
