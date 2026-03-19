@@ -263,6 +263,8 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     default_dtype: {{ default_dtype | toyaml(None) }}
     mixed_precision: {{ mixed_precision | toyaml(None) }}
 
+    dataloader_drop_last: True
+
 [datacollator]
 data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
     tokenizer: *tokenizer

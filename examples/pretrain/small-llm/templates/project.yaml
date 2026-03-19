@@ -83,11 +83,15 @@
     torch_compile_mode: "max-autotune"
 -- endif
 
-    # **Misc.**
+    # Dataloader
+    dataloader_num_workers: 1
+    dataloader_prefetch_factor: 4
+
+    # Misc.
     float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
     default_dtype: {{ default_dtype | toyaml("float32") }}
     mixed_precision: {{ mixed_precision | toyaml("bf16") }}
-    ##max_grad_norm: 4.0
+    max_grad_norm: 3.0
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW
