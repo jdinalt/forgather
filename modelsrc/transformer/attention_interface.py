@@ -194,7 +194,7 @@ def sdpa_attention_forward(
             )
 
     num_key_value_groups = query.shape[1] // key.shape[1]
-    is_causal = q_len > 1 and attention_mask is None and is_causal
+    is_causal = q_len > 1 and attention_mask is None
 
     attn_output = scaled_dot_product_attention(
         query,
@@ -246,7 +246,8 @@ def flash_attn_2_forward(
         Q: (batch_size, seqlen, nheads, headdim)
         KV: (batch_size, seqlen, nheads_k, headdim)
         returns: (batch_size, seqlen, nheads, headdim)
-    This does not match Attention Interface, thus we must transpose (1, 2) on input and output.
+    This does not match Attention Interface, thus we must transpose (1, 2) on input.
+    Output is already in (batch, seq, heads, d_head) format matching the convention.
 
     ALiBI slopes are expected to be float32
     """
@@ -261,4 +262,4 @@ def flash_attn_2_forward(
         window_size=window_size,
         alibi_slopes=alibi_slopes,
     )
-    return attn_output.transpose(1, 2), None  # type: ignore[union-attr]
+    return attn_output.contiguous(), None  # type: ignore[union-attr]
