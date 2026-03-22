@@ -49,14 +49,18 @@ def create_model_parser(global_args):
         "--refresh-model",
         "-r",
         action="store_true",
-        help="Force regeneration of fresh model from sources by deleting output_dir"
+        help="Force regeneration of fresh model from sources by deleting output_dir",
     )
 
     subparsers = parser.add_subparsers(
         dest="model_subcommand", help="Model subcommands"
     )
-    parser.add_argument("--save-checkpoint", action="store_true", help="Save model checkpoint")
-    parser.add_argument("--safetensors", action="store_true", help="Save using safetensors")
+    parser.add_argument(
+        "--save-checkpoint", action="store_true", help="Save model checkpoint"
+    )
+    parser.add_argument(
+        "--safetensors", action="store_true", help="Save using safetensors"
+    )
 
     # construct subcommand
     construct_parser = subparsers.add_parser(
@@ -101,6 +105,59 @@ def create_model_parser(global_args):
         type=float,
         default=1.0e-2,
         help="Learning rate",
+    )
+
+    # torch.compile options
+    test_parser.add_argument(
+        "--compile",
+        action="store_true",
+        default=False,
+        help="Compile model with torch.compile()",
+    )
+    test_parser.add_argument(
+        "--compile-backend",
+        type=str,
+        default="inductor",
+        help="torch.compile backend (default: inductor)",
+    )
+    test_parser.add_argument(
+        "--compile-mode",
+        type=str,
+        default="default",
+        choices=[
+            "default",
+            "reduce-overhead",
+            "max-autotune",
+            "max-autotune-no-cudagraphs",
+        ],
+        help="torch.compile mode (default: default)",
+    )
+    test_parser.add_argument(
+        "--compile-dynamic",
+        action="store_true",
+        default=True,
+        help="Allow dynamic shapes in torch.compile (default: True)",
+    )
+    test_parser.add_argument(
+        "--no-compile-dynamic",
+        action="store_false",
+        dest="compile_dynamic",
+        help="Disable dynamic shapes in torch.compile",
+    )
+    test_parser.add_argument(
+        "--compile-fullgraph",
+        action="store_true",
+        help="Force entire model as single graph in torch.compile",
+    )
+
+    # AMP options
+    test_parser.add_argument(
+        "--amp",
+        type=str,
+        default=None,
+        choices=["bf16", "fp16"],
+        metavar="DTYPE",
+        help="Enable Automatic Mixed Precision (bf16 or fp16)",
     )
 
     add_output_arg(parser)

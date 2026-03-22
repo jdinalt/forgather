@@ -13,6 +13,7 @@ from forgather.ml.construct import torch_dtype
 from forgather.ml.data_collator import DataCollatorForCausalLM
 from forgather.ml.no_init_weights import no_init_weights
 from forgather.ml.sharded_checkpoint import load_checkpoint, save_checkpoint
+from forgather.ml.trainer.amp import AMPContext
 from forgather.ml.utils import count_parameters, default_dtype, fmt_si
 
 from .dynamic_args import get_dynamic_args
@@ -141,9 +142,51 @@ class RandomDatasetIterator(IterableDataset):
 def model_test_cmd(args):
     torch.autograd.set_detect_anomaly(True)
     torch._dynamo.config.recompile_limit = 32
+
+    # Ensure defaults for optional test args (may be missing when subcommand isn't 'test')
+    compile_enabled = getattr(args, "compile", False) or False
+    amp_mode = getattr(args, "amp", None)
+
+    # Dump test settings
+    device_type = args.device.split(":")[0]
+    print(f"{'Test Settings':-^60}")
+    print(f"  device:                {args.device}")
+    print(f"  dtype:                 {args.dtype}")
+    print(f"  batch_size:            {args.batch_size}")
+    print(f"  sequence_length:       {args.sequence_length}")
+    print(f"  steps:                 {args.steps}")
+    print(f"  lr:                    {args.lr}")
+    print(f"  gradient_checkpointing:{args.gradient_checkpointing}")
+    print(f"  fuse_optim_backward:   {args.fuse_optim_with_backward}")
+    print(f"  compile:               {compile_enabled}")
+    if compile_enabled:
+        print(f"    backend:             {args.compile_backend}")
+        print(f"    mode:                {args.compile_mode}")
+        print(f"    dynamic:             {args.compile_dynamic}")
+        print(f"    fullgraph:           {args.compile_fullgraph}")
+    print(f"  amp:                   {amp_mode or 'disabled'}")
+    print(f"{'':-^60}")
+
     (config, tokenizer, model_ctor), meta = load_model(args)
 
     model = construct_model(model_ctor, args, meta)
+
+    # torch.compile
+    if compile_enabled:
+        print(
+            f"Compiling model: backend={args.compile_backend}, mode={args.compile_mode}, "
+            f"dynamic={args.compile_dynamic}, fullgraph={args.compile_fullgraph}"
+        )
+        model.compile(
+            backend=args.compile_backend,
+            mode=args.compile_mode,
+            dynamic=args.compile_dynamic,
+            fullgraph=args.compile_fullgraph,
+        )
+
+    # AMP
+    amp_context = AMPContext(mixed_precision=amp_mode, device_type=device_type)
+
     print(f"Setting learning-rate={args.lr}")
     optimizer = SGD(model.parameters(), lr=args.lr)
 
@@ -203,12 +246,14 @@ def model_test_cmd(args):
         if i == 0:
             print(f"{batch.keys()=}")
 
-        loss, logits = model(**batch)
+        with amp_context.autocast():
+            loss, logits = model(**batch)
         print(f"step: {i+1}, loss: {loss}, logits.shape: {logits.shape}")
 
-        loss.backward()
+        amp_context.scale_loss(loss).backward()
+        amp_context.unscale_(optimizer)
         if not args.fuse_optim_with_backward:
-            optimizer.step()
+            amp_context.optimizer_step(optimizer)
         optimizer.zero_grad()
 
     print("Test Completed")
