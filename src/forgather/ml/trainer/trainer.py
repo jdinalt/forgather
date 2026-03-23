@@ -1205,6 +1205,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         # Unscale gradients before clipping (no-op when not using fp16 GradScaler)
         self.amp_context.unscale_(self.optimizer)
         total_norm = self._clip_grad_norm(self.args.max_grad_norm)
+        self._dispatch_event("on_pre_optimizer_step")
         if not self.args.fuse_optim_with_backward:
             self.amp_context.optimizer_step(self.optimizer)
             self.optimizer.zero_grad()

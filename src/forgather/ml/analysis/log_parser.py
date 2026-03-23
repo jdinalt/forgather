@@ -234,3 +234,27 @@ def find_log_files(
         log_files.append(log_file)
 
     return sorted(log_files, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def find_diagnostic_logs(project_dir: str | Path, filename: str) -> List[Path]:
+    """Find diagnostic log files in a project's output_models directory.
+
+    Searches for files matching ``filename`` (e.g., "parameter_norms.json",
+    "gradient_norms.json") in the standard run directory structure.
+
+    Args:
+        project_dir: Project directory to search.
+        filename: Log filename to look for.
+
+    Returns:
+        List of matching paths, most recently modified first.
+    """
+    project_dir = Path(project_dir)
+    output_models_dir = project_dir / "output_models"
+
+    if not output_models_dir.exists():
+        return []
+
+    log_files = list(output_models_dir.glob(f"*/runs/*/{filename}"))
+
+    return sorted(log_files, key=lambda p: p.stat().st_mtime, reverse=True)

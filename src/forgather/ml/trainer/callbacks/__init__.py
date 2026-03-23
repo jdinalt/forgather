@@ -6,7 +6,9 @@ from .divergence_detector import (
     DualTimeScaleDivergenceDetector,
     DualWindowDivergenceDetector,
 )
+from .grad_logger import GradNormLogger
 from .json_logger import JsonLogger
+from .parameter_norm_logger import ParameterNormLogger
 from .peak_memory import PeakMemory
 from .profiler_callback import ProfilerCallback
 from .resumable_summary_writer import ResumableSummaryWriter

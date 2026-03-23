@@ -66,6 +66,7 @@ def parse_global_args(args=None):
 
 def get_subcommand_registry():
     """Registry of all available subcommands and their argument parsers."""
+    from .checkpoint_args import create_checkpoint_parser
     from .commands_args import (
         create_code_parser,
         create_construct_parser,
@@ -78,12 +79,12 @@ def get_subcommand_registry():
         create_tb_parser,
         create_tlist_parser,
     )
-    from .checkpoint_args import create_checkpoint_parser
     from .control_args import create_control_parser
-    from .diloco_args import create_diloco_parser
     from .dataset_args import create_dataset_parser
+    from .diloco_args import create_diloco_parser
     from .logs_args import create_logs_parser
     from .model_args import create_model_parser
+    from .plot_args import create_plot_parser
     from .project_args import create_project_parser
     from .train_args import create_train_parser
     from .trefs_args import create_trefs_parser
@@ -117,6 +118,7 @@ def get_subcommand_registry():
         "update-vocab": create_update_vocab_parser,
         "checkpoint": create_checkpoint_parser,
         "logs": create_logs_parser,
+        "plot": create_plot_parser,
         "diloco": create_diloco_parser,
     }
 
@@ -391,6 +393,10 @@ def main():
                 from .logs import logs_cmd
 
                 logs_cmd(args)
+            case "plot":
+                from .plot import plot_cmd
+
+                plot_cmd(args)
             case "diloco":
                 from .diloco import diloco_cmd
 
