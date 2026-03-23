@@ -1,0 +1,12 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Adafactor"
+    -- set ns.config_description = "Train with Adafactor"
+    -- set ns.log_name = "adafactor"
+    -- set ns.model_name = "adafactor"
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim:Adafactor
+    lr: {{ ns.global_lr | toyaml }}

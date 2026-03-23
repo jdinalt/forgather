@@ -91,13 +91,12 @@
     float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
     default_dtype: {{ default_dtype | toyaml("float32") }}
     mixed_precision: {{ mixed_precision | toyaml("bf16") }}
-    max_grad_norm: 3.0
+    max_grad_norm: 1.0
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW
     lr: {{ ns.global_lr | toyaml }}
     foreach: True
-    ##fused: True
 
 [lr_scheduler]
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:InfiniteLRScheduler@lr_scheduler

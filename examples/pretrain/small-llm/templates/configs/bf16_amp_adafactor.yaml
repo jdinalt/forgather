@@ -1,0 +1,18 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "bfloat16 Adafactor AMP"
+    -- set ns.config_description = "Train with bf16 weights, Adafactor, and AMP"
+    -- set ns.log_name = "bf16_amp_adafactor"
+    -- set ns.model_name = "bf16_amp_adafactor"
+
+[trainer_args]
+    == super()
+    # bf16 model weights with mixed precision autocast
+    default_dtype: "bfloat16"
+    mixed_precision: "bf16"
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim:Adafactor
+    lr: {{ ns.global_lr | toyaml }}
