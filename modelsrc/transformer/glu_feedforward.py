@@ -207,6 +207,7 @@ if _HAS_TRITON:
         """Fused SiLU(gate) * up with custom backward."""
 
         @staticmethod
+        @torch.amp.custom_fwd(device_type="cuda")
         def forward(ctx, gate: Tensor, up: Tensor) -> Tensor:  # type: ignore[override]
             assert gate.is_contiguous() and up.is_contiguous()
             out = torch.empty_like(gate)
@@ -218,6 +219,7 @@ if _HAS_TRITON:
             return out
 
         @staticmethod
+        @torch.amp.custom_bwd(device_type="cuda")
         def backward(ctx, grad_out: Tensor) -> tuple:  # type: ignore[override]
             gate, up = ctx.saved_tensors
             grad_out = grad_out.contiguous()
@@ -235,6 +237,7 @@ if _HAS_TRITON:
         """Fused ReLU(gate) * up with custom backward."""
 
         @staticmethod
+        @torch.amp.custom_fwd(device_type="cuda")
         def forward(ctx, gate: Tensor, up: Tensor) -> Tensor:  # type: ignore[override]
             assert gate.is_contiguous() and up.is_contiguous()
             out = torch.empty_like(gate)
@@ -246,6 +249,7 @@ if _HAS_TRITON:
             return out
 
         @staticmethod
+        @torch.amp.custom_bwd(device_type="cuda")
         def backward(ctx, grad_out: Tensor) -> tuple:  # type: ignore[override]
             gate, up = ctx.saved_tensors
             grad_out = grad_out.contiguous()
@@ -263,6 +267,7 @@ if _HAS_TRITON:
         """Fused GELU(gate) * up with custom backward."""
 
         @staticmethod
+        @torch.amp.custom_fwd(device_type="cuda")
         def forward(ctx, gate: Tensor, up: Tensor) -> Tensor:  # type: ignore[override]
             assert gate.is_contiguous() and up.is_contiguous()
             out = torch.empty_like(gate)
@@ -274,6 +279,7 @@ if _HAS_TRITON:
             return out
 
         @staticmethod
+        @torch.amp.custom_bwd(device_type="cuda")
         def backward(ctx, grad_out: Tensor) -> tuple:  # type: ignore[override]
             gate, up = ctx.saved_tensors
             grad_out = grad_out.contiguous()

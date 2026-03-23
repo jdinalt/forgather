@@ -260,6 +260,7 @@ if _HAS_TRITON:
         """Fused RoPE rotation with custom backward (inverse rotation)."""
 
         @staticmethod
+        @torch.amp.custom_fwd(device_type="cuda")
         def forward(ctx, x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
             """
             Args:
@@ -272,6 +273,7 @@ if _HAS_TRITON:
             return out
 
         @staticmethod
+        @torch.amp.custom_bwd(device_type="cuda")
         def backward(ctx, grad_out: Tensor) -> tuple:  # type: ignore[override]
             cos, sin = ctx.saved_tensors
             grad_out = grad_out.contiguous()
