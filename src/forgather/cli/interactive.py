@@ -13,6 +13,11 @@ from typing import List, Optional
 
 from forgather.meta_config import MetaConfig
 
+# Commands that run in a fresh subprocess to avoid stale module cache issues.
+# These commands import and execute user/project code that changes during
+# iterative development in the interactive shell.
+SUBPROCESS_COMMANDS = {"model", "dataset", "construct"}
+
 from .commands import get_env
 from .main import get_subcommand_registry
 from .main import main as cli_main
@@ -1105,8 +1110,21 @@ class ForgatherShell(cmd.Cmd):
         # Execute the forgather command
         print(f"Executing: forgather {' '.join(forgather_args)}")
 
+        # Commands needing fresh imports run in a subprocess to avoid stale
+        # module cache from previous in-process invocations.
+        if command_args[0] in SUBPROCESS_COMMANDS:
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "forgather.cli"] + forgather_args
+                )
+                if result.returncode not in (0, None):
+                    print(f"Command exited with code {result.returncode}")
+            except KeyboardInterrupt:
+                print("\nCommand interrupted")
+            return
+
         # Check if this is a command that should use pager in interactive mode
-        should_page = command_args[0] in ["pp", "graph", "code", "construct", "dataset"]
+        should_page = command_args[0] in ["pp", "graph", "code"]
 
         if should_page:
             # Capture output for paging
