@@ -92,12 +92,15 @@ def _extract_heatmap_data(
     records: list[dict],
     metric: str,
     step_stride: int = 1,
+    filter_pattern: str | None = None,
 ) -> tuple[np.ndarray, list[str], list[int]]:
     """Extract a 2D array from diagnostic log records.
 
     Returns:
         (data, param_names, steps) where data has shape (n_params, n_steps).
     """
+    import re
+
     data_key = _METRIC_KEYS[metric]
 
     # Filter records that have the metric key and apply stride
@@ -114,6 +117,15 @@ def _extract_heatmap_data(
 
     # Collect all parameter names (preserving insertion order from first record)
     param_names = list(filtered[0][data_key].keys())
+
+    # Apply regex filter on FQN names
+    if filter_pattern:
+        regex = re.compile(filter_pattern)
+        param_names = [n for n in param_names if regex.search(n)]
+        if not param_names:
+            raise ValueError(
+                f"No parameter names match filter pattern '{filter_pattern}'"
+            )
 
     # Build 2D array
     steps = []
@@ -134,6 +146,7 @@ def plot_parameter_heatmap(
     log_path: str | Path,
     metric: str | None = None,
     step_stride: int = 1,
+    filter_pattern: str | None = None,
     log_scale: bool = False,
     vmin: float | None = None,
     vmax: float | None = None,
@@ -153,6 +166,8 @@ def plot_parameter_heatmap(
         metric: Which metric to plot ("norm", "spectral_norm", "grad_norm").
                 Auto-detected from file content if None.
         step_stride: Plot every Nth step (default: 1, all eval steps).
+        filter_pattern: Regex pattern to filter parameter FQN names.
+                Only parameters whose names match are included.
         log_scale: Use log scale for color mapping.
         vmin: Manual minimum for color range.
         vmax: Manual maximum for color range.
@@ -176,7 +191,9 @@ def plot_parameter_heatmap(
                 f"Expected keys: {list(_METRIC_KEYS.values())}"
             )
 
-    data, param_names, steps = _extract_heatmap_data(records, metric, step_stride)
+    data, param_names, steps = _extract_heatmap_data(
+        records, metric, step_stride, filter_pattern
+    )
     n_params, n_steps = data.shape
 
     # Auto-scale figure size

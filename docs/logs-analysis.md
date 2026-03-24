@@ -298,6 +298,175 @@ forgather logs plot --loss-curves --output loss_plot.png --no-show
 forgather logs plot --metrics "grad_norm" --output grad_plot.png --no-show
 ```
 
+## Per-Parameter Diagnostic Logging
+
+Forgather provides callbacks for logging per-parameter weight norms, spectral norms, and gradient norms to JSON files. These are useful for diagnosing training instability, such as the issues described in [arxiv 2510.04212](https://arxiv.org/abs/2510.04212).
+
+Diagnostic logs are written on each **evaluation step** to keep overhead low. They are saved alongside `trainer_logs.json` in the run directory.
+
+### Enabling Diagnostic Callbacks
+
+Add the callbacks to your trainer:
+
+```python
+from forgather.ml.trainer.callbacks import ParameterNormLogger, GradNormLogger
+
+callbacks = [
+    # Per-parameter L2 norms and spectral norms
+    ParameterNormLogger(
+        log_norms=True,            # Log per-parameter L2 norms
+        log_spectral_norms=True,   # Log per-parameter spectral norms
+        power_iter_steps=10,       # Power iteration steps (accuracy vs speed)
+    ),
+    # Per-parameter gradient norms
+    GradNormLogger(),
+    # ... your other callbacks
+]
+
+trainer = Trainer(model=model, args=args, callbacks=callbacks, ...)
+trainer.train()
+```
+
+Both callbacks support checkpoint resume via the Stateful protocol. On resume, log files are truncated to the checkpoint step and appending continues.
+
+### ParameterNormLogger
+
+Writes `parameter_norms.json` containing per-parameter L2 norms and/or spectral norms:
+
+```json
+[
+  {"timestamp": 1700000000.0, "global_step": 500, "epoch": 0.5,
+   "norms": {"model.layers.0.attention.q.weight": 1.23, "model.layers.0.attention.k.weight": 1.18, ...},
+   "spectral_norms": {"model.layers.0.attention.q.weight": 0.98, "model.layers.0.attention.k.weight": 0.91, ...}},
+  ...
+]
+```
+
+Spectral norms are estimated via power iteration, which is significantly faster than full SVD for large weight matrices. Direction vectors are cached across evaluation steps for warm-starting, improving accuracy over time.
+
+### GradNormLogger
+
+Writes `gradient_norms.json` containing per-parameter gradient L2 norms. Gradients are captured after clipping but before the optimizer step (via the `on_pre_optimizer_step` hook):
+
+```json
+[
+  {"timestamp": 1700000000.0, "global_step": 500, "epoch": 0.5,
+   "grad_norms": {"model.layers.0.attention.q.weight": 0.012, "model.layers.0.attention.k.weight": 0.045, ...}},
+  ...
+]
+```
+
+When `fuse_optim_with_backward` is enabled, gradients are consumed during the backward pass and this callback disables itself with a warning.
+
+### Diagnostic Log Location
+
+Diagnostic logs are saved to the same directory as `trainer_logs.json`:
+
+```
+output_models/MODEL_NAME/runs/RUN_NAME/
+    trainer_logs.json        # Standard training metrics
+    parameter_norms.json     # Per-parameter weight/spectral norms
+    gradient_norms.json      # Per-parameter gradient norms
+```
+
+## Per-Parameter Heatmap Plots
+
+The `forgather plot heatmap` command generates grid heatmaps from diagnostic log files, with parameter FQN labels on the y-axis and training steps on the x-axis. Each cell is color-coded by the metric value.
+
+### Basic Usage
+
+```bash
+# Auto-detect latest diagnostic log in project
+forgather plot heatmap
+
+# Specify a log file
+forgather plot heatmap path/to/parameter_norms.json
+
+# Open in editor after generation
+forgather plot heatmap -e
+```
+
+The metric type is auto-detected from the file content (`norms`, `spectral_norms`, or `grad_norms`). To override:
+
+```bash
+# Plot spectral norms from a file that contains both norms and spectral_norms
+forgather plot heatmap path/to/parameter_norms.json --metric spectral_norm
+```
+
+### Filtering Parameters
+
+Use `--filter` / `-f` with a regex pattern to show only matching parameter names:
+
+```bash
+# Only attention parameters
+forgather plot heatmap parameter_norms.json -f "attention"
+
+# Only query and key matrices
+forgather plot heatmap parameter_norms.json -f "(q_proj|k_proj)"
+
+# Only a specific layer
+forgather plot heatmap parameter_norms.json -f "layers\.2\."
+
+# Only MLP parameters across all layers
+forgather plot heatmap gradient_norms.json -f "mlp"
+```
+
+### Controlling Step Density
+
+For long training runs, use `--step-stride` to reduce the number of plotted steps:
+
+```bash
+# Plot every 5th evaluation step
+forgather plot heatmap parameter_norms.json --step-stride 5
+```
+
+### Color Scale Options
+
+```bash
+# Log scale (useful when values span multiple orders of magnitude)
+forgather plot heatmap parameter_norms.json --log-scale
+
+# Manual color range
+forgather plot heatmap parameter_norms.json --vmin 0.5 --vmax 2.0
+```
+
+### Output Options
+
+```bash
+# Custom output path
+forgather plot heatmap parameter_norms.json -o figures/spectral_heatmap.png
+
+# SVG format
+forgather plot heatmap parameter_norms.json --format svg
+
+# Custom figure size (width height in inches)
+forgather plot heatmap parameter_norms.json --figsize 20 30
+
+# Custom title
+forgather plot heatmap parameter_norms.json --title "Spectral Norms: BF16 Run"
+```
+
+### Typical Workflow
+
+```bash
+# 1. Train with diagnostic callbacks enabled
+forgather -t config.yaml train
+
+# 2. List available logs
+forgather logs list
+
+# 3. Check overall spectral norms
+forgather plot heatmap output_models/my_model/runs/latest/parameter_norms.json --metric spectral_norm -e
+
+# 4. Zoom in on attention layers
+forgather plot heatmap output_models/my_model/runs/latest/parameter_norms.json \
+    --metric spectral_norm -f "attention" -e
+
+# 5. Check gradient norms for the same layers
+forgather plot heatmap output_models/my_model/runs/latest/gradient_norms.json \
+    -f "attention" -e
+```
+
 ## Programmatic API
 
 You can also use the analysis tools programmatically in Python:
@@ -316,6 +485,22 @@ print(f"Best loss: {summary['best_loss']} at step {summary['best_loss_step']}")
 from forgather.ml.analysis.plotting import plot_loss_curves
 
 fig = plot_loss_curves([log], smooth_window=10, output_path="loss.png")
+```
+
+### Heatmap API
+
+```python
+from forgather.ml.analysis import plot_parameter_heatmap
+
+# Plot spectral norms for attention parameters only
+fig = plot_parameter_heatmap(
+    "path/to/parameter_norms.json",
+    metric="spectral_norm",
+    filter_pattern="attention",
+    step_stride=2,
+    log_scale=True,
+    output_path="spectral_heatmap.png",
+)
 ```
 
 ## Log Location

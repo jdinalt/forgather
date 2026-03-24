@@ -93,6 +93,12 @@ def create_plot_parser(global_args):
         help="Manual maximum for color range",
     )
     heatmap_parser.add_argument(
+        "--filter",
+        "-f",
+        type=str,
+        help="Regex to filter parameter FQN names (only matching names are plotted)",
+    )
+    heatmap_parser.add_argument(
         "--figsize",
         type=float,
         nargs=2,

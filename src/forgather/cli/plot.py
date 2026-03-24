@@ -68,6 +68,7 @@ def heatmap_cmd(args):
             log_path=log_path,
             metric=args.metric,
             step_stride=args.step_stride,
+            filter_pattern=getattr(args, "filter", None),
             log_scale=args.log_scale,
             vmin=args.vmin,
             vmax=args.vmax,
