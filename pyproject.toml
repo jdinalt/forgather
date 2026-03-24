@@ -29,7 +29,7 @@ dependencies = [
     "transformers ~= 5.0",
     "tqdm ~= 4.65",
     "aiohttp ~= 3.9",
-    "torchao ~= 0.16666664",
+    "torchao ~= 0.16.0",
     "torchdata ~= 0.11",
     "uvicorn",
     "fastapi",
