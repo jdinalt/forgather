@@ -729,6 +729,8 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             case _:
                 raise ValueError("Requires one of: default|meta|device")
         assert self.model is not None
+        if self.args.fp8_recipe:
+            self.model = self._apply_fp8_training(self.model)
         if self.args.gradient_checkpointing:
             if self.enable_activation_checkpoint_fn is None:
                 if self.dist.rank == 0:
@@ -745,6 +747,46 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         self._flops_per_token = self._compute_flops_per_token()
         if self.dist.rank == 0:
             logger.info(f"Estimated FLOPs per token: {self._flops_per_token:.2e}")
+
+    def _apply_fp8_training(self, model: torch.nn.Module) -> torch.nn.Module:
+        """Convert nn.Linear layers to Float8Linear for FP8 training via torchao."""
+        from torchao.float8 import Float8LinearConfig, convert_to_float8_training
+        from torchao.float8.float8_linear import Float8Linear
+
+        assert self.args.fp8_recipe is not None
+        config = Float8LinearConfig.from_recipe_name(self.args.fp8_recipe)
+
+        module_filter_fn = None
+        pad = self.args.fp8_dim_alignment
+        if pad:
+
+            def _filter_fn(mod: torch.nn.Module, fqn: str) -> bool:
+                if isinstance(mod, torch.nn.Linear):
+                    ok = mod.in_features % pad == 0 and mod.out_features % pad == 0
+                    if not ok:
+                        logger.info(
+                            f"Skipping FP8 for {fqn}: dims ({mod.in_features}, {mod.out_features}) "
+                            f"not divisible by {pad}"
+                        )
+                    return ok
+                return True
+
+            module_filter_fn = _filter_fn
+
+        model = convert_to_float8_training(
+            model, config=config, module_filter_fn=module_filter_fn
+        )
+
+        converted = sum(1 for m in model.modules() if isinstance(m, Float8Linear))
+        total_linear = sum(
+            1 for m in model.modules() if isinstance(m, (torch.nn.Linear, Float8Linear))
+        )
+        logger.info(
+            f"FP8 training ({self.args.fp8_recipe}): "
+            f"converted {converted}/{total_linear} Linear layers"
+        )
+
+        return model
 
     def _wrap_loss_fn(self):
         # Rescale loss by gradient accumulation steps.

@@ -64,6 +64,7 @@
 ##   float32_matmul_precision
 ##                          (str)   Approximate float32 matmul with bf16. Choices: highest, high, medium
 ##   mixed_precision        (str)   AMP dtype.                      Choices: bf16, fp16, no
+##   fp8_recipe             (str)   FP8 recipe for linear layers.   Choices: tensorwise, rowwise, rowwise_with_gw_hp
 ##   compile                (bool)  Enable torch.compile.           Default: False
 ##
 ## Misc
@@ -262,6 +263,7 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     float32_matmul_precision: {{ float32_matmul_precision | toyaml(None) }}
     default_dtype: {{ default_dtype | toyaml(None) }}
     mixed_precision: {{ mixed_precision | toyaml(None) }}
+    fp8_recipe: {{ fp8_recipe | toyaml(None) }}
 
     dataloader_drop_last: True
 
@@ -361,6 +363,10 @@ optimizer: &optimizer !partial:torch:optim.AdamW
         names: "--mixed-precision"
         choices: [ "bf16", "fp16", "no" ]
         help: "Automatic Mixed Precision (AMP) dtype"
+    fp8_recipe:
+        names: "--fp8-recipe"
+        choices: [ "tensorwise", "rowwise", "rowwise_with_gw_hp" ]
+        help: "FP8 training recipe (torchao Float8Linear)"
     seed:
         names: "--seed"
         type: int

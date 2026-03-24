@@ -424,6 +424,10 @@ class PipelineTrainer(
 
         self._print_modules(pipeline_modules)
 
+        if self.args.fp8_recipe:
+            for i, mod in enumerate(pipeline_modules):
+                pipeline_modules[i] = self._apply_fp8_training(mod)
+
         # Construct the pipeline scheduler.
         # Depending upon the class, it either takes a single stage (PipelineScheduleSingle) or a list of stages,
         # PipelineScheduleMulti. See: https://docs.pytorch.org/docs/stable/distributed.pipelining.html#torch.distributed.pipelining.schedules.PipelineScheduleSingle
@@ -994,7 +998,9 @@ class PipelineTrainer(
         return total_norm
 
     @override
-    def _count_batch_tokens(self, input_dict: dict[str, Tensor], labels: Tensor) -> Tensor:
+    def _count_batch_tokens(
+        self, input_dict: dict[str, Tensor], labels: Tensor
+    ) -> Tensor:
         """
         Count tokens in pipeline parallel training.
 

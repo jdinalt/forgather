@@ -122,6 +122,16 @@ class BaseTrainingArguments(MinimalTrainingArguments):
     # "fp16": float16 autocast with GradScaler loss scaling
     mixed_precision: str | None = None
 
+    # FP8 training via torchao. Converts nn.Linear to Float8Linear for FP8 matmuls.
+    # Recipes: "tensorwise" (fastest), "rowwise" (more accurate), "rowwise_with_gw_hp" (most accurate)
+    # None = disabled. Orthogonal to mixed_precision (use both for FP8 matmuls + bf16 non-linear ops).
+    # Requires CUDA SM >= 8.9 (RTX 4090, H100, etc.) and matmul dims divisible by 16.
+    fp8_recipe: str | None = None
+
+    # Minimum alignment for FP8 Linear layer dimensions. Layers with in_features or
+    # out_features not divisible by this value are skipped. Hardware requires 16.
+    fp8_dim_alignment: int = 16
+
     def __post_init__(self):
         if self.logging_dir is None:
             self.logging_dir = os.path.join(
@@ -147,6 +157,14 @@ class BaseTrainingArguments(MinimalTrainingArguments):
                 raise ValueError(
                     f"mixed_precision must be None, 'no', 'bf16', or 'fp16', "
                     f"got '{self.mixed_precision}'"
+                )
+
+        # Validate fp8_recipe
+        _FP8_RECIPES = ("tensorwise", "rowwise", "rowwise_with_gw_hp")
+        if self.fp8_recipe is not None:
+            if self.fp8_recipe not in _FP8_RECIPES:
+                raise ValueError(
+                    f"fp8_recipe must be one of {_FP8_RECIPES}, got '{self.fp8_recipe}'"
                 )
 
 
