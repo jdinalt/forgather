@@ -187,22 +187,9 @@ Detailed inference instructions are located in 'tools/inference_server/README.md
 
 Forgather models support distributed inference with [vLLM](https://docs.vllm.ai/) for high-throughput serving with tensor and pipeline parallelism.
 
-**Validate vLLM Support**
-
-```python
-from forgather.ml.model_conversion import validate_vllm_plans, print_model_structure
-from transformers import AutoModelForCausalLM
-
-# Load trained model
-model = AutoModelForCausalLM.from_pretrained("output_models/my_model")
-
-# Print model structure
-print_model_structure(model, max_depth=4)
-
-# Validate vLLM plans
-if hasattr(model, '_tp_plan') and model._tp_plan:
-    is_valid = validate_vllm_plans(model, tp_plan=model._tp_plan, pp_plan=model._pp_plan, strict=True)
-```
+> **Note (2026-03):** vLLM integration is currently broken due to Forgather's move to
+> Transformers v5, which vLLM does not yet support. The deployment commands below are
+> preserved for reference.
 
 **Deploy with vLLM**
 

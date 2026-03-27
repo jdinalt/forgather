@@ -665,7 +665,7 @@ def get_state_components(self) -> List[StateComponent]:
 - **Main Documentation**: `docs/checkpointing/distributed_checkpoint_abstraction.md`
 - **User Guide**: `docs/checkpointing/user_guide.md` - Troubleshooting and best practices
 - **Built-in Trainers**: Check source code for reference implementations
-- **Issues**: Report issues at https://github.com/anthropics/forgather/issues
+- **Issues**: Report issues at https://github.com/jdinalt/forgather/issues
 
 ## Current Status
 

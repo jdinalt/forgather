@@ -45,42 +45,67 @@ Both are display-only; they are not written to `trainer_logs.json`. The underlyi
 token and FLOP values in `trainer_logs.json` can be used to reproduce these
 calculations offline.
 
-## ProgressCallback options
+## Callback configuration
+
+Performance metrics are split across two callbacks that work together:
+
+- **`DefaultMetrics`** computes derived metrics (`tok_per_sec`, `mfu`, `peak_mem`) during
+  `on_log_step`, before other callbacks see the log entry.
+- **`ProgressCallback`** formats and displays the console output, using column specifications
+  to control which metrics appear.
+
+Both are included by default in Forgather trainers.
+
+### DefaultMetrics
+
+```python
+from forgather.ml.trainer.callbacks import DefaultMetrics
+
+callbacks = [
+    DefaultMetrics(
+        peak_hardware_flops=4 * 165.2e12,     # 4× RTX 4090, for MFU display
+    ),
+]
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `peak_hardware_flops` | `None` | Aggregate peak BF16 FLOP/s across all GPUs; enables MFU display |
+
+When `peak_hardware_flops` is set, `DefaultMetrics` computes MFU each log step. Token
+throughput (`tok_per_sec`) is always computed when token counts are available in the logs.
+
+### ProgressCallback
+
+`ProgressCallback` controls the console display. It does not compute metrics itself;
+it renders whatever metrics are present in the log entry (including those injected by
+`DefaultMetrics`).
 
 ```python
 from forgather.ml.trainer.callbacks import ProgressCallback
 
 callbacks = [
     ProgressCallback(
-        show_tokens_per_second=True,          # Display tok/s each log step
-        peak_hardware_flops=4 * 165.2e12,     # 4× RTX 4090, for MFU display
+        use_tqdm=False,             # Use line-based logging instead of TQDM
+        header_interval=20,         # Print column headers every 20 log steps
+        step_columns={...},         # Override default column display (see below)
+        final_metrics={...},        # Override final summary metrics
     ),
 ]
 ```
 
-When `show_tokens_per_second=True`, the console output gains a `tok/s` column:
-
-```
-2025-01-15 10:23:45   1000  1.0   train-loss: 2.31450   learning-rate: 1.00e-04  tok/s: 142857
-```
-
-When `peak_hardware_flops` is also set, an `mfu` column appears alongside it:
-
-```
-2025-01-15 10:23:45   1000  1.0   train-loss: 2.31450   learning-rate: 1.00e-04  tok/s: 142857  mfu: 38.5%
-```
-
-### Full option reference
-
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `show_loss` | `True` | Display training loss |
-| `show_learning_rate` | `True` | Display current learning rate |
-| `show_epoch` | `True` | Display epoch |
-| `show_grad_norm` | `True` | Display gradient norm |
-| `show_tokens` | `False` | Display token count for the log interval |
-| `show_tokens_per_second` | `False` | Display tokens/sec from wall-clock time (real throughput) |
-| `peak_hardware_flops` | `None` | Aggregate peak BF16 FLOP/s across all GPUs; enables MFU display |
+| `use_tqdm` | `None` (auto) | `True` for TQDM progress bar, `False` for line-based logging, `None` to auto-detect |
+| `output_stream` | `None` | Output stream for line-based logging (`"stdout"`, `"stderr"`, or a `TextIOBase`) |
+| `step_columns` | `None` | Dict of column spec overrides, merged with defaults. Set a key to `None` to remove it |
+| `final_metrics` | `None` | Dict of final metric spec overrides, merged with defaults |
+| `header_interval` | `20` | Print column headers every N log steps |
+
+Columns are displayed only when the corresponding metric key appears in the current log
+entry. The default columns include `loss`, `learning_rate`, `grad_norm`, `tok_per_sec`,
+`mfu`, and `peak_mem`. Override `step_columns` to customize which metrics are shown and
+their formatting.
 
 ## Setting `peak_hardware_flops`
 

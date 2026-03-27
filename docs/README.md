@@ -44,16 +44,17 @@ Much of this is still under construction.
 
 ```
 docs/
-├── getting-started/     # Installation and tutorials
-├── core-concepts/       # Fundamental concepts
-├── project-templates/  # Reusable project templates (LM Training, Auto LR)
-├── trainers/           # Training system documentation
-├── checkpointing/      # Distributed checkpoint system (✅ Complete)
-├── models/             # Model construction and templates
-├── data/               # Data handling and preprocessing
-├── configuration/      # Template and configuration system
-├── examples/           # Working examples and tutorials
-├── reference/          # Complete API and template reference
-├── guides/             # Best practices and advanced topics
-└── contributing/       # Development and contribution
+├── getting-started/     # Installation and tutorials (WIP)
+├── core-concepts/       # Fundamental concepts (WIP)
+├── project-templates/   # Reusable project templates (LM Training, Auto LR)
+├── trainers/            # Training system documentation
+├── checkpointing/       # Distributed checkpoint system
+├── datasets/            # Data loading, packing, and preprocessing
+├── configuration/       # Template and configuration system
+├── inference/           # vLLM integration guide
+├── development/         # Testing and development workflow
+├── fused_loss/          # Fused linear cross-entropy loss
+├── known_issues/        # Known performance issues and workarounds
+├── guides/              # Best practices and advanced topics (WIP)
+└── examples/            # Pointers to working examples
 ```

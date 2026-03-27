@@ -74,23 +74,16 @@ should not be passed to the sync function.
 
 ---
 
-## `model_conversion.__init__` exports undefined symbols
+## `model_conversion.__init__` exported undefined symbols (Fixed)
 
 **File**: `src/forgather/ml/model_conversion/__init__.py`
-**Severity**: Low (import error if accessed)
+**Severity**: Fixed
 
-### Description
-
-The `__all__` list includes `validate_tp_plan`, `validate_pp_plan`,
-`validate_vllm_plans`, and `print_model_structure`, but none of these functions
-are defined or imported anywhere in the codebase. Accessing them via
-`from forgather.ml.model_conversion import validate_vllm_plans` raises
-`ImportError`.
-
-### Fix
-
-Either implement the functions or remove them from `__all__`. The functions are
-referenced in `docs/inference/vllm_integration.md` as planned features.
+The `__all__` list previously included `validate_tp_plan`, `validate_pp_plan`,
+`validate_vllm_plans`, and `print_model_structure`, but these functions were never
+implemented. They have been removed from `__all__`. Additionally, vLLM integration
+is currently broken due to Forgather's move to Transformers v5 (see
+`docs/inference/vllm_integration.md`).
 
 ---
 

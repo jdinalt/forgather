@@ -173,7 +173,7 @@ ConfigLoader.add_multi_constructor("!factory", CallableConstructor(FactoryNode))
 ConfigLoader.add_multi_constructor("!singleton", CallableConstructor(SingletonNode))
 ConfigLoader.add_multi_constructor("!call", CallableConstructor(SingletonNode))
 
-# Depricated
+# Deprecated
 ConfigLoader.add_multi_constructor("!lambda", CallableConstructor(PartialNode))
 
 
