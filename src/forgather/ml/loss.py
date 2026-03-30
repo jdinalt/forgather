@@ -276,7 +276,7 @@ class LinearCrossEntropyLoss:
             self._compute_fn = torch.compile(self._compute_fn)
 
     def _select_implementation(
-        self, impl: str, **kwargs
+        self, impl: str, impl_was_auto: bool = False, **kwargs
     ) -> tuple[str, Callable[..., Any]]:
         """
         Select and initialize the loss implementation.
@@ -297,7 +297,7 @@ class LinearCrossEntropyLoss:
             for candidate in candidates:
                 try:
                     actual_impl, compute_fn = self._select_implementation(
-                        candidate, **kwargs
+                        candidate, impl_was_auto=True, **kwargs
                     )
                     logger.info(
                         f"LinearCrossEntropyLoss: auto-selected '{actual_impl}' implementation"
@@ -329,8 +329,33 @@ class LinearCrossEntropyLoss:
                         "Optimized Cross-Cut-Entropy implementation requires bfloat16 or float16 dtype. Using 'torch_compile'"
                     )
                     self.cce_impl = "torch_compile"
+
+                # For half-precision weights, default to fp32 gradient accumulation
+                # to prevent spectral norm explosion in lm_head during training.
+                # When explicitly requested, warn instead of overriding.
+                if self.weight.dtype in (torch.bfloat16, torch.float16):
+                    if impl_was_auto:
+                        self.kwargs.setdefault("accum_e_fp32", True)
+                        self.kwargs.setdefault("accum_c_fp32", True)
+                    else:
+                        if not kwargs.get("accum_e_fp32", False):
+                            logger.warning(
+                                "CCE with %s weights: accum_e_fp32 is not enabled. "
+                                "This may cause numerical instability (lm_head spectral norm explosion) "
+                                "during long training runs. Consider setting accum_e_fp32=True.",
+                                self.weight.dtype,
+                            )
+                        if not kwargs.get("accum_c_fp32", False):
+                            logger.warning(
+                                "CCE with %s weights: accum_c_fp32 is not enabled. "
+                                "This may cause numerical instability (lm_head spectral norm explosion) "
+                                "during long training runs. Consider setting accum_c_fp32=True.",
+                                self.weight.dtype,
+                            )
+
                 logger.info(
-                    f"LinearCrossEntropyLoss: using Apple CCE ({self.cce_impl}) implementation"
+                    f"LinearCrossEntropyLoss: using Apple CCE ({self.cce_impl}), "
+                    f"kwargs={self.kwargs}"
                 )
                 return "cce", self._compute_cce
             except ImportError as e:
@@ -345,11 +370,27 @@ class LinearCrossEntropyLoss:
             try:
                 from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
 
-                logger.info("LinearCrossEntropyLoss: using Liger Kernel implementation")
+                # For half-precision weights, default to fp32 accumulation
+                # to prevent spectral norm explosion in lm_head during training.
+                liger_kwargs = dict(self.kwargs)
+                if self.weight.dtype in (torch.bfloat16, torch.float16):
+                    if impl_was_auto:
+                        liger_kwargs.setdefault("accum_dtype", torch.float32)
+                    elif liger_kwargs.get("accum_dtype") is None:
+                        logger.warning(
+                            "Liger with %s weights: accum_dtype is not set. "
+                            "This may cause numerical instability (lm_head spectral norm explosion) "
+                            "during long training runs. Consider setting accum_dtype=torch.float32.",
+                            self.weight.dtype,
+                        )
+
+                logger.info(
+                    f"LinearCrossEntropyLoss: using Liger Kernel, kwargs={liger_kwargs}"
+                )
 
                 # Initialize Liger loss function
                 self._liger_loss = LigerFusedLinearCrossEntropyLoss(
-                    ignore_index=self.ignore_index, **self.kwargs
+                    ignore_index=self.ignore_index, **liger_kwargs
                 )
                 return "liger", self._compute_liger
             except ImportError as e:
@@ -359,7 +400,9 @@ class LinearCrossEntropyLoss:
                 ) from e
 
         elif impl == "pytorch":
-            logger.info("LinearCrossEntropyLoss: using pure PyTorch implementation")
+            logger.info(
+                f"LinearCrossEntropyLoss: using pure PyTorch, kwargs={self.kwargs}"
+            )
             return "pytorch", self._compute_pytorch
 
         else:
