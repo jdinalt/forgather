@@ -58,20 +58,32 @@ output_models/my_model/
 
 ### Resuming from Checkpoint
 
+By default, ``resume_from_checkpoint=True``. The trainer automatically finds
+and loads the latest checkpoint. If no checkpoint exists (first run), it falls
+back to fresh model initialization — no manual flag toggling between runs.
+
 ```python
-# Resume from latest checkpoint
+# Default: auto-resume (recommended for most use cases)
 args = TrainingArguments(
     output_dir="output_models/my_model",
-    resume_from_checkpoint=True,      # Auto-finds latest checkpoint
-    max_steps=2000,                   # Continue training
+    # resume_from_checkpoint=True is the default
+    max_steps=2000,
 )
 
 trainer = Trainer(model=model, args=args, ...)
-trainer.train()  # Continues from step 1500
+trainer.train()
+# First run: no checkpoint -> initializes fresh model
+# Subsequent runs: checkpoint found -> resumes from latest
 
-# Or specify explicit checkpoint
+# Specify explicit checkpoint
 args = TrainingArguments(
     resume_from_checkpoint="output_models/my_model/checkpoint-1000",
+    ...
+)
+
+# Force fresh initialization (ignore existing checkpoints)
+args = TrainingArguments(
+    resume_from_checkpoint=False,
     ...
 )
 ```

@@ -245,7 +245,10 @@ class MinimalTrainingArguments:
         save_safetensors: Use safetensors format instead of pickle (safer, compatible).
         save_on_each_node: In multi-node training, save on each node (not just main). Don't use with shared storage.
         overwrite_output_dir: Overwrite output_dir contents (use to continue from checkpoint in that dir).
-        resume_from_checkpoint: Path to checkpoint to resume from, or True to auto-find latest.
+        resume_from_checkpoint: Auto-resume behavior (default True). When True, automatically
+            finds and loads the latest checkpoint. If no checkpoint exists, falls back to fresh
+            initialization. Set to a path string to resume from a specific checkpoint. Set to
+            False to force fresh initialization (ignoring existing checkpoints).
 
         load_best_model_at_end: Load best checkpoint at end of training (requires save_strategy == eval_strategy).
         metric_for_best_model: Metric to compare models when load_best_model_at_end=True. Defaults to "loss".
@@ -317,7 +320,7 @@ class MinimalTrainingArguments:
     save_safetensors: bool = True
     save_on_each_node: bool = False
     overwrite_output_dir: bool = False
-    resume_from_checkpoint: bool | str = False
+    resume_from_checkpoint: bool | str = True
 
     # Best model tracking and loading options
     load_best_model_at_end: bool = False

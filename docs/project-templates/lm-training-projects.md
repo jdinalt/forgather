@@ -211,7 +211,7 @@ proportionally.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `seed` | int | 42 | Random seed |
-| `resume` | bool | False | Resume from latest checkpoint |
+| `resume` | bool | True | Auto-resume from latest checkpoint (falls back to fresh init if none exists) |
 | `save_strategy` | str | steps | Checkpoint save strategy. Choices: no, steps, epoch |
 
 ### CLI Arguments

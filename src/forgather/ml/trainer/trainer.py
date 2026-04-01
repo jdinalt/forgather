@@ -40,6 +40,7 @@ from ..loss import RescaleLoss
 from ..no_init_weights import no_init_weights
 from ..sharded_checkpoint import (
     create_sharing_metadata,
+    find_latest_checkpoint,
     next_checkpoint_path,
     retie_parameters,
     save_checkpoint_metrics,
@@ -514,6 +515,12 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                     "PyTorch does not appear to support the experimental activation_memory_budget API"
                 )
 
+        # Resolve resume_from_checkpoint before model construction, since the
+        # construction strategy depends on whether we're resuming (e.g., "meta"
+        # requires a checkpoint, "default" skips init when resuming).
+        # After this block, resume_from_checkpoint is either a path string or False.
+        self._resolve_checkpoint()
+
         self._init_dataloaders(train_dataset, eval_dataset)
         self._prepare_model()
         if self.args.torch_compile:
@@ -536,12 +543,9 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         self.state = self._init_state()
         self.checkpoint_manager = self._init_checkpoint_manager()
 
-        # Restore from checkpoint if specified (after state is initialized)
+        # Restore from checkpoint (path already resolved by _resolve_checkpoint)
         if self.args.resume_from_checkpoint:
-            checkpoint_path = self.args.resume_from_checkpoint
-            if isinstance(checkpoint_path, bool) or checkpoint_path == "":
-                checkpoint_path = None
-            self.load_checkpoint(checkpoint_path)
+            self.load_checkpoint(self.args.resume_from_checkpoint)
             # Non-persistent buffers (e.g., RotaryEmbedding's inv_freq) are not
             # saved in checkpoints. When the model was constructed on meta device,
             # these buffers were never initialized. Compute them now.
@@ -549,6 +553,35 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                 self._initialize_non_persistent_buffers(self.model)
 
         self._dispatch_event("on_init_end")
+
+    def _resolve_checkpoint(self) -> None:
+        """Resolve resume_from_checkpoint to a concrete path or False.
+
+        Called early in ``_prepare()`` before model construction, since the
+        construction strategy depends on whether we're resuming.
+
+        After this method:
+        - ``self.args.resume_from_checkpoint`` is a path string (checkpoint found)
+        - or ``False`` (no checkpoint, fresh initialization)
+        """
+        rfc = self.args.resume_from_checkpoint
+        if not rfc:
+            return
+
+        if isinstance(rfc, bool):
+            # True = auto-find latest checkpoint
+            checkpoint_path = find_latest_checkpoint(self.args.output_dir)
+        else:
+            # Explicit path string
+            checkpoint_path = rfc if os.path.exists(rfc) else None
+
+        if checkpoint_path is None:
+            logger.info(
+                "No checkpoint found. Starting with fresh model initialization."
+            )
+            self.args.resume_from_checkpoint = False
+        else:
+            self.args.resume_from_checkpoint = checkpoint_path
 
     def _wrap(self) -> None:
         """
@@ -670,6 +703,19 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         Also sets up gradient checkpointing if enabled and initializes fused loss if available.
         """
         # _prepare() sub-step 2
+        # Meta device construction requires a checkpoint. If none is available,
+        # fall back to the default strategy.
+        if (
+            self.args.construct_model_on == "meta"
+            and not self.args.resume_from_checkpoint
+        ):
+            logger.warning(
+                "No checkpoint available for meta device construction. "
+                "Falling back to 'default' strategy (construct on CPU, "
+                "initialize, move to device)."
+            )
+            self.args.construct_model_on = "default"
+
         match self.args.construct_model_on:
             case "default":
                 if self.model_init:
@@ -692,9 +738,6 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                 assert (
                     self.model_init
                 ), "Constructing the model on meta device requires model_init"
-                assert (
-                    self.args.resume_from_checkpoint
-                ), "Constructing model on meta-device requires loading parameters from checkpoint"
 
                 logger.info(
                     f"Constructing model on meta device and materializing on {self.args.device}"

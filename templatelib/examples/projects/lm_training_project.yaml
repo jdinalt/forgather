@@ -69,7 +69,7 @@
 ##
 ## Misc
 ##   seed                   (int)   Random seed.                    Default: 42
-##   resume                 (bool)  Resume from latest checkpoint.  Default: False
+##   resume                 (bool)  Resume from latest checkpoint.  Default: True
 ##   save_strategy          (str)   Checkpoint save strategy.       Default: steps
 ##
 ## ---------------------------------------------------------------------------
@@ -257,7 +257,7 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     per_device_eval_batch_size: {{ ns.per_device_train_batch_size * 2 }}  # 2x train batch size
     gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
 
-    resume_from_checkpoint: {{ resume | default(False) }}
+    resume_from_checkpoint: {{ resume | default(True) }}
     torch_compile: {{ compile | default(False) }}
     dispatch_batches: {{ ns.dispatch_batches }}
     float32_matmul_precision: {{ float32_matmul_precision | toyaml(None) }}
