@@ -443,47 +443,71 @@ The `persistent=False` flag means `inv_freq` is excluded from `state_dict()`,
 so it is never saved to or loaded from checkpoints. It is always recomputed
 by `reset_parameters()`.
 
-#### Meta Device Construction (Pipeline Parallel, from_pretrained)
+#### Meta Device Construction
 
-When a model is constructed on the meta device (for pipeline parallel or
-`from_pretrained`), tensors have shape and dtype but no data:
+There are two different flows for meta device construction, depending on
+whether HF's ``from_pretrained`` or Forgather's trainer is doing the loading.
+The key difference is in the ordering: HF loads weights while tensors are
+still on meta (materializing per-tensor onto the target device), while
+Forgather materializes all tensors first via ``to_empty()`` then loads.
+
+**HuggingFace ``from_pretrained`` flow:**
 
 ```
 1. with torch.device("meta"):
        model = DynamicCasualLM(config)
    # All tensors (params and buffers) are on meta device
-   # post_init() calls _init_weights for each module
-   # reset_parameters() sees inv_freq.is_meta -> returns early (no-op)
+   # post_init() -> init_weights() skips because meta device
 
-2. Load state_dict (for from_pretrained)
-   # Persistent parameters are loaded from checkpoint
-   # Non-persistent buffers (inv_freq) remain on meta
+2. _load_pretrained_model()
+   # Loads checkpoint and materializes each tensor directly onto the
+   # target device (per-tensor via spawn_materialize). Tensors go from
+   # meta -> target device as they are loaded.
+   # Non-persistent buffers (inv_freq) are NOT in the checkpoint
+   # and remain on meta.
 
-3. HF calls _move_missing_keys_from_meta_to_device()
-   # Replaces meta tensors with torch.empty_like(..., device=target_device)
-   # inv_freq is now an empty tensor on the real device
-
-4. HF calls _initialize_missing_keys() -> init_weights() for affected modules
-   # _init_weights(rotary_emb) is called again
-   # reset_parameters() now runs: inv_freq.is_meta is False
-   # Computes and fills inv_freq on the real device
+3. _finalize_model_loading():
+   a. _move_missing_keys_from_meta_to_device()
+      # Moves ONLY keys not loaded from checkpoint (missing params +
+      # non-persistent buffers) from meta to the target device via
+      # torch.empty_like(..., device=target_device)
+   b. _initialize_missing_keys() -> initialize_weights()
+      # Calls _init_weights for each module. Modules with params already
+      # loaded have _is_hf_initialized=True and are skipped.
+      # Non-persistent buffer modules (RotaryEmbedding) are NOT skipped:
+      # reset_parameters() runs, inv_freq.is_meta is False -> computes values.
 ```
 
-This two-phase initialization (allocate in `__init__`, compute in
-`reset_parameters`) is what allows the same code to work for both direct
-construction and meta-device construction.
+**Forgather trainer ``construct_model_on="meta"`` flow:**
 
-### Initialization Order
+```
+1. with torch.device("meta"):
+       model = model_init()
+   # All tensors on meta device
+   # post_init() -> init_weights() skips because meta device
 
-During model construction:
-1. Model is constructed (on meta device for `from_pretrained`, or target device directly)
-2. `post_init()` triggers `_init_weights(module)` for each module
-3. For each module, the injected init function (e.g., `init_weights_by_regex`) runs:
-   - Skip if no local state (no parameters or buffers)
-   - Apply implementation-specific logic (e.g., regex matching via `init_prefix`)
-   - Fall back to `reset_parameters()`
-4. If loading from checkpoint: `_is_hf_initialized` flags prevent re-initialization of loaded parameters
-5. For meta device: steps 3-4 happen again after buffers are moved to real device
+2. model.to_empty(device=target_device)
+   # Materializes ALL tensors (params and buffers) as uninitialized
+   # empty tensors on the target device.
+   retie_parameters(model, sharing_metadata)
+   # Restores weight tying broken by to_empty()
+
+3. load_checkpoint()
+   # Loads state_dict with assign=False, overwriting the empty tensors
+   # with values from checkpoint. Non-persistent buffers (inv_freq) are
+   # not in the state_dict and remain uninitialized.
+
+4. _initialize_non_persistent_buffers(model)
+   # Finds modules with _non_persistent_buffers_set and calls their
+   # reset_parameters(). inv_freq.is_meta is False (already on real
+   # device from step 2) -> computes and fills correct values.
+```
+
+Both flows arrive at the same result: persistent parameters loaded from
+checkpoint, non-persistent buffers computed by ``reset_parameters()``.
+The two-phase initialization pattern (allocate in ``__init__``, compute in
+``reset_parameters``) is what allows the same module code to work with
+both approaches.
 
 ### Module Construction Patterns
 
