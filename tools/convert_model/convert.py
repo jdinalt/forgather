@@ -128,6 +128,12 @@ def parse_args(args=None):
         help="Destination model test prompt",
     )
     parser.add_argument(
+        "--compare-text-file",
+        type=os.path.expanduser,
+        default=None,
+        help="Path to a text file whose contents will be used as the comparison prompt instead of --prompt.",
+    )
+    parser.add_argument(
         "--debug-params",
         action="store_true",
         help="Print parameter names for debugging mapping",
@@ -271,6 +277,16 @@ def main():
         level=getattr(logging, args.log_level),
         format="%(levelname)s:%(name)s:%(message)s",
     )
+
+    # Override prompt with file contents if --compare-text-file is provided
+    if args.compare_text_file:
+        compare_text_path = os.path.abspath(args.compare_text_file)
+        if not os.path.isfile(compare_text_path):
+            print(f"ERROR: Compare text file not found: {compare_text_path}")
+            sys.exit(1)
+        with open(compare_text_path, "r") as f:
+            args.prompt = f.read()
+        logger.info(f"Using comparison text from file: {compare_text_path}")
 
     # Discover and register converters from builtin and custom paths
     custom_paths = args.converter_paths if args.converter_paths else None
