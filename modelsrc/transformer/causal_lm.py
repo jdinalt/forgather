@@ -19,11 +19,13 @@ class CasualLM(nn.Module):
         init_weights: Callable,
         attn_mask_fn: Callable,
         config: Any = None,
+        rotary_emb: Optional[nn.Module] = None,
     ):
         super().__init__()
         self.config = config
         self.input_encoder = input_encoder
         self.layer_stack = layer_stack
+        self.rotary_emb = rotary_emb
         self.use_internal_mask = True
         self.attn_mask_fn = partial(
             attn_mask_fn,
@@ -100,12 +102,30 @@ class CasualLM(nn.Module):
             # Intermediate pipeline stage: input_ids is actually hidden_states
             hidden_states = input_ids
 
+        # Default position_ids from sequence length when not provided
+        if position_ids is None and self.rotary_emb is not None:
+            seq_length = hidden_states.shape[1]
+            past_seen_tokens = (
+                past_key_values.get_seq_length() if past_key_values is not None else 0
+            )
+            position_ids = torch.arange(
+                past_seen_tokens,
+                past_seen_tokens + seq_length,
+                device=hidden_states.device,
+            ).unsqueeze(0)
+
+        # Compute rotary position embeddings once for all layers
+        position_embeddings = None
+        if self.rotary_emb is not None:
+            position_embeddings = self.rotary_emb(hidden_states, position_ids)
+
         if self.layer_stack:
             # Pass the input through each of the layers.
             hidden_states = self.layer_stack(
                 hidden_states,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
+                position_embeddings=position_embeddings,
                 past_key_values=past_key_values,
                 cache_position=cache_position,
                 **kwargs,

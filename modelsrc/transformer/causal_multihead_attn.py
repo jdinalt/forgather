@@ -148,9 +148,11 @@ class CausalMultiheadAttn(nn.Module):
         if self.k_norm:
             key = self.k_norm(key)
 
-        # Apply relative positional embeddings to query and key tensors
+        # Apply relative positional embeddings to query and key tensors.
+        # The pos_encoder callable receives **kwargs which carries
+        # position_embeddings=(cos, sin) from the central RotaryEmbedding.
         if self.pos_encoder:
-            query, key = self.pos_encoder(query, key, position_ids)
+            query, key = self.pos_encoder(query, key, **kwargs)
 
         # Transpose to [batch, heads, seq_len, d_head], for attention function
         query = query.transpose(1, 2)

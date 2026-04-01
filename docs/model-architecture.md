@@ -27,12 +27,13 @@ output_models/my_model/
 | `causal_lm.py` | `CasualLM` | Core model: chains InputEncoder -> LayerStack -> output. HF-compatible forward with KV cache support. |
 | `causal_loss.py` | `CausalLoss` | Standard next-token cross-entropy loss with label shifting. |
 
-`CasualLM` is an orchestrator. It accepts an `input_encoder`, `layer_stack`, `init_weights` function, and `attn_mask_fn`, all passed as callables/factories from the configuration system. Its forward pass:
+`CasualLM` is an orchestrator. It accepts an `input_encoder`, `layer_stack`, `init_weights` function, `attn_mask_fn`, and an optional `rotary_emb` module, all passed as callables/factories from the configuration system. Its forward pass:
 
 1. Converts `input_ids` to embeddings via `InputEncoder`
 2. Creates the attention mask via `attn_mask_fn`
-3. Passes hidden states through the `LayerStack`
-4. Returns `BaseModelOutputWithPast` (hidden states + optional KV cache)
+3. Computes rotary position embeddings via `rotary_emb` (if present)
+4. Passes hidden states + `position_embeddings` through the `LayerStack`
+5. Returns `BaseModelOutputWithPast` (hidden states + optional KV cache)
 
 The HF template (`modelsrc/templates/hf_causal.py`) wraps `CasualLM` inside a `PreTrainedModel` subclass that adds the language model head (`lm_head`), loss computation, generation support, and vLLM pipeline/tensor parallelism plans.
 
@@ -48,19 +49,20 @@ The HF template (`modelsrc/templates/hf_causal.py`) wraps `CasualLM` inside a `P
 
 | File | Class | Interface | Description |
 |------|-------|-----------|-------------|
-| `rotary_embeddings.py` | `RotaryPE` | `(q, k, position_ids) -> (q, k)` | Real-valued RoPE. Applied to Q/K in the attention module, not in InputEncoder. Supports cached and on-demand modes, Llama3 frequency scaling, Liger kernel acceleration, and fused Triton rotation. |
-| `complex_rotary_embeddings.py` | `ComplexRotaryPE` | Same | Complex-valued RoPE (experimental, ~11% slower than real-valued). |
+| `rotary_embeddings.py` | `RotaryEmbedding` | `(x, position_ids) -> (cos, sin)` | RoPE module (`nn.Module`). Computes (cos, sin) once per forward pass in `CasualLM`. Supports Llama3 frequency scaling. |
+| `rotary_embeddings.py` | `apply_rotary_pos_emb` | `(q, k, position_embeddings, **kw) -> (q, k)` | Standalone rotation function. Injected into attention as `pos_encoder`. |
 | `sinusoidal_pe.py` | `SinusoidalPE` | `(x, position_ids) -> x` | Original Transformer absolute positional encoding. Added to embeddings in InputEncoder. |
 | `null_pe.py` | `NullPE` | `(x, position_ids) -> x` | Identity -- used when positional information comes from attention (e.g., ALiBi). |
 
-**Two interfaces exist**: Absolute PEs (SinusoidalPE, NullPE) are added to embeddings in InputEncoder. Relative PEs (RotaryPE, ComplexRotaryPE) modify Q/K tensors inside the attention module.
+**Two interfaces exist**: Absolute PEs (SinusoidalPE, NullPE) are added to embeddings in InputEncoder. Relative PEs (RoPE) modify Q/K tensors inside the attention module.
 
-RoPE is the dominant choice (~90% of configs). Key implementation details:
-- **Cached mode** (default): Precomputes cos/sin for `max_sequence_length` positions once. Best for inference with dynamic KV cache (~135 tok/s on Llama 1B).
-- **On-demand mode**: Recomputes per forward pass. Supports `torch.export()`. Optionally compiled via `torch.compile()` (~115 tok/s compiled, ~92 without).
-- **`rotate_half(x)`**: Splits tensor into halves, negates, and concatenates. The fused Triton kernel eliminates this entirely.
-- **`use_liger`**: Optional Liger kernel acceleration (external dependency).
-- **`use_triton`**: Fused Triton rotation kernel (3.7-6x speedup over PyTorch, no external dependency beyond triton).
+RoPE is the dominant choice (~90% of configs). The architecture follows Transformers v5.x:
+- **`RotaryEmbedding`** is an `nn.Module` owned by `CasualLM`. It computes `(cos, sin)` once per forward pass.
+- **`position_embeddings`**: The `(cos, sin)` tuple flows through kwargs from `CasualLM` -> `LayerStack` -> `PreLNLayer` -> `CausalMultiheadAttn` -> `pos_encoder`.
+- **`apply_rotary_pos_emb`**: A stateless function that extracts `position_embeddings` from kwargs and applies the rotation to Q/K.
+- **Meta device support**: `inv_freq` is a non-persistent buffer (`persistent=False`), allocated empty in `__init__` and computed by `reset_parameters()`. The weight initialization system (`init_weights_by_regex`) calls `reset_parameters()` as its fallback for modules without `init_prefix`. On meta device, `reset_parameters()` is a no-op; values are computed after buffers are moved to a real device. See `docs/configuration/model-initialization.md` for the full call chain.
+- **Numerical stability**: Frequency computation forced to float32 via `torch.autocast(enabled=False)`. Rotation upcasts to float32 for bf16/fp16 inputs.
+- **torch.compile**: No graph breaks. No Triton kernels needed -- torch.compile fuses the element-wise rotation ops automatically.
 
 ### Layer Stacking
 
@@ -101,7 +103,7 @@ hidden_states [B, seq, d_model]
   -> key_linear   -> [B, seq, num_kv_heads, d_head]
   -> value_linear -> [B, seq, num_kv_heads, d_head]
   -> (optional) q_norm, k_norm  (per-head LayerNorm over d_head)
-  -> (optional) pos_encoder(q, k, position_ids)  (RoPE rotation)
+  -> (optional) pos_encoder(q, k, **kwargs)  (RoPE rotation via position_embeddings kwarg)
   -> transpose to [B, heads, seq, d_head]
   -> (optional) KV cache update
   -> attn_fn(q, k, v, mask, ...)
@@ -163,8 +165,7 @@ layer_factory: !partial:pre_ln_layer:PreLNLayer
         use_triton: true
     attention_factory: !partial:causal_multihead_attn:CausalMultiheadAttn
         num_heads: 8
-        pos_encoder: !call:rotary_embeddings:RotaryPE
-            use_triton: true
+        pos_encoder: !partial:rotary_embeddings:apply_rotary_pos_emb
     norm_factory: !partial:torch.nn:RMSNorm
 ```
 
@@ -177,12 +178,11 @@ The modules support several optimization strategies, enabled via constructor fla
 | Optimization | Flag | Where | Effect |
 |-------------|------|-------|--------|
 | Triton fused SiLU/GELU*up | `use_triton=True` | `GLUFeedforwardLayer` | 1.67x forward, 1.50x backward |
-| Triton fused RoPE rotation | `use_triton=True` | `RotaryPE` | 3.7-6x forward, 4.5x backward |
-| Liger RoPE kernel | `use_liger=True` | `RotaryPE` | External library acceleration |
+| Float32 RoPE rotation | Always on for bf16/fp16 | `apply_rotary_pos_emb` | Numerical stability for half-precision training |
 | Flash Attention 2 | `attn_implementation="flash_attention_2"` | Attention modules | O(seq) memory, fastest |
 | Flex Attention + compile | `attn_implementation="flex_attention"` | Attention modules | Good with torch.compile |
 | Gradient checkpointing | `enable_checkpoint=True` | `LayerStack` (checkpoint variant) | Memory/compute tradeoff |
-| Compiled RoPE | `compile_on_demand=True` | `RotaryPE` (on-demand mode) | ~15% speedup via torch.compile |
+| torch.compile | Model-level | All modules including RoPE | Fuses element-wise ops; no graph breaks in RoPE path |
 
 All optimizations fall back gracefully when dependencies are unavailable.
 
@@ -240,8 +240,7 @@ modelsrc/
     ├── causal_lm.py                  # CasualLM (core model)
     ├── input_encoder.py              # InputEncoder (embeddings + PE + dropout)
     │
-    ├── rotary_embeddings.py          # RotaryPE (real-valued, recommended)
-    ├── complex_rotary_embeddings.py  # ComplexRotaryPE (experimental)
+    ├── rotary_embeddings.py          # RotaryEmbedding (nn.Module) + apply_rotary_pos_emb
     ├── sinusoidal_pe.py              # SinusoidalPE (absolute, original Transformer)
     ├── null_pe.py                    # NullPE (identity)
     │

@@ -328,55 +328,189 @@ class CustomModule(nn.Module):
 
 ### HuggingFace Integration
 
-Forgather models override `_init_weights(module)` in the `DynamicCasualLM` class:
+The initialization system integrates with HuggingFace Transformers v5's
+`PreTrainedModel` weight initialization pipeline. Understanding this call chain
+is important for debugging initialization issues.
 
-```python
-@override
-def _init_weights(self, module: torch.nn.Module):
-    self.causal_lm.init_weights(module)
+#### The Call Chain
+
+When a model is constructed (either directly or via `from_pretrained`), HF's
+`post_init()` triggers weight initialization:
+
+```
+DynamicCasualLM.__init__(config)
+  |
+  +-- self.causal_lm = CasualLM(...)     # Build model (all tensors on meta or target device)
+  |
+  +-- self.post_init()                    # HF PreTrainedModel hook
+        |
+        +-- self.init_weights()           # PreTrainedModel method
+              |
+              +-- self.initialize_weights()
+                    |
+                    +-- self.smart_apply(self._initialize_weights)
+                          |
+                          +-- for each module in model.modules():
+                                |
+                                +-- self._initialize_weights(module)
+                                      |
+                                      +-- check _is_hf_initialized flag
+                                      |   (skip if already initialized from checkpoint)
+                                      |
+                                      +-- self._init_weights(module)      # OUR OVERRIDE
+                                            |
+                                            +-- self.causal_lm._init_weights_fn(module)
+                                                  |
+                                                  +-- init_weights_by_regex(module, ...)
+                                                        |
+                                                        +-- has_local_state(module)?
+                                                        |   (skip if no params or buffers)
+                                                        |
+                                                        +-- has init_prefix?
+                                                        |   -> regex match -> apply init_fn
+                                                        |
+                                                        +-- has reset_parameters()?
+                                                        |   -> module.reset_parameters()
+                                                        |
+                                                        +-- else: raise ValueError
 ```
 
-This preserves the `@init.guard_torch_init_functions()` decorator from HuggingFace's base class, which:
-1. Patches `torch.nn.init.*` functions to check `_is_hf_initialized` flags
-2. Prevents re-initialization of parameters loaded from checkpoints
-3. Enables proper meta device construction in `from_pretrained()`
+Key points:
+
+- **`_init_weights(module)`** is HF's per-module hook. Its signature is
+  `(self, module)` where `self` is the top-level `PreTrainedModel` and `module`
+  is the specific sub-module being initialized. Our template overrides this to
+  delegate to the injected `_init_weights_fn`.
+
+- **`_init_weights_fn`** is a callable stored on `CasualLM`, set from the
+  configuration (typically `init_weights_by_regex` with pre-bound regex list).
+  This is the dependency injection point -- different models can use different
+  initialization strategies.
+
+- **`init_weights_by_regex`** processes each module individually. It checks for
+  `init_prefix` (regex path), then falls back to `reset_parameters()`. Modules
+  with no local state (no parameters or buffers) are skipped entirely.
+
+- **`_is_hf_initialized`** is a flag set by HF on parameters loaded from a
+  checkpoint. The `_initialize_weights` wrapper checks this flag and skips
+  modules that were already loaded. The `torch.nn.init.*` functions are also
+  patched to respect this flag as an additional safety net.
+
+#### Buffer-Only Modules (e.g., RotaryEmbedding)
+
+Modules with only non-persistent buffers (no parameters) still participate
+in initialization. `has_local_state()` checks both parameters and buffers,
+so `RotaryEmbedding` (which has an `inv_freq` buffer) is not skipped.
+
+Since `RotaryEmbedding` has no `init_prefix` and no parameters for regex
+matching, `init_weights_by_regex` falls through to `reset_parameters()`.
+This is where the buffer values are computed:
+
+```python
+class RotaryEmbedding(nn.Module):
+    def __init__(self, ...):
+        # Allocate empty buffer -- NOT computed here
+        self.register_buffer("inv_freq", torch.empty(d_head // 2), persistent=False)
+
+    def reset_parameters(self):
+        # Compute actual values -- called by init system
+        if self.inv_freq.is_meta:
+            return  # On meta device, wait for real device
+        inv_freq = 1.0 / (theta ** (torch.arange(0, d_head, 2, ...) / d_head))
+        self.inv_freq.copy_(inv_freq)
+```
+
+The `persistent=False` flag means `inv_freq` is excluded from `state_dict()`,
+so it is never saved to or loaded from checkpoints. It is always recomputed
+by `reset_parameters()`.
+
+#### Meta Device Construction (Pipeline Parallel, from_pretrained)
+
+When a model is constructed on the meta device (for pipeline parallel or
+`from_pretrained`), tensors have shape and dtype but no data:
+
+```
+1. with torch.device("meta"):
+       model = DynamicCasualLM(config)
+   # All tensors (params and buffers) are on meta device
+   # post_init() calls _init_weights for each module
+   # reset_parameters() sees inv_freq.is_meta -> returns early (no-op)
+
+2. Load state_dict (for from_pretrained)
+   # Persistent parameters are loaded from checkpoint
+   # Non-persistent buffers (inv_freq) remain on meta
+
+3. HF calls _move_missing_keys_from_meta_to_device()
+   # Replaces meta tensors with torch.empty_like(..., device=target_device)
+   # inv_freq is now an empty tensor on the real device
+
+4. HF calls _initialize_missing_keys() -> init_weights() for affected modules
+   # _init_weights(rotary_emb) is called again
+   # reset_parameters() now runs: inv_freq.is_meta is False
+   # Computes and fills inv_freq on the real device
+```
+
+This two-phase initialization (allocate in `__init__`, compute in
+`reset_parameters`) is what allows the same code to work for both direct
+construction and meta-device construction.
 
 ### Initialization Order
 
 During model construction:
-1. Model is constructed on meta device (transformers 5.0+)
-2. If loading checkpoint: weights are loaded, `param._is_hf_initialized = True` is set
-3. `_init_weights(module)` is called for each module, where `module._is_hf_initialized == False`
-4. For each module:
-   - Check if has `init_prefix`
-   - If yes: try regex matching
-   - If no/no matches: call `reset_parameters()`
-   - Patched `torch.nn.init.*` functions check flags and skip already-initialized params
+1. Model is constructed (on meta device for `from_pretrained`, or target device directly)
+2. `post_init()` triggers `_init_weights(module)` for each module
+3. For each module, `init_weights_by_regex` runs:
+   - Skip if no local state (no parameters or buffers)
+   - Try regex matching via `init_prefix`
+   - Fall back to `reset_parameters()`
+4. If loading from checkpoint: `_is_hf_initialized` flags prevent re-initialization of loaded parameters
+5. For meta device: steps 3-4 happen again after buffers are moved to real device
 
-### Module Construction Pattern
+### Module Construction Patterns
 
-When creating custom modules, follow this pattern:
+**Modules with parameters** (e.g., attention, feedforward): Tag sub-modules with
+`init_prefix` for regex-based initialization. PyTorch's built-in modules
+(`nn.Linear`, `nn.Embedding`, etc.) already have `reset_parameters()` as a
+fallback, so no override is needed for standard cases.
 
 ```python
 class MyAttention(nn.Module):
     def __init__(self, d_model, num_heads):
         super().__init__()
 
-        # Create linear layers
         self.query_linear = nn.Linear(d_model, d_model)
         self.key_linear = nn.Linear(d_model, d_model)
-        self.value_linear = nn.Linear(d_model, d_model)
-        self.output_linear = nn.Linear(d_model, d_model)
+        # ...
 
-        # Tag with semantic init_prefix
+        # Tag with semantic init_prefix for regex matching
         setattr(self.query_linear, "init_prefix", "attn.query")
         setattr(self.key_linear, "init_prefix", "attn.key")
-        setattr(self.value_linear, "init_prefix", "attn.value")
-        setattr(self.output_linear, "init_prefix", "attn.output")
-
-    # No need to override reset_parameters()
-    # PyTorch's Linear already has reset_parameters() as fallback
+        # ...
 ```
+
+**Modules with only buffers** (e.g., RotaryEmbedding): Allocate empty buffers
+in `__init__` and compute values in `reset_parameters()`. This two-phase
+pattern supports meta device construction.
+
+```python
+class MyModule(nn.Module):
+    def __init__(self, dim, device=None):
+        super().__init__()
+        self.dim = dim
+        # Allocate but don't compute -- reset_parameters() handles that
+        self.register_buffer("my_buffer", torch.empty(dim, device=device), persistent=False)
+
+    def reset_parameters(self):
+        if self.my_buffer.is_meta:
+            return  # Meta device: wait for real device
+        values = self._compute_buffer()
+        self.my_buffer.copy_(values)
+```
+
+The `persistent=False` flag excludes the buffer from `state_dict()`, so it is
+always recomputed (never loaded from checkpoints). The `is_meta` guard allows
+`reset_parameters()` to be safely called during meta-device construction,
+deferring actual computation until the buffer has been moved to a real device.
 
 ### Performance Considerations
 
