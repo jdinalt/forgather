@@ -193,11 +193,11 @@ class RotaryEmbedding(nn.Module):
         Compute rotary position embeddings.
 
         Args:
-            x: Input tensor, used only for device and dtype inference.
+            x: Input tensor, used only for device inference.
             position_ids: Position indices of shape ``[batch_size, seq_len]``.
 
         Returns:
-            Tuple of ``(cos, sin)``, each of shape ``[batch_size, seq_len, d_head]``.
+            Tuple of ``(cos, sin)``, each float32 of shape ``[batch_size, seq_len, d_head]``.
         """
         # [1, d_head//2, 1] -> [batch, d_head//2, 1]
         inv_freq_expanded = (
@@ -219,7 +219,10 @@ class RotaryEmbedding(nn.Module):
             cos = emb.cos() * self.attention_scaling
             sin = emb.sin() * self.attention_scaling
 
-        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
+        # Return float32 embeddings. apply_rotary_pos_emb() handles the
+        # dtype conversion after the rotation, avoiding a lossy round-trip
+        # through bf16/fp16.
+        return cos, sin
 
 
 def apply_rotary_pos_emb(
@@ -251,15 +254,11 @@ def apply_rotary_pos_emb(
     cos = cos.unsqueeze(2)
     sin = sin.unsqueeze(2)
 
-    # Upcast to float32 for numerical stability with bf16/fp16.
-    # This matches the precision guarantees that the Triton kernel provided
-    # (computed in float32, stored in original dtype).
+    # Compute rotation in float32 for numerical stability with bf16/fp16.
+    # cos/sin are already float32 from RotaryEmbedding.forward().
     orig_dtype = q.dtype
-    if orig_dtype in (torch.bfloat16, torch.float16):
-        q = q.float()
-        k = k.float()
-        cos = cos.float()
-        sin = sin.float()
+    q = q.float()
+    k = k.float()
 
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
