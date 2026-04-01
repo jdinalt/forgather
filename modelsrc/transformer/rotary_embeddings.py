@@ -99,6 +99,7 @@ class RotaryEmbedding(nn.Module):
         rope_parameters: Optional[Dict[str, Any]] = None,
         rope_theta: Optional[float] = None,
         rope_scaling: Optional[Dict[str, Any]] = None,
+        float32_output: bool = True,
         device=None,
     ):
         """
@@ -111,6 +112,12 @@ class RotaryEmbedding(nn.Module):
                 params (HF v5 format). Takes priority over legacy args.
             rope_theta: (Legacy) Base frequency. Use rope_parameters instead.
             rope_scaling: (Legacy) Scaling dict. Use rope_parameters instead.
+            float32_output: If True (default), return cos/sin in float32 so that
+                the rotation in ``apply_rotary_pos_emb`` is computed in float32.
+                If False, cast cos/sin to the input dtype before returning, so
+                the rotation stays in the model's native precision (matching HF
+                Transformers' default). Float32 is recommended for training
+                stability, especially with long sequences and bf16/fp16.
             device: Device for initial buffer allocation.
         """
         super().__init__()
@@ -135,6 +142,7 @@ class RotaryEmbedding(nn.Module):
 
         # Attention scaling factor (defaults 1.0; used by YaRN/LongRoPE)
         self.attention_scaling = 1.0
+        self.float32_output = float32_output
 
         # Allocate buffer; actual values are filled by reset_parameters().
         self.register_buffer(
@@ -148,7 +156,8 @@ class RotaryEmbedding(nn.Module):
             f"d_head={self.d_head}, "
             f"max_position_embeddings={self.max_position_embeddings}, "
             f"rope_theta={self.rope_theta}, "
-            f"rope_type={self.rope_type!r}"
+            f"rope_type={self.rope_type!r}, "
+            f"float32_output={self.float32_output}"
         )
 
     def reset_parameters(self):
@@ -193,11 +202,12 @@ class RotaryEmbedding(nn.Module):
         Compute rotary position embeddings.
 
         Args:
-            x: Input tensor, used only for device inference.
+            x: Input tensor, used for device and (when ``float32_output=False``) dtype.
             position_ids: Position indices of shape ``[batch_size, seq_len]``.
 
         Returns:
-            Tuple of ``(cos, sin)``, each float32 of shape ``[batch_size, seq_len, d_head]``.
+            Tuple of ``(cos, sin)``, each of shape ``[batch_size, seq_len, d_head]``.
+            Dtype is float32 when ``float32_output=True``, otherwise ``x.dtype``.
         """
         # [1, d_head//2, 1] -> [batch, d_head//2, 1]
         inv_freq_expanded = (
@@ -207,11 +217,7 @@ class RotaryEmbedding(nn.Module):
         position_ids_expanded = position_ids[:, None, :].float()
 
         # Force float32 for numerical stability (disable autocast)
-        device_type = (
-            x.device.type
-            if isinstance(x.device.type, str) and x.device.type != "mps"
-            else "cpu"
-        )
+        device_type = x.device.type if x.device.type != "mps" else "cpu"
         with torch.autocast(device_type=device_type, enabled=False):
             # [batch, d_head//2, seq] -> [batch, seq, d_head//2]
             freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
@@ -219,9 +225,10 @@ class RotaryEmbedding(nn.Module):
             cos = emb.cos() * self.attention_scaling
             sin = emb.sin() * self.attention_scaling
 
-        # Return float32 embeddings. apply_rotary_pos_emb() handles the
-        # dtype conversion after the rotation, avoiding a lossy round-trip
-        # through bf16/fp16.
+        if not self.float32_output:
+            cos = cos.to(dtype=x.dtype)
+            sin = sin.to(dtype=x.dtype)
+
         return cos, sin
 
 
@@ -239,11 +246,19 @@ def apply_rotary_pos_emb(
     from the attention forward pass (originally computed by
     :class:`RotaryEmbedding` in ``CasualLM``).
 
-    By default, the rotation is computed in float32 for numerical stability,
-    which is important for long sequences and half-precision training. To
-    use native dtype instead (matching HF Transformers' default behavior),
-    use :func:`apply_rotary_pos_emb_native_precision` or create a partial
-    with ``force_float32=False``.
+    The rotation precision is controlled by :class:`RotaryEmbedding`'s
+    ``float32_output`` flag:
+
+    - **float32_output=True** (default): cos/sin arrive in float32, q/k are
+      upcast to float32 for the rotation, then cast back. Best precision,
+      important for long sequences and bf16/fp16 training.
+    - **float32_output=False**: cos/sin arrive in the model dtype, q/k stay
+      in their native dtype. Matches HF Transformers' default behavior.
+      Faster, less memory, but may lose precision.
+
+    In both cases, q/k are cast to match the dtype of cos/sin, and the
+    result is cast back to the original q/k dtype. When dtypes already
+    match, the casts are no-ops.
 
     Args:
         q: Query tensor of shape ``[batch, seq, heads, d_head]``.
@@ -267,57 +282,13 @@ def apply_rotary_pos_emb(
     cos = cos.unsqueeze(2)
     sin = sin.unsqueeze(2)
 
-    # Compute rotation in float32 for numerical stability with bf16/fp16.
-    # cos/sin are already float32 from RotaryEmbedding.forward().
+    # Cast q/k to match cos/sin dtype. When RotaryEmbedding.float32_output
+    # is True, this upcasts to float32. When False, this is a no-op.
     orig_dtype = q.dtype
-    q = q.float()
-    k = k.float()
+    q = q.to(cos.dtype)
+    k = k.to(cos.dtype)
 
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
 
     return q_embed.to(orig_dtype), k_embed.to(orig_dtype)
-
-
-def apply_rotary_pos_emb_native_precision(
-    q: Tensor,
-    k: Tensor,
-    position_embeddings: Tuple[Tensor, Tensor] = None,  # type: ignore[assignment]
-    **kwargs,
-) -> Tuple[Tensor, Tensor]:
-    """
-    Apply rotary position embeddings in the native dtype of q/k.
-
-    This matches HuggingFace Transformers' default behavior, where cos/sin are
-    cast to the model dtype and the rotation is computed without upcasting.
-    Faster and uses less memory than :func:`apply_rotary_pos_emb`, but may
-    lose precision with bf16/fp16, especially for long sequences.
-
-    Useful for benchmarking the speed/memory/accuracy tradeoff vs float32.
-
-    Args:
-        q: Query tensor of shape ``[batch, seq, heads, d_head]``.
-        k: Key tensor of shape ``[batch, seq, heads, d_head]``.
-        position_embeddings: Tuple of ``(cos, sin)``, each
-            ``[batch, seq, d_head]``. Computed by :class:`RotaryEmbedding`.
-        **kwargs: Ignored (absorbs other forward kwargs).
-
-    Returns:
-        Tuple of ``(rotated_q, rotated_k)`` with same shapes as input.
-    """
-    if position_embeddings is None:
-        raise ValueError(
-            "position_embeddings is None. When using apply_rotary_pos_emb_native_precision "
-            "as pos_encoder, ensure that CasualLM is configured with a rotary_emb "
-            "module (RotaryEmbedding) so that position_embeddings are computed "
-            "and passed through kwargs."
-        )
-    cos, sin = position_embeddings
-    # Broadcast over heads and cast to q/k dtype: [batch, seq, 1, d_head]
-    cos = cos.unsqueeze(2).to(q.dtype)
-    sin = sin.unsqueeze(2).to(q.dtype)
-
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
-
-    return q_embed, k_embed

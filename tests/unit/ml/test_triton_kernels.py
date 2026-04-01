@@ -33,7 +33,6 @@ if _HAS_TRITON:
 from rotary_embeddings import (
     RotaryEmbedding,
     apply_rotary_pos_emb,
-    apply_rotary_pos_emb_native_precision,
     rotate_half,
 )
 
@@ -485,27 +484,33 @@ class TestRotaryEmbedding(unittest.TestCase):
 
     def test_float32_vs_native_precision(self):
         """Float32 rotation is more precise than native bf16 for large positions."""
-        rope = self._make_rope(num_heads=4, d_head=128, max_position_embeddings=8192)
+        rope_f32 = self._make_rope(
+            num_heads=4, d_head=128, max_position_embeddings=8192, float32_output=True
+        )
+        rope_native = self._make_rope(
+            num_heads=4, d_head=128, max_position_embeddings=8192, float32_output=False
+        )
         q, k = self._make_qk(
             batch=1, seq_len=64, num_heads=4, d_head=128, dtype=torch.bfloat16
         )
         # Use large position IDs to stress precision
         position_ids = torch.arange(4096, 4096 + 64, device=self.device).unsqueeze(0)
 
-        cos, sin = rope(q, position_ids)
+        cos_f32, sin_f32 = rope_f32(q, position_ids)
+        cos_native, sin_native = rope_native(q, position_ids)
 
         # Float32 rotation (default)
-        q_f32, _ = apply_rotary_pos_emb(q, k, position_embeddings=(cos, sin))
+        q_f32, _ = apply_rotary_pos_emb(q, k, position_embeddings=(cos_f32, sin_f32))
 
         # Native precision rotation
-        q_native, _ = apply_rotary_pos_emb_native_precision(
-            q, k, position_embeddings=(cos, sin)
+        q_native, _ = apply_rotary_pos_emb(
+            q, k, position_embeddings=(cos_native, sin_native)
         )
 
         # Compute ground truth in full float32
         q_float = q.float()
-        cos_b = cos.unsqueeze(2)
-        sin_b = sin.unsqueeze(2)
+        cos_b = cos_f32.unsqueeze(2)
+        sin_b = sin_f32.unsqueeze(2)
         q_truth = ((q_float * cos_b) + (rotate_half(q_float) * sin_b)).to(
             torch.bfloat16
         )
@@ -630,21 +635,31 @@ class TestRotaryEmbedding(unittest.TestCase):
 
         self.assertIn("position_embeddings is None", str(ctx.exception))
 
-    def test_native_precision_matches_hf_behavior(self):
-        """apply_rotary_pos_emb_native_precision casts cos/sin to input dtype."""
-        rope = self._make_rope(num_heads=4, d_head=64)
+    def test_float32_output_flag(self):
+        """float32_output=False returns embeddings in input dtype."""
+        rope_f32 = self._make_rope(num_heads=4, d_head=64, float32_output=True)
+        rope_native = self._make_rope(num_heads=4, d_head=64, float32_output=False)
+
+        x = torch.randn(1, 16, 256, device=self.device, dtype=torch.bfloat16)
+        position_ids = torch.arange(16, device=self.device).unsqueeze(0)
+
+        cos_f32, sin_f32 = rope_f32(x, position_ids)
+        cos_native, sin_native = rope_native(x, position_ids)
+
+        self.assertEqual(cos_f32.dtype, torch.float32)
+        self.assertEqual(cos_native.dtype, torch.bfloat16)
+
+        # Both should produce the same output dtype from apply_rotary_pos_emb
         q, k = self._make_qk(
             batch=1, seq_len=16, num_heads=4, d_head=64, dtype=torch.bfloat16
         )
-        position_ids = torch.arange(16, device=self.device).unsqueeze(0)
-
-        cos, sin = rope(q, position_ids)
-        q_rot, _ = apply_rotary_pos_emb_native_precision(
-            q, k, position_embeddings=(cos, sin)
+        q_f32, _ = apply_rotary_pos_emb(q, k, position_embeddings=(cos_f32, sin_f32))
+        q_native, _ = apply_rotary_pos_emb(
+            q, k, position_embeddings=(cos_native, sin_native)
         )
 
-        # Output should be in input dtype
-        self.assertEqual(q_rot.dtype, torch.bfloat16)
+        self.assertEqual(q_f32.dtype, torch.bfloat16)
+        self.assertEqual(q_native.dtype, torch.bfloat16)
 
 
 class TestGLUFeedforwardIntegration(unittest.TestCase):
