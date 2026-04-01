@@ -402,15 +402,18 @@ class PipelineTrainer(
         if self.args.resume_from_checkpoint:
             missing_buffer_set = missing_buffers(model)
             if len(missing_buffer_set):
+                # Non-persistent buffers are not saved in checkpoints. Initialize
+                # them locally on each rank via reset_parameters(). This is safe
+                # because buffer computation is deterministic and local to each
+                # module (e.g., RotaryEmbedding computes inv_freq from its own
+                # rope_theta and d_head -- no cross-module dependencies).
                 if self.dist.rank == 0:
-                    logger.warning(
-                        f"The following buffers were not found in the model's state_dict: {missing_buffer_set}. "
-                        "Forcing initialization of full model on CPU to construct missing buffers. "
-                        "To avoid this, make sure all the model's buffers have 'persist' set to True."
+                    logger.info(
+                        f"Initializing non-persistent buffers locally on each rank: "
+                        f"{missing_buffer_set}"
                     )
-                self._initialize_params(
-                    all_pipeline_modules, pipeline_modules, stage_indices, True
-                )
+                for mod in pipeline_modules:
+                    self._initialize_non_persistent_buffers(mod)
         else:
             if self.dist.rank == 0:
                 # If this results in OOM (really large model), you will have to initialize the model from a checkpoint
