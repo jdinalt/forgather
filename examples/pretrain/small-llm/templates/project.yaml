@@ -13,8 +13,8 @@
     -- set ns.dispatch_batches = dispatch_batches | default(False)
 
     ## Model
-    -- set ns.model_project_dir = abspath(model_project | default((joinpath(project_dir, "custom_deepone"))))
-    -- set ns.model_project_config = model_config | default("custom_deepone.yaml")
+    -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "llama"))))
+    -- set ns.model_project_config = model_config | default("medium.yaml")
 
     ## Training budget (millions of tokens)
     -- set ns.total_tokens = total_tokens | default(2270)
@@ -160,6 +160,7 @@ text_gen_callback_args: &text_gen_callback_args
         warmup: 10              # Skip first 10 observations
         action: "abort"
     weight_norm: !call:forgather.ml.trainer.callbacks:WeightNormLogger
+    param_norm: !call:forgather.ml.trainer.callbacks:ParameterNormLogger
 
 [tb_scalars]
 .define: &tb_scalars !dict

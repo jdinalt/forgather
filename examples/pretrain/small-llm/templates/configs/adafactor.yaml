@@ -4,8 +4,8 @@
     == super()
     -- set ns.config_name = "Adafactor"
     -- set ns.config_description = "Train with Adafactor"
-    -- set ns.log_name = "adafactor"
-    -- set ns.model_name = "adafactor"
+    -- set ns.log_name = log_name | default("adafactor")
+    -- set ns.model_name = model_name | default("adafactor")
 
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim:Adafactor

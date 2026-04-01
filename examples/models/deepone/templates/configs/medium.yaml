@@ -3,7 +3,7 @@
 [config_metadata]
     == super()
     -- set ns.config_name = "Medium Deepone"
-    -- set ns.config_description = "A Deepone with 138M parameters"
+    -- set ns.config_description = "A Deepone with ~160M parameters"
     -- set ns.model_name = "medium"
 
 [model_definition]
@@ -15,7 +15,7 @@
 [model_tokenizer]
 tokenizer: &tokenizer !call:forgather:from_project
     project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
-    config_template: "16k.yaml"
+    config_template: "32k.yaml"
     pp_debug: False
 
 [model_config]

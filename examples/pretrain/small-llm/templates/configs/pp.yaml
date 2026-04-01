@@ -5,7 +5,8 @@
     ## Overrides
     -- set ns.config_name = "Train with PP"
     -- set ns.config_description = "Experiment in training a small LM with Pipeline Parallel"
-    -- set ns.model_name = "pp"
+    -- set ns.log_name = log_name | default("pp")
+    -- set ns.model_name = model_name | default("pp")
 
     ## Set pipeline parallel schedule
     ## pipeline_schedule is one of:

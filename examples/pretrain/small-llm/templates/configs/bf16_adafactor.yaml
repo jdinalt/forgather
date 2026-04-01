@@ -4,14 +4,13 @@
     == super()
     -- set ns.config_name = "bfloat16 Adafactor"
     -- set ns.config_description = "Train with bf16 weights using Adafactor"
-    -- set ns.log_name = "bf16_adafactor"
-    -- set ns.model_name = "bf16_adafactor"
+    -- set ns.log_name = log_name | default("bf16_adafactor")
+    -- set ns.model_name = model_name | default("bf16_adafactor")
 
 [trainer_args]
     == super()
     # **bf16**
     default_dtype: "bfloat16"
-    mixed_precision: null
 
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim:Adafactor
