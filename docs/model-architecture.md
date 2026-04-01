@@ -92,6 +92,8 @@ The `RotaryEmbedding.float32_output` flag controls which approach to use:
 
 Under **AMP** (`torch.autocast`): matmul is a "fast" op that gets cast to lower precision, which is why autocast must be explicitly disabled for the frequency computation. Element-wise ops (the rotation) follow their input dtype and are not auto-promoted. This means AMP does not help with rotation precision -- the `float32_output` flag is the only control.
 
+**`torch.set_float32_matmul_precision`**: Settings like `"high"` (TF32) or `"medium"` reduce precision in the multiply-accumulate stage of matmuls. The frequency computation uses `inv_freq @ position_ids` where the inner (contraction) dimension is 1 -- each output element is a single multiply with no accumulation. Therefore TF32/medium produce identical results to full float32 for this operation, and the setting is not a concern.
+
 ### Layer Stacking
 
 | File | Class | Description |

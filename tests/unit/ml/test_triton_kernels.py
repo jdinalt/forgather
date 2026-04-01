@@ -432,14 +432,20 @@ class TestRotaryEmbedding(unittest.TestCase):
         self.assertEqual(cos.shape, (2, 128, 64))
         self.assertEqual(sin.shape, (2, 128, 64))
 
-    def test_forward_returns_float32(self):
-        """Embeddings are always returned in float32 regardless of input dtype."""
-        rope = self._make_rope()
+    def test_forward_output_dtype(self):
+        """Output dtype depends on float32_output flag."""
         x = torch.randn(1, 16, 512, device=self.device, dtype=torch.bfloat16)
         position_ids = torch.arange(16, device=self.device).unsqueeze(0)
 
+        # Default (float32_output=False): matches input dtype
+        rope = self._make_rope(float32_output=False)
         cos, sin = rope(x, position_ids)
+        self.assertEqual(cos.dtype, torch.bfloat16)
+        self.assertEqual(sin.dtype, torch.bfloat16)
 
+        # float32_output=True: always float32
+        rope_f32 = self._make_rope(float32_output=True)
+        cos, sin = rope_f32(x, position_ids)
         self.assertEqual(cos.dtype, torch.float32)
         self.assertEqual(sin.dtype, torch.float32)
 

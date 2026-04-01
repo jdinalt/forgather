@@ -238,7 +238,11 @@ class RotaryEmbedding(nn.Module):
         # [batch, 1, seq_len]
         position_ids_expanded = position_ids[:, None, :].float()
 
-        # Force float32 for numerical stability (disable autocast)
+        # Force float32 for numerical stability (disable autocast).
+        # Note: torch.set_float32_matmul_precision() does NOT affect this
+        # matmul because the inner (contraction) dimension is 1 -- each
+        # output is a single multiply with no accumulation, so TF32/medium
+        # produce identical results to full float32.
         device_type = x.device.type if x.device.type != "mps" else "cpu"
         with torch.autocast(device_type=device_type, enabled=False):
             # [batch, d_head//2, seq] -> [batch, seq, d_head//2]
