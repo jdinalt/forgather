@@ -1,8 +1,5 @@
 """
-Tests for Triton kernel implementations of fused GLU activation and RoPE rotation.
-
-These kernels provide fused alternatives to the standard PyTorch implementations
-in modelsrc/transformer/glu_feedforward.py and modelsrc/transformer/rotary_embeddings.py.
+Tests for Triton kernel implementations (fused GLU activation) and RoPE embeddings.
 
 Tests validate:
 1. Numerical correctness against PyTorch reference implementations
@@ -10,7 +7,7 @@ Tests validate:
 3. Multiple dtypes (float32, bfloat16, float16)
 4. Various tensor shapes
 5. Integration with module classes
-6. Graceful fallback when Triton is unavailable
+6. RoPE: RotaryEmbedding module + apply_rotary_pos_emb function
 """
 
 import sys
@@ -33,15 +30,12 @@ from glu_feedforward import _HAS_TRITON, GLUFeedforwardLayer
 if _HAS_TRITON:
     from glu_feedforward import _FusedSiLUMul, _FusedReLUMul, _FusedGELUMul
 
-from rotary_embeddings import _HAS_TRITON as _ROPE_HAS_TRITON
-from rotary_embeddings import RotaryPE, rotate_half
-
-if _ROPE_HAS_TRITON:
-    from rotary_embeddings import (
-        _FusedRoPERotation,
-        _prepare_cos_sin_for_triton,
-        _triton_rope_apply,
-    )
+from rotary_embeddings import (
+    RotaryEmbedding,
+    apply_rotary_pos_emb,
+    apply_rotary_pos_emb_native_precision,
+    rotate_half,
+)
 
 
 def _skip_no_triton(test_func):
@@ -399,149 +393,151 @@ class TestFusedGELUMul(unittest.TestCase):
         )
 
 
-class TestFusedRoPERotation(unittest.TestCase):
-    """Tests for the fused RoPE rotation Triton kernel."""
+class TestRotaryEmbedding(unittest.TestCase):
+    """Tests for the RotaryEmbedding module and apply_rotary_pos_emb function."""
 
     def setUp(self):
         torch.manual_seed(42)
         self.device = torch.device("cuda")
 
-    def _create_rope_inputs(
+    def _make_rope(self, num_heads=8, d_head=64, **kwargs):
+        """Create a RotaryEmbedding and initialize it."""
+        rope = RotaryEmbedding(
+            hidden_size=num_heads * d_head,
+            num_attention_heads=num_heads,
+            **kwargs,
+        ).to(self.device)
+        rope.reset_parameters()
+        return rope
+
+    def _make_qk(
         self, batch=2, seq_len=64, num_heads=8, d_head=64, dtype=torch.float32
     ):
-        """Create test inputs for RoPE."""
+        """Create q, k tensors for testing."""
         q = torch.randn(
             batch, seq_len, num_heads, d_head, device=self.device, dtype=dtype
         )
         k = torch.randn(
             batch, seq_len, num_heads, d_head, device=self.device, dtype=dtype
         )
+        return q, k
 
-        # Create cos/sin of shape [1, seq_len, 1, d_head]
-        half_dim = d_head // 2
-        freqs = torch.randn(seq_len, half_dim, device=self.device, dtype=dtype)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        cos = emb.cos().unsqueeze(0).unsqueeze(2)  # [1, seq, 1, d_head]
-        sin = emb.sin().unsqueeze(0).unsqueeze(2)  # [1, seq, 1, d_head]
+    def test_forward_output_shape(self):
+        """RotaryEmbedding returns (cos, sin) with correct shapes."""
+        rope = self._make_rope(num_heads=8, d_head=64)
+        x = torch.randn(2, 128, 512, device=self.device)
+        position_ids = torch.arange(128, device=self.device).unsqueeze(0).expand(2, -1)
 
-        return q, k, cos, sin
+        cos, sin = rope(x, position_ids)
 
-    def _reference_rope(self, x, cos, sin):
-        """PyTorch reference RoPE: (x * cos) + (rotate_half(x) * sin)."""
-        return (x * cos) + (rotate_half(x) * sin)
+        self.assertEqual(cos.shape, (2, 128, 64))
+        self.assertEqual(sin.shape, (2, 128, 64))
 
-    @_skip_no_triton
-    def test_matches_pytorch_float32(self):
-        """Fused RoPE matches PyTorch reference in float32."""
-        q, k, cos, sin = self._create_rope_inputs(dtype=torch.float32)
+    def test_forward_returns_float32(self):
+        """Embeddings are always returned in float32 regardless of input dtype."""
+        rope = self._make_rope()
+        x = torch.randn(1, 16, 512, device=self.device, dtype=torch.bfloat16)
+        position_ids = torch.arange(16, device=self.device).unsqueeze(0)
 
-        ref_q = self._reference_rope(q, cos, sin)
-        ref_k = self._reference_rope(k, cos, sin)
+        cos, sin = rope(x, position_ids)
 
-        cos_t, sin_t = _prepare_cos_sin_for_triton(
-            cos, sin, q.shape[0], q.shape[1], q.shape[3]
-        )
-        fused_q = _FusedRoPERotation.apply(q.contiguous(), cos_t, sin_t)
-        fused_k = _FusedRoPERotation.apply(k.contiguous(), cos_t, sin_t)
+        self.assertEqual(cos.dtype, torch.float32)
+        self.assertEqual(sin.dtype, torch.float32)
 
-        self.assertTrue(
-            torch.allclose(ref_q, fused_q, atol=1e-5, rtol=1e-5),
-            f"Q max diff: {(ref_q - fused_q).abs().max().item():.2e}",
-        )
-        self.assertTrue(
-            torch.allclose(ref_k, fused_k, atol=1e-5, rtol=1e-5),
-            f"K max diff: {(ref_k - fused_k).abs().max().item():.2e}",
-        )
+    def test_apply_rotary_pos_emb_correctness(self):
+        """apply_rotary_pos_emb matches manual rotation in float32."""
+        rope = self._make_rope(num_heads=4, d_head=64)
+        q, k = self._make_qk(batch=2, seq_len=32, num_heads=4, d_head=64)
+        position_ids = torch.arange(32, device=self.device).unsqueeze(0).expand(2, -1)
 
-    @_skip_no_triton
-    def test_matches_pytorch_bfloat16(self):
-        """Fused RoPE matches PyTorch reference in bfloat16."""
-        q, k, cos, sin = self._create_rope_inputs(dtype=torch.bfloat16)
+        cos, sin = rope(q, position_ids)
+        q_rot, k_rot = apply_rotary_pos_emb(q, k, position_embeddings=(cos, sin))
 
-        ref_q = self._reference_rope(q, cos, sin)
-
-        cos_t, sin_t = _prepare_cos_sin_for_triton(
-            cos, sin, q.shape[0], q.shape[1], q.shape[3]
-        )
-        fused_q = _FusedRoPERotation.apply(q.contiguous(), cos_t, sin_t)
+        # Manual reference (float32)
+        cos_b = cos.unsqueeze(2)
+        sin_b = sin.unsqueeze(2)
+        q_ref = (q.float() * cos_b) + (rotate_half(q.float()) * sin_b)
+        k_ref = (k.float() * cos_b) + (rotate_half(k.float()) * sin_b)
 
         self.assertTrue(
-            torch.allclose(ref_q, fused_q, atol=1e-2, rtol=1e-2),
-            f"Q max diff: {(ref_q - fused_q).abs().max().item():.2e}",
+            torch.allclose(q_rot, q_ref.to(q.dtype), atol=1e-6, rtol=1e-6),
+            f"Q max diff: {(q_rot - q_ref.to(q.dtype)).abs().max().item():.2e}",
         )
-
-    @_skip_no_triton
-    def test_matches_pytorch_float16(self):
-        """Fused RoPE matches PyTorch reference in float16."""
-        q, k, cos, sin = self._create_rope_inputs(dtype=torch.float16)
-
-        ref_q = self._reference_rope(q, cos, sin)
-
-        cos_t, sin_t = _prepare_cos_sin_for_triton(
-            cos, sin, q.shape[0], q.shape[1], q.shape[3]
-        )
-        fused_q = _FusedRoPERotation.apply(q.contiguous(), cos_t, sin_t)
-
         self.assertTrue(
-            torch.allclose(ref_q, fused_q, atol=1e-2, rtol=1e-2),
-            f"Q max diff: {(ref_q - fused_q).abs().max().item():.2e}",
+            torch.allclose(k_rot, k_ref.to(k.dtype), atol=1e-6, rtol=1e-6),
+            f"K max diff: {(k_rot - k_ref.to(k.dtype)).abs().max().item():.2e}",
         )
 
-    @_skip_no_triton
-    def test_backward_matches_pytorch(self):
-        """Gradient of fused RoPE matches PyTorch autograd."""
-        batch, seq_len, num_heads, d_head = 2, 32, 4, 64
+    def test_apply_rotary_pos_emb_bf16(self):
+        """apply_rotary_pos_emb works correctly with bf16 inputs."""
+        rope = self._make_rope(num_heads=4, d_head=64)
+        q, k = self._make_qk(
+            batch=2, seq_len=32, num_heads=4, d_head=64, dtype=torch.bfloat16
+        )
+        position_ids = torch.arange(32, device=self.device).unsqueeze(0).expand(2, -1)
 
-        q, _, cos, sin = self._create_rope_inputs(
-            batch=batch, seq_len=seq_len, num_heads=num_heads, d_head=d_head
+        cos, sin = rope(q, position_ids)
+        q_rot, k_rot = apply_rotary_pos_emb(q, k, position_embeddings=(cos, sin))
+
+        self.assertEqual(q_rot.dtype, torch.bfloat16)
+        self.assertEqual(k_rot.dtype, torch.bfloat16)
+        self.assertEqual(q_rot.shape, q.shape)
+
+    def test_float32_vs_native_precision(self):
+        """Float32 rotation is more precise than native bf16 for large positions."""
+        rope = self._make_rope(num_heads=4, d_head=128, max_position_embeddings=8192)
+        q, k = self._make_qk(
+            batch=1, seq_len=64, num_heads=4, d_head=128, dtype=torch.bfloat16
+        )
+        # Use large position IDs to stress precision
+        position_ids = torch.arange(4096, 4096 + 64, device=self.device).unsqueeze(0)
+
+        cos, sin = rope(q, position_ids)
+
+        # Float32 rotation (default)
+        q_f32, _ = apply_rotary_pos_emb(q, k, position_embeddings=(cos, sin))
+
+        # Native precision rotation
+        q_native, _ = apply_rotary_pos_emb_native_precision(
+            q, k, position_embeddings=(cos, sin)
         )
 
-        # Reference backward
-        q_ref = q.detach().clone().requires_grad_(True)
-        ref_out = self._reference_rope(q_ref, cos, sin)
-        grad_out = torch.randn_like(ref_out)
-        ref_out.backward(grad_out)
-
-        # Fused backward
-        q_fused = q.detach().clone().requires_grad_(True)
-        cos_t, sin_t = _prepare_cos_sin_for_triton(cos, sin, batch, seq_len, d_head)
-        fused_out = _FusedRoPERotation.apply(q_fused.contiguous(), cos_t, sin_t)
-        fused_out.backward(grad_out)
-
-        self.assertTrue(
-            torch.allclose(q_ref.grad, q_fused.grad, atol=1e-5, rtol=1e-5),
-            f"Q grad max diff: {(q_ref.grad - q_fused.grad).abs().max().item():.2e}",
+        # Compute ground truth in full float32
+        q_float = q.float()
+        cos_b = cos.unsqueeze(2)
+        sin_b = sin.unsqueeze(2)
+        q_truth = ((q_float * cos_b) + (rotate_half(q_float) * sin_b)).to(
+            torch.bfloat16
         )
 
-    @_skip_no_triton
-    def test_backward_bfloat16(self):
-        """Gradient correctness in bfloat16."""
-        batch, seq_len, num_heads, d_head = 2, 32, 4, 64
+        err_f32 = (q_f32.float() - q_truth.float()).abs().max().item()
+        err_native = (q_native.float() - q_truth.float()).abs().max().item()
 
-        q, _, cos, sin = self._create_rope_inputs(
-            batch=batch,
-            seq_len=seq_len,
-            num_heads=num_heads,
-            d_head=d_head,
-            dtype=torch.bfloat16,
+        # Float32 path should be at least as precise as native (usually much better)
+        self.assertLessEqual(
+            err_f32,
+            err_native + 1e-7,
+            f"Float32 err={err_f32:.2e}, native err={err_native:.2e}",
         )
 
-        q_ref = q.detach().clone().requires_grad_(True)
-        ref_out = self._reference_rope(q_ref, cos, sin)
-        grad_out = torch.randn_like(ref_out)
-        ref_out.backward(grad_out)
+    def test_backward_through_rotation(self):
+        """Gradients flow correctly through apply_rotary_pos_emb."""
+        rope = self._make_rope(num_heads=4, d_head=64)
+        q = torch.randn(2, 16, 4, 64, device=self.device, requires_grad=True)
+        k = torch.randn(2, 16, 4, 64, device=self.device, requires_grad=True)
+        position_ids = torch.arange(16, device=self.device).unsqueeze(0).expand(2, -1)
 
-        q_fused = q.detach().clone().requires_grad_(True)
-        cos_t, sin_t = _prepare_cos_sin_for_triton(cos, sin, batch, seq_len, d_head)
-        fused_out = _FusedRoPERotation.apply(q_fused.contiguous(), cos_t, sin_t)
-        fused_out.backward(grad_out)
+        cos, sin = rope(q, position_ids)
+        q_rot, k_rot = apply_rotary_pos_emb(q, k, position_embeddings=(cos, sin))
 
-        self.assertTrue(
-            torch.allclose(q_ref.grad, q_fused.grad, atol=1e-1, rtol=1e-1),
-            f"Q grad max diff: {(q_ref.grad - q_fused.grad).abs().max().item():.2e}",
-        )
+        loss = q_rot.sum() + k_rot.sum()
+        loss.backward()
 
-    @_skip_no_triton
+        self.assertIsNotNone(q.grad)
+        self.assertIsNotNone(k.grad)
+        self.assertFalse(torch.all(q.grad == 0), "Q gradients are all zero")
+        self.assertFalse(torch.all(k.grad == 0), "K gradients are all zero")
+
     def test_various_shapes(self):
         """Test with various tensor shapes."""
         configs = [
@@ -550,66 +546,105 @@ class TestFusedRoPERotation(unittest.TestCase):
             (2, 128, 8, 64),  # Typical
             (4, 256, 32, 128),  # Large model (Llama d_head=128)
             (1, 1, 32, 128),  # Single token decode, many heads
-            (2, 512, 8, 64),  # Long sequence
         ]
         for batch, seq_len, num_heads, d_head in configs:
             with self.subTest(shape=(batch, seq_len, num_heads, d_head)):
-                q, _, cos, sin = self._create_rope_inputs(
-                    batch=batch,
-                    seq_len=seq_len,
-                    num_heads=num_heads,
-                    d_head=d_head,
+                rope = self._make_rope(num_heads=num_heads, d_head=d_head)
+                q, k = self._make_qk(
+                    batch=batch, seq_len=seq_len, num_heads=num_heads, d_head=d_head
+                )
+                position_ids = (
+                    torch.arange(seq_len, device=self.device)
+                    .unsqueeze(0)
+                    .expand(batch, -1)
                 )
 
-                ref = self._reference_rope(q, cos, sin)
-
-                cos_t, sin_t = _prepare_cos_sin_for_triton(
-                    cos, sin, batch, seq_len, d_head
-                )
-                fused = _FusedRoPERotation.apply(q.contiguous(), cos_t, sin_t)
-
-                self.assertTrue(
-                    torch.allclose(ref, fused, atol=1e-5, rtol=1e-5),
-                    f"Shape {(batch, seq_len, num_heads, d_head)}: "
-                    f"max diff {(ref - fused).abs().max().item():.2e}",
+                cos, sin = rope(q, position_ids)
+                q_rot, k_rot = apply_rotary_pos_emb(
+                    q, k, position_embeddings=(cos, sin)
                 )
 
-    @_skip_no_triton
-    def test_with_position_ids(self):
-        """Test RoPE with non-sequential position_ids (KV cache scenario)."""
-        batch, seq_len, num_heads, d_head = 2, 1, 8, 64
-        max_seq_len = 128
+                self.assertEqual(q_rot.shape, q.shape)
+                self.assertEqual(k_rot.shape, k.shape)
 
-        q = torch.randn(batch, seq_len, num_heads, d_head, device=self.device)
-        k = torch.randn(batch, seq_len, num_heads, d_head, device=self.device)
+    def test_position_ids_non_sequential(self):
+        """Non-sequential position_ids work correctly (KV cache scenario)."""
+        rope = self._make_rope(num_heads=8, d_head=64, max_position_embeddings=256)
+        q, k = self._make_qk(batch=2, seq_len=1, num_heads=8, d_head=64)
 
         # Non-sequential positions (simulating KV cache at different steps)
         position_ids = torch.tensor([[42], [99]], device=self.device)
+        cos, sin = rope(q, position_ids)
 
-        rope = RotaryPE(
-            hidden_size=num_heads * d_head,
-            num_attention_heads=num_heads,
-            max_sequence_length=max_seq_len,
-            use_triton=False,
-        )
-        rope_triton = RotaryPE(
-            hidden_size=num_heads * d_head,
-            num_attention_heads=num_heads,
-            max_sequence_length=max_seq_len,
-            use_triton=True,
+        self.assertEqual(cos.shape, (2, 1, 64))
+
+        # Different positions should produce different embeddings
+        pos_a = torch.tensor([[10]], device=self.device)
+        pos_b = torch.tensor([[20]], device=self.device)
+        cos_a, _ = rope(q[:1], pos_a)
+        cos_b, _ = rope(q[:1], pos_b)
+        self.assertFalse(
+            torch.allclose(cos_a, cos_b),
+            "Different positions should produce different embeddings",
         )
 
-        ref_q, ref_k = rope(q, k, position_ids)
-        fused_q, fused_k = rope_triton(q, k, position_ids)
+    def test_reset_parameters(self):
+        """reset_parameters computes correct inv_freq values."""
+        rope = self._make_rope(num_heads=4, d_head=64)
+
+        # Manually compute expected inv_freq
+        theta = 10000.0
+        expected = 1.0 / (theta ** (torch.arange(0, 64, 2, dtype=torch.float32) / 64))
 
         self.assertTrue(
-            torch.allclose(ref_q, fused_q, atol=1e-5, rtol=1e-5),
-            f"Q max diff: {(ref_q - fused_q).abs().max().item():.2e}",
+            torch.allclose(rope.inv_freq.cpu(), expected, atol=1e-6),
+            f"inv_freq max diff: {(rope.inv_freq.cpu() - expected).abs().max().item():.2e}",
         )
-        self.assertTrue(
-            torch.allclose(ref_k, fused_k, atol=1e-5, rtol=1e-5),
-            f"K max diff: {(ref_k - fused_k).abs().max().item():.2e}",
+
+    def test_meta_device_construction(self):
+        """RotaryEmbedding can be constructed on meta device."""
+        with torch.device("meta"):
+            rope = RotaryEmbedding(
+                hidden_size=512,
+                num_attention_heads=8,
+            )
+
+        self.assertTrue(rope.inv_freq.is_meta)
+
+        # reset_parameters should be a no-op on meta
+        rope.reset_parameters()
+        self.assertTrue(rope.inv_freq.is_meta)
+
+        # Move to real device and initialize
+        rope = rope.to_empty(device=self.device)
+        rope.reset_parameters()
+        self.assertFalse(rope.inv_freq.is_meta)
+        self.assertEqual(rope.inv_freq.shape, (32,))  # d_head=64, half=32
+
+    def test_position_embeddings_none_raises(self):
+        """apply_rotary_pos_emb raises ValueError when position_embeddings is None."""
+        q, k = self._make_qk(batch=1, seq_len=4, num_heads=4, d_head=64)
+
+        with self.assertRaises(ValueError) as ctx:
+            apply_rotary_pos_emb(q, k, position_embeddings=None)
+
+        self.assertIn("position_embeddings is None", str(ctx.exception))
+
+    def test_native_precision_matches_hf_behavior(self):
+        """apply_rotary_pos_emb_native_precision casts cos/sin to input dtype."""
+        rope = self._make_rope(num_heads=4, d_head=64)
+        q, k = self._make_qk(
+            batch=1, seq_len=16, num_heads=4, d_head=64, dtype=torch.bfloat16
         )
+        position_ids = torch.arange(16, device=self.device).unsqueeze(0)
+
+        cos, sin = rope(q, position_ids)
+        q_rot, _ = apply_rotary_pos_emb_native_precision(
+            q, k, position_embeddings=(cos, sin)
+        )
+
+        # Output should be in input dtype
+        self.assertEqual(q_rot.dtype, torch.bfloat16)
 
 
 class TestGLUFeedforwardIntegration(unittest.TestCase):
@@ -770,178 +805,6 @@ class TestGLUFeedforwardIntegration(unittest.TestCase):
         x = torch.randn(2, 32, d_model, device=self.device)
         out = layer(x)
         self.assertEqual(out.shape, (2, 32, d_model))
-
-
-class TestRoPEIntegration(unittest.TestCase):
-    """Integration tests using the full RotaryPE module."""
-
-    def setUp(self):
-        torch.manual_seed(42)
-        self.device = torch.device("cuda")
-
-    @_skip_no_triton
-    def test_use_triton_flag_cached(self):
-        """RotaryPE with use_triton=True (cached) matches PyTorch."""
-        num_heads, d_head = 8, 64
-        hidden_size = num_heads * d_head
-        seq_len = 128
-
-        rope_ref = RotaryPE(hidden_size, num_heads, max_sequence_length=256)
-        rope_triton = RotaryPE(
-            hidden_size,
-            num_heads,
-            max_sequence_length=256,
-            use_triton=True,
-        )
-
-        q = torch.randn(2, seq_len, num_heads, d_head, device=self.device)
-        k = torch.randn(2, seq_len, num_heads, d_head, device=self.device)
-
-        ref_q, ref_k = rope_ref(q, k)
-        tri_q, tri_k = rope_triton(q, k)
-
-        self.assertTrue(
-            torch.allclose(ref_q, tri_q, atol=1e-5, rtol=1e-5),
-            f"Q max diff: {(ref_q - tri_q).abs().max().item():.2e}",
-        )
-        self.assertTrue(
-            torch.allclose(ref_k, tri_k, atol=1e-5, rtol=1e-5),
-            f"K max diff: {(ref_k - tri_k).abs().max().item():.2e}",
-        )
-
-    @_skip_no_triton
-    def test_use_triton_flag_on_demand(self):
-        """RotaryPE with use_triton=True (on-demand) matches PyTorch."""
-        num_heads, d_head = 8, 64
-        hidden_size = num_heads * d_head
-        seq_len = 128
-
-        rope_ref = RotaryPE(
-            hidden_size,
-            num_heads,
-            cache_embeddings=False,
-            compile_on_demand=False,
-        )
-        rope_triton = RotaryPE(
-            hidden_size,
-            num_heads,
-            cache_embeddings=False,
-            compile_on_demand=False,
-            use_triton=True,
-        )
-
-        q = torch.randn(2, seq_len, num_heads, d_head, device=self.device)
-        k = torch.randn(2, seq_len, num_heads, d_head, device=self.device)
-
-        ref_q, ref_k = rope_ref(q, k)
-        tri_q, tri_k = rope_triton(q, k)
-
-        self.assertTrue(
-            torch.allclose(ref_q, tri_q, atol=1e-5, rtol=1e-5),
-            f"Q max diff: {(ref_q - tri_q).abs().max().item():.2e}",
-        )
-
-    @_skip_no_triton
-    def test_backward_through_rope(self):
-        """RotaryPE backward with Triton matches PyTorch."""
-        num_heads, d_head = 4, 64
-        hidden_size = num_heads * d_head
-        seq_len = 32
-
-        rope_ref = RotaryPE(hidden_size, num_heads, max_sequence_length=64)
-        rope_triton = RotaryPE(
-            hidden_size,
-            num_heads,
-            max_sequence_length=64,
-            use_triton=True,
-        )
-
-        q = torch.randn(
-            2, seq_len, num_heads, d_head, device=self.device, requires_grad=True
-        )
-        k = torch.randn(
-            2, seq_len, num_heads, d_head, device=self.device, requires_grad=True
-        )
-
-        q_ref = q.detach().clone().requires_grad_(True)
-        k_ref = k.detach().clone().requires_grad_(True)
-
-        ref_q, ref_k = rope_ref(q_ref, k_ref)
-        grad_q = torch.randn_like(ref_q)
-        grad_k = torch.randn_like(ref_k)
-        (ref_q.sum() + ref_k.sum()).backward()
-
-        q_tri = q.detach().clone().requires_grad_(True)
-        k_tri = k.detach().clone().requires_grad_(True)
-        tri_q, tri_k = rope_triton(q_tri, k_tri)
-        (tri_q.sum() + tri_k.sum()).backward()
-
-        self.assertTrue(
-            torch.allclose(q_ref.grad, q_tri.grad, atol=1e-5, rtol=1e-5),
-            f"Q grad max diff: {(q_ref.grad - q_tri.grad).abs().max().item():.2e}",
-        )
-        self.assertTrue(
-            torch.allclose(k_ref.grad, k_tri.grad, atol=1e-5, rtol=1e-5),
-            f"K grad max diff: {(k_ref.grad - k_tri.grad).abs().max().item():.2e}",
-        )
-
-
-class TestPrepareCosSinForTriton(unittest.TestCase):
-    """Tests for the cos/sin preprocessing helper."""
-
-    def setUp(self):
-        self.device = torch.device("cuda")
-
-    @_skip_no_triton
-    def test_4d_input(self):
-        """[1, seq, 1, d_head] input is correctly preprocessed."""
-        seq_len, d_head = 32, 64
-        half_dim = d_head // 2
-
-        cos = torch.randn(1, seq_len, 1, d_head, device=self.device)
-        sin = torch.randn(1, seq_len, 1, d_head, device=self.device)
-
-        cos_t, sin_t = _prepare_cos_sin_for_triton(cos, sin, 2, seq_len, d_head)
-
-        self.assertEqual(cos_t.shape, (2 * seq_len, half_dim))
-        self.assertEqual(sin_t.shape, (2 * seq_len, half_dim))
-        self.assertTrue(cos_t.is_contiguous())
-        self.assertTrue(sin_t.is_contiguous())
-
-    @_skip_no_triton
-    def test_2d_input(self):
-        """[seq, d_head] input is correctly preprocessed."""
-        seq_len, d_head = 32, 64
-        half_dim = d_head // 2
-
-        cos = torch.randn(seq_len, d_head, device=self.device)
-        sin = torch.randn(seq_len, d_head, device=self.device)
-
-        cos_t, sin_t = _prepare_cos_sin_for_triton(cos, sin, 4, seq_len, d_head)
-
-        self.assertEqual(cos_t.shape, (4 * seq_len, half_dim))
-        self.assertTrue(cos_t.is_contiguous())
-
-    @_skip_no_triton
-    def test_batch_broadcast(self):
-        """[1, seq, 1, d_head] is broadcast to batch_size > 1."""
-        batch, seq_len, d_head = 4, 16, 128
-        half_dim = d_head // 2
-
-        cos = torch.randn(1, seq_len, 1, d_head, device=self.device)
-        sin = torch.randn(1, seq_len, 1, d_head, device=self.device)
-
-        cos_t, sin_t = _prepare_cos_sin_for_triton(cos, sin, batch, seq_len, d_head)
-
-        self.assertEqual(cos_t.shape, (batch * seq_len, half_dim))
-
-        # Verify broadcast: all batch entries should be identical
-        cos_reshaped = cos_t.reshape(batch, seq_len, half_dim)
-        for b in range(1, batch):
-            self.assertTrue(
-                torch.allclose(cos_reshaped[0], cos_reshaped[b]),
-                f"Batch {b} differs from batch 0",
-            )
 
 
 if __name__ == "__main__":

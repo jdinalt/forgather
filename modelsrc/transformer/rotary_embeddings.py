@@ -239,6 +239,12 @@ def apply_rotary_pos_emb(
     from the attention forward pass (originally computed by
     :class:`RotaryEmbedding` in ``CasualLM``).
 
+    By default, the rotation is computed in float32 for numerical stability,
+    which is important for long sequences and half-precision training. To
+    use native dtype instead (matching HF Transformers' default behavior),
+    use :func:`apply_rotary_pos_emb_native_precision` or create a partial
+    with ``force_float32=False``.
+
     Args:
         q: Query tensor of shape ``[batch, seq, heads, d_head]``.
         k: Key tensor of shape ``[batch, seq, heads, d_head]``.
@@ -249,6 +255,13 @@ def apply_rotary_pos_emb(
     Returns:
         Tuple of ``(rotated_q, rotated_k)`` with same shapes as input.
     """
+    if position_embeddings is None:
+        raise ValueError(
+            "position_embeddings is None. When using apply_rotary_pos_emb as "
+            "pos_encoder, ensure that CasualLM is configured with a rotary_emb "
+            "module (RotaryEmbedding) so that position_embeddings are computed "
+            "and passed through kwargs."
+        )
     cos, sin = position_embeddings
     # Broadcast over heads: [batch, seq, 1, d_head]
     cos = cos.unsqueeze(2)
@@ -264,3 +277,47 @@ def apply_rotary_pos_emb(
     k_embed = (k * cos) + (rotate_half(k) * sin)
 
     return q_embed.to(orig_dtype), k_embed.to(orig_dtype)
+
+
+def apply_rotary_pos_emb_native_precision(
+    q: Tensor,
+    k: Tensor,
+    position_embeddings: Tuple[Tensor, Tensor] = None,  # type: ignore[assignment]
+    **kwargs,
+) -> Tuple[Tensor, Tensor]:
+    """
+    Apply rotary position embeddings in the native dtype of q/k.
+
+    This matches HuggingFace Transformers' default behavior, where cos/sin are
+    cast to the model dtype and the rotation is computed without upcasting.
+    Faster and uses less memory than :func:`apply_rotary_pos_emb`, but may
+    lose precision with bf16/fp16, especially for long sequences.
+
+    Useful for benchmarking the speed/memory/accuracy tradeoff vs float32.
+
+    Args:
+        q: Query tensor of shape ``[batch, seq, heads, d_head]``.
+        k: Key tensor of shape ``[batch, seq, heads, d_head]``.
+        position_embeddings: Tuple of ``(cos, sin)``, each
+            ``[batch, seq, d_head]``. Computed by :class:`RotaryEmbedding`.
+        **kwargs: Ignored (absorbs other forward kwargs).
+
+    Returns:
+        Tuple of ``(rotated_q, rotated_k)`` with same shapes as input.
+    """
+    if position_embeddings is None:
+        raise ValueError(
+            "position_embeddings is None. When using apply_rotary_pos_emb_native_precision "
+            "as pos_encoder, ensure that CasualLM is configured with a rotary_emb "
+            "module (RotaryEmbedding) so that position_embeddings are computed "
+            "and passed through kwargs."
+        )
+    cos, sin = position_embeddings
+    # Broadcast over heads and cast to q/k dtype: [batch, seq, 1, d_head]
+    cos = cos.unsqueeze(2).to(q.dtype)
+    sin = sin.unsqueeze(2).to(q.dtype)
+
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+
+    return q_embed, k_embed
