@@ -28,16 +28,34 @@ Additionally, HuggingFace Transformers 5.0+ requires models to properly integrat
 ### The Solution
 
 Forgather's initialization system provides:
-1. **Semantic naming** via `init_prefix` - modules are tagged with implementation-independent names
-2. **Regex-based overrides** - match parameter patterns and apply custom initialization
-3. **Automatic fallback** - uses PyTorch's `reset_parameters()` for standard modules
+1. **Dependency injection** - the init function is a configurable callable (`_init_weights_fn`)
+2. **Built-in implementations** - `init_weights_by_regex` (regex-based) and `simple_weight_init` (reset_parameters-based)
+3. **Automatic fallback** - both implementations fall back to PyTorch's `reset_parameters()` for standard modules
 4. **HF compatibility** - properly overrides `_init_weights()` to preserve initialization flags
+5. **Extensible** - custom init functions can be injected via the configuration system
 
 ## How It Works
 
-### Three-Tier Initialization Strategy
+### The _init_weights_fn Injection Point
 
-When `_init_weights(module)` is called for each module during model initialization:
+The HF template's `_init_weights(module)` delegates to `self.causal_lm._init_weights_fn(module)`.
+This callable is set from the model configuration — it is not hardcoded. Any function with
+the signature `(module: nn.Module) -> None` can be used.
+
+Forgather provides two built-in implementations in `modelsrc/transformer/init_weights.py`:
+
+- **`init_weights_by_regex`** — regex-based initialization with `init_prefix` support
+  (used by Llama, Mistral, Qwen3, and most models)
+- **`simple_weight_init`** — delegates to `reset_parameters()` with optional
+  embedding scaling (useful for simpler models or quick prototyping)
+
+Both follow the same contract: skip modules without local state, fall back to
+`reset_parameters()`, and raise on modules that can't be initialized. Custom
+init functions can follow the same pattern.
+
+### init_weights_by_regex Strategy
+
+When `init_weights_by_regex(module)` is called for each module:
 
 1. **Skip empty modules** - Modules without parameters or buffers are skipped
 2. **Regex-based override** (if `init_prefix` is set):
@@ -361,18 +379,17 @@ DynamicCasualLM.__init__(config)
                                             |
                                             +-- self.causal_lm._init_weights_fn(module)
                                                   |
-                                                  +-- init_weights_by_regex(module, ...)
-                                                        |
-                                                        +-- has_local_state(module)?
-                                                        |   (skip if no params or buffers)
-                                                        |
-                                                        +-- has init_prefix?
-                                                        |   -> regex match -> apply init_fn
-                                                        |
-                                                        +-- has reset_parameters()?
-                                                        |   -> module.reset_parameters()
-                                                        |
-                                                        +-- else: raise ValueError
+                                                  +-- (injected init function)
+                                                  |   e.g. init_weights_by_regex
+                                                  |   or   simple_weight_init
+                                                  |   or   custom function
+                                                  |
+                                                  +-- has_local_state(module)?
+                                                  |   (skip if no params or buffers)
+                                                  |
+                                                  +-- (implementation-specific logic)
+                                                  |
+                                                  +-- fallback: module.reset_parameters()
 ```
 
 Key points:
@@ -383,13 +400,15 @@ Key points:
   delegate to the injected `_init_weights_fn`.
 
 - **`_init_weights_fn`** is a callable stored on `CasualLM`, set from the
-  configuration (typically `init_weights_by_regex` with pre-bound regex list).
-  This is the dependency injection point -- different models can use different
-  initialization strategies.
+  configuration. This is the dependency injection point -- different models
+  can use different initialization strategies. It is typically a ``partial``
+  with pre-bound arguments (e.g., ``partial(init_weights_by_regex,
+  regex_list=...)``).
 
-- **`init_weights_by_regex`** processes each module individually. It checks for
-  `init_prefix` (regex path), then falls back to `reset_parameters()`. Modules
-  with no local state (no parameters or buffers) are skipped entirely.
+- **Built-in implementations** (``init_weights_by_regex``,
+  ``simple_weight_init``) both follow the same contract: skip modules without
+  local state, apply implementation-specific logic, fall back to
+  ``reset_parameters()``. Custom init functions should follow the same pattern.
 
 - **`_is_hf_initialized`** is a flag set by HF on parameters loaded from a
   checkpoint. The `_initialize_weights` wrapper checks this flag and skips
@@ -403,7 +422,7 @@ in initialization. `has_local_state()` checks both parameters and buffers,
 so `RotaryEmbedding` (which has an `inv_freq` buffer) is not skipped.
 
 Since `RotaryEmbedding` has no `init_prefix` and no parameters for regex
-matching, `init_weights_by_regex` falls through to `reset_parameters()`.
+matching, the init function falls through to `reset_parameters()`.
 This is where the buffer values are computed:
 
 ```python
@@ -459,9 +478,9 @@ construction and meta-device construction.
 During model construction:
 1. Model is constructed (on meta device for `from_pretrained`, or target device directly)
 2. `post_init()` triggers `_init_weights(module)` for each module
-3. For each module, `init_weights_by_regex` runs:
+3. For each module, the injected init function (e.g., `init_weights_by_regex`) runs:
    - Skip if no local state (no parameters or buffers)
-   - Try regex matching via `init_prefix`
+   - Apply implementation-specific logic (e.g., regex matching via `init_prefix`)
    - Fall back to `reset_parameters()`
 4. If loading from checkpoint: `_is_hf_initialized` flags prevent re-initialization of loaded parameters
 5. For meta device: steps 3-4 happen again after buffers are moved to real device
@@ -523,6 +542,6 @@ deferring actual computation until the buffer has been moved to a real device.
 - [Syntax Reference](syntax-reference.md) - Full YAML configuration syntax
 - [Writing a Config](writing-a-config.md) - General configuration guide
 - [Template Inheritance](inheritance.md) - How to extend base templates
-- `modelsrc/transformer/init_weights.py` - Implementation source code
-- `modelsrc/transformer/llama_init.py` - Llama initialization functions
+- `modelsrc/transformer/init_weights.py` - Built-in init functions (`init_weights_by_regex`, `simple_weight_init`)
+- `modelsrc/transformer/llama_init.py` - Llama-specific initialization functions
 - `templatelib/examples/models/transformers/dynamic_llama.yaml` - Complete example
