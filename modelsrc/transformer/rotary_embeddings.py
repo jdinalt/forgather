@@ -75,17 +75,39 @@ class RotaryEmbedding(nn.Module):
     The resulting (cos, sin) tuple is passed to attention layers via kwargs as
     ``position_embeddings``.
 
-    Initialization follows the two-phase pattern for meta device support:
+    Precision
+    ---------
+    Frequency computation (inv_freq, cos, sin) is always performed in float32
+    with autocast disabled, as bf16 rounding in periodic functions produces
+    large absolute errors at moderate-to-large positions.
+
+    The ``float32_output`` flag controls whether cos/sin are returned in float32
+    or cast to the input dtype. ``apply_rotary_pos_emb`` casts q/k to match,
+    so this flag effectively controls the rotation precision:
+
+    - **float32_output=True**: Rotation in float32. Recommended for long-context
+      training (>4K positions) and when maximum precision is needed. Matches
+      Flash Attention's Triton kernel behavior.
+    - **float32_output=False** (default): Rotation in model dtype. Matches
+      HF Transformers, torchtitan, and vLLM. Sufficient for most training
+      scenarios and uses less memory.
+
+    See ``docs/model-architecture.md`` for a detailed discussion of RoPE
+    precision tradeoffs.
+
+    Initialization
+    --------------
+    Follows the two-phase pattern for meta device support:
 
     - ``__init__`` allocates an empty ``inv_freq`` buffer (non-persistent).
     - ``reset_parameters()`` computes the actual frequency values.
 
-    The weight initialization system (``init_weights_by_regex``) calls
-    ``reset_parameters()`` as its fallback for modules without ``init_prefix``.
-    On meta device, ``reset_parameters()`` is a no-op; values are computed
-    after HF moves buffers to a real device and re-runs initialization.
+    The weight initialization system calls ``reset_parameters()`` as its
+    fallback for modules without ``init_prefix``. On meta device,
+    ``reset_parameters()`` is a no-op; values are computed after the buffer
+    is moved to a real device.
 
-    See ``docs/configuration/model-initialization.md`` for the full HF
+    See ``docs/configuration/model-initialization.md`` for the full
     initialization call chain.
     """
 
@@ -99,7 +121,7 @@ class RotaryEmbedding(nn.Module):
         rope_parameters: Optional[Dict[str, Any]] = None,
         rope_theta: Optional[float] = None,
         rope_scaling: Optional[Dict[str, Any]] = None,
-        float32_output: bool = True,
+        float32_output: bool = False,
         device=None,
     ):
         """

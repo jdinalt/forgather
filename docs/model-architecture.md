@@ -61,8 +61,36 @@ RoPE is the dominant choice (~90% of configs). The architecture follows Transfor
 - **`position_embeddings`**: The `(cos, sin)` tuple flows through kwargs from `CasualLM` -> `LayerStack` -> `PreLNLayer` -> `CausalMultiheadAttn` -> `pos_encoder`.
 - **`apply_rotary_pos_emb`**: A stateless function that extracts `position_embeddings` from kwargs and applies the rotation to Q/K.
 - **Meta device support**: `inv_freq` is a non-persistent buffer (`persistent=False`), allocated empty in `__init__` and computed by `reset_parameters()`. The weight initialization system (`init_weights_by_regex`) calls `reset_parameters()` as its fallback for modules without `init_prefix`. On meta device, `reset_parameters()` is a no-op; values are computed after buffers are moved to a real device. See `docs/configuration/model-initialization.md` for the full call chain.
-- **Numerical stability**: Frequency computation forced to float32 via `torch.autocast(enabled=False)`. Rotation upcasts to float32 for bf16/fp16 inputs.
-- **torch.compile**: No graph breaks. No Triton kernels needed -- torch.compile fuses the element-wise rotation ops automatically.
+- **torch.compile**: No graph breaks. The `float32_output` flag is a compile-time guard (constant-folded after first trace). No Triton kernels needed -- torch.compile fuses the element-wise rotation ops automatically.
+
+#### RoPE Numerical Precision
+
+RoPE precision has two distinct aspects: **frequency computation** (inv_freq, cos, sin) and **rotation application** (q*cos + rotate_half(q)*sin). The requirements differ.
+
+**Frequency computation -- float32 is mandatory.** The inverse frequencies are computed as `1 / (theta^(2i/d))`, producing values that span several orders of magnitude. Cos/sin of these frequencies at large position indices amplify small rounding errors into large absolute errors. Known incidents:
+
+- HF Transformers #29301: autocast silently downcast the `inv_freq @ position_ids` matmul to bf16 despite explicit `.float()` calls. Fixed by wrapping with `torch.autocast(enabled=False)`.
+- GPT-NeoX bug: cos/sin tables computed in fp16 produced errors of ~0.78 vs float32 at position 1857. The periodic functions turn small relative rounding into large absolute errors.
+- Research has shown that bf16 frequency computation breaks RoPE's position-shift invariance property -- the mathematical guarantee that `A(i+d)(j+d) == A(i)(j)` fails under bf16 rounding.
+
+Our implementation forces float32 for all frequency computation via `torch.autocast(enabled=False)`.
+
+**Rotation -- float32 is recommended but optional.** The rotation `q*cos + rotate_half(q)*sin` involves element-wise multiplications. In bf16, this introduces rounding at each step. The impact depends on context length: short contexts (<4K) show negligible differences; long contexts (>8K) can show measurable degradation.
+
+What major implementations do:
+
+| Implementation | Frequency computation | Rotation |
+|---|---|---|
+| HF Transformers v5 | float32 (autocast disabled) | Model dtype |
+| Flash Attention (Triton) | float32 | float32 (hardcoded) |
+| torchtitan | float32 | Model dtype |
+| vLLM | float32 | Model dtype |
+
+The `RotaryEmbedding.float32_output` flag controls which approach to use:
+- `float32_output=False` (default): matches HF/torchtitan/vLLM. Sufficient for most training.
+- `float32_output=True`: matches Flash Attention. Recommended for long-context training or when investigating precision-related instability.
+
+Under **AMP** (`torch.autocast`): matmul is a "fast" op that gets cast to lower precision, which is why autocast must be explicitly disabled for the frequency computation. Element-wise ops (the rotation) follow their input dtype and are not auto-promoted. This means AMP does not help with rotation precision -- the `float32_output` flag is the only control.
 
 ### Layer Stacking
 
