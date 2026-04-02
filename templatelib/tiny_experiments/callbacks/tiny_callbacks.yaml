@@ -26,11 +26,8 @@ text_gen_callback_args: &text_gen_callback_args
 ## This adds a text-generationn sample every 'generation_steps'
 [callback_list]
     == super()
-    ## Flex attention seems to occasionally crash when generating. Disabled until issue is resolved.
-    -- if ns.attn_implementation != "flex_attention"
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         <<: *text_gen_callback_args
-    -- endif
     peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
         show_details: {{ debug_memory | toyaml(False) }}
         do_log: {{ log_peak_memory | toyaml(False) }}

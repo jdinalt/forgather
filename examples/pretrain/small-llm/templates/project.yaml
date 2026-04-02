@@ -72,9 +72,6 @@
     preserve_n_best: 1
     eval_on_save: True
 
-    # Checkpoint loading
-    resume_from_checkpoint: {{ resume | default(True) }}
-
     # Enable compile by default, with maximum performance
     torch_compile: {{ compile | default(True) }}
     torch_compile_dynamic: False
@@ -145,11 +142,8 @@ text_gen_callback_args: &text_gen_callback_args
 
 [callback_list]
     == super()
-    ## Flex attention seems to occasionally crash when generating. Disabled until issue is resolved.
-    -- if ns.attn_implementation != "flex_attention"
     text_gen_callback: !call:forgather.ml.trainer.callbacks:TextgenCallback
         <<: *text_gen_callback_args
-    -- endif
     trainer_control: !call:forgather.ml.trainer.callbacks:TrainerControlCallback
     peak_memory: !call:forgather.ml.trainer.callbacks:PeakMemory
     # Abort training if loss diverges substantially
