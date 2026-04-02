@@ -104,14 +104,25 @@ class TextgenCallback(TrainerCallback):
             padding_side="left",
         )
 
-        input_ids = tokenizer_outputs["input_ids"].to(device)
+        # Temporarily remove torch.compile from the model for generation.
+        # The compiled model may use flex_attention + max-autotune which fails
+        # during the generate loop (different shapes/cache behavior than training).
+        # Saving and restoring _compiled_call_impl reverts to eager for this call.
+        compiled_call = getattr(model, "_compiled_call_impl", None)
+        if compiled_call is not None:
+            model._compiled_call_impl = model._call_impl
 
+        input_ids = tokenizer_outputs["input_ids"].to(device)
         with torch.inference_mode():
             outputs = model.generate(
                 input_ids,
                 generation_config=generation_config,
                 tokenizer=tokenizer,
             )
+
+        # Restore compiled forward for training
+        if compiled_call is not None:
+            model._compiled_call_impl = compiled_call
 
         output_text = tokenizer.batch_decode(
             outputs.sequences,
