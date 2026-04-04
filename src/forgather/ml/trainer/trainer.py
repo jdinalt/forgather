@@ -1479,6 +1479,8 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
     def _end_train_loop(
         self, start_time: float | None, train_steps: int
     ) -> dict[str, int | float]:
+        if train_steps == -1:
+            train_steps = 0
         if start_time:
             runtime = time.time() - start_time
         else:

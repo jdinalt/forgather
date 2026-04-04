@@ -147,6 +147,8 @@ def format_value(value: Any, fmt: str | Callable[[Any], str]) -> str:
         return str(value)
     if fmt[-1] in _INT_TYPES:
         value = int(value)
+    if value is None:
+        return "None"
     return format(value, fmt)
 
 
