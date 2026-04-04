@@ -149,6 +149,35 @@ model programmatically -- see the
 
 Run `forgather --help` or `forgather <command> --help` for full usage details.
 
+## Interactive mode
+
+For day-to-day work, running `forgather -i` launches an interactive shell that is
+often easier to use than invoking `forgather` repeatedly from your normal shell.
+It provides:
+
+- **Tab completion** for configuration names, commands, and arguments
+- **Persistent current template** -- set it once with `config baseline.yaml`, then
+  run `pp`, `train`, etc. without repeating `-t baseline.yaml`
+- **Project-specific command history** (stored in `.forgather_history`)
+- **Editor integration** -- the `edit` command opens template files directly in
+  VS Code or vim, with multi-file selection
+
+```bash
+forgather -i
+forgather> ls                             # List available configurations
+forgather> config train_tiny_llama.yaml   # Set current template
+forgather> pp                             # Preview configuration
+forgather> train                          # Train
+forgather> edit                           # Open templates in your editor
+```
+
+When running in a VS Code terminal, the interactive CLI automatically detects
+VS Code and opens files as editor tabs. This makes it easy to inspect the full
+template inheritance chain while working on a configuration.
+
+For the full guide, including vim clientserver setup and multi-file editing,
+see the [Interactive CLI Guide](../guides/interactive-cli.md).
+
 ## Next steps
 
 With your first model trained, here are recommended paths for learning more:
