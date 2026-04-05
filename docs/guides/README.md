@@ -1,9 +1,7 @@
 # Guides
 
-Practical guides for common tasks, best practices, and advanced topics.
+Practical guides for common tasks and tools.
 
-Under construction.
-
-## Essential Guides
-
-- **[Interactive CLI](interactive-cli.md)** - Advanced editor integration and multi-file editing
+- **[Interactive CLI](interactive-cli.md)** - Interactive shell with tab completion, editor integration, and multi-file editing
+- **[Model Conversion](model-conversion.md)** - Bidirectional HuggingFace / Forgather model conversion
+- **[Creating a Model Project](creating-a-model-project.md)** - Define a custom model architecture from scratch

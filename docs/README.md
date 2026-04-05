@@ -4,18 +4,36 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 
 ## Quick Navigation
 
-- **[Model Architecture](model-architecture.md)** - Transformer module inventory, composition patterns, and optimization flags (`modelsrc/transformer/`)
-- **[Interactive CLI](guides/interactive-cli.md)** - Interactive CLI
+**Start here:**
+- **[Getting Started](getting-started/README.md)** - Installation, first training run, key CLI commands
+- **[Core Concepts](core-concepts/README.md)** - Configuration pipeline, projects, templates, trainers
+
+**Configuration:**
+- **[Configuration Overview](configuration/README.md)** - Template system and YAML configuration
+- **[Syntax Reference](configuration/syntax-reference.md)** - Complete syntax reference for tags and directives
+- **[Template Inheritance](configuration/inheritance.md)** - Inheritance patterns and block overrides
+- **[Model Initialization](configuration/model-initialization.md)** - Regex-based parameter initialization
+- **[Debugging Guide](configuration/debugging.md)** - Tools and techniques for debugging configurations
+- **[Project Templates](project-templates/lm-training-projects.md)** - LM Training and Auto LR project templates
+- **[High-level API](configuration/project.ipynb)** - The "Project" abstraction
+- **[Low-level API](configuration/low-level-api.md)** - The API upon which the Project abstraction is built
+
+**Training:**
+- **[Pipeline Parallel](trainers/pipeline-parallel.md)** - Pipeline parallelism for consumer GPUs and limited interconnects
+- **[Trainer Control](trainers/trainer-control.md)** - External control of running training jobs (save, stop, abort)
 - **[Training Performance Metrics](trainers/training-performance-metrics.md)** - Token throughput, FLOP tracking, and MFU
 - **[DiLoCo](trainers/diloco.md)** - Distributed Local-SGD training across heterogeneous machines on LAN
-- **[Project Templates](project-templates/lm-training-projects.md)** - LM Training and Auto LR project templates
-- **[Configuration Overview](configuration/README.md)** - Template system and YAML configuration
-- **[Syntax Reference](configuration/syntax-reference.md)** - Complete syntax reference
-- **[Model Initialization](configuration/model-initialization.md)** - Regex-based parameter initialization
+- **[FP8 Training](trainers/fp8-training.md)** - FP8 training via torchao
 - **[Checkpointing](checkpointing/README.md)** - Distributed checkpoint system for multi-GPU and multi-node training
-- **[High-level API](configuration/project.ipynb)** - The "Project" abstraction
-- **[Low-level API](configuration/low-level-api.md)** - The API upon which the 'Project' abstraction is built from
-- **[Debugging Guide](configuration/debugging.md)** - Tools and techniques for debugging configurations
+
+**Models and inference:**
+- **[Model Architecture](model-architecture.md)** - Transformer module inventory, composition patterns, and optimization flags
+- **[Model Conversion](guides/model-conversion.md)** - Bidirectional HuggingFace / Forgather model conversion
+- **[vLLM Integration](inference/vllm_integration.md)** - Distributed inference with vLLM (currently blocked on Transformers v5)
+
+**Tools:**
+- **[Interactive CLI](guides/interactive-cli.md)** - Interactive shell with tab completion and editor integration
+- **[Log Analysis](logs-analysis.md)** - Training log summaries, plots, and heatmaps
 
 ## Tutorials
 - **[Tiny Llama](../examples/tutorials/tiny_llama/project_index.ipynb)** - Demonstration of basic usage
@@ -40,21 +58,19 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 
 ## Documentation Structure
 
-Much of this is still under construction.
-
 ```
 docs/
-├── getting-started/     # Installation and tutorials (WIP)
-├── core-concepts/       # Fundamental concepts (WIP)
+├── getting-started/     # Installation and first training run
+├── core-concepts/       # Configuration pipeline, projects, templates
+├── configuration/       # Template and configuration system
 ├── project-templates/   # Reusable project templates (LM Training, Auto LR)
-├── trainers/            # Training system documentation
+├── trainers/            # Training system (PP, DiLoCo, control, metrics, FP8)
 ├── checkpointing/       # Distributed checkpoint system
 ├── datasets/            # Data loading, packing, and preprocessing
-├── configuration/       # Template and configuration system
 ├── inference/           # vLLM integration guide
+├── guides/              # Interactive CLI, model conversion
 ├── development/         # Testing and development workflow
 ├── fused_loss/          # Fused linear cross-entropy loss
 ├── known_issues/        # Known performance issues and workarounds
-├── guides/              # Best practices and advanced topics (WIP)
 └── examples/            # Pointers to working examples
 ```
