@@ -120,7 +120,6 @@ class CausalMultiheadAttn(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> FloatTensor:
         batch_size, seq_len, d_model = hidden_states.shape

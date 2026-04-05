@@ -55,7 +55,7 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
     num_heads: !var "num_attention_heads"
     num_kv_heads: !var "num_key_value_heads"
     dropout: !var "attention_dropout"
-    pos_encoder: *relative_pe
+    pos_encoder: *apply_rotary_pos_emb
     attn_implementation: !var "attn_implementation"
     attn_functions: *attn_functions
     qk_norm_factory: *qk_norm_factory

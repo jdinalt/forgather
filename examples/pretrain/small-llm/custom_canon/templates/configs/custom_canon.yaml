@@ -28,7 +28,8 @@ tokenizer: &tokenizer !call:forgather:from_project
 
 [rel_positional_encoder]
 # Use NoPE
-.define: &relative_pe null
+.define: &rotary_emb null
+.define: &apply_rotary_pos_emb null
 
 [qk_norm_factory]
 # Add QK Norm -- Like Qwen3

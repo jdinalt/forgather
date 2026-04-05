@@ -13,4 +13,6 @@
 -- extends "config.4M.model"
 
 [rel_positional_encoder]
-.define: &relative_pe null
+# Use NoPE
+.define: &rotary_emb null
+.define: &apply_rotary_pos_emb null

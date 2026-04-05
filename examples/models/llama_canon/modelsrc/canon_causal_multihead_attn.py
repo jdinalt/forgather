@@ -71,7 +71,9 @@ class CanonCausalMultiheadAttn(nn.Module):
         self.key_linear = nn.Linear(d_model, self.num_kv_heads * self.d_head, bias=bias)
         setattr(self.key_linear, "init_prefix", "attn.key")
 
-        self.value_linear = nn.Linear(d_model, self.num_kv_heads * self.d_head, bias=bias)
+        self.value_linear = nn.Linear(
+            d_model, self.num_kv_heads * self.d_head, bias=bias
+        )
         setattr(self.value_linear, "init_prefix", "attn.value")
 
         self.output_linear = nn.Linear(self.num_heads * self.d_head, d_model, bias=bias)
@@ -108,7 +110,6 @@ class CanonCausalMultiheadAttn(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional["Cache"] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> FloatTensor:
         batch_size, seq_len, d_model = hidden_states.shape
@@ -133,7 +134,7 @@ class CanonCausalMultiheadAttn(nn.Module):
             key = self.k_norm(key)
 
         if self.pos_encoder:
-            query, key = self.pos_encoder(query, key, position_ids)
+            query, key = self.pos_encoder(query, key, **kwargs)
 
         query = query.transpose(1, 2)
         key = key.transpose(1, 2)
