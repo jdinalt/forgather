@@ -105,7 +105,7 @@ Model configs (in `models/` sub-project):
 - `canon_b.yaml` -- Canon-B: only attention QKV convolution
 - `canon_bd.yaml` -- Canon-BD: attention QKV (B) and FFN gate/up (D)
 
-Model configs (in `examples/tiny_experiments/llama_nope/`):
+Model configs (in `llama_nope/` sub-project):
 - `nope_4M.yaml` -- Plain Llama 4M without RoPE
 
 Training configs (prefix `train_`):
@@ -136,8 +136,8 @@ examples/tiny_experiments/canon/        # Main experiment project
       canon_b.yaml                      # Model: Canon B only
       canon_bd.yaml                     # Model: Canon B+D
 
-examples/tiny_experiments/llama_nope/   # Companion model project
-  meta.yaml                             # Adds llama templates to search path
-  templates/configs/
-    nope_4M.yaml                        # Model: Llama 4M without RoPE
+  llama_nope/                           # Companion model sub-project
+    meta.yaml                           # Adds llama templates to search path
+    templates/configs/
+      nope_4M.yaml                      # Model: Llama 4M without RoPE
 ```
