@@ -4,8 +4,9 @@
     == super()
     -- set ns.config_name = "bfloat16 Adafactor"
     -- set ns.config_description = "Train with bf16 weights using Adafactor"
-    -- set ns.log_name = log_name | default("bf16_adafactor")
     -- set ns.model_name = model_name | default("bf16_adafactor")
+    ## https://arxiv.org/pdf/2502.20566
+    -- set ns.base_lr = lr | default(1.0e-3)
 
 [trainer_args]
     == super()

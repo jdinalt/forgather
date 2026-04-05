@@ -1,0 +1,10 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Long Cooldown"
+    -- set ns.config_description = "Extended cooldown, 0.7"
+    -- set ns.model_name = model_name | default("long_cooldown")
+
+    ## Extend cooldown to 70% (from 30%) of token budget
+    -- set ns.cooldown_p = 0.7
