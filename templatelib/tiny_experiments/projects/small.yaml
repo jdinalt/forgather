@@ -1,4 +1,4 @@
--- extends "projects/auto_lr_project.yaml"
+-- extends "projects/lm_training_project.yaml"
 
 [config_metadata]
     == super()
@@ -35,6 +35,9 @@
     ## This setting appears to cause issues when using gradient accumulation
     torch_compile_mode: "max-autotune"
 -- endif
+
+[trainer_definition]
+    -- include 'trainers/ddp_trainer.yaml'
 
 [datacollator]
     == super()

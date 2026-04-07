@@ -6,9 +6,13 @@
 ## steps from a target token budget. The budget is typically set relative to
 ## the "Chinchilla-Optimal" ratio (see background below).
 ##
-## Includes a cosine-decay LR scheduler with warmup and an AdamW optimizer.
-## For automatic LR scaling based on global batch size, extend this template
-## with 'projects/auto_lr_project.yaml'.
+## Includes a cosine-decay LR scheduler with warmup and an AdamW optimizer
+## with automatic LR scaling based on global batch size. This allows you to
+## change the batch size, number of GPUs, or gradient accumulation steps
+## without manually retuning the learning rate. The scaling uses a power-law
+## rule:
+##
+##   lr = base_lr * (global_batch_size / base_batch_size) ** alpha
 ##
 ## ---------------------------------------------------------------------------
 ## Configuration Parameters
@@ -44,8 +48,15 @@
 ##   model_config           (str)   Model project configuration.    Default: small.yaml (28M parameters)
 ##   attn_implementation    (str)   Attention backend.              Default: sdpa
 ##
-## Optimizer / Scheduler
-##   lr                     (float) Learning rate.                  Default: 3e-4
+## Optimizer / Scheduler / LR Scaling
+##   lr                     (float) Base learning rate at           Default: 3e-4
+##                                  base_batch_size.
+##   base_batch_size        (int)   Reference batch size (tokens)   Default: 16384
+##                                  for LR scaling calculation.
+##   lr_alpha               (float) Scaling exponent.               Default: 0.5
+##                                    0.0 = no scaling
+##                                    0.5 = sqrt (noise-dominated)
+##                                    1.0 = linear (signal-dominated)
 ##
 ## Step Cadence (logging / eval / save intervals)
 ##   step_cadence           (float) Multiplier applied to the base  Default: 1.0
@@ -71,6 +82,38 @@
 ##   seed                   (int)   Random seed.                    Default: 42
 ##   resume                 (bool)  Resume from latest checkpoint.  Default: True
 ##   save_strategy          (str)   Checkpoint save strategy.       Default: steps
+##
+## ---------------------------------------------------------------------------
+## Batch-Size / Learning-Rate Scaling: Background
+##
+## The transition between scaling regimes is governed by the critical batch
+## size B_crit, which can be estimated from the gradient noise scale:
+##
+##   B_simple ~ tr(Sigma) / ||G||^2
+##
+## where G is the mean gradient and Sigma is the per-example gradient
+## covariance. Practically, B_simple can be estimated cheaply by computing
+## gradient norms at two batch sizes (e.g., B=1 and B=64) and taking their
+## ratio -- see McCandlish et al. (2018) Appendix A for the exact estimator.
+##
+## When batch_size << B_crit (signal-dominated), each sample contributes
+## fresh gradient signal, so linear scaling (alpha=1.0) is appropriate.
+## When batch_size >> B_crit (noise-dominated), additional samples mainly
+## reduce gradient noise, so sqrt scaling (alpha=0.5) is appropriate.
+##
+## Caveats:
+##   - B_crit increases over training as "easy" gradient signal is exhausted,
+##     suggesting batch size warmup as a practical strategy.
+##   - The noise scale proxy relies on SGD + well-conditioned gradient
+##     assumptions; recent work (Mayberry et al., 2025) finds it can
+##     underestimate B_crit by orders of magnitude for Adam on LLMs, so
+##     treat it as a rough lower bound.
+##
+## References:
+##   McCandlish et al. (2018) "An Empirical Model of Large-Batch Training"
+##     https://arxiv.org/abs/1812.06162
+##   Mayberry et al. (2025) "Critical Batch Size Revisited"
+##     https://arxiv.org/abs/2505.23971
 ##
 ## ---------------------------------------------------------------------------
 ## Chinchilla-Optimal Training: Background
@@ -153,6 +196,11 @@
     ## Attention
     -- set ns.attn_implementation = attn_implementation | default("sdpa")
 
+    ## LR scaling
+    -- set ns.base_lr = lr | default(3e-4)
+    -- set ns.base_batch_size = 16384
+    -- set ns.lr_alpha = 0.5
+
 ## ===== Derived globals ======================================================
 
 [globals]
@@ -177,6 +225,9 @@
     -- set ns.total_steps = ns.total_tokens // ns.tokens_per_step
     -- set ns.total_peak_hardware_flops = ns.world_size * ns.peak_hardware_flops
 
+    ## LR Scaling
+    -- set ns.global_lr = ns.base_lr * (ns.tokens_per_step / ns.base_batch_size) ** ns.lr_alpha
+
 [variable_listing]
     == super()
 # **LM Training Project**
@@ -191,6 +242,10 @@
 # ns.total_tokens: {{ ns.total_tokens // (1000 * 1000)}}M
 # ns.tokens_per_step: {{ ns.tokens_per_step }} tokens
 # ns.total_peak_hardware_flops: {{ ns.total_peak_hardware_flops / 1e12 }} TFLOPS
+# ns.base_lr: {{ ns.base_lr }}
+# ns.base_batch_size: {{ ns.base_batch_size }}
+# ns.lr_alpha: {{ ns.lr_alpha }}
+# ns.global_lr: {{ ns.global_lr }}
 
 ## ===== Dataset ==============================================================
 ##
@@ -282,7 +337,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:CosineLRScheduler@lr_sch
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW
-    lr: {{ lr | default(3e-4) | toyaml  }}
+    lr: {{ ns.global_lr | toyaml  }}
 
 ## ===== CLI arguments ========================================================
 ##
