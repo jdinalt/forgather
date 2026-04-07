@@ -1,0 +1,32 @@
+-- extends "configs/code-interleaved.yaml"
+-- from "packed.yaml" import dynamic_args
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Code Interleaved Packed"
+    -- set ns.config_description = "Interleave and pack all ajibawa-2023 code datasets"
+
+[pp_kwargs]
+    == super()
+    stride: {{ stride | default(0) }}
+    max_length: {{ max_length | default(512) }}
+
+[python_code]
+    == super()
+    config_template: "Python-Code-Large-packed.yaml"
+
+[cpp_code]
+    == super()
+    config_template: "Cpp-Code-Large-packed.yaml"
+
+[c_code]
+    == super()
+    config_template: "C-Code-Large-packed.yaml"
+
+[javascript_code]
+    == super()
+    config_template: "JavaScript-Code-Large-packed.yaml"
+
+[dynamic_args]
+    == super()
+{{ dynamic_args() }}
