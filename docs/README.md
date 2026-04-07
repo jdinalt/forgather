@@ -31,7 +31,10 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 - **[Model Conversion](guides/model-conversion.md)** - Bidirectional HuggingFace / Forgather model conversion
 - **[vLLM Integration](inference/vllm_integration.md)** - Distributed inference with vLLM (currently blocked on Transformers v5)
 
-**Tools:**
+**Guides:**
+- **[Creating a Model Project](guides/creating-a-model-project.md)** - Define a custom model architecture from scratch
+- **[Creating a Dataset Project](guides/creating-a-dataset-project.md)** - Load, pack, and interleave HuggingFace datasets
+- **[Debugging Configuration Errors](guides/debugging.md)** - Systematic troubleshooting and common error patterns
 - **[Interactive CLI](guides/interactive-cli.md)** - Interactive shell with tab completion and editor integration
 - **[Log Analysis](logs-analysis.md)** - Training log summaries, plots, and heatmaps
 
@@ -68,7 +71,7 @@ docs/
 ├── checkpointing/       # Distributed checkpoint system
 ├── datasets/            # Data loading, packing, and preprocessing
 ├── inference/           # vLLM integration guide
-├── guides/              # Interactive CLI, model conversion
+├── guides/              # How-to guides (models, datasets, CLI, conversion)
 ├── development/         # Testing and development workflow
 ├── fused_loss/          # Fused linear cross-entropy loss
 ├── known_issues/        # Known performance issues and workarounds

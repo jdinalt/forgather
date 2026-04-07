@@ -6,3 +6,4 @@ Practical guides for common tasks and tools.
 - **[Model Conversion](model-conversion.md)** - Bidirectional HuggingFace / Forgather model conversion
 - **[Creating a Model Project](creating-a-model-project.md)** - Define a custom model architecture from scratch
 - **[Creating a Dataset Project](creating-a-dataset-project.md)** - Load, pack, and interleave HuggingFace datasets
+- **[Debugging Configuration Errors](debugging.md)** - Systematic troubleshooting workflow and common error patterns
