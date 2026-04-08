@@ -1,7 +1,7 @@
 # https://github.com/pytorch/pytorch/tree/main/torch/distributed/pipelining
 import logging
 import math
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import (
@@ -814,6 +814,55 @@ class PipelineTrainer(
         if self.lr_scheduler is None and self.lr_scheduler_factory is not None:
             self.lr_scheduler = self.lr_scheduler_factory(self.optimizer)
 
+    @contextmanager
+    def _eval_schedule_context(self):
+        """Temporarily strip backward actions from a pre-computed pipeline schedule.
+
+        Workaround for PyTorch issue: schedules that inherit from
+        _PipelineScheduleRuntime (e.g. ScheduleZBVZeroBubble) pre-compute
+        pipeline_order_with_comms at __init__ time, including backward actions.
+        During eval(), _has_backward is set to False and stage.backward_one_chunk
+        early-returns, but the V-schedule special-case code still calls
+        stage.get_local_bwd_output() which asserts has_backward, causing a crash.
+
+        This context manager removes backward-related actions (BACKWARD_INPUT,
+        BACKWARD_WEIGHT, FULL_BACKWARD, SEND_B, RECV_B, REDUCE_GRAD) from the
+        schedule for the duration of eval, then restores the original.
+        """
+        from torch.distributed.pipelining.schedules import _ComputationType
+
+        _BACKWARD_ACTIONS = frozenset(
+            {
+                _ComputationType.BACKWARD_INPUT,
+                _ComputationType.BACKWARD_WEIGHT,
+                _ComputationType.FULL_BACKWARD,
+                _ComputationType.SEND_B,
+                _ComputationType.RECV_B,
+                _ComputationType.REDUCE_GRAD,
+            }
+        )
+
+        scheduler = self.scheduler
+        original = getattr(scheduler, "pipeline_order_with_comms", None)
+        if original is not None:
+            setattr(
+                scheduler,
+                "pipeline_order_with_comms",
+                {
+                    rank: [
+                        a
+                        for a in actions
+                        if a.computation_type not in _BACKWARD_ACTIONS
+                    ]
+                    for rank, actions in original.items()
+                },
+            )
+        try:
+            yield
+        finally:
+            if original is not None:
+                setattr(scheduler, "pipeline_order_with_comms", original)
+
     @override
     def _prediction_step(
         self, input_dict: dict[str, Tensor], labels: Tensor
@@ -852,10 +901,20 @@ class PipelineTrainer(
         loss_fn = self.loss_fn
         assert isinstance(loss_fn, RescaleLoss)
         with loss_fn.no_rescale(), self.amp_context.autocast():
-            if self.pp_has_first_stage:
-                self.scheduler.eval(*inputs, **extra_kwargs)
-            else:
-                self.scheduler.eval(**extra_kwargs, target=targets, losses=losses)
+            with self._eval_schedule_context():
+                if self.pp_has_first_stage:
+                    self.scheduler.eval(
+                        *inputs,
+                        **extra_kwargs,
+                        target=targets,
+                        losses=cast(list, losses),
+                    )
+                else:
+                    self.scheduler.eval(
+                        **extra_kwargs,
+                        target=targets,
+                        losses=cast(list, losses),
+                    )
 
         # Compute loss on last stage
         if self.pp_has_last_stage:
