@@ -58,6 +58,14 @@
 ##                                    0.5 = sqrt (noise-dominated)
 ##                                    1.0 = linear (signal-dominated)
 ##
+## Trainer Selection
+##   trainer_type           (str)   Trainer backend.                Choices: basic, ddp, pipeline
+##                                                                  Default: basic
+##   nproc_per_node         (str|int) Processes per node.           Default: auto (1 for basic,
+##                                                                           "gpu" for ddp/pipeline)
+##   pipeline_schedule      (str)   PP schedule class.              Default: ScheduleInterleaved1F1B
+##   microbatch_scale       (int)   PP microbatch scale factor.     Default: 1
+##
 ## Step Cadence (logging / eval / save intervals)
 ##   step_cadence           (float) Multiplier applied to the base  Default: 1.0
 ##                                  token intervals below.
@@ -163,6 +171,7 @@
     == super()
     -- set ns.config_name = "LM Training Project"
     -- set ns.config_description = "Default LM Training Project"
+    -- set ns.nproc_per_node = nproc_per_node | default(ns.nproc_per_node)
 
     ## Dataset
     -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, "examples", "datasets", "HuggingFaceTB"))
@@ -201,10 +210,27 @@
     -- set ns.base_batch_size = 16384
     -- set ns.lr_alpha = 0.5
 
+    ## Trainer selection
+    -- set ns.trainer_type = trainer_type | default("basic")
+
+    ## Pipeline Parallel inputs (only used when trainer_type == "pipeline")
+    -- set ns.pipe_schedule_factory = pipeline_schedule | default("ScheduleInterleaved1F1B")
+    -- set ns.microbatch_scale = microbatch_scale | default(1)
+
 ## ===== Derived globals ======================================================
 
 [globals]
     == super()
+    ## Map trainer_type to trainer template and launch config
+    -- if ns.trainer_type == "ddp"
+        -- set ns.trainer_class = 'trainers/ddp_trainer.yaml'
+    -- elif ns.trainer_type == "pipeline"
+        -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
+        -- set ns.dispatch_batches = True
+    -- else
+        -- set ns.trainer_class = 'trainers/trainer.yaml'
+    -- endif
+
     ## Convert M-token inputs to raw token counts
     -- set ns.total_tokens = ns.total_tokens * 1000 * 1000
     -- set ns.warmup_tokens = ns.warmup_tokens * 1000 * 1000
@@ -228,6 +254,26 @@
     ## LR Scaling
     -- set ns.global_lr = ns.base_lr * (ns.tokens_per_step / ns.base_batch_size) ** ns.lr_alpha
 
+    ## Pipeline Parallel derived values
+    -- if ns.trainer_type == "pipeline"
+        -- if ns.pipe_schedule_factory in ["ScheduleGPipe", "Schedule1F1B"]
+            -- set ns.stages_per_rank = 1
+        -- else
+            -- set ns.stages_per_rank = 2
+        -- endif
+        -- if (ns.per_device_train_batch_size % (ns.stages_per_rank * ns.microbatch_scale)) != 0
+            == raise("per_device_train_batch_size must be evenly divisible by stages_per_rank * microbatch_scale")
+        -- endif
+        -- set ns.per_stage_batch_size = ns.per_device_train_batch_size // (ns.stages_per_rank * ns.microbatch_scale)
+        -- set ns.n_microbatches = ns.world_size * ns.stages_per_rank * ns.microbatch_scale
+        -- set ns.pp_batch_size = ns.n_microbatches * ns.per_stage_batch_size
+        -- if ns.pipe_schedule_factory == "ScheduleZBVZeroBubble"
+            -- set ns.pp_stage_type = "v"
+        -- else
+            -- set ns.pp_stage_type = "loop"
+        -- endif
+    -- endif
+
 [variable_listing]
     == super()
 # **LM Training Project**
@@ -246,6 +292,15 @@
 # ns.base_batch_size: {{ ns.base_batch_size }}
 # ns.lr_alpha: {{ ns.lr_alpha }}
 # ns.global_lr: {{ ns.global_lr }}
+# ns.trainer_type: {{ ns.trainer_type }}
+-- if ns.trainer_type == "pipeline"
+# Pipeline Parallel:
+# ns.stages_per_rank: {{ ns.stages_per_rank }}
+# ns.per_stage_batch_size: {{ ns.per_stage_batch_size }}
+# ns.n_microbatches: {{ ns.n_microbatches }}
+# ns.pp_batch_size: {{ ns.pp_batch_size }}
+# ns.pp_stage_type: {{ ns.pp_stage_type }}
+-- endif
 
 ## ===== Dataset ==============================================================
 ##
@@ -321,6 +376,21 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     fp8_recipe: {{ fp8_recipe | toyaml(None) }}
 
     dataloader_drop_last: True
+
+-- if ns.trainer_type == "pipeline"
+    # Pipeline Parallel
+    n_microbatches: {{ ns.n_microbatches }}
+    is_multistage: {{ (ns.stages_per_rank > 1) | toyaml }}
+    stages_per_rank: {{ ns.stages_per_rank }}
+    pp_stage_type: {{ ns.pp_stage_type | toyaml }}
+    per_device_train_batch_size: {{ ns.pp_batch_size }}
+    per_device_eval_batch_size: {{ ns.pp_batch_size }}
+    dispatch_batches: null
+    torch_compile_mode: default
+-- endif
+
+[trainer_definition]
+    -- include ns.trainer_class
 
 [datacollator]
 data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
@@ -426,3 +496,20 @@ optimizer: &optimizer !partial:torch:optim.AdamW
         names: "--seed"
         type: int
         help: "Random seed"
+    trainer_type:
+        names: "--trainer-type"
+        choices: [ "basic", "ddp", "pipeline" ]
+        default: "basic"
+        help: "Trainer: basic (single GPU), ddp (multi-GPU), pipeline (pipeline parallel)"
+    nproc_per_node:
+        names: "--nproc-per-node"
+        help: "Processes per node: 'gpu' for all GPUs, or integer. Auto-set from trainer type."
+    pipeline_schedule:
+        names: "--pipeline-schedule"
+        default: "ScheduleInterleaved1F1B"
+        help: "Pipeline schedule class (pipeline trainer only)"
+    microbatch_scale:
+        names: "--microbatch-scale"
+        default: 1
+        type: int
+        help: "Microbatch scale factor (pipeline trainer only)"

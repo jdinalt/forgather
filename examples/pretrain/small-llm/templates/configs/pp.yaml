@@ -5,94 +5,17 @@
     ## Overrides
     -- set ns.config_name = "Train with PP"
     -- set ns.config_description = "Experiment in training a small LM with Pipeline Parallel"
-    -- set ns.log_name = log_name | default("pp")
     -- set ns.model_name = model_name | default("pp")
-
-    ## Set pipeline parallel schedule
-    ## pipeline_schedule is one of:
-    ## [ScheduleGPipe, Schedule1F1B, *ScheduleInterleaved1F1B, *ScheduleLoopedBFS, *ScheduleInterleavedZeroBubble, *ScheduleZBVZeroBubble]
-    ## * use stages_per_rank = 2
-    ## Note that the two zero-bubble configs appears to be broken at present.
-    -- set ns.pipe_schedule_factory = pipeline_schedule | default("ScheduleInterleaved1F1B")
-    -- set ns.microbatch_scale = microbatch_scale | default(1)
-
-    ## Pipeline always dispatches batches
-    -- set ns.dispatch_batches = True
-[globals]
-    ## Computed config. values
-    == super()
-
-    ## Auto-select stages_per_rank, based upon scheduler
-    -- if ns.pipe_schedule_factory in [ "ScheduleGPipe", "Schedule1F1B" ]
-        -- set ns.stages_per_rank = 1
-    -- else
-        -- set ns.stages_per_rank = 2
-    -- endif
-
-    -- if (ns.per_device_train_batch_size % (ns.stages_per_rank * ns.microbatch_scale)) != 0
-        == raise("per_device_train_batch_size must be evenly divisible by stages_per_rank * microbatch_scale")
-    -- endif
-
-    ## This is the size of each micro-batch
-    -- set ns.per_stage_batch_size = ns.per_device_train_batch_size // (ns.stages_per_rank * ns.microbatch_scale)
-
-    ## The global number of microbatches for all ranks
-    -- set ns.n_microbatches = ns.world_size * ns.stages_per_rank * ns.microbatch_scale
-
-    ## The total Pipeline Parallel batch size, which is to be divided into micro-batches.
-    -- set ns.pp_batch_size = ns.n_microbatches * ns.per_stage_batch_size
-
-    ## ZBVZ is unique, in that it has a different stage layout
-    -- if ns.pipe_schedule_factory == "ScheduleZBVZeroBubble"
-        -- set ns.pp_stage_type = "v"
-    -- else
-        -- set ns.pp_stage_type = "loop"
-    -- endif
-
-[variable_listing]
-    == super()
-# Pipeline Parallel:
-# ns.stages_per_rank: {{ ns.stages_per_rank }}
-# ns.per_stage_batch_size: {{ ns.per_stage_batch_size }}
-# ns.n_microbatches: {{ ns.n_microbatches }}
-# ns.pp_batch_size: {{ ns.pp_batch_size }}
-# ns.pp_stage_type: {{ ns.pp_stage_type }}
+    -- set ns.trainer_type = trainer_type | default("pipeline")
 
 [trainer_args]
     == super()
-    # Pipeline Parallel
-    n_microbatches: {{ ns.n_microbatches }}
-    is_multistage: {{ (ns.stages_per_rank > 1) | toyaml }}
-    stages_per_rank: {{ ns.stages_per_rank }}
-    pp_stage_type: {{ ns.pp_stage_type | toyaml }}
-
-    per_device_train_batch_size: {{ ns.pp_batch_size }}
-    per_device_eval_batch_size: {{ ns.pp_batch_size }}
-
-    # PP does not have 'dispatch_batches'
-    dispatch_batches: null
 
     # max-autotune runs into issues; disable for now
     torch_compile_mode: default
 
 [trainer_callbacks]
     -- include 'pp.logger_config'
-
-[trainer_definition]
-    ## Switch to PP
-    -- include 'trainers/pipeline_trainer.yaml'
-
-[dynamic_args]
-    == super()
-    pipeline_schedule:
-        names: "--pipeline-schedule"
-        default: "ScheduleInterleaved1F1B"
-        help: "The name of the Pipeline Parallel schedule class to use."
-    microbatch_scale:
-        names: "--microbatch-scale"
-        default: 1
-        type: int
-        help: "Scale the number of microbatches by this amount. Total batch size must be divisible by this factor."
 
 #-------------------- pp.logger_config --------------------
 -- extends 'project.logger_config'

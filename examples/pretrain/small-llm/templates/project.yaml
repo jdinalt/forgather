@@ -7,6 +7,7 @@
     -- set ns.config_description = "Pretrain a small LLM"
     -- set ns.model_name = model_name | default("sllm")
     -- set ns.nproc_per_node = "gpu"
+    -- set ns.trainer_type = trainer_type | default("ddp")
 
     ## Dataset
     -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, "examples", "datasets", "HuggingFaceTB"))

@@ -1,0 +1,8 @@
+-- extends "projects/lm_training_project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DDP"
+    -- set ns.config_description = "Test DDP Trainer"
+    -- set ns.trainer_type = trainer_type | default("ddp")
+    -- set ns.nproc_per_node = 2

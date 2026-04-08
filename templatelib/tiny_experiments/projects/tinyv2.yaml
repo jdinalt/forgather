@@ -7,9 +7,6 @@
     -- set ns.config_description = "A project template for running tiny model experiments."
     -- set ns.model_name = model_name | default("tinyv2")
 
-    # Supports DDP, but defaults to single GPU
-    -- set ns.nproc_per_node = 1
-
     -- set ns.dataset_proj = dataset_project | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
     -- set ns.dataset_config = dataset_config | default("tinystories-abridged.yaml")
     -- set ns.batch_density = 0.60
@@ -40,9 +37,6 @@
     default_dtype: {{ default_dtype | toyaml("float32") }}
     mixed_precision: {{ mixed_precision | toyaml("bf16") }}
     fp8_recipe: {{ fp8_recipe | toyaml(None) }}
-
-[trainer_definition]
-    -- include 'trainers/ddp_trainer.yaml'
 
 [trainer_callbacks]
     ## See definition below

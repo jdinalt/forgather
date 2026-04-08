@@ -2,8 +2,9 @@
 
 Forgather ships a reusable project template for language model pre-training.
 It computes training steps automatically from a target token budget, includes
-automatic LR scaling based on global batch size, and provides extensive CLI
-overrides for rapid experimentation.
+automatic LR scaling based on global batch size, and supports three trainer
+backends switchable via `--trainer-type`: basic (single GPU), DDP (multi-GPU),
+and Pipeline Parallel.
 
 **Template:** [projects/lm_training_project.yaml](../../templatelib/examples/projects/lm_training_project.yaml)\
 **Extends:** [training_script/causal_lm/causal_lm.yaml](../../templatelib/base/training_script/causal_lm/causal_lm.yaml)
@@ -21,21 +22,21 @@ forgather ls
 # Preview the resolved configuration
 forgather pp
 
-# Train with defaults (single GPU, full float32 precision)
+# Train with defaults (single GPU, basic trainer)
 forgather train
 
-# Train with mixed-precision and torch.compile (Ampere+ GPUs)
-forgather train --compile true --mixed-precision bf16 --float32-matmul-precision high
+# DDP training on all GPUs
+forgather train --trainer-type ddp
 
-# Train on all GPUs (DDP)
-forgather train -d gpu
+# DDP on specific GPUs
+forgather train --trainer-type ddp -d 0,1
 
-# Single GPU with increased effective batch size (LR scales automatically)
-forgather train --gradient-accumulation-steps 8 -d 0
+# Pipeline Parallel on all GPUs
+forgather train --trainer-type pipeline
 
-# Mixed-precision on GPUs 0 and 1
-forgather train \
-    --compile true --mixed-precision bf16 --float32-matmul-precision high -d 0,1
+# Mixed-precision with torch.compile (Ampere+ GPUs)
+forgather train --trainer-type ddp \
+    --compile true --mixed-precision bf16 --float32-matmul-precision high
 ```
 
 ## Using in Your Own Project
@@ -52,7 +53,8 @@ Create a config that extends the template:
 ```
 
 Override any defaults using template blocks or by passing values via the
-preprocessor. For example, to change the model and token budget:
+preprocessor. For example, to change the model, token budget, and default
+trainer:
 
 ```yaml
 -- extends "projects/lm_training_project.yaml"
@@ -65,7 +67,56 @@ preprocessor. For example, to change the model and token budget:
     -- set ns.total_tokens = 20000
     -- set ns.seq_len = 2048
     -- set ns.per_device_train_batch_size = 8
+    -- set ns.trainer_type = "ddp"
 ```
+
+## Trainer Selection
+
+The template supports three trainer backends, selected via `--trainer-type`
+or by setting `ns.trainer_type` in a child template's `[config_metadata]`:
+
+| Trainer Type | Backend | Default nproc_per_node | Description |
+|--------------|---------|------------------------|-------------|
+| `basic` | `forgather.ml.trainer:Trainer` | 1 | Single-GPU training |
+| `ddp` | `forgather.ml.trainer.ddp:DDPTrainer` | gpu (all GPUs) | Distributed Data Parallel |
+| `pipeline` | `forgather.ml.trainer.pipeline:PipelineTrainer` | gpu (all GPUs) | Pipeline Parallel |
+
+The trainer type controls which trainer template is included and, for
+`ddp` and `pipeline`, automatically sets `nproc_per_node` to `"gpu"` (all
+available GPUs). Use `-d` to restrict to specific devices.
+
+### DDP Notes
+
+- All GPUs are used by default. Restrict with `-d 0` or `-d 0,1`.
+- Stopping DDP with Ctrl-C can leave worker processes running. Use
+  `forgather control list` and `forgather control stop JOB_ID` for a clean
+  shutdown.
+
+### Pipeline Parallel
+
+Pipeline Parallel splits the model into stages distributed across GPUs.
+When `--trainer-type pipeline` is selected, the template automatically:
+
+- Forces `dispatch_batches = True` (rank-0 loads and dispatches data)
+- Computes microbatch and stage configuration from the pipeline schedule
+- Overrides batch sizes to the computed PP batch size
+- Disables `torch_compile_mode: max-autotune` (incompatible with PP)
+
+The pipeline schedule determines how microbatches flow through stages:
+
+| Schedule | stages_per_rank | Notes |
+|----------|-----------------|-------|
+| `ScheduleGPipe` | 1 | Simple, high pipeline bubble |
+| `Schedule1F1B` | 1 | Reduced bubble vs GPipe |
+| `ScheduleInterleaved1F1B` | 2 | Default; lower bubble |
+| `ScheduleLoopedBFS` | 2 | Alternative interleaved schedule |
+| `ScheduleInterleavedZeroBubble` | 2 | Near-zero bubble |
+| `ScheduleZBVZeroBubble` | 2 | Zero-bubble V layout (experimental) |
+
+**Batch size constraint:** `per_device_train_batch_size` must be divisible by
+`stages_per_rank * microbatch_scale`. The default batch size of 32 works with
+all schedules. Use `--microbatch-scale` to increase throughput by adding more
+microbatches without changing the logical batch size.
 
 ## Token Budget and Step Computation
 
@@ -173,7 +224,7 @@ All token counts are specified in **millions** unless noted otherwise.
 | `seq_len` | int | 512 | Maximum sequence length |
 | `batch_size` | int | 32 | Per-device training batch size |
 | `gradient_accumulation_steps` | int | 1 | Gradient accumulation steps |
-| `batch_density` | float | 0.90 | Estimated fraction of non-pad tokens per batch; used to correct token-count estimates |
+| `batch_density` | float | 0.95 | Estimated fraction of non-pad tokens per batch; used to correct token-count estimates |
 
 ### Data
 
@@ -204,6 +255,15 @@ The computed LR appears in `forgather pp` output as:
 ```
 # ns.global_lr: 1.3258252147247766e-05
 ```
+
+### Trainer Selection
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `trainer_type` | str | `basic` | Trainer backend: basic, ddp, pipeline |
+| `nproc_per_node` | str/int | auto | Processes per node: `"gpu"` for all GPUs, or integer count. Auto-set from trainer type if not specified |
+| `pipeline_schedule` | str | `ScheduleInterleaved1F1B` | Pipeline Parallel schedule class (pipeline trainer only) |
+| `microbatch_scale` | int | 1 | Microbatch scale factor (pipeline trainer only) |
 
 ### Step Cadence
 
@@ -253,6 +313,10 @@ forgather -p examples/base_lm_project train --help
 
 | CLI Flag | Parameter | Description |
 |----------|-----------|-------------|
+| `--trainer-type {basic,ddp,pipeline}` | `trainer_type` | Trainer backend |
+| `--nproc-per-node N` | `nproc_per_node` | Processes per node (auto-set from trainer type) |
+| `--pipeline-schedule NAME` | `pipeline_schedule` | Pipeline schedule class |
+| `--microbatch-scale N` | `microbatch_scale` | Microbatch scale factor |
 | `--total-tokens N` | `total_tokens` | Total training tokens in millions |
 | `--warmup-tokens N` | `warmup_tokens` | Warmup tokens in millions |
 | `--min-cooldown-tokens N` | `min_cooldown_tokens` | Minimum LR decay window in millions |
@@ -302,23 +366,42 @@ values. The output includes a variable listing showing all derived quantities:
 # ns.base_batch_size: 16384
 # ns.lr_alpha: 0.5
 # ns.global_lr: 0.00028460498941515414
+# ns.trainer_type: basic
+```
+
+With `--trainer-type pipeline`, additional PP variables are shown:
+
+```
+# ns.trainer_type: pipeline
+# Pipeline Parallel:
+# ns.stages_per_rank: 2
+# ns.per_stage_batch_size: 16
+# ns.n_microbatches: 2
+# ns.pp_batch_size: 32
+# ns.pp_stage_type: loop
 ```
 
 ## Examples
 
 ```bash
-# Default training (single GPU)
+# Basic trainer (single GPU, default)
 forgather train
 
-# DDP training on all GPUs
-forgather train -d gpu
+# DDP on all GPUs
+forgather train --trainer-type ddp
 
-# Single GPU with 8x gradient accumulation (LR scales automatically)
-forgather train --gradient-accumulation-steps 8 -d 0
+# DDP on specific GPUs with gradient accumulation (LR scales automatically)
+forgather train --trainer-type ddp --gradient-accumulation-steps 8 -d 0,1
 
-# Mixed-precision on GPUs 0 and 1
-forgather train \
-    --compile true --mixed-precision bf16 --float32-matmul-precision high -d 0,1
+# Pipeline Parallel with GPipe schedule
+forgather train --trainer-type pipeline --pipeline-schedule ScheduleGPipe
+
+# Pipeline Parallel with increased microbatch count
+forgather train --trainer-type pipeline --microbatch-scale 2
+
+# Mixed-precision DDP with torch.compile
+forgather train --trainer-type ddp \
+    --compile true --mixed-precision bf16 --float32-matmul-precision high
 
 # Override base learning rate
 forgather train --lr 1e-3
