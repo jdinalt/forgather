@@ -6,12 +6,14 @@ Tests the new optimizer/scheduler state saving and loading, automatic checkpoint
 discovery, and checkpoint validation functionality.
 """
 
+import json
 import os
 import shutil
 import tempfile
 import time
 import unittest
 from dataclasses import dataclass
+from datetime import datetime
 from unittest.mock import Mock, patch
 
 import torch
@@ -26,6 +28,7 @@ from forgather.ml.distributed import (
     StaticDistributedEnvironment,
 )
 from forgather.ml.sharded_checkpoint import (
+    CHECKPOINT_MANIFEST_FILENAME,
     find_latest_checkpoint,
     validate_checkpoint,
 )
@@ -263,6 +266,26 @@ class TestCheckpointFunctionality(unittest.TestCase):
 
         latest = find_latest_checkpoint(self.test_dir)
         self.assertIsNone(latest)
+
+    def test_find_latest_checkpoint_prefers_manifest_timestamp(self):
+        """Test that manifest timestamp is preferred over mtime for ordering."""
+        # Create checkpoint-100 first (older mtime), but give it the NEWEST manifest timestamp
+        cp100 = self.create_mock_checkpoint(100, delay=0.1)
+        manifest_newest = {"timestamp": datetime(2026, 6, 1, 12, 0, 0).isoformat()}
+        with open(os.path.join(cp100, CHECKPOINT_MANIFEST_FILENAME), "w") as f:
+            json.dump(manifest_newest, f)
+
+        # Create checkpoint-200 second (newer mtime), but give it an OLDER manifest timestamp
+        cp200 = self.create_mock_checkpoint(200, delay=0.1)
+        manifest_older = {"timestamp": datetime(2026, 1, 1, 12, 0, 0).isoformat()}
+        with open(os.path.join(cp200, CHECKPOINT_MANIFEST_FILENAME), "w") as f:
+            json.dump(manifest_older, f)
+
+        latest = find_latest_checkpoint(self.test_dir)
+
+        # Should return checkpoint-100 because its manifest timestamp is newer,
+        # even though checkpoint-200 has a newer mtime
+        self.assertEqual(latest, cp100)
 
     def test_resolve_checkpoint_path_auto_discovery(self):
         """Test automatic checkpoint discovery when resume_from_checkpoint=True."""
@@ -873,6 +896,7 @@ class TestDataloaderStateHandling(unittest.TestCase):
 
     def test_dataset_component_missing_if_not_stateful(self):
         """Test that dataset component is not included if dataloader is not stateful."""
+
         # Create custom dataloader without state_dict method
         class NonStatefulDataLoader:
             pass

@@ -7,6 +7,7 @@ import shutil
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from pprint import pp
 from typing import Dict, List, Optional, Set, TypeAlias, Union, overload
 
@@ -393,7 +394,11 @@ def save_checkpoint(
     state_dict = _resolve_state_dict(module)
 
     # Detect buffer sharing if requested and not explicitly provided
-    if param_sharing_metadata is None and include_param_sharing and isinstance(module, Module):
+    if (
+        param_sharing_metadata is None
+        and include_param_sharing
+        and isinstance(module, Module)
+    ):
         param_sharing_metadata = create_sharing_metadata(module)
         if param_sharing_metadata:
             logger.debug(f"Detected {len(param_sharing_metadata)} shared buffer groups")
@@ -679,7 +684,9 @@ def load_sharded_checkpoint(
 
             module.load_state_dict(state_dict, strict=False, assign=assign)
             for weight_name, p in module.state_dict(keep_vars=True).items():
-                logger.debug(f"{weight_name} : {p.shape=}, {p.dtype=}, {p.requires_grad=}")
+                logger.debug(
+                    f"{weight_name} : {p.shape=}, {p.dtype=}, {p.requires_grad=}"
+                )
             state_dict = None
             gc.collect()
 
@@ -784,8 +791,36 @@ def validate_checkpoint(checkpoint_path: str) -> bool:
     return True
 
 
+CHECKPOINT_MANIFEST_FILENAME = "checkpoint_manifest.json"
+
+
+def _get_checkpoint_timestamp(checkpoint_path: str) -> float:
+    """Get effective timestamp for a checkpoint as epoch seconds.
+
+    Prefers the timestamp from checkpoint_manifest.json (stable across file copies).
+    Falls back to filesystem mtime if manifest is missing or corrupt.
+    """
+    manifest_path = os.path.join(checkpoint_path, CHECKPOINT_MANIFEST_FILENAME)
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, "r") as f:
+                data = json.load(f)
+            ts = datetime.fromisoformat(data["timestamp"])
+            return ts.timestamp()
+        except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
+            logger.warning(
+                f"Failed to read manifest timestamp from {manifest_path}: {e}. "
+                "Falling back to filesystem mtime."
+            )
+    return os.path.getmtime(checkpoint_path)
+
+
 def find_latest_checkpoint(model_dir: str) -> str | None:
-    """Find the most recent valid checkpoint in the checkpoints directory based on modification time."""
+    """Find the most recent valid checkpoint in the checkpoints directory.
+
+    Uses checkpoint_manifest.json timestamp when available, falling back to
+    filesystem modification time for legacy checkpoints.
+    """
     checkpoints_dir = os.path.join(model_dir, "checkpoints")
 
     # If checkpoints directory does not exist, check the model directory
@@ -810,16 +845,16 @@ def find_latest_checkpoint(model_dir: str) -> str | None:
         return None
 
     try:
-        latest = max(valid_checkpoints, key=lambda path: os.path.getmtime(path))
+        latest = max(valid_checkpoints, key=_get_checkpoint_timestamp)
         step_num = (
             os.path.basename(latest).split("-")[1]
             if "-" in os.path.basename(latest)
             else "unknown"
         )
-        mtime = os.path.getmtime(latest)
-        mtime_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
+        ts = _get_checkpoint_timestamp(latest)
+        ts_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
         logger.debug(
-            f"Found latest valid checkpoint: {latest} (step {step_num}, modified {mtime_str})"
+            f"Found latest valid checkpoint: {latest} (step {step_num}, timestamp {ts_str})"
         )
         return latest
     except (OSError, IndexError) as e:
@@ -892,8 +927,8 @@ def maybe_delete_oldest_checkpoint(
     num_to_delete = min(num_to_delete, len(checkpoints_to_consider))
 
     if num_to_delete > 0:
-        # Sort by modification time and delete the oldest
-        checkpoints_to_consider.sort(key=lambda path: os.path.getmtime(path))
+        # Sort by timestamp (manifest preferred, mtime fallback) and delete the oldest
+        checkpoints_to_consider.sort(key=_get_checkpoint_timestamp)
         for checkpoint_path in checkpoints_to_consider[:num_to_delete]:
             logger.info(
                 f"Deleting checkpoint at {checkpoint_path} (preserved: {preserved_set})"

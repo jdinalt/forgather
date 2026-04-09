@@ -18,16 +18,19 @@ import shutil
 import tempfile
 import time
 import unittest
+from datetime import datetime
 
 import torch
 import torch.nn as nn
 
 from forgather.ml.sharded_checkpoint import (
+    CHECKPOINT_MANIFEST_FILENAME,
     SAFE_WEIGHTS_INDEX_NAME,
     SAFE_WEIGHTS_NAME,
     WEIGHTS_INDEX_NAME,
     WEIGHTS_NAME,
     CheckpointMeta,
+    _get_checkpoint_timestamp,
     _intersect_weight_map,
     _make_shard_dictionaries,
     _resolve_state_dict,
@@ -835,6 +838,134 @@ class TestMaybeDeleteOldestCheckpoint(unittest.TestCase):
         self.assertFalse(os.path.exists(cp3))
         self.assertFalse(os.path.exists(cp4))
 
+    def _create_checkpoint_with_manifest(self, step, timestamp, delay=0.05):
+        """Create a checkpoint with a manifest containing the given timestamp."""
+        path = self._create_checkpoint(step, delay=delay)
+        manifest = {"timestamp": timestamp.isoformat()}
+        with open(os.path.join(path, CHECKPOINT_MANIFEST_FILENAME), "w") as f:
+            json.dump(manifest, f)
+        return path
+
+    def test_deletes_oldest_by_manifest_timestamp(self):
+        """Should delete based on manifest timestamp, not mtime."""
+        # Create checkpoints in filesystem order 100, 200, 300, 400
+        # but with manifest timestamps that reverse 200 and 300
+        t1 = datetime(2026, 1, 1, 10, 0, 0)
+        t2 = datetime(2026, 1, 1, 12, 0, 0)  # Newer than t3 by manifest
+        t3 = datetime(2026, 1, 1, 11, 0, 0)  # Older than t2 by manifest
+        t4 = datetime(2026, 1, 1, 13, 0, 0)
+
+        cp1 = self._create_checkpoint_with_manifest(100, t1)
+        cp2 = self._create_checkpoint_with_manifest(200, t2)
+        cp3 = self._create_checkpoint_with_manifest(300, t3)
+        cp4 = self._create_checkpoint_with_manifest(400, t4)
+
+        maybe_delete_oldest_checkpoint(self.tmpdir, max_checkpoints=3)
+
+        # cp1 has the oldest manifest timestamp, should be deleted
+        self.assertFalse(os.path.exists(cp1))
+        self.assertTrue(os.path.exists(cp2))
+        self.assertTrue(os.path.exists(cp3))
+        self.assertTrue(os.path.exists(cp4))
+
+    def test_mixed_manifest_and_legacy_checkpoints(self):
+        """Checkpoints with and without manifests should be orderable together."""
+        # cp1: manifest with the oldest timestamp
+        cp1 = self._create_checkpoint_with_manifest(100, datetime(2020, 1, 1, 10, 0, 0))
+        # cp2: legacy (no manifest), uses mtime (current time, between the manifest times)
+        cp2 = self._create_checkpoint(200)
+        # cp3: manifest with the newest timestamp (far in the future)
+        cp3 = self._create_checkpoint_with_manifest(300, datetime(2099, 1, 1, 12, 0, 0))
+        # cp4: legacy (no manifest), uses mtime (current time, slightly after cp2)
+        cp4 = self._create_checkpoint(400)
+
+        maybe_delete_oldest_checkpoint(self.tmpdir, max_checkpoints=3)
+
+        # cp1 has the oldest effective timestamp (2020 manifest), should be deleted
+        self.assertFalse(os.path.exists(cp1))
+        self.assertTrue(os.path.exists(cp2))
+        self.assertTrue(os.path.exists(cp3))
+        self.assertTrue(os.path.exists(cp4))
+
+
+class TestGetCheckpointTimestamp(unittest.TestCase):
+    """Test _get_checkpoint_timestamp helper function."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.checkpoint_path = os.path.join(self.tmpdir, "checkpoint-100")
+        os.makedirs(self.checkpoint_path)
+        # Write a file so the directory has content
+        with open(os.path.join(self.checkpoint_path, "data.txt"), "w") as f:
+            f.write("test")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_manifest(self, data):
+        manifest_path = os.path.join(self.checkpoint_path, CHECKPOINT_MANIFEST_FILENAME)
+        with open(manifest_path, "w") as f:
+            json.dump(data, f)
+
+    def test_timestamp_from_manifest(self):
+        """Should return manifest timestamp when available."""
+        ts = datetime(2026, 3, 15, 14, 30, 0)
+        self._write_manifest({"timestamp": ts.isoformat()})
+
+        result = _get_checkpoint_timestamp(self.checkpoint_path)
+        self.assertAlmostEqual(result, ts.timestamp(), places=0)
+
+    def test_timestamp_fallback_to_mtime(self):
+        """Should return mtime when no manifest exists."""
+        result = _get_checkpoint_timestamp(self.checkpoint_path)
+        expected = os.path.getmtime(self.checkpoint_path)
+        self.assertEqual(result, expected)
+
+    def test_timestamp_fallback_on_corrupt_json(self):
+        """Should fall back to mtime when manifest JSON is corrupt."""
+        manifest_path = os.path.join(self.checkpoint_path, CHECKPOINT_MANIFEST_FILENAME)
+        with open(manifest_path, "w") as f:
+            f.write("not valid json{{{")
+
+        result = _get_checkpoint_timestamp(self.checkpoint_path)
+        expected = os.path.getmtime(self.checkpoint_path)
+        self.assertEqual(result, expected)
+
+    def test_timestamp_fallback_on_missing_key(self):
+        """Should fall back to mtime when manifest lacks timestamp key."""
+        self._write_manifest({"world_size": 4})
+
+        result = _get_checkpoint_timestamp(self.checkpoint_path)
+        expected = os.path.getmtime(self.checkpoint_path)
+        self.assertEqual(result, expected)
+
+    def test_timestamp_fallback_on_bad_timestamp_format(self):
+        """Should fall back to mtime when timestamp string is unparseable."""
+        self._write_manifest({"timestamp": "not-a-date"})
+
+        result = _get_checkpoint_timestamp(self.checkpoint_path)
+        expected = os.path.getmtime(self.checkpoint_path)
+        self.assertEqual(result, expected)
+
+    def test_manifest_timestamp_stable_after_copy(self):
+        """Core regression test: copied checkpoint should have same effective timestamp."""
+        ts = datetime(2026, 3, 15, 14, 30, 0)
+        self._write_manifest({"timestamp": ts.isoformat()})
+
+        # Copy the checkpoint directory
+        copy_path = os.path.join(self.tmpdir, "checkpoint-100-copy")
+        shutil.copytree(self.checkpoint_path, copy_path)
+
+        # Manifest timestamps should be identical
+        orig_ts = _get_checkpoint_timestamp(self.checkpoint_path)
+        copy_ts = _get_checkpoint_timestamp(copy_path)
+        self.assertEqual(orig_ts, copy_ts)
+
+        # But mtime should differ (copy is newer)
+        orig_mtime = os.path.getmtime(self.checkpoint_path)
+        copy_mtime = os.path.getmtime(copy_path)
+        self.assertGreaterEqual(copy_mtime, orig_mtime)
+
 
 class TestResolveStateDict(unittest.TestCase):
     """Test _resolve_state_dict helper."""
@@ -905,9 +1036,7 @@ class TestSaveLoadCheckpointWithDict(unittest.TestCase):
         load_checkpoint(self.tmpdir, model2, device="cpu")
 
         for key in original_sd:
-            torch.testing.assert_close(
-                model2.state_dict()[key], original_sd[key]
-            )
+            torch.testing.assert_close(model2.state_dict()[key], original_sd[key])
 
     def test_save_module_load_dict(self):
         """Save nn.Module, load as raw dict."""
@@ -973,9 +1102,7 @@ class TestSaveShardedCheckpointWithDict(unittest.TestCase):
         # Verify shard files were written
         weight_map = shard_index["weight_map"]
         for shard_file in set(weight_map.values()):
-            self.assertTrue(
-                os.path.exists(os.path.join(self.tmpdir, shard_file))
-            )
+            self.assertTrue(os.path.exists(os.path.join(self.tmpdir, shard_file)))
 
     def test_save_dict_safetensors(self):
         """save_sharded_checkpoint with raw dict (safetensors format)."""
@@ -985,9 +1112,7 @@ class TestSaveShardedCheckpointWithDict(unittest.TestCase):
 
         weight_map = shard_index["weight_map"]
         for shard_file in set(weight_map.values()):
-            self.assertTrue(
-                os.path.exists(os.path.join(self.tmpdir, shard_file))
-            )
+            self.assertTrue(os.path.exists(os.path.join(self.tmpdir, shard_file)))
 
 
 class TestLoadShardedCheckpointWithDict(unittest.TestCase):
@@ -1001,16 +1126,14 @@ class TestLoadShardedCheckpointWithDict(unittest.TestCase):
 
     def _save_sharded(self, sd, safetensors=False):
         shard_index = make_shard_index([sd], safetensors=safetensors)
-        from forgather.ml.sharded_checkpoint import save_shard_index, index_file_name
+        from forgather.ml.sharded_checkpoint import index_file_name, save_shard_index
 
         save_shard_index(
             shard_index,
             self.tmpdir,
             index_file_name(safetensors),
         )
-        save_sharded_checkpoint(
-            self.tmpdir, shard_index, sd, safetensors=safetensors
-        )
+        save_sharded_checkpoint(self.tmpdir, shard_index, sd, safetensors=safetensors)
         return shard_index
 
     def test_load_all_keys_pytorch(self):
@@ -1067,9 +1190,7 @@ class TestLoadShardedCheckpointWithDict(unittest.TestCase):
         self.assertIsInstance(unloaded, set)
         self.assertEqual(len(unloaded), 0)
         for key in original_sd:
-            torch.testing.assert_close(
-                model2.state_dict()[key], original_sd[key]
-            )
+            torch.testing.assert_close(model2.state_dict()[key], original_sd[key])
 
 
 class TestLoadCheckpointNonShardedDict(unittest.TestCase):
@@ -1108,9 +1229,7 @@ class TestLoadCheckpointNonShardedDict(unittest.TestCase):
         original = {"w": torch.randn(3, 2), "b": torch.randn(3)}
         torch.save(original, os.path.join(self.tmpdir, "pytorch_model.bin"))
 
-        loaded = load_checkpoint(
-            self.tmpdir, module=None, device="cpu", keys={"w"}
-        )
+        loaded = load_checkpoint(self.tmpdir, module=None, device="cpu", keys={"w"})
         self.assertEqual(set(loaded.keys()), {"w"})
         torch.testing.assert_close(loaded["w"], original["w"])
 
