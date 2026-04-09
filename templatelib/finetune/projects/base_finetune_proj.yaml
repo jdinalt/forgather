@@ -162,6 +162,15 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     # Exponetial decay limit
     min_lr: 1.0e-8
 
+    # Begin annealing from current step on checkpoint resume
+    start_annealing: {{ start_annealing | default(False) }}
+
+    # Annealing type: "exponential" (default) or "rsqrt" (harmonic/WSD-S)
+    annealing_type: "{{ annealing_type | default('exponential') }}"
+
+    # Total annealing steps for rsqrt type (ignored for exponential)
+    annealing_steps: {{ annealing_steps | default(0) }}
+
 ## Add a default memory efficient optimizer
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor

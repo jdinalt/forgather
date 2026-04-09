@@ -7,6 +7,7 @@ from .multiopt import Multiopt, make_re_multiopt
 from .opt_utils import make_grouped_optimizer
 from .sgd import SGD
 from .sinkgd import SinkGD
+from .wsd_scheduler import WSDScheduler
 
 __all__ = [
     "Adafactor",
@@ -17,6 +18,7 @@ __all__ = [
     "Apollo",
     "Multiopt",
     "SinkGD",
+    "WSDScheduler",
     "make_grouped_optimizer",
     "make_re_multiopt",
 ]

@@ -46,6 +46,7 @@
     ## LR Scheduler
     -- set ns.constant_lr_ratio = 1.0 / 3
     -- set ns.cooldown_p = 0.3
+    -- set ns.annealing_tokens = annealing_tokens | default(0)
     
     ## Attention
     -- set ns.attn_implementation = attn_implementation | default("flex_attention")
@@ -54,6 +55,8 @@
     == super()
     -- set ns.constant_lr = ns.global_lr * ns.constant_lr_ratio
     -- set ns.cooldown_steps = [ns.min_cooldown_steps, ns.total_steps * ns.cooldown_p] | max | int
+    -- set ns.annealing_tokens = ns.annealing_tokens * 1000 * 1000
+    -- set ns.annealing_steps = ns.annealing_tokens // ns.tokens_per_step
 
 [variable_listing]
     == super()
@@ -61,6 +64,7 @@
 # ns.constant_lr: {{ ns.constant_lr }}
 # ns.cooldown_p: {{ ns.cooldown_p }}
 # ns.cooldown_steps: {{ ns.cooldown_steps }}
+# ns.annealing_steps: {{ ns.annealing_steps }}
 
 [trainer_args]
     == super()
@@ -105,6 +109,9 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:InfiniteLRScheduler@lr_s
     cooldown_steps: {{ ns.cooldown_steps }}
     constant_lr: {{ ns.constant_lr | toyaml }}
     min_lr: {{ ns.min_lr | toyaml }}
+    annealing_type: "rsqrt"
+    start_annealing: {{ start_annealing | toyaml(False) }}
+    annealing_steps: {{ ns.annealing_steps }}
 
 [datacollator]
     == super()
@@ -119,6 +126,17 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:InfiniteLRScheduler@lr_s
 
 [trainer_callbacks]
     -- include 'project.logger_config'
+
+[dynamic_args]
+    == super()
+    annealing_tokens:
+        names: "--annealing-tokens"
+        type: int
+        help: "Number of tokens in annealing phase."
+    start_annealing:
+        names: "--start-annealing"
+        action: "store_true"
+        help: "Manually trigger annealing phase"
 
 #-------------------- project.logger_config --------------------
 -- extends 'callbacks/loggers.yaml'

@@ -167,6 +167,9 @@ validation_dataset: &validation_dataset !call:getitem [ *dataset, 'eval_dataset'
     warmup_steps: 500
     cooldown_steps: 50000
     constant_lr: 1.0e-6
+    start_annealing: {{ start_annealing | default(False) }}
+    annealing_type: "{{ annealing_type | default('exponential') }}"
+    annealing_steps: {{ annealing_steps | default(0) }}
 
     [data_collator]
 .define: &data_collator !call:forgather.ml.data_collator:DataCollatorForCausalLM

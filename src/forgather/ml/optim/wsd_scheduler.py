@@ -1,0 +1,143 @@
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
+
+
+class WSDScheduler(LRScheduler):
+    """Warmup-Stable-Decay learning rate scheduler.
+
+    Implements the WSD-S protocol from:
+    "Understanding Warmup-Stable-Decay Learning Rates: A River Valley
+    Loss Landscape Perspective"
+    (https://arxiv.org/abs/2410.05192)
+
+    The schedule consists of three phases:
+
+        1. Warmup: Linear increase from 0 to base_lr over warmup_steps.
+        2. Stable: Maintains base_lr indefinitely until decay is triggered.
+        3. Decay: Harmonic/rational decay from base_lr to min_lr over
+           decay_steps. Uses linear interpolation of inverse LR, which
+           drops quickly at first then slows (convex decay curve).
+
+    The decay phase can be triggered either by setting decay_start_step
+    to a specific step, or retroactively via start_decay=True when
+    resuming from a checkpoint.
+    """
+
+    # Config-only keys: set from constructor config, not saved/loaded
+    # from checkpoints.
+    _CONFIG_ONLY_KEYS = frozenset(("start_decay", "min_lr", "decay_steps"))
+
+    def __init__(
+        self,
+        optimizer: Optimizer,
+        warmup_steps: int = 0,
+        min_lr: float = 1e-8,
+        decay_steps: int = 1,
+        decay_start_step: int = -1,
+        start_decay: bool = False,
+        last_epoch: int = -1,
+    ):
+        """
+        Args:
+            optimizer: Wrapped optimizer.
+            warmup_steps: Number of steps for linear warmup (phase 1).
+            min_lr: Target minimum learning rate for the decay phase.
+                Must be > 0. Config-only: not saved in checkpoints.
+            decay_steps: Total number of steps for the decay phase.
+                The LR reaches min_lr after exactly this many steps
+                past decay_start_step. Must be > 0.
+                Config-only: not saved in checkpoints.
+            decay_start_step: Step at which to begin decay (phase 3).
+                Set to -1 to disable decay. Must be >= warmup_steps
+                when enabled.
+            start_decay: When True, decay begins at the current step
+                upon loading a checkpoint (if decay_start_step < 0).
+                This allows triggering decay retroactively from any
+                saved checkpoint. When False after a previous decay
+                run, training resumes at the stable LR phase.
+                Config-only: not saved in checkpoints.
+            last_epoch: The index of the last epoch. Used for resuming.
+        """
+        assert warmup_steps >= 0
+        assert min_lr > 0.0
+        assert decay_steps > 0
+        assert decay_start_step < 0 or decay_start_step >= warmup_steps
+
+        self.warmup_steps = warmup_steps
+        self.min_lr = min_lr
+        self.decay_steps = decay_steps
+        self.decay_start_step = decay_start_step
+        self.start_decay = start_decay
+
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        """Compute learning rate for the current step."""
+        if self.last_epoch < self.warmup_steps:
+            return self._warmup_lr()
+        elif self.decay_start_step >= 0 and self.last_epoch >= self.decay_start_step:
+            return self._decay_lr()
+        else:
+            return self._stable_lr()
+
+    def _warmup_lr(self):
+        """Phase 1: Linear warmup from 0 to base_lr."""
+        return [
+            base_lr * self.last_epoch / self.warmup_steps for base_lr in self.base_lrs
+        ]
+
+    def _stable_lr(self):
+        """Phase 2: Constant learning rate at base_lr."""
+        return list(self.base_lrs)
+
+    def _decay_lr(self):
+        """Phase 3: Harmonic/rational decay from base_lr to min_lr.
+
+        Uses linear interpolation of inverse LR:
+            t = step / decay_steps   (progress 0..1)
+            lr = 1 / (t / min_lr + (1 - t) / base_lr)
+
+        At step=0: lr = base_lr (smooth transition from stable phase).
+        At step=decay_steps: lr = min_lr (exact target).
+        Past decay_steps: clamped at min_lr.
+        """
+        step = self.last_epoch - self.decay_start_step
+        t = min(step / self.decay_steps, 1.0)
+        return [
+            1.0 / (t / self.min_lr + (1.0 - t) / base_lr) for base_lr in self.base_lrs
+        ]
+
+    def state_dict(self):
+        """Return state dict excluding config-only parameters."""
+        return {
+            key: value
+            for key, value in super().state_dict().items()
+            if key not in self._CONFIG_ONLY_KEYS
+        }
+
+    def load_state_dict(self, state_dict):
+        """Load state dict, preserving config-only parameters.
+
+        The start_decay flag controls how decay_start_step is resolved:
+
+        - start_decay=True with loaded decay_start_step < 0:
+          Begin decay at the current step (last_epoch).
+        - start_decay=True with loaded decay_start_step >= 0:
+          Resume decay from where it left off.
+        - start_decay=False:
+          Restore decay_start_step from the constructor value,
+          ignoring whatever was saved in the checkpoint.
+        """
+        saved_config = {key: getattr(self, key) for key in self._CONFIG_ONLY_KEYS}
+        saved_decay_start_step = self.decay_start_step
+
+        super().load_state_dict(state_dict)
+
+        for key, value in saved_config.items():
+            setattr(self, key, value)
+
+        if self.start_decay:
+            if self.decay_start_step < 0:
+                self.decay_start_step = self.last_epoch
+        else:
+            self.decay_start_step = saved_decay_start_step

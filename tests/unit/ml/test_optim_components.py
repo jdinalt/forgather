@@ -37,6 +37,7 @@ from forgather.ml.optim.subspace_proj import (
     RandProjector,
     SubspaceProjector,
 )
+from forgather.ml.optim.wsd_scheduler import WSDScheduler
 
 # ---------------------------------------------------------------------------
 # Helper: simple multi-layer model for optimizer grouping tests
@@ -957,6 +958,762 @@ class TestInfiniteLRScheduler:
         opt = self._make_optimizer(lr=1.0)
         with pytest.raises(AssertionError):
             InfiniteLRScheduler(opt, warmup_steps=-1, cooldown_steps=0, constant_lr=0.1)
+
+    # --- start_annealing flag ---
+
+    def test_start_annealing_triggers_from_constant_phase(self):
+        """start_annealing=True should begin annealing at the loaded step."""
+        opt = self._make_optimizer(lr=1.0)
+        sched = InfiniteLRScheduler(
+            opt,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=0.5,
+            checkpoint_step=-1,
+        )
+
+        # Advance 50 steps into constant phase
+        for _ in range(50):
+            sched.step()
+
+        saved_state = sched.state_dict()
+        lr_before = sched.get_last_lr()[0]
+
+        # Create new scheduler with start_annealing=True
+        opt2 = self._make_optimizer(lr=1.0)
+        sched2 = InfiniteLRScheduler(
+            opt2,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=0.5,
+            min_lr=1e-6,
+            tau=100.0,
+            checkpoint_step=-1,
+            start_annealing=True,
+        )
+        sched2.load_state_dict(saved_state)
+
+        assert sched2.checkpoint_step == 50
+        # Step forward and verify LR is decaying
+        sched2.step()
+        lr_after = sched2.get_last_lr()[0]
+        assert (
+            lr_after < lr_before
+        ), f"LR should decay after start_annealing, got {lr_after} >= {lr_before}"
+
+    def test_start_annealing_resumes_existing_annealing(self):
+        """start_annealing=True preserves checkpoint_step if already annealing."""
+        opt = self._make_optimizer(lr=1.0)
+        sched = InfiniteLRScheduler(
+            opt,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=0.5,
+            min_lr=1e-6,
+            tau=100.0,
+            checkpoint_step=20,
+        )
+
+        # Advance to step 30 (in annealing)
+        for _ in range(30):
+            sched.step()
+
+        saved_state = sched.state_dict()
+        lr_at_30 = sched.get_last_lr()[0]
+
+        # Load with start_annealing=True
+        opt2 = self._make_optimizer(lr=1.0)
+        sched2 = InfiniteLRScheduler(
+            opt2,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=0.5,
+            min_lr=1e-6,
+            tau=100.0,
+            checkpoint_step=-1,
+            start_annealing=True,
+        )
+        sched2.load_state_dict(saved_state)
+
+        assert (
+            sched2.checkpoint_step == 20
+        ), f"Should keep loaded checkpoint_step=20, got {sched2.checkpoint_step}"
+        assert sched2.get_last_lr()[0] == pytest.approx(lr_at_30, abs=1e-10)
+
+    def test_start_annealing_false_restores_constructor_checkpoint_step(self):
+        """start_annealing=False restores constructor checkpoint_step."""
+        opt = self._make_optimizer(lr=1.0)
+        sched = InfiniteLRScheduler(
+            opt,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=0.5,
+            min_lr=1e-6,
+            tau=100.0,
+            checkpoint_step=20,
+        )
+
+        # Advance to step 30 (annealing in progress)
+        for _ in range(30):
+            sched.step()
+
+        saved_state = sched.state_dict()
+
+        # Load with start_annealing=False and constructor checkpoint_step=-1
+        opt2 = self._make_optimizer(lr=1.0)
+        sched2 = InfiniteLRScheduler(
+            opt2,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=0.5,
+            checkpoint_step=-1,
+            start_annealing=False,
+        )
+        sched2.load_state_dict(saved_state)
+
+        assert (
+            sched2.checkpoint_step == -1
+        ), f"Should restore constructor checkpoint_step=-1, got {sched2.checkpoint_step}"
+        # Should be in constant phase now (base_lr since cooldown_steps=0)
+        sched2.step()
+        lr = sched2.get_last_lr()[0]
+        assert lr == pytest.approx(
+            1.0, abs=1e-7
+        ), f"Should be back in constant phase at base_lr=1.0, got {lr}"
+
+    def test_start_annealing_not_in_state_dict(self):
+        """Config-only params should not appear in state_dict."""
+        opt = self._make_optimizer(lr=1.0)
+        sched = InfiniteLRScheduler(
+            opt,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=0.5,
+            start_annealing=True,
+            annealing_type="rsqrt",
+            annealing_steps=100,
+        )
+
+        state = sched.state_dict()
+        assert "start_annealing" not in state
+        assert "annealing_type" not in state
+        assert "annealing_steps" not in state
+
+    # --- rsqrt annealing ---
+
+    def test_rsqrt_annealing_decay(self):
+        """rsqrt annealing should follow harmonic interpolation formula."""
+        opt = self._make_optimizer(lr=1.0)
+        constant_lr = 0.5
+        min_lr = 1e-6
+        annealing_steps = 100
+        checkpoint_step = 10
+        sched = InfiniteLRScheduler(
+            opt,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=constant_lr,
+            min_lr=min_lr,
+            checkpoint_step=checkpoint_step,
+            annealing_type="rsqrt",
+            annealing_steps=annealing_steps,
+        )
+
+        # Advance to checkpoint_step
+        for _ in range(checkpoint_step):
+            sched.step()
+
+        # Now in annealing phase, verify formula at each step
+        prev_lr = sched.get_last_lr()[0]
+        for i in range(1, 50):
+            sched.step()
+            lr = sched.get_last_lr()[0]
+            assert lr < prev_lr, f"rsqrt annealing step {i}: LR should decrease"
+            t = i / annealing_steps
+            expected = 1.0 / (t / min_lr + (1.0 - t) / constant_lr)
+            assert lr == pytest.approx(
+                expected, abs=1e-10
+            ), f"rsqrt annealing step {i}: expected {expected}, got {lr}"
+            prev_lr = lr
+
+    def test_rsqrt_annealing_reaches_min_lr(self):
+        """rsqrt annealing should reach exactly min_lr at annealing_steps."""
+        opt = self._make_optimizer(lr=1.0)
+        constant_lr = 0.5
+        min_lr = 1e-5
+        annealing_steps = 50
+        checkpoint_step = 5
+        sched = InfiniteLRScheduler(
+            opt,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=constant_lr,
+            min_lr=min_lr,
+            checkpoint_step=checkpoint_step,
+            annealing_type="rsqrt",
+            annealing_steps=annealing_steps,
+        )
+
+        # Advance to exactly checkpoint_step + annealing_steps
+        for _ in range(checkpoint_step + annealing_steps):
+            sched.step()
+
+        lr = sched.get_last_lr()[0]
+        assert lr == pytest.approx(
+            min_lr, rel=1e-7
+        ), f"At annealing_steps, LR should be {min_lr}, got {lr}"
+
+    def test_rsqrt_annealing_starts_at_constant_lr(self):
+        """At checkpoint_step, rsqrt annealing LR should be constant_lr."""
+        opt = self._make_optimizer(lr=1.0)
+        constant_lr = 0.3
+        sched = InfiniteLRScheduler(
+            opt,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=constant_lr,
+            min_lr=1e-6,
+            checkpoint_step=10,
+            annealing_type="rsqrt",
+            annealing_steps=100,
+        )
+
+        # Advance to checkpoint_step
+        for _ in range(10):
+            sched.step()
+
+        lr = sched.get_last_lr()[0]
+        assert lr == pytest.approx(
+            constant_lr, abs=1e-10
+        ), f"At checkpoint_step, LR should be constant_lr={constant_lr}, got {lr}"
+
+    def test_rsqrt_clamps_beyond_annealing_steps(self):
+        """Past annealing_steps, rsqrt LR should stay at min_lr."""
+        opt = self._make_optimizer(lr=1.0)
+        min_lr = 1e-5
+        annealing_steps = 20
+        checkpoint_step = 5
+        sched = InfiniteLRScheduler(
+            opt,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=0.5,
+            min_lr=min_lr,
+            checkpoint_step=checkpoint_step,
+            annealing_type="rsqrt",
+            annealing_steps=annealing_steps,
+        )
+
+        # Advance past annealing_steps
+        for _ in range(checkpoint_step + annealing_steps + 10):
+            sched.step()
+
+        for _ in range(5):
+            sched.step()
+            lr = sched.get_last_lr()[0]
+            assert lr == pytest.approx(
+                min_lr, rel=1e-7
+            ), f"Past annealing_steps, LR should be {min_lr}, got {lr}"
+
+    # --- config-only keys and backward compatibility ---
+
+    def test_load_old_checkpoint_without_new_keys(self):
+        """Old checkpoints (without new keys) should load correctly."""
+        opt = self._make_optimizer(lr=1.0)
+        sched = InfiniteLRScheduler(
+            opt,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=0.5,
+            checkpoint_step=-1,
+        )
+        for _ in range(20):
+            sched.step()
+
+        # Simulate an old checkpoint (no new keys)
+        old_state = sched.state_dict()
+        assert "start_annealing" not in old_state
+        assert "annealing_type" not in old_state
+
+        # Load into a new scheduler with new config
+        opt2 = self._make_optimizer(lr=1.0)
+        sched2 = InfiniteLRScheduler(
+            opt2,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=0.5,
+            start_annealing=True,
+            annealing_type="rsqrt",
+            annealing_steps=50,
+        )
+        sched2.load_state_dict(old_state)
+
+        # Config-only params should be preserved from constructor
+        assert sched2.start_annealing is True
+        assert sched2.annealing_type == "rsqrt"
+        assert sched2.annealing_steps == 50
+        # start_annealing=True + loaded checkpoint_step=-1 -> checkpoint_step=last_epoch
+        assert sched2.checkpoint_step == 20
+
+    # --- start_annealing + rsqrt combined ---
+
+    def test_start_annealing_with_rsqrt(self):
+        """start_annealing + rsqrt should work together."""
+        opt = self._make_optimizer(lr=1.0)
+        sched = InfiniteLRScheduler(
+            opt,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=0.5,
+            min_lr=1e-6,
+            checkpoint_step=-1,
+        )
+
+        for _ in range(50):
+            sched.step()
+
+        saved_state = sched.state_dict()
+
+        # Resume with rsqrt annealing triggered by start_annealing
+        opt2 = self._make_optimizer(lr=1.0)
+        annealing_steps = 100
+        sched2 = InfiniteLRScheduler(
+            opt2,
+            warmup_steps=0,
+            cooldown_steps=0,
+            constant_lr=0.5,
+            min_lr=1e-6,
+            checkpoint_step=-1,
+            start_annealing=True,
+            annealing_type="rsqrt",
+            annealing_steps=annealing_steps,
+        )
+        sched2.load_state_dict(saved_state)
+
+        assert sched2.checkpoint_step == 50
+
+        # Step and verify rsqrt formula
+        sched2.step()
+        lr = sched2.get_last_lr()[0]
+        t = 1 / annealing_steps
+        expected = 1.0 / (t / 1e-6 + (1.0 - t) / 0.5)
+        assert lr == pytest.approx(expected, abs=1e-10)
+
+    # --- validation for new params ---
+
+    def test_invalid_annealing_type_raises(self):
+        """Invalid annealing_type should raise."""
+        opt = self._make_optimizer(lr=1.0)
+        with pytest.raises(AssertionError):
+            InfiniteLRScheduler(
+                opt,
+                warmup_steps=0,
+                cooldown_steps=0,
+                constant_lr=0.5,
+                annealing_type="linear",
+            )
+
+    def test_rsqrt_requires_positive_annealing_steps(self):
+        """rsqrt with annealing_steps=0 should raise."""
+        opt = self._make_optimizer(lr=1.0)
+        with pytest.raises(AssertionError):
+            InfiniteLRScheduler(
+                opt,
+                warmup_steps=0,
+                cooldown_steps=0,
+                constant_lr=0.5,
+                annealing_type="rsqrt",
+                annealing_steps=0,
+            )
+
+
+# ===========================================================================
+# Tests for wsd_scheduler.py
+# ===========================================================================
+
+
+class TestWSDScheduler:
+    """Tests for WSDScheduler with 3 phases: warmup, stable, decay."""
+
+    def _make_optimizer(self, lr=1.0):
+        """Create a simple optimizer with a single parameter group."""
+        param = nn.Parameter(torch.randn(4))
+        return torch.optim.SGD([param], lr=lr)
+
+    # --- warmup phase ---
+
+    def test_warmup_starts_at_zero(self):
+        """At step 0, LR should be 0 during warmup."""
+        opt = self._make_optimizer(lr=1.0)
+        sched = WSDScheduler(opt, warmup_steps=10)
+
+        lr = sched.get_last_lr()[0]
+        assert lr == pytest.approx(0.0), f"Expected LR=0 at warmup start, got {lr}"
+
+    def test_warmup_linear_ramp(self):
+        """LR should increase linearly during warmup."""
+        opt = self._make_optimizer(lr=1.0)
+        warmup_steps = 10
+        sched = WSDScheduler(opt, warmup_steps=warmup_steps)
+
+        lrs = [sched.get_last_lr()[0]]
+        for _ in range(warmup_steps):
+            sched.step()
+            lrs.append(sched.get_last_lr()[0])
+
+        for i in range(warmup_steps + 1):
+            expected = 1.0 * i / warmup_steps
+            assert lrs[i] == pytest.approx(
+                expected, abs=1e-7
+            ), f"Step {i}: expected LR={expected}, got {lrs[i]}"
+
+    def test_warmup_end_matches_base_lr(self):
+        """At the last warmup step, LR should equal base_lr."""
+        opt = self._make_optimizer(lr=0.5)
+        sched = WSDScheduler(opt, warmup_steps=20)
+
+        for _ in range(20):
+            sched.step()
+
+        lr = sched.get_last_lr()[0]
+        assert lr == pytest.approx(0.5, abs=1e-7)
+
+    # --- stable phase ---
+
+    def test_stable_phase(self):
+        """After warmup, LR should remain at base_lr."""
+        opt = self._make_optimizer(lr=0.3)
+        sched = WSDScheduler(opt, warmup_steps=5)
+
+        for _ in range(5):
+            sched.step()
+
+        for _ in range(20):
+            sched.step()
+            lr = sched.get_last_lr()[0]
+            assert lr == pytest.approx(0.3, abs=1e-7)
+
+    def test_no_warmup_starts_at_base_lr(self):
+        """With warmup=0, scheduler starts at base_lr."""
+        opt = self._make_optimizer(lr=0.7)
+        sched = WSDScheduler(opt, warmup_steps=0)
+
+        lr = sched.get_last_lr()[0]
+        assert lr == pytest.approx(0.7, abs=1e-7)
+
+    # --- decay phase ---
+
+    def test_decay_harmonic_formula(self):
+        """Decay should follow harmonic interpolation formula."""
+        opt = self._make_optimizer(lr=1.0)
+        min_lr = 1e-6
+        decay_steps = 100
+        decay_start_step = 10
+        sched = WSDScheduler(
+            opt,
+            warmup_steps=0,
+            min_lr=min_lr,
+            decay_steps=decay_steps,
+            decay_start_step=decay_start_step,
+        )
+
+        for _ in range(decay_start_step):
+            sched.step()
+
+        prev_lr = sched.get_last_lr()[0]
+        for i in range(1, 50):
+            sched.step()
+            lr = sched.get_last_lr()[0]
+            assert lr < prev_lr, f"Decay step {i}: LR should decrease"
+            t = i / decay_steps
+            expected = 1.0 / (t / min_lr + (1.0 - t) / 1.0)
+            assert lr == pytest.approx(
+                expected, abs=1e-10
+            ), f"Decay step {i}: expected {expected}, got {lr}"
+            prev_lr = lr
+
+    def test_decay_reaches_min_lr(self):
+        """Decay should reach exactly min_lr at decay_steps."""
+        opt = self._make_optimizer(lr=1.0)
+        min_lr = 1e-5
+        decay_steps = 50
+        decay_start_step = 5
+        sched = WSDScheduler(
+            opt,
+            warmup_steps=0,
+            min_lr=min_lr,
+            decay_steps=decay_steps,
+            decay_start_step=decay_start_step,
+        )
+
+        for _ in range(decay_start_step + decay_steps):
+            sched.step()
+
+        lr = sched.get_last_lr()[0]
+        assert lr == pytest.approx(min_lr, rel=1e-7)
+
+    def test_decay_starts_at_base_lr(self):
+        """At decay_start_step, LR should still be base_lr."""
+        opt = self._make_optimizer(lr=0.3)
+        sched = WSDScheduler(
+            opt,
+            warmup_steps=0,
+            min_lr=1e-6,
+            decay_steps=100,
+            decay_start_step=10,
+        )
+
+        for _ in range(10):
+            sched.step()
+
+        lr = sched.get_last_lr()[0]
+        assert lr == pytest.approx(0.3, abs=1e-10)
+
+    def test_decay_clamps_beyond_decay_steps(self):
+        """Past decay_steps, LR should stay at min_lr."""
+        opt = self._make_optimizer(lr=1.0)
+        min_lr = 1e-5
+        sched = WSDScheduler(
+            opt,
+            warmup_steps=0,
+            min_lr=min_lr,
+            decay_steps=20,
+            decay_start_step=5,
+        )
+
+        for _ in range(5 + 20 + 10):
+            sched.step()
+
+        for _ in range(5):
+            sched.step()
+            lr = sched.get_last_lr()[0]
+            assert lr == pytest.approx(min_lr, rel=1e-7)
+
+    # --- start_decay flag ---
+
+    def test_start_decay_triggers_from_stable(self):
+        """start_decay=True should begin decay at the loaded step."""
+        opt = self._make_optimizer(lr=1.0)
+        sched = WSDScheduler(opt, warmup_steps=0, decay_start_step=-1)
+
+        for _ in range(50):
+            sched.step()
+
+        saved_state = sched.state_dict()
+
+        opt2 = self._make_optimizer(lr=1.0)
+        sched2 = WSDScheduler(
+            opt2,
+            warmup_steps=0,
+            min_lr=1e-6,
+            decay_steps=100,
+            decay_start_step=-1,
+            start_decay=True,
+        )
+        sched2.load_state_dict(saved_state)
+
+        assert sched2.decay_start_step == 50
+
+        sched2.step()
+        lr = sched2.get_last_lr()[0]
+        assert lr < 1.0, f"LR should decay, got {lr}"
+
+    def test_start_decay_resumes_existing(self):
+        """start_decay=True preserves decay_start_step if already decaying."""
+        opt = self._make_optimizer(lr=1.0)
+        sched = WSDScheduler(
+            opt,
+            warmup_steps=0,
+            min_lr=1e-6,
+            decay_steps=100,
+            decay_start_step=20,
+        )
+
+        for _ in range(30):
+            sched.step()
+
+        saved_state = sched.state_dict()
+        lr_at_30 = sched.get_last_lr()[0]
+
+        opt2 = self._make_optimizer(lr=1.0)
+        sched2 = WSDScheduler(
+            opt2,
+            warmup_steps=0,
+            min_lr=1e-6,
+            decay_steps=100,
+            decay_start_step=-1,
+            start_decay=True,
+        )
+        sched2.load_state_dict(saved_state)
+
+        assert sched2.decay_start_step == 20
+        assert sched2.get_last_lr()[0] == pytest.approx(lr_at_30, abs=1e-10)
+
+    def test_start_decay_false_restores_constructor(self):
+        """start_decay=False restores constructor decay_start_step."""
+        opt = self._make_optimizer(lr=1.0)
+        sched = WSDScheduler(
+            opt,
+            warmup_steps=0,
+            min_lr=1e-6,
+            decay_steps=100,
+            decay_start_step=20,
+        )
+
+        for _ in range(30):
+            sched.step()
+
+        saved_state = sched.state_dict()
+
+        opt2 = self._make_optimizer(lr=1.0)
+        sched2 = WSDScheduler(
+            opt2,
+            warmup_steps=0,
+            decay_start_step=-1,
+            start_decay=False,
+        )
+        sched2.load_state_dict(saved_state)
+
+        assert sched2.decay_start_step == -1
+        sched2.step()
+        lr = sched2.get_last_lr()[0]
+        assert lr == pytest.approx(1.0, abs=1e-7)
+
+    # --- config-only keys ---
+
+    def test_config_only_keys_excluded_from_state_dict(self):
+        """Config-only params should not appear in state_dict."""
+        opt = self._make_optimizer(lr=1.0)
+        sched = WSDScheduler(
+            opt,
+            warmup_steps=0,
+            min_lr=1e-6,
+            decay_steps=100,
+            start_decay=True,
+        )
+
+        state = sched.state_dict()
+        assert "start_decay" not in state
+        assert "min_lr" not in state
+        assert "decay_steps" not in state
+
+    # --- state dict round-trip ---
+
+    def test_state_dict_round_trip(self):
+        """state_dict / load_state_dict preserves scheduler state."""
+        opt = self._make_optimizer(lr=1.0)
+        sched = WSDScheduler(
+            opt,
+            warmup_steps=10,
+            min_lr=1e-6,
+            decay_steps=50,
+            decay_start_step=30,
+        )
+
+        for _ in range(15):
+            sched.step()
+
+        saved_state = sched.state_dict()
+        lr_before = sched.get_last_lr()[0]
+
+        opt2 = self._make_optimizer(lr=1.0)
+        sched2 = WSDScheduler(
+            opt2,
+            warmup_steps=10,
+            min_lr=1e-6,
+            decay_steps=50,
+            decay_start_step=30,
+        )
+        sched2.load_state_dict(saved_state)
+
+        lr_after = sched2.get_last_lr()[0]
+        assert lr_before == pytest.approx(lr_after, abs=1e-10)
+
+        for _ in range(20):
+            sched.step()
+            sched2.step()
+            assert sched.get_last_lr()[0] == pytest.approx(
+                sched2.get_last_lr()[0], abs=1e-10
+            )
+
+    # --- multiple param groups ---
+
+    def test_multiple_param_groups(self):
+        """Scheduler should handle optimizers with multiple parameter groups."""
+        p1 = nn.Parameter(torch.randn(4))
+        p2 = nn.Parameter(torch.randn(4))
+        opt = torch.optim.SGD(
+            [
+                {"params": [p1], "lr": 1.0},
+                {"params": [p2], "lr": 0.5},
+            ]
+        )
+
+        sched = WSDScheduler(opt, warmup_steps=10)
+
+        # At step 0 both should be 0 (warmup start)
+        lrs = sched.get_last_lr()
+        assert lrs[0] == pytest.approx(0.0)
+        assert lrs[1] == pytest.approx(0.0)
+
+        # At step 5
+        for _ in range(5):
+            sched.step()
+
+        lrs = sched.get_last_lr()
+        assert lrs[0] == pytest.approx(1.0 * 5 / 10, abs=1e-7)
+        assert lrs[1] == pytest.approx(0.5 * 5 / 10, abs=1e-7)
+
+    def test_multiple_param_groups_decay(self):
+        """Decay should use each group's base_lr independently."""
+        p1 = nn.Parameter(torch.randn(4))
+        p2 = nn.Parameter(torch.randn(4))
+        opt = torch.optim.SGD(
+            [
+                {"params": [p1], "lr": 1.0},
+                {"params": [p2], "lr": 0.5},
+            ]
+        )
+
+        min_lr = 1e-6
+        decay_steps = 100
+        sched = WSDScheduler(
+            opt,
+            warmup_steps=0,
+            min_lr=min_lr,
+            decay_steps=decay_steps,
+            decay_start_step=0,
+        )
+
+        for _ in range(10):
+            sched.step()
+
+        lrs = sched.get_last_lr()
+        t = 10 / decay_steps
+        expected_0 = 1.0 / (t / min_lr + (1.0 - t) / 1.0)
+        expected_1 = 1.0 / (t / min_lr + (1.0 - t) / 0.5)
+        assert lrs[0] == pytest.approx(expected_0, abs=1e-10)
+        assert lrs[1] == pytest.approx(expected_1, abs=1e-10)
+
+    # --- validation ---
+
+    def test_invalid_decay_start_step(self):
+        """decay_start_step < warmup_steps should raise."""
+        opt = self._make_optimizer(lr=1.0)
+        with pytest.raises(AssertionError):
+            WSDScheduler(opt, warmup_steps=10, decay_start_step=5)
+
+    def test_negative_warmup_raises(self):
+        """Negative warmup_steps should raise."""
+        opt = self._make_optimizer(lr=1.0)
+        with pytest.raises(AssertionError):
+            WSDScheduler(opt, warmup_steps=-1)
+
+    def test_zero_decay_steps_raises(self):
+        """decay_steps=0 should raise."""
+        opt = self._make_optimizer(lr=1.0)
+        with pytest.raises(AssertionError):
+            WSDScheduler(opt, decay_steps=0)
 
 
 # ===========================================================================
