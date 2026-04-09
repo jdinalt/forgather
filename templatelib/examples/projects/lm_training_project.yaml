@@ -207,6 +207,7 @@
 
     ## LR scaling
     -- set ns.base_lr = lr | default(3e-4)
+    -- set ns.min_lr_ratio = 0.1
     -- set ns.base_batch_size = 16384
     -- set ns.lr_alpha = 0.5
 
@@ -253,6 +254,7 @@
 
     ## LR Scaling
     -- set ns.global_lr = ns.base_lr * (ns.tokens_per_step / ns.base_batch_size) ** ns.lr_alpha
+    -- set ns.min_lr = ns.global_lr * ns.min_lr_ratio
 
     ## Pipeline Parallel derived values
     -- if ns.trainer_type == "pipeline"
@@ -289,6 +291,7 @@
 # ns.tokens_per_step: {{ ns.tokens_per_step }} tokens
 # ns.total_peak_hardware_flops: {{ ns.total_peak_hardware_flops / 1e12 }} TFLOPS
 # ns.base_lr: {{ ns.base_lr }}
+# ns.min_lr: {{ ns.min_lr }}
 # ns.base_batch_size: {{ ns.base_batch_size }}
 # ns.lr_alpha: {{ ns.lr_alpha }}
 # ns.global_lr: {{ ns.global_lr }}
@@ -404,6 +407,7 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
 lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:CosineLRScheduler@lr_scheduler
     warmup_steps: {{ ns.warmup_steps }}
     total_steps: {{ [ns.min_cooldown_steps, ns.total_steps] | max | int }}
+    min_lr: {{ ns.min_lr | toyaml }}
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW

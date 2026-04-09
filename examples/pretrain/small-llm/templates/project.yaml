@@ -45,7 +45,6 @@
 
     ## LR Scheduler
     -- set ns.constant_lr_ratio = 1.0 / 3
-    -- set ns.min_lr = 5.0e-6
     -- set ns.cooldown_p = 0.3
     
     ## Attention
@@ -53,15 +52,13 @@
 
 [globals]
     == super()
-    -- set ns.base_constant_lr = ns.base_lr * ns.constant_lr_ratio
-    -- set ns.constant_lr = ns.base_constant_lr * (ns.tokens_per_step / ns.base_batch_size) ** ns.lr_alpha
+    -- set ns.constant_lr = ns.global_lr * ns.constant_lr_ratio
     -- set ns.cooldown_steps = [ns.min_cooldown_steps, ns.total_steps * ns.cooldown_p] | max | int
 
 [variable_listing]
     == super()
-# ns.base_constant_lr: {{ ns.base_constant_lr }}
+# ns.constant_lr_ratio: {{ ns.constant_lr_ratio }}
 # ns.constant_lr: {{ ns.constant_lr }}
-# ns.min_lr: {{ ns.min_lr }}
 # ns.cooldown_p: {{ ns.cooldown_p }}
 # ns.cooldown_steps: {{ ns.cooldown_steps }}
 
