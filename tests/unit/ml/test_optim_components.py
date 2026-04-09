@@ -1866,7 +1866,7 @@ class TestRoundingUtilsCUDA:
 
 
 class TestCosineLRScheduler:
-    """Tests for CosineLRScheduler with optional warmup and cosine decay to 0."""
+    """Tests for CosineLRScheduler with optional warmup and cosine decay."""
 
     def _make_optimizer(self, lr=1.0):
         param = nn.Parameter(torch.randn(4))
@@ -1923,6 +1923,18 @@ class TestCosineLRScheduler:
 
         assert sched.get_last_lr()[0] == pytest.approx(0.0, abs=1e-7)
 
+    def test_decay_reaches_min_lr_at_total_steps(self):
+        opt = self._make_optimizer(lr=1.0)
+        total_steps = 100
+        sched = CosineLRScheduler(
+            opt, total_steps=total_steps, warmup_steps=0, min_lr=0.1
+        )
+
+        for _ in range(total_steps):
+            sched.step()
+
+        assert sched.get_last_lr()[0] == pytest.approx(0.1, abs=1e-7)
+
     def test_decay_midpoint_is_half(self):
         """At the midpoint of cosine decay, LR should be 0.5 * base_lr."""
         opt = self._make_optimizer(lr=2.0)
@@ -1933,6 +1945,20 @@ class TestCosineLRScheduler:
             sched.step()
 
         assert sched.get_last_lr()[0] == pytest.approx(1.0, abs=1e-7)
+
+    def test_decay_midpoint_with_min_lr(self):
+        """At the midpoint, LR should be midway between base_lr and min_lr."""
+        opt = self._make_optimizer(lr=1.0)
+        total_steps = 100
+        sched = CosineLRScheduler(
+            opt, total_steps=total_steps, warmup_steps=0, min_lr=0.2
+        )
+
+        for _ in range(total_steps // 2):
+            sched.step()
+
+        # min_lr + (base_lr - min_lr) * 0.5 = 0.2 + 0.8 * 0.5 = 0.6
+        assert sched.get_last_lr()[0] == pytest.approx(0.6, abs=1e-7)
 
     def test_decay_cosine_shape(self):
         """Verify LR follows cosine curve during decay."""
@@ -1952,6 +1978,29 @@ class TestCosineLRScheduler:
         for i in range(total_steps + 1):
             progress = i / decay_steps
             expected = 0.5 * (1.0 + math.cos(math.pi * progress))
+            assert lrs[i] == pytest.approx(
+                expected, abs=1e-7
+            ), f"Step {i}: expected {expected}, got {lrs[i]}"
+
+    def test_decay_cosine_shape_with_min_lr(self):
+        """Verify LR follows cosine curve with min_lr floor."""
+        opt = self._make_optimizer(lr=1.0)
+        total_steps = 200
+        min_lr = 0.1
+        sched = CosineLRScheduler(
+            opt, total_steps=total_steps, warmup_steps=0, min_lr=min_lr
+        )
+
+        lrs = [sched.get_last_lr()[0]]
+        for _ in range(total_steps):
+            sched.step()
+            lrs.append(sched.get_last_lr()[0])
+
+        for i in range(total_steps + 1):
+            progress = i / total_steps
+            expected = min_lr + (1.0 - min_lr) * 0.5 * (
+                1.0 + math.cos(math.pi * progress)
+            )
             assert lrs[i] == pytest.approx(
                 expected, abs=1e-7
             ), f"Step {i}: expected {expected}, got {lrs[i]}"
@@ -1985,6 +2034,39 @@ class TestCosineLRScheduler:
         for i in range(warmup_steps, total_steps + 1):
             progress = (i - warmup_steps) / decay_steps
             expected = 0.5 * (1.0 + math.cos(math.pi * progress))
+            assert lrs[i] == pytest.approx(
+                expected, abs=1e-7
+            ), f"Decay step {i}: expected {expected}, got {lrs[i]}"
+
+    def test_warmup_then_decay_with_min_lr(self):
+        """Full schedule: warmup to base_lr, then cosine decay to min_lr."""
+        opt = self._make_optimizer(lr=1.0)
+        warmup_steps = 20
+        total_steps = 120
+        decay_steps = total_steps - warmup_steps
+        min_lr = 0.05
+        sched = CosineLRScheduler(
+            opt, total_steps=total_steps, warmup_steps=warmup_steps, min_lr=min_lr
+        )
+
+        lrs = [sched.get_last_lr()[0]]
+        for _ in range(total_steps):
+            sched.step()
+            lrs.append(sched.get_last_lr()[0])
+
+        # Warmup: linear from 0 to 1 (unaffected by min_lr)
+        for i in range(warmup_steps + 1):
+            expected = i / warmup_steps
+            assert lrs[i] == pytest.approx(
+                expected, abs=1e-7
+            ), f"Warmup step {i}: expected {expected}, got {lrs[i]}"
+
+        # Decay: cosine from 1 to min_lr
+        for i in range(warmup_steps, total_steps + 1):
+            progress = (i - warmup_steps) / decay_steps
+            expected = min_lr + (1.0 - min_lr) * 0.5 * (
+                1.0 + math.cos(math.pi * progress)
+            )
             assert lrs[i] == pytest.approx(
                 expected, abs=1e-7
             ), f"Decay step {i}: expected {expected}, got {lrs[i]}"
@@ -2023,6 +2105,11 @@ class TestCosineLRScheduler:
         opt = self._make_optimizer()
         with pytest.raises(AssertionError):
             CosineLRScheduler(opt, total_steps=10, warmup_steps=-1)
+
+    def test_negative_min_lr_rejected(self):
+        opt = self._make_optimizer()
+        with pytest.raises(AssertionError):
+            CosineLRScheduler(opt, total_steps=10, min_lr=-0.1)
 
 
 if __name__ == "__main__":
