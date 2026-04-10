@@ -896,61 +896,80 @@ class PipelineTrainer(
         generated_ids = input_ids.clone()
         done = torch.zeros(batch_size, dtype=torch.bool, device=self.dist.device)
 
-        for _ in range(max_new_tokens):
-            attention_mask = None
-            if self.attention_mask_creator is not None:
-                attention_mask = self.attention_mask_creator(input_ids=generated_ids)
+        # Temporarily bypass torch.compile on the pipeline stage modules for the
+        # duration of generation. Compiled modules (e.g. flex_attention + max-autotune)
+        # are specialized on the training shapes and fail when called with the varying
+        # shapes used during autoregressive decoding. Mirrors the single-rank workaround
+        # in TextgenCallback.generate().
+        assert self.pipeline_modules
+        saved_compiled_calls: list = []
+        for mod in self.pipeline_modules:
+            compiled_call = getattr(mod, "_compiled_call_impl", None)
+            saved_compiled_calls.append(compiled_call)
+            if compiled_call is not None:
+                mod._compiled_call_impl = mod._call_impl
 
-            logits = self._pipeline_step_for_generation(generated_ids, attention_mask)
+        try:
+            for _ in range(max_new_tokens):
+                attention_mask = None
+                if self.attention_mask_creator is not None:
+                    attention_mask = self.attention_mask_creator(input_ids=generated_ids)
 
-            if self.pp_has_last_stage:
-                assert logits is not None
-                next_logits = logits[:, -1, :].float()  # [batch, vocab]
+                logits = self._pipeline_step_for_generation(generated_ids, attention_mask)
 
-                if repetition_penalty != 1.0:
-                    for b in range(batch_size):
-                        for tok in set(generated_ids[b].tolist()):
-                            if next_logits[b, tok] > 0:
-                                next_logits[b, tok] /= repetition_penalty
-                            else:
-                                next_logits[b, tok] *= repetition_penalty
+                if self.pp_has_last_stage:
+                    assert logits is not None
+                    next_logits = logits[:, -1, :].float()  # [batch, vocab]
 
-                if temperature != 1.0:
-                    next_logits = next_logits / temperature
+                    if repetition_penalty != 1.0:
+                        for b in range(batch_size):
+                            for tok in set(generated_ids[b].tolist()):
+                                if next_logits[b, tok] > 0:
+                                    next_logits[b, tok] /= repetition_penalty
+                                else:
+                                    next_logits[b, tok] *= repetition_penalty
 
-                if top_k > 0:
-                    top_values, _ = torch.topk(next_logits, top_k, dim=-1)
-                    threshold = top_values[:, -1, None]
-                    next_logits = next_logits.masked_fill(
-                        next_logits < threshold, float("-inf")
+                    if temperature != 1.0:
+                        next_logits = next_logits / temperature
+
+                    if top_k > 0:
+                        top_values, _ = torch.topk(next_logits, top_k, dim=-1)
+                        threshold = top_values[:, -1, None]
+                        next_logits = next_logits.masked_fill(
+                            next_logits < threshold, float("-inf")
+                        )
+
+                    if do_sample:
+                        probs = torch.softmax(next_logits, dim=-1)
+                        next_tokens = torch.multinomial(probs, 1).squeeze(1)
+                    else:
+                        next_tokens = next_logits.argmax(dim=-1)
+                else:
+                    next_tokens = torch.zeros(
+                        batch_size, dtype=torch.long, device=self.dist.device
                     )
 
-                if do_sample:
-                    probs = torch.softmax(next_logits, dim=-1)
-                    next_tokens = torch.multinomial(probs, 1).squeeze(1)
+                distributed.broadcast(next_tokens, src=self.pp_last_stage_rank)
+
+                done = done | (next_tokens == eos_token_id)
+                next_tokens = next_tokens.masked_fill(done, pad_token_id)
+                generated_ids = torch.cat([generated_ids, next_tokens.unsqueeze(1)], dim=1)
+
+                # Broadcast early-exit flag from last-stage rank to all ranks.
+                if self.pp_has_last_stage:
+                    stop = torch.tensor(
+                        [int(done.all())], dtype=torch.long, device=self.dist.device
+                    )
                 else:
-                    next_tokens = next_logits.argmax(dim=-1)
-            else:
-                next_tokens = torch.zeros(
-                    batch_size, dtype=torch.long, device=self.dist.device
-                )
-
-            distributed.broadcast(next_tokens, src=self.pp_last_stage_rank)
-
-            done = done | (next_tokens == eos_token_id)
-            next_tokens = next_tokens.masked_fill(done, pad_token_id)
-            generated_ids = torch.cat([generated_ids, next_tokens.unsqueeze(1)], dim=1)
-
-            # Broadcast early-exit flag from last-stage rank to all ranks.
-            if self.pp_has_last_stage:
-                stop = torch.tensor(
-                    [int(done.all())], dtype=torch.long, device=self.dist.device
-                )
-            else:
-                stop = torch.zeros(1, dtype=torch.long, device=self.dist.device)
-            distributed.broadcast(stop, src=self.pp_last_stage_rank)
-            if stop.item():
-                break
+                    stop = torch.zeros(1, dtype=torch.long, device=self.dist.device)
+                distributed.broadcast(stop, src=self.pp_last_stage_rank)
+                if stop.item():
+                    break
+        finally:
+            # Restore compiled forwards for training, even if generation raised.
+            for mod, compiled_call in zip(self.pipeline_modules, saved_compiled_calls):
+                if compiled_call is not None:
+                    mod._compiled_call_impl = compiled_call
 
         return generated_ids
 
