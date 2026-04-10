@@ -31,7 +31,13 @@ class InfiniteLRScheduler(LRScheduler):
     # Config-only keys: set from constructor config, not saved/loaded
     # from checkpoints.
     _CONFIG_ONLY_KEYS = frozenset(
-        ("start_annealing", "annealing_type", "annealing_steps", "min_lr")
+        (
+            "start_annealing",
+            "annealing_type",
+            "annealing_steps",
+            "min_lr",
+            "checkpoint_step",
+        )
     )
 
     def __init__(

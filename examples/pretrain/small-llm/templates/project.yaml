@@ -69,7 +69,7 @@
 [trainer_args]
     == super()
 
-    # Checkpoing saving
+    # Checkpoint saving
     save_strategy: {{ save_strategy | toyaml('steps') }}
     save_total_limit: 4
     preserve_best_model: True
