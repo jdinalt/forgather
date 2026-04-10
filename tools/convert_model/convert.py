@@ -81,7 +81,7 @@ def parse_args(args=None):
     parser.add_argument(
         "--model-type",
         type=str,
-        choices=["llama", "mistral", "qwen3"],
+        choices=["llama", "mistral", "qwen3", "gemma3_text"],
         default="llama",
         help="Override auto-detected model type for FG->HF conversion (default: llama if auto-detection fails)",
     )

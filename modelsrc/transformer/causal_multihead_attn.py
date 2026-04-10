@@ -27,6 +27,8 @@ class CausalMultiheadAttn(nn.Module):
         qk_norm_factory: Optional[Callable] = None,
         layer_idx: int,
         sliding_window: Optional[int] = None,
+        head_dim: Optional[int] = None,
+        query_pre_attn_scalar: Optional[float] = None,
         **kwargs,
     ):
         """
@@ -40,6 +42,12 @@ class CausalMultiheadAttn(nn.Module):
             pos_encoder: A relative positional encoder
             bias: Apply bias to Q, K, V, and O
             dropout: Attention dropout -- not compatible with flex-attention!
+            head_dim: Optional explicit per-head dimension. When provided, Q/K/V/O
+                projections use ``num_heads * head_dim`` instead of ``d_model``.
+                Used by models like Gemma where ``head_dim * num_heads != d_model``.
+            query_pre_attn_scalar: Optional explicit scaling denominator. When
+                provided, attention scale is ``1 / sqrt(query_pre_attn_scalar)``
+                instead of ``1 / sqrt(d_head)``. Used by Gemma.
         """
         super().__init__()
         self.d_model = d_model
@@ -65,13 +73,22 @@ class CausalMultiheadAttn(nn.Module):
             # Fallback to HF registry
             self.attn_fn = ALL_ATTENTION_FUNCTIONS[attn_implementation]
 
-        assert d_model % num_heads == 0, "d_model must be evenly divisible by num_heads"
         assert (
             num_heads % self.num_kv_heads == 0
         ), "num_heads must be divisible by num_kv_heads"
 
-        self.d_head = d_model // num_heads
-        self.scale = 1.0 / math.sqrt(self.d_head)
+        if head_dim is not None:
+            self.d_head = head_dim
+        else:
+            assert (
+                d_model % num_heads == 0
+            ), "d_model must be evenly divisible by num_heads"
+            self.d_head = d_model // num_heads
+
+        if query_pre_attn_scalar is not None:
+            self.scale = 1.0 / math.sqrt(query_pre_attn_scalar)
+        else:
+            self.scale = 1.0 / math.sqrt(self.d_head)
         self.num_key_value_groups = self.num_heads // self.num_kv_heads
 
         # Query projections for all heads
