@@ -12,6 +12,15 @@ from ..trainer_types import TrainerCallback
 
 
 class TextgenCallback(TrainerCallback):
+    """
+    Periodically generate and log text from a set of prompts for subjective model evaluation.
+
+    Automatically dispatches between single-rank generation (via model.generate()) and
+    pipeline-parallel generation (via trainer.pipeline_generate()) based on whether the
+    trainer exposes a pipeline_generate method. The same callback works unchanged with
+    SimpleTrainer, AccelTrainer/DDPTrainer, and PipelineTrainer.
+    """
+
     # Stride is the number of steps between text generations
     def __init__(
         self,
@@ -73,6 +82,15 @@ class TextgenCallback(TrainerCallback):
         self.next_gen_step = 0
 
     def on_evaluate(self, args, state, control, **kwargs):
+        trainer = kwargs.get("trainer")
+        # Pipeline trainers expose pipeline_generate() and require collective participation
+        # from all ranks. Single-rank trainers (including DDP) use model.generate() on rank 0.
+        if hasattr(trainer, "pipeline_generate"):
+            self._on_evaluate_pipeline(args, state, control, **kwargs)
+        else:
+            self._on_evaluate_single_rank(args, state, control, **kwargs)
+
+    def _on_evaluate_single_rank(self, args, state, control, **kwargs):
         model = kwargs.get("model")
         processing_class = kwargs.get("processing_class")
         if self.generation_steps is None:
@@ -85,6 +103,70 @@ class TextgenCallback(TrainerCallback):
             text += output + "\n\n---\n\n"
         self.summary_writer.add_text("eval-text", text, global_step=state.global_step)
         self.summary_writer.flush()
+
+    def _on_evaluate_pipeline(self, args, state, control, **kwargs):
+        trainer = kwargs.get("trainer")
+        processing_class = kwargs.get("processing_class")
+
+        if self.generation_steps is None:
+            self.generation_steps = args.eval_steps
+
+        # Coordinate "should we generate this step?" across all ranks.
+        # Only rank 0 has the authoritative next_gen_step counter.
+        should_gen = torch.tensor(
+            [int(state.is_world_process_zero and state.global_step >= self.next_gen_step)],
+            dtype=torch.long,
+            device=args.device,
+        )
+        torch.distributed.broadcast(should_gen, src=0)
+        if not should_gen.item():
+            return
+
+        if state.is_world_process_zero:
+            self.next_gen_step += self.generation_steps
+
+        # Rank 0 tokenizes; broadcast shape then ids to all ranks.
+        if state.is_world_process_zero:
+            enc = processing_class(
+                self.prompts,
+                padding=True,
+                truncation=True,
+                return_tensors="pt",
+                padding_side="left",
+            )
+            input_ids = enc["input_ids"].to(args.device)
+            shape_t = torch.tensor(list(input_ids.shape), device=args.device)
+        else:
+            shape_t = torch.zeros(2, dtype=torch.long, device=args.device)
+
+        torch.distributed.broadcast(shape_t, src=0)
+
+        if not state.is_world_process_zero:
+            input_ids = torch.zeros(
+                shape_t.tolist(), dtype=torch.long, device=args.device
+            )
+        torch.distributed.broadcast(input_ids, src=0)
+
+        # All ranks generate together.
+        gen_config = dict(
+            eos_token_id=processing_class.eos_token_id,
+            pad_token_id=processing_class.pad_token_id or processing_class.eos_token_id,
+            **self.gen_config_args,
+        )
+        generated_ids = trainer.pipeline_generate(
+            input_ids=input_ids,
+            max_new_tokens=self.max_new_tokens,
+            **gen_config,
+        )
+
+        # Only rank 0 decodes and logs.
+        if state.is_world_process_zero:
+            texts = processing_class.batch_decode(generated_ids, skip_special_tokens=True)
+            body = ""
+            for prompt, decoded in zip(self.prompts, texts):
+                body += prompt + " [START] " + decoded[len(prompt) + 1:] + "\n\n---\n\n"
+            self.summary_writer.add_text("eval-text", body, global_step=state.global_step)
+            self.summary_writer.flush()
 
     def generate(self, device, model, tokenizer):
         generation_config = GenerationConfig(
