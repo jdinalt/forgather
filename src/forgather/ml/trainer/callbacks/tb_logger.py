@@ -109,11 +109,15 @@ class TBLogger(TrainerCallback):
         if not state.is_world_process_zero:
             return
         if self.experiment_info is not None:
-            self.summary_writer.add_text("experiment", self.experiment_info)
+            self.summary_writer.add_text(
+                "experiment", self.experiment_info, global_step=state.global_step
+            )
 
         info, extra_info = format_train_info(args, state, control, **kwargs)
         self.summary_writer.add_text(
-            "training_info", self.mapping_as_markdown(info | extra_info)
+            "training_info",
+            self.mapping_as_markdown(info | extra_info),
+            global_step=state.global_step,
         )
 
     @staticmethod
@@ -162,5 +166,8 @@ class TBLogger(TrainerCallback):
         if not state.is_world_process_zero and len(state.log_history):
             return
         self.summary_writer.add_text(
-            "train_results", self.mapping_as_markdown(state.log_history[-1])
+            "train_results",
+            self.mapping_as_markdown(
+                state.log_history[-1], global_step=state.global_step
+            ),
         )
