@@ -8,17 +8,11 @@
 
     ## Extend to 10x Chinchilla
     -- set ns.total_tokens = total_tokens | default(24970)
+    -- set ns.annealing_tokens = annealing_tokens | default(2497)
 
     ## Extend cooldown to 70% (from 30%) of token budget
     -- set ns.cooldown_p = 0.7
 
-[globals]
-    == super()
-    ## Decay for 10% of total tokens
-    -- set ns.decay_steps = (ns.total_steps * 0.1) | int
-    -- set ns.decay_start_step = (ns.total_steps - ns.decay_steps) | int
-
 [lr_scheduler]
     == super()
-    annealing_steps: {{ ns.decay_steps }}
     checkpoint_step: {{ ns.decay_start_step }}

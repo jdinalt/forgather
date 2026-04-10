@@ -168,6 +168,7 @@ class TBLogger(TrainerCallback):
         self.summary_writer.add_text(
             "train_results",
             self.mapping_as_markdown(
-                state.log_history[-1], global_step=state.global_step
+                state.log_history[-1],
             ),
+            global_step=state.global_step,
         )

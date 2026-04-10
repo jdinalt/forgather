@@ -7,20 +7,11 @@
     -- set ns.config_description = "Experiment in training a small LM with Pipeline Parallel"
     -- set ns.model_name = model_name | default("pp")
     -- set ns.trainer_type = trainer_type | default("pipeline")
+    ## The "ZeroBubble" schedules appear to have issues with flex-attention.
+    ##-- set ns.pipe_schedule_factory = pipeline_schedule | default("ScheduleInterleavedZeroBubble")
 
 [trainer_args]
     == super()
 
-    # max-autotune runs into issues; disable for now
-    torch_compile_mode: default
-
-[trainer_callbacks]
-    -- include 'pp.logger_config'
-
-#-------------------- pp.logger_config --------------------
--- extends 'project.logger_config'
-
-[callback_list]
-    == super()
-    # Textgen is incompatible with the Pipeline Parallel trainer
-    text_gen_callback: null
+    # "max-autotune" x Flex-Attention x PP = No Bueno!
+    torch_compile_mode: max-autotune-no-cudagraphs

@@ -296,6 +296,7 @@
 # ns.lr_alpha: {{ ns.lr_alpha }}
 # ns.global_lr: {{ ns.global_lr }}
 # ns.trainer_type: {{ ns.trainer_type }}
+# ns.trainer_class: {{ ns.trainer_class }}
 -- if ns.trainer_type == "pipeline"
 # Pipeline Parallel:
 # ns.stages_per_rank: {{ ns.stages_per_rank }}
@@ -389,7 +390,6 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     per_device_train_batch_size: {{ ns.pp_batch_size }}
     per_device_eval_batch_size: {{ ns.pp_batch_size }}
     dispatch_batches: null
-    torch_compile_mode: default
 -- endif
 
 [trainer_definition]
