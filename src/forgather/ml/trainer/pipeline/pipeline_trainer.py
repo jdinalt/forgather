@@ -921,6 +921,17 @@ class PipelineTrainer(
                     assert logits is not None
                     next_logits = logits[:, -1, :].float()  # [batch, vocab]
 
+                    # Sanitize logits before sampling. Unstable model output (common
+                    # early in training or with mixed precision) can produce NaN/Inf,
+                    # which makes torch.multinomial fail the "probability tensor
+                    # contains inf, nan or element < 0" assertion. Replace NaN with 0
+                    # and clamp ±Inf to finite values. Top-k masking below uses its
+                    # own float("-inf") after this step, so -inf handling here does
+                    # not interfere with top-k.
+                    next_logits = torch.nan_to_num(
+                        next_logits, nan=0.0, posinf=1e4, neginf=-1e4
+                    )
+
                     if repetition_penalty != 1.0:
                         for b in range(batch_size):
                             for tok in set(generated_ids[b].tolist()):
