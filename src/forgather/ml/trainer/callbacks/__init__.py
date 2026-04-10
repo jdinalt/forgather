@@ -13,5 +13,6 @@ from .peak_memory import PeakMemory
 from .profiler_callback import ProfilerCallback
 from .resumable_summary_writer import ResumableSummaryWriter
 from .tb_logger import TBLogger
+from .pipeline_textgen_callback import PipelineTextgenCallback
 from .textgen_callback import TextgenCallback
 from .weight_norm_logger import WeightNormLogger

@@ -10,6 +10,7 @@ from typing import (
     Dict,
     Generic,
     List,
+    Optional,
     Protocol,
     Tuple,
     TypeAlias,
@@ -497,6 +498,28 @@ class PipelineTrainer(
                 self.pp_last_stage_rank = rank
                 break
 
+        # Map every global stage index to the rank that owns it.
+        self._stage_to_rank: dict[int, int] = {
+            stage: rank_idx
+            for rank_idx, stages in enumerate(stage_indices)
+            for stage in stages
+        }
+
+        # Map global stage index → local pipeline_modules index (for this rank only).
+        # pipeline_modules[j] corresponds to stage_indices[rank][j].
+        self._stage_to_local_mod: dict[int, int] = {
+            stage: idx for idx, stage in enumerate(self.stage_indices)
+        }
+
+        # Dtype for activations exchanged between ranks during generation.
+        if self.args.mixed_precision == "bf16":
+            self._generation_dtype = torch.bfloat16
+        elif self.args.mixed_precision == "fp16":
+            self._generation_dtype = torch.float16
+        else:
+            param = next((p for m in pipeline_modules for p in m.parameters()), None)
+            self._generation_dtype = param.dtype if param is not None else torch.float32
+
         # We keep the original model on the meta-device. This model is obviously not functional, but
         # some trainer callbacks may wish to dump the layout.
         self.model = model
@@ -773,6 +796,163 @@ class PipelineTrainer(
         else:
             mean_loss = torch.tensor(0.0, device=self.dist.device, dtype=torch.float32)
         return mean_loss
+
+    @torch.no_grad()
+    def _pipeline_step_for_generation(
+        self,
+        input_ids: Tensor,
+        attention_mask: Optional[Tensor],
+    ) -> Optional[Tensor]:
+        """
+        Single forward pass through all pipeline stages for autoregressive generation.
+        All ranks must call simultaneously; coordination via blocking p2p send/recv.
+
+        Works for any stages_per_rank and "loop"/"v" stage assignment styles.
+
+        Assumption: inter-stage activations have shape [batch, seq, model.config.hidden_size].
+
+        Returns:
+            Logits tensor [batch, seq, vocab] on the last-stage rank; None on all other ranks.
+        """
+        assert self.pipeline_modules
+
+        forward_kwargs: dict = {}
+        if attention_mask is not None:
+            forward_kwargs["attention_mask"] = attention_mask
+
+        hidden_states: Optional[Tensor] = None
+        batch, seq = input_ids.shape
+
+        with self.amp_context.autocast():
+            for stage_k in range(self.n_pipeline_stages):
+                rank_k = self._stage_to_rank[stage_k]
+
+                # At each stage boundary, transfer activations if stages are on different ranks.
+                if stage_k > 0:
+                    rank_prev = self._stage_to_rank[stage_k - 1]
+                    if rank_prev != rank_k:
+                        if self.dist.rank == rank_prev:
+                            assert hidden_states is not None
+                            distributed.send(hidden_states.contiguous(), dst=rank_k)
+                        elif self.dist.rank == rank_k:
+                            recv_buf = torch.empty(
+                                batch,
+                                seq,
+                                self.model.config.hidden_size,
+                                dtype=self._generation_dtype,
+                                device=self.dist.device,
+                            )
+                            distributed.recv(recv_buf, src=rank_prev)
+                            hidden_states = recv_buf
+                        # Other ranks: not involved in this boundary, continue loop.
+
+                # Run the module on its owning rank.
+                if self.dist.rank == rank_k:
+                    local_idx = self._stage_to_local_mod[stage_k]
+                    mod = self.pipeline_modules[local_idx]
+                    inp = input_ids if stage_k == 0 else hidden_states
+                    hidden_states = mod(inp, **forward_kwargs)
+
+        if self.pp_has_last_stage:
+            return hidden_states  # logits tensor from last stage
+        return None
+
+    @torch.no_grad()
+    def pipeline_generate(
+        self,
+        input_ids: Tensor,
+        max_new_tokens: int,
+        eos_token_id: int,
+        pad_token_id: int,
+        do_sample: bool = True,
+        temperature: float = 1.0,
+        top_k: int = 0,
+        repetition_penalty: float = 1.0,
+    ) -> Tensor:
+        """
+        Autoregressive text generation through pipeline stages.
+
+        Bypasses the pipeline scheduler so input shapes are not constrained.
+        All ranks must call simultaneously; returns the full generated sequence
+        (prompt + new tokens) as a [batch, total_len] LongTensor on every rank.
+
+        No KV caching: each step recomputes the full sequence. This is acceptable
+        for the callback use case (infrequent, qualitative quality check).
+
+        Args:
+            input_ids: Prompt token ids [batch, prompt_len], same on all ranks.
+            max_new_tokens: Maximum number of tokens to generate.
+            eos_token_id: Token id that signals end of sequence.
+            pad_token_id: Token id used to pad completed sequences.
+            do_sample: If True, sample from the distribution; else greedy.
+            temperature: Softmax temperature (applied before top_k).
+            top_k: If > 0, only sample from the top-k logits.
+            repetition_penalty: Penalty factor for tokens already in the sequence.
+
+        Returns:
+            Generated token ids [batch, prompt_len + n_new_tokens] on all ranks.
+        """
+        batch_size = input_ids.shape[0]
+        generated_ids = input_ids.clone()
+        done = torch.zeros(batch_size, dtype=torch.bool, device=self.dist.device)
+
+        for _ in range(max_new_tokens):
+            attention_mask = None
+            if self.attention_mask_creator is not None:
+                attention_mask = self.attention_mask_creator(input_ids=generated_ids)
+
+            logits = self._pipeline_step_for_generation(generated_ids, attention_mask)
+
+            if self.pp_has_last_stage:
+                assert logits is not None
+                next_logits = logits[:, -1, :].float()  # [batch, vocab]
+
+                if repetition_penalty != 1.0:
+                    for b in range(batch_size):
+                        for tok in set(generated_ids[b].tolist()):
+                            if next_logits[b, tok] > 0:
+                                next_logits[b, tok] /= repetition_penalty
+                            else:
+                                next_logits[b, tok] *= repetition_penalty
+
+                if temperature != 1.0:
+                    next_logits = next_logits / temperature
+
+                if top_k > 0:
+                    top_values, _ = torch.topk(next_logits, top_k, dim=-1)
+                    threshold = top_values[:, -1, None]
+                    next_logits = next_logits.masked_fill(
+                        next_logits < threshold, float("-inf")
+                    )
+
+                if do_sample:
+                    probs = torch.softmax(next_logits, dim=-1)
+                    next_tokens = torch.multinomial(probs, 1).squeeze(1)
+                else:
+                    next_tokens = next_logits.argmax(dim=-1)
+            else:
+                next_tokens = torch.zeros(
+                    batch_size, dtype=torch.long, device=self.dist.device
+                )
+
+            distributed.broadcast(next_tokens, src=self.pp_last_stage_rank)
+
+            done = done | (next_tokens == eos_token_id)
+            next_tokens = next_tokens.masked_fill(done, pad_token_id)
+            generated_ids = torch.cat([generated_ids, next_tokens.unsqueeze(1)], dim=1)
+
+            # Broadcast early-exit flag from last-stage rank to all ranks.
+            if self.pp_has_last_stage:
+                stop = torch.tensor(
+                    [int(done.all())], dtype=torch.long, device=self.dist.device
+                )
+            else:
+                stop = torch.zeros(1, dtype=torch.long, device=self.dist.device)
+            distributed.broadcast(stop, src=self.pp_last_stage_rank)
+            if stop.item():
+                break
+
+        return generated_ids
 
     @override
     def _init_optimizer(self):
