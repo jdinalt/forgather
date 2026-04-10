@@ -252,6 +252,7 @@ class LinearCrossEntropyLoss:
         chunk_size: int = 4096,
         ignore_index: int = -100,
         compile: bool = False,
+        softcap: Optional[float] = None,
         **kwargs,
     ):
         self.output_embeddings = output_embeddings
@@ -269,6 +270,15 @@ class LinearCrossEntropyLoss:
             )
         self.weight = _weight
         self.bias = getattr(output_embeddings, "bias", None)
+
+        # Auto-discover softcap from the lm_head module if not explicitly provided.
+        # Models like Gemma attach a ``softcap`` attribute to their lm_head module
+        # (via SoftcappedLinear). The fused-loss path bypasses the lm_head's forward,
+        # so we read the softcap value directly off the module here and apply it
+        # inside each backend.
+        if softcap is None:
+            softcap = getattr(output_embeddings, "softcap", None)
+        self.softcap = softcap
 
         # Select and initialize implementation
         self.actual_impl, self._compute_fn = self._select_implementation(impl, **kwargs)
@@ -385,12 +395,15 @@ class LinearCrossEntropyLoss:
                         )
 
                 logger.info(
-                    f"LinearCrossEntropyLoss: using Liger Kernel, kwargs={liger_kwargs}"
+                    f"LinearCrossEntropyLoss: using Liger Kernel, kwargs={liger_kwargs}, "
+                    f"softcap={self.softcap}"
                 )
 
                 # Initialize Liger loss function
                 self._liger_loss = LigerFusedLinearCrossEntropyLoss(
-                    ignore_index=self.ignore_index, **liger_kwargs
+                    ignore_index=self.ignore_index,
+                    softcap=self.softcap,
+                    **liger_kwargs,
                 )
                 return "liger", self._compute_liger
             except ImportError as e:
@@ -423,6 +436,7 @@ class LinearCrossEntropyLoss:
             # bias=self.bias,
             shift=True,  # Automatic causal shifting
             ignore_index=self.ignore_index,
+            softcap=self.softcap,
             impl=self.cce_impl,
             reduction="mean",
             **self.kwargs,
@@ -459,6 +473,7 @@ class LinearCrossEntropyLoss:
             self.bias,
             chunk_size=self.chunk_size,
             ignore_index=self.ignore_index,
+            softcap=self.softcap,
         )
 
     def _fused_linear_cross_entropy_pytorch(
@@ -469,12 +484,17 @@ class LinearCrossEntropyLoss:
         bias: Optional[Tensor],
         chunk_size: int,
         ignore_index: int,
+        softcap: Optional[float] = None,
     ) -> Tensor:
         """
         Pure PyTorch implementation of fused linear + cross-entropy.
 
         This is the same algorithm as FusedLinearCrossEntropy._fused_forward_loss,
         but as a standalone function for use with external weight matrices.
+
+        If ``softcap`` is provided, ``cap * tanh(chunk_logits / cap)`` is applied
+        to each materialized vocab chunk immediately after the linear, before any
+        reduction. Softcap is element-wise so it commutes with the chunk boundary.
         """
         n_tokens = hidden_states.size(0)
         vocab_size = weight.size(0)
@@ -507,6 +527,8 @@ class LinearCrossEntropyLoss:
             chunk_weight = weight[start_idx:end_idx]
             chunk_bias = bias[start_idx:end_idx] if bias is not None else None
             chunk_logits = F.linear(hidden_states, chunk_weight, chunk_bias)
+            if softcap is not None:
+                chunk_logits = softcap * torch.tanh(chunk_logits / softcap)
 
             chunk_max = chunk_logits.max(dim=-1).values
             max_logit = torch.maximum(max_logit, chunk_max)
@@ -524,6 +546,8 @@ class LinearCrossEntropyLoss:
             chunk_weight = weight[start_idx:end_idx]
             chunk_bias = bias[start_idx:end_idx] if bias is not None else None
             chunk_logits = F.linear(hidden_states, chunk_weight, chunk_bias)
+            if softcap is not None:
+                chunk_logits = softcap * torch.tanh(chunk_logits / softcap)
 
             # Accumulate exp(logit - max)
             chunk_exp = torch.exp(chunk_logits - max_logit.unsqueeze(-1))
@@ -575,7 +599,10 @@ class LinearCrossEntropyLoss:
         Returns:
             logits: [batch, seq_len, vocab_size]
         """
-        return F.linear(hidden_states, self.weight, self.bias)
+        logits = F.linear(hidden_states, self.weight, self.bias)
+        if self.softcap is not None:
+            logits = self.softcap * torch.tanh(logits / self.softcap)
+        return logits
 
     def __repr__(self):
         return (
@@ -583,7 +610,8 @@ class LinearCrossEntropyLoss:
             f"impl='{self.actual_impl}', "
             f"vocab_size={self.weight.size(0)}, "
             f"hidden_dim={self.weight.size(1)}, "
-            f"chunk_size={self.chunk_size}), "
+            f"chunk_size={self.chunk_size}, "
+            f"softcap={self.softcap}, "
             f"compile={self.compile})"
         )
 
