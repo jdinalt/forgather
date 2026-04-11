@@ -430,6 +430,23 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         """
         return tokens
 
+    def _distributed_peak_mem(self, local_peak: int) -> list[int]:
+        """
+        Gather per-rank peak CUDA memory into a list on every rank.
+
+        Base implementation is single-device and returns a one-element list.
+        Distributed trainers override to all_gather across ranks so logging
+        reflects per-rank high-water marks.
+
+        Args:
+            local_peak: torch.cuda.max_memory_allocated for this rank, in bytes.
+
+        Returns:
+            List of peak bytes indexed by rank (length == world_size, or 1
+            for single-device training).
+        """
+        return [int(local_peak)]
+
     def _init_distributed(self):
         """
         Subclasses are expected to override, if they support distributed training.
@@ -1629,7 +1646,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
     ):
         self._update_training_steps()
 
-        logs = {
+        logs: dict[str, Any] = {
             "epoch": self.state.epoch,
         }
 
@@ -1672,14 +1689,17 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                     last_lr = last_lr.item()
                 logs["learning_rate"] = last_lr
 
-        # Capture peak CUDA memory for this rank and reset stats so each interval
-        # reflects only the high-water mark since the previous log step.  Doing this
-        # here (rather than in individual callbacks) ensures the reset happens exactly
-        # once regardless of how many callbacks query memory statistics.
+        # Capture peak CUDA memory for this rank, gather across ranks, and reset
+        # stats so each interval reflects only the high-water mark since the previous
+        # log step.  Doing this here (rather than in individual callbacks) ensures
+        # the reset happens exactly once regardless of how many callbacks query
+        # memory statistics, and the per-rank list is uniformly available to all
+        # logging callbacks (JsonLogger, PeakMemory, ProgressCallback).
         if torch.cuda.is_available():
             device = torch.cuda.current_device()
-            logs["peak_mem_allocated"] = torch.cuda.max_memory_allocated(device=device)
+            local_peak = int(torch.cuda.max_memory_allocated(device=device))
             torch.cuda.reset_peak_memory_stats(device=device)
+            logs["peak_mem_allocated"] = self._distributed_peak_mem(local_peak)
 
         # Allow callbacks to add entries to the logs before on_log fires
         self._dispatch_event(

@@ -42,8 +42,9 @@ class DefaultMetrics(TrainerCallback):
     Computed metrics:
         tok_per_sec   -- tokens processed per wall-clock second between log steps.
         mfu           -- Model FLOPs Utilization (requires *peak_hardware_flops*).
-        peak_mem      -- peak CUDA memory allocated (bytes), aliased from
-                         ``peak_mem_allocated`` for display formatting.
+        peak_mem      -- per-rank peak CUDA memory allocated (list of bytes),
+                         aliased from ``peak_mem_allocated`` for display
+                         formatting (default reduction: max across ranks).
     """
 
     def __init__(

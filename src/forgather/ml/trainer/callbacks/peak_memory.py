@@ -3,7 +3,6 @@ import os
 from pprint import pformat
 
 import torch
-import torch.distributed as dist
 
 from forgather.ml.trainer.logging import format_mapping
 
@@ -130,27 +129,16 @@ class PeakMemory(TrainerCallback):
             # Only take a single snapshot
             self.enable_memory_snapshot = False
 
-        # Use the value captured and reset by _log_step so that a single reset
-        # serves all callbacks and they don't interfere with each other.
-        max_allocated = logs.get("peak_mem_allocated", 0)
-        self.max_allocated = max(self.max_allocated, max_allocated)
-        if self.world_size > 1:
-            max_allocated_tensor = torch.tensor(max_allocated, device=device)
-            if self.rank == 0:
-                gather_list = [
-                    torch.zeros_like(max_allocated_tensor, device=device)
-                    for i in range(self.world_size)
-                ]
-            else:
-                gather_list = None
-            dist.gather(max_allocated_tensor, gather_list, dst=0)
-            if self.rank != 0:
-                return
-            # Only rank 0 will log the peak memory
-            assert gather_list is not None
-            max_allocated_list = [i.item() for i in gather_list]
-        else:
-            max_allocated_list = [max_allocated]
+        # peak_mem_allocated is a per-rank list populated by Trainer._log_step
+        # via _distributed_peak_mem. Every rank sees the full list.
+        max_allocated_list = logs.get("peak_mem_allocated")
+        if not max_allocated_list:
+            return
+        self.max_allocated = max(self.max_allocated, max_allocated_list[self.rank])
+
+        # Per-rank TB scalars and the console line are rank-0 only.
+        if self.rank != 0:
+            return
 
         if self.summary_writer:
             for i, mem in enumerate(max_allocated_list):

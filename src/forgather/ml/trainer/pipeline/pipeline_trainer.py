@@ -1343,6 +1343,21 @@ class PipelineTrainer(
         return loss
 
     @override
+    def _distributed_peak_mem(self, local_peak: int) -> list[int]:
+        """
+        All-gather per-rank peak CUDA memory across pipeline ranks.
+
+        Each pipeline stage hosts different layers with distinct memory footprints,
+        so per-rank peaks are genuinely informative.
+        """
+        value = torch.tensor(
+            [int(local_peak)], dtype=torch.long, device=self.args.device
+        )
+        gathered = [torch.zeros_like(value) for _ in range(self.dist.world_size)]
+        dist.all_gather(gathered, value)
+        return [int(t.item()) for t in gathered]
+
+    @override
     def get_state_components(self) -> List[StateComponent]:
         """
         Get state components for pipeline parallel training.

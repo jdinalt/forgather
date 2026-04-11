@@ -113,7 +113,15 @@ def load_metrics(run_name: str) -> dict:
     ]
     best_eval = min(eval_losses, key=lambda x: x[1])[1] if eval_losses else None
 
-    peak_mem = max((r.get("peak_mem_allocated", 0) for r in records), default=0)
+    def _record_peak(r) -> float:
+        # peak_mem_allocated is a per-rank list in current logs; old logs
+        # used a scalar. Accept both.
+        v = r.get("peak_mem_allocated", 0)
+        if isinstance(v, list):
+            return max(v) if v else 0
+        return v or 0
+
+    peak_mem: float = max((_record_peak(r) for r in records), default=0)
     tok_vals = [r["tok_per_sec"] for r in records if "tok_per_sec" in r]
     mfu_vals = [r["mfu"] for r in records if "mfu" in r]
 

@@ -358,6 +358,21 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
         return tokens
 
     @override
+    def _distributed_peak_mem(self, local_peak: int) -> list[int]:
+        """
+        All-gather per-rank peak CUDA memory across DDP ranks.
+        """
+        if self.dist.world_size == 1:
+            return super()._distributed_peak_mem(local_peak)
+
+        value = torch.tensor(
+            [int(local_peak)], dtype=torch.long, device=self.args.device
+        )
+        gathered = [torch.zeros_like(value) for _ in range(self.dist.world_size)]
+        dist.all_gather(gathered, value)
+        return [int(t.item()) for t in gathered]
+
+    @override
     def _forward_backward_step(
         self,
         *args,

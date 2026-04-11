@@ -127,6 +127,21 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
         return reduced_loss
 
     @override
+    def _distributed_peak_mem(self, local_peak: int) -> list[int]:
+        """
+        All-gather per-rank peak CUDA memory via Accelerate.
+        """
+        if self.dist.world_size == 1:
+            return super()._distributed_peak_mem(local_peak)
+
+        value = torch.tensor(
+            [int(local_peak)], dtype=torch.long, device=self.args.device
+        )
+        gathered = self.accelerator.gather(value)
+        assert isinstance(gathered, Tensor)
+        return [int(v) for v in gathered.tolist()]
+
+    @override
     def _prepare_batch(
         self, batch: Dict[str, Tensor]
     ) -> tuple[Dict[str, Tensor], Tensor]:

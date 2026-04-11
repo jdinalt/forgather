@@ -9,6 +9,8 @@ from forgather.ml.utils import alt_repr, count_parameters, fmt_si
 
 Mapping = dict[str, Any]
 
+Reduction = str | Callable[[list], Any] | None
+
 
 # ---------------------------------------------------------------------------
 # Column / metric specification dataclasses
@@ -20,25 +22,39 @@ class ColumnSpec:
     """Specification for a single column in the step-log table.
 
     Attributes:
-        key:   Metric key in the logs dict (e.g. ``"loss"``, ``"tok_per_sec"``).
-        label: Column header text.  Defaults to *key* when empty.
-        width: Fixed column width in characters.
-        fmt:   Formatting control -- one of:
+        key:    Metric key in the logs dict (e.g. ``"loss"``, ``"tok_per_sec"``).
+        label:  Column header text.  Defaults to *key* when empty.
+        width:  Fixed column width in characters.
+        fmt:    Formatting control -- one of:
 
-               * A Python format-spec string (``".5f"``, ``".2e"``, ``",d"``).
-                 Applied via ``format(value, spec)``.  Integer presentation
-                 types (``d``, ``o``, ``x``, ...) auto-convert the value to
-                 ``int`` first.
-               * A named formatter alias (``"si"``, ``"gib"``).
-               * A ``Callable[[Any], str]``.
-               * ``""`` for a type-based fallback (float -> ``.4g``,
-                 int -> comma-separated, else ``str``).
+                * A Python format-spec string (``".5f"``, ``".2e"``, ``",d"``).
+                  Applied via ``format(value, spec)``.  Integer presentation
+                  types (``d``, ``o``, ``x``, ...) auto-convert the value to
+                  ``int`` first.
+                * A named formatter alias (``"si"``, ``"gib"``).
+                * A ``Callable[[Any], str]``.
+                * ``""`` for a type-based fallback (float -> ``.4g``,
+                  int -> comma-separated, else ``str``).
+        reduce: How to render list-valued metrics (e.g. a per-rank list of
+                peak memory values).  One of:
+
+                * ``None`` (default) -- scalar values pass through; list
+                  values fall back to an implicit ``max`` reduction.
+                * ``"max"``, ``"min"``, ``"mean"``, ``"sum"`` -- reduce a
+                  list to a scalar before formatting.
+                * ``"all"`` -- format each element individually and join
+                  with ``"/"`` (per-rank display; may overflow *width*).
+                * A ``Callable[[list], Any]`` -- custom reduction; the
+                  result is then formatted via *fmt*.
+
+                Ignored for scalar values unless the reduction is a callable.
     """
 
     key: str
     label: str = ""
     width: int = 10
     fmt: str | Callable[[Any], str] = ""
+    reduce: Reduction = None
 
     def __post_init__(self):
         if not self.label:
@@ -115,6 +131,15 @@ _NAMED_FORMATTERS: dict[str, Callable[[Any], str]] = {
 }
 
 
+# Named reducers for list-valued metrics.  See ColumnSpec.reduce.
+_NAMED_REDUCERS: dict[str, Callable[[list], Any]] = {
+    "max": max,
+    "min": min,
+    "mean": lambda xs: sum(xs) / len(xs) if xs else 0,
+    "sum": sum,
+}
+
+
 # ---------------------------------------------------------------------------
 # Value formatting
 # ---------------------------------------------------------------------------
@@ -123,8 +148,8 @@ _NAMED_FORMATTERS: dict[str, Callable[[Any], str]] = {
 _INT_TYPES = frozenset("doxXbn")
 
 
-def format_value(value: Any, fmt: str | Callable[[Any], str]) -> str:
-    """Format a single metric value.
+def _format_scalar(value: Any, fmt: str | Callable[[Any], str]) -> str:
+    """Format a single scalar metric value.
 
     Resolution order:
 
@@ -152,6 +177,41 @@ def format_value(value: Any, fmt: str | Callable[[Any], str]) -> str:
     return format(value, fmt)
 
 
+def format_value(
+    value: Any,
+    fmt: str | Callable[[Any], str],
+    reduce: Reduction = None,
+) -> str:
+    """Format a single metric value, with optional list reduction.
+
+    For scalar *value* the *fmt* path is unchanged from legacy behavior.
+
+    For list *value* the *reduce* argument controls rendering:
+
+    * ``None`` -- implicit ``max`` reduction (suits peak-style metrics).
+    * ``"max" / "min" / "mean" / "sum"`` -- named scalar reduction,
+      then format via *fmt*.
+    * ``"all"`` -- format each element with *fmt* and join with ``"/"``.
+    * Callable -- apply to the list; result is then formatted via *fmt*.
+
+    A callable *reduce* applied to a scalar value is still honored.
+    """
+    if isinstance(value, list):
+        if reduce is None or reduce == "max":
+            value = max(value) if value else 0
+        elif reduce == "all":
+            return "/".join(_format_scalar(v, fmt) for v in value)
+        elif callable(reduce):
+            value = reduce(value)
+        elif reduce in _NAMED_REDUCERS:
+            value = _NAMED_REDUCERS[reduce](value)
+        else:
+            raise ValueError(f"Unknown reduction {reduce!r}")
+    elif callable(reduce):
+        value = reduce(value)
+    return _format_scalar(value, fmt)
+
+
 # ---------------------------------------------------------------------------
 # Default column / metric specs
 # ---------------------------------------------------------------------------
@@ -176,7 +236,7 @@ def default_step_columns() -> dict[str, dict]:
         "total_tokens": {"label": "total_tok", "width": 10, "fmt": "si"},
         "tok_per_sec": {"label": "tok/s", "width": 10, "fmt": ",d"},
         "mfu": {"label": "mfu", "width": 6, "fmt": ".1%"},
-        "peak_mem": {"label": "peak_mem", "width": 11, "fmt": "gib"},
+        "peak_mem": {"label": "peak_mem", "width": 11, "fmt": "gib", "reduce": "max"},
     }
 
 
@@ -313,7 +373,7 @@ def format_train_log(
     parts = [f"{state.global_step:>{_STEP_COL_WIDTH},d}"]
     for col in columns:
         if col.key in metrics:
-            formatted = format_value(metrics[col.key], col.fmt)
+            formatted = format_value(metrics[col.key], col.fmt, col.reduce)
             parts.append(f"{formatted:>{col.width}}")
     return "  ".join(parts)
 

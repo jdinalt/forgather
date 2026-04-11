@@ -107,6 +107,180 @@ entry. The default columns include `loss`, `learning_rate`, `grad_norm`, `tok_pe
 `mfu`, and `peak_mem`. Override `step_columns` to customize which metrics are shown and
 their formatting.
 
+## Customizing the progress display
+
+Each column in the step-log table is described by a `ColumnSpec` with five fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `key` | `str` | Metric key in the log entry (e.g. `"loss"`, `"tok_per_sec"`). |
+| `label` | `str` | Column header text. Defaults to `key` when empty. |
+| `width` | `int` | Fixed column width in characters. |
+| `fmt` | `str` or callable | How to format a scalar value (see below). |
+| `reduce` | `str`, callable, or `None` | How to render list-valued metrics (see below). |
+
+`step_columns` accepts a dict of `{key: spec_overrides}`; values are shallow-merged with
+`default_step_columns()`. Setting a key to `None` removes that column from the defaults.
+The merged result is turned into a list of `ColumnSpec` objects; column order follows
+insertion order.
+
+### The `fmt` field
+
+`fmt` controls scalar formatting. It accepts:
+
+1. **A Python format-spec string** — applied via `format(value, spec)`. Integer
+   presentation types (`d`, `o`, `x`, …) auto-convert the value to `int` first.
+
+   ```python
+   "loss":          {"fmt": ".5f"}    # 2.34567
+   "learning_rate": {"fmt": ".2e"}    # 1.00e-04
+   "tokens":        {"fmt": ",d"}     # 8,192
+   "mfu":           {"fmt": ".1%"}    # 42.0%
+   ```
+
+2. **A named formatter alias** — shorthand for common unit-aware formatters:
+
+   | Alias | Behavior | Example |
+   |-------|----------|---------|
+   | `"si"` | SI prefixes (K, M, G, …) | `8.19M` |
+   | `"gib"` | Binary gibibytes | `1.863 GiB` |
+
+   ```python
+   "total_tokens": {"fmt": "si"}
+   "peak_mem":     {"fmt": "gib"}
+   ```
+
+3. **A callable** — any `Callable[[Any], str]` is invoked directly with the value.
+
+   ```python
+   "custom_metric": {"fmt": lambda v: f"{v:>6.2f}!"}
+   ```
+
+4. **An empty string** — type-based fallback (float → `.4g`, int → comma-separated,
+   else `str()`).
+
+### The `reduce` field
+
+Some metrics arrive as a per-rank list rather than a scalar. `peak_mem_allocated`, for
+example, is captured on every rank inside `Trainer._log_step` and stored in the log
+entry as a list of per-rank bytes (length equal to world size; length 1 for single-GPU
+runs). `reduce` controls how such a list is rendered in a fixed-width column:
+
+| Value | Behavior |
+|-------|----------|
+| `None` (default) | Scalars pass through unchanged; lists fall back to an implicit `max` reduction. |
+| `"max"` / `"min"` / `"mean"` / `"sum"` | Reduce the list to a scalar, then format via `fmt`. |
+| `"all"` | Format each element with `fmt` and join with `"/"` (per-rank display; may overflow `width` for large world sizes). |
+| `Callable[[list], Any]` | Apply the callable to the list, then format the result via `fmt`. |
+
+`reduce` is silently ignored for scalar values unless it is a callable, in which case
+the callable is still applied.
+
+#### Example: show peak memory from all ranks
+
+The default `peak_mem` column reduces the per-rank list with `max`, so the progress
+display stays compact:
+
+```
+peak_mem
+1.863 GiB
+```
+
+To show every rank's peak instead, override `reduce` to `"all"`:
+
+```python
+from forgather.ml.trainer.callbacks import ProgressCallback
+
+callbacks = [
+    ProgressCallback(
+        step_columns={
+            "peak_mem": {"width": 32, "reduce": "all"},
+        },
+    ),
+]
+```
+
+With a 2-GPU DDP run this renders as:
+
+```
+                        peak_mem
+         1.863 GiB/2.047 GiB
+```
+
+Widen `width` to fit your world size; per-rank display scales linearly with the number
+of ranks, so plan on roughly `len("X.XXX GiB/") × world_size` characters.
+
+#### Example: show min and max peak memory in separate columns
+
+Point two columns at the same log key and give each its own reduction:
+
+```python
+callbacks = [
+    ProgressCallback(
+        step_columns={
+            # Remove the default peak_mem entry.
+            "peak_mem": None,
+            # Add two new columns keyed off the raw trainer metric.
+            "peak_mem_min": {
+                "key": "peak_mem_allocated",
+                "label": "min_mem",
+                "width": 11,
+                "fmt": "gib",
+                "reduce": "min",
+            },
+            "peak_mem_max": {
+                "key": "peak_mem_allocated",
+                "label": "max_mem",
+                "width": 11,
+                "fmt": "gib",
+                "reduce": "max",
+            },
+        },
+    ),
+]
+```
+
+Note that the top-level dict key (`peak_mem_min`) is only used for merging and ordering;
+the actual lookup into the log entry uses the nested `key` field.
+
+#### Example: gap between max and min as a custom reduction
+
+A callable `reduce` can return any scalar, which is then formatted via `fmt`:
+
+```python
+callbacks = [
+    ProgressCallback(
+        step_columns={
+            "peak_mem_gap": {
+                "key": "peak_mem_allocated",
+                "label": "mem_gap",
+                "width": 11,
+                "fmt": "gib",
+                "reduce": lambda xs: max(xs) - min(xs),
+            },
+        },
+    ),
+]
+```
+
+This surfaces per-rank memory imbalance — useful for spotting a straggler stage in
+pipeline-parallel training.
+
+### What lands in `trainer_logs.json`
+
+`JsonLogger` serializes the log entry with `json.dumps`, so list-valued metrics land in
+`trainer_logs.json` as native JSON arrays:
+
+```json
+{"global_step": 1000, "peak_mem_allocated": [2000000000, 2200000000], ...}
+```
+
+This format is used for single-GPU runs as well (a 1-element array), so any downstream
+analysis tool that reads `peak_mem_allocated` must handle lists. The
+`forgather.ml.trainer.logging.format_value()` helper is a convenient way to reproduce
+the progress-display formatting offline — it accepts the same `(value, fmt, reduce)`
+arguments used by `ColumnSpec`.
+
 ## Setting `peak_hardware_flops`
 
 `peak_hardware_flops` must be the **aggregate** peak FLOP/s across **all GPUs** used in
