@@ -816,9 +816,16 @@ class PipelineTrainer(
     ) -> Optional[Tensor]:
         """
         Single forward pass through all pipeline stages for autoregressive generation.
-        All ranks must call simultaneously; coordination via blocking p2p send/recv.
+        All ranks must call simultaneously.
 
         Works for any stages_per_rank and "loop"/"v" stage assignment styles.
+
+        Cross-rank activation transfer uses dist.batch_isend_irecv() with dist.P2POp,
+        the same primitive PyTorch's pipeline scheduler uses internally. Going through
+        the batched API (rather than blocking dist.send/dist.recv) avoids the lazy
+        creation of new 2-rank NCCL sub-communicators on every call and matches the
+        op-issuing pattern the scheduler already uses on this process group, so the
+        two code paths share NCCL state cleanly.
 
         Assumption: inter-stage activations have shape [batch, seq, model.config.hidden_size].
 
@@ -844,7 +851,14 @@ class PipelineTrainer(
                     if rank_prev != rank_k:
                         if self.dist.rank == rank_prev:
                             assert hidden_states is not None
-                            distributed.send(hidden_states.contiguous(), dst=rank_k)
+                            op = distributed.P2POp(
+                                distributed.isend,
+                                hidden_states.contiguous(),
+                                peer=rank_k,
+                                group=self.pp_group,
+                            )
+                            for w in distributed.batch_isend_irecv([op]):
+                                w.wait()
                         elif self.dist.rank == rank_k:
                             recv_buf = torch.empty(
                                 batch,
@@ -853,7 +867,14 @@ class PipelineTrainer(
                                 dtype=self._generation_dtype,
                                 device=self.dist.device,
                             )
-                            distributed.recv(recv_buf, src=rank_prev)
+                            op = distributed.P2POp(
+                                distributed.irecv,
+                                recv_buf,
+                                peer=rank_prev,
+                                group=self.pp_group,
+                            )
+                            for w in distributed.batch_isend_irecv([op]):
+                                w.wait()
                             hidden_states = recv_buf
                         # Other ranks: not involved in this boundary, continue loop.
 
@@ -903,6 +924,13 @@ class PipelineTrainer(
         Returns:
             Generated token ids [batch, prompt_len + n_new_tokens] on all ranks.
         """
+        # Ensure all ranks reach this point before issuing any generation collectives.
+        # This forces a clean synchronization fence after the trainer's eval phase, so
+        # any pending scheduler ops on the same NCCL communicators are guaranteed to be
+        # drained before our textgen ops start. Without this, our hand-rolled p2p can
+        # get interleaved with leftover scheduler state and deadlock.
+        distributed.barrier(group=self.pp_group)
+
         batch_size = input_ids.shape[0]
         generated_ids = input_ids.clone()
         done = torch.zeros(batch_size, dtype=torch.bool, device=self.dist.device)
