@@ -61,20 +61,31 @@ class DataloaderDispatcher:
 
     def _init_1d_mesh(self, mesh: DeviceMesh, dp_mesh_dim: Optional[int]) -> None:
         """Initialize from 1D mesh."""
+        mesh_size = mesh.size(0)
         if dp_mesh_dim == 0:
             # Pure DP: all ranks in DP group, no MP
             self._dp_group = mesh.get_group(0)
             self._mp_group = None
-            self._dp_size = mesh.size(0)
+            self._dp_size = mesh_size
             self._mp_size = 1
             self._dp_rank = mesh.get_local_rank(0)
             self._mp_rank = 0
         elif dp_mesh_dim is None:
-            # Pure MP: no DP, all ranks in MP group
+            # Pure MP: no DP, all ranks in MP group. A degenerate single-rank
+            # mesh here is almost always a misconfiguration (e.g. pipeline
+            # trainer launched with --nproc-per-node 1) — fail loudly instead
+            # of silently falling through to the pure-DP path in __iter__.
+            assert mesh_size > 1, (
+                "DataloaderDispatcher pure-MP mode (dp_mesh_dim=None) requires a "
+                f"1D mesh with size > 1, got mesh.size(0)={mesh_size}. The trainer "
+                "appears to have been launched with world_size=1 but configured "
+                "for model-parallel training. Check that --nproc-per-node (or the "
+                "equivalent dynamic arg) is being honored."
+            )
             self._dp_group = None
             self._mp_group = mesh.get_group(0)
             self._dp_size = 1
-            self._mp_size = mesh.size(0)
+            self._mp_size = mesh_size
             self._dp_rank = 0
             self._mp_rank = mesh.get_local_rank(0)
         else:

@@ -272,6 +272,17 @@ class PipelineTrainer(
         self.is_world_process_zero = self.dist.rank == 0
         self.num_processes = self.dist.world_size
 
+        # Pipeline parallelism is meaningless with a single rank, and downstream
+        # code (DataloaderDispatcher pure-MP, pipeline scheduler) will fail in
+        # confusing ways if we let this through. Catch it here with a clear
+        # diagnostic.
+        assert self.dist.world_size > 1, (
+            f"PipelineTrainer requires world_size > 1, got {self.dist.world_size}. "
+            "Launch with torchrun --nproc-per-node N (N > 1), or verify that any "
+            "dynamic-arg override of nproc_per_node is being honored by the "
+            "`forgather train` command."
+        )
+
         # Calculate total number of pipeline stages
         self.n_pipeline_stages = self.args.stages_per_rank * self.dist.world_size
 
@@ -913,9 +924,13 @@ class PipelineTrainer(
             for _ in range(max_new_tokens):
                 attention_mask = None
                 if self.attention_mask_creator is not None:
-                    attention_mask = self.attention_mask_creator(input_ids=generated_ids)
+                    attention_mask = self.attention_mask_creator(
+                        input_ids=generated_ids
+                    )
 
-                logits = self._pipeline_step_for_generation(generated_ids, attention_mask)
+                logits = self._pipeline_step_for_generation(
+                    generated_ids, attention_mask
+                )
 
                 if self.pp_has_last_stage:
                     assert logits is not None
@@ -964,7 +979,9 @@ class PipelineTrainer(
 
                 done = done | (next_tokens == eos_token_id)
                 next_tokens = next_tokens.masked_fill(done, pad_token_id)
-                generated_ids = torch.cat([generated_ids, next_tokens.unsqueeze(1)], dim=1)
+                generated_ids = torch.cat(
+                    [generated_ids, next_tokens.unsqueeze(1)], dim=1
+                )
 
                 # Broadcast early-exit flag from last-stage rank to all ranks.
                 if self.pp_has_last_stage:

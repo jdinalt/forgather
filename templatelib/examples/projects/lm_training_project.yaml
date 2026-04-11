@@ -258,6 +258,9 @@
 
     ## Pipeline Parallel derived values
     -- if ns.trainer_type == "pipeline"
+        -- if ns.nproc_per_node is number and ns.nproc_per_node <= 1
+            -- set ns.nproc_per_node = "gpu"
+        -- endif
         -- if ns.pipe_schedule_factory in ["ScheduleGPipe", "Schedule1F1B"]
             -- set ns.stages_per_rank = 1
         -- else
@@ -507,6 +510,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
         help: "Trainer: basic (single GPU), ddp (multi-GPU), pipeline (pipeline parallel)"
     nproc_per_node:
         names: "--nproc-per-node"
+        type: int
         help: "Processes per node: 'gpu' for all GPUs, or integer. Auto-set from trainer type."
     pipeline_schedule:
         names: "--pipeline-schedule"
