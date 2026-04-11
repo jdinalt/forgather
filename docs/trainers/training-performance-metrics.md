@@ -200,6 +200,19 @@ callbacks = [
 ]
 ```
 
+Using the configuration syntax:
+
+```yaml
+[step_columns]
+.define: &step_columns !dict
+  peak_mem:  {"width": 32, "reduce": "all"}
+
+[callback_list]
+trainer_callbacks: &trainer_callbacks !dlist:@trainer_callbacks
+  progress_callback: !singleton:forgather.ml.trainer.callbacks:ProgressCallback
+    step_columns: *step_columns
+```
+
 With a 2-GPU DDP run this renders as:
 
 ```

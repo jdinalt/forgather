@@ -51,6 +51,10 @@
     ## Attention
     -- set ns.attn_implementation = attn_implementation | default("flex_attention")
 
+    ## Compile
+    -- set ns.torch_compile = compile | default("True")
+    -- set ns.torch_compile_mode = torch_compile_mode | default("max-autotune")
+
 [globals]
     == super()
     -- set ns.constant_lr = ns.global_lr * ns.constant_lr_ratio
@@ -78,13 +82,8 @@
     preserve_n_best: 1
     eval_on_save: True
 
-    # Enable compile by default, with maximum performance
-    torch_compile: {{ compile | default(True) }}
+    # Compile
     torch_compile_dynamic: False
--- if ns.gradient_accumulation_steps == 1
-    ## This setting appears to cause issues when using gradient accumulation
-    torch_compile_mode: "max-autotune"
--- endif
 
     # Dataloader
     dataloader_num_workers: 1
@@ -137,46 +136,4 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:InfiniteLRScheduler@lr_s
         help: "Manually trigger annealing phase"
 
 #-------------------- project.logger_config --------------------
--- extends 'callbacks/loggers.yaml'
-
-[loggers_dependencies]
-    == super()
-
-    [generation_config]
-generation_config: &generation_config !dict:@generation_config
-    do_sample: True
-    temperature: 0.7
-    repetition_penalty: 1.15
-
-    [text_gen_callback_args]
-# Periodically generate text at eval. step for subjective model evaluation.
-text_gen_callback_args: &text_gen_callback_args
-    summary_writer: *summary_writer
-    prompts: {{ abspath(joinpath(ns.forgather_dir, "prompts/short_stories.yaml")) }}
-    generation_config: *generation_config
-    max_new_tokens: 120
-    generation_steps: 10000
-
-[peak_hardware_flops]
-.define: &peak_hardware_flops {{ ns.total_peak_hardware_flops | toyaml }}
-
-[callback_list]
-    == super()
-    text_gen_callback: !call:forgather.ml.trainer.callbacks:TextgenCallback
-        <<: *text_gen_callback_args
-    trainer_control: !call:forgather.ml.trainer.callbacks:TrainerControlCallback
-    peak_memory: !call:forgather.ml.trainer.callbacks:PeakMemory
-    # Abort training if loss diverges substantially
-    divergence_detector: !call:forgather.ml.trainer.callbacks:DivergenceDetector
-        smoothing: 0.3          # EMA alpha for loss smoothing
-        threshold: 1.0          # Absolute: smoothed - best >= 1.0
-        patience: 3             # Require 3 consecutive observations
-        warmup: 10              # Skip first 10 observations
-        action: "abort"
-    weight_norm: !call:forgather.ml.trainer.callbacks:WeightNormLogger
-    param_norm: !call:forgather.ml.trainer.callbacks:ParameterNormLogger
-
-[tb_scalars]
-.define: &tb_scalars !dict
-    weight-norm: {}
-    tok-per-sec: {}
+-- extends "callbacks/lm_callbacks.yaml"

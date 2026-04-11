@@ -1,0 +1,9 @@
+-- extends "projects/lm_training_project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "LM Callbacks"
+    -- set ns.config_description = "Test with LM callbacks examples"
+
+[trainer_callbacks]
+    -- include "callbacks/lm_callbacks.yaml"

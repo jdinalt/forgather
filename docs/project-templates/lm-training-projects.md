@@ -7,7 +7,9 @@ backends switchable via `--trainer-type`: basic (single GPU), DDP (multi-GPU),
 and Pipeline Parallel.
 
 **Template:** [projects/lm_training_project.yaml](../../templatelib/examples/projects/lm_training_project.yaml)\
-**Extends:** [training_script/causal_lm/causal_lm.yaml](../../templatelib/base/training_script/causal_lm/causal_lm.yaml)
+**Extends:** [training_script/causal_lm/causal_lm.yaml](../../templatelib/base/training_script/causal_lm/causal_lm.yaml)\
+**See also:** [Trainer Options Reference](../trainers/trainer_options.md) -
+every option exposed on the trainers that this template wires up.
 
 ## Quick Start
 
@@ -100,18 +102,32 @@ When `--trainer-type pipeline` is selected, the template automatically:
 - Forces `dispatch_batches = True` (rank-0 loads and dispatches data)
 - Computes microbatch and stage configuration from the pipeline schedule
 - Overrides batch sizes to the computed PP batch size
-- Disables `torch_compile_mode: max-autotune` (incompatible with PP)
+- Rejects `torch_compile_mode: max-autotune` (incompatible with PP; use
+  `max-autotune-no-cudagraphs` instead)
+- Rejects `compile: true` combined with zero-bubble schedules
+  (`ScheduleInterleavedZeroBubble`, `ScheduleZBVZeroBubble`)
 
 The pipeline schedule determines how microbatches flow through stages:
 
-| Schedule | stages_per_rank | Notes |
-|----------|-----------------|-------|
-| `ScheduleGPipe` | 1 | Simple, high pipeline bubble |
-| `Schedule1F1B` | 1 | Reduced bubble vs GPipe |
-| `ScheduleInterleaved1F1B` | 2 | Default; lower bubble |
-| `ScheduleLoopedBFS` | 2 | Alternative interleaved schedule |
-| `ScheduleInterleavedZeroBubble` | 2 | Near-zero bubble |
-| `ScheduleZBVZeroBubble` | 2 | Zero-bubble V layout (experimental) |
+| Schedule | stages_per_rank | When to use |
+|----------|-----------------|-------------|
+| `ScheduleGPipe` | 1 | Simple reference scheduler. Use only as a failsafe - other schedules are strictly better. |
+| `Schedule1F1B` | 1 | **Lowest memory consumption.** Reach for it when pipeline memory is the bottleneck. |
+| `ScheduleInterleaved1F1B` | 2 | **Default.** Stable, good throughput, broad compatibility, and works with `torch.compile`. |
+| `ScheduleLoopedBFS` | 2 | Alternative interleaved schedule; worth trying if you're micro-optimising. |
+| `ScheduleInterleavedZeroBubble` | 2 | Near-zero bubble; incompatible with `torch.compile`. |
+| `ScheduleZBVZeroBubble` | 2 | **Best raw throughput**, but experimental and fickle. Incompatible with `torch.compile`. Flex-attention works via a Forgather monkey-patch - treat the combination as experimental. |
+
+Rule of thumb: start with `ScheduleInterleaved1F1B` + `--compile true`. Drop
+to `Schedule1F1B` if you're memory-limited. Try `ScheduleZBVZeroBubble` (with
+compile off) when squeezing the last few percent of throughput matters more
+than stability.
+
+**Pipeline + text-generation callback (experimental):** the pipeline trainer
+now supports distributed text generation, so the text-generation callback
+finally works under pipeline parallel. Treat this as an experimental feature
+and disable the callback if you see hangs or other oddities. See
+[Pipeline Parallel -> Text generation](../trainers/pipeline-parallel.md#text-generation-experimental).
 
 **Batch size constraint:** `per_device_train_batch_size` must be divisible by
 `stages_per_rank * microbatch_scale`. The default batch size of 32 works with
@@ -189,12 +205,168 @@ To use a fixed learning rate regardless of batch size, set `lr_alpha` to 0:
     -- set ns.lr_alpha = 0.0
 ```
 
+### Use an LR sweep before long runs
+
+Automatic LR scaling is there to get you into the right ballpark and to let
+you change batch size / world size without rethinking everything. It's
+deliberately conservative - a good starting point, not a final answer.
+Before committing to a long training run, do a short LR sweep and pick the
+best point on the curve. The right answer is usually the highest LR that
+doesn't diverge, but not always: there are cases where a lower LR is stable
+*and* gives a better final loss, so sweep widely enough to see both
+failure modes.
+
+A cheap sweep: pick a handful of candidate LRs spaced ~0.5x apart (e.g.,
+1x, 2x, 4x the scaled LR), train each for a few percent of the total token
+budget, and compare training-loss trajectories.
+
+### Pure bf16 training and stochastic rounding
+
+"Pure bf16" means weights, activations, *and* gradients live in bf16 (as
+opposed to mixed precision, where master weights stay in fp32). Pure bf16
+halves optimizer memory but loses the fp32 accumulator, so small updates to
+large weights are lost to rounding error unless the optimizer compensates.
+
+The standard fix is **stochastic rounding (SR)** in the optimizer: instead
+of round-to-nearest-even, round up or down with probability proportional to
+how close the unrounded update is to each neighbour. Over many steps this
+preserves updates that would otherwise be lost, closing most of the gap to
+fp32 accumulation.
+
+- Forgather's `Adafactor` and `Adam` optimizers default to SR when their
+  state is bf16.
+- `torchao` provides quantized Adam variants with SR if you also want to
+  compress the optimizer state.
+- For the theory and practical trade-offs, see *Stochastic Rounding for
+  LLM Training: Theory and Practice*
+  (<https://arxiv.org/pdf/2502.20566>).
+
+Tuning notes:
+
+- Pure bf16 + SR **needs** (and tolerates) higher learning rates than
+  mixed-precision training. The automatic LR scaling curve fits
+  mixed-precision; when switching to pure bf16 + SR, rerun the LR sweep.
+- Properly tuned, pure bf16 + SR can reach perplexity comparable to
+  mixed-precision at meaningfully lower optimizer-memory cost.
+
+### Sweep batch size for throughput
+
+Batch size deserves its own sweep before a long run. In practice the right
+target is **the batch size that maximises sustained throughput (tokens per
+second) without triggering OOM** - not the largest batch that happens to
+fit. For smaller models in particular, the throughput-optimal batch size is
+often noticeably below what the GPU can physically hold: past some point,
+larger batches don't improve GPU utilisation and just inflate activation
+memory and step time.
+
+This empirical observation aligns with Marek et al. 2025, *Small Batch
+Size Training for Language Models: When Vanilla SGD Works, and Why
+Gradient Accumulation Is Wasteful*
+(<https://arxiv.org/pdf/2507.07101>), whose main findings are worth
+internalising:
+
+- **Small batches train stably.** The paper demonstrates stable LM
+  pre-training and fine-tuning all the way down to batch size one -
+  contradicting the common belief that tiny batches are inherently
+  unstable.
+- **Equal or better per-FLOP performance.** Small batches achieve equal
+  or better loss per FLOP than larger batches, and are consistently
+  more *robust* to hyperparameter choices.
+- **Avoid gradient accumulation on a single device.** The authors
+  explicitly recommend against `gradient_accumulation_steps > 1` unless
+  you're training multiple model replicas across devices. On a single
+  device, accumulation pays the compute cost of a larger effective
+  batch without the corresponding statistical benefit - a smaller real
+  batch is usually better. In Forgather terms: prefer lowering
+  `--batch-size` (and letting the template rescale the LR) over
+  raising `--gradient-accumulation-steps`.
+- **Adafactor is competitive with Adam at small-to-moderate batch
+  sizes.** At the small end the paper finds Adafactor and Adam produce
+  comparable results; Adam only pulls ahead at larger batch sizes.
+  That matters for fine-tuning large models on limited hardware: you
+  can run Adafactor for near-zero extra optimizer memory and get
+  results comparable to plain or quantized Adam. Reach for Adam (or
+  a quantized Adam) when you're training at a large batch size *and*
+  you have the memory to spare.
+- **Vanilla SGD is demonstrated viable, but not necessarily practical.**
+  The paper shows that vanilla SGD (no momentum, *no* optimizer state)
+  can train LMs stably at batch size one. That's a striking existence
+  proof - it recovers a LoRA-like memory footprint while doing full
+  fine-tuning - but don't read it as "use SGD by default". The main
+  realistic case for SGD + batch-size-1 is when the model is so large
+  that a single example is all that fits on the device; for most other
+  setups you'll still want Adafactor or Adam.
+
+#### A note on `beta2` scaling
+
+The paper also proposes holding Adam's second-moment *half-life fixed
+in terms of tokens* across batch sizes rather than holding `beta2`
+itself fixed: if you cut the batch in half, push `beta2` closer to 1 so
+the effective averaging window (in tokens) stays constant.
+
+In practice, the default `beta2 = 0.999` shipped by `torch.optim.AdamW`
+and Forgather's optimizers is *already* tuned for small batch sizes, so
+you generally don't need to touch it for the default LM Training Project
+settings. The scaling only starts to matter when you increase the batch
+size substantially - we've measured a modest but real effect at batch
+sizes around 256 tokens-per-step and above. Below that, leave `beta2`
+alone.
+
+When you do want to apply the scaling, `examples/tiny_experiments/optimizers/`
+implements it as a template using the same reference batch size as the
+LR scaling:
+
+```yaml
+[config_metadata]
+    == super()
+    ## beta2 is optimal at base_batch_size tokens per step
+    -- set ns.beta2 = 0.999
+
+[globals]
+    == super()
+    ## Constant-half-life scaling in token units
+    -- set ns.scaled_beta2 = ns.beta2 ** (ns.tokens_per_step / ns.base_batch_size)
+
+[optimizer]
+optimizer: &optimizer !partial:torch:optim.AdamW
+    lr: {{ ns.global_lr | toyaml }}
+    betas:
+        - !!float 0.9
+        - {{ ns.scaled_beta2 | toyaml }}
+```
+
+At `tokens_per_step == base_batch_size` this is the identity and leaves
+`beta2 = 0.999`. Smaller real batches push the exponent below 1, which
+drives `scaled_beta2` closer to 1 (longer EMA window in tokens); larger
+batches shorten it.
+
+#### Practical batch-size workflow
+
+1. Run a quick throughput sweep. Try `--batch-size` values spaced by
+   powers of two (e.g., 8, 16, 32, 64), train a few hundred steps each,
+   and record sustained tokens/sec from the training logs. Pick the
+   best-throughput point that still leaves a little headroom below OOM.
+2. With the chosen batch size, run the LR sweep described above. The
+   template's automatic LR scaling will already move the base LR with
+   batch size; your sweep is just fine-tuning around that.
+3. If you have pushed the batch size well above the `base_batch_size`
+   reference (say, 256+ tokens-per-step) and are using Adam, apply the
+   `scaled_beta2` formula shown above. At small-to-moderate batches
+   the default `0.999` is already fine.
+4. Only reach for `--gradient-accumulation-steps > 1` when you genuinely
+   cannot fit a single real batch of the target size *and* you are
+   training a single model replica. On multi-device runs with
+   replication (DDP / pipeline), accumulation is fine - that's the
+   case the paper explicitly excludes from its recommendation.
+
 ## LR Scheduler Behaviour
 
-The cosine-decay scheduler's `total_steps` is clamped to at least
-`min_cooldown_steps` so that short training runs (or runs that are stopped
-early) do not decay the learning rate all the way to zero. This shows up
-in the preprocessed output as:
+The default LR schedule is **cosine decay with warmup**, which has been
+industry standard practice for LM pre-training for years. The cosine
+scheduler's `total_steps` is clamped to at least `min_cooldown_steps` so
+that short training runs (or runs that are stopped early) do not decay the
+learning rate all the way to zero. This shows up in the preprocessed output
+as:
 
 ```yaml
 # LR Scheduler (cosine decay with warmup)
@@ -204,6 +376,88 @@ lr_scheduler: ...
     warmup_steps: 3797
     total_steps: 37978
 ```
+
+### Limitations of cosine decay
+
+The cosine-decay schedule has one major practical weakness: it requires you
+to commit to a **total token budget up front**. The full LR curve is
+parameterised on `total_steps`, so if you later want to continue pre-training
+the same checkpoint on more tokens, you have to decide between:
+
+- re-warming the LR from a small value (historically this induces a visible
+  instability spike and a period of elevated loss before the model recovers),
+  or
+- ignoring the original schedule and ad-hoc patching in a new one, which
+  loses the "compute-optimal" calibration the cosine curve was giving you.
+
+This makes plain cosine decay a poor fit for continual pre-training or for
+iterative workflows where the token budget is not known in advance. Two
+alternatives address this directly and are both demonstrated in
+`examples/pretrain/small-llm/`.
+
+### Alternative: Warmup-Stable-Decay (WSD / WSD-S)
+
+Warmup-Stable-Decay replaces the cosine curve with three explicit phases:
+
+1. **Warmup** - linear ramp from 0 to peak LR over `warmup_steps`.
+2. **Stable** - constant LR, held indefinitely until you trigger the decay.
+3. **Decay (annealing)** - decay from peak LR down to a small fraction of
+   it over `decay_steps`.
+
+The original WSD protocol was "checkpoint-then-branch": train in the stable
+phase, branch the checkpoint, anneal one branch for release while continuing
+pre-training on the un-annealed branch. **WSD-S (Simplified)** - proposed
+by Wen et al. 2024, *Understanding Warmup-Stable-Decay Learning Rates: A
+River Valley Loss Landscape Perspective*
+(<https://arxiv.org/abs/2410.05192>) - drops the branching: you anneal the
+live checkpoint and then resume pre-training from the *decayed* checkpoint.
+According to the authors, this avoids the re-warm-up instability that
+plagues continued pre-training from a cosine-decayed checkpoint. If that
+claim holds up in your setting, it is a meaningful quality-of-life win for
+continual pre-training.
+
+`examples/pretrain/small-llm/templates/configs/wds.yaml` uses Forgather's
+`WSDScheduler` and demonstrates the full protocol, including the hooks for
+triggering decay and resuming afterwards.
+
+### Alternative: Infinite Learning Rate Schedule
+
+*Beyond Cosine Decay: On the effectiveness of Infinite Learning Rate
+Schedule for Continual Pre-training* (<https://arxiv.org/abs/2503.02844>)
+proposes an extension of WSD: append a *cosine decay from the peak LR down
+to roughly 1/3 of the peak* before the stable phase (so the "stable" phase
+is actually a constant at ~1/3 peak), then anneal to a small final LR at
+the end. The authors report that this schedule helps reduce catastrophic
+forgetting when the dataset distribution changes between training sessions
+(in addition to the usual replay-buffer tricks), making it well-suited to
+continual pre-training.
+
+`examples/pretrain/small-llm/templates/project.yaml` defaults to
+Forgather's `InfiniteLRScheduler` for exactly this reason:
+
+```yaml
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:InfiniteLRScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    cooldown_steps: {{ ns.cooldown_steps }}
+    constant_lr: {{ ns.constant_lr | toyaml }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    annealing_type: "rsqrt"
+    start_annealing: {{ start_annealing | toyaml(False) }}
+    annealing_steps: {{ ns.annealing_steps }}
+```
+
+Both the WSD and infinite schedules in that project plug into the same
+`forgather control` machinery, so you can externally trigger the annealing
+phase on a running job (via `--start-annealing` or the control callback)
+and resume pre-training from the resulting checkpoint.
+
+### Swapping schedulers in your own config
+
+The LM Training Project defaults to cosine for backward compatibility and
+because it is the right choice for one-shot runs with a known token budget.
+To swap in WSD or the infinite schedule, override the `[lr_scheduler]`
+block in your config - the `examples/pretrain/small-llm/` templates are
+the reference implementation to copy from.
 
 ## Configuration Parameters
 
@@ -232,7 +486,7 @@ All token counts are specified in **millions** unless noted otherwise.
 |-----------|------|---------|-------------|
 | `dataset_project` | path | `examples/datasets/HuggingFaceTB` | Path to dataset project |
 | `dataset_config` | str | `smollm-corpus/fineweb-edu-packed.yaml` | Dataset project configuration |
-| `dispatch_batches` | bool | False | When True, rank-0 loads and dispatches all batches (DDP). Use when the dataset does not support sharding, or to match single-process example ordering |
+| `dispatch_batches` | bool | False | When True, rank-0 loads and dispatches all batches (DDP). Prefer False for throughput - centralized loading adds per-step dispatch overhead and serialises data loading on rank-0. Only enable when the dataset implementation doesn't support sharding, or when you need the DDP run to see the same example sequence as a single-GPU / pipeline run for direct comparison of training curves |
 
 ### Model
 
@@ -289,10 +543,98 @@ proportionally.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `default_dtype` | str | null | Torch dtype for model construction. Choices: float32, bfloat16, float16 |
-| `float32_matmul_precision` | str | null | Approximate float32 matmul with bf16. Choices: highest, high, medium |
+| `float32_matmul_precision` | str | null | Approximate float32 matmul with bf16. Choices: highest, high, medium. On Ampere+ GPUs you usually want `high` - leaving this unset keeps the PyTorch default (`highest`) which disables TF32 and triggers a runtime warning |
 | `mixed_precision` | str | null | AMP dtype. Choices: bf16, fp16, no |
 | `fp8_recipe` | str | null | FP8 recipe for linear layers. Choices: tensorwise, rowwise, rowwise_with_gw_hp |
 | `compile` | bool | False | Enable torch.compile |
+| `torch_compile_mode` | str | `default` | `torch.compile` mode. Choices: `default`, `max-autotune`, `max-autotune-no-cudagraphs`. See [When to use each compile mode](#when-to-use-each-compile-mode) below |
+
+#### When to use each compile mode
+
+- `default` - Safe baseline. Works with gradient accumulation, DDP, and
+  pipeline parallel.
+- `max-autotune` - Preferred when it's supported. Best steady-state
+  throughput, and it's the default in the pre-train example project.
+  **Incompatible** with `gradient_accumulation_steps > 1` and with pipeline
+  parallel (both raise a template error). Also incompatible with zero-bubble
+  pipeline schedules.
+- `max-autotune-no-cudagraphs` - Use this instead of `max-autotune` when you
+  need autotune benefits with gradient accumulation or pipeline parallel.
+
+The template refuses invalid combinations at preprocess time, so
+`forgather pp` will fail with an explicit message rather than blow up
+mid-training.
+
+#### Compile startup cost
+
+Enabling any `compile` setting adds significant latency to the first training
+step and the first eval step, because `torch.compile` has to trace and
+generate code for the model's forward (and backward) before they can run.
+`max-autotune` in particular has very long startup times and tends to spam
+the TTY with copious diagnostic messages during its tuning sweep. PyTorch
+caches the compiled artefacts on disk, so subsequent runs of the same
+configuration start faster - but "faster" is still "slow" compared to an
+uncompiled run.
+
+Practical guidance:
+
+- Iterating on configs, hyperparameters, or dataset plumbing? Disable
+  `--compile` so each `forgather train` invocation starts in seconds.
+- Actual training runs? Turn `--compile` on and pick the most aggressive
+  compatible mode (typically `max-autotune` for single-GPU, or
+  `max-autotune-no-cudagraphs` when gradient accumulation or pipeline
+  parallel is in play). The one-time warmup is amortised across the whole
+  run.
+
+### Memory / Performance
+
+These options trade compute, memory, and flexibility. They are most useful
+when you hit OOM or activation-memory pressure on large models.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `gradient_checkpointing` | bool | False | Enable activation checkpointing for models that implement the HF gradient-checkpointing API. Trades recompute for lower activation memory. |
+| `activation_offloading` | bool | False | Offload saved activations to CPU memory during backward (via `torch.autograd.graph.save_on_cpu`). Pair with `gradient_checkpointing` for maximum memory savings, at the cost of extra host-device bandwidth. |
+| `activation_memory_budget` | float | null | Fraction passed to `torch._functorch.config.activation_memory_budget`. Requires `compile=True`. See the [PyTorch activation checkpointing techniques post](https://pytorch.org/blog/activation-checkpointing-techniques/). |
+| `fuse_optim_with_backward` | bool | False | Apply the optimizer update inside the backward grad hook so each gradient is consumed and freed immediately. Biggest memory wins when combined with `gradient_checkpointing`. Supported by the basic and pipeline trainers. Incompatible with DDP / Accelerate (they need gradients intact for the all-reduce), with `max_grad_norm` gradient clipping (needs the full gradient vector before any update), with `gradient_accumulation_steps > 1`, and with fp16 AMP. |
+| `construct_model_on` | str | `default` | Where to build the model. `default` builds on CPU and moves to device (safest); `device` builds directly on device (faster, may fail for sharded models); `meta` builds on the meta device and materialises empty tensors on the target device (fastest). With `meta`, the basic trainer falls back to CPU construction automatically if no checkpoint is available. Ignored by the pipeline trainer - it always builds on meta (see note below). |
+| `gc_threshold` | float | 0.9 | Ratio of allocated-to-total GPU memory at which to try `empty_cache()` and (conditionally) `gc.collect()`. Real trade-off: too low and frequent cache flushes will slow training; too high and you OOM from fragmentation. Tune against the OOM edge. |
+
+Picking a combination:
+
+- **OOM from activations** - start with `--gradient-checkpointing`. If that is
+  still tight, add `--activation-offloading true`.
+- **Maximum memory savings** - combine `--gradient-checkpointing`,
+  `--fuse-optim-with-backward true`, and `--activation-offloading true`.
+  `fuse_optim_with_backward` is supported by the basic and pipeline trainers
+  but **not** by DDP or Accelerate: DDP needs all gradients intact after
+  backward for the all-reduce, and the fused hook would consume and free
+  them before that step could run. `fuse_optim_with_backward` is also
+  incompatible with gradient clipping (`max_grad_norm`): clipping requires
+  the full gradient vector before any optimizer update, and the fused hook
+  applies each parameter's update as soon as its gradient is produced.
+  Similarly incompatible with `gradient_accumulation_steps > 1` and fp16
+  AMP.
+- **Fastest model construction** - use `--construct-model-on device` when the
+  model fits on one GPU. Use `meta` when you already have a checkpoint to
+  load and want to skip weight initialisation entirely; if there is no
+  checkpoint, the basic trainer falls back to CPU construction
+  automatically so you don't end up training against uninitialised weights.
+- **Fragmentation-related OOM** - lower `--gc-threshold` (e.g., `0.75`). Don't
+  lower it further than you have to: each cache flush synchronises the CUDA
+  stream and can visibly cut throughput.
+
+`PipelineTrainer` always builds the model on meta, regardless of
+`construct_model_on`. When resuming from a checkpoint, the meta model is
+filled directly from the checkpoint - no CPU materialisation. When training
+from scratch, rank-0 currently builds the full model on CPU just long
+enough to initialise the weights, then dispatches the initialised
+parameters and buffers to each rank's empty stage. Transformers v5 exposes
+an API for initialising weights directly on a meta-constructed model,
+which would let us skip the rank-0 CPU step - not wired up yet.
+
+See [`../trainers/trainer_options.md`](../trainers/trainer_options.md) for the
+underlying trainer field semantics.
 
 ### Misc
 
@@ -330,6 +672,13 @@ forgather -p examples/base_lm_project train --help
 | `--dataset-project PATH` | `dataset_project` | Path to dataset project |
 | `--dataset-config NAME` | `dataset_config` | Dataset project configuration |
 | `--compile BOOL` | `compile` | Enable torch.compile |
+| `--torch-compile-mode {default,max-autotune,max-autotune-no-cudagraphs}` | `torch_compile_mode` | torch.compile mode |
+| `--gradient-checkpointing` / `-G` | `gradient_checkpointing` | Enable activation checkpointing |
+| `--activation-offloading BOOL` | `activation_offloading` | Offload saved activations to CPU |
+| `--activation-memory-budget X` | `activation_memory_budget` | Functorch activation memory budget (requires `--compile true`) |
+| `--fuse-optim-with-backward BOOL` | `fuse_optim_with_backward` | Apply optimizer update in backward hook (basic trainer only) |
+| `--construct-model-on {default,meta,device}` | `construct_model_on` | Where to build the model |
+| `--gc-threshold X` | `gc_threshold` | GPU allocator cleanup threshold |
 | `--mixed-precision {bf16,fp16,no}` | `mixed_precision` | AMP dtype |
 | `--default-dtype {float32,bfloat16,float16}` | `default_dtype` | Model construction dtype |
 | `--float32-matmul-precision {highest,high,medium}` | `float32_matmul_precision` | Float32 matmul approximation |
@@ -412,3 +761,59 @@ forgather train --lr 1e-3
 # Quick test: 10M tokens, fast logging
 forgather train --total-tokens 10 --step-cadence 0.1 -d 0
 ```
+
+## References
+
+### Scaling laws and compute-optimal training
+
+- Kaplan, J., McCandlish, S., Henighan, T., Brown, T.B., Chess, B., Child,
+  R., Gray, S., Radford, A., Wu, J., Amodei, D. (2020). *Scaling Laws for
+  Neural Language Models.* <https://arxiv.org/abs/2001.08361>
+- Hoffmann, J., Borgeaud, S., Mensch, A., Buchatskaya, E., Cai, T.,
+  Rutherford, E., Casas, D., Hendricks, L.A., Welbl, J., Clark, A., et al.
+  (2022). *Training Compute-Optimal Large Language Models* (Chinchilla).
+  <https://arxiv.org/abs/2203.15556>
+- Besiroglu, T., Erdil, E., Barnett, M., You, J. / Epoch AI (2024).
+  *Chinchilla Scaling: A Replication Attempt.*
+  <https://arxiv.org/abs/2404.10102>
+
+### Critical batch size and LR scaling
+
+- McCandlish, S., Kaplan, J., Amodei, D., OpenAI Dota Team (2018).
+  *An Empirical Model of Large-Batch Training.*
+  <https://arxiv.org/abs/1812.06162>
+- Mayberry, R., et al. (2025). *Critical Batch Size Revisited.*
+  <https://arxiv.org/abs/2505.23971>
+
+### Small batch size training and Adam hyperparameters
+
+- Marek, M., Lotfi, S., Somasundaram, A., Wilson, A.G., Goldblum, M.
+  (2025). *Small Batch Size Training for Language Models: When Vanilla
+  SGD Works, and Why Gradient Accumulation Is Wasteful.*
+  <https://arxiv.org/abs/2507.07101>
+
+### Learning-rate schedules for continual pre-training
+
+- Wen, K., Li, Z., Wang, J., Hall, D., Liang, P., Ma, T. (2024).
+  *Understanding Warmup-Stable-Decay Learning Rates: A River Valley Loss
+  Landscape Perspective.* (WSD-S protocol.)
+  <https://arxiv.org/abs/2410.05192>
+- *Beyond Cosine Decay: On the effectiveness of Infinite Learning Rate
+  Schedule for Continual Pre-training.* (2025)
+  <https://arxiv.org/abs/2503.02844>
+
+### Low-precision training
+
+- *Stochastic Rounding for LLM Training: Theory and Practice.* (2025)
+  <https://arxiv.org/abs/2502.20566>
+
+### PyTorch documentation
+
+- *Activation Checkpointing Techniques in PyTorch.*
+  <https://pytorch.org/blog/activation-checkpointing-techniques/>
+- *DistributedDataParallel.*
+  <https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html>
+- *Pipeline Parallelism.*
+  <https://docs.pytorch.org/docs/stable/distributed.pipelining.html>
+- *`torch.set_float32_matmul_precision`.*
+  <https://docs.pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html>

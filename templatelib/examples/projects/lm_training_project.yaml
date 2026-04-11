@@ -39,9 +39,16 @@
 ##   dataset_config         (str)   Dataset project configuration.  Default: smollm-corpus/fineweb-edu-packed.yaml
 ##   dispatch_batches       (bool)  When True, rank-0 loads and     Default: False
 ##                                  dispatches all batches (DDP).
-##                                  Use when the dataset does not
-##                                  support sharding, or to match
-##                                  single-process example ordering.
+##                                  Prefer False for throughput:
+##                                  centralised loading adds per-step
+##                                  dispatch overhead and serialises
+##                                  data loading on rank-0. Enable only
+##                                  when (a) the dataset doesn't support
+##                                  sharding, or (b) you need the DDP run
+##                                  to see the same example sequence as
+##                                  a single-GPU / pipeline run so that
+##                                  training curves are directly
+##                                  comparable.
 ##
 ## Model
 ##   model_project          (path)  Path to model project.          Default: examples/models/llama
@@ -85,11 +92,73 @@
 ##   mixed_precision        (str)   AMP dtype.                      Choices: bf16, fp16, no
 ##   fp8_recipe             (str)   FP8 recipe for linear layers.   Choices: tensorwise, rowwise, rowwise_with_gw_hp
 ##   compile                (bool)  Enable torch.compile.           Default: False
+##   torch_compile_mode     (str)   torch.compile mode.             Default: default
+##                                  Choices: default, max-autotune, max-autotune-no-cudagraphs.
+##                                  max-autotune is incompatible with gradient accumulation
+##                                  and pipeline parallel; use max-autotune-no-cudagraphs
+##                                  instead. Zero-bubble pipeline schedules are incompatible
+##                                  with torch_compile entirely.
+##
+## Memory / Performance
+##   gradient_checkpointing (bool)  Enable activation checkpointing Default: False
+##                                  on models that implement the HF
+##                                  gradient-checkpointing API.
+##                                  Trades extra recompute for lower
+##                                  peak activation memory.
+##   activation_offloading  (bool)  Offload saved activations to    Default: False
+##                                  CPU memory during backward. Pair
+##                                  with gradient_checkpointing for
+##                                  maximum memory savings.
+##   activation_memory_budget
+##                          (float) Fraction passed to torch._functorch
+##                                  activation_memory_budget. Requires
+##                                  compile=True. See
+##                                  https://pytorch.org/blog/activation-checkpointing-techniques
+##   fuse_optim_with_backward
+##                          (bool)  Apply optimizer updates inside  Default: False
+##                                  the backward grad hook so each
+##                                  gradient is consumed and freed
+##                                  immediately. Supported by the
+##                                  basic and pipeline trainers.
+##                                  Incompatible with DDP/Accelerate
+##                                  (they need gradients intact for
+##                                  the all-reduce step), with
+##                                  max_grad_norm gradient clipping
+##                                  (clipping needs the full gradient
+##                                  vector before any update),
+##                                  gradient_accumulation_steps > 1,
+##                                  and fp16 AMP.
+##   construct_model_on     (str)   Where to build the model.       Default: default
+##                                  Choices: default, device, meta.
+##                                    default: build on CPU, move to device.
+##                                    device:  build directly on device.
+##                                    meta:    build on meta then materialize empty
+##                                             on device. If no checkpoint is
+##                                             available the basic trainer falls
+##                                             back to CPU construction
+##                                             automatically. Ignored by the
+##                                             pipeline trainer, which always
+##                                             constructs on meta (with rank-0
+##                                             doing a one-time CPU
+##                                             initialisation + dispatch when no
+##                                             checkpoint is present).
+##   gc_threshold           (float) Ratio of allocated-to-total GPU Default: 0.9
+##                                  memory at which to run empty_cache
+##                                  and (conditionally) gc.collect.
+##                                  Real trade-off: too low and frequent
+##                                  cache flushes slow training (each
+##                                  flush synchronises the CUDA stream);
+##                                  too high and you OOM from allocator
+##                                  fragmentation. Tune against the
+##                                  OOM edge.
 ##
 ## Misc
 ##   seed                   (int)   Random seed.                    Default: 42
 ##   resume                 (bool)  Resume from latest checkpoint.  Default: True
 ##   save_strategy          (str)   Checkpoint save strategy.       Default: steps
+##
+## See docs/trainers/trainer_options.md for the complete list of options
+## supported by each trainer and full descriptions of their semantics.
 ##
 ## ---------------------------------------------------------------------------
 ## Batch-Size / Learning-Rate Scaling: Background
@@ -218,6 +287,10 @@
     -- set ns.pipe_schedule_factory = pipeline_schedule | default("ScheduleInterleaved1F1B")
     -- set ns.microbatch_scale = microbatch_scale | default(1)
 
+    ## Compile settings
+    -- set ns.torch_compile = compile | default(False)
+    -- set ns.torch_compile_mode = torch_compile_mode | default("default")
+
 ## ===== Derived globals ======================================================
 
 [globals]
@@ -256,8 +329,20 @@
     -- set ns.global_lr = ns.base_lr * (ns.tokens_per_step / ns.base_batch_size) ** ns.lr_alpha
     -- set ns.min_lr = ns.global_lr * ns.min_lr_ratio
 
+    ## Compile
+    -- if ns.torch_compile == True and ns.gradient_accumulation_steps != 1 and ns.torch_compile_mode == "max-autotune"
+        == raise("max-autotune is incompatible with gradient accumulation; try 'max-autotune-no-cudagraphs'")
+    -- endif
+
     ## Pipeline Parallel derived values
     -- if ns.trainer_type == "pipeline"
+        -- if ns.torch_compile == True
+            -- if ns.pipe_schedule_factory in ["ScheduleInterleavedZeroBubble", "ScheduleZBVZeroBubble"]
+                == raise("Torch compile is incompatible with zero-bubble schedulers'")
+            -- elif ns.torch_compile_mode == "max-autotune"
+                == raise("max-autotune is incompatible with pipeline training; try 'max-autotune-no-cudagraphs'")
+            -- endif
+        -- endif
         -- if ns.nproc_per_node is number and ns.nproc_per_node <= 1
             -- set ns.nproc_per_node = "gpu"
         -- endif
@@ -375,14 +460,20 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     gradient_accumulation_steps: {{ ns.gradient_accumulation_steps }}
 
     resume_from_checkpoint: {{ resume | default(True) }}
-    torch_compile: {{ compile | default(False) }}
+    torch_compile: {{ ns.torch_compile }}
+    torch_compile_mode: {{ ns.torch_compile_mode }}
     dispatch_batches: {{ ns.dispatch_batches }}
     float32_matmul_precision: {{ float32_matmul_precision | toyaml(None) }}
     default_dtype: {{ default_dtype | toyaml(None) }}
     mixed_precision: {{ mixed_precision | toyaml(None) }}
     fp8_recipe: {{ fp8_recipe | toyaml(None) }}
-
+    gradient_checkpointing: {{ gradient_checkpointing | default(False) }}
+    fuse_optim_with_backward: {{ fuse_optim_with_backward | default(False) }}
+    enable_activation_offloading: {{ activation_offloading | default(False) }}
     dataloader_drop_last: True
+    construct_model_on: {{ construct_model_on | toyaml("default") }}
+    activation_memory_budget: {{ activation_memory_budget | toyaml(None) }}
+    gc_threshold: {{ gc_threshold | default(0.9) }}
 
 -- if ns.trainer_type == "pipeline"
     # Pipeline Parallel
@@ -479,6 +570,10 @@ optimizer: &optimizer !partial:torch:optim.AdamW
         names: "--compile"
         type: bool
         help: "Enable torch.compile"
+    torch_compile_mode:
+        names: "--torch-compile-mode"
+        choices: [ "default", "max-autotune", "max-autotune-no-cudagraphs" ]
+        help: "Torch compile mode argument."
     dispatch_batches:
         names: "--dispatch-batches"
         type: bool
@@ -511,7 +606,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
     nproc_per_node:
         names: "--nproc-per-node"
         type: int
-        help: "Processes per node: 'gpu' for all GPUs, or integer. Auto-set from trainer type."
+        help: "Processes per node: 'gpu' for all GPUs, or integer."
     pipeline_schedule:
         names: "--pipeline-schedule"
         default: "ScheduleInterleaved1F1B"
@@ -521,3 +616,27 @@ optimizer: &optimizer !partial:torch:optim.AdamW
         default: 1
         type: int
         help: "Microbatch scale factor (pipeline trainer only)"
+    gradient_checkpointing:
+        names: [ "--gradient-checkpointing", "-G" ]
+        action: "store_true"
+        help: "Enable gradient (activation) checkpointing, when supported"
+    fuse_optim_with_backward:
+        names: "--fuse-optim-with-backward"
+        type: bool
+        help: "Combine gradient computation with optimizer step"
+    activation_offloading:
+        names: "--activation-offloading"
+        type: bool
+        help: "Save activations to CPU memory"
+    construct_model_on:
+        names: "--construct-model-on"
+        choices: [ "default", "meta", "device" ]
+        help: "Where to construct the model?"
+    activation_memory_budget:
+        names: "--activation-memory-budget"
+        type: float
+        help: "https://pytorch.org/blog/activation-checkpointing-techniques"
+    gc_threshold:
+        names: "--gc-threshold"
+        type: float
+        help: "Ratio of reserved to total GPU memory to trigger GC"

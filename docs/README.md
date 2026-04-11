@@ -19,6 +19,7 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 - **[Low-level API](configuration/low-level-api.md)** - The API upon which the Project abstraction is built
 
 **Training:**
+- **[Trainer Options Reference](trainers/trainer_options.md)** - Every training-argument field and constructor parameter across all built-in trainers
 - **[Pipeline Parallel](trainers/pipeline-parallel.md)** - Pipeline parallelism for consumer GPUs and limited interconnects
 - **[Trainer Control](trainers/trainer-control.md)** - External control of running training jobs (save, stop, abort)
 - **[Training Performance Metrics](trainers/training-performance-metrics.md)** - Token throughput, FLOP tracking, and MFU

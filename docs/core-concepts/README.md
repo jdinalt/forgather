@@ -285,10 +285,15 @@ configuration interface. The trainer is selected in the configuration template -
 switching from single-GPU to pipeline parallel is a template change, not a code
 change.
 
+For the complete list of training arguments (batching, compile, checkpointing,
+memory, DDP, pipeline, ...) and each trainer class's constructor parameters,
+see the [Trainer Options Reference](../trainers/trainer_options.md).
+
 ## Further reading
 
 - [Getting Started](../getting-started/README.md) -- Install and train your first model
 - [Configuration Syntax](../configuration/syntax-reference.md) -- Complete tag and directive reference
 - [Template Inheritance](../configuration/inheritance.md) -- Detailed inheritance patterns
 - [Model Architecture](../model-architecture.md) -- Transformer component inventory
+- [Trainer Options Reference](../trainers/trainer_options.md) -- All training arguments and trainer constructor parameters
 - [Checkpointing](../checkpointing/README.md) -- Distributed checkpoint system

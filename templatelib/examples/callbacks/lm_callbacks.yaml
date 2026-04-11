@@ -1,0 +1,47 @@
+-- extends 'callbacks/loggers.yaml'
+
+[loggers_dependencies]
+    == super()
+
+    [generation_config]
+generation_config: &generation_config !dict:@generation_config
+    do_sample: True
+    temperature: 0.7
+    repetition_penalty: 1.15
+
+    [text_gen_callback_args]
+# Periodically generate text at eval. step for subjective model evaluation.
+text_gen_callback_args: &text_gen_callback_args
+    summary_writer: *summary_writer
+    prompts: {{ abspath(joinpath(ns.forgather_dir, "prompts/short_stories.yaml")) }}
+    generation_config: *generation_config
+    max_new_tokens: 120
+    generation_steps: 10000
+
+[peak_hardware_flops]
+.define: &peak_hardware_flops {{ ns.total_peak_hardware_flops | toyaml }}
+
+[callback_list]
+    == super()
+    text_gen_callback: !call:forgather.ml.trainer.callbacks:TextgenCallback
+        <<: *text_gen_callback_args
+    trainer_control: !call:forgather.ml.trainer.callbacks:TrainerControlCallback
+    # Abort training if loss diverges substantially
+    divergence_detector: !call:forgather.ml.trainer.callbacks:DivergenceDetector
+        smoothing: 0.3          # EMA alpha for loss smoothing
+        threshold: 1.0          # Absolute: smoothed - best >= 1.0
+        patience: 3             # Require 3 consecutive observations
+        warmup: 10              # Skip first 10 observations
+        action: "abort"
+    weight_norm: !call:forgather.ml.trainer.callbacks:WeightNormLogger
+    param_norm: !call:forgather.ml.trainer.callbacks:ParameterNormLogger
+
+[tb_scalars]
+.define: &tb_scalars !dict
+    weight-norm: {}
+    tok-per-sec: {}
+
+[step_columns]
+    == super()
+    # Show memory usage from all ranks
+    peak_mem:  {"width": 32, "reduce": "all"}

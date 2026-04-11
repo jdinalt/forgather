@@ -81,6 +81,26 @@ Forgather supports all schedules from `torch.distributed.pipelining`:
 Multi-stage schedulers assign 2 stages per GPU in either a round-robin ("loop")
 or V-shaped ("v") pattern, which can reduce the pipeline bubble further.
 
+#### Choosing a schedule
+
+- `ScheduleGPipe` - Simple reference scheduler. Use it as a failsafe when
+  something more sophisticated is misbehaving; not recommended otherwise.
+- `Schedule1F1B` - Lowest memory consumption of all the schedulers. Reach
+  for this first when pipeline memory pressure is the bottleneck.
+- `ScheduleInterleaved1F1B` - Stable, good throughput, broad compatibility.
+  **Works with `torch.compile`.** This is the recommended default for most
+  runs and is what the `lm_training_project` template selects.
+- `ScheduleZBVZeroBubble` - Best raw throughput, but experimental and a bit
+  fickle. Its biggest drawback is that it is incompatible with
+  `torch.compile`. It also doesn't natively handle flex-attention; Forgather
+  ships a monkey-patch that works around this, but treat the combination as
+  experimental and expect occasional rough edges.
+- `ScheduleLoopedBFS` / `ScheduleInterleavedZeroBubble` - Alternative
+  interleaved layouts. Worth trying if you're micro-optimising, but the
+  sweet spot for most workloads is `ScheduleInterleaved1F1B` (for
+  compile-compatible stability) or `ScheduleZBVZeroBubble` (for peak
+  throughput without compile).
+
 ### Model splitting
 
 The model must be divided into stages. Forgather uses the
@@ -154,6 +174,10 @@ Extends `TrainingArguments` with pipeline-specific parameters:
 | `pp_stage_type` | `"loop"` | Stage assignment pattern: `"loop"` (round-robin) or `"v"` (for `ScheduleZBVZeroBubble`). |
 | `is_multistage` | `False` | Must be `True` when `stages_per_rank > 1`. |
 
+For the fields inherited from `TrainingArguments` (compile, AMP, checkpointing,
+memory options, etc.), see the
+[Trainer Options Reference](trainer_options.md).
+
 ### Constraints
 
 - **Batch size** must be evenly divisible by `n_microbatches`.
@@ -168,6 +192,14 @@ Extends `TrainingArguments` with pipeline-specific parameters:
   fixed batch shapes).
 - **`torch_compile_mode: max-autotune`** is incompatible; use `default` if
   compiling.
+
+### Text generation (experimental)
+
+The pipeline trainer now has distributed text-generation support, which makes
+the text-generation callback compatible with pipeline runs for the first
+time. This is an experimental feature - if you encounter hangs, shape
+mismatches, or other oddities during training, disable the
+text-generation callback and file a report.
 
 ## How it works
 
