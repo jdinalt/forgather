@@ -47,6 +47,10 @@ from ..checkpoint_types import SharingPattern, StateComponent
 from ..dataloader_dispatcher import DataloaderDispatcher
 from ..trainer import Trainer, TrainingArguments, optimizer_hook
 from ..trainer_types import LossFunctionT
+from ._torch_patches import (  # noqa: F401  -- import also applies the stage_backward_input patch
+    disable_compiled_backward_donated_buffers,
+    is_zero_bubble_schedule,
+)
 from .model_splitter import ModelSplitter
 from .pipeline_utils import (
     assert_no_duplicate_fqns,
@@ -224,6 +228,37 @@ class PipelineTrainer(
         super().__init__(args=args, **kwargs)
         self.model_splitter = model_splitter
         self.pipe_schedule_factory = pipe_schedule_factory
+
+        # Zero-bubble schedules split backward into input-grad and weight-grad
+        # steps and call torch.autograd.grad(..., retain_graph=True). That
+        # conflicts with donated buffers in torch.compile'd backward
+        # (e.g. flex_attention). Disable the optimization before any compiled
+        # backward has been captured.
+        if is_zero_bubble_schedule(pipe_schedule_factory):
+            disable_compiled_backward_donated_buffers()
+
+            # torch.compile applied at stage granularity (see _compile_model)
+            # collapses the stage interior into a single Python autograd.Function
+            # (CompiledFunctionBackward). Zero-bubble's stage_backward_weight
+            # then constructs GradientEdge(intermediate, 0) over those nodes and
+            # passes them to torch.autograd.grad, which calls _make_grads ->
+            # out.node._input_metadata. That attribute is unavailable on Python
+            # autograd.Function nodes and the C++ binding raises:
+            #   "Attribute '_input_metadata' is invalid for this instance of
+            #    _C._FunctionBase. ... legacy access pattern that is no longer
+            #    supported."
+            # The crash is structural: AOTAutograd flattens the stage interior
+            # so the I/W split has nothing to walk between intermediates and
+            # parameters. Refuse the combination at init time with a clear
+            # diagnostic instead of letting the user hit it mid-training.
+            assert not self.args.torch_compile, (
+                "PipelineTrainer does not support torch.compile with zero-bubble "
+                "schedules (ScheduleZBVZeroBubble, ScheduleInterleavedZeroBubble). "
+                "AOTAutograd wraps each compiled stage in a Python autograd.Function "
+                "whose internal nodes do not expose _input_metadata, which the "
+                "split-backward weight step requires. Use a non-zero-bubble schedule "
+                "(e.g. ScheduleInterleaved1F1B) or disable torch_compile."
+            )
 
         assert self.args.mixed_precision != "fp16", (
             "PipelineTrainer does not support fp16 mixed precision (GradScaler is incompatible "
