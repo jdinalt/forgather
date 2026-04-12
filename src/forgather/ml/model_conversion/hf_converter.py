@@ -248,7 +248,7 @@ class HFConverter(ModelConverter):
         logger.debug(src_model)
 
         # Load tokenizer
-        src_tokenizer = AutoTokenizer.from_pretrained(src_model_path)
+        src_tokenizer = AutoTokenizer.from_pretrained(src_model_path, trust_remove_code=True)
 
         if kwargs.get("debug_params"):
             self._print_params(src_model, "Source HuggingFace model")
@@ -445,7 +445,7 @@ class HFConverter(ModelConverter):
         src_model_config = AutoConfig.from_pretrained(
             src_model_path, trust_remote_code=True
         )
-        tokenizer = AutoTokenizer.from_pretrained(src_model_path)
+        tokenizer = AutoTokenizer.from_pretrained(src_model_path, trust_remove_code=True)
 
         # Auto-detect dtype if not specified
         if dtype is None:
