@@ -166,6 +166,8 @@ def parse_args(args=None):
     inf_interactive_workaround = False
     convert_t_workaround = False
     convert_original_args = None  # Save original args for convert command
+    update_vocab_t_workaround = False
+    update_vocab_original_args = None  # Save original args for update-vocab command
     removed_flags = []
 
     # Handle 'inf' command with --interactive/-i
@@ -206,6 +208,23 @@ def parse_args(args=None):
             t_idx_in_full = convert_idx + 1 + t_idx_in_remaining
             args_for_global.pop(t_idx_in_full)  # Remove -t
             # Also remove the value after -t if it exists and doesn't start with -
+            if t_idx_in_full < len(args_for_global) and not args_for_global[
+                t_idx_in_full
+            ].startswith("-"):
+                args_for_global.pop(t_idx_in_full)
+            args_list = args_for_global
+
+    # Handle 'update-vocab' command with -t (same conflict as convert)
+    if "update-vocab" in args_list:
+        uv_idx = args_list.index("update-vocab")
+        remaining_after_uv = args_list[uv_idx + 1 :]
+        update_vocab_original_args = remaining_after_uv.copy()
+        if "-t" in remaining_after_uv:
+            update_vocab_t_workaround = True
+            args_for_global = args_list.copy()
+            t_idx_in_remaining = remaining_after_uv.index("-t")
+            t_idx_in_full = uv_idx + 1 + t_idx_in_remaining
+            args_for_global.pop(t_idx_in_full)  # Remove -t
             if t_idx_in_full < len(args_for_global) and not args_for_global[
                 t_idx_in_full
             ].startswith("-"):
@@ -275,6 +294,12 @@ def parse_args(args=None):
                 sub_args.remainder = (
                     convert_original_args
                     if convert_original_args is not None
+                    else subcommand_args
+                )
+            elif subcommand == "update-vocab":
+                sub_args.remainder = (
+                    update_vocab_original_args
+                    if update_vocab_original_args is not None
                     else subcommand_args
                 )
             else:

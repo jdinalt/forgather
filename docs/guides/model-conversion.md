@@ -202,3 +202,8 @@ class MyModelConverter(HFConverter):
 The parameter mapping patterns are recursive regex substitution lists. See
 `standard_mappings.py` and existing converters (e.g.,
 `examples/models/llama/src/converter.py`) for reference.
+
+## See also
+
+- **[Vocabulary and Chat Template](update-vocab.md)** -- add tokens or set chat
+  templates on an existing model without converting between formats

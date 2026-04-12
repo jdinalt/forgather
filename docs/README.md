@@ -30,6 +30,7 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 **Models and inference:**
 - **[Model Architecture](model-architecture.md)** - Transformer module inventory, composition patterns, and optimization flags
 - **[Model Conversion](guides/model-conversion.md)** - Bidirectional HuggingFace / Forgather model conversion
+- **[Vocabulary and Chat Template](guides/update-vocab.md)** - Add tokens or set chat templates on existing models without conversion
 - **[vLLM Integration](inference/vllm_integration.md)** - Distributed inference with vLLM (currently blocked on Transformers v5)
 
 **Guides:**
