@@ -49,6 +49,18 @@ source ~/venvs/forgather/bin/activate
 uv pip install -e .
 ```
 
+**Recommended: install cut-cross-entropy from source:**
+
+The pip-installable version of `cut-cross-entropy` (25.1.1) is missing features
+needed for numerical stability during bf16/fp16 training (`accum_e_fp32`,
+`accum_c_fp32`). Forgather will fall back gracefully, but training may exhibit
+lm_head spectral norm explosion over long runs. Install the latest version from
+source:
+
+```bash
+pip install "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
+```
+
 Verify the installation:
 
 ```bash

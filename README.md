@@ -50,6 +50,9 @@ git clone https://github.com/jdinalt/forgather.git
 cd forgather
 pip install -e .
 
+# Recommended: install cut-cross-entropy from source for bf16/fp16 training stability
+pip install "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
+
 # Verify install works with CLI
 forgather ls -r
 ```

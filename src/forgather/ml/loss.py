@@ -330,6 +330,17 @@ class LinearCrossEntropyLoss:
             try:
                 from cut_cross_entropy import linear_cross_entropy
 
+                # Detect which kwargs the installed version supports by
+                # inspecting the function signature.  The pip-installable
+                # v25.1.1 lacks accum_e_fp32 / accum_c_fp32 (among others);
+                # the source-installable v25.9.3+ has them.
+                import inspect
+
+                _cce_params = set(
+                    inspect.signature(linear_cross_entropy).parameters.keys()
+                )
+                self._cce_supported_params = _cce_params
+
                 self.cce_impl = kwargs.get("cce_impl", "cce")
                 if self.cce_impl == "cce" and not (
                     self.weight.dtype == torch.bfloat16
@@ -343,25 +354,37 @@ class LinearCrossEntropyLoss:
                 # For half-precision weights, default to fp32 gradient accumulation
                 # to prevent spectral norm explosion in lm_head during training.
                 # When explicitly requested, warn instead of overriding.
+                _has_fp32_accum = "accum_e_fp32" in _cce_params
                 if self.weight.dtype in (torch.bfloat16, torch.float16):
-                    if impl_was_auto:
-                        self.kwargs.setdefault("accum_e_fp32", True)
-                        self.kwargs.setdefault("accum_c_fp32", True)
+                    if _has_fp32_accum:
+                        if impl_was_auto:
+                            self.kwargs.setdefault("accum_e_fp32", True)
+                            self.kwargs.setdefault("accum_c_fp32", True)
+                        else:
+                            if not kwargs.get("accum_e_fp32", False):
+                                logger.warning(
+                                    "CCE with %s weights: accum_e_fp32 is not enabled. "
+                                    "This may cause numerical instability (lm_head spectral norm explosion) "
+                                    "during long training runs. Consider setting accum_e_fp32=True.",
+                                    self.weight.dtype,
+                                )
+                            if not kwargs.get("accum_c_fp32", False):
+                                logger.warning(
+                                    "CCE with %s weights: accum_c_fp32 is not enabled. "
+                                    "This may cause numerical instability (lm_head spectral norm explosion) "
+                                    "during long training runs. Consider setting accum_c_fp32=True.",
+                                    self.weight.dtype,
+                                )
                     else:
-                        if not kwargs.get("accum_e_fp32", False):
-                            logger.warning(
-                                "CCE with %s weights: accum_e_fp32 is not enabled. "
-                                "This may cause numerical instability (lm_head spectral norm explosion) "
-                                "during long training runs. Consider setting accum_e_fp32=True.",
-                                self.weight.dtype,
-                            )
-                        if not kwargs.get("accum_c_fp32", False):
-                            logger.warning(
-                                "CCE with %s weights: accum_c_fp32 is not enabled. "
-                                "This may cause numerical instability (lm_head spectral norm explosion) "
-                                "during long training runs. Consider setting accum_c_fp32=True.",
-                                self.weight.dtype,
-                            )
+                        logger.warning(
+                            "Installed cut-cross-entropy does not support "
+                            "accum_e_fp32/accum_c_fp32 (needed for numerical stability "
+                            "with %s weights). Training may exhibit lm_head spectral "
+                            "norm explosion. Install the latest version from source:\n"
+                            "  pip install \"cut-cross-entropy @ "
+                            "git+https://github.com/apple/ml-cross-entropy.git\"",
+                            self.weight.dtype,
+                        )
 
                 logger.info(
                     f"LinearCrossEntropyLoss: using Apple CCE ({self.cce_impl}), "
@@ -428,6 +451,13 @@ class LinearCrossEntropyLoss:
         """Use Apple's CCE implementation."""
         from cut_cross_entropy import linear_cross_entropy
 
+        # Filter kwargs to only those the installed version accepts.
+        cce_kwargs = {
+            k: v
+            for k, v in self.kwargs.items()
+            if k in self._cce_supported_params
+        }
+
         return linear_cross_entropy(
             hidden_states,
             self.weight,
@@ -439,7 +469,7 @@ class LinearCrossEntropyLoss:
             softcap=self.softcap,
             impl=self.cce_impl,
             reduction="mean",
-            **self.kwargs,
+            **cce_kwargs,
         )
 
     def _compute_liger(self, hidden_states: Tensor, labels: Tensor) -> Tensor:

@@ -41,7 +41,7 @@ dependencies = [
     "pytest",
     "black",
     "isort",
-    "cut-cross-entropy ~= 25.9",
+    "cut-cross-entropy >= 25.1",
     "liger-kernel",
     "triton",
     "dacite",
