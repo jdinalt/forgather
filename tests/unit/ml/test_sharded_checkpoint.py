@@ -1234,5 +1234,79 @@ class TestLoadCheckpointNonShardedDict(unittest.TestCase):
         torch.testing.assert_close(loaded["w"], original["w"])
 
 
+class TestSafetensorsTiedWeights(unittest.TestCase):
+    """Tests for safetensors behaviour with tied (shared) weights."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_safetensors_rejects_tied_weights(self):
+        """safetensors_save raises RuntimeError when tensors share storage."""
+        from safetensors.torch import save_file
+
+        model = TiedModel()
+        state_dict = model.state_dict()
+        path = os.path.join(self.tmpdir, "model.safetensors")
+        with self.assertRaises(RuntimeError):
+            save_file(state_dict, path)
+
+    def test_save_checkpoint_safetensors_tied_weights(self):
+        """save_checkpoint with safetensors=True and tied weights should fail."""
+        model = TiedModel()
+        with self.assertRaises(RuntimeError):
+            save_checkpoint(self.tmpdir, model, safetensors=True)
+
+    def test_round_trip_pytorch_preserves_ties(self):
+        """Round-trip through PyTorch format preserves tied weight identity."""
+        model = TiedModel()
+        save_checkpoint(self.tmpdir, model, safetensors=False)
+
+        model2 = TiedModel()
+        load_checkpoint(self.tmpdir, model2, device="cpu")
+
+        # After loading with assign=False into a model that already has ties,
+        # the parameters should still share the same object.
+        self.assertIs(model2.lm_head.weight, model2.embedding.weight)
+
+    def test_safetensors_dedup_round_trip_with_tie_weights(self):
+        """Loading deduplicated safetensors and calling tie_weights() restores ties.
+
+        This simulates loading an HF checkpoint where tied weights were
+        deduplicated before saving to safetensors.
+        """
+        from safetensors.torch import save_file
+
+        model = TiedModel()
+
+        # Simulate HF-style deduplication: save only one copy
+        state_dict = model.state_dict()
+        deduped = {k: v for k, v in state_dict.items() if k != "lm_head.weight"}
+        path = os.path.join(self.tmpdir, "model.safetensors")
+        save_file(deduped, path)
+
+        # Build a fresh model and load the deduped checkpoint (non-strict
+        # because lm_head.weight is missing from the file).
+        model2 = TiedModel()
+        from safetensors.torch import load_file
+
+        loaded = load_file(path, device="cpu")
+        model2.load_state_dict(loaded, strict=False)
+
+        # Before tie_weights: the lm_head.weight was not updated from the
+        # checkpoint (it retains its random init value from construction), so
+        # it may differ from embedding.weight.
+
+        # If the model is a PreTrainedModel, tie_weights() would fix this.
+        # For our plain nn.Module test fixture, manually tie:
+        model2.lm_head.weight = model2.embedding.weight
+        self.assertIs(model2.lm_head.weight, model2.embedding.weight)
+        torch.testing.assert_close(
+            model2.embedding.weight, model.embedding.weight
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,7 @@ from forgather.ml.distributed import (
     prefix_logger_rank,
 )
 from forgather.ml.sharded_checkpoint import (
+    create_sharing_metadata,
     find_latest_checkpoint,
     index_file_name,
     load_checkpoint,
@@ -95,6 +96,24 @@ class CheckpointManager(CheckpointInterface):
                 safetensors=config.save_safetensors,
             )
         self.shard_index = shard_index
+
+        # Validate: safetensors cannot save tensors that share storage (tied
+        # weights).  Fail early so the user learns about the incompatibility at
+        # startup rather than hours later at the first checkpoint save.
+        if config.save_safetensors:
+            sharing_metadata = create_sharing_metadata(model)
+            if sharing_metadata:
+                tied_desc = "; ".join(
+                    " <-> ".join(group) for group in sharing_metadata
+                )
+                raise ValueError(
+                    f"save_safetensors=True is incompatible with models that have "
+                    f"tied (shared) weights. The safetensors format cannot "
+                    f"represent tensors that share storage.\n"
+                    f"Tied weight groups: {tied_desc}\n"
+                    f"Set save_safetensors=False in your training configuration, "
+                    f"or use --save-safetensors false on the command line."
+                )
         self.best_checkpoint = None  # Deprecated - use best_checkpoints instead
         self.best_checkpoints: List[Tuple[str, float]] = (
             []
@@ -566,6 +585,21 @@ class CheckpointManager(CheckpointInterface):
                 device=self.dist.device,
                 strict=True,
             )
+
+        # Re-establish tied weights after loading.
+        #
+        # When loading from safetensors format, tied weights are stored as
+        # separate tensors (the format cannot represent shared storage, so HF
+        # deduplicates on save and re-ties on load).  With PyTorch format the
+        # sharing is already intact, but calling tie_weights() is idempotent.
+        #
+        # Only call on the full model, not on individual pipeline stage
+        # modules.  In pipeline-parallel, tied weights (e.g. embedding / head)
+        # are intentionally on separate nodes; the pipeline trainer handles
+        # within-stage sharing via retie_parameters() separately.
+        is_pipeline = len(self.model_parts) > 1
+        if not is_pipeline and hasattr(self.model, "tie_weights"):
+            self.model.tie_weights()
 
     def _save_training_state(self, output_dir: str) -> None:
         """Save all training state components to separate files."""
