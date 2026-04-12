@@ -27,7 +27,7 @@
     -- set ns.default_attn_implementation = "sdpa"
 
     ## See docs/trainers/training-performance-metrics.md
-    -- set ns.total_peak_hardware_flops = peak_hardware_flops | default(None)
+    -- set ns.total_peak_hardware_flops = peak_hardware_flops | default(get_peak_hardware_flops())
 
 [datasets_preprocessor_args]
 tokenizer_args: &tokenizer_args !dict

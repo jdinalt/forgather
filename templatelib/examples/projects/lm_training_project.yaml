@@ -81,9 +81,11 @@
 ##   base_save_tokens       (int)   Tokens (M) between save steps.  Default: 500
 ##
 ## Hardware / Performance
-##   peak_hardware_flops    (float) Peak device FLOPS for MFU       Default: 165.2e12
-##                                  computation. See
-##                                  docs/trainers/training-performance-metrics.md
+##   peak_hardware_flops    (float) Peak device FLOPS for MFU       Default: auto-detected
+##                                  computation. Auto-detected from
+##                                  the current GPU, or read from
+##                                  ~/.forgather/hardware.yaml.
+##                                  See docs/trainers/training-performance-metrics.md
 ##
 ## Precision / Compilation
 ##   default_dtype          (str)   Torch dtype for model construction. Choices: float32, bfloat16, float16
@@ -240,7 +242,7 @@
     == super()
     -- set ns.config_name = "LM Training Project"
     -- set ns.config_description = "Default LM Training Project"
-    -- set ns.nproc_per_node = nproc_per_node | default(ns.nproc_per_node)
+    -- set ns.nproc_per_node = nproc_per_node | default("gpu")
 
     ## Dataset
     -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, "examples", "datasets", "HuggingFaceTB"))
@@ -269,7 +271,7 @@
     -- set ns.base_save_tokens = 500
 
     ## Hardware
-    -- set ns.peak_hardware_flops = peak_hardware_flops | default(165.2e12)
+    -- set ns.peak_hardware_flops = peak_hardware_flops | default(get_peak_hardware_flops())
 
     ## Attention
     -- set ns.attn_implementation = attn_implementation | default("sdpa")
@@ -305,6 +307,7 @@
         -- set ns.dispatch_batches = True
     -- else
         -- set ns.trainer_class = 'trainers/trainer.yaml'
+        -- set ns.nproc_per_node = 1
     -- endif
 
     ## Convert M-token inputs to raw token counts
@@ -344,9 +347,6 @@
             -- elif ns.torch_compile_mode == "max-autotune"
                 == raise("max-autotune is incompatible with pipeline training; try 'max-autotune-no-cudagraphs'")
             -- endif
-        -- endif
-        -- if ns.nproc_per_node is number and ns.nproc_per_node <= 1
-            -- set ns.nproc_per_node = "gpu"
         -- endif
         -- if ns.pipe_schedule_factory in ["ScheduleGPipe", "Schedule1F1B"]
             -- set ns.stages_per_rank = 1

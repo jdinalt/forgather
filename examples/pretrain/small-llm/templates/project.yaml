@@ -36,7 +36,7 @@
     -- set ns.base_save_tokens = 500
 
     ## Hardware
-    -- set ns.peak_hardware_flops = peak_hardware_flops | default(165.2e12)
+    -- set ns.peak_hardware_flops = peak_hardware_flops | default(get_peak_hardware_flops())
 
     ## LR scaling
     -- set ns.base_lr = lr | default(1.5e-4)

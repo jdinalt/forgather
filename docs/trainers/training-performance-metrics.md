@@ -311,57 +311,144 @@ For a 4-GPU job on RTX 4090s:
 peak_hardware_flops = 4 * 165.2e12   # 4 GPUs × 165.2 TFLOPS each
 ```
 
+### Automatic GPU detection
+
+The project templates (`lm_training_project.yaml`, `tiny.yaml`, etc.) use the
+`get_peak_hardware_flops()` preprocessor function to auto-detect the per-GPU
+peak BF16 FLOP/s. The function follows this resolution order:
+
+1. **Read `~/.forgather/hardware.yaml`** -- if the file exists and contains a
+   `peak_hardware_flops` value, use it immediately.
+2. **Detect the current GPU** via `torch.cuda.get_device_name()` and look it
+   up in the built-in reference table (the same table shown below).
+3. **Cache the result** -- write the detected value to
+   `~/.forgather/hardware.yaml` so subsequent runs skip detection.
+
+The multi-GPU templates (e.g. `lm_training_project.yaml`) multiply the per-GPU
+value by `world_size` automatically, so the auto-detected value is always
+per-device.
+
+If the GPU is not in the reference table, the function returns `null` and MFU
+is disabled. In that case, create the file manually:
+
+```yaml
+# ~/.forgather/hardware.yaml
+peak_hardware_flops: 165.2e12
+```
+
+To re-trigger auto-detection, delete the file:
+
+```bash
+rm ~/.forgather/hardware.yaml
+```
+
+The `--peak-hardware-flops` CLI argument still overrides everything -- the
+auto-detected value is only used as a default when neither the CLI argument
+nor a template override is specified.
+
 ### Peak BF16 FLOP/s reference table
 
 The figures below are the **dense BF16 Tensor Core** numbers with **FP32 accumulation**,
 which is what PyTorch uses in mixed-precision (autocast BF16) training. This is the correct
 figure for MFU calculations.
 
-Note that NVIDIA spec sheets for consumer GPUs often advertise the higher
-FP16-with-FP16-accumulation figure (approximately 2× the values below). That figure
-is not applicable to standard training workloads.
+Note that NVIDIA spec sheets for consumer GPUs (Ada and Blackwell) often advertise
+the higher FP16-with-FP16-accumulation figure (approximately 2x the values below).
+BF16 on these architectures always accumulates in FP32, so the half-rate figure is
+the correct one for standard training workloads.
+
+These values are also used by the `get_peak_hardware_flops()` auto-detection
+function (see [Automatic GPU detection](#automatic-gpu-detection) above).
 
 #### NVIDIA Data Center GPUs
 
 | GPU | Architecture | BF16 dense (FP32 accum) |
 |-----|--------------|------------------------|
+| B200 | Blackwell | 2250 TFLOPS |
+| B100 | Blackwell | 1750 TFLOPS |
+| H200 SXM | Hopper | 989 TFLOPS |
 | H100 SXM | Hopper | 989 TFLOPS |
 | H100 PCIe | Hopper | 756 TFLOPS |
+| H800 SXM | Hopper | 989 TFLOPS |
+| H800 PCIe | Hopper | 756 TFLOPS |
+| H20 | Hopper | 148 TFLOPS |
+| L40S | Ada Lovelace | 362 TFLOPS |
+| L40 | Ada Lovelace | 181 TFLOPS |
+| L4 | Ada Lovelace | 121 TFLOPS |
 | A100 SXM 80GB | Ampere | 312 TFLOPS |
 | A100 PCIe 80GB | Ampere | 312 TFLOPS |
 | A100 SXM 40GB | Ampere | 312 TFLOPS |
+| A800 80GB | Ampere | 312 TFLOPS |
+| A40 | Ampere | 149.7 TFLOPS |
+| A30 | Ampere | 165 TFLOPS |
 | A10 | Ampere | 31.2 TFLOPS |
 
-#### NVIDIA Consumer / Workstation GPUs
+> **Note on H200, H800, A800:** These are variants of the H100 and A100 with different
+> memory configurations or reduced NVLink bandwidth (for export compliance). The BF16
+> compute throughput is identical to the base model.
+
+#### NVIDIA Professional / Workstation GPUs
 
 | GPU | Architecture | BF16 dense (FP32 accum) |
 |-----|--------------|------------------------|
+| RTX PRO 6000 | Blackwell | 251.9 TFLOPS |
+| RTX 6000 Ada | Ada Lovelace | 181 TFLOPS |
+| RTX A6000 | Ampere | 154.8 TFLOPS |
+| RTX A5000 | Ampere | 111.1 TFLOPS |
+| RTX A4000 | Ampere | 76.7 TFLOPS |
+
+> **Note on professional Ada cards:** Professional Ada GPUs (RTX 6000 Ada, L40, L40S)
+> run BF16 tensor ops with FP32 accumulation at full speed -- unlike GeForce Ada cards,
+> which run at half speed.
+
+#### NVIDIA Consumer GPUs
+
+| GPU | Architecture | BF16 dense (FP32 accum) |
+|-----|--------------|------------------------|
+| RTX 5090 | Blackwell | 209.5 TFLOPS |
+| RTX 5080 | Blackwell | 112.6 TFLOPS |
+| RTX 5070 Ti | Blackwell | 87.8 TFLOPS |
+| RTX 5070 | Blackwell | 61.8 TFLOPS |
+| RTX 5060 Ti | Blackwell | 47.4 TFLOPS |
+| RTX 5060 | Blackwell | 38.4 TFLOPS |
 | RTX 4090 | Ada Lovelace | 165.2 TFLOPS |
 | RTX 4080 SUPER | Ada Lovelace | 104.4 TFLOPS |
 | RTX 4080 | Ada Lovelace | 97.0 TFLOPS |
 | RTX 4070 Ti SUPER | Ada Lovelace | 79.8 TFLOPS |
-| RTX 3090 | Ampere | 71.2 TFLOPS |
+| RTX 4070 Ti | Ada Lovelace | 40.1 TFLOPS |
+| RTX 4070 SUPER | Ada Lovelace | 35.5 TFLOPS |
+| RTX 4070 | Ada Lovelace | 29.1 TFLOPS |
+| RTX 4060 Ti | Ada Lovelace | 22.1 TFLOPS |
+| RTX 4060 | Ada Lovelace | 15.1 TFLOPS |
 | RTX 3090 Ti | Ampere | 79.8 TFLOPS |
+| RTX 3090 | Ampere | 71.2 TFLOPS |
 | RTX 3080 Ti | Ampere | 59.8 TFLOPS |
-| RTX 3080 (10GB) | Ampere | 44.7 TFLOPS |
+| RTX 3080 | Ampere | 44.7 TFLOPS |
+| RTX 3070 Ti | Ampere | 43.5 TFLOPS |
+| RTX 3070 | Ampere | 40.6 TFLOPS |
+| RTX 3060 Ti | Ampere | 32.4 TFLOPS |
+| RTX 3060 | Ampere | 25.5 TFLOPS |
 
-> **Note on RTX 3090 / 3080 series:** NVIDIA's published specs for Ampere consumer GPUs
-> cite the FP16-with-FP16-accumulation throughput (~142 TFLOPS for the 3090). The
-> BF16-with-FP32-accumulation figure (~71 TFLOPS) is half that, and is the value to use
-> here. Both BF16 and FP16 share the same Tensor Core hardware on Ampere and Ada; the
-> difference in published figures is entirely the accumulation precision.
+> **Note on FP32 accumulation and consumer GPUs:** On GeForce Ada (RTX 40xx) and
+> Blackwell (RTX 50xx) cards, BF16 tensor ops with FP32 accumulation run at half the
+> FP16-with-FP16-accumulation rate. NVIDIA's published specs for these cards often cite
+> the higher FP16-accum figure. The values above are the correct half-rate numbers.
+> Ampere consumer cards (RTX 30xx) do **not** have this penalty -- BF16 with FP32
+> accumulation runs at full speed on Ampere.
 
 #### Example: multi-GPU configurations
 
 | Configuration | `peak_hardware_flops` |
 |---------------|-----------------------|
+| 1× RTX 5090 | `209.5e12` |
+| 4× RTX 5090 | `838e12` |
 | 1× RTX 4090 | `165.2e12` |
-| 2× RTX 4090 | `330.4e12` |
 | 4× RTX 4090 | `660.8e12` |
 | 1× RTX 3090 | `71.2e12` |
 | 4× A100 SXM | `1248e12` |
 | 8× A100 SXM | `2496e12` |
 | 8× H100 SXM | `7912e12` |
+| 8× B200 | `18000e12` |
 
 ## Notes on FLOP estimation accuracy
 

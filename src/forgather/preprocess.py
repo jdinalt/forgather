@@ -1,8 +1,10 @@
 import getpass
+import logging
 import os
 import re
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 import yaml
 from jinja2 import FileSystemLoader, StrictUndefined, Undefined
@@ -18,9 +20,157 @@ from platformdirs import (
 
 from .utils import format_line_numbers
 
+logger = logging.getLogger(__name__)
+
 
 def forgather_config_dir():
     return user_config_dir("forgather", getpass.getuser())
+
+
+def forgather_home_dir():
+    return str(Path.home() / ".forgather")
+
+
+# ---------------------------------------------------------------------------
+# GPU peak BF16 FLOP/s (with FP32 accumulation) reference table.
+# See docs/trainers/training-performance-metrics.md for sources and notes.
+#
+# Order matters: more specific patterns are checked first within each GPU
+# family so that e.g. "RTX 4080 SUPER" matches before "RTX 4080".
+# Each entry is (required_substrings, peak_bf16_flops).
+# ---------------------------------------------------------------------------
+_GPU_FLOPS_TABLE = [
+    # NVIDIA Data Center GPUs -- Blackwell
+    (("B200",), 2250e12),
+    (("B100",), 1750e12),
+    # Hopper (H200 has the same compute die as H100 SXM; only memory differs)
+    (("H200",), 989e12),
+    (("H100", "PCIe"), 756e12),
+    (("H100",), 989e12),
+    (("H800", "PCIe"), 756e12),
+    (("H800",), 989e12),
+    (("H20",), 148e12),
+    # Ampere data center
+    (("A800",), 312e12),
+    (("A100",), 312e12),
+    # Ada data center / professional
+    (("L40S",), 362e12),
+    (("L40",), 181e12),
+    (("L4",), 121e12),
+    (("RTX 6000 Ada",), 181e12),
+    # Ampere professional -- must precede A40 ("A40" is a substring of "A4000")
+    (("RTX A6000",), 154.8e12),
+    (("RTX A5000",), 111.1e12),
+    (("RTX A4000",), 76.7e12),
+    # Ampere data center (continued) -- A40/A30 must precede A10
+    (("A40",), 149.7e12),
+    (("A30",), 165e12),
+    (("A10",), 31.2e12),
+    # Blackwell professional
+    (("RTX PRO 6000",), 251.9e12),
+    # NVIDIA Consumer GPUs -- RTX 50-series (Blackwell)
+    (("RTX 5090",), 209.5e12),
+    (("RTX 5080",), 112.6e12),
+    (("RTX 5070 Ti",), 87.8e12),
+    (("RTX 5070",), 61.8e12),
+    (("RTX 5060 Ti",), 47.4e12),
+    (("RTX 5060",), 38.4e12),
+    # RTX 40-series (Ada Lovelace)
+    (("RTX 4090",), 165.2e12),
+    (("RTX 4080 SUPER",), 104.4e12),
+    (("RTX 4080",), 97.0e12),
+    (("RTX 4070 Ti SUPER",), 79.8e12),
+    (("RTX 4070 Ti",), 40.1e12),
+    (("RTX 4070 SUPER",), 35.5e12),
+    (("RTX 4070",), 29.1e12),
+    (("RTX 4060 Ti",), 22.1e12),
+    (("RTX 4060",), 15.1e12),
+    # RTX 30-series (Ampere)
+    (("RTX 3090 Ti",), 79.8e12),
+    (("RTX 3090",), 71.2e12),
+    (("RTX 3080 Ti",), 59.8e12),
+    (("RTX 3080",), 44.7e12),
+    (("RTX 3070 Ti",), 43.5e12),
+    (("RTX 3070",), 40.6e12),
+    (("RTX 3060 Ti",), 32.4e12),
+    (("RTX 3060",), 25.5e12),
+]
+
+_HARDWARE_YAML = "hardware.yaml"
+
+
+def _match_gpu_flops(device_name: str) -> float | None:
+    """Match a CUDA device name against the reference table."""
+    for patterns, flops in _GPU_FLOPS_TABLE:
+        if all(p in device_name for p in patterns):
+            return flops
+    return None
+
+
+def _detect_gpu_flops() -> tuple[str | None, float | None]:
+    """Detect the current GPU and return (device_name, peak_flops)."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None, None
+        device_name = torch.cuda.get_device_name(0)
+        flops = _match_gpu_flops(device_name)
+        return device_name, flops
+    except (ImportError, RuntimeError):
+        return None, None
+
+
+def get_peak_hardware_flops() -> float | None:
+    """
+    Return the peak BF16 FLOP/s (FP32 accumulation) for a single GPU.
+
+    Resolution order:
+
+    1. Read ``~/.forgather/hardware.yaml`` -- if it contains a
+       ``peak_hardware_flops`` value, return it immediately.
+    2. Detect the current GPU via ``torch.cuda.get_device_name(0)`` and
+       look it up in the built-in reference table.
+    3. If found, write the result to ``~/.forgather/hardware.yaml`` so
+       subsequent calls (and other sessions) skip detection.
+
+    Returns ``None`` when no GPU is available or the GPU is not in the
+    reference table. In that case the user can create
+    ``~/.forgather/hardware.yaml`` manually -- see
+    ``docs/trainers/training-performance-metrics.md`` for values.
+    """
+    home_dir = Path(forgather_home_dir())
+    hardware_file = home_dir / _HARDWARE_YAML
+
+    # 1. Check for a cached / manually specified value.
+    if hardware_file.is_file():
+        try:
+            data = yaml.safe_load(hardware_file.read_text())
+            if isinstance(data, dict) and "peak_hardware_flops" in data:
+                value = data["peak_hardware_flops"]
+                if value is not None:
+                    return float(value)
+        except (yaml.YAMLError, ValueError, OSError):
+            pass
+
+    # 2. Auto-detect from current GPU.
+    device_name, flops = _detect_gpu_flops()
+
+    # 3. Cache the result for future sessions.
+    if flops is not None:
+        try:
+            home_dir.mkdir(parents=True, exist_ok=True)
+            hardware_file.write_text(
+                f"# Forgather hardware settings\n"
+                f"# Auto-detected from: {device_name}\n"
+                f"# Edit this value to override, or delete the file to re-detect.\n"
+                f"# See docs/trainers/training-performance-metrics.md for reference values.\n"
+                f"peak_hardware_flops: {flops}\n"
+            )
+        except OSError as exc:
+            logger.debug("Could not write %s: %s", hardware_file, exc)
+
+    return flops
 
 
 def split_templates(template, name=None):
@@ -352,6 +502,8 @@ class PPEnvironment(SandboxedEnvironment):
         "user_home_dir": lambda: os.path.expanduser("~"),
         "getcwd": os.getcwd,
         "forgather_config_dir": forgather_config_dir,
+        "forgather_home_dir": forgather_home_dir,
+        "get_peak_hardware_flops": get_peak_hardware_flops,
         # https://pypi.org/project/platformdirs/
         "user_data_dir": user_data_dir,
         "user_cache_dir": user_cache_dir,
