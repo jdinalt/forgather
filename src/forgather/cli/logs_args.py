@@ -7,7 +7,7 @@ from argparse import RawTextHelpFormatter
 path_type = lambda x: os.path.normpath(os.path.expanduser(x))
 
 
-def create_logs_parser(global_args):
+def create_logs_parser(_global_args):
     """Create parser for logs command."""
     parser = argparse.ArgumentParser(
         prog="forgather logs",
@@ -122,14 +122,62 @@ def create_logs_parser(global_args):
         help="Generate loss curves plot with LR on secondary axis",
     )
     plot_parser.add_argument(
+        "--grad-norm",
+        action="store_true",
+        help="Plot gradient norm across training steps",
+    )
+    plot_parser.add_argument(
+        "--ignore-outliers",
+        dest="ignore_outliers",
+        action="store_true",
+        default=True,
+        help="Auto-scale y-axis using 5th/95th percentiles so large early-training\n"
+        "values do not squash the tail of the curve (default: on)",
+    )
+    plot_parser.add_argument(
+        "--no-ignore-outliers",
+        dest="ignore_outliers",
+        action="store_false",
+        help="Disable outlier-aware y-auto-scaling and use the full (min, max) range",
+    )
+    plot_parser.add_argument(
+        "--perplexity",
+        action="store_true",
+        help="Plot loss-like metrics as perplexity (exp(loss))",
+    )
+    plot_parser.add_argument(
+        "--x-min",
+        type=float,
+        default=None,
+        help="Clip plotted data and x-axis at this lower bound (in the current --x-axis units)",
+    )
+    plot_parser.add_argument(
+        "--x-max",
+        type=float,
+        default=None,
+        help="Clip plotted data and x-axis at this upper bound (in the current --x-axis units)",
+    )
+    plot_parser.add_argument(
+        "--y-min",
+        type=float,
+        default=None,
+        help="Override the lower y-axis bound (takes precedence over --ignore-outliers)",
+    )
+    plot_parser.add_argument(
+        "--y-max",
+        type=float,
+        default=None,
+        help="Override the upper y-axis bound (takes precedence over --ignore-outliers)",
+    )
+    plot_parser.add_argument(
         "-e",
         "--edit",
         action="store_true",
         help="Open plot in editor after generation (works with VS Code remote sessions)",
     )
 
-    # list subcommand
-    list_parser = subparsers.add_parser(
+    # list subcommand (registered for side effect on `subparsers`)
+    subparsers.add_parser(
         "list",
         help="List available training logs in project",
         formatter_class=RawTextHelpFormatter,

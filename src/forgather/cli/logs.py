@@ -1,6 +1,5 @@
 """CLI commands for training log analysis."""
 
-import argparse
 import json
 import os
 import sys
@@ -17,7 +16,7 @@ from forgather.ml.analysis.metrics import (
     format_summary_oneline,
     format_summary_text,
 )
-from forgather.ml.analysis.plotting import plot_loss_curves
+from forgather.ml.analysis.plotting import plot_grad_norm, plot_loss_curves
 
 from .utils import _open_in_editor
 
@@ -28,7 +27,10 @@ def summary_cmd(args):
     if args.all:
         # Process all logs in project
         if args.log_path:
-            print("Warning: Ignoring log_path argument when --all is specified", file=sys.stderr)
+            print(
+                "Warning: Ignoring log_path argument when --all is specified",
+                file=sys.stderr,
+            )
         log_files = find_log_files(args.project_dir)
         if not log_files:
             print("Error: No training logs found in project.")
@@ -150,6 +152,15 @@ def plot_cmd(args):
         # Default metrics based on plot type
         metrics = None  # Will use defaults in plot function
 
+    # Reject mutually-incompatible plot-mode combinations.
+    grad_norm_mode = getattr(args, "grad_norm", False)
+    if grad_norm_mode and (args.loss_curves or args.metrics):
+        print(
+            "Error: --grad-norm cannot be combined with --loss-curves or --metrics.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # Determine output path following forgather conventions
     if args.output:
         # Explicit output path specified
@@ -170,7 +181,9 @@ def plot_cmd(args):
                 config_name = config_name[:-5]
             config_prefix = f"{config_name}_"
 
-        if args.loss_curves:
+        if grad_norm_mode:
+            base_name = f"{config_prefix}grad_norm"
+        elif args.loss_curves:
             base_name = f"{config_prefix}loss_curves"
         elif args.metrics:
             metric_name = args.metrics.replace(",", "_")
@@ -182,20 +195,48 @@ def plot_cmd(args):
 
     # Generate plot (never show interactively - doesn't work on remote SSH)
     plot_title = getattr(args, "title", None)
+    ignore_outliers = getattr(args, "ignore_outliers", True)
+    perplexity = getattr(args, "perplexity", False)
+    x_min = getattr(args, "x_min", None)
+    x_max = getattr(args, "x_max", None)
+    y_min = getattr(args, "y_min", None)
+    y_max = getattr(args, "y_max", None)
     try:
-        if args.loss_curves:
+        if grad_norm_mode:
+            plot_grad_norm(
+                logs=logs,
+                x_axis=args.x_axis,
+                smooth_window=args.smooth,
+                log_scale=args.log_scale,
+                output_path=output_path,
+                show=False,
+                title=plot_title,
+                ignore_outliers=ignore_outliers,
+                x_min=x_min,
+                x_max=x_max,
+                y_min=y_min,
+                y_max=y_max,
+            )
+        elif args.loss_curves:
             # Special loss curves plot with LR on secondary axis
-            fig = plot_loss_curves(
+            plot_loss_curves(
                 logs=logs,
                 x_axis=args.x_axis,
                 smooth_window=args.smooth,
                 output_path=output_path,
                 show=False,  # Never show - use editor instead
                 title=plot_title,
+                log_scale=args.log_scale,
+                ignore_outliers=ignore_outliers,
+                perplexity=perplexity,
+                x_min=x_min,
+                x_max=x_max,
+                y_min=y_min,
+                y_max=y_max,
             )
         else:
             # General metrics plot
-            fig = plot_training_metrics(
+            plot_training_metrics(
                 logs=logs,
                 metrics=metrics,
                 x_axis=args.x_axis,
@@ -204,6 +245,12 @@ def plot_cmd(args):
                 output_path=output_path,
                 show=False,  # Never show - use editor instead
                 title=plot_title,
+                ignore_outliers=ignore_outliers,
+                perplexity=perplexity,
+                x_min=x_min,
+                x_max=x_max,
+                y_min=y_min,
+                y_max=y_max,
             )
 
         print(f"Plot saved to: {output_path}")
@@ -239,10 +286,14 @@ def list_cmd(args):
             runs_idx = parts.index("runs")
             if runs_idx > 0:
                 model_name = parts[runs_idx - 1]
-                run_name = parts[runs_idx + 1] if runs_idx + 1 < len(parts) else "unknown"
+                run_name = (
+                    parts[runs_idx + 1] if runs_idx + 1 < len(parts) else "unknown"
+                )
             else:
                 model_name = "unknown"
-                run_name = parts[runs_idx + 1] if runs_idx + 1 < len(parts) else "unknown"
+                run_name = (
+                    parts[runs_idx + 1] if runs_idx + 1 < len(parts) else "unknown"
+                )
         else:
             model_name = "unknown"
             run_name = "unknown"

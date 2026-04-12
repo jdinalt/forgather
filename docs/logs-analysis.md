@@ -211,7 +211,41 @@ forgather logs plot --log-scale
 
 # Plot by time instead of steps
 forgather logs plot --x-axis time
+
+# Plot gradient norm (own layout; cannot combine with --loss-curves/--metrics)
+forgather logs plot --grad-norm --smooth 10
+
+# Plot losses as perplexity (exp(loss)); composes with --log-scale
+forgather logs plot --loss-curves --perplexity --log-scale
+
+# Clip the plot window in data space (respects --x-axis units)
+forgather logs plot --x-max 36448 --metrics eval_loss
+
+# Override y-axis bounds; takes precedence over --ignore-outliers
+forgather logs plot --y-min 2.2 --y-max 3.5
 ```
+
+**Outlier-aware auto-scaling**
+
+By default, `forgather logs plot` computes the y-axis window for loss-like
+metrics (`loss`, `eval_loss`, `train_loss`, `grad_norm`, `max_grad_norm`) from
+the 5th/95th percentiles of the plotted series instead of the raw min/max.
+This keeps the huge early-training values from squashing the tail of the
+curve, similar to TensorBoard's "Ignore outliers in chart scaling" option.
+Use `--no-ignore-outliers` to restore the previous full-range behaviour, or
+`--y-min` / `--y-max` to pin the bounds explicitly. Learning-rate subplots
+and secondary axes are never auto-clipped.
+
+**Plot mode and scaling options:**
+
+| Flag | Description |
+|------|-------------|
+| `--loss-curves` | Dual-axis train/eval loss with learning rate on a secondary axis. |
+| `--grad-norm` | Gradient-norm plot; mutually exclusive with `--loss-curves` / `--metrics`. |
+| `--ignore-outliers` / `--no-ignore-outliers` | Enable (default) or disable percentile-based y-axis auto-scaling. |
+| `--perplexity` | Plot loss-like metrics as `exp(loss)` with relabelled axes. |
+| `--x-min` / `--x-max` | Clip plotted data and x-axis to the given domain (in `--x-axis` units). |
+| `--y-min` / `--y-max` | Override y-axis bounds; takes precedence over `--ignore-outliers`. |
 
 ### Compare Multiple Runs
 

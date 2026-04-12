@@ -137,10 +137,20 @@ forgather logs plot --metrics "loss,grad_norm"      # Specific metrics
 forgather logs plot --x-axis epoch                  # Plot by epoch
 forgather logs plot --smooth 10                     # Apply smoothing
 forgather logs plot --format svg                    # SVG format (default: png)
+forgather logs plot --grad-norm --smooth 10         # Gradient norm plot
+forgather logs plot --perplexity --log-scale        # Convert losses to exp(loss)
+forgather logs plot --x-max 36448                   # Clip data to a step window
+forgather logs plot --y-min 2.2 --y-max 3.5         # Manual y-axis override
+forgather logs plot --no-ignore-outliers            # Disable percentile auto-scale
 
 # Compare multiple runs
 forgather logs plot --compare run1/trainer_logs.json run2/trainer_logs.json --loss-curves
 ```
+
+Note: `forgather logs plot` now defaults to outlier-aware y-axis auto-scaling
+(5th/95th percentile window) for loss/eval-loss/grad-norm series, so a few
+huge early-training values no longer squash the tail of the curve. Pass
+`--no-ignore-outliers` to restore the old full-range behaviour.
 
 **Programmatic API:**
 

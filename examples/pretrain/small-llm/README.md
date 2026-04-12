@@ -1,756 +1,532 @@
 # Small LLM Pretraining
 
-A complete example project for pretraining small language models (100M-2B parameters) from scratch, demonstrating token-efficient training with principled learning rate scheduling.
+A long-running playground project for pretraining small language models
+(~100M-200M parameters) from scratch. Over time it has become the main test
+bed for the [LM Training Project
+template](../../../docs/project-templates/lm-training-projects.md), and this
+README is as much a changelog of what has been tried here as it is a getting-
+started guide.
 
-## Overview
+If you are looking for the full reference on every training argument and
+dial that the template exposes, read the
+[LM Training Project documentation](../../../docs/project-templates/lm-training-projects.md)
+and the [Trainer Options Reference](../../../docs/trainers/trainer_options.md).
+This README focuses on *this particular project*: its defaults, its
+sub-projects, the configs we ship, and the experiments that have been run.
 
-This project trains models on the [HuggingFaceTB/smollm-corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus), a curated collection of high-quality educational and synthetic data designed for training small language models. The training dataset combines "cosmopedia-v2" and "fineweb-edu-dedup" subsets with intelligent interleaving to balance data sources.
+## What This Project Is
 
-**Key Features:**
-- Token-budget-based training with Chinchilla-optimal defaults
-- Principled LR scheduling that adapts to training scale
-- Multi-GPU distributed training with DDP and Pipeline Parallel
-- Sequence packing for efficiency (4K token blocks)
-- Comprehensive monitoring and checkpointing
-- Support for multiple model architectures (DeepOne, Llama, Qwen, etc.)
+- A concrete LM training project that extends `lm_training_project.yaml`
+  with choices appropriate for pre-training a small model on a few consumer
+  GPUs.
+- A set of ready-to-run configurations covering precision experiments, LR
+  schedules, alternative architectures, and a curriculum dataset.
+- Two sub-projects under this directory that demonstrate how to plug a
+  custom model or a custom dataset into a training project without
+  vendoring everything into the top-level project:
+  - [`custom_canon/`](custom_canon/README.md) - a custom model sub-project
+    that shows how to build a Llama variant with Canon-A layers and NoPE
+    while inheriting from the regular Llama model project.
+  - [`tiny-stories_small-lm/`](tiny-stories_small-lm/) - a dataset
+    sub-project that demonstrates a soft curriculum, interleaving Tiny
+    Stories with SmolLM corpus via `soft_sequential` sampling.
 
-**Default Configuration:**
-- Precision: Automatic Mixed Precision (bf16)
-- Model: Custom DeepOne (162M parameters)
-- Token Budget: 2.3B tokens (Chinchilla-optimal for ~113M non-embedding params)
-- Batch Size: 4 per device (auto-scaled with world size)
-- Sequence Length: 4096 tokens
-- Optimizer: AdamW
+## Defaults
+
+All experiments below were run on **4 GPUs** (4x RTX 3090 / equivalent), DDP,
+with sequence packing at 4K tokens.
+
+| Setting | Default |
+|---------|---------|
+| Model | vanilla `examples/models/llama/medium.yaml` |
+| Trainer | `ddp` |
+| Precision | AMP bf16 (`mixed_precision: bf16`), weights in fp32 |
+| Attention | `flex_attention` |
+| `torch.compile` | enabled, `max-autotune` |
+| Sequence length | 4096 |
+| Per-device batch size | 4 |
+| `base_lr` | `1.5e-4` (sqrt-scaled to global batch) |
+| `base_batch_size` | 16384 (LR scaling reference) |
+| LR schedule | `InfiniteLRScheduler` with rsqrt annealing |
+| Cooldown | `cooldown_p = 0.3`, `min_cooldown_tokens = 6.8B` |
+| Token budget | 2.27B (1x Chinchilla for the default model) |
+| Fused loss | `forgather.ml.loss:LinearCrossEntropyLoss` |
+| Optimizer | `torch.optim.AdamW` |
+| Grad clipping | `max_grad_norm: 1.0` |
+
+The default 2.27B-token budget is Chinchilla-optimal for the default model.
+From `forgather model construct` on `examples/models/llama/medium.yaml`:
+
+```
+Total:             162M
+Trainable:         162M
+Embedding:         49.2M
+Non-embedding:     113M
+Tied embeddings:   False
+Chinchilla tokens: 2.27G
+FLOPs/token:       6.80e+08
+```
+
+## Default Model: vanilla Llama (medium)
+
+The project used to default to a custom DeepOne model. It now defaults to the
+plain `examples/models/llama/medium.yaml` config - a vanilla Llama at
+roughly the same parameter count as the old DeepOne default, but with
+predictable behaviour and no bespoke architecture to reason about. The
+DeepOne model is still reachable via `-t deepone.yaml`, and the custom
+Canon variant lives in the [`custom_canon/`](custom_canon/README.md)
+sub-project.
+
+## Default Dataset: SmolLM-Corpus (interleaved + packed)
+
+The default training dataset is the `smollm-corpus/interleaved-packed.yaml`
+config of the [`examples/datasets/HuggingFaceTB/`](../../datasets/HuggingFaceTB/README.md)
+dataset project. It is the packed variant of an interleaved mix of two
+subsets of [HuggingFaceTB/smollm-corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus):
+
+- **`fineweb-edu-dedup`** - a deduplicated, quality-filtered slice of
+  FineWeb-Edu. Real educational web content.
+- **`cosmopedia-v2`** - Hugging Face's synthetic-text-books corpus of
+  generated educational content, stories, and Q&A.
+
+SmolLM-Corpus is a large (~600B token) curated mix assembled for training
+small language models, where sample efficiency matters more than sheer
+volume. It trades breadth for signal density, which is the right choice
+when you're training a ~100M-parameter model on a consumer-GPU budget.
+
+**Interleaved:** The two subsets are merged with
+`forgather.ml.datasets.interleave_datasets` using the
+`balance_remaining_examples` sampling policy - on each draw, the
+probability of each subset is proportional to its *remaining* unseen
+examples. This keeps both subsets at roughly the same depletion rate
+rather than exhausting one before the other. `stopping_strategy:
+all_exhausted` means the combined iterator continues until every subset
+has been seen.
+
+**Packed:** Each subset is pre-tokenised and packed into fixed-length
+sequences (default 4096 tokens to match the project's `seq_len`). Packing
+concatenates short examples into full-length blocks with attention masks
+that prevent cross-example attention, so no tokens are wasted on padding
+and every batch is fully utilised. This is what makes the 4K-token
+sequence length cheap - without packing, short FineWeb pages would each
+produce a mostly-padded batch element.
+
+**First-run download:** The initial load downloads the full dataset
+(~100GB+) and tokenises it; subsequent runs hit the on-disk cache and
+load near-instantly. Downloads and cached tokenisations live under
+`datasets/` at the repo root; see the
+[HuggingFaceTB dataset project README](../../datasets/HuggingFaceTB/README.md)
+for the full set of available configs (`fineweb-edu-packed`,
+`cosmopedia-v2-packed`, the non-packed variants, etc.) and how to select
+one via `--dataset-config`.
 
 ## Quick Start
 
-```bash
-# Init new model and train with defaults (Custom DeepOne 162M, 2.3B tokens)
-forgather train --resume false
+Auto-resume is the default: running `forgather train` picks up the latest
+checkpoint if one exists, and starts fresh otherwise. There is no need to
+pass `--resume` flags in the common case.
 
-# Resume from checkpoint
+```bash
+# Train with defaults (vanilla Llama medium, 2.27B tokens, 4 GPUs)
 forgather train
 
-# Train with different model
-rm -rf output_models # First, delete or backup old output directory
-forgather train --resume false --model-project ../../models/llama/ --model-config medium.yaml
-
 # Train for longer (23B tokens instead of 2.3B)
-forgather train --resume false --total-tokens 23000
+forgather train --total-tokens 23000
 
-# Use sdpa attention and disable Torch compile for faster startup
-forgather train --resume false --compile false --attn-implementation sdpa
-```
+# Use SDPA attention and disable torch.compile for faster startup
+forgather train --compile false --attn-implementation sdpa
 
-## Training Configuration
-
-The training configuration is built around several interconnected parameters that together determine training dynamics, compute requirements, and final model quality.
-
-The project configuration is derived from our base LM training templates:
-
-- [project.yaml](./templates/project.yaml)
-  - [projects/auto_lr_project.yaml](../../../templatelib/examples/projects/auto_lr_project.yaml)
-    - [projects/lm_training_project.yaml](../../../templatelib/examples/projects/lm_training_project.yaml)
-
-The full documentation for the base templates can be found [here](../../../docs/project-templates/lm-training-projects.md).
-
-### Token Budget and Compute Allocation
-
-Training is controlled by a **token budget** rather than epochs or arbitrary step counts. This aligns with modern understanding of compute-optimal training.
-
-**Key Parameters:**
-- `--total-tokens N`: Total training tokens in millions (default: 2270)
-- `--max-steps N`: Override to limit training steps (optional)
-
-**Chinchilla Optimal:**
-The default 2.3B token budget follows Chinchilla scaling laws for compute-optimal training:
-```
-optimal_tokens ≈ 20 × model_parameters
-```
-
-For the default model with ~113M non-embedding parameters: `113M × 20 = 2.3B tokens`
-
-Note that we only count non-embedding parameters. For forgather's models, you can get this by constructing a model on the meta device.
-
-```bash
-# From model project directory
-forgather [-t MODEL_CONFIG] model construct
-```
-
-**How it works:**
-```python
-# These are computed automatically from your settings:
-tokens_per_step = max_length × global_batch_size
-total_steps = total_tokens // tokens_per_step
-
-# Example with defaults (4 GPUs):
-# tokens_per_step = 4096 × (4 × 4) = 65,536
-# total_steps = 2.27B / 65,536 ≈ 34,637 steps
-```
-
-### Batch Size and Learning Rate Scaling
-
-Batch sizes and learning rates are coupled through sqrt-scaling to maintain training dynamics across different hardware configurations.
-
-**Key Parameters:**
-- `--batch-size N`: Per-device training batch size (default: 4)
-- `--lr LR`: Base learning rate (default: 1.5e-4)
-
-**How it works:**
-```python
-# Global batch size scales with world size
-global_batch_size = batch_size × gradient_accumulation_steps × world_size
-tokens_per_step = max_length × global_batch_size
-
-# Learning rate scales relative to reference batch (single GPU defaults)
-# Reference: tokens_per_step = 4096 × 4 = 16384
-lr_scale = (tokens_per_step / 16384) ** 0.5
-actual_lr = base_lr × lr_scale
-
-# Example with 4 GPUs:
-# tokens_per_step = 4096 × (4 × 4) = 65,536
-# lr_scale = sqrt(65536 / 16384) = sqrt(4) = 2.0
-# actual_lr = 1.5e-4 × 2.0 = 3.0e-4
-```
-
-**Why sqrt-scaling?**
-This maintains the signal-to-noise ratio in gradients as batch size increases, allowing larger batches without changing optimization dynamics. Based on empirical findings from "Don't Decay the Learning Rate, Increase the Batch Size" (Smith et al., 2017).
-
-### Learning Rate Scheduling Strategy
-
-The LR schedule uses the **InfiniteLRScheduler**, designed for flexible pretraining with optional continuation and annealing phases.
-
-**Schedule Structure:**
-```
-1. Warmup (5% of total steps): 0 → max_lr
-2. Cooldown (variable): max_lr → constant_lr (cosine decay)
-3. Constant (remaining): constant_lr
-4. Annealing (optional): constant_lr → min_lr (not used by default)
-```
-
-**Key Parameters:**
-- `--warmup-tokens N`: The number of tokens (millions) for the warmup phase.
-- `--min-cooldown-tokens N`: Minimum tokens (millions) for cooldown phase.
-
-**Cooldown Duration:**
-
-The cooldown duration is determined by two factors: a proportional term `P` and a minimum floor:
-
-```python
-cooldown_steps = max(min_cooldown_steps, total_steps * P)
-```
-
-`P` (default 0.3) controls what fraction of total training is spent in cooldown. This matches the best result from the InfiniteLR paper's appendix, where P=0.3 outperformed longer cooldown proportions for language model training at 10x+ Chinchilla scale.
-
-The floor (`min_cooldown_tokens`, default 6.8B) prevents excessively fast cooldown on short runs. It is set to approximately 3x Chinchilla-optimal for the default 113M non-embedding parameter model (113M x 20 x 3 = 6.8B tokens). This value should be scaled in proportion to the model size when training larger or smaller models.
-
-**How the two terms interact:**
-
-The proportional term `total_steps * P` exceeds the floor when `total_tokens > min_cooldown_tokens / P`. For the defaults, this crossover is at ~22.7B tokens (~10x Chinchilla). Below that, the floor dominates:
-
-- **2.3B tokens** (1x Chinchilla): cooldown = floor (6.8B). Training ends ~32% through the cosine, keeping LR at ~77% of max. The model never reaches the constant phase, which is appropriate for a short run.
-- **6.8B tokens** (3x Chinchilla): cooldown = floor (6.8B). Cosine nearly completes, transitioning to constant_lr.
-- **23B+ tokens** (10x+ Chinchilla): P=0.3 takes over. The first 30% of training decays from max_lr to constant_lr, and the remaining 70% trains at constant_lr.
-
-**Base Learning Rates** (before sqrt-scaling):
-- `max_lr`: 1.5e-4 (set with `--lr`)
-- `constant_lr`: 5.0e-5 (~33% of max)
-- `min_lr`: 5.0e-6 (~3% of max)
-
-**The annealing phase** (warmup → cooldown → constant → anneal) is a key feature of the InfiniteLR schedule. Unlike cosine scheduling, which requires knowing the total training budget upfront, InfiniteLR can run indefinitely at `constant_lr` and only anneal when a converged checkpoint is needed.
-
-**Annealing formula** (Eq. 1 from the paper):
-```
-η(n) = η_const × (η_min / η_const) ^ ((n - N_d) / (t_a + N_d))
-```
-
-Where `N_d` is the step at which annealing starts (`checkpoint_step`) and `t_a` is the annealing budget (`tau`). The LR reaches exactly `η_min` after `t_a + N_d` annealing steps.
-
-**Adaptive decay rate:** The denominator `t_a + N_d` means that models trained longer before annealing (larger `N_d`) decay more slowly. This is intentional: a model that has trained for 100B tokens should anneal more gradually than one trained for 1B tokens, since the loss landscape is flatter and more sensitive to abrupt LR changes.
-
-**Typical workflow:**
-1. Train at `constant_lr` for as long as needed (the "infinite" phase)
-2. When ready for a converged checkpoint, set `checkpoint_step` to the current step and choose a `tau` (annealing budget)
-3. Continue training through the annealing phase to produce a final model
-4. Alternatively, fork from the constant-phase checkpoint for multiple task-specific annealing runs with different `tau` values
-
-This approach decouples the training budget decision from the LR schedule, which is particularly valuable for continual pre-training where new data arrives over time. See [Beyond Cosine Decay: On the effectiveness of Infinite Learning Rate Schedule for Continual Pre-training](https://arxiv.org/html/2503.02844v1) for the full analysis.
-
-### Sequence Length
-
-**Parameter:**
-- `--max-length N`: Maximum sequence length in tokens (default: 4096)
-
-Sequences are packed to this length using multiple examples with masking to prevent cross-attention between samples. This maximizes GPU utilization while maintaining training semantics.
-
-**Trade-offs:**
-- Longer sequences: Better context, more memory, fewer steps for same token budget
-- Shorter sequences: Less memory, faster iteration, more gradient updates
-
-**Memory scaling:** Attention is O(n²) in sequence length. For large models, you may need to reduce sequence length or use memory-efficient attention (flash_attention_2, flex_attention).
-
-### Step Cadence
-
-**Parameter:**
-- `--step-cadence FACTOR`: Scales logging/eval/save intervals (default: 1.0)
-
-Controls how often various events occur without changing the token scale:
-```python
-# Base intervals (in millions of tokens):
-logging_interval = 1M tokens
-eval_interval = 25M tokens
-save_interval = 500M tokens
-
-# Actual step intervals:
-logging_steps = (1M × step_cadence) / tokens_per_step
-eval_steps = (25M × step_cadence) / tokens_per_step
-save_steps = (500M × step_cadence) / tokens_per_step
-```
-
-**Use cases:**
-- `--step-cadence 4.0`: For small models - checkpoint/eval less frequently
-- `--step-cadence 0.25`: For debugging - more frequent monitoring
-
-## Model Selection
-
-### Default Model: Custom DeepOne
-
-A customized 162M parameter model based on DeepNet architecture:
-- 16 layers × 768 hidden × 8 attention heads
-- RoPE positional encoding (replaced ALiBi for speed)
-- Qwen3-style QK-Norm
-- GLU feedforward (ReLU)
-- 32K vocabulary
-
-**Why DeepOne?**
-The DeepNet architecture is relatively forgiving for pretraining experiments due to its improved initialization and normalization. Good choice for learning about pretraining dynamics.
-
-See [Custom DeepOne README](./custom_deepone/README.md) for details.
-
-### Using Different Models
-
-```bash
-# Llama architecture (30M - 3B params)
-forgather train --resume false \
+# Swap in a different model project / config
+forgather train \
     --model-project ../../models/llama/ \
-    --model-config medium.yaml
+    --model-config small.yaml
 
-# Qwen3 architecture
-forgather train --resume false \
-    --model-project ../../models/qwen3/ \
-    --model-config medium.yaml
-
-# List available model configs
-ls ../../models/llama/templates/configs/
+# List the ready-made configs in this project
+forgather ls
 ```
 
-**Important:** When changing models, delete the old output directory:
+Most options documented in the
+[LM Training Project reference](../../../docs/project-templates/lm-training-projects.md)
+apply here unchanged - this project only overrides a handful of defaults on
+top of `lm_training_project.yaml`. See
+[`templates/project.yaml`](templates/project.yaml) for the exact overrides.
+
+## Configurations
+
+```
+forgather ls
+```
+
+| Config | Purpose |
+|--------|---------|
+| `default.yaml` | Baseline. Same as `project.yaml` - 1x Chinchilla, AMP bf16, Llama medium. |
+| `bf16.yaml` | Pure bf16 weights + SR, Forgather's AdamW. `lr = 4e-4`. |
+| `bf16_adafactor.yaml` | Pure bf16 weights + SR, Adafactor. `lr = 1e-3`. |
+| `high_lr.yaml` | AMP at the highest non-diverging LR we could find (`3e-4`). |
+| `canon.yaml` | Custom Canon-A + NoPE variant from the `custom_canon/` sub-project. |
+| `tiny_x_small_lm.yaml` | Curriculum: Tiny Stories softly transitioning into SmolLM-corpus. |
+| `ten_chinchilla.yaml` | Baseline extended to 10x Chinchilla + 1x annealing. |
+| `long_cooldown.yaml` | 10x Chinchilla with `cooldown_p = 0.7`. |
+| `wsd.yaml` | Demonstrates the WSD-S scheduler from `forgather.ml.optim:WSDScheduler`. Not run yet. |
+| `deepone.yaml` | Old default - DeepOne medium with trainable ALiBi. Kept for comparison; not currently run. |
+| `pp.yaml` | Pipeline Parallel trainer variant of the baseline. |
+
+Unless otherwise noted below, each of the 1x Chinchilla configs uses the
+baseline LR schedule, so their loss curves are directly comparable to the
+first 1x of the 10x runs.
+
+## Sub-Projects
+
+### `custom_canon/` - custom model demonstrator
+
+[`custom_canon/`](custom_canon/README.md) shows how to build a custom model
+architecture *as a sub-project* of a training project, without forking the
+underlying model project. It extends `examples/models/llama_canon/` and:
+
+- enables **Canon-A** (a depthwise causal convolution before attention, to
+  mix adjacent token representations and facilitate induction head
+  formation - see <https://arxiv.org/pdf/2512.17351>);
+- disables **Canon-C** (no-op for the pre-FFN position);
+- uses **NoPE** (no positional encoder);
+- adds **QK-Norm** (RMSNorm on Q and K, Qwen3-style);
+- keeps the model at roughly the same size as the baseline Llama medium
+  (`hidden_size=768`, `intermediate_size=2048`, 16 layers, 8 heads) so
+  training curves can be compared head-to-head.
+
+This sub-project is the intended pattern for adding a custom architecture
+to an experiment: treat the custom model as its own Forgather project, then
+point the training project at it via `--model-project` (or by committing a
+config like `canon.yaml` that sets `ns.model_project_dir`).
+
+### `tiny-stories_small-lm/` - curriculum dataset demonstrator
+
+[`tiny-stories_small-lm/`](tiny-stories_small-lm/) is a dataset sub-project
+that demonstrates a soft curriculum: it interleaves the `roneneldan/
+TinyStories` dataset with the default `HuggingFaceTB/smollm-corpus`
+interleaved-packed dataset using `forgather.ml.datasets.soft_sequential`,
+which smoothly transitions the sampling weight from the first dataset to
+the second over the course of training.
+
+The `tiny_x_small_lm.yaml` config plugs this sub-project in as the training
+dataset. The pattern is the same as for models: the dataset lives in its
+own Forgather project, and the training config points at it via
+`ns.dataset_proj` / `ns.dataset_config`.
+
+## Experiments
+
+All experiments in this section were run on 4 GPUs. The plots below are
+generated with `forgather logs plot`.
+
+### 10x Chinchilla runs
+
+These are long runs at 10x Chinchilla (~22.7B tokens) followed by a 1x
+Chinchilla (~2.27B tokens) annealing phase. The LR schedule before the
+annealing phase is the same as the 1x baseline, so the first 10% of
+training is directly comparable to the 1x runs.
+
+The LR trace from the baseline `ten_chinchilla.yaml` run makes the Infinite
+LR schedule concrete: a short warmup ramp, a cosine cooldown from peak
+(~3e-4 at the scaled global batch) down to `constant_lr` (~1e-4) over the
+first ~30% of training, a long stable phase, and a final rsqrt annealing
+phase that was triggered after the fact via `--start-annealing`. The loss
+drops visibly in the annealing region.
+
+![10x ten_chinchilla - loss and LR](docs/plots/10x_ten_chinchilla_lr.png)
+
+Side-by-side comparison of the two 10x configs. The outlier-aware y-axis
+auto-scaling focuses on the tail, where the crossover is: `long_cooldown`
+stays *above* `ten_chinchilla` until around step 140K, at which point it
+overtakes and finishes with a notably lower eval loss. The rising train-loss
+noise band from ~step 100K onwards is the `constant_lr` phase - there is no
+more decay, so per-step variance stays high even while eval loss keeps
+improving.
+
+![10x comparison - train and eval loss](docs/plots/10x_chinchilla_comparison.png)
+
+Same eval losses plotted as perplexity on a linear axis (outlier-clipped to
+the late-training tail). Perplexity on a linear scale is the natural view
+for this data - log-perplexity is just loss, so it would collapse back to
+the previous plot:
+
+![10x eval perplexity](docs/plots/10x_eval_perplexity.png)
+
+#### `ten_chinchilla.yaml` - `output_models/ten_chinchilla`
+
+The baseline extended to 10x + 1x with `cooldown_p = 0.3`. Best eval loss
+**2.329** at step 400334.
+
+Note: this run was *not* originally launched from `ten_chinchilla.yaml` -
+the config was reverse-engineered afterwards to match what actually ran.
+The run was started from the baseline with `--total-tokens 24970`, and the
+annealing phase was triggered after the fact using the new
+`--start-annealing` / `forgather control` path. The TensorBoard logs
+appear to have been updated correctly, and the JSON logs should have been
+appended to as well, though that has not been confirmed end-to-end. The
+baseline config would produce an identical training trajectory if
+truncated to 2.27B tokens.
+
+#### `long_cooldown.yaml` - `output_models/long_cooldown`
+
+Same as above, except `cooldown_p = 0.7` - the cosine cooldown runs over
+70% of the initial 10x token budget instead of 30%. Best eval loss
+**2.308** at step 399131 (lower than `ten_chinchilla`).
+
+As with `ten_chinchilla`, the annealing phase was added after the fact.
+The technique was slightly different - `ns.decay_start_step` was edited
+from `-1` to trigger annealing - and the resulting rounding error in the
+step count produced a small discontinuity at the start of the annealing
+phase. The overall profile is still close to `ten_chinchilla`.
+
+The interesting observation is in the validation-loss curve: `long_cooldown`
+stays *above* `ten_chinchilla` until around step 140K, at which point it
+overtakes and finishes with a notably lower perplexity. This is consistent
+with the intuition that stretching the high-LR phase helps late-training
+convergence when you have the compute budget to pay for the slower early
+progress.
+
+#### `wsd.yaml` - not yet run
+
+Demonstrates the WSD-S protocol on top of the baseline. Listed here so the
+comparison slot is visible; a full run is on the TODO list.
+
+### 1x Chinchilla runs
+
+These runs share the baseline LR schedule over the 1x budget, so they are
+directly comparable. The `default` series in the plots below is the first
+~36.4K steps of the `ten_chinchilla` run, clipped with `--x-max` - since
+the cooldown floor (`min_cooldown_tokens = 6.8B`) dominates both the 1x
+and 10x configs, the first 1x interval of `ten_chinchilla` is on exactly
+the same LR schedule as a standalone default run, so it serves as a
+zero-cost stand-in for the baseline.
+
+![1x comparison - train and eval loss](docs/plots/1x_chinchilla_comparison.png)
+
+The train-loss panel on the left makes the `tiny_x_small_lm` curriculum
+behaviour obvious - the early Tiny Stories phase pulls loss well below the
+other runs, and it climbs back up as the curriculum transitions to
+SmolLM-corpus. The eval panel on the right (which only uses the SmolLM
+eval split) shows the ranking: `high_lr` and `default` at the bottom, the
+two pure-bf16 runs next, `tiny_x_small_lm` a bit behind, and `canon` last.
+
+Same eval losses plotted as perplexity on a linear axis. The 1x runs have
+fewer eval points than the 10x runs, so the outlier-clip percentile window
+is more permissive; `--y-max 25` is used here to force a comparable
+y-range to the 10x plot so the tail-end differentiation is legible:
+
+![1x eval perplexity](docs/plots/1x_eval_perplexity.png)
+
+| Config | Best eval loss | Notes |
+|--------|----------------|-------|
+| `high_lr.yaml` | **2.617** | AMP, `lr = 3e-4`. Highest non-diverging LR for AMP. |
+| `bf16.yaml` | 2.622 | Pure bf16 + SR, Forgather AdamW, `lr = 4e-4`. |
+| `default.yaml` | ~2.63 | Baseline. Shown via the first 1x slice of `ten_chinchilla`; not rerun separately. |
+| `bf16_adafactor.yaml` | 2.649 | Pure bf16 + SR, Adafactor, `lr = 1e-3`. |
+| `tiny_x_small_lm.yaml` | 2.660 | Curriculum dataset. |
+| `canon.yaml` | 2.678 | Custom Canon-A + NoPE variant. |
+
+#### `high_lr.yaml` - `output_models/high_lr`
+
+AMP run with PyTorch's AdamW at the highest LR that did not diverge in a
+sweep (`lr = 3e-4`). Finished at the best eval loss of any 1x run, but
+only modestly better than the default baseline - the default is already
+close to the edge.
+
+#### `bf16.yaml` - `output_models/bf16`
+
+Pure bf16 weights + gradients with stochastic rounding, using Forgather's
+AdamW (which defaults to SR when optimizer state is in bf16). Less robust
+to high LRs than the SR Adafactor run - settled on `lr = 4e-4` after a
+sweep - but still tolerated a higher LR than AMP did.
+
+Results confirm the general expectation from the
+[SR paper](https://arxiv.org/pdf/2502.20566): pure bf16 + SR can reach
+perplexity comparable to mixed precision, at a meaningfully lower
+optimizer-memory cost.
+
+#### `bf16_adafactor.yaml` - `output_models/bf16_adafactor`
+
+Same pure-bf16 + SR setup as `bf16.yaml`, but using Forgather's Adafactor.
+This run was **unusually stable at high LRs** - we settled on `lr = 1e-3`
+as the base, but had tried even higher values without diverging. The
+grad-norms are visibly noisier than other configs, which suggests `1e-3`
+may still be above the statistical optimum. Finding the optimal LR for
+this combination is a TODO.
+
+#### `canon.yaml` - `output_models/canon`
+
+The `custom_canon` model (Canon-A only, NoPE, QK-Norm) at comparable
+parameter count to the baseline Llama. Finished with a higher final eval
+loss than the vanilla Llama runs. Throughput was also noticeably lower,
+which is consistent with the sub-optimal causal-convolution implementation
+in the current Canon layer - there is room to revisit this with a better
+kernel. Given how well other Canon variants have performed in the
+`tiny_experiments/canon` project, this config is worth coming back to with
+different hyperparameters.
+
+#### `tiny_x_small_lm.yaml` - `output_models/tiny_x_small_lm`
+
+The curriculum dataset run, using the `tiny-stories_small-lm` sub-project
+to softly transition from Tiny Stories to SmolLM corpus. The loss curves
+converge near the end of training, suggesting there is headroom for a
+follow-up run at a larger token budget. The influence of the Tiny Stories
+phase is visible in the text-generation-callback samples - the model
+produces noticeably more "children's story" flavoured completions in the
+early and middle of training than the baseline does.
+
+#### `deepone.yaml` - not currently run
+
+Keeps the old default DeepOne-medium model around for comparison. It has
+historically been a strong performer with trainable ALiBi, but there is a
+current performance regression with `flex_attention + ALiBi` that makes it
+much slower than it used to be. Fixing the regression and running this
+config for comparison is on the TODO list.
+
+#### `pp.yaml` - not currently run end-to-end
+
+The Pipeline Parallel variant of the baseline. Verified to start up, but
+not yet run for a full training budget. A useful follow-up would be to add
+a matching DDP config with `dispatch_batches = True`, so the DDP and PP
+runs see exactly the same sequence of examples and can be compared
+head-to-head.
+
+### Reproducing the plots
+
+The plots above are produced with `forgather logs plot`. The commands
+below are what was actually used - run them from this project directory
+(`examples/pretrain/small-llm/`). They double as a short tour of the more
+useful `forgather logs plot` flags.
+
 ```bash
-rm -rf output_models
-forgather train --resume false --model-project ...
+# 10x ten_chinchilla alone, loss + LR on secondary axis.
+# Single-run --loss-curves draws the LR trace; the outlier-aware y-axis
+# default focuses on the tail instead of the warmup peak.
+forgather logs plot \
+    output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json \
+    --loss-curves --smooth 10 \
+    --output docs/plots/10x_ten_chinchilla_lr.png
+
+# 10x comparison: ten_chinchilla vs long_cooldown.
+# --loss-curves in multi-run mode produces side-by-side train/eval panels.
+forgather logs plot \
+    --compare \
+        output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json \
+        output_models/long_cooldown/runs/log_2026-04-06T07-14-55/trainer_logs.json \
+    --loss-curves --smooth 10 \
+    --output docs/plots/10x_chinchilla_comparison.png
+
+# 10x eval perplexity (linear axis).
+# --perplexity transforms eval_loss to exp(eval_loss); omit --log-scale
+# because log-perplexity is just loss, so the log form would collapse back
+# to the previous plot.
+forgather logs plot \
+    --compare \
+        output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json \
+        output_models/long_cooldown/runs/log_2026-04-06T07-14-55/trainer_logs.json \
+    --metrics eval_loss --smooth 5 --perplexity \
+    --output docs/plots/10x_eval_perplexity.png
+
+# 1x comparison, with ten_chinchilla clipped to the 1x step budget to
+# serve as the "default" baseline (see note in the 1x section above).
+# --x-max clips the *data* before plotting, not just the view; --labels
+# reorders/renames the series so the clipped run shows up as "default".
+forgather logs plot \
+    --compare \
+        output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json \
+        output_models/bf16/runs/log_2026-04-05T00-51-49/trainer_logs.json \
+        output_models/bf16_adafactor/runs/log_2026-04-04T20-52-11/trainer_logs.json \
+        output_models/high_lr/runs/log_2026-04-08T14-47-03/trainer_logs.json \
+        output_models/canon/runs/log_2026-04-05T20-04-51/trainer_logs.json \
+        output_models/tiny_x_small_lm/runs/log_2026-04-06T00-55-02/trainer_logs.json \
+    --labels default bf16 bf16_adafactor high_lr canon tiny_x_small_lm \
+    --loss-curves --smooth 10 \
+    --x-max 36448 \
+    --output docs/plots/1x_chinchilla_comparison.png
+
+# 1x eval perplexity. --y-max forces a tight y-range matching the 10x
+# plot (the 1x runs have fewer eval points, so the outlier-clip window
+# would otherwise land too permissively).
+forgather logs plot \
+    --compare \
+        output_models/ten_chinchilla/runs/log_2026-04-02T00-02-58/trainer_logs.json \
+        output_models/bf16/runs/log_2026-04-05T00-51-49/trainer_logs.json \
+        output_models/bf16_adafactor/runs/log_2026-04-04T20-52-11/trainer_logs.json \
+        output_models/high_lr/runs/log_2026-04-08T14-47-03/trainer_logs.json \
+        output_models/canon/runs/log_2026-04-05T20-04-51/trainer_logs.json \
+        output_models/tiny_x_small_lm/runs/log_2026-04-06T00-55-02/trainer_logs.json \
+    --labels default bf16 bf16_adafactor high_lr canon tiny_x_small_lm \
+    --metrics eval_loss --smooth 3 --perplexity \
+    --x-max 36448 --y-max 25 \
+    --output docs/plots/1x_eval_perplexity.png
 ```
 
-## Dataset
+Flags worth knowing (full reference in
+[`docs/logs-analysis.md`](../../../docs/logs-analysis.md)):
 
-**Source:** [HuggingFaceTB/smollm-corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus)
+| Flag | Purpose |
+|------|---------|
+| `--loss-curves` | Train + eval loss panels; adds an LR trace on a secondary axis in single-run mode. |
+| `--metrics NAME[,NAME...]` | Plot specific metrics instead of the default set. |
+| `--compare LOG1 LOG2 ...` | Overlay multiple runs on the same axes. |
+| `--labels L1 L2 ...` | Override per-run labels (order matches `--compare`). |
+| `--smooth N` | Moving-average smoothing window (raw curve drawn faintly behind). |
+| `--perplexity` | Convert loss-like metrics to `exp(loss)`; relabel axes. |
+| `--log-scale` | Log y-axis. Note: disables outlier-aware auto-clipping (log scale already handles dynamic range). |
+| `--ignore-outliers` / `--no-ignore-outliers` | Default-on 5th/95th-percentile y-axis auto-clipping. Disable for the old full-range behaviour. |
+| `--x-min`, `--x-max` | Clip the *data* to a step / epoch / time window. |
+| `--y-min`, `--y-max` | Explicit y-axis limits; override auto-clipping. |
+| `--grad-norm` | First-class grad-norm plot with optional smoothing and log scale. |
 
-**Subsets used:**
-- `cosmopedia-v2`: Synthetic educational content
-- `fineweb-edu-dedup`: Deduplicated educational web content
+## Parallelism
 
-**Processing:**
-- Interleaved with proportional sampling (balanced consumption)
-- Packed into 4K token blocks with masking
-- Fast loading with [Fast HF Dataset Loader](../../../docs/datasets/fast-hf-loader.md)
+This project uses DDP by default. For the trainer-level details
+(dispatch-batches vs sharding, pipeline schedule selection, memory trade-
+offs, text-generation callback compatibility, etc.) see:
 
-**Note:** Initial download is large (~100GB+) but subsequent loads are nearly instant when cached.
+- [LM Training Project documentation](../../../docs/project-templates/lm-training-projects.md)
+- [Pipeline Parallel guide](../../../docs/trainers/pipeline-parallel.md)
+- [Trainer Options Reference](../../../docs/trainers/trainer_options.md)
 
-See [SmolLM-Corpus dataset project](../../datasets/HuggingFaceTB/README.md) for details.
+Everything those documents say about DDP, pipeline parallel schedule
+choice, compile-mode compatibility, memory optimisations, and the
+text-generation callback applies here without modification.
 
-## Command-Line Options
-
-### Core Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--resume false` | Initialize new model (vs resume from checkpoint) | Resume |
-| `--total-tokens N` | Total training tokens in millions | 2270 |
-| `--batch-size N` | Per-device training batch size | 4 |
-| `--lr LR` | Base learning rate (before batch size scaling) | 1.5e-4 |
-| `--max-length N` | Maximum sequence length | 4096 |
-| `--min-cooldown-tokens N` | Minimum tokens (millions) for LR cooldown | 6800 |
-
-### Model Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--model-project PATH` | Path to model project directory | `./custom_deepone` |
-| `--model-config NAME` | Model configuration file | `custom_deepone.yaml` |
-
-### Attention Implementation
-
-| Option | Description | Performance |
-|--------|-------------|-------------|
-| `--attn-implementation sdpa` | PyTorch SDPA | Good, no sparsity |
-| `--attn-implementation flex_attention` | Flex attention (default) | Best, supports sparsity |
-| `--attn-implementation flash_attention_2` | Flash Attention 2 | Excellent, requires installation |
-| `--attn-implementation eager` | Standard PyTorch | Slow, debugging only |
-
-The default `flex_attention` provides best performance with sequence packing. Use `sdpa` for faster startup during quick experiments.
-
-### Training Control
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--max-steps N` | Override max steps (instead of token budget) | Auto-computed |
-| `--save-strategy {no,steps,epoch}` | When to save checkpoints | steps |
-| `--step-cadence FACTOR` | Scale log/eval/save intervals | 1.0 |
-| `--compile false` | Torch compile (slower startup, faster training) | Enabled |
-
-### Distributed Training
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `-d DEVICES` | CUDA visible devices (e.g., "0,1,3") | All GPUs |
-| `--dist-backend BACKEND` | PyTorch distributed backend | nccl |
-
-### Pipeline Parallel Options
-
-These options apply when using `pp.yaml` (`forgather -t pp.yaml`).
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--pipeline-schedule NAME` | Pipeline schedule class to use (see below) | `ScheduleInterleaved1F1B` |
-| `--microbatch-scale N` | Multiply the number of microbatches by N | 1 |
-
-**Available pipeline schedules:**
-
-| Schedule | `stages_per_rank` | Notes |
-|----------|--------------------|-------|
-| `ScheduleGPipe` | 1 | Simple, high pipeline bubble |
-| `Schedule1F1B` | 1 | Reduced bubble vs GPipe |
-| `ScheduleInterleaved1F1B` | 2 | Default; lower bubble, requires 2 stages/rank |
-| `ScheduleLoopedBFS` | 2 | Alternative interleaved schedule |
-| `ScheduleInterleavedZeroBubble` | 2 | Near-zero bubble |
-| `ScheduleZBVZeroBubble` | 2 | Zero-bubble V layout (experimental) |
-
-**Batch size constraint:** `per_device_train_batch_size` must be divisible by `stages_per_rank × microbatch_scale`. The default batch size of 4 works with `stages_per_rank=2` (the interleaved default). Use `--microbatch-scale` to increase throughput by adding more microbatches without changing the logical batch size.
-
-### Debugging
-
-| Option | Description |
-|--------|-------------|
-| `--dry-run` | Show command without executing |
-| `--verbose-info` | Display detailed config at startup |
-| `--no-restore-dataset-state` | Start from dataset beginning |
-| `--save-strategy no` | Disable checkpointing for quick experiments |
-
-## Examples
-
-### Example 1: Quick Chinchilla-Optimal Run
-
-Train the default Custom DeepOne 162M model for 2.3B tokens (Chinchilla-optimal):
+## Monitoring and Control
 
 ```bash
-forgather train --resume false
-```
-
-**What happens:**
-- Model: Custom DeepOne 162M
-- Total tokens: 2.3B
-- Total steps: ~35K (with 4 GPUs)
-- LR: Stays at ~99% of max_lr throughout
-- Training time: ~6-8 hours on 4x RTX 3090
-
-### Example 2: Longer Training Run
-
-Train for 10B tokens to see more convergence:
-
-```bash
-forgather train --resume false \
-    --total-tokens 10000 \
-    --attn-implementation flex_attention
-```
-
-**What happens:**
-- Total steps: ~153K (with 4 GPUs)
-- LR: Gentle decay over training (~87% of max_lr at end)
-- Better final performance but diminishing returns per token
-
-### Example 3: Small Model, High Cadence
-
-Train a tiny model quickly with frequent checkpointing:
-
-```bash
-forgather train --resume false \
-    --model-project ../../models/llama/ \
-    --model-config small.yaml \
-    --batch-size 16 \
-    --step-cadence 4.0 \
-    --attn-implementation flex_attention
-```
-
-**Why this works:**
-- 30M model trains fast
-- Larger batch size (16) → fewer steps
-- `step_cadence 4.0` → checkpoints less frequently
-- Good for testing configurations quickly
-
-### Example 4: Multi-GPU on Specific Devices
-
-Use specific GPUs (skip GPU 2):
-
-```bash
-forgather train --resume false \
-    -d 0,1,3,4,5 \
-    --attn-implementation flex_attention
-```
-
-**What happens:**
-- Uses 5 GPUs (skips GPU 2)
-- `global_batch_size = 4 × 5 = 20`, `tokens_per_step = 4096 × 20 = 81920`
-- LR auto-scales: `1.5e-4 × sqrt(81920 / 16384) ≈ 3.4e-4`
-
-### Example 5: Hyperparameter Exploration
-
-Quick experiment without saving checkpoints:
-
-```bash
-forgather train --resume false \
-    --max-steps 2000 \
-    --save-strategy no \
-    --lr 2.0e-5 \
-    --attn-implementation flex_attention
-```
-
-**Use case:**
-- Test different learning rates quickly
-- No disk space used for checkpoints
-- 2000 steps ≈ 130M tokens with defaults (4 GPUs)
-
-### Example 6: Resume and Continue
-
-Resume from checkpoint and train longer:
-
-```bash
-# Initial run (uses default 2.3B token budget)
-forgather train --resume false
-
-# Later: continue for more tokens (10B total)
-forgather train --total-tokens 10000
-```
-
-**What happens:**
-- Resumes from last checkpoint
-- Continues to 10B total tokens (10000M)
-- Dataset state restored (picks up where it left off)
-
-### Example 7: Pipeline Parallel Training
-
-Train using Pipeline Parallel across 4 GPUs with the interleaved schedule:
-
-```bash
-forgather -t pp.yaml train --resume false \
-    -d 0,1,2,3 \
-    --attn-implementation flex_attention \
-    --pipeline-schedule ScheduleInterleaved1F1B
-```
-
-**What happens:**
-- 4 GPUs, `stages_per_rank=2` → 8 total pipeline stages
-- Each GPU holds 2 model stages (interleaved across the pipeline)
-- Default batch size (4) split into microbatches of 1 each
-- Memory per GPU: roughly 1/4 of total model parameters
-
-**Performance testing without checkpointing:**
-
-```bash
-forgather -t pp.yaml train --resume false \
-    -d 0,1 \
-    --attn-implementation sdpa \
-    --microbatch-scale 2 \
-    --batch-size 8 \
-    --max-steps 100 \
-    --save-strategy no \
-    --pipeline-schedule ScheduleGPipe
-```
-
-This runs 100 steps with `--save-strategy no` for fast iteration when testing schedule and batch size combinations.
-
-**When to use PP over DDP:**
-- Model does not fit on a single GPU in full precision
-- You want to pipeline compute across GPUs rather than replicate the model
-
-### Example 8: Conservative LR Schedule
-
-Use more conservative cooldown for very long training:
-
-```bash
-forgather train --resume false \
-    --total-tokens 50000 \
-    --min-cooldown-tokens 100000 \
-    --attn-implementation flex_attention
-```
-
-**What happens:**
-- 50B token budget (50000M)
-- min_cooldown of 100B → only 50% cosine progress → gentle decay
-- Good for exploring if longer high-LR phases improve convergence
-
-## Advanced Topics
-
-### Distributed Data Parallel (DDP)
-
-The project uses PyTorch DDP for multi-GPU training on a single node. Each GPU maintains a complete copy of the model and processes different data.
-
-**Dataset sharding** (default):
-- Each rank processes a different shard of the dataset
-- More efficient: parallel data loading
-- Drawback: Requires more CPU memory
-
-**Batch dispatching** (alternative):
-Set `ns.dispatch_batches = True` in config:
-- Rank 0 loads and dispatches batches to all ranks
-- More memory efficient
-- Drawback: Potential data loading bottleneck
-
-**Memory limits:**
-DDP requires the full model to fit on a single GPU. For larger models (>2B params with 24GB), consider:
-- Pipeline parallelism (see below)
-- Tensor parallelism
-- Fully-sharded data parallel (FSDP)
-
-### Pipeline Parallel
-
-Use `pp.yaml` instead of the default config to train with Pipeline Parallel (PP). This is configured with `forgather -t pp.yaml`.
-
-**When to use PP:**
-- The model is too large to fit on a single GPU with DDP
-- You want to split compute across GPUs in a pipeline rather than replicate the full model
-
-**How it works:**
-
-The model is partitioned into stages distributed across GPUs. Each GPU holds one or more stages and processes microbatches in a pipelined fashion. The pipeline schedule determines the order in which microbatches flow through stages.
-
-**Batch size and microbatches:**
-
-```
-# DDP: each GPU processes a full batch independently
-# PP: the batch is split into microbatches that flow through the pipeline
-
-stages_per_rank = 1 or 2 (determined by schedule)
-n_microbatches = world_size × stages_per_rank × microbatch_scale
-per_stage_batch_size = per_device_train_batch_size // (stages_per_rank × microbatch_scale)
-pp_batch_size = n_microbatches × per_stage_batch_size
-```
-
-With defaults (`--batch-size 4`, `ScheduleInterleaved1F1B`, 2 GPUs):
-```
-stages_per_rank = 2
-n_microbatches = 2 × 2 × 1 = 4
-per_stage_batch_size = 4 // (2 × 1) = 2
-pp_batch_size = 4 × 2 = 8  (the logical batch size seen by the trainer)
-```
-
-Tip: When you double batch-size, also double microbatch-scale. e.g.
-
-```
-... --batch-size 4 --microbatch-scale 1
-... --batch-size 8 --microbatch-scale 2
-... --batch-size 32 --microbatch-scale 8
-...
-```
-
-**Choosing a schedule:**
-
-Simple schedules (`ScheduleGPipe`, `Schedule1F1B`) use one stage per rank. Interleaved schedules (`ScheduleInterleaved1F1B`, `ScheduleLoopedBFS`) use two stages per rank and require an even divisor batch size, but reduce pipeline bubble and improve utilization. Start with `ScheduleInterleaved1F1B` (the default).
-
-**Dataset loading:**
-
-PP loads the dataset only on rank 0 (not sharded), unlike DDP which shards across ranks. This is handled automatically by the `pp.yaml` config.
-
-**Basic usage:**
-```bash
-# 4 GPUs, interleaved schedule, flex attention
-forgather -t pp.yaml train --resume false -d 0,1,2,3 --attn-implementation flex_attention
-
-# 2 GPUs, GPipe schedule (simpler, one stage per rank)
-forgather -t pp.yaml train --resume false -d 0,1 --pipeline-schedule ScheduleGPipe
-
-# Increase microbatch count without changing batch size
-forgather -t pp.yaml train --resume false -d 0,1 --microbatch-scale 2 --batch-size 8
-```
-
-**Resuming from checkpoint:**
-
-PP checkpoints are saved per rank (each rank holds different pipeline stages). Resume works the same as DDP:
-```bash
-forgather -t pp.yaml train  # or --resume true to resume
-```
-
-### Attention Implementations
-
-**Flex Attention (default):**
-- Supports sparsity masks (respects sequence packing)
-- Excellent performance
-- Requires PyTorch 2.5+
-
-**SDPA:**
-```bash
-forgather train --attn-implementation sdpa
-```
-- PyTorch native scaled dot-product attention
-- Works everywhere, good performance, faster startup
-- Does NOT support sparsity from sequence packing
-
-**Flash Attention 2:**
-```bash
-forgather train --attn-implementation flash_attention_2
-```
-- Fastest for dense attention
-- Requires separate installation: `pip install flash-attn`
-- Does NOT support sparsity
-
-### Torch Compile
-
-Enabled by default. Disable with `--compile false` for quick experiments:
-```bash
-forgather train --resume false --compile false
-```
-
-**Trade-offs:**
-- Initial compilation: takes a few minutes on first run
-- Training speed: 10-30% faster after compilation
-- Worth it for long runs, disable for quick experiments
-
-### Checkpoint Management
-
-**Automatic checkpointing:**
-- Saves every 500M tokens (adjustable with `--step-cadence`)
-- Keeps last 4 checkpoints (`save_total_limit: 4`)
-- Preserves best model by eval loss
-
-**What's saved:**
-- Model weights
-- Optimizer state
-- LR scheduler state
-- Dataset position (for exact resume)
-- RNG state (for reproducibility)
-- Training progress
-
-**Manual checkpoint control:**
-
-Use training control commands while running:
-```bash
-# List running jobs
-forgather control list
-
-# Save checkpoint now
-forgather control save JOB_ID
-
-# Stop gracefully (saves final checkpoint)
-forgather control stop JOB_ID
-
-# Abort without saving (failed hyperparameter experiment)
-forgather control abort JOB_ID
-```
-
-See [Training Job Control](../../../docs/trainers/trainer-control.md) for details.
-
-### Monitoring Training
-
-**Training logs:**
-```bash
-# View recent progress
-tail -f output_models/sllm/runs/*/trainer_logs.json
-
-# Get summary statistics
-forgather logs summary
-
-# Generate plots
+# Tail the trainer log
+tail -f output_models/<run>/runs/*/trainer_logs.json
+
+# Summaries and plots
+forgather logs summary --all --format one-line
 forgather logs plot --loss-curves
-forgather logs plot --loss-curves -e  # Open in editor
-
-# Compare multiple runs
 forgather logs plot --compare run1/trainer_logs.json run2/trainer_logs.json
 
-# Start tensorboard for all models in output_models directory.
-forgather tb --all               # Only available from localhost
-forgather tb --all -- --bind_all # Available on all interfaces
+# TensorBoard across every model in output_models/
+forgather tb --all                 # localhost only
+forgather tb --all -- --bind_all   # all interfaces
 ```
 
-See [Training Log Analysis](../../../docs/logs-analysis.md) for details.
-
-**Divergence detection:**
-
-The config includes a `DivergenceDetector` that monitors smoothed train loss (EMA with alpha=0.3) against its best observed value. If the smoothed loss exceeds the best by threshold (1.0) for 3 consecutive observations, training aborts automatically to save compute.
-
-### Memory Optimization
-
-For fitting larger models:
-
-1. **Reduce batch size:** `--batch-size 2` or `--batch-size 1`
-2. **Reduce sequence length:** `--max-length 2048`
-3. **Use gradient accumulation:** Edit config to set `gradient_accumulation_steps: 4`
-4. **Use flash attention:** `--attn-implementation flash_attention_2`
-5. **Disable some callbacks:** Edit config to remove peak_memory, text_gen callbacks
-
-## Troubleshooting
-
-**OOM (Out of Memory):**
-- Reduce `--batch-size`
-- Reduce `--max-length`
-- Use `--attn-implementation flash_attention_2`
-- Train on fewer GPUs with same global batch (LR auto-adjusts)
-
-**Slow data loading:**
-- First run downloads dataset (slow, one-time)
-- Subsequent runs load from cache (fast)
-- If still slow, check disk I/O and consider SSD
-
-**Loss not decreasing:**
-- Check LR isn't too low (use `--verbose-info` to see actual LR)
-- Try higher `--lr`
-- Check for data preprocessing issues
-- Verify model initialized correctly (`--resume false`)
-
-**Loss exploding:**
-- LR might be too high, reduce `--lr`
-- Consider enabling gradient clipping (uncomment `max_grad_norm: 4.0` in config)
-- Divergence detector should catch this automatically
-
-**Different results after resume:**
-- Dataset state should restore automatically
-- If deleted dataset checkpoint, training continues from random position
-- Use `--no-restore-dataset-state` to explicitly restart from beginning
-
-## Configuration Files
-
-**Main config:** `templates/project.yaml`
-- Defines all training parameters
-- Inherits from base training script templates
-- Customizable through child configs
-
-**Alternative configs:**
-- `configs/pp.yaml`: Pipeline Parallel training with configurable schedule and microbatch settings
-- `configs/bf16.yaml`: Full bfloat16 precision training (no mixed precision)
-- `configs/tiny_x_small_lm.yaml`: Progressive curriculum (Tiny Stories → SmolLM)
-
-**Creating custom configs:**
-```yaml
--- extends 'project.yaml'
-
-[config_metadata]
-    == super()
-    -- set ns.config_name = "My Experiment"
-    -- set ns.model_name = "my_experiment"
-    -- set ns.base_lr = 3.0e-5
-```
+External control of a running job (save / stop / abort / trigger
+annealing) uses the standard `forgather control` commands - see
+[Trainer Control](../../../docs/trainers/trainer-control.md).
 
 ## References
 
-- [Chinchilla Paper](https://arxiv.org/abs/2203.15556): Training Compute-Optimal Large Language Models
-- [DeepNet Paper](https://arxiv.org/abs/2203.00555): Scaling Transformers to 1,000 Layers and Beyond
-- [SmolLM-Corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus): High-quality pretraining data
-- [InfiniteLR Schedule](https://arxiv.org/abs/2503.02844): Beyond Cosine Decay: On the effectiveness of Infinite Learning Rate Schedule for Continual Pre-training
-- [Learning Rate Scaling](https://arxiv.org/abs/1711.00489): Don't Decay the Learning Rate, Increase the Batch Size
+- [LM Training Project template documentation](../../../docs/project-templates/lm-training-projects.md)
+  - full reference for every option exposed by the template this project
+    extends.
+- [Trainer Options Reference](../../../docs/trainers/trainer_options.md) -
+  all training arguments and trainer constructor parameters.
+- [Pipeline Parallel guide](../../../docs/trainers/pipeline-parallel.md)
+- Hoffmann et al. (2022) *Training Compute-Optimal Large Language Models*
+  (Chinchilla). <https://arxiv.org/abs/2203.15556>
+- *Beyond Cosine Decay: On the effectiveness of Infinite Learning Rate
+  Schedule for Continual Pre-training.* (2025)
+  <https://arxiv.org/abs/2503.02844>
+- Wen et al. (2024) *Understanding Warmup-Stable-Decay Learning Rates: A
+  River Valley Loss Landscape Perspective.* (WSD-S.)
+  <https://arxiv.org/abs/2410.05192>
+- *Stochastic Rounding for LLM Training: Theory and Practice.* (2025)
+  <https://arxiv.org/abs/2502.20566>
+- [SmolLM-Corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus)
+- [Tiny Stories](https://huggingface.co/datasets/roneneldan/TinyStories)
