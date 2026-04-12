@@ -11,6 +11,10 @@ forgather train
 # Train in mixed-precision (bf16), with compile, and Ampere or later GPU
 # Slower startup, but _much_ faster!
 forgather train --compile true --mixed-precision bf16 --float32-matmul-precision high
+
+# FSDP2 (fully_shard) -- parameters, gradients and optimizer state are sharded
+# across the data-parallel mesh. 2 GPUs by default.
+forgather -t fsdp2.yaml train
 ```
 
 ## Test Auto LR Project Template

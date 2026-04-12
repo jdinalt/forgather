@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+[configs]
+name: "fsdp2_trainer"
+description: "Test FSDP2 Trainer"
+config_prefix: "configs"
+default_config: "2gpu.yaml"

@@ -2,9 +2,9 @@
 
 Forgather ships a reusable project template for language model pre-training.
 It computes training steps automatically from a target token budget, includes
-automatic LR scaling based on global batch size, and supports three trainer
+automatic LR scaling based on global batch size, and supports four trainer
 backends switchable via `--trainer-type`: basic (single GPU), DDP (multi-GPU),
-and Pipeline Parallel.
+FSDP2 (sharded multi-GPU), and Pipeline Parallel.
 
 **Template:** [projects/lm_training_project.yaml](../../templatelib/examples/projects/lm_training_project.yaml)\
 **Extends:** [training_script/causal_lm/causal_lm.yaml](../../templatelib/base/training_script/causal_lm/causal_lm.yaml)\
@@ -74,18 +74,21 @@ trainer:
 
 ## Trainer Selection
 
-The template supports three trainer backends, selected via `--trainer-type`
+The template supports four trainer backends, selected via `--trainer-type`
 or by setting `ns.trainer_type` in a child template's `[config_metadata]`:
 
 | Trainer Type | Backend | Default nproc_per_node | Description |
 |--------------|---------|------------------------|-------------|
 | `basic` | `forgather.ml.trainer:Trainer` | 1 | Single-GPU training |
 | `ddp` | `forgather.ml.trainer.ddp:DDPTrainer` | gpu (all GPUs) | Distributed Data Parallel |
+| `fsdp2` | `forgather.ml.trainer.fsdp2:FSDP2Trainer` | gpu (all GPUs) | Fully Sharded Data Parallel v2 (`torch.distributed.fsdp.fully_shard`) |
 | `pipeline` | `forgather.ml.trainer.pipeline:PipelineTrainer` | gpu (all GPUs) | Pipeline Parallel |
 
 The trainer type controls which trainer template is included and, for
-`ddp` and `pipeline`, automatically sets `nproc_per_node` to `"gpu"` (all
-available GPUs). Use `-d` to restrict to specific devices.
+`pipeline`, automatically sets `nproc_per_node` to `"gpu"` (all available
+GPUs). For `ddp` and `fsdp2`, pass `--nproc-per-node` or set
+`ns.nproc_per_node` in your child config. Use `-d` to restrict to
+specific devices.
 
 ### DDP Notes
 
@@ -93,6 +96,35 @@ available GPUs). Use `-d` to restrict to specific devices.
 - Stopping DDP with Ctrl-C can leave worker processes running. Use
   `forgather control list` and `forgather control stop JOB_ID` for a clean
   shutdown.
+
+### FSDP2 Notes
+
+FSDP2 shards parameters, gradients, and optimizer state across the
+data-parallel mesh via `torch.distributed.fsdp.fully_shard`. Reach for
+it when the model is larger than a single GPU's memory, or when you
+want to free optimizer-state memory for a model that would otherwise
+fit under DDP but leave little headroom for activations.
+
+- Parameters become DTensors in place; the trainer applies
+  `fully_shard` layer-by-layer on the transformer blocks (default
+  attribute path `causal_lm.layer_stack.layers`) before the root module.
+  Override `fsdp2.transformer_layers_path` in `[trainer_args]` if your
+  model has a different block-list attribute.
+- FSDP2-level mixed precision is configured via the
+  `fsdp2.param_dtype` / `fsdp2.reduce_dtype` knobs (separate from the
+  template's `--mixed-precision` AMP autocast). A typical setting for
+  memory-bound runs is `param_dtype: bfloat16, reduce_dtype: float32`.
+- `fsdp2.cpu_offload: True` offloads parameters and gradients to CPU
+  between uses - large memory savings at the cost of PCIe transfer
+  time.
+- **Checkpoints are saved as per-rank DTensor shards** and are tied to
+  the world size they were trained at. Resuming at the same world size
+  works normally (`--resume` / `resume_from_checkpoint: True`);
+  resuming at a different world size is not supported in this first
+  cut and would require switching to `torch.distributed.checkpoint`
+  (DCP).
+- See [`trainer_options.md`](../trainers/trainer_options.md#fsdp2trainingarguments)
+  for the full list of `fsdp2.*` fields.
 
 ### Pipeline Parallel
 

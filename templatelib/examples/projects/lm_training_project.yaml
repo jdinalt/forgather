@@ -66,10 +66,10 @@
 ##                                    1.0 = linear (signal-dominated)
 ##
 ## Trainer Selection
-##   trainer_type           (str)   Trainer backend.                Choices: basic, ddp, pipeline
+##   trainer_type           (str)   Trainer backend.                Choices: basic, ddp, fsdp2, pipeline
 ##                                                                  Default: basic
 ##   nproc_per_node         (str|int) Processes per node.           Default: auto (1 for basic,
-##                                                                           "gpu" for ddp/pipeline)
+##                                                                           "gpu" for ddp/fsdp2/pipeline)
 ##   pipeline_schedule      (str)   PP schedule class.              Default: ScheduleInterleaved1F1B
 ##   microbatch_scale       (int)   PP microbatch scale factor.     Default: 1
 ##
@@ -298,6 +298,8 @@
     ## Map trainer_type to trainer template and launch config
     -- if ns.trainer_type == "ddp"
         -- set ns.trainer_class = 'trainers/ddp_trainer.yaml'
+    -- elif ns.trainer_type == "fsdp2"
+        -- set ns.trainer_class = 'trainers/fsdp2_trainer.yaml'
     -- elif ns.trainer_type == "pipeline"
         -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
         -- set ns.dispatch_batches = True
@@ -600,9 +602,9 @@ optimizer: &optimizer !partial:torch:optim.AdamW
         help: "Random seed"
     trainer_type:
         names: "--trainer-type"
-        choices: [ "basic", "ddp", "pipeline" ]
+        choices: [ "basic", "ddp", "fsdp2", "pipeline" ]
         default: "basic"
-        help: "Trainer: basic (single GPU), ddp (multi-GPU), pipeline (pipeline parallel)"
+        help: "Trainer: basic (single GPU), ddp (multi-GPU), fsdp2 (sharded DP), pipeline (pipeline parallel)"
     nproc_per_node:
         names: "--nproc-per-node"
         type: int

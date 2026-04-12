@@ -1,0 +1,13 @@
+## FSDP2 with CPUOffloadPolicy - parameters and gradients are offloaded to CPU.
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "FSDP2 CPU Offload"
+    -- set ns.config_description = "FSDP2Trainer with fsdp2.cpu_offload=True"
+    -- set ns.log_name = "fsdp2_cpu_offload"
+
+[trainer_args]
+    == super()
+    fsdp2:
+        cpu_offload: True

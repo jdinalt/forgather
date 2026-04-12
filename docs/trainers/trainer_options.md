@@ -10,6 +10,7 @@ Trainers covered:
 - `forgather.ml.trainer.Trainer` - lightweight single-device trainer
 - `forgather.ml.trainer.accelerate.AccelTrainer` - multi-GPU via HF Accelerate
 - `forgather.ml.trainer.ddp.DDPTrainer` - multi-GPU via raw PyTorch DDP
+- `forgather.ml.trainer.fsdp2.FSDP2Trainer` - sharded DP via `torch.distributed.fsdp.fully_shard`
 - `forgather.ml.trainer.pipeline.PipelineTrainer` - pipeline parallel
 
 The `torchtitan`-based trainer is out of scope - see the torchtitan docs.
@@ -28,6 +29,7 @@ TrainingArguments           (adds memory/compile options for simple Trainer)
    v
  +-- AccelTrainingArguments     (no new fields; trainer overrides behaviour)
  +-- DDPTrainingArguments       (adds dispatch_batches, DDP, Post-Local-SGD)
+ +-- FSDP2TrainingArguments     (adds dispatch_batches, fsdp2.* policies)
  +-- PipelineTrainingArguments  (adds pipeline-schedule/microbatch fields)
 ```
 
@@ -322,6 +324,50 @@ periodically averages parameters instead of performing all-reduce every step.
 
 ---
 
+## FSDP2TrainingArguments
+
+Adds FSDP2 (`torch.distributed.fsdp.fully_shard`) options. Defined in
+[`fsdp2/fsdp2_trainer.py`](../../src/forgather/ml/trainer/fsdp2/fsdp2_trainer.py).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `dispatch_batches` | bool | True | Same semantics as `DDPTrainingArguments.dispatch_batches`. True = rank-0 loads and dispatches every batch; False = each rank reads its own shard via `SynchronizedDataLoader`. |
+| `fsdp2` | FSDP2Arguments | default | Nested FSDP2 policy options (see below). |
+
+`fuse_optim_with_backward` is not supported - FSDP2 needs gradients intact
+for the reduce-scatter in its backward hook.
+
+### `FSDP2Arguments` (nested as `fsdp2.*`)
+
+Passed to `fully_shard()`. See the
+[PyTorch FSDP2 docs](https://docs.pytorch.org/docs/stable/distributed.fsdp.fully_shard.html).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `reshard_after_forward` | bool \| int | True | True behaves like ZeRO-3 (reshard parameters after forward, minimum memory, more communication). False behaves like ZeRO-2 (keep params unsharded between forward and backward, lower comm, higher memory). An int N enables ZeRO++ hybrid sharding across N ranks. |
+| `param_dtype` | str \| None | None | FSDP `MixedPrecisionPolicy` parameter dtype (e.g., `"bfloat16"`). None disables FSDP-level mixed precision; the trainer's existing AMP autocast still applies. |
+| `reduce_dtype` | str \| None | None | Gradient reduce-scatter accumulation dtype. Typically `"float32"` when `param_dtype="bfloat16"` for numerical stability. |
+| `buffer_dtype` | str \| None | None | Non-parameter buffer dtype. |
+| `cpu_offload` | bool | False | Enable `CPUOffloadPolicy` - offload parameters (and gradients) to CPU between uses. Dramatically reduces GPU memory at the cost of PCIe transfer time. |
+| `shard_transformer_layers` | bool | True | Apply `fully_shard` layer-by-layer on transformer blocks before the root module. Required for meaningful memory savings - root-only wrapping can't reshard per-layer during forward/backward. |
+| `transformer_layers_path` | str | `"causal_lm.layer_stack.layers"` | Dotted attribute path that resolves to the iterable of transformer blocks. The default matches Forgather's standard causal-LM structure (see `modelsrc/transformer/`). Override for models with a different block-list path; set to an empty/unresolvable path to fall back to root-only sharding. |
+
+Checkpointing: model and optimizer state are saved as **per-rank DTensor
+shards** (`SharingPattern.PER_RANK`) via
+`torch.distributed.checkpoint.state_dict.get_model_state_dict` /
+`get_optimizer_state_dict` with default (sharded) `StateDictOptions`.
+The model is saved under key `fsdp2_model` (not `model`) so it routes
+through the `CheckpointCoordinator`'s PER_RANK path rather than the
+safetensors path, which cannot handle DTensors. Checkpoints are tied
+to the world size they were saved at - resuming at a different world
+size is not supported without going through
+`torch.distributed.checkpoint` (DCP).
+
+When `world_size == 1`, the trainer transparently degrades to the single-device
+path without calling `fully_shard`.
+
+---
+
 ## PipelineTrainingArguments
 
 Adds pipeline-parallel options. Defined in
@@ -407,6 +453,16 @@ happen.
 When `world_size == 1`, the trainer transparently degrades to the single-device
 path without wrapping in DDP.
 
+### `FSDP2Trainer`
+
+Extends `Trainer`. Same keyword arguments as `Trainer`; no FSDP2-specific
+constructor parameters. `fully_shard` wrapping happens inside
+`_prepare_model()`, before the optimizer is built, so the optimizer is
+constructed from the already-sharded DTensor parameters.
+
+When `world_size == 1`, the trainer transparently degrades to the single-device
+path without calling `fully_shard`.
+
 ### `PipelineTrainer`
 
 Extends `Trainer`, adds:
@@ -437,6 +493,7 @@ The definitive documentation lives next to the code:
 - `src/forgather/ml/trainer/trainer.py` - `TrainingArguments`, `Trainer`
 - `src/forgather/ml/trainer/accelerate/accel_trainer.py` - `AccelTrainingArguments`, `AccelTrainer`
 - `src/forgather/ml/trainer/ddp/ddp_trainer.py` - `DDPTrainingArguments`, `DDPTrainer`, `DDPArguments`, `PostLocalSGDArguments`
+- `src/forgather/ml/trainer/fsdp2/fsdp2_trainer.py` - `FSDP2TrainingArguments`, `FSDP2Trainer`, `FSDP2Arguments`
 - `src/forgather/ml/trainer/pipeline/pipeline_trainer.py` - `PipelineTrainingArguments`, `PipelineTrainer`
 
 When updating an option, update the dataclass comment first and then

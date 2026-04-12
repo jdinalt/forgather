@@ -1,0 +1,8 @@
+-- extends "projects/lm_training_project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "FSDP2"
+    -- set ns.config_description = "Test FSDP2 Trainer"
+    -- set ns.trainer_type = trainer_type | default("fsdp2")
+    -- set ns.nproc_per_node = 2
