@@ -124,6 +124,11 @@ Notes:
 See [`docs/checkpointing/user_guide.md`](../checkpointing/user_guide.md) for a
 practical guide to checkpointing.
 
+Notes:
+
+- `save_safetensors` is incompatible with saving tied weights. The format was created to address a real security issue with
+PyTorch's native format, which allowed arbitrary code execution. PyTorch has since addressed the security and performance issues.
+
 ### Optimizer and LR scheduler (HF compat)
 
 These fields exist for HuggingFace compatibility. If you pass an explicit

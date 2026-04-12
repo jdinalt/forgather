@@ -476,6 +476,7 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     construct_model_on: {{ construct_model_on | toyaml("default") }}
     activation_memory_budget: {{ activation_memory_budget | toyaml(None) }}
     gc_threshold: {{ gc_threshold | default(0.9) }}
+    save_safetensors: {{ save_safetensors | default(False) }}
 
 -- if ns.trainer_type == "pipeline"
     # Pipeline Parallel
@@ -642,3 +643,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
         names: "--gc-threshold"
         type: float
         help: "Ratio of reserved to total GPU memory to trigger GC"
+    save_safetensors:
+        names: "--save-safetensors"
+        type: bool
+        help: "Save checkpoint using safe-tensors format"

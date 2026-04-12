@@ -675,8 +675,11 @@ underlying trainer field semantics.
 | `seed` | int | 42 | Random seed |
 | `resume` | bool | True | Auto-resume from latest checkpoint (falls back to fresh init if none exists) |
 | `save_strategy` | str | steps | Checkpoint save strategy. Choices: no, steps, epoch |
+| `save_safetensors` | bool | False | Use safetensors format for weights |
 
-## CLI Arguments
+Notes:
+
+- `save_safetensors`: We default to `False`, as safetensors can't handle tied weights.
 
 All parameters listed above are available as CLI arguments via `forgather train`.
 Additional arguments inherited from the base training script:
