@@ -676,10 +676,117 @@ underlying trainer field semantics.
 | `resume` | bool | True | Auto-resume from latest checkpoint (falls back to fresh init if none exists) |
 | `save_strategy` | str | steps | Checkpoint save strategy. Choices: no, steps, epoch |
 | `save_safetensors` | bool | False | Use safetensors format for weights |
+| `debug_optimizer_groups` | bool | False | Log parameter -> optimizer-group assignments when the optimizer is built. Useful for verifying `optimizer_groups` overrides. |
 
 Notes:
 
 - `save_safetensors`: We default to `False`, as safetensors can't handle tied weights.
+
+## Optimizer Parameter Groups
+
+The LM Training Project template ships with an `[optimizer_groups]` block
+that excludes biases, norms, embeddings, and the LM head from weight decay
+by default:
+
+```yaml
+[optimizer_groups]
+optimizer_groups: &optimizer_groups
+    no_decay:
+        regex: 'norm|bias|embed|lm_head'
+        config:
+            weight_decay: 0.0
+```
+
+This is the standard "no-decay" convention for language-model training -
+applying weight decay to parameters whose natural scale is small or
+interpretation-dependent (layer-norm gains, biases, embedding rows,
+output-projection rows) tends to hurt, while applying it to the main
+transformer weight matrices tends to help. Keeping the split explicit in
+the template means new projects inherit the convention for free and do
+not silently apply decay to those parameters.
+
+### How the mapping is read
+
+Each entry has the form:
+
+```yaml
+<group_name>:
+    regex: '<pattern>'
+    config:
+        <override_key>: <override_value>
+        ...
+```
+
+`config:` may be omitted when a group just carves parameters out without
+changing hyperparameters. At optimizer-construction time the trainer
+walks the model's named parameters and assigns each one to the **first**
+group whose regex matches (insertion order). Parameters that match no
+group fall through to an implicit default group with no overrides, so
+every parameter is guaranteed to end up in some group.
+
+Regex semantics are Python `re.search` (substring match). More specific
+patterns should be declared first - once a parameter is claimed by a
+group, later patterns do not see it.
+
+### Overriding the defaults
+
+To change the default mapping, override the `[optimizer_groups]` block
+in your child config. Because each group is a named dictionary entry,
+you can add, replace, or remove individual groups from the parent via
+`== super()`.
+
+Replace one group and add a new one:
+
+```yaml
+-- extends "projects/lm_training_project.yaml"
+
+-- block optimizer_groups
+optimizer_groups: &optimizer_groups
+    == super()
+    no_decay:
+        regex: 'norm|bias|embed'
+        config:
+            weight_decay: 0.0
+    lm_head:
+        regex: 'lm_head'
+        config:
+            weight_decay: 0.0
+            lr: 1.0e-4
+-- endblock
+```
+
+Remove an inherited group without replacing anything else by setting its
+value to `null`:
+
+```yaml
+-- block optimizer_groups
+optimizer_groups: &optimizer_groups
+    == super()
+    no_decay: ~     # cancel the default no-decay group entirely
+-- endblock
+```
+
+To disable parameter grouping entirely (a single uniform optimizer over
+all parameters), set the whole mapping to `null`:
+
+```yaml
+-- block optimizer_groups
+optimizer_groups: &optimizer_groups ~
+-- endblock
+```
+
+### Verifying the assignment
+
+Set `debug_optimizer_groups: True` (or pass `--debug-optimizer-groups`)
+to have the trainer log every parameter -> group assignment when the
+optimizer is built. Use this whenever you edit a regex - it's the
+fastest way to confirm the override landed on the parameters you
+expected.
+
+See [Trainer Options Reference -> Parameter groups via `optimizer_groups`](../trainers/trainer_options.md#parameter-groups-via-optimizer_groups)
+for the underlying trainer API. All trainer backends supported by the
+LM Training Project honour `optimizer_groups` (basic, DDP, FSDP2, and
+pipeline).
 
 All parameters listed above are available as CLI arguments via `forgather train`.
 Additional arguments inherited from the base training script:
@@ -726,6 +833,8 @@ forgather -p examples/base_lm_project train --help
 | `-d DEVICES` | -- | CUDA visible devices (e.g., "0,1" or "gpu" for all) |
 | `--max-steps N` | `max_steps` | Override computed max training steps |
 | `-S {no,steps,epoch}` | `save_strategy` | Checkpoint save strategy |
+| `--save-safetensors BOOL` | `save_safetensors` | Save checkpoint using safetensors format |
+| `--debug-optimizer-groups` | `debug_optimizer_groups` | Log parameter -> optimizer-group assignments |
 | `--dry-run` | -- | Show generated command without executing |
 
 ## Inspecting the Configuration

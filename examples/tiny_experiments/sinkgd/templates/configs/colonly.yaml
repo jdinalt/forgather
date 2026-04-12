@@ -6,7 +6,11 @@
     -- set ns.config_description = "SinkGD with col_only mode for embed"
     -- set ns.log_name = log_name | default("colonly")
 
-[optim_embed_grp]
+[optimizer_groups]
     == super()
-    mode: "col_only"
-    lr: {{ ns.sinkgd_lr | toyaml }}
+    embed:
+        regex: 'embed'
+        config:
+            mode: "col_only"
+            lr: {{ ns.sinkgd_lr }}
+            weight_decay: 0.0

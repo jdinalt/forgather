@@ -38,6 +38,7 @@ from forgather.ml.utils import default_dtype
 from ..distributed import DistributedEnvInterface, prefix_logger_rank
 from ..loss import RescaleLoss
 from ..no_init_weights import no_init_weights
+from ..optim.opt_utils import OptimGroupMap, build_parameter_groups
 from ..sharded_checkpoint import (
     create_sharing_metadata,
     find_latest_checkpoint,
@@ -171,6 +172,9 @@ class TrainingArguments(BaseTrainingArguments):
     # If the train dataset has a `set_epoch(epoch: int)` method, call it at the start of each epoch.
     set_dataset_epoch: bool = True
 
+    # Debug grouped optimizer assignments
+    debug_optimizer_groups: bool = False
+
 
 @contextmanager
 def set_train(model: torch.nn.Module, mode: bool):
@@ -296,6 +300,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
     lr_scheduler_factory: LRSchedulerFactoryT | None
     enable_activation_checkpoint_fn: EnableCheckpointFnT | None
     fused_loss_factory: FusedLossFactoryT | None
+    optimizer_groups: OptimGroupMap | None
 
     max_steps: int
     epoch_train_steps: int
@@ -323,6 +328,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             EnableCheckpointFnT
         ] = enable_hf_activation_checkpointing,
         fused_loss_factory: Optional[FusedLossFactoryT] = None,
+        optimizer_groups: Optional[OptimGroupMap] = None,
         **kwargs,
     ):
         if isinstance(args, dict):
@@ -343,6 +349,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                 optimizer_factory = partial(
                     optimizer_cls_and_kwargs[0], **optimizer_cls_and_kwargs[1]
                 )
+        self.optimizer_groups = optimizer_groups
         self.dist = distributed_env
         self.optimizer_factory = optimizer_factory
         self.lr_scheduler_factory = lr_scheduler_factory
@@ -935,7 +942,15 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         assert self.model is not None
         if self.optimizer is None:
             assert self.optimizer_factory is not None
-            self.optimizer = self.optimizer_factory(self.model.named_parameters())
+            if self.optimizer_groups is not None:
+                param_groups = build_parameter_groups(
+                    self.model.named_parameters(),
+                    self.optimizer_groups,
+                    self.args.debug_optimizer_groups,
+                )
+            else:
+                param_groups = self.model.named_parameters()
+            self.optimizer = self.optimizer_factory(param_groups)
 
             # Combine backward with optimizer step?
             if self.args.fuse_optim_with_backward:

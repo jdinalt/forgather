@@ -232,6 +232,7 @@ Defined in [`trainer.py`](../../src/forgather/ml/trainer/trainer.py).
 | `fuse_optim_with_backward` | bool | False | Apply optimizer step from the backward gradient hook so each parameter's gradient is consumed and freed immediately after it's produced. Biggest savings when combined with activation checkpointing. Supported by the basic `Trainer` and `PipelineTrainer`, **not** by `DDPTrainer` or `AccelTrainer` (they need gradients intact for the all-reduce). Also incompatible with `max_grad_norm` gradient clipping (clipping needs the full gradient vector before any update is applied), `gradient_accumulation_steps > 1`, and fp16 mixed precision. |
 | `speed_metrics_start_step` | int | 1 | Step at which to start collecting speed metrics. `1` excludes the first step (to skip `torch.compile` warmup). Set higher for longer compile warmups. |
 | `set_dataset_epoch` | bool | True | If the train dataset has `set_epoch(epoch: int)`, call it at the start of each epoch. |
+| `debug_optimizer_groups` | bool | False | Log the parameter-name -> optimizer-group assignments produced from the `optimizer_groups` constructor argument when the optimizer is built. Useful to verify that an `optimizer_groups` mapping picks up the parameters you expect. |
 
 Notes on `construct_model_on = "meta"`:
 
@@ -425,9 +426,61 @@ Adds:
 | `distributed_env` | `DistributedEnvInterface` | Required. Provides rank / world-size / device info. Single-device subclasses assert `world_size == 1`. |
 | `optimizer_factory` | `Callable[[params], Optimizer]` | Builds the optimizer from model parameters. If omitted and `optimizer_cls_and_kwargs` is also None, a default AdamW is built from `args`. |
 | `optimizer_cls_and_kwargs` | `tuple[type, dict]` | HF-Trainer-compatible alternative to `optimizer_factory`. |
+| `optimizer_groups` | `Mapping[str, Mapping \| None]` \| None | Optional regex-to-group mapping used to assign parameters to named optimizer param groups with per-group hyperparameter overrides. See [Parameter groups via `optimizer_groups`](#parameter-groups-via-optimizer_groups) below. |
 | `lr_scheduler_factory` | `Callable[[Optimizer], LRScheduler]` | Builds the LR scheduler from the optimizer. |
 | `enable_activation_checkpoint_fn` | `Callable[[int, nn.Module], None]` | Called to enable activation checkpointing on the model. Defaults to `enable_hf_activation_checkpointing`. |
 | `fused_loss_factory` | `Callable[[nn.Module], LossFunction]` | Builds a loss function that shares state with the model (e.g., fused cross entropy). |
+
+#### Parameter groups via `optimizer_groups`
+
+`optimizer_groups` lets you split a model's parameters into named groups,
+each matched by a regex against the fully-qualified parameter name, and
+each contributing its own hyperparameter overrides to the optimizer. The
+mapping has the form:
+
+```python
+optimizer_groups = {
+    "<group_name>": {
+        "regex": r"<pattern>",
+        "config": {"<override_key>": <override_value>, ...},
+    },
+    # ...
+}
+```
+
+`config` may be omitted (or set to `None`) when a group just carves
+parameters out without changing hyperparameters. Setting an entry's
+value to `None` removes the group entirely - useful for cancelling an
+inherited group from a child template without replacing the whole
+mapping.
+
+Each parameter is assigned to the **first** group whose regex matches
+(dict insertion order), so more-specific patterns should come first.
+Parameters that match no group fall through to an implicit default group
+with no overrides - every parameter is guaranteed to end up somewhere.
+Empty groups are dropped from the result.
+
+The canonical use case is excluding biases, norms, and embeddings from
+weight decay:
+
+```yaml
+[optimizer_groups]
+optimizer_groups: &optimizer_groups
+    no_decay:
+        regex: 'norm|bias|embed|lm_head'
+        config:
+            weight_decay: 0.0
+```
+
+Named entries are deliberate: they let a child template override an
+individual group by re-declaring its name (and replacing the entire
+spec), rather than having to re-specify every group in the mapping.
+Set `debug_optimizer_groups: True` in the trainer args to log each
+parameter -> group assignment when the optimizer is built - useful for
+verifying that the regex picks up the parameters you expected.
+
+Supported by `Trainer`, `DDPTrainer`, `AccelTrainer`, `FSDP2Trainer`,
+and `PipelineTrainer`.
 
 ### `AccelTrainer`
 

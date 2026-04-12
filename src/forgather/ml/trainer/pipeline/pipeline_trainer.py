@@ -35,6 +35,7 @@ from forgather.ml.construct import torch_dtype
 from forgather.ml.loss import RescaleLoss
 from forgather.ml.utils import default_dtype
 
+from ...optim.opt_utils import build_parameter_groups
 from ...sharded_checkpoint import (
     ShardIndex,
     SharingMetadataT,
@@ -1082,9 +1083,15 @@ class PipelineTrainer(
 
             assert self.pipeline_modules
             assert self.optimizer_factory
-            self.optimizer = self.optimizer_factory(
-                named_parameters(self.pipeline_modules)
-            )
+            if self.optimizer_groups is not None:
+                opt_params = build_parameter_groups(
+                    named_parameters(self.pipeline_modules),
+                    self.optimizer_groups,
+                    debug=self.args.debug_optimizer_groups,
+                )
+            else:
+                opt_params = named_parameters(self.pipeline_modules)
+            self.optimizer = self.optimizer_factory(opt_params)
 
             if self.args.fuse_optim_with_backward:
                 self._total_grad_squared = torch.zeros(

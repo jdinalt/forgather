@@ -477,6 +477,7 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     activation_memory_budget: {{ activation_memory_budget | toyaml(None) }}
     gc_threshold: {{ gc_threshold | default(0.9) }}
     save_safetensors: {{ save_safetensors | default(False) }}
+    debug_optimizer_groups: {{ debug_optimizer_groups | default(False) }}
 
 -- if ns.trainer_type == "pipeline"
     # Pipeline Parallel
@@ -508,7 +509,14 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:CosineLRScheduler@lr_sch
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW
-    lr: {{ ns.global_lr | toyaml  }}
+    lr: {{ ns.global_lr | toyaml }}
+
+[optimizer_groups]
+optimizer_groups: &optimizer_groups
+    no_decay:
+        regex: 'norm|bias|embed|lm_head'
+        config:
+            weight_decay: 0.0
 
 ## ===== CLI arguments ========================================================
 ##
@@ -647,3 +655,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
         names: "--save-safetensors"
         type: bool
         help: "Save checkpoint using safe-tensors format"
+    debug_optimizer_groups:
+        names: "--debug-optimizer-groups"
+        action: "store_true"
+        help: "Show how parameters are mapped to optimizer param groups"

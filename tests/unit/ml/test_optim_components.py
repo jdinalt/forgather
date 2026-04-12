@@ -3,7 +3,7 @@
 Unit tests for the forgather ML optim module components.
 
 Tests cover:
-- opt_utils: make_regex_optimizer_groups, make_grouped_optimizer
+- opt_utils: build_parameter_groups, make_grouped_optimizer
 - rounding_utils: fp32_to_bf16_stochastic_round
 - cosine_lr_scheduler: CosineLRScheduler (warmup, cosine decay)
 - infinite_lr_scheduler: InfiniteLRScheduler (warmup, cooldown, constant, annealing)
@@ -26,8 +26,8 @@ from forgather.ml.optim.adamw import AdamW
 from forgather.ml.optim.cosine_lr_scheduler import CosineLRScheduler
 from forgather.ml.optim.infinite_lr_scheduler import InfiniteLRScheduler
 from forgather.ml.optim.opt_utils import (
+    build_parameter_groups,
     make_grouped_optimizer,
-    make_regex_optimizer_groups,
 )
 from forgather.ml.optim.rounding_utils import fp32_to_bf16_stochastic_round
 from forgather.ml.optim.sequential_lr_factory import sequential_lr_factory
@@ -61,8 +61,8 @@ class TwoLayerModel(nn.Module):
 # ===========================================================================
 
 
-class TestMakeRegexOptimizerGroups:
-    """Tests for make_regex_optimizer_groups."""
+class TestBuildParameterGroups:
+    """Tests for build_parameter_groups."""
 
     def _make_model(self):
         return TwoLayerModel()
@@ -70,17 +70,19 @@ class TestMakeRegexOptimizerGroups:
     def test_basic_weight_bias_grouping(self):
         """Parameters are correctly split into weight and bias groups."""
         model = self._make_model()
-        group_map = [
-            (r"weight", "weight_group"),
-            (r"bias", "bias_group"),
-        ]
-        group_config = {
-            "weight_group": {"lr": 1e-3, "weight_decay": 0.01},
-            "bias_group": {"lr": 1e-4, "weight_decay": 0.0},
+        optimizer_groups = {
+            "weight_group": {
+                "regex": r"weight",
+                "config": {"lr": 1e-3, "weight_decay": 0.01},
+            },
+            "bias_group": {
+                "regex": r"bias",
+                "config": {"lr": 1e-4, "weight_decay": 0.0},
+            },
         }
 
-        param_groups = make_regex_optimizer_groups(
-            model.named_parameters(), group_map, group_config
+        param_groups = build_parameter_groups(
+            model.named_parameters(), optimizer_groups
         )
 
         assert len(param_groups) == 2
@@ -106,19 +108,16 @@ class TestMakeRegexOptimizerGroups:
     def test_first_match_wins(self):
         """A parameter matches the first regex that applies."""
         model = self._make_model()
-        # "linear1.weight" contains both "linear1" and "weight". If "linear1"
-        # comes first in group_map it should capture both weight and bias of linear1.
-        group_map = [
-            (r"linear1", "first_layer"),
-            (r".*", "rest"),
-        ]
-        group_config = {
-            "first_layer": {"lr": 1e-2},
-            "rest": {"lr": 1e-3},
+        # "linear1.weight" contains both "linear1" and "weight". With "linear1"
+        # defined first, it should capture both weight and bias of linear1,
+        # leaving linear2's parameters for the fall-through default group.
+        optimizer_groups = {
+            "first_layer": {"regex": r"linear1", "config": {"lr": 1e-2}},
+            "rest": {"regex": r"linear2", "config": {"lr": 1e-3}},
         }
 
-        param_groups = make_regex_optimizer_groups(
-            model.named_parameters(), group_map, group_config
+        param_groups = build_parameter_groups(
+            model.named_parameters(), optimizer_groups
         )
 
         first_params: list[Any] = param_groups[0]["params"]  # type: ignore[assignment]
@@ -131,68 +130,205 @@ class TestMakeRegexOptimizerGroups:
         assert len(rest_names) == 2  # linear2.weight, linear2.bias
         assert all("linear2" in n for n in rest_names)
 
-    def test_unmatched_parameters_omitted(self):
-        """Parameters that match no regex are excluded from all groups."""
+    def test_unmatched_parameters_go_to_default(self):
+        """Parameters that match no user regex fall through to the default group."""
         model = self._make_model()
-        # Only match linear1 parameters
-        group_map = [
-            (r"linear1", "group_a"),
-        ]
-        group_config = {
-            "group_a": {"lr": 1e-3},
+        # Only match linear1 parameters — linear2.* should land in default.
+        optimizer_groups = {
+            "group_a": {"regex": r"linear1", "config": {"lr": 1e-3}},
         }
 
-        param_groups = make_regex_optimizer_groups(
-            model.named_parameters(), group_map, group_config
+        param_groups = build_parameter_groups(
+            model.named_parameters(), optimizer_groups
         )
 
-        assert len(param_groups) == 1
-        group_params: list[Any] = param_groups[0]["params"]  # type: ignore[assignment]
-        names = [n for n, _ in group_params]
-        assert len(names) == 2  # linear1.weight, linear1.bias
-        assert all("linear1" in n for n in names)
+        assert len(param_groups) == 2  # group_a + default fall-through
+        # First group is group_a with user-specified lr
+        assert param_groups[0]["lr"] == 1e-3
+        group_a_names = [n for n, _ in param_groups[0]["params"]]
+        assert all("linear1" in n for n in group_a_names)
+        assert len(group_a_names) == 2
 
-    def test_empty_model(self):
-        """An empty parameter list produces groups with empty param lists."""
-        group_map = [
-            (r"weight", "w"),
-        ]
-        group_config = {
-            "w": {"lr": 0.1},
-        }
+        # Second group is the default fall-through, no lr override
+        assert "lr" not in param_groups[1]
+        default_names = [n for n, _ in param_groups[1]["params"]]
+        assert all("linear2" in n for n in default_names)
+        assert len(default_names) == 2
 
-        param_groups = make_regex_optimizer_groups([], group_map, group_config)
-        assert len(param_groups) == 1
-        empty_params: list[Any] = param_groups[0]["params"]  # type: ignore[assignment]
-        assert len(empty_params) == 0
-
-    def test_debug_flag_does_not_crash(self):
-        """Setting debug=True should not raise."""
+    def test_empty_optimizer_groups_puts_all_in_default(self):
+        """Passing an empty mapping sends every parameter to the default group."""
         model = self._make_model()
-        group_map = [
-            (r".*", "all"),
-        ]
-        group_config = {
-            "all": {"lr": 0.1},
+        param_groups = build_parameter_groups(model.named_parameters(), {})
+        # Only the default group is produced
+        assert len(param_groups) == 1
+        names = [n for n, _ in param_groups[0]["params"]]
+        assert set(names) == {
+            "linear1.weight",
+            "linear1.bias",
+            "linear2.weight",
+            "linear2.bias",
         }
 
-        # Should not raise
-        make_regex_optimizer_groups(
-            model.named_parameters(), group_map, group_config, debug=True
+    def test_empty_named_parameters_produces_no_groups(self):
+        """An empty named_parameters iterator yields no groups (empty ones filtered)."""
+        optimizer_groups = {"w": {"regex": r"weight", "config": {"lr": 0.1}}}
+        param_groups = build_parameter_groups(iter([]), optimizer_groups)
+        assert param_groups == []
+
+    def test_reserved_default_name_rejected(self):
+        """Using the reserved fall-through group name raises a clear error."""
+        from forgather.ml.optim.opt_utils import _DEFAULT_GROUP
+
+        model = self._make_model()
+        optimizer_groups = {
+            _DEFAULT_GROUP: {"regex": r".*", "config": {"lr": 0.1}},
+        }
+        with pytest.raises(ValueError, match="reserved"):
+            build_parameter_groups(model.named_parameters(), optimizer_groups)
+
+    def test_config_omitted_or_none(self):
+        """A group spec with no 'config' key (or config=None) is valid."""
+        model = self._make_model()
+        optimizer_groups = {
+            "weights_no_config": {"regex": r"weight"},
+            "biases_null_config": {"regex": r"bias", "config": None},
+        }
+
+        param_groups = build_parameter_groups(
+            model.named_parameters(), optimizer_groups
         )
+
+        assert len(param_groups) == 2
+        for pg in param_groups:
+            assert list(pg.keys()) == ["params"]
+
+    def test_none_spec_removes_group(self):
+        """A spec value of None removes the group — used to clear inherited entries."""
+        model = self._make_model()
+        # Parent would define 'no_decay'; child sets it to null to cancel it.
+        optimizer_groups = {
+            "no_decay": None,
+            "weights": {"regex": r"weight", "config": {"lr": 1e-3}},
+        }
+
+        param_groups = build_parameter_groups(
+            model.named_parameters(), optimizer_groups
+        )
+
+        # Only 'weights' + default fall-through; 'no_decay' is gone.
+        assert len(param_groups) == 2
+        # First group is weights with lr override
+        assert param_groups[0]["lr"] == 1e-3
+        weight_names = [n for n, _ in param_groups[0]["params"]]
+        assert all("weight" in n for n in weight_names)
+
+        # Second is the default fall-through (biases), no overrides
+        assert "lr" not in param_groups[1]
+        default_names = [n for n, _ in param_groups[1]["params"]]
+        assert all("bias" in n for n in default_names)
+
+    def test_none_spec_can_clear_all_groups(self):
+        """Setting every entry to None is equivalent to no groups at all."""
+        model = self._make_model()
+        optimizer_groups = {"group1": None, "group2": None}
+
+        param_groups = build_parameter_groups(
+            model.named_parameters(), optimizer_groups
+        )
+
+        # Nothing left but the default fall-through containing everything.
+        assert len(param_groups) == 1
+        names = {n for n, _ in param_groups[0]["params"]}
+        assert len(names) == 4
+
+    def test_missing_regex_raises(self):
+        """A spec without a 'regex' key is rejected with a clear error."""
+        model = self._make_model()
+        with pytest.raises(ValueError, match="regex"):
+            build_parameter_groups(
+                model.named_parameters(),
+                {"bad": {"config": {"lr": 0.1}}},  # type: ignore[typeddict-item]
+            )
+
+    def test_non_dict_config_rejected(self):
+        """A spec with a non-dict config value is rejected."""
+        model = self._make_model()
+        with pytest.raises(ValueError, match="config"):
+            build_parameter_groups(
+                model.named_parameters(),
+                {"bad": {"regex": r".*", "config": "not a dict"}},  # type: ignore[dict-item]
+            )
+
+    def test_empty_groups_are_filtered_out(self):
+        """Groups that end up with no parameters are removed from the output."""
+        model = self._make_model()
+        # 'nomatch' won't be picked by any parameter name.
+        optimizer_groups = {
+            "nomatch": {
+                "regex": r"this_substring_is_not_in_any_param_name",
+                "config": {"lr": 99.0},
+            },
+            "all_weights": {"regex": r"weight", "config": {"lr": 1e-3}},
+        }
+
+        param_groups = build_parameter_groups(
+            model.named_parameters(), optimizer_groups
+        )
+
+        # nomatch dropped; all_weights + default fall-through for biases
+        assert len(param_groups) == 2
+        lrs = {pg.get("lr") for pg in param_groups}
+        assert 1e-3 in lrs
+        assert 99.0 not in lrs
+
+    def test_debug_flag_emits_log_messages(self):
+        """Setting debug=True should not raise and should emit log entries."""
+        # The forgather.ml.optim.opt_utils logger has propagate=False and its
+        # own stderr handler (set up by prefix_logger_rank), so caplog cannot
+        # see its output. Attach a temporary handler and explicitly set the
+        # level to INFO so debug messages reach it.
+        import logging
+
+        opt_logger = logging.getLogger("forgather.ml.optim.opt_utils")
+        captured: list[str] = []
+
+        class _ListHandler(logging.Handler):
+            def emit(self, record):
+                captured.append(record.getMessage())
+
+        previous_level = opt_logger.level
+        handler = _ListHandler(level=logging.INFO)
+        opt_logger.setLevel(logging.INFO)
+        opt_logger.addHandler(handler)
+        try:
+            model = self._make_model()
+            optimizer_groups = {"all": {"regex": r".*", "config": {"lr": 0.1}}}
+            build_parameter_groups(
+                model.named_parameters(), optimizer_groups, debug=True
+            )
+        finally:
+            opt_logger.removeHandler(handler)
+            opt_logger.setLevel(previous_level)
+
+        assert any("param group:" in m for m in captured)
 
     def test_group_config_hyperparams_forwarded(self):
-        """All hyperparameters from group_config appear in the returned dicts."""
+        """All hyperparameters from the group config appear in the returned dicts."""
         model = self._make_model()
-        group_map = [
-            (r".*", "all"),
-        ]
-        group_config = {
-            "all": {"lr": 0.1, "weight_decay": 0.05, "betas": (0.9, 0.98), "eps": 1e-8},
+        optimizer_groups = {
+            "all": {
+                "regex": r".*",
+                "config": {
+                    "lr": 0.1,
+                    "weight_decay": 0.05,
+                    "betas": (0.9, 0.98),
+                    "eps": 1e-8,
+                },
+            },
         }
 
-        param_groups = make_regex_optimizer_groups(
-            model.named_parameters(), group_map, group_config
+        param_groups = build_parameter_groups(
+            model.named_parameters(), optimizer_groups
         )
 
         pg = param_groups[0]
@@ -201,6 +337,66 @@ class TestMakeRegexOptimizerGroups:
         assert pg["betas"] == (0.9, 0.98)
         assert pg["eps"] == 1e-8
 
+    def test_no_decay_convention(self):
+        """The typical 'no weight-decay for norms/biases/embeddings' idiom works."""
+
+        class LMLike(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = nn.Embedding(16, 8)
+                self.norm = nn.LayerNorm(8)
+                self.linear = nn.Linear(8, 8)
+                self.lm_head = nn.Linear(8, 16, bias=False)
+
+            def forward(self, x):
+                return self.lm_head(self.linear(self.norm(self.embed(x))))
+
+        model = LMLike()
+        optimizer_groups = {
+            "no_decay": {
+                "regex": r"norm|bias|embed|lm_head",
+                "config": {"weight_decay": 0.0},
+            },
+        }
+
+        param_groups = build_parameter_groups(
+            model.named_parameters(), optimizer_groups
+        )
+
+        # no_decay group + default fall-through
+        assert len(param_groups) == 2
+        no_decay_group, default_group = param_groups
+
+        assert no_decay_group["weight_decay"] == 0.0
+        no_decay_names = {n for n, _ in no_decay_group["params"]}
+        assert "embed.weight" in no_decay_names
+        assert "norm.weight" in no_decay_names
+        assert "norm.bias" in no_decay_names
+        assert "linear.bias" in no_decay_names
+        assert "lm_head.weight" in no_decay_names
+
+        # Remaining parameters (just linear.weight here) live in the default group
+        # with no weight-decay override.
+        assert "weight_decay" not in default_group
+        default_names = {n for n, _ in default_group["params"]}
+        assert default_names == {"linear.weight"}
+
+    def test_insertion_order_preserved(self):
+        """Resulting param_groups preserve the insertion order of the input mapping."""
+        model = self._make_model()
+        optimizer_groups = {
+            "biases": {"regex": r"bias", "config": {"lr": 1e-5}},
+            "weights": {"regex": r"weight", "config": {"lr": 1e-3}},
+        }
+
+        param_groups = build_parameter_groups(
+            model.named_parameters(), optimizer_groups
+        )
+
+        # biases appears before weights in the input, so must come first.
+        assert param_groups[0]["lr"] == 1e-5
+        assert param_groups[1]["lr"] == 1e-3
+
 
 class TestMakeGroupedOptimizer:
     """Tests for make_grouped_optimizer."""
@@ -208,62 +404,45 @@ class TestMakeGroupedOptimizer:
     def test_creates_optimizer_with_groups(self):
         """make_grouped_optimizer returns a working optimizer instance."""
         model = TwoLayerModel()
-        group_map = [
-            (r"weight", "weights"),
-            (r"bias", "biases"),
-        ]
-        group_config = {
-            "weights": {"lr": 1e-3, "weight_decay": 0.01},
-            "biases": {"lr": 1e-4, "weight_decay": 0.0},
+        optimizer_groups = {
+            "weights": {
+                "regex": r"weight",
+                "config": {"lr": 1e-3, "weight_decay": 0.01},
+            },
+            "biases": {
+                "regex": r"bias",
+                "config": {"lr": 1e-4, "weight_decay": 0.0},
+            },
         }
 
         optimizer = make_grouped_optimizer(
             model.named_parameters(),
-            opt_ctor=torch.optim.SGD,
-            group_map=group_map,
-            group_config=group_config,
+            optimizer_groups=optimizer_groups,
+            optimizer_factory=torch.optim.SGD,
         )
 
         assert isinstance(optimizer, torch.optim.SGD)
         assert len(optimizer.param_groups) == 2
 
-    def test_opt_kwargs_forwarded(self):
-        """Extra keyword arguments are forwarded to the optimizer constructor."""
+    def test_optimizer_factory_is_called_with_param_groups(self):
+        """The optimizer factory receives the computed param groups."""
         model = TwoLayerModel()
-        group_map = [
-            (r".*", "all"),
-        ]
-        group_config = {
-            "all": {"lr": 1e-3},
+        optimizer_groups = {
+            "all": {"regex": r".*", "config": {"lr": 1e-3}},
         }
 
+        # partial binding extra kwargs into the factory is the standard pattern.
+        factory = partial(torch.optim.SGD, momentum=0.9)
+
         optimizer = make_grouped_optimizer(
             model.named_parameters(),
-            opt_ctor=torch.optim.SGD,
-            group_map=group_map,
-            group_config=group_config,
-            opt_kwargs={"momentum": 0.9},
+            optimizer_groups=optimizer_groups,
+            optimizer_factory=factory,
         )
 
         assert isinstance(optimizer, torch.optim.SGD)
-        # Momentum should be set in the param group defaults
         assert optimizer.param_groups[0]["momentum"] == 0.9
-
-    def test_opt_args_forwarded(self):
-        """Positional arguments beyond param_groups are forwarded."""
-        model = TwoLayerModel()
-        group_map = [(r".*", "all")]
-        group_config = {"all": {}}
-
-        # torch.optim.SGD requires lr; pass it as a positional arg via opt_args
-        optimizer = make_grouped_optimizer(
-            model.named_parameters(),
-            opt_ctor=torch.optim.SGD,
-            group_map=group_map,
-            group_config=group_config,
-            opt_args=[0.01],  # lr as positional argument
-        )
-        assert isinstance(optimizer, torch.optim.SGD)
+        assert optimizer.param_groups[0]["lr"] == 1e-3
 
 
 # ===========================================================================

@@ -124,6 +124,13 @@ optimizer: &optimizer ~
     -- endfilter
 
 
+    -- filter trim()
+    -- block optimizer_groups
+optimizer_groups: &optimizer_groups ~
+    << endblock optimizer_groups
+    -- endfilter
+
+
 == h2('LR Scheduler')
 
     -- filter trim()
