@@ -1,0 +1,111 @@
+-- extends "projects/lm_training_project.yaml"
+
+[config_metadata]
+    == super()
+    ## Overrides
+    -- set ns.config_name = "Finetune v2"
+    -- set ns.config_description = "Base Finetune Project v2"
+
+    ## Dataset
+    -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, 'examples', 'datasets', 'QuixiAI'))
+    -- set ns.dataset_config = dataset_config | default("samantha-packed.yaml")
+
+    ## Batching
+    -- set ns.seq_len = seq_len | default(4096)
+    -- set ns.per_device_train_batch_size = batch_size | default(4)
+    -- set ns.batch_density = 0.95
+
+    ## LR scaling
+    -- set ns.base_lr = lr | default(5.0e-5)
+    -- set ns.base_batch_size = 16384
+    -- set ns.lr_alpha = 0.5
+
+    ## LR Scheduler
+    -- set ns.annealing_tokens = annealing_tokens | default(300)
+    
+    ## Attention
+    -- set ns.attn_implementation = attn_implementation | default("flex_attention")
+
+    ## Compile
+    -- set ns.torch_compile = compile | default("True")
+    -- set ns.torch_compile_mode = torch_compile_mode | default("max-autotune")
+
+[globals]
+    == super()
+    -- set ns.annealing_tokens = ns.annealing_tokens * 1000 * 1000
+    -- set ns.annealing_steps = ns.annealing_tokens // ns.tokens_per_step
+    -- set ns.decay_start_step = (ns.total_steps - ns.annealing_steps) | int
+    ## If not specified, default to model-dir and model-name
+	-- set ns.model_id_or_path = model_id_or_path | default(joinpath(ns.models_dir, ns.model_name))
+
+    ## If explicity specified, use 'output_dir,' otherwise assume that 'ns.model_id_or_path'
+    -- set ns.output_dir = output_dir | default(ns.model_id_or_path)
+    -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
+
+[variable_listing]
+    == super()
+# ns.model_id_or_path: {{ ns.model_id_or_path }}
+# ns.annealing_steps: {{ ns.annealing_steps }}
+
+[construct_new_model]
+    -- include 'models/causal_lm/from_pretrained_config.yaml'
+
+[trainer_args]
+    == super()
+
+    # Checkpoint saving
+    save_strategy: {{ save_strategy | toyaml('steps') }}
+    save_total_limit: 4
+    preserve_best_model: True
+    best_model_metric: "loss"
+    preserve_n_best: 1
+    eval_on_save: True
+
+    # Compile
+    torch_compile_dynamic: False
+
+    # Dataloader
+    dataloader_num_workers: 1
+    dataloader_prefetch_factor: 4
+
+    # Misc.
+    float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
+    default_dtype: {{ default_dtype | toyaml("bfloat16") }}
+    mixed_precision: {{ mixed_precision | toyaml("bf16") }}
+    max_grad_norm: 1.0
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
+    lr: {{ ns.global_lr | toyaml }}
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    decay_steps: {{ ns.annealing_steps }}
+    decay_start_step: {{ ns.decay_start_step }}
+
+[datacollator]
+    == super()
+    max_length: {{ ns.seq_len }}
+    ## Pad batches to 'max_length'; This minimizes recompiles, but should
+    ## may be inefficient if not using a 'packed' dataset configuration.
+    padding: "max_length"
+
+[fused_loss_factory]
+### Fused output-linear x cross-entropy-loss kernel
+.define: &fused_loss_factory !partial:forgather.ml.loss:LinearCrossEntropyLoss
+
+[trainer_callbacks]
+    -- include "callbacks/lm_callbacks.yaml"
+
+[dynamic_args]
+    == super()
+    annealing_tokens:
+        names: "--annealing-tokens"
+        type: int
+        help: "Number of tokens in annealing phase."
+    model_id_or_path:
+        names: [ "--model-id-or-path", "-M" ]
+        type: "path"
+        help: "HF model ID or local path to model"
