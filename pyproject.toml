@@ -6,6 +6,9 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 include = ["forgather*"]
 
+[tool.setuptools.package-data]
+forgather = ["gpu_flops.yaml"]
+
 [project]
 name = "forgather"
 description = "ML project configuration framework."
@@ -38,7 +41,7 @@ dependencies = [
     "pytest",
     "black",
     "isort",
-    "cut-cross-entropy",
+    "cut-cross-entropy ~= 25.9",
     "liger-kernel",
     "triton",
     "dacite",

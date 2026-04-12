@@ -31,77 +31,27 @@ def forgather_home_dir():
     return str(Path.home() / ".forgather")
 
 
-# ---------------------------------------------------------------------------
-# GPU peak BF16 FLOP/s (with FP32 accumulation) reference table.
-# See docs/trainers/training-performance-metrics.md for sources and notes.
-#
-# Order matters: more specific patterns are checked first within each GPU
-# family so that e.g. "RTX 4080 SUPER" matches before "RTX 4080".
-# Each entry is (required_substrings, peak_bf16_flops).
-# ---------------------------------------------------------------------------
-_GPU_FLOPS_TABLE = [
-    # NVIDIA Data Center GPUs -- Blackwell
-    (("B200",), 2250e12),
-    (("B100",), 1750e12),
-    # Hopper (H200 has the same compute die as H100 SXM; only memory differs)
-    (("H200",), 989e12),
-    (("H100", "PCIe"), 756e12),
-    (("H100",), 989e12),
-    (("H800", "PCIe"), 756e12),
-    (("H800",), 989e12),
-    (("H20",), 148e12),
-    # Ampere data center
-    (("A800",), 312e12),
-    (("A100",), 312e12),
-    # Ada data center / professional
-    (("L40S",), 362e12),
-    (("L40",), 181e12),
-    (("L4",), 121e12),
-    (("RTX 6000 Ada",), 181e12),
-    # Ampere professional -- must precede A40 ("A40" is a substring of "A4000")
-    (("RTX A6000",), 154.8e12),
-    (("RTX A5000",), 111.1e12),
-    (("RTX A4000",), 76.7e12),
-    # Ampere data center (continued) -- A40/A30 must precede A10
-    (("A40",), 149.7e12),
-    (("A30",), 165e12),
-    (("A10",), 31.2e12),
-    # Blackwell professional
-    (("RTX PRO 6000",), 251.9e12),
-    # NVIDIA Consumer GPUs -- RTX 50-series (Blackwell)
-    (("RTX 5090",), 209.5e12),
-    (("RTX 5080",), 112.6e12),
-    (("RTX 5070 Ti",), 87.8e12),
-    (("RTX 5070",), 61.8e12),
-    (("RTX 5060 Ti",), 47.4e12),
-    (("RTX 5060",), 38.4e12),
-    # RTX 40-series (Ada Lovelace)
-    (("RTX 4090",), 165.2e12),
-    (("RTX 4080 SUPER",), 104.4e12),
-    (("RTX 4080",), 97.0e12),
-    (("RTX 4070 Ti SUPER",), 79.8e12),
-    (("RTX 4070 Ti",), 40.1e12),
-    (("RTX 4070 SUPER",), 35.5e12),
-    (("RTX 4070",), 29.1e12),
-    (("RTX 4060 Ti",), 22.1e12),
-    (("RTX 4060",), 15.1e12),
-    # RTX 30-series (Ampere)
-    (("RTX 3090 Ti",), 79.8e12),
-    (("RTX 3090",), 71.2e12),
-    (("RTX 3080 Ti",), 59.8e12),
-    (("RTX 3080",), 44.7e12),
-    (("RTX 3070 Ti",), 43.5e12),
-    (("RTX 3070",), 40.6e12),
-    (("RTX 3060 Ti",), 32.4e12),
-    (("RTX 3060",), 25.5e12),
-]
-
 _HARDWARE_YAML = "hardware.yaml"
+_GPU_FLOPS_YAML = Path(__file__).with_name("gpu_flops.yaml")
+
+# Loaded lazily by _get_gpu_flops_table().
+_gpu_flops_table: list[tuple[list[str], float]] | None = None
+
+
+def _get_gpu_flops_table() -> list[tuple[list[str], float]]:
+    """Load and cache the GPU FLOPS reference table from gpu_flops.yaml."""
+    global _gpu_flops_table
+    if _gpu_flops_table is None:
+        entries = yaml.safe_load(_GPU_FLOPS_YAML.read_text())
+        _gpu_flops_table = [
+            (entry["match"], entry["tflops"] * 1e12) for entry in entries
+        ]
+    return _gpu_flops_table
 
 
 def _match_gpu_flops(device_name: str) -> float | None:
     """Match a CUDA device name against the reference table."""
-    for patterns, flops in _GPU_FLOPS_TABLE:
+    for patterns, flops in _get_gpu_flops_table():
         if all(p in device_name for p in patterns):
             return flops
     return None
