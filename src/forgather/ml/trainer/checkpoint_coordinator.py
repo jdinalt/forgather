@@ -94,7 +94,7 @@ from .checkpoint_utils import (
 )
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 prefix_logger_rank(logger)
 
 
