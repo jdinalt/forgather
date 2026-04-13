@@ -9,7 +9,7 @@
 [map_function]
 {{ map_function(ns.orca_src, ns.chat_template, max_length | default(512), stride | default(0)) }}
 
-[map_args]
+[map_kwargs]
     == super()
 {{ map_kwargs() }}
 
