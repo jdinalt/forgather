@@ -501,9 +501,24 @@ class PipelineTrainer(
 
         # Only the last state needs to compute loss
         # TODO: Placing this here is not going to work for the auto-splitter. That will require more work...
-        if self.pp_has_last_stage:
+        # Zero-bubble schedules are incompatible with Python autograd.Function-based
+        # fused loss kernels (e.g. Apple CCE's LinearCrossEntropyFunction). Zero-bubble's
+        # stage_backward_weight constructs GradientEdge over intermediate nodes and
+        # calls torch.autograd.grad -> _make_grads -> out.node._input_metadata, which
+        # is not exposed on Python autograd.Function nodes and raises the same legacy
+        # accessor error documented for torch.compile above. Disable fused loss in this
+        # case so the pipeline falls back to the standard (unfused) loss path.
+        if self.pp_has_last_stage and not is_zero_bubble_schedule(
+            self.pipe_schedule_factory
+        ):
             self.loss_fn = self._maybe_get_fused_loss_fn(
                 pipeline_modules[-1], self.loss_fn
+            )
+        elif self.pp_has_last_stage and self.fused_loss_factory is not None:
+            logger.warning(
+                "Zero-bubble pipeline schedules are incompatible with Python "
+                "autograd.Function-based fused loss kernels. Falling back to the "
+                "standard (unfused) loss path."
             )
 
         # Loss needs to be scaled by the number of micro-batches
