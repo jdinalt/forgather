@@ -2,9 +2,26 @@ from typing import Callable, Iterable, Tuple
 
 import torch
 from torch import Tensor, nn
+from torch.distributed.tensor import DTensor
 from torch.optim import Optimizer
 
 from .rounding_utils import fp32_to_bf16_stochastic_round
+
+
+def _local_shard(t: Tensor) -> Tensor:
+    """Return the local shard of a DTensor, or the tensor unchanged.
+
+    See the identical helper in adafactor.py for the full rationale. In
+    short: FSDP2 parameters are DTensors with global-valued ``.numel()``
+    and ``.shape``, and compiled fullgraph kernels over DTensor args are
+    brittle. The per-parameter AdamW step is entirely elementwise and
+    needs no cross-rank communication, so we run the compiled kernel on
+    local shards and rely on views-over-storage to flow in-place writes
+    back into the live DTensor parameter.
+    """
+    if isinstance(t, DTensor):
+        return t.to_local()
+    return t
 
 
 class AdamW(Optimizer):
@@ -62,10 +79,18 @@ class AdamW(Optimizer):
         with torch._dynamo.utils.disable_cache_limit():
             for group in self.param_groups:
                 for p in group["params"]:
-                    if p.grad is None:
-                        continue
                     grad = p.grad
+                    if grad is None:
+                        continue
+                    # Key state by the DTensor-backed Parameter before
+                    # unsharding so save/load round-trips correctly.
                     state = self.state[p]
+                    # Under FSDP2, p and p.grad are DTensors. Unshard to
+                    # local shards for the compiled kernel and for scratch-
+                    # buffer sizing (SR random bits). In-place ops on the
+                    # local views flow back into the DTensor storage.
+                    grad = _local_shard(grad)
+                    p = _local_shard(p)
 
                     # Init state
                     if "step" not in state:

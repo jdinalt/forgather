@@ -4,9 +4,36 @@ from typing import Callable, Iterable, Tuple
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from torch.distributed.tensor import DTensor
 from torch.optim import Optimizer
 
 from .rounding_utils import fp32_to_bf16_stochastic_round
+
+
+def _local_shard(t: Tensor) -> Tensor:
+    """Return the local shard of a DTensor, or the tensor unchanged.
+
+    Under FSDP2, parameters and gradients are DTensors on a device mesh.
+    The per-parameter optimizer step is entirely elementwise and needs no
+    cross-rank communication, so we unshard to the local tensor before the
+    compiled kernel runs. This matters for two independent reasons:
+
+    1. Sizing of scratch state (row/col moment buffers) must come from the
+       local shard shape, not the DTensor's global shape. DTensor.numel()
+       returns the global element count, so naive ``torch.zeros(grad[...,0]
+       .numel(), ...)`` produces a buffer sized for the unsharded parameter
+       and then fails the mixed-tensor guard on the first in-place op.
+    2. ``torch.compile(_adafactor, fullgraph=True)`` is not safe over
+       DTensor ops today; running the kernel against plain-tensor local
+       shards keeps the compiled graph on stable ground.
+
+    In-place mutations on the returned tensor update the DTensor's local
+    storage directly, so p -= lr*update inside the kernel still writes
+    back into the live parameter.
+    """
+    if isinstance(t, DTensor):
+        return t.to_local()
+    return t
 
 
 class Adafactor(Optimizer):
@@ -97,10 +124,21 @@ class Adafactor(Optimizer):
         with torch._dynamo.utils.disable_cache_limit():
             for group in self.param_groups:
                 for p in group["params"]:
-                    if p.grad is None:
-                        continue
                     grad = p.grad
+                    if grad is None:
+                        continue
+                    # Optimizer state must be keyed by the DTensor-backed
+                    # Parameter so save/load via get_optimizer_state_dict
+                    # round-trips correctly; do the state lookup before
+                    # unsharding.
                     state = self.state[p]
+                    # Under FSDP2, p and p.grad are DTensors. The kernel
+                    # below operates entirely on local shards; see
+                    # _local_shard docstring. The returned tensors are
+                    # views over the DTensor's local storage, so in-place
+                    # ops flow back into the live parameter.
+                    grad = _local_shard(grad)
+                    p = _local_shard(p)
 
                     # Init state
                     if "step" not in state:
