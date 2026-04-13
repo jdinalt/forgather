@@ -11,12 +11,16 @@ Design notes
   must be created *after* that swap so its param groups hold the sharded
   parameters. The base Trainer._prepare() calls _prepare_model() before
   _init_optimizer(), so overriding _prepare_model() is the natural hook.
-- Checkpoints are saved as per-rank shards using SharingPattern.PER_RANK.
-  Each rank writes the local DTensor state via
-  torch.distributed.checkpoint.state_dict.get_model_state_dict with default
-  (sharded) StateDictOptions. Checkpoints are therefore tied to the world
-  size they were saved at; resuming at a different world size is out of
-  scope for this first cut (would require a DCP-based loader).
+- Model checkpoints are saved as plain HuggingFace safetensors (gathered
+  full-state-dict on rank 0 via get_model_state_dict). This makes them
+  loadable by ``from_pretrained`` and symmetrically lets the trainer resume
+  from any plain HF checkpoint it did not create. See fsdp2_checkpoint.py
+  for the save/load helpers that drive CheckpointManager's model hooks.
+- Optimizer state remains per-rank sharded (SharingPattern.PER_RANK) and is
+  handled by CheckpointCoordinator. Optimizer checkpoints are therefore
+  tied to the world size they were saved at; resuming optimizer state at a
+  different world size is out of scope for this first cut (would require a
+  DCP-based optim loader).
 - Gradient-sync gating at accumulation boundaries uses FSDP2's
   set_requires_gradient_sync() instead of DDP's no_sync() context manager.
 """
@@ -30,9 +34,7 @@ from dacite import from_dict
 from torch import Tensor
 from torch import distributed as dist
 from torch.distributed.checkpoint.state_dict import (
-    get_model_state_dict,
     get_optimizer_state_dict,
-    set_model_state_dict,
     set_optimizer_state_dict,
 )
 from torch.distributed.checkpoint.stateful import Stateful
@@ -55,6 +57,10 @@ from forgather.ml.trainer.checkpoint_manager import (
     RNGState,
 )
 from forgather.ml.trainer.checkpoint_types import SharingPattern, StateComponent
+from forgather.ml.trainer.fsdp2.fsdp2_checkpoint import (
+    load_fsdp2_model_from_hf,
+    save_fsdp2_model_as_hf,
+)
 from forgather.ml.trainer.synchronized_dataloader import SynchronizedDataLoader
 from forgather.ml.trainer.trainer import Trainer, TrainingArguments
 from forgather.ml.trainer.trainer_types import FusedLossFactoryT
@@ -162,19 +168,6 @@ TFSDP2TrainingArguments = TypeVar(
 )
 
 
-class _FSDP2ModelStateful(Stateful):
-    """Stateful adapter that keeps FSDP2 model state sharded on save/load."""
-
-    def __init__(self, model: Module):
-        self._model = model
-
-    def state_dict(self) -> Dict[str, Any]:
-        return get_model_state_dict(self._model)
-
-    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
-        set_model_state_dict(self._model, state_dict)
-
-
 class _FSDP2OptimStateful(Stateful):
     """Stateful adapter for the optimizer under FSDP2 sharded state."""
 
@@ -250,6 +243,16 @@ class FSDP2Trainer(Trainer[TFSDP2TrainingArguments], Generic[TFSDP2TrainingArgum
 
     @override
     def _prepare_model(self) -> None:
+        # Stash the base (unfused) loss_fn before super() wraps it. The
+        # base trainer's _prepare_model calls _maybe_get_fused_loss_fn BEFORE
+        # we apply fully_shard, so any fused loss (LinearCrossEntropyLoss)
+        # gets constructed against a plain-tensor lm_head and happily
+        # selects Apple CCE / Liger. Those kernels silently produce zero
+        # gradients once lm_head becomes a DTensor after fully_shard, so
+        # we have to rebuild the fused loss after sharding. See the bottom
+        # of this method for the rebuild.
+        base_loss_fn = self.loss_fn
+
         super()._prepare_model()
         if self.dist.world_size == 1:
             return
@@ -301,6 +304,29 @@ class FSDP2Trainer(Trainer[TFSDP2TrainingArguments], Generic[TFSDP2TrainingArgum
             offload_policy=offload_policy,
         )
 
+        # Fused loss is incompatible with DTensor lm_head under FSDP2.
+        # None of CCE / Liger / pytorch-chunked handle a sharded weight:
+        # CCE and Liger silently produce zero gradients (loss stuck at
+        # ln(vocab_size)), and the pytorch path raises "mixed torch.Tensor
+        # and DTensor" on its hidden_states @ weight.T matmul. The base
+        # trainer's _prepare_model already built a fused-loss wrapper
+        # against the pre-shard plain-tensor lm_head; undo that and
+        # re-wrap the base unfused loss_fn. The model's normal lm_head
+        # forward pass handles DTensor correctly via FSDP2's all_gather
+        # forward hooks, at the cost of materializing the full logits
+        # tensor that the fused path would have avoided. A future DTensor-
+        # native fused loss can revisit this.
+        if self.use_fused_loss:
+            logger.warning(
+                "FSDP2: fused LinearCrossEntropyLoss is incompatible with a "
+                "DTensor lm_head weight; falling back to the standard "
+                "logits path. Expect higher activation memory from "
+                "materialized logits."
+            )
+            self.use_fused_loss = False
+            self.loss_fn = base_loss_fn
+            self._wrap_loss_fn()
+
     @override
     def _wrap(self) -> None:
         """Wrap dataloaders for DP; the model is already sharded."""
@@ -337,11 +363,24 @@ class FSDP2Trainer(Trainer[TFSDP2TrainingArguments], Generic[TFSDP2TrainingArgum
     @override
     def _init_checkpoint_manager(self) -> CheckpointManager:
         """
-        FSDP2 model state is sharded DTensors — incompatible with the
-        safetensors save path that CheckpointManager uses for the "model"
-        component. We pass model_parts=[] and a dummy shard_index so
-        ``_save_model`` is a no-op; the model is saved/loaded through the
-        CheckpointCoordinator as the "fsdp2_model" PER_RANK StateComponent.
+        Wire CheckpointManager with FSDP2-aware model save/load hooks.
+
+        FSDP2 parameters are DTensors on a device mesh, so CheckpointManager's
+        default shard-index path (which calls ``save_sharded_checkpoint`` on
+        plain ``nn.Module.state_dict()``) can't be used directly: save needs
+        a full-state-dict gather to rank 0, load needs a broadcast-and-
+        reshard from rank 0. The hooks below handle both, and the output is
+        standard HuggingFace safetensors layout, so:
+
+        - ``transformers.AutoModel.from_pretrained`` can load checkpoints
+          this trainer saves, and
+        - this trainer can resume from any plain HF checkpoint it did not
+          create.
+
+        Because the hooks themselves are collectives, CheckpointManager
+        calls them on every rank (rank gating for file writes lives inside
+        the hooks). ``model_parts=[]`` and ``shard_index={}`` make the
+        legacy shard-index path a no-op.
         """
         if self.dist.world_size == 1:
             return super()._init_checkpoint_manager()
@@ -353,14 +392,34 @@ class FSDP2Trainer(Trainer[TFSDP2TrainingArguments], Generic[TFSDP2TrainingArgum
             save_safetensors=self.args.save_safetensors,
         )
 
+        fsdp2_model = self.unwrapped_model()
+        safetensors = self.args.save_safetensors
+
+        def _save_model_hook(output_dir: str) -> None:
+            save_fsdp2_model_as_hf(
+                fsdp2_model,
+                output_dir,
+                dist=self.dist,
+                safetensors=safetensors,
+            )
+
+        def _load_model_hook(checkpoint_path: str) -> None:
+            load_fsdp2_model_from_hf(
+                fsdp2_model,
+                checkpoint_path,
+                dist=self.dist,
+            )
+
         checkpoint_manager = CheckpointManager(
             config=cp_config,
             dist=self.dist,
-            model=self.unwrapped_model(),
+            model=fsdp2_model,
             model_parts=[],
             model_preprocessor=self.processing_class,
             stateful_provider=self,
             shard_index={},
+            model_save_fn=_save_model_hook,
+            model_load_fn=_load_model_hook,
         )
         checkpoint_manager.trainer = self
         if hasattr(self.args, "preserve_n_best"):
@@ -429,11 +488,12 @@ class FSDP2Trainer(Trainer[TFSDP2TrainingArguments], Generic[TFSDP2TrainingArgum
         """
         State components for FSDP2.
 
-        Model and optimizer state remain sharded: each rank saves and loads
-        its own DTensor shard (PER_RANK). validate_replication is False for
-        those components because the per-rank state is expected to differ by
-        design. Scheduler, trainer progress, dataset and RNG mirror
-        DDPTrainer.
+        The model is saved/loaded as HuggingFace safetensors via the model
+        hooks wired in ``_init_checkpoint_manager``; it is NOT registered as
+        a StateComponent. Optimizer state stays sharded per rank because
+        the DTensor layout of the optimizer moments cannot cheaply round-
+        trip through a gather/broadcast. Scheduler, trainer progress,
+        dataset and RNG mirror DDPTrainer.
         """
         if self.dist.world_size == 1:
             return super().get_state_components()
@@ -441,19 +501,6 @@ class FSDP2Trainer(Trainer[TFSDP2TrainingArguments], Generic[TFSDP2TrainingArgum
         assert self.model is not None
 
         components: List[StateComponent] = []
-
-        # Key is "fsdp2_model" (not "model") so CheckpointManager routes it
-        # through the CheckpointCoordinator's PER_RANK path rather than the
-        # safetensors model-save path (which can't handle DTensors).
-        components.append(
-            StateComponent(
-                key="fsdp2_model",
-                stateful=_FSDP2ModelStateful(self.model),
-                sharing_pattern=SharingPattern.PER_RANK,
-                validate_replication=False,
-                required=True,
-            )
-        )
 
         if self.optimizer is not None:
             components.append(

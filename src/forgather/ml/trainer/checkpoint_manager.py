@@ -3,7 +3,7 @@ import logging
 import os
 import traceback
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Tuple
 
 import torch
 from torch.distributed.checkpoint.stateful import Stateful
@@ -75,6 +75,8 @@ class CheckpointManager(CheckpointInterface):
         model_parts: ModelParts | None = None,
         model_preprocessor: Any = None,
         shard_index=None,
+        model_save_fn: Callable[[str], None] | None = None,
+        model_load_fn: Callable[[str], None] | None = None,
     ):
 
         self.dist = dist
@@ -89,6 +91,12 @@ class CheckpointManager(CheckpointInterface):
         self.model = model
         self.model_parts = model_parts
         self.model_preprocessor = model_preprocessor
+        # Optional hooks that take over model save/load when set. All ranks
+        # call the hook; the hook is responsible for its own rank gating,
+        # since collective ops (e.g. DTensor full-state-dict gather) need to
+        # run on every rank.
+        self.model_save_fn = model_save_fn
+        self.model_load_fn = model_load_fn
 
         if not shard_index:
             shard_index = make_shard_index(
@@ -103,9 +111,7 @@ class CheckpointManager(CheckpointInterface):
         if config.save_safetensors:
             sharing_metadata = create_sharing_metadata(model)
             if sharing_metadata:
-                tied_desc = "; ".join(
-                    " <-> ".join(group) for group in sharing_metadata
-                )
+                tied_desc = "; ".join(" <-> ".join(group) for group in sharing_metadata)
                 raise ValueError(
                     f"save_safetensors=True is incompatible with models that have "
                     f"tied (shared) weights. The safetensors format cannot "
@@ -184,8 +190,14 @@ class CheckpointManager(CheckpointInterface):
         ):
             self._validate_model_replication(self.model_state_component)
 
-        # Save model weights (only on ranks that should save)
-        if self._should_save_common():
+        # Save model weights. When a model_save_fn hook is set (e.g. FSDP2's
+        # full-state-dict gather), every rank must call it because the hook
+        # runs a collective op; the hook itself handles rank gating for the
+        # actual file write. In the legacy shard-index path, only the "save
+        # common" rank writes.
+        if self.model_save_fn is not None:
+            self._save_model(checkpoint_path)
+        elif self._should_save_common():
             self._save_model(checkpoint_path)
 
         # Save training state
@@ -538,6 +550,13 @@ class CheckpointManager(CheckpointInterface):
             logger.warning(f"Failed to validate model replication: {e}")
 
     def _save_model(self, output_dir: str):
+        if self.model_save_fn is not None:
+            # Hook takes over model save entirely. Every rank calls it; the
+            # hook is responsible for any collective op plus its own rank
+            # gating for the actual file writes.
+            self.model_save_fn(output_dir)
+            return
+
         shard_index = self.shard_index
         save_safetensors = self.config.save_safetensors
 
@@ -575,9 +594,17 @@ class CheckpointManager(CheckpointInterface):
     def _load_model_from_checkpoint(self, checkpoint_path: str) -> None:
         """Load model weights from checkpoint using the sharded checkpoint loader."""
 
-        # Use the sharded checkpoint loader to handle all checkpoint formats
         logger.info(f"Loading model weights from checkpoint: {checkpoint_path}")
 
+        if self.model_load_fn is not None:
+            # Hook takes over model load entirely. Typical use: FSDP2 trainer
+            # reads the full state dict on rank 0 from HF safetensors and
+            # broadcasts via set_model_state_dict. The hook is responsible
+            # for re-tying weights if applicable.
+            self.model_load_fn(checkpoint_path)
+            return
+
+        # Use the sharded checkpoint loader to handle all checkpoint formats
         for mod in self.model_parts:
             load_checkpoint(
                 checkpoint_path,
@@ -616,20 +643,28 @@ class CheckpointManager(CheckpointInterface):
                 raise
 
     def _load_training_state(self, checkpoint_path: str) -> None:
-        """Load all training state components from separate files."""
+        """Load all training state components from separate files.
+
+        Raises on failure: by the time this is called, the user has
+        explicitly requested a checkpoint load (resume_from_checkpoint was
+        resolved to a concrete path), so silently continuing with freshly
+        initialized optimizer / scheduler / dataset state would turn the
+        user's finetune into training-from-scratch. The coordinator already
+        tolerates missing optional components internally; anything that
+        escapes here is either a required-component failure or an
+        unexpected filesystem / serialization error, both of which must be
+        fatal.
+        """
         if self.coordinator is not None:
-            # Use CheckpointCoordinator API
-            # The coordinator handles per-component errors internally and logs them.
-            # We only catch unexpected errors (e.g. filesystem failures, manifest corruption).
             try:
                 self.coordinator.load_checkpoint(checkpoint_path, strict=False)
-            except Exception as e:
+            except Exception:
                 logger.error(
-                    f"Failed to load training state via CheckpointCoordinator: {e}\n"
-                    f"Training will continue WITHOUT any restored training state "
-                    f"(optimizer, scheduler, etc.). This is likely to cause training instability.",
+                    f"Failed to load training state via CheckpointCoordinator "
+                    f"from {checkpoint_path}. Aborting training.",
                     exc_info=True,
                 )
+                raise
 
 
 class RNGState(Stateful):

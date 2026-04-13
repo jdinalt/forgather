@@ -63,6 +63,7 @@ from forgather.ml.distributed import (
 )
 from forgather.ml.sharded_checkpoint import (
     find_latest_checkpoint,
+    get_checkpoint_metadata,
     index_file_name,
     load_checkpoint,
     make_shard_index,
@@ -656,6 +657,21 @@ class CheckpointCoordinator:
         manifest_path = os.path.join(checkpoint_path, "checkpoint_manifest.json")
         if os.path.exists(manifest_path):
             self._load_with_manifest(checkpoint_path, strict=strict)
+        elif get_checkpoint_metadata(checkpoint_path) is not None:
+            # Bare HuggingFace-format checkpoint: model weights only, no
+            # Forgather training state. Model weights are loaded separately
+            # by CheckpointManager._load_model_from_checkpoint (via its
+            # model_load_fn hook for FSDP2, or the plain sharded-checkpoint
+            # loader otherwise). There's nothing for the coordinator to do
+            # here, and iterating its optional components would just emit a
+            # string of scary "component not found" warnings for a routine
+            # finetune-from-pretrained scenario. Skip it.
+            logger.info(
+                f"No Forgather manifest at {checkpoint_path}; treating as "
+                "HuggingFace-format checkpoint. Model weights were loaded "
+                "separately; optimizer, scheduler and dataset state are not "
+                "present in this checkpoint and will be freshly initialized."
+            )
         else:
             logger.warning(
                 f"No manifest found at {manifest_path}. "
@@ -1002,7 +1018,7 @@ class CheckpointCoordinator:
             logger.error(
                 f"Checkpoint load completed with failures: {summary}. "
                 f"Components that failed to load will use freshly initialized state. "
-                f"This is likely to cause training instability (e.g. grad-norm spikes, loss jumps)."
+                f"This may cause training instability (e.g. grad-norm spikes, loss jumps)."
             )
         else:
             logger.info(f"Checkpoint load completed: {summary}")

@@ -295,6 +295,36 @@ class LinearCrossEntropyLoss:
             (actual_impl_name, compute_function)
         """
 
+        # Detect DTensor weights (FSDP2-sharded lm_head). None of the three
+        # backends — CCE, Liger, or pytorch chunked — handle DTensor inputs:
+        # CCE and Liger are Triton kernels that expect plain tensors and
+        # silently produce zero gradients, and the pytorch path does a
+        # ``hidden_states @ weight.T`` which mixes plain tensor with DTensor
+        # and raises "aten.mm.default got mixed torch.Tensor and DTensor".
+        # Fused loss under FSDP2 requires either gathering the full lm_head
+        # weight up front (losing the memory benefit) or a DTensor-native
+        # implementation; neither is in place yet, so refuse construction
+        # here and let the caller fall back to the standard logits path.
+        try:
+            from torch.distributed.tensor import DTensor as _DTensor
+        except ImportError:
+            _DTensor = None  # type: ignore[assignment]
+        weight_is_dtensor = _DTensor is not None and isinstance(self.weight, _DTensor)
+
+        if weight_is_dtensor:
+            raise RuntimeError(
+                "LinearCrossEntropyLoss cannot be constructed against a "
+                "DTensor lm_head weight (detected FSDP2 / tensor-parallel "
+                "sharding). None of the CCE / Liger / pytorch backends "
+                "handle DTensor inputs correctly: CCE and Liger silently "
+                "produce zero gradients, and the pytorch chunked path "
+                "raises on the hidden_states @ weight.T matmul. Disable "
+                "fused loss for the sharded code path (the FSDP2 trainer "
+                "does this automatically) and use the standard logits "
+                "path, whose lm_head forward composes with FSDP2 via the "
+                "normal all_gather hooks."
+            )
+
         if impl == "auto":
             if self.bias:
                 # Only pytorch support bias at present
@@ -328,13 +358,13 @@ class LinearCrossEntropyLoss:
             assert not self.bias, "Bias is not supported by CCE v25.1.1"
 
             try:
-                from cut_cross_entropy import linear_cross_entropy
-
                 # Detect which kwargs the installed version supports by
                 # inspecting the function signature.  The pip-installable
                 # v25.1.1 lacks accum_e_fp32 / accum_c_fp32 (among others);
                 # the source-installable v25.9.3+ has them.
                 import inspect
+
+                from cut_cross_entropy import linear_cross_entropy
 
                 _cce_params = set(
                     inspect.signature(linear_cross_entropy).parameters.keys()
@@ -381,8 +411,8 @@ class LinearCrossEntropyLoss:
                             "accum_e_fp32/accum_c_fp32 (needed for numerical stability "
                             "with %s weights). Training may exhibit lm_head spectral "
                             "norm explosion. Install the latest version from source:\n"
-                            "  pip install \"cut-cross-entropy @ "
-                            "git+https://github.com/apple/ml-cross-entropy.git\"",
+                            '  pip install "cut-cross-entropy @ '
+                            'git+https://github.com/apple/ml-cross-entropy.git"',
                             self.weight.dtype,
                         )
 
@@ -453,9 +483,7 @@ class LinearCrossEntropyLoss:
 
         # Filter kwargs to only those the installed version accepts.
         cce_kwargs = {
-            k: v
-            for k, v in self.kwargs.items()
-            if k in self._cce_supported_params
+            k: v for k, v in self.kwargs.items() if k in self._cce_supported_params
         }
 
         return linear_cross_entropy(
