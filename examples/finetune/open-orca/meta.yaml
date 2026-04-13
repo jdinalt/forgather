@@ -2,7 +2,7 @@
 
 -- block configs
 name: "Open-Orca Finetune"
-description: "Finetune a model on the Open-Orca Dataset"
+description: "Finetune a model on the Open-Orca reasoning dataset (packed)"
 config_prefix: "configs"
-default_config: "1gpu_llama_7b/default.yaml"
+default_config: "llama3_1b/1gpu_default.yaml"
 << endblock configs

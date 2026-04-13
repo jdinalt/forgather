@@ -1,0 +1,49 @@
+-- extends 'projects/finetune_v2.yaml'
+## -----------------------------------------------------------------------------
+## Open-Orca Finetune (base)
+##
+## Fine-tunes a causal LM on the Open-Orca reasoning dataset using the new
+## fast-loading packed dataset variant (openorca-packed.yaml) and the
+## finetune_v2 base template. The dataset is large (~4M examples, ~2B tokens
+## after ChatML rendering), so the default budget is sized for long runs
+## rather than per-epoch training -- child configs pick a token budget.
+##
+## Differentiation from the Samantha example: Open-Orca is reasoning-flavoured
+## (distilled FLAN chain-of-thought data) rather than persona-flavoured, so
+## sequences run longer and the natural seq_len target is higher. The default
+## here is 2048 tokens, vs Samantha's default mixture of 1280--4096 depending
+## on the backend.
+## -----------------------------------------------------------------------------
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Open-Orca Finetune"
+    -- set ns.config_description = "Train a model on the Open-Orca reasoning dataset"
+
+    ## Dataset: use the packed variant for throughput
+    -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, 'examples', 'datasets', 'Open-Orca'))
+    -- set ns.dataset_config = dataset_config | default("openorca-packed.yaml")
+
+    ## Step cadence: OpenOrca is huge, default 1.0 (log every 1M tokens,
+    ## eval every 25M, save every 500M) is roomy enough for long runs.
+    -- set ns.step_cadence = step_cadence | default(1.0)
+
+    ## Default sequence length -- child configs may override.
+    -- set ns.seq_len = seq_len | default(2048)
+
+    ## LR annealing budget (millions of tokens). Child configs pick a
+    ## total_tokens budget; annealing_tokens controls the final decay window.
+    ## The WSDScheduler inherited from finetune_v2 holds LR constant until
+    ## start_annealing is triggered (either in the config or via
+    ## `forgather control save-stop`), then decays over this many tokens.
+    -- set ns.annealing_tokens = annealing_tokens | default(200)
+
+[trainer_args]
+    == super()
+    ## finetune_v2 defaults max_steps=-1, which makes the trainer run for
+    ## num_train_epochs=1 worth of data. For Open-Orca that's ~8B tokens
+    ## (~87h on 4x 4090), which buries any realistic budget. Rebind to
+    ## ns.total_steps so child configs' `total_tokens` parameter actually
+    ## bounds training. ns.total_steps is re-derived at worker start with
+    ## the true WORLD_SIZE, so this works under any device count.
+    max_steps: {{ max_steps | toyaml(ns.total_steps) }}
