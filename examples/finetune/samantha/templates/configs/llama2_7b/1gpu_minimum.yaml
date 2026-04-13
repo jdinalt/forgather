@@ -6,27 +6,27 @@
     -- set ns.config_description = "Train on 16 GB GPU"
     -- set ns.log_name = "16gb"
 
+    ## Dataset
+    -- set ns.dataset_config = dataset_config | default("samantha.yaml")
+
+    ## Batching
+    -- set ns.seq_len = seq_len | default(1280)
+    -- set ns.per_device_train_batch_size = batch_size | default(1)
+
+    ## Attention
+    -- set ns.attn_implementation = attn_implementation | default("sdpa")
+
+    ## Compile settings
+    -- set ns.torch_compile = compile | default(False)
+
 [trainer_args]
     == super()
-
-    # **config**
-    logging_steps: 50
-    eval_steps: 250
-    max_eval_steps: 50
-    save_steps: 1000
-    per_device_train_batch_size: 1
-    per_device_eval_batch_size: 2
-    gradient_checkpointing: True
-    fuse_optim_with_backward: True
-    enable_activation_offloading: True
+    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
+    fuse_optim_with_backward: {{ fuse_optim_with_backward | default(True) }}
+    ## This appears to be incompatible with flex-attention, so we have fallen back to SDPA
+    enable_activation_offloading: {{ activation_offloading | default(True) }}
 
 [datacollator]
-    == super()
-    # Demonstrate that we /can/ train with this sequence length! But not fast...
-    max_length: 512
-    ## Set to always use max_length. This can reduce peak memory slightly.
-    padding: "max_length"
-
-[optimizer]
-    == super()
-    lr: 1.41e-6 # Rescale LR for smaller batch-size
+data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollatorForCausalLM@DataCollatorForCausalLM
+    tokenizer: *tokenizer
+    return_tensors: pt

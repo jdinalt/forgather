@@ -5,7 +5,7 @@ Finetune a model on the Samantha dataset
 ## What You'll Learn
 
 This tutorial teaches you how to:
-- ✓ Fine-tune a 7B parameter language model on consumer GPUs (full precision, no LoRA/quantization!)
+- ✓ Fine-tune a 7B parameter language model on consumer GPUs (no LoRA/quantization!)
 - ✓ Use [pipeline parallelism](https://docs.pytorch.org/docs/stable/distributed.pipelining.html) to distribute models across multiple GPUs
 - ✓ Train with packed-sequences and flex-attention
 - ✓ Scale training across multiple machines over standard Gigabit Ethernet
@@ -29,19 +29,12 @@ There is an experimental config for a 16 GB GPU. The measured peak usage on a RT
 
 We also have configurations for multi-GPU single node and multi-node training. You can mix-and-match GPUs, provided that they all support bfloat16, but the slowest GPU will be the bottleneck.
 
-Tested Configurations:
-
-- single node RTX 4090, x1, x2, x4, x6
-- single node, RTX 3090, x1, x2
-- multinode, RTX 3090 + RTX 3090
-- multinode, RTX 4090 + RTX 3090
-
 ## Setup
 
 ### Download a Model
 You will need a model to finetune. For our examples, we will use the base [Mistral-7B-v0.1](https://huggingface.co/mistralai/Mistral-7B-v0.1) model. This is a raw, pretrained, model, which has never been trained to interact in a chat context before. It will not take very long for this model to become "Samantha," who is a pro at interacting with the ChatML dialog format.
 
-You should be able to use any 7B Llama flavor, with minimal changes to these instructions.
+You should be able to use any 7B Llama flavor, with minimal changes to these instructions. For example, 'meta-llama--Llama-2-7b-hf' has also been tested.
 
 ```bash
 # Download the model
@@ -72,12 +65,12 @@ FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
 
 # Convert model to Forgather Llama/Mistral implementation
 # This model 
-forgather convert -t "../../../chat_templates/chatml.jinja" "${SRC_MODEL}" "${FG_MODEL}" \
+forgather convert --dtype bfloat16 -t "../../../chat_templates/chatml.jinja" "${SRC_MODEL}" "${FG_MODEL}" \
 --add-tokens "../../../tools/convert_model/example_additional_tokens.yaml"
 
 # For models which already have a chat template, you can skip specifying a chat template and 
 # setting custom tokens. For "meta-llama/Llama-3.2-1B-Instruct" ...
-forgather convert Llama-3.2-1B-Instruct/ fg_Llama-3.2-1B-Instruct/
+forgather convert --dtype bfloat16 Llama-3.2-1B-Instruct/ fg_Llama-3.2-1B-Instruct/
 ```
 
 To convert the model back to HF format...
@@ -122,40 +115,29 @@ While not exhaustive, this is a sampling of the configurations used by this proj
 **Samantha Project**
 - [samantha.yaml](./templates/samantha.yaml) -- Base project configuration
 
-  **7B Single GPU Configurations**
-  - [llama2_7b/1gpu_default.yaml](./templates/configs/llama2_7b/1gpu_default.yaml) -- Conservative setting to train a 7B Llaama model on 1 GPU
-  - [llama2_7b/1gpu_minimum.yaml](./templates/configs/llama2_7b/1gpu_minimum.yaml) -- Train on 16 GB GPU
-  - [llama2_7b/1gpu_packed.yaml](./templates/configs/llama2_7b/1gpu_packed.yaml) -- Train with 4096 token context on single GPU, 24 GBs
+  **Llama2 7B Configurations**
+  - [llama2_7b/1gpu_default.yaml](./templates/configs/llama2_7b/1gpu_default.yaml) -- Single GPU, conservative settings (basic trainer)
+  - [llama2_7b/1gpu_minimum.yaml](./templates/configs/llama2_7b/1gpu_minimum.yaml) -- Single GPU, 16 GB VRAM budget
+  - [llama2_7b/2gpu_pp.yaml](./templates/configs/llama2_7b/2gpu_pp.yaml) -- 2 GPU Pipeline Parallel
+  - [llama2_7b/4gpu_pp.yaml](./templates/configs/llama2_7b/4gpu_pp.yaml) -- 4 GPU Pipeline Parallel
+  - [llama2_7b/fsdp2.yaml](./templates/configs/llama2_7b/fsdp2.yaml) -- FSDP2 (requires fast GPU interconnect for reasonable performance)
 
-  **7B Pipeline Parallel Configurations**
-  - [llama2_7b/2gpu_pp_1f1b.yaml](./templates/configs/llama2_7b/2gpu_pp_1f1b.yaml) -- Train Samantha on 1F1B 2 GPU Pipeline
-  - [llama2_7b/2gpu_pp_i1f1b_packed.yaml](./templates/configs/llama2_7b/2gpu_pp_i1f1b_packed.yaml) -- Samantha Llama 7B i1F1B Pipe x2 with packed sequences
-  - [llama2_7b/4gpu_pp_1f1b.yaml](./templates/configs/llama2_7b/4gpu_pp_1f1b.yaml) -- Train Samantha on 1F!B 4 GPU Pipeline
-  - [llama2_7b/4gpu_pp_1f1b_adamw.yaml](./templates/configs/llama2_7b/4gpu_pp_1f1b_adamw.yaml) -- Train Samantha on 1F1B 4 GPU Pipeline with AdamW
-  - [llama2_7b/4gpu_pp_1f1b_adamw4bit.yaml](./templates/configs/llama2_7b/4gpu_pp_1f1b_adamw4bit.yaml) -- Train Samantha on 1F1B 4 GPU Pipeline with AdamW-4bit
-  - [llama2_7b/4gpu_pp_1f1b_float32.yaml](./templates/configs/llama2_7b/4gpu_pp_1f1b_float32.yaml) -- Train Samantha on 1F1B 4 GPU Pipeline in float32
-  - [llama2_7b/4gpu_pp_i1f1b.yaml](./templates/configs/llama2_7b/4gpu_pp_i1f1b.yaml) -- Samantha Llama 7B i1F1B Pipe x4
-  - [llama2_7b/4gpu_pp_i1f1b_packed.yaml](./templates/configs/) -- Samantha Llama 7B i1F1B Pipe x4 with packed sequences
-  - [llama2_7b/4gpu_pp_zb.yaml](./templates/configs/llama2_7b/4gpu_pp_zb.yaml) -- Train Samantha on ZBVZ 4 GPU Pipeline
+  **Llama3 1B Configurations**
+  - [llama3_1b/1gpu_default.yaml](./templates/configs/llama3_1b/1gpu_default.yaml) -- Single GPU (basic trainer)
+  - [llama3_1b/ddp.yaml](./templates/configs/llama3_1b/ddp.yaml) -- Multi-GPU Distributed Data Parallel
+  - [llama3_1b/ddp_adam4bit.yaml](./templates/configs/llama3_1b/ddp_adam4bit.yaml) -- DDP with torchao 4-bit AdamW (stochastic-rounded)
+  - [llama3_1b/fsdp2.yaml](./templates/configs/llama3_1b/fsdp2.yaml) -- Multi-GPU FSDP2
+  - [llama3_1b/pp.yaml](./templates/configs/llama3_1b/pp.yaml) -- Multi-GPU Pipeline Parallel
 
-  **1B Single GPU Configurations**
-  - [llama3_1b/1gpu_default.yaml](./templates/configs/llama3_1b/1gpu_default.yaml) -- Train a 1B Llama3 on 1 GPU with a context of 1300
-  - [llama3_1b/1gpu_packed.yaml](./templates/configs/llama3_1b/1gpu_packed.yaml) -- Train with 4096 token context on single GPU, 24 GBs
-
-  **1B Pipeline Parallel Configurations**
-  - [llama3_1b/2gpu_pp_1f1b.yaml](./templates/configs/llama3_1b/2gpu_pp_1f1b.yaml) -- Train Samantha on 1F1B 2 GPU Pipeline
-  - [llama3_1b/2gpu_pp_i1f1b.yaml](./templates/configs/llama3_1b/2gpu_pp_i1f1b.yaml) -- Samantha Llama 7B i1F1B Pipe x2 with packed sequences
-
-**Finetune**
-- [projects/base_finetune_proj.yaml](../../../templatelib/finetune/projects/base_finetune_proj.yaml) -- Base Finetune Project
+**Project Templates**
+- [projects/finetune_v2.yaml](../../../templatelib/examples/projects/finetune_v2.yaml) -- Base Finetune Project
+- [projects/lm_training_project.yaml](../../../templatelib/examples/projects/lm_training_project.yaml) -- Base LM Training Project
+- [LM Training Project Template](../../../docs/project-templates/lm-training-projects.md) Documentation for base template project
 
 **Samantha Dataset**
 - [samantha.yaml](../../datasets/QuixiAI/templatelib/configs/samantha.yaml) -- Samantha dataset definition
 - [samantha-packed.yaml](../../datasets/QuixiAI/templatelib/configs/samantha-packed.yaml) -- Packed Samantha dataset definition
 - [src/samantha.py](../../datasets/QuixiAI/src/samantha.py) -- Dataset preprocessing implementation
-
-**Model**
-- [models/transformers/dynamic_llama.yaml](../../../templatelib/examples/models/transformers/dynamic_llama.yaml) -- Base Forgather Llama model definition
 
 **Chat Template**
 - [chat_templates/chatml_eos.jinja](../../../chat_templates/chatml_eos.jinja) -- [ChatML](https://github.com/openai/openai-python/blob/release-v0.28.0/chatml.md) chat template definition
@@ -191,41 +173,40 @@ forgather:samantha> ls
 
 # Change the configuration to "1gpu_llama_7b/long_context.yaml"
 # Note that tab-completion is supported
-forgather:samantha> config 1gpu_llama_7b/long_context.yaml
+forgather:samantha> config llama2_7b/2gpu_pp.yaml
 
 # Checkout the template hierarchy for this configuration
 # If running in VS Code...
-forgather:samantha [1gpu_llama_7b/long_context.yaml]> trefs --format svg -e
+forgather:samantha [llama2_7b/2gpu_pp.yaml]> trefs --format svg -e
 
 # Otherwise...
 # Open the resulting file, "long_context.svg," with a compatible viewer.
-forgather:samantha [1gpu_llama_7b/long_context.yaml]> trefs --format svg -o long_context.svg
+forgather:samantha [llama2_7b/2gpu_pp.yaml]> trefs --format svg -o long_context.svg
 
 # Take a look at one of the configurations we will be demonstrating
-forgather:samantha [1gpu_llama_7b/long_context.yaml]> edit templates/configs/1gpu_llama_7b/long_context.yaml
+forgather:samantha [llama2_7b/2gpu_pp.yaml]> edit llama2_7b/2gpu_pp.yaml
 
 # Take a look at the base Samantha project configuration.
-forgather:samantha [1gpu_llama_7b/long_context.yaml]> edit templates/samantha.yaml
+forgather:samantha [llama2_7b/2gpu_pp.yaml]> edit templates/samantha.yaml
 
-# Take a look at the base finetuning config files.
-# First, bring up the menu to interactively select the files to edit
-forgather:samantha [1gpu_llama_7b/long_context.yaml]> edit
+# Take a look at the base finetune and LM training templates.
+# First, bring up the menu to interactively select the files to edit.
+forgather:samantha [llama2_7b/2gpu_pp.yaml]> edit
 ...
-# Then enter the numbers corresponding to "base_finetune_trainer.yaml" and "base_finetune_proj.yaml"
-Select template(s) (0-58): 49,50
+# Then enter the numbers corresponding to "finetune_v2.yaml" and "lm_training_project.yaml"
 
 # Show the preprocessed configuration in the editor
-forgather:samantha [1gpu_llama_7b/long_context.yaml]> pp -e
+forgather:samantha [llama2_7b/2gpu_pp.yaml]> pp -e
 
 # See what this configuration looks like, when translated to native Python code
-forgather:samantha [1gpu_llama_7b/long_context.yaml]> graph --format python -e
+forgather:samantha [llama2_7b/2gpu_pp.yaml]> graph --format python -e
 
 # Take a look at the configuration-specific arguments
 # Most of these arguments are derived from the configuration's "dynamic_args" section.
-forgather:samantha [1gpu_llama_7b/long_context.yaml]> train --help
+forgather:samantha [llama2_7b/2gpu_pp.yaml]> train --help
 
 # Quit, when done
-forgather:samantha [1gpu_llama_7b/long_context.yaml]> quit
+forgather:samantha [llama2_7b/2gpu_pp.yaml]> quit
 ```
 
 ## Control Interface
@@ -269,15 +250,12 @@ PyTorch uses float32 by default, which takes twice as much memory as bfloat16.
 We address the optimizer state issue by using Adafactor, without momentum. This optimizer uses negligible
 memory for optimizer states and performs nearly identically to AdamW, as long as the batch size is relatively small.
 
+When training in bf16 format, this optimizer uses stochastic-rounding, which yields results close to mixed-precision training accuracy.
+
 ```yaml
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
-  lr: 4.0e-6
-  weight_decay: 0.001
-...
-[trainer_args]
-  ...
-  per_device_train_batch_size: 8 # As the batch size grows larger, AdamW becomes more effective than Adafactor
+  lr: 5.0e-5
 ```
 
 To address the storage required for gradients, we combine the gradient computation step with the optimizer
@@ -339,43 +317,23 @@ forgather -t "llama2_7b/1gpu_default.yaml" train --save-strategy no --max-steps 
 # --max-steps 10 : Run a quick test, with only 10 training steps
 ```
 
-The default config is pretty conservative (context length = 512).
+The 7B default config uses a 2048 token context; the 1B default config uses 4096. Both leave some VRAM headroom on a 24 GB card.
 
 Once you have verified that a given config will run, you can train on the full dataset...
 
-#### Single GPU, 1300 Context Length, "Safe" settings
+#### Single GPU, default settings
 
 ```bash
-# Train with a context length of 1300 on FG model
+# Train a 7B Llama/Mistral model (seq_len = 2048)
 forgather -t "llama2_7b/1gpu_default.yaml" train -M "${FG_MODEL}"
 
-# Train the Llama-3.1-1B-Instruct model
+# Train the Llama-3.2-1B model (seq_len = 4096)
 forgather -t "llama3_1b/1gpu_default.yaml" train -M "${FG_MODEL}"
 
-# To train a native HF model, without a chat template, use:
-forgather -t "llama2_7b/1gpu_default.yaml" -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml_eos.jinja"
+# To train a native HF model (i.e. one not converted via 'forgather convert'),
+# pass a chat template explicitly:
+forgather -t "llama2_7b/1gpu_default.yaml" train -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml_eos.jinja"
 ```
-
-#### Single GPU, 4096 Packed
-
-We can go further by offloading the activation storage to CPU memory. This allows full training of a 7B parameter model, with a sequence length of 4096, on a 24 GB device!
-
-With [sequence packing](../../../docs/datasets/sequence-packing.md), we use "best_fit" packing to optimally pack as many examples as we can within the sequence dimension. This results very little compute wasted on "pad" tokens. We then use the attention mask to prevent cross-example attention.
-
-Normally, this would require O(N^2) compute for these long sequences, but by using [Pytorch Flex Attetnion](https://pytorch.org/blog/flexattention/), the attention function is sparse, which can greatly reduce mean compute.
-
-The attention implementation to use can be specified on the CLI via:
-
-```bash
---attn-implementation {eager,sdpa,flash_attention_2,flex_attention}
-
-# e.g.
-forgather -t "llama2_7b/1gpu_packed.yaml" train -M "${FG_MODEL}" --attn-implementation flex_attention
-```
-
-This will also work with "sdpa" and "eager," but they will require significantly more peak memory and compute.
-
-Note that flex-attention makes use of torch.compile(). The first time you run a particular configuration, there will be some compile overhead, along with verbose diagnostic messages.
 
 #### Single GPU, 16 GB
 
@@ -390,31 +348,247 @@ forgather -t llama2_7b/1gpu_minimum.yaml train -M "${FG_MODEL}"
 
 ## Multi-GPU Setup
 
-For our multi-GPU configurations, we will be using pipeline parallel. This is far more performant on consumer-grade hardware than Fully-Sharded-Data-Parallel (FSDP). Consumer-grade GPUs generally lack a high-speed interconnect (NVLINK). Without this, FSDP, the primary alternative, is painfully slow.
+The `finetune_v2` base template supports four trainer backends, selected via
+`ns.trainer_type` (or `--trainer-type` on the command line): `basic`, `ddp`,
+`fsdp2`, and `pipeline`. The Samantha configs ship one example per backend for
+the 1B model and the pipeline + FSDP2 variants for the 7B model.
+
+Which one should you reach for?
+
+- **Pipeline Parallel (`pipeline`)** — best fit for consumer-grade hardware. PP
+  transfers activations between stages, not parameters, so it tolerates the
+  slow PCIe interconnects typical of multi-GPU desktops. This is the
+  recommended default for the 7B model on 24 GB cards.
+- **FSDP2 (`fsdp2`)** — shards parameters, gradients, and optimizer state
+  across the data-parallel mesh. Great when a single GPU can't hold the model,
+  but the all-gather / reduce-scatter traffic needs a fast interconnect
+  (NVLINK or similar) for reasonable throughput; expect it to be painful on
+  PCIe-only machines.
+- **DDP (`ddp`)** — replicates the full model on every GPU and averages
+  gradients. Only works when the model + optimizer state already fits on a
+  single device. For the 1B model this is the easiest win; for 7B you'd
+  typically prefer PP or FSDP2.
+
+For the details of each backend see
+[LM Training Project Template](../../../docs/project-templates/lm-training-projects.md).
+
+## Measured Throughput
+
+These are 10-step smoke-test numbers on the reference hardware: a 6x RTX 4090
+box with PCIe 4.0 and no NVLINK, each card power-limited to 250 W. GPU 2 was
+excluded for thermal reasons, so the distributed runs used 5 or fewer cards.
+The single-GPU and `{2,4}gpu_pp` configs are pinned to their advertised rank
+counts, so the 5-card limit only directly affects the DDP/FSDP2 rows below
+(which would run identically at 1, 2, 4, or 8 GPUs — the template adjusts).
+At 250 W the cards are mildly throttled, but every distributed run here is
+bandwidth-bound on the PCIe fabric rather than compute-bound, so the numbers
+should be close to what full-power cards would produce.
+
+Measurements taken with `--save-strategy no --max-steps 10` against the
+default settings in each config. Treat the throughput as order-of-magnitude —
+a 10-step average is noisy, and MFU is reported per-rank (pipeline parallel
+values include bubble time).
+
+### Llama2 7B (`fg_llama_7b`)
+
+| Config | GPUs | seq_len | bs (per dev) | tok/s | Peak mem | MFU |
+|---|---|---|---|---|---|---|
+| `llama2_7b/1gpu_default.yaml` | 1 | 2048 | 1 | 2,120 | 21.95 GiB | 36% |
+| `llama2_7b/1gpu_minimum.yaml` | 1 | 1280 | 1 | ~95 | 14.80 GiB | ~3% |
+| `llama2_7b/2gpu_pp.yaml` | 2 | 1280 | 2 | 3,478 | 18.7 / 20.4 GiB | 69% |
+| `llama2_7b/4gpu_pp.yaml` | 4 | 2048 | 2 | **8,893** | 16.3 – 19.2 GiB | 63% |
+| `llama2_7b/fsdp2.yaml` | 5 | 2048 | 1 | 1,360 | 12.6 GiB / rank | 10% |
+
+Observations:
+
+- **`4gpu_pp` is the throughput winner** at 8.9K tok/s. The ZBV schedule keeps
+  the pipeline densely packed; MFU lands in the low-60s even at seq_len 2048.
+- **`2gpu_pp` gets surprisingly high per-rank MFU (69%)** because the
+  two-stage ZBV schedule has very little bubble. Absolute throughput is
+  lower than `4gpu_pp`, but it's the most compute-efficient 7B config we
+  measured.
+- **`1gpu_minimum` is about 22x slower than `1gpu_default`.** The bottleneck
+  is CPU activation offloading — host-device bandwidth, not compute. The
+  config also has to fall back to SDPA instead of flex-attention, because
+  flex-attention currently doesn't compose with activation offloading in
+  PyTorch, and without offloading the run OOMs on a 16 GB card. (At
+  seq_len 1280 flex-attention is otherwise a little *faster* and a little
+  more memory-efficient than SDPA; SDPA here is a workaround, not a
+  preference.) This config exists to prove 7B fine-tuning on a 16 GB card
+  is *possible*, not fast — reach for it only when you genuinely can't
+  spare another card.
+- **`fsdp2` on PCIe is a cautionary tale.** At 1.36K tok/s on 5 GPUs it is
+  slower than `1gpu_default` on a single card: the all-gather /
+  reduce-scatter traffic dominates step time on consumer interconnects.
+  FSDP2 is the right backend when the model + optimizer state legitimately
+  does not fit on one GPU, and when you have NVLINK or equivalent. For
+  the 7B Samantha case you almost always want pipeline parallel instead.
+
+### Llama3 1B (`fg_llama_1b`)
+
+| Config | GPUs | seq_len | bs (per dev) | Optimizer | tok/s | Peak mem |
+|---|---|---|---|---|---|---|
+| `llama3_1b/1gpu_default.yaml` | 1 | 4096 | 2 | Adafactor | 12,844 | 13.19 GiB |
+| `llama3_1b/ddp.yaml` | 5 | 4096 | 1 | Adafactor | **20,853** | 10.79 GiB / rank |
+| `llama3_1b/ddp_adam4bit.yaml` | 5 | 4096 | 1 | torchao AdamW4bit | 19,851 | 12.01 GiB / rank |
+| `llama3_1b/fsdp2.yaml` | 5 | 4096 | 1 | Adafactor | 10,778 | 11.03 GiB / rank |
+| `llama3_1b/pp.yaml` | 2 | 4096 | 2 | Adafactor | 20,452 | 16.9 / 9.4 GiB |
+
+Observations:
+
+- **DDP is the simplest, fastest 1B backend on PCIe.** The model + optimizer
+  state fit comfortably on one card, so you pay for gradient all-reduce but
+  not for parameter sharding. At 20.9K tok/s on 5 ranks, it slightly beats
+  the 2-GPU pipeline.
+- **Pipeline parallel is competitive on just 2 GPUs.** The config is pinned
+  to `nproc_per_node = 2` on purpose — scaling the ZBV schedule to 5 ranks
+  balloons activation memory on the first stage and OOMs immediately. The
+  takeaway generalises: ZBV pipelines scale micro-batches with the rank
+  count, and the first stage typically pays the biggest memory price.
+- **FSDP2 is again the slowest distributed variant.** Same story as the 7B
+  case — PCIe all-gathers dominate.
+- **torchao AdamW4bit is a ~5% throughput trade for first-moment momentum
+  back.** The quantized-Adam variant of the DDP config runs at 19.9K tok/s
+  vs 20.9K for the Adafactor baseline, and adds ~1.2 GiB of peak per-rank
+  memory (the 4-bit first and second moments, plus block-quantization
+  metadata). Stochastic rounding (`bf16_stochastic_round: True`) is
+  enabled by the config and is required for stable pure-bf16 training
+  with quantized moments.
+
+### Tuning attempts that did not help
+
+The baseline configs above already sit right at the 24 GB memory edge. For
+each, I tried the next-most-obvious knob; every attempt below OOMed:
+
+| Config | Attempted change | Result |
+|---|---|---|
+| `llama2_7b/1gpu_default.yaml` | `--compile true` (max-autotune) | OOM — cudagraph scratch |
+| `llama2_7b/1gpu_default.yaml` | `--compile true --torch-compile-mode max-autotune-no-cudagraphs` | OOM — inductor workspace |
+| `llama2_7b/2gpu_pp.yaml` | `--seq-len 2048` (up from 1280) | OOM |
+| `llama2_7b/2gpu_pp.yaml` | `--batch-size 4` (at seq_len 1280) | OOM |
+| `llama2_7b/4gpu_pp.yaml` | `--batch-size 4` (at seq_len 2048) | OOM |
+| `llama2_7b/4gpu_pp.yaml` | `--batch-size 4 --seq-len 1280` | OOM |
+| `llama2_7b/4gpu_pp.yaml` | `--batch-size 4 --pipeline-schedule Schedule1F1B` | OOM |
+
+The pipeline configs come in 1/2/4 GPU flavours because those are the shapes
+of almost every real multi-GPU box. An 8-GPU ZBV pipeline would also work
+with the current `4gpu_pp.yaml` as a starting point — you'd mainly want to
+re-tune `batch_size` and `seq_len` against the larger per-rank memory slice.
+I don't have an 8-GPU rig to measure on, so there's no official config for
+it in this project.
+
+If you want to push further within a single card's memory budget, the
+realistic path is to trade optimizer state for momentum back: Adafactor
+without momentum is nearly state-free (~2 bytes/param in bf16 for its
+row/column stats), so there's no memory to reclaim there. Where there *is*
+room is swapping Adafactor for a *quantized* Adam — torchao's 4-bit Adam
+keeps both moments at 4 bits per parameter (~1 GB extra on a 7B model) with
+stochastic rounding for bf16 stability. That's still far cheaper than full
+fp32 AdamW and gives you first-moment momentum back, which sometimes helps
+convergence on small-batch fine-tuning. See
+`llama3_1b/ddp_adam4bit.yaml` for a worked example.
+
+### Exercise: mixed-precision optimizer groups
+
+The `ddp_adam4bit.yaml` config applies `AdamW4bit` uniformly to every
+parameter. In principle, tensors whose natural scale is small (layer-norm
+gains, biases, the embedding, the lm_head) are the ones you'd most expect
+to misbehave under aggressive quantization, so splitting them into a
+full-precision group is the obvious knob to try.
+
+Two things to know before you start:
+
+1. **torchao already auto-skips small params.** `AdamW4bit._new_buffer`
+   (following the bitsandbytes convention) keeps state in native precision
+   for any tensor with fewer than 4096 elements or whose numel is not
+   divisible by `block_size` (default 128). On Llama3 1B (`hidden_size =
+   2048`) and Llama2 7B (`hidden_size = 4096`) that means layer-norm gains
+   and most biases never get quantized in the first place. The remaining
+   candidates for an explicit full-precision group are therefore the
+   *large* tensors: `embed_tokens`, `lm_head`, and anything else whose
+   numel comfortably exceeds the threshold.
+2. **`[optimizer_groups]` overrides per-group kwargs, not the optimizer
+   class.** The Forgather mechanism builds one optimizer factory and feeds
+   it `param_groups` with per-group hyperparameter overrides (same shape
+   that `torch.optim` accepts). You can change `lr`, `weight_decay`,
+   `betas`, etc. per group, but you can't say "this group uses full
+   `torch.optim.AdamW` and this group uses `AdamW4bit`" without writing a
+   composite-optimizer wrapper. For an experiment that swaps the optimizer
+   class per group you'd need to wrap two factories yourself — out of
+   scope for the template, but a reasonable project.
+
+With those caveats, there are still useful variants to try:
+
+- **Carve `embed_tokens` / `lm_head` into their own groups** and give them
+  a lower `lr` or `weight_decay`. This is the standard "no-decay on
+  embeddings" convention; the default `[optimizer_groups]` block in
+  `lm_training_project.yaml` already zeroes the decay, but you could go
+  further and give them their own LR.
+- **Verify what is actually being quantized.** Pass
+  `--debug-optimizer-groups` to have the trainer log every parameter →
+  group assignment when the optimizer is built, and compare against your
+  expectations. Combine with a short Python probe (the same one used to
+  confirm the auto-skip behaviour) to see which tensors end up as
+  `OptimState4bit` vs plain `Tensor`.
+
+Starting points:
+
+- `examples/tiny_experiments/sinkgd/templates/exp.yaml` — a multi-group
+  `[optimizer_groups]` block that routes norms, biases, embeddings, and
+  lm_head into three named groups with per-group kwargs.
+- `templatelib/examples/projects/lm_training_project.yaml` — the default
+  `[optimizer_groups]` block and the `debug_optimizer_groups` trainer arg.
+- `docs/project-templates/lm-training-projects.md#optimizer-parameter-groups`
+  — the reference for the override mechanism, including how to remove an
+  inherited group by setting its value to `null`.
+
+Override the `[optimizer_groups]` block in a child config that extends
+`llama3_1b/ddp_adam4bit.yaml`, enable `--debug-optimizer-groups`, run a
+short smoke test, and compare training-loss trajectories against the
+baseline over a few hundred steps. If the mixed-precision split makes a
+measurable difference, you've found something worth committing.
 
 ## Single Node Training
 
 First, check if everything is working, like this:
 
 ```bash
-forgather -t "llama2_7b/2gpu_pp_1f1b.yaml" train --save-strategy no --max-steps 10 -M "${FG_MODEL}"
+forgather -t "llama2_7b/2gpu_pp.yaml" train --save-strategy no --max-steps 10 -M "${FG_MODEL}"
 # Note that we don't need to specify the chat-template, as the conversion tool bakes it into the tokenizer.
 ```
 
-There are quite a few different configurations defined, with different schedulers and numbers of GPUs.
+### Llama2 7B on multiple GPUs
 
-### Config Naming Conventions
-- llama2_7b : Written for and tested on Llama2 7B models. Llama3-8B may require adjustments for memory.
-- llama3_1b : Written for and tested on Llama3-3.1-1B models.
-- 1gpu : Single GPU Configuration
-- Ngpu : Requires at least N GPUs
-- default : These configurations work with native HF models and are useful for diagnostics, should you run into any issues.
-- packed : Uses packed examples. See description, above.
-- pp_1f1b : 1-Forward-1-Back Pipeline. This requires the least amount of peak memory
-- pp_i1f1b : Interleaved-1-Forward-1-Back Pipeline. Faster than 1f1b, but uses more memory
-- pp_zb : Zero Bubble Pipeline. The fastest, but does not support validation.
-- float32 : With 4 GPUs, you can train a 7B model in full 32-bit precision
-- adamw | adamw4bit: With 4 GPUs, there's enough memory (using bfloat16) to use the AdamW optimizer. Experimentally, this does not offer much benefit over Adafactor, but it is an option.
+```bash
+# 2 GPU Pipeline Parallel (ZBV schedule, seq_len 1280)
+forgather -t "llama2_7b/2gpu_pp.yaml" train -M "${FG_MODEL}"
+
+# 4 GPU Pipeline Parallel (ZBV schedule, seq_len 2048)
+forgather -t "llama2_7b/4gpu_pp.yaml" train -M "${FG_MODEL}"
+
+# FSDP2 (requires a fast GPU interconnect to be worthwhile)
+forgather -t "llama2_7b/fsdp2.yaml" train -M "${FG_MODEL}"
+```
+
+### Llama3 1B on multiple GPUs
+
+The 1B model is small enough that all three multi-GPU backends work out of
+the box. Use these to get a feel for the trade-offs on your hardware:
+
+```bash
+FG_MODEL_1B="${MODELS_DIR}/fg_Llama-3.2-1B-Instruct"
+
+# Distributed Data Parallel — simplest multi-GPU scaling
+forgather -t "llama3_1b/ddp.yaml" train -M "${FG_MODEL_1B}"
+
+# FSDP2 — useful if you want to see how sharding behaves on the 1B model
+forgather -t "llama3_1b/fsdp2.yaml" train -M "${FG_MODEL_1B}"
+
+# Pipeline Parallel — ZBV schedule across all visible GPUs
+forgather -t "llama3_1b/pp.yaml" train -M "${FG_MODEL_1B}"
+```
+
+Use `-d 0,1` (or any comma-separated GPU list) to restrict the set of GPUs.
 
 ## Testing the Finetuned Model
 
@@ -602,18 +776,18 @@ CWD (NFS share): /mnt/ai_assets/ai_assets/forgather
 
 We have configured a NFS volume, where "/home/dinalt/ai_assets/," on "hal9000" is mounted at "/mnt/ai_assets" on "muthur." Our current working directories on each node correspond to "Path to Forgather," which ensures that the configuration files are identical on both nodes, even if we make changes. The model directory, "fg_mistral," is also shared between the two hosts.
 
-We will have hal9000 host the rendezvous and we will be using the "llama2_7b/2gpu_pp_1f1b.yaml" config, which is for 2 GPUs.
+We will have hal9000 host the rendezvous and we will be using the "llama2_7b/2gpu_pp.yaml" config, which is for 2 GPUs.
 
 Start job on "hal9000"
 ```bash
-NCCL_SOCKET_IFNAME=enp37s0f1 forgather -t llama2_7b/2gpu_pp_1f1b.yaml -p examples/finetune/samantha/ train \
+NCCL_SOCKET_IFNAME=enp37s0f1 forgather -t llama2_7b/2gpu_pp.yaml -p examples/finetune/samantha/ train \
 -M /home/dinalt/ai_assets/models/fg_mistral -- --nnodes 2 --nproc-per-node 1 --rdzv-backend c10d \
 --rdzv-endpoint hal9000:29400 --rdzv-id 1 --rdzv-conf "is_host=true"
 ```
 
 Start job on "muthur"
 ```bash
-NCCL_SOCKET_IFNAME=eno1 forgather -t llama2_7b/2gpu_pp_1f1b.yaml -p examples/finetune/samantha/ train \
+NCCL_SOCKET_IFNAME=eno1 forgather -t llama2_7b/2gpu_pp.yaml -p examples/finetune/samantha/ train \
 -M /home/dinalt/ai_assets/models/fg_mistral -- --nnodes 2 --nproc-per-node 1 --rdzv-backend c10d \
 --rdzv-endpoint hal9000:29400 --rdzv-id 1
 ```
