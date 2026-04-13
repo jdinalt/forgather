@@ -1,78 +1,46 @@
--- extends "datasets/tokenized_dataset.yaml"
+-- extends "datasets/load_dataset.yaml"
 
 [config_metadata]
     == super()
     -- set ns.config_name = "Open Orca"
-    -- set ns.config_description = " This rich collection of augmented FLAN data aligns, as best as possible, with the distributions outlined in the Orca paper. It has been instrumental in generating high-performing model checkpoints and serves as a valuable resource for all NLP researchers and developers!"
-    -- set ns.source = "https://arxiv.org/abs/2306.02707"
-    -- set ns.pp_src = joinpath(project_dir, 'src', 'orca.py')
-    -- set ns.main_feature = "question"
+    -- set ns.config_description = "A rich collection of augmented FLAN data aligned with the distributions outlined in the Orca paper."
+    -- set ns.source = "https://huggingface.co/datasets/Open-Orca/OpenOrca"
+    -- set ns.load_method = "forgather.ml.datasets:fast_load_iterable_dataset"
+    -- set ns.orca_src = joinpath(project_dir, 'src', 'orca.py')
     -- set ns.default_chat_template = joinpath(ns.forgather_dir, 'chat_templates', 'chatml.jinja')
     -- set ns.chat_template = chat_template | default(ns.default_chat_template)
+    ## main_feature is advisory metadata only -- the orca map function reads
+    ## system_prompt/question/response directly rather than a single feature.
+    -- set ns.main_feature = "question"
+
+[map_args]
+    == super()
+    batch_size: 32
+
+[load_dataset_args]
+    == super()
+    path: "Open-Orca/OpenOrca"
 
 [train_dataset_split]
-train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train_dataset_split
-    arg0: "Open-Orca/OpenOrca"
-    split: "train[10000:{{ train_split_size | default('') }}]"
-    num_proc: 8
+    == super()
+    split: "train[10000:]"
 
 [validation_dataset_split]
-validation_dataset_split: &validation_dataset_split !singleton:datasets:load_dataset@validation_dataset_split
-    arg0: "Open-Orca/OpenOrca"
+    == super()
     split: "train[:200]"
 
 [test_dataset_split]
-test_dataset_split: &test_dataset_split !singleton:datasets:load_dataset@test_dataset_split
-    arg0: "Open-Orca/OpenOrca"
+    == super()
     split: "train[1000:10000]"
 
-[train_dataset]
-train_dataset: &train_dataset !singleton:{{ ns.pp_src }}:preprocess_orca@train_dataset
-    dataset: *train_dataset_split
-    chat_template: "{{ ns.chat_template }}"
-    tokenizer: *tokenizer
-    tokenizer_args: !var "preprocess_args"
-    map_args:
-        batch_size: 32
-    template_args:
-        bos_token: !call:getattr [ *tokenizer, 'bos_token' ]
-        eos_token: !call:getattr [ *tokenizer, 'eos_token' ]
-    to_iterable: True
-    desc: "Tokenizing train"
-
-[eval_dataset]
-eval_dataset: &eval_dataset !singleton:{{ ns.pp_src }}:preprocess_orca@eval_dataset
-    dataset: *validation_dataset_split
-    chat_template: "{{ ns.chat_template }}"
-    tokenizer: *tokenizer
-    tokenizer_args: !var "preprocess_args"
-    map_args:
-        batch_size: 32
-    template_args:
-        bos_token: !call:getattr [ *tokenizer, 'bos_token' ]
-        eos_token: !call:getattr [ *tokenizer, 'eos_token' ]
-    desc: "Tokenizing eval"
-
-[test_dataset]
-test_dataset: &test_dataset !singleton:{{ ns.pp_src }}:preprocess_orca@test_dataset
-    dataset: *test_dataset_split
-    chat_template: "{{ ns.chat_template }}"
-    tokenizer: *tokenizer
-    tokenizer_args: !var "preprocess_args"
-    map_args:
-        batch_size: 32
-    template_args:
-        bos_token: !call:getattr [ *tokenizer, 'bos_token' ]
-        eos_token: !call:getattr [ *tokenizer, 'eos_token' ]
-    desc: "Tokenizing test"
+[map_function]
+.define: &map_function !partial:{{ ns.orca_src }}:orca_map_fn
+    chat_template: !singleton:{{ ns.orca_src }}:load_chat_template
+        path: "{{ ns.chat_template }}"
 
 [dynamic_args]
     == super()
-    max_steps:
+    chat_template:
         names: "--chat-template"
-        help: "Path to chat template"
+        help: "Path to chat template file"
         type: "path"
-    train_split_size:
-        names: "--train-split-size"
-        help: "Number of examples to use from the train-split"
-        type: "int"

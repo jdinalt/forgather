@@ -1,102 +1,128 @@
+"""
+Preprocessing helpers for the Open-Orca/OpenOrca dataset.
+
+The dataset stores each example as three raw text fields: ``system_prompt``,
+``question`` and ``response``. This module provides map functions that render
+those fields through a Jinja chat template and then either tokenize the result
+directly (``orca_map_fn``) or hand the rendered text off to
+``block_tokenize_fn`` for sequence packing (``orca_packed_map_fn``).
+"""
+
 import logging
 import os
 
 import jinja2
+import jinja2.sandbox
 
-from forgather.ml.datasets import to_iterable_dataset_with_length
-from forgather.ml.distributed import main_process_first
+from forgather.ml.datasets import block_tokenize_fn
 
-logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-chatml_template = """{% for message in messages %}{{'<|im_start|>' + message['role'] + '
-' + message['content'] + '<|im_end|>' + '
-'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
-' }}{% endif %}"""
+
+DEFAULT_CHATML_TEMPLATE = (
+    "{% for message in messages %}"
+    "{{ '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>\n' }}"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
+)
 
 
-def to_conversations(batch):
-    for system, question, response in zip(
-        batch["system_prompt"], batch["question"], batch["response"]
-    ):
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": question},
-            {"role": "assistant", "content": response},
-        ]
-        yield messages
+def load_chat_template(path: str | None = None) -> jinja2.Template:
+    """Compile a Jinja chat template.
 
-
-def map_function(input_batch, tokenizer, chat_template, template_args, tokenizer_args):
-    conversations = [
-        chat_template.render(
-            messages=messages,
-            **template_args,
-        )
-        for messages in to_conversations(input_batch)
-    ]
-    if not tokenizer:
-        return {"text": conversations}
-
-    outputs = tokenizer(
-        conversations,
-        **tokenizer_args,
-    )
-    return {"input_ids": outputs["input_ids"]}
-
-
-@main_process_first()
-def preprocess_orca(
-    dataset,
-    chat_template=None,
-    tokenizer=None,
-    tokenizer_args=None,
-    map_args=None,
-    template_args=None,
-    desc="Tokenizing Dataset",
-    num_shards=256,
-    to_iterable=False,
-):
-    if tokenizer_args is None:
-        tokenizer_args = dict()
-    if map_args is None:
-        map_args = dict()
-    if template_args is None:
-        template_args = dict()
-    template_args["bos_token"] = tokenizer.bos_token
-    template_args["eos_token"] = tokenizer.eos_token
-    if not chat_template or len(chat_template) == 0:
-        if tokenizer and tokenizer.chat_template:
-            chat_template = tokenizer.chat_template
-            logger.info("Using chat template from tokenizer")
-        else:
-            chat_template = chatml_template
-            logger.warning("Using default chat template (ChatML)")
+    ``path`` may be a filesystem path, an inline template string or ``None``
+    (in which case the bundled ChatML default is used). The returned template
+    is compiled in an immutable sandbox and is safe to share across workers.
+    """
+    if path and os.path.exists(path):
+        with open(path, "r") as f:
+            template_str = f.read()
+    elif path:
+        template_str = path
     else:
-        with open(chat_template, "r") as f:
-            chat_template = f.read()
+        template_str = DEFAULT_CHATML_TEMPLATE
+        logger.info("Using bundled default ChatML chat template")
 
-    environment = jinja2.sandbox.ImmutableSandboxedEnvironment(
+    env = jinja2.sandbox.ImmutableSandboxedEnvironment(
         trim_blocks=True,
         lstrip_blocks=True,
     )
-    chat_template = environment.from_string(chat_template)
+    return env.from_string(template_str)
 
-    if to_iterable:
-        dataset = to_iterable_dataset_with_length(dataset, num_shards=num_shards)
-    else:
-        map_args["desc"] = desc
 
-    output_dataset = dataset.map(
-        map_function,
-        batched=True,
-        remove_columns=dataset.column_names,
-        fn_kwargs=dict(
-            tokenizer=tokenizer,
-            chat_template=chat_template,
-            template_args=template_args,
-            tokenizer_args=tokenizer_args,
-        ),
-        **map_args,
+def _render_batch(batch, tokenizer, chat_template, template_args):
+    if chat_template is None:
+        chat_template = load_chat_template()
+
+    render_args = dict(template_args) if template_args else {}
+    if tokenizer is not None:
+        if tokenizer.bos_token is not None:
+            render_args.setdefault("bos_token", tokenizer.bos_token)
+        if tokenizer.eos_token is not None:
+            render_args.setdefault("eos_token", tokenizer.eos_token)
+
+    return [
+        chat_template.render(
+            messages=[
+                {"role": "system", "content": system or ""},
+                {"role": "user", "content": question or ""},
+                {"role": "assistant", "content": response or ""},
+            ],
+            **render_args,
+        )
+        for system, question, response in zip(
+            batch["system_prompt"], batch["question"], batch["response"]
+        )
+    ]
+
+
+def orca_map_fn(
+    batch,
+    tokenizer,
+    feature=None,
+    chat_template=None,
+    template_args=None,
+    **tokenizer_kwargs,
+):
+    """Render OpenOrca examples through ``chat_template`` and tokenize them.
+
+    ``feature`` is accepted (and ignored) so that this function is drop-in
+    compatible with ``preprocess_dataset``'s ``map_fn`` contract, which always
+    supplies ``tokenizer`` and ``feature`` via ``fn_kwargs``. Additional
+    keyword arguments are forwarded to the tokenizer call, so pass things
+    like ``truncation`` or ``max_length`` through ``preprocess_args``.
+    """
+    del feature  # OpenOrca reads multiple fields rather than a single feature
+
+    texts = _render_batch(batch, tokenizer, chat_template, template_args)
+    if tokenizer is None:
+        return {"text": texts}
+
+    outputs = tokenizer(texts, **tokenizer_kwargs)
+    return {"input_ids": outputs["input_ids"]}
+
+
+def orca_packed_map_fn(
+    batch,
+    tokenizer,
+    feature=None,
+    chat_template=None,
+    template_args=None,
+    **block_kwargs,
+):
+    """Render OpenOrca examples and hand them to ``block_tokenize_fn``.
+
+    Any keyword arguments not consumed by the chat-template rendering step are
+    forwarded to ``block_tokenize_fn`` so that packing parameters (e.g.
+    ``max_length``, ``packing_strategy``, ``add_bos``) can be bound via
+    ``!partial`` in the dataset config.
+    """
+    del feature
+
+    texts = _render_batch(batch, tokenizer, chat_template, template_args)
+    return block_tokenize_fn(
+        {"text": texts},
+        tokenizer=tokenizer,
+        feature="text",
+        **block_kwargs,
     )
-    return output_dataset
