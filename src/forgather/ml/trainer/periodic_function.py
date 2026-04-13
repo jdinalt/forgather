@@ -10,7 +10,8 @@ class PeriodicFunction:
         epoch_period: int,
         first_step=0,
     ):
-        assert period > 0
+        if period < 1:
+            period = 1
         # Present global step
         self.global_step = global_step
 
@@ -25,7 +26,6 @@ class PeriodicFunction:
             case "no":
                 self.enabled = False
             case "steps":
-                assert period > 0
                 self.period = period
             case "epoch":
                 assert epoch_period > 0

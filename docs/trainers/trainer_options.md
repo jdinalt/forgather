@@ -187,6 +187,9 @@ PyTorch tweaks. Defined in
 | `enable_activation_offloading` | bool | False | Offload saved activations to CPU during backward (via `torch.autograd.graph.save_on_cpu`). Best combined with activation checkpointing. |
 | `detect_anomaly` | bool | False | Enable `torch.autograd.set_detect_anomaly(True)` to help track down NaNs. Adds overhead - debug only. |
 
+Notes:
+ - `enable_activation_offloading` appears to be incompatible with flex-attention.
+
 ### Scaled Dot-Product Attention
 
 | Field | Type | Default | Description |

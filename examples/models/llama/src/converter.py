@@ -97,7 +97,7 @@ class LlamaConverter(HFConverter):
                     "rope_type", config.rope_scaling.get("type")
                 )
                 assert (
-                    rope_type == "llama3"
+                    rope_type == "llama3" or rope_type == "default"
                 ), f"Unsupported rope_scaling type: {rope_type}. Only 'llama3' is supported."
 
     @override

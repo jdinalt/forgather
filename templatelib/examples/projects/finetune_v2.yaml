@@ -72,9 +72,9 @@
     float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
     default_dtype: {{ default_dtype | toyaml("bfloat16") }}
     mixed_precision: {{ mixed_precision | toyaml("bf16") }}
-    max_grad_norm: 1.0
 
-    max_steps: -1
+    # The default is to train on the entire dataset
+    max_steps: {{ max_steps | toyaml(-1) }}
     num_train_epochs: {{ epochs | default(1) }}
     save_total_limit: 2
 
@@ -92,7 +92,7 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_schedule
 [datacollator]
     == super()
     max_length: {{ ns.seq_len }}
-    ## Pad batches to 'max_length'; This minimizes recompiles, but should
+    ## Pad batches to 'max_length'; This minimizes recompiles, but
     ## may be inefficient if not using a 'packed' dataset configuration.
     padding: "max_length"
 

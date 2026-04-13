@@ -795,6 +795,10 @@ Additional arguments inherited from the base training script:
 forgather -p examples/base_lm_project train --help
 ```
 
+The prupose of exposing all of these parameters as CLI arguments is for quickly iterating over options to find the optimal values.
+Once you have identified the settings to use, these should be committed to a configuration. Don't create bash CLI scripts using these, which is what
+our configuration system is intended to avoid!
+
 | CLI Flag | Parameter | Description |
 |----------|-----------|-------------|
 | `--trainer-type {basic,ddp,pipeline}` | `trainer_type` | Trainer backend |

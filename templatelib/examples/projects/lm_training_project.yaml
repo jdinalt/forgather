@@ -478,6 +478,7 @@ model: &model !call:getitem [ *model_dict, 'model' ]
     gc_threshold: {{ gc_threshold | default(0.9) }}
     save_safetensors: {{ save_safetensors | default(False) }}
     debug_optimizer_groups: {{ debug_optimizer_groups | default(False) }}
+    max_grad_norm: {{ max_grad_norm | toyaml(None) }}
 
 -- if ns.trainer_type == "pipeline"
     # Pipeline Parallel
@@ -659,3 +660,7 @@ optimizer_groups: &optimizer_groups
         names: "--debug-optimizer-groups"
         action: "store_true"
         help: "Show how parameters are mapped to optimizer param groups"
+    max_grad_norm:
+        names: "--max-grad-norm"
+        type: float
+        help: "Maximum gradient norm for gradient clipping"
