@@ -1082,8 +1082,10 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         logger.info(f"Loading best model from {self.state.best_model_checkpoint}")
         self.load_checkpoint(self.state.best_model_checkpoint)
 
-    @override
-    def _train_loop(self) -> TrainOutput:
+    def _setup_periodic_functions(
+        self,
+    ) -> tuple[PeriodicFunction, PeriodicFunction, PeriodicFunction]:
+        """Build the three periodic functions driving log/eval/save cadence."""
         periodic_log = PeriodicFunction(
             global_step=self.state.global_step,
             strategy=self.args.logging_strategy,
@@ -1105,6 +1107,123 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             epoch_period=self.epoch_train_steps,
             first_step=0,
         )
+        return periodic_log, periodic_eval, periodic_save
+
+    def _log_stop_condition(self) -> None:
+        """Log a clear message describing why the training loop is stopping.
+
+        Called from `_train_loop` immediately after the early-stop check
+        trips. Distinguishes the three termination paths (abort without
+        save, graceful stop, reaching max_steps) and identifies which
+        callback -- if any -- requested the stop via
+        ``self._stop_requested_by`` (populated by ``_dispatch_event``).
+        """
+        step = self.state.global_step
+        requested_by = self._stop_requested_by
+
+        if self.control.should_abort_without_save:
+            if requested_by is not None:
+                cb_name, event, _ = requested_by
+                logger.warning(
+                    f"Training aborted at step {step} by callback "
+                    f"'{cb_name}' during '{event}' "
+                    f"(no final checkpoint will be saved)"
+                )
+            else:
+                logger.warning(
+                    f"Training aborted at step {step} "
+                    f"(should_abort_without_save set; "
+                    f"no final checkpoint will be saved)"
+                )
+        elif self.control.should_training_stop:
+            if requested_by is not None:
+                cb_name, event, _ = requested_by
+                logger.info(
+                    f"Training stopped at step {step} by callback "
+                    f"'{cb_name}' during '{event}'"
+                )
+            else:
+                logger.info(
+                    f"Training stopped at step {step} " f"(should_training_stop set)"
+                )
+        else:
+            logger.info(
+                f"Training stopped at step {step}: "
+                f"reached max_steps ({self.max_steps})"
+            )
+
+    def _run_final_checkpoint_if_needed(
+        self,
+        accumulated_loss: list,
+        accumulated_grad_norm: list,
+        accumulated_tokens: list,
+        periodic_log: PeriodicFunction,
+        periodic_eval: PeriodicFunction,
+        periodic_save: PeriodicFunction,
+    ) -> None:
+        """Run the end-of-training log/eval/save sequence.
+
+        Skipped if ``should_abort_without_save`` is set (e.g. the
+        divergence detector triggered). Otherwise forces a save on the
+        current step if one hasn't already happened, then runs
+        ``_maybe_log_save_evaluate`` once more to drain any pending
+        accumulated metrics.
+        """
+        if self.control.should_abort_without_save:
+            return
+
+        # Force save, if we have not already saved on this step and save enabled.
+        if periodic_save.rel_step != 0 and self.args.save_strategy != "no":
+            logger.info(f"Saving final checkpoint at step {self.state.global_step}")
+            # If load best model, we need to evaluate it too.
+            if self.args.load_best_model_at_end:
+                self.control.should_evaluate = True
+            self.control.should_save = True
+        self._maybe_log_save_evaluate(
+            accumulated_loss,
+            accumulated_grad_norm,
+            accumulated_tokens,
+            periodic_log,
+            periodic_eval,
+            periodic_save,
+        )
+
+    def _finalize_training(
+        self,
+        start_time: Optional[float],
+        speed_metrics_steps: int,
+    ) -> TrainOutput:
+        """Post-training cleanup: load best model, summarise, fire on_train_end.
+
+        Runs after the training loop exits (either normally, via a
+        callback-requested stop, or via dataset exhaustion). Returns the
+        ``TrainOutput`` that the public ``train()`` entry point
+        eventually propagates to callers.
+        """
+        if self.args.load_best_model_at_end:
+            logger.info(f'Loading best model "{self.state.best_model_checkpoint}"')
+            self.load_best_model()
+
+        metrics = self._end_train_loop(start_time, speed_metrics_steps)
+        self.log(metrics)
+
+        # Log best checkpoints summary at end of training
+        if (
+            self.args.preserve_best_model
+            and self.checkpoint_manager
+            and self.state.is_world_process_zero
+        ):
+            summary = cast(
+                CheckpointManager, self.checkpoint_manager
+            ).get_best_checkpoints_summary(metric_key=self.args.best_model_metric)
+            logger.info(f"\n{'='*60}\nTraining complete!\n{summary}\n{'='*60}")
+
+        self._dispatch_event("on_train_end")
+        return TrainOutput(self.state.global_step, metrics)
+
+    @override
+    def _train_loop(self) -> TrainOutput:
+        periodic_log, periodic_eval, periodic_save = self._setup_periodic_functions()
 
         assert self.optimizer is not None
         assert self.model is not None
@@ -1118,9 +1237,9 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         self._dispatch_event("on_train_begin")
 
         # Holds loss, grad-norm, and token samples between log steps
-        accumulated_grad_norm = []
-        accumulated_loss = []
-        accumulated_tokens = []
+        accumulated_grad_norm: list = []
+        accumulated_loss: list = []
+        accumulated_tokens: list = []
 
         # Context manager for setting model.train()/eval()
         with set_train(self.model, True):
@@ -1184,47 +1303,7 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                         or self.control.should_abort_without_save
                         or self.state.global_step >= self.max_steps
                     ):
-                        # Log WHY we are stopping so users can tell the
-                        # three termination paths apart from the trainer
-                        # log alone. `_stop_requested_by` is populated by
-                        # `_dispatch_event` whenever a callback flips one
-                        # of the stop flags.
-                        if self.control.should_abort_without_save:
-                            if self._stop_requested_by is not None:
-                                cb_name, event, _ = self._stop_requested_by
-                                logger.warning(
-                                    f"Training aborted at step "
-                                    f"{self.state.global_step} by callback "
-                                    f"'{cb_name}' during '{event}' "
-                                    f"(no final checkpoint will be saved)"
-                                )
-                            else:
-                                logger.warning(
-                                    f"Training aborted at step "
-                                    f"{self.state.global_step} "
-                                    f"(should_abort_without_save set; "
-                                    f"no final checkpoint will be saved)"
-                                )
-                        elif self.control.should_training_stop:
-                            if self._stop_requested_by is not None:
-                                cb_name, event, _ = self._stop_requested_by
-                                logger.info(
-                                    f"Training stopped at step "
-                                    f"{self.state.global_step} by callback "
-                                    f"'{cb_name}' during '{event}'"
-                                )
-                            else:
-                                logger.info(
-                                    f"Training stopped at step "
-                                    f"{self.state.global_step} "
-                                    f"(should_training_stop set)"
-                                )
-                        else:
-                            logger.info(
-                                f"Training stopped at step "
-                                f"{self.state.global_step}: reached "
-                                f"max_steps ({self.max_steps})"
-                            )
+                        self._log_stop_condition()
                         self.control.should_epoch_stop = True
                         break
 
@@ -1239,47 +1318,19 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                 if self.control.should_epoch_stop:
                     break
 
-        # Final log-eval-save step; skip on abort condition
-        if not self.control.should_abort_without_save:
-            # Force save, if we have not already saved on this step and save enabled.
-            if periodic_save.rel_step != 0 and self.args.save_strategy != "no":
-                logger.info(f"Saving final checkpoint at step {self.state.global_step}")
-                # If load best model, we need to evaluate it too.
-                if self.args.load_best_model_at_end:
-                    self.control.should_evaluate = True
-                self.control.should_save = True
-            self._maybe_log_save_evaluate(
-                accumulated_loss,
-                accumulated_grad_norm,
-                accumulated_tokens,
-                periodic_log,
-                periodic_eval,
-                periodic_save,
-            )
-
-        # Load best model at end if requested
-        if self.args.load_best_model_at_end:
-            logger.info(f'Loading best model "{self.state.best_model_checkpoint}"')
-            self.load_best_model()
-
-        metrics = self._end_train_loop(
-            start_time, train_steps - self.args.speed_metrics_start_step
+        self._run_final_checkpoint_if_needed(
+            accumulated_loss,
+            accumulated_grad_norm,
+            accumulated_tokens,
+            periodic_log,
+            periodic_eval,
+            periodic_save,
         )
-        self.log(metrics)
 
-        # Log best checkpoints summary at end of training
-        if (
-            self.args.preserve_best_model
-            and self.checkpoint_manager
-            and self.state.is_world_process_zero
-        ):
-            summary = cast(
-                CheckpointManager, self.checkpoint_manager
-            ).get_best_checkpoints_summary(metric_key=self.args.best_model_metric)
-            logger.info(f"\n{'='*60}\nTraining complete!\n{summary}\n{'='*60}")
-
-        self._dispatch_event("on_train_end")
-        return TrainOutput(self.state.global_step, metrics)
+        return self._finalize_training(
+            start_time,
+            train_steps - self.args.speed_metrics_start_step,
+        )
 
     @override
     @torch.no_grad()
