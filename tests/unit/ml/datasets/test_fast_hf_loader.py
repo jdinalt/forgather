@@ -2835,3 +2835,89 @@ def test_example_sharding_multi_file(tmp_path):
         f"missing={set(range(split_start, total)) - seen}, "
         f"extra={seen - set(range(split_start, total))}"
     )
+
+
+def test_example_sharding_multi_file_partial_file_at_end(tmp_path):
+    """Shard range ends mid-file on the last rank -- not just mid-file at
+    the start.
+
+    Companion to test_example_sharding_multi_file. That one exercises
+    shards whose ranges begin mid-file (ranks 1..N-1); this one picks a
+    total / num_shards combination that makes the final rank's shard
+    range END mid-file, so iteration has to stop inside a file and all
+    subsequent files are skipped. The previous double-increment bug hit
+    both boundaries but the earlier test only directly asserted balance
+    -- this one also asserts that the shard ends exactly where it
+    should (no over-delivery on the last rank).
+    """
+    from datasets import Dataset
+
+    # 10 files of 1000 each. Split the first 9500, which leaves the last
+    # shard range cutting off mid-file (file 9 intersects only partially
+    # with the split for the last rank).
+    total = 10_000
+    ds = Dataset.from_dict({"idx": list(range(total)), "value": list(range(total))})
+    ds.save_to_disk(str(tmp_path / "multi_file_end"), num_shards=10)
+
+    # `train[:9500]` yields a split that ends halfway through file 9.
+    # Then a 4-way shard puts the last rank at range [7125, 9500) in
+    # global space, with 9500 landing 500 examples into file 9.
+    split_end = 9500
+    ids = fast_load_iterable_dataset(
+        str(tmp_path / "multi_file_end"), split=f"train[:{split_end}]"
+    )
+    assert len(ids) == split_end
+
+    num_shards = 4
+    shards = [
+        ids.shard(num_shards=num_shards, index=i, mode="example")
+        for i in range(num_shards)
+    ]
+    counts = [sum(1 for _ in s) for s in shards]
+
+    assert (
+        sum(counts) == split_end
+    ), f"Counts must sum to split length {split_end}: {counts}"
+    expected_per_shard = split_end // num_shards
+    for i, c in enumerate(counts):
+        assert abs(c - expected_per_shard) <= 1, (
+            f"Shard {i} has {c} examples, expected ~{expected_per_shard} "
+            f"(all shards: {counts})"
+        )
+
+    # The last rank's examples must be exactly the tail slice of the
+    # split, with nothing past split_end leaking in.
+    last_shard_values = sorted(ex["value"] for ex in shards[num_shards - 1])
+    assert last_shard_values[-1] < split_end, (
+        f"Last shard contains an example at position {last_shard_values[-1]} "
+        f"but split ends at {split_end}; over-iterated past split boundary"
+    )
+
+
+def test_file_level_sharding_with_multi_file(tmp_path):
+    """File-level sharding (the other sharding mode) also balances.
+
+    When there is no virtual split, shard(mode='auto') picks file-level
+    sharding if num_shards <= num_files. The file-level path does not
+    touch global_example_idx per example, so it's unaffected by the
+    refactor, but verifying it catches regressions in the auto-mode
+    selection and file assignment.
+    """
+    from datasets import Dataset
+
+    total = 8_000
+    ds = Dataset.from_dict({"idx": list(range(total)), "value": list(range(total))})
+    ds.save_to_disk(str(tmp_path / "file_shard"), num_shards=8)
+
+    ids = fast_load_iterable_dataset(str(tmp_path / "file_shard"), split="train")
+    assert len(ids) == total
+
+    num_shards = 4
+    # mode='auto' with 4 shards and 8 files picks file-level mode.
+    shards = [ids.shard(num_shards=num_shards, index=i) for i in range(num_shards)]
+
+    counts = [sum(1 for _ in s) for s in shards]
+    assert sum(counts) == total, f"File-level shards must cover dataset: {counts}"
+    # With 8 files / 4 shards each rank gets exactly 2 files of 1000 each.
+    for i, c in enumerate(counts):
+        assert c == 2000, f"File-level shard {i} should have 2000 examples, got {c}"

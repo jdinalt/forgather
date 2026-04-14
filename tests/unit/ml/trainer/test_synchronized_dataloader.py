@@ -110,3 +110,39 @@ def test_exact_length_iterates_fully(monkeypatch):
     wrapped = SynchronizedDataLoader(loader, device=torch.device("cpu"))
     items = list(wrapped)
     assert items == [0, 1, 2, 3, 4]
+
+
+def test_state_dict_forwarding():
+    """state_dict / load_state_dict forward to the wrapped loader.
+
+    SynchronizedDataLoader is a transparent wrapper; checkpoint state
+    has to round-trip through it or resume-from-checkpoint breaks.
+    """
+    loader = _FiniteLoader(real_len=3)
+    wrapped = SynchronizedDataLoader(loader, device=MagicMock(), enabled=False)
+
+    loader.state = {"position": 42, "seed": 1337}
+    assert wrapped.state_dict() == {"position": 42, "seed": 1337}
+
+    wrapped.load_state_dict({"position": 99})
+    assert loader.state == {"position": 99}
+
+
+def test_state_dict_no_support():
+    """A loader without state_dict / load_state_dict methods shouldn't crash.
+
+    The wrapper returns an empty dict on save and logs a warning on
+    load. This matches what the trainer expects for plain DataLoader.
+    """
+
+    class _Bare:
+        def __iter__(self):
+            return iter([])
+
+        def __len__(self):
+            return 0
+
+    wrapped = SynchronizedDataLoader(_Bare(), device=MagicMock(), enabled=False)
+    assert wrapped.state_dict() == {}
+    # load_state_dict on a loader without support should warn, not raise
+    wrapped.load_state_dict({"anything": 1})
