@@ -36,3 +36,12 @@
     ## Compile settings. ZBV is incompatible with torch.compile; leave off.
     -- set ns.torch_compile = compile | default(False)
     -- set ns.torch_compile_mode = torch_compile_mode | default("max-autotune-no-cudagraphs")
+
+[trainer_args]
+    == super()
+    ## Pipeline trainer supports fuse_optim_with_backward (unlike DDP).
+    ## Combined with gradient_checkpointing on a memory-tight 7B config,
+    ## this avoids materialising a full gradient copy before the
+    ## optimizer step.
+    fuse_optim_with_backward: {{ fuse_optim_with_backward | default(True) }}
+    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}

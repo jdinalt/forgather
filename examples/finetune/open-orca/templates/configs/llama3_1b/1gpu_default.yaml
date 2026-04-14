@@ -17,3 +17,12 @@
     ## Compile settings (off by default; first step eats several minutes
     ## under max-autotune, which dwarfs short iteration runs).
     -- set ns.torch_compile = compile | default(False)
+
+[trainer_args]
+    == super()
+    ## Single-GPU basic trainer: fuse the optimizer update into the
+    ## backward grad hook so gradients are consumed and freed one
+    ## parameter at a time. Incompatible with DDP (needs grads intact
+    ## for all-reduce), max_grad_norm clipping, gradient_accumulation > 1,
+    ## and fp16 AMP -- none of which this config uses.
+    fuse_optim_with_backward: {{ fuse_optim_with_backward | default(True) }}
