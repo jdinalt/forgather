@@ -38,6 +38,20 @@
     ## `forgather control save-stop`), then decays over this many tokens.
     -- set ns.annealing_tokens = annealing_tokens | default(200)
 
+[globals]
+    == super()
+    ## Pre-compute the WSD decay-start step. Because [trainer_args]
+    ## below pins max_steps to ns.total_steps, we know the exact length
+    ## of the run in advance and can ask the scheduler to begin the
+    ## decay phase automatically at total_steps - annealing_steps,
+    ## clamped to at least warmup_steps to keep ordering valid for very
+    ## short budgets. Same pattern as examples/pretrain/small-llm.
+    -- set ns.decay_start_step = [ns.warmup_steps, (ns.total_steps - ns.annealing_steps)] | max | int
+
+[variable_listing]
+    == super()
+# ns.decay_start_step: {{ ns.decay_start_step }}
+
 [trainer_args]
     == super()
     ## finetune_v2 defaults max_steps=-1, which makes the trainer run for
@@ -47,3 +61,17 @@
     ## bounds training. ns.total_steps is re-derived at worker start with
     ## the true WORLD_SIZE, so this works under any device count.
     max_steps: {{ max_steps | toyaml(ns.total_steps) }}
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    decay_steps: {{ ns.annealing_steps }}
+    ## Automatic WSD decay trigger: with a fixed total_tokens budget the
+    ## scheduler transitions from the stable phase into decay at step
+    ## ns.decay_start_step without needing `--start-annealing` or a
+    ## `forgather control` RPC. See open_orca.yaml [globals] for the
+    ## derivation. Override decay_start_step via --decay-start-step or
+    ## set to -1 to fall back to the manual-trigger flow.
+    decay_start_step: {{ ns.decay_start_step }}
+    start_decay: {{ start_annealing | toyaml(False) }}
