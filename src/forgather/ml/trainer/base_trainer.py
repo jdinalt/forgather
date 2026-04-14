@@ -495,13 +495,14 @@ class BaseTrainer(
             # can attribute any state change to a specific callback. This
             # makes "training stopped by callback X" logging possible
             # without every callback having to shout about it individually.
-            prev_stop = bool(self.control.should_training_stop)
-            prev_abort = bool(getattr(self.control, "should_abort_without_save", False))
+            old_control = self.control
+            prev_stop = bool(old_control.should_training_stop)
+            prev_abort = bool(getattr(old_control, "should_abort_without_save", False))
 
             new_control = getattr(callback, event)(
                 args=self.args,
                 state=self.state,
-                control=self.control,
+                control=old_control,
                 model=unwrapped_model,
                 processing_class=self.processing_class,
                 optimizer=self.optimizer,
@@ -512,7 +513,19 @@ class BaseTrainer(
                 **kwargs,
             )
 
-            if new_control is not None:
+            if new_control is not None and new_control is not old_control:
+                # Callbacks may either mutate the passed control in place
+                # or return a new one. A small number of older callbacks
+                # do both -- mutating flags on the received object and
+                # then returning a fresh one. If we blindly replace
+                # `self.control` with the returned object, those in-place
+                # mutations would be lost. Propagate any stop flags that
+                # were set on the old object forward to the new one so
+                # the trainer's main stop check still sees them.
+                if old_control.should_training_stop:
+                    new_control.should_training_stop = True
+                if getattr(old_control, "should_abort_without_save", False):
+                    new_control.should_abort_without_save = True
                 self.control = new_control
 
             # Record the first callback that flips should_training_stop or
@@ -521,9 +534,19 @@ class BaseTrainer(
             # cause is visible even when the callback itself is silent
             # (DivergenceDetector does log, but trainer_control callbacks
             # set the flag via RPC without a clear local log line).
-            now_stop = bool(self.control.should_training_stop)
-            now_abort = bool(getattr(self.control, "should_abort_without_save", False))
+            # Check both the old control (in case the callback mutated it
+            # in place) and the new control (in case it was replaced) so
+            # we catch the transition regardless of the callback pattern.
+            now_stop = bool(self.control.should_training_stop) or bool(
+                old_control.should_training_stop
+            )
+            now_abort = bool(
+                getattr(self.control, "should_abort_without_save", False)
+            ) or bool(getattr(old_control, "should_abort_without_save", False))
             if (now_stop and not prev_stop) or (now_abort and not prev_abort):
+                # Prefer "abort" when both transitions happen in the same
+                # call; the trainer's abort path is more restrictive and
+                # that's the user-facing distinction that matters.
                 reason = "abort" if (now_abort and not prev_abort) else "stop"
                 if getattr(self, "_stop_requested_by", None) is None:
                     self._stop_requested_by = (callback.name, event, reason)

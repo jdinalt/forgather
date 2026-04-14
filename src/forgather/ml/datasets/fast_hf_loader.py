@@ -1274,12 +1274,12 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self,
         file_idx: int,
         file_len: int,
-        global_example_idx: int,
+        file_global_start: int,
         split_start: int,
         split_end: int,
         use_virtual_split: bool,
         use_example_sharding: bool,
-    ) -> tuple[int, int, int]:
+    ) -> tuple[int, int]:
         """
         Compute the range of examples to read from this file.
 
@@ -1291,13 +1291,19 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         Args:
             file_idx: Current file index
             file_len: Length of the file
-            global_example_idx: Global position before this file
+            file_global_start: Global position of the first example in this
+                file (the sum of lengths of all preceding worker files).
+                The caller advances this by ``file_len`` after each file,
+                so position tracking is correct regardless of how many
+                examples were actually yielded.
             split_start, split_end: Split boundaries
             use_virtual_split, use_example_sharding: Flags
 
         Returns:
-            (file_start_idx, file_end_idx, updated_global_idx):
-                Range to read and updated global position
+            (file_start_idx, file_end_idx): local indices into the file
+            for the subset that intersects the desired range. If the file
+            is entirely outside the range the returned range is empty
+            (file_start_idx == file_end_idx) and the caller should skip it.
         """
         # Compute the range of examples we need from this file (for efficient random access)
         # This eliminates sequential seeking - we use .select() to jump directly to the range
@@ -1312,9 +1318,8 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         # 2. Handle virtual split and example-level sharding
         # These define windows in global example space that we need to intersect with this file
         if use_virtual_split or use_example_sharding:
-            # Examples in this file span [global_example_idx, global_example_idx + file_len)
-            file_global_start = global_example_idx
-            file_global_end = global_example_idx + file_len
+            # Examples in this file span [file_global_start, file_global_start + file_len)
+            file_global_end = file_global_start + file_len
 
             # Compute the global range we want
             desired_global_start = split_start
@@ -1333,8 +1338,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 file_global_end <= desired_global_start
                 or file_global_start >= desired_global_end
             ):
-                # File is completely outside desired range - return empty range
-                return file_start_idx, file_start_idx, global_example_idx + file_len
+                # File is completely outside desired range - return empty range.
+                # The caller detects this via file_start_idx >= file_end_idx
+                # and still advances its running position by file_len.
+                return file_start_idx, file_start_idx
 
             # Compute intersection with desired range
             intersect_start = max(file_global_start, desired_global_start)
@@ -1344,7 +1351,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             file_start_idx = max(file_start_idx, intersect_start - file_global_start)
             file_end_idx = min(file_end_idx, intersect_end - file_global_start)
 
-        return file_start_idx, file_end_idx, global_example_idx
+        return file_start_idx, file_end_idx
 
     def _load_file_range(
         self,
@@ -1486,10 +1493,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             # local_idx`.
             file_len, file_len_cached = self._get_file_length(file_idx, arrow_file)
             file_global_start = global_example_idx
-            file_start_idx, file_end_idx, _ = self._compute_file_range(
+            file_start_idx, file_end_idx = self._compute_file_range(
                 file_idx,
                 file_len,
-                global_example_idx,
+                file_global_start,
                 split_start,
                 split_end,
                 use_virtual_split,
