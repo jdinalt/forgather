@@ -32,11 +32,32 @@ If you've already worked through the Samantha tutorial, the quick tour:
   (model-size, execution-mode) combination that actually gets used:
   `llama3_1b/{1gpu_default,4gpu_ddp}` and `llama2_7b/{1gpu_default,4gpu_pp}`.
   No 2-GPU PP variants, no FSDP2 variant — Samantha already covers those.
-- **WSD learning-rate schedule.** Inherited from `finetune_v2.yaml`: linear
-  warmup, stable LR, then cosine decay over `annealing_tokens`. The decay
-  phase doesn't fire automatically in a token-budget-bounded run; use the
-  `--start-annealing` flag at launch or `forgather control save-stop` to
-  trigger it near the end.
+- **WSD learning-rate schedule with automatic decay-start.** Inherited
+  from `finetune_v2.yaml`: linear warmup, stable LR, then harmonic decay
+  to `min_lr` over `annealing_tokens`. Because `open_orca.yaml` pins
+  `max_steps` to `ns.total_steps` (the run length is exactly the
+  configured token budget), the base template can also pre-compute the
+  decay-start point as `total_steps - annealing_steps` and wire it into
+  the scheduler via `decay_start_step`. The result: decay fires
+  automatically about 80% of the way through the run -- you don't need
+  to pass `--start-annealing` or send a `forgather control save-stop`
+  RPC near the end. Manual triggering is still available for runs where
+  you don't know the budget in advance (e.g. epoch-based training); see
+  *Triggering the annealing phase* below for the override paths.
+- **ChatML reasoning prompts for the textgen eval callback.** The
+  default `finetune_v2.yaml` text-generation eval prompts are short
+  story openers (`prompts/short_stories.yaml`) intended for raw
+  causal-LM continuation -- they don't exercise instruction following
+  at all. The Open-Orca project ships
+  [`prompts/open_orca_eval.yaml`](../../../prompts/open_orca_eval.yaml),
+  a set of 12 ChatML-formatted prompts covering chain-of-thought math,
+  logic puzzles, reading comprehension, multiple choice, summarization,
+  format-constrained instruction following, translation, ELI5,
+  sentiment, and a short control prompt. System prompts are pulled from
+  the actual Open-Orca distribution so eval hits the same styles the
+  model trains on. Wired in via `ns.eval_prompts_file` /
+  `ns.eval_max_new_tokens` in `[config_metadata]` -- override either to
+  swap in your own set.
 
 ## Setup
 
@@ -196,32 +217,63 @@ forgather logs plot --loss-curves "${OO_RUN}/runs"/*/trainer_logs.json
 ### Triggering the annealing phase
 
 The config uses `finetune_v2.yaml`'s `WSDScheduler` — linear warmup, then a
-stable LR, then a cosine decay to `min_lr` over `annealing_tokens` (200M
-in this config). In a token-budget-bounded run the decay phase does not
-fire on its own; trigger it explicitly when you want to wind the run down:
+stable LR, then a harmonic decay to `min_lr` over `annealing_tokens` (200M
+in this config).
+
+**The default behaviour is automatic.** `open_orca.yaml` pins `max_steps`
+to `ns.total_steps`, so the exact length of the run is known up front,
+and the base template uses that to pre-compute
+`decay_start_step = max(warmup_steps, total_steps - annealing_steps)`
+and pass it to the scheduler. With the headline 4gpu_ddp config (1B
+total tokens, 200M annealing, 4-rank DDP, ~31K tokens/step), that lands
+at:
+
+```
+total_steps:        32,124
+warmup_steps:          642
+annealing_steps:     6,425
+decay_start_step:   25,699   (~80% of the run)
+```
+
+Once the run reaches step 25,699 the LR begins decaying from peak
+(`global_lr`) toward `min_lr` over the next 6,425 steps and reaches
+the floor exactly at `max_steps`. You don't need to do anything for
+this -- launching the headline run as documented above is the whole
+story.
+
+**To override the auto-computed decay-start step**, set a different
+`ns.decay_start_step` (or the underlying `ns.annealing_tokens`) in a
+child config or via `--annealing-tokens`. Setting `decay_start_step`
+to `-1` in your config falls back to the manual-trigger flow below.
+
+**Manual triggering** is still available for the cases where you don't
+know the budget in advance (epoch-based runs that exhaust the dataset
+naturally) or want to react to the loss curve mid-run:
 
 ```bash
-# Option 1: bake it into the launch. Start the decay from step 0 -- use
-# this when you know the total token budget up front and just want a
-# standard cosine-decay schedule.
+# (a) Start the decay immediately from step 0. Use this only when
+#     decay_start_step is set to -1 in the config, since otherwise the
+#     constructor's positive value wins and --start-annealing becomes
+#     a no-op (per WSDScheduler.load_state_dict's branch logic).
 forgather -t llama3_1b/4gpu_ddp.yaml train --start-annealing \
     -M "${OO_RUN}" -d 0,1,3,4
 
-# Option 2: trigger it mid-run via the control interface. Do this when
-# you want to react to the loss curve -- e.g., when eval loss plateaus,
-# tell the running job to save a checkpoint and begin annealing. The
-# trainer will finish the decay and stop.
-forgather control list              # find the job id
-forgather control save JOB_ID       # save a pre-anneal checkpoint (optional)
-# ... in practice, option 2 requires a control-callback hook to flip
-# start_annealing on the running job. For a simpler path, stop the job
-# with `forgather control save-stop`, then resume with --start-annealing
-# from the last checkpoint.
+# (b) React to the loss curve mid-run via the control interface.
+#     Save the current state and stop the job, then edit the config
+#     (or pass --decay-start-step on relaunch) and resume with the
+#     new schedule. Auto-resume picks up the checkpoint and the new
+#     constructor decay_start_step takes effect.
+forgather control list                          # find the job id
+forgather control save-stop JOB_ID              # save then exit
+# ... edit decay_start_step in the config, then ...
+forgather -t llama3_1b/4gpu_ddp.yaml train -M "${OO_RUN}" -d 0,1,3,4
 ```
 
-If you just want the model to finish training at a low LR without thinking
-about any of this, launch with `--start-annealing` and let the WSDScheduler
-handle the decay over the last 200M tokens of the budget.
+The control-callback flow works because `decay_start_step` is *not* in
+WSDScheduler's `_CONFIG_ONLY_KEYS`, so it gets restored from the
+constructor (the new config) on `load_state_dict`, not from the
+checkpoint state. See `src/forgather/ml/optim/wsd_scheduler.py:139`
+for the exact logic.
 
 ## Serving the Fine-Tuned Model
 
