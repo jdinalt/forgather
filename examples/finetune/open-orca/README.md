@@ -109,6 +109,69 @@ annealing windows are set in the individual configs rather than on the
 command line so that a run is fully reproducible from the config template
 alone — override them via CLI flags only when you're iterating.
 
+## Examining the Dataset
+
+Before launching any real run it is worth eyeballing what the model is
+actually going to see — both to sanity-check the chat template / packing
+pipeline and to get a feel for the task distribution. The `forgather
+dataset` subcommand operates on the dataset project (not this finetune
+project), so you run it from `examples/datasets/Open-Orca/` and pass
+the target model's tokenizer with `-T`. See
+[examples/datasets/README.md](../../datasets/README.md) for the full
+reference.
+
+```bash
+cd ../../datasets/Open-Orca
+
+# (a) Raw source examples, before any preprocessing. Useful for seeing
+#     the unmodified system_prompt / question / response fields and the
+#     range of system prompts the dataset uses.
+forgather -t openorca-packed.yaml dataset \
+    --target train_dataset_split -n 3
+
+# (b) Post-preprocess examples: rendered through the ChatML template,
+#     packed via best-fit, and tokenized with the actual model
+#     tokenizer. This is what the trainer feeds to the model. The
+#     `-s` (--tokenized) flag tells the dataset CLI that the target is
+#     already tokenized so it should decode `input_ids` rather than
+#     look for raw text fields.
+forgather -t openorca-packed.yaml dataset \
+    --target train_dataset \
+    -T ~/rust/models/fg_llama_1b \
+    --max-length 2048 -s -n 2
+```
+
+A typical (b) sample on `fg_llama_1b` looks like this — note the
+`<|begin_of_text|>` BOS, the ChatML `<|im_start|>` / `<|im_end|>`
+turn markers, and how the packer concatenates *multiple* Open-Orca
+examples into a single 2048-token sequence with `<|im_end|><|im_end|>`
+at each example boundary (one from the chat template's turn-close,
+one from `add_eos=True` adding the tokenizer's EOS):
+
+```
+... <|im_start|>assistant
+1. Analyze the sentence and identify the main subjects and objects.
+   The main subjects and objects in this sentence are tourists, ...
+   ...
+4. ...the keywords are: tourists, walk, cottages, coastal village.<|im_end|>
+<|im_end|><|begin_of_text|><|im_start|>system
+You are a helpful assistant, who always provide explanation. Think
+like you are answering to a five year old.<|im_end|>
+<|im_start|>user
+Write a subject line for this message:
+...
+Subject Line:<|im_end|>
+<|im_start|>assistant
+Your Mailbox is Almost Full, Time to Make Space!<|im_end|>
+<|im_end|>
+```
+
+If the model's tokenizer is missing `<|im_start|>` / `<|im_end|>` (or
+they decode as `<|reserved_special_token_*|>`), the conversion step
+from the [Samantha setup](../samantha/README.md#convert-the-model)
+hasn't been applied — the textgen eval prompts and the training data
+will both be silently malformed.
+
 ## Smoke Testing Before Committing to a Long Run
 
 The user-visible EOS-token / chat-template failure modes are silent until
