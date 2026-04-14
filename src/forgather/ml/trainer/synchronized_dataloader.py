@@ -91,7 +91,28 @@ class SynchronizedDataLoader:
 
         iterator = iter(self._dataloader)
         for _ in range(min_len):
-            yield next(iterator)
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                # Underlying dataloader exhausted before reaching min_len.
+                # `min_len` is computed from len(dataloader) at the start of
+                # iteration; for iterable datasets with a dynamic length
+                # estimator the real length can drift below the estimate,
+                # in which case next() raises StopIteration here. Letting
+                # that StopIteration propagate would violate PEP 479 -- this
+                # method is a generator, and a StopIteration raised inside
+                # a generator body is converted to `RuntimeError: generator
+                # raised StopIteration` by the interpreter -- bypassing the
+                # trainer's end-of-training save path. Instead, `return`
+                # cleanly so the outer `for batch in loader` loop sees a
+                # normal iteration end.
+                logger.warning(
+                    "SynchronizedDataLoader: underlying dataloader exhausted "
+                    "before reaching the all-ranks minimum length "
+                    f"({min_len}); returning early."
+                )
+                return
+            yield batch
 
     def __len__(self):
         """Return length of underlying dataloader (may differ across ranks!)."""

@@ -1184,6 +1184,47 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                         or self.control.should_abort_without_save
                         or self.state.global_step >= self.max_steps
                     ):
+                        # Log WHY we are stopping so users can tell the
+                        # three termination paths apart from the trainer
+                        # log alone. `_stop_requested_by` is populated by
+                        # `_dispatch_event` whenever a callback flips one
+                        # of the stop flags.
+                        if self.control.should_abort_without_save:
+                            if self._stop_requested_by is not None:
+                                cb_name, event, _ = self._stop_requested_by
+                                logger.warning(
+                                    f"Training aborted at step "
+                                    f"{self.state.global_step} by callback "
+                                    f"'{cb_name}' during '{event}' "
+                                    f"(no final checkpoint will be saved)"
+                                )
+                            else:
+                                logger.warning(
+                                    f"Training aborted at step "
+                                    f"{self.state.global_step} "
+                                    f"(should_abort_without_save set; "
+                                    f"no final checkpoint will be saved)"
+                                )
+                        elif self.control.should_training_stop:
+                            if self._stop_requested_by is not None:
+                                cb_name, event, _ = self._stop_requested_by
+                                logger.info(
+                                    f"Training stopped at step "
+                                    f"{self.state.global_step} by callback "
+                                    f"'{cb_name}' during '{event}'"
+                                )
+                            else:
+                                logger.info(
+                                    f"Training stopped at step "
+                                    f"{self.state.global_step} "
+                                    f"(should_training_stop set)"
+                                )
+                        else:
+                            logger.info(
+                                f"Training stopped at step "
+                                f"{self.state.global_step}: reached "
+                                f"max_steps ({self.max_steps})"
+                            )
                         self.control.should_epoch_stop = True
                         break
 

@@ -284,6 +284,11 @@ class BaseTrainer(
             max_eval_steps=args.max_eval_steps,
         )
         self.control = TrainerControl()
+        # When a callback flips control.should_training_stop (or
+        # should_abort_without_save), `_dispatch_event` records
+        # (callback_name, event, reason) here so the trainer can log a
+        # clear "stopped by X" message on the next iteration check.
+        self._stop_requested_by: tuple[str, str, str] | None = None
 
         # Silence annoying Huggingface FastTokenizer warnings
         # If knows if it is safe or not, and does the right thing, why
@@ -486,6 +491,13 @@ class BaseTrainer(
 
         unwrapped_model = self.unwrapped_model()
         for callback in handlers:
+            # Snapshot stop-related flags before the callback runs so we
+            # can attribute any state change to a specific callback. This
+            # makes "training stopped by callback X" logging possible
+            # without every callback having to shout about it individually.
+            prev_stop = bool(self.control.should_training_stop)
+            prev_abort = bool(getattr(self.control, "should_abort_without_save", False))
+
             new_control = getattr(callback, event)(
                 args=self.args,
                 state=self.state,
@@ -502,6 +514,20 @@ class BaseTrainer(
 
             if new_control is not None:
                 self.control = new_control
+
+            # Record the first callback that flips should_training_stop or
+            # should_abort_without_save. `_stop_requested_by` is read by
+            # the training loop when it logs "Training stopped ..." so the
+            # cause is visible even when the callback itself is silent
+            # (DivergenceDetector does log, but trainer_control callbacks
+            # set the flag via RPC without a clear local log line).
+            now_stop = bool(self.control.should_training_stop)
+            now_abort = bool(getattr(self.control, "should_abort_without_save", False))
+            if (now_stop and not prev_stop) or (now_abort and not prev_abort):
+                reason = "abort" if (now_abort and not prev_abort) else "stop"
+                if getattr(self, "_stop_requested_by", None) is None:
+                    self._stop_requested_by = (callback.name, event, reason)
+
         return self.control
 
     def unwrapped_model(self) -> torch.nn.Module:

@@ -223,9 +223,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             >>> new_ds = ds._copy(shuffle_seed=42, epoch=1)
         """
         # Create new instance with same arrow files
-        new_dataset = SimpleArrowIterableDataset(
-            self.arrow_files, self.file_lengths
-        )
+        new_dataset = SimpleArrowIterableDataset(self.arrow_files, self.file_lengths)
 
         # Copy all instance variables
         # Checkpoint state
@@ -564,7 +562,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             raise ValueError(f"Invalid index type: {type(idx)}")
 
         # Get current slice boundaries (these are absolute indices in original dataset)
-        current_start = self._split_start_idx if self._split_start_idx is not None else 0
+        current_start = (
+            self._split_start_idx if self._split_start_idx is not None else 0
+        )
         current_end = self._split_end_idx
 
         if current_end is None:
@@ -1205,7 +1205,13 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             use_virtual_split = True  # Enable filtering by these boundaries
             worker_sharding_enabled = True
 
-        return split_start, split_end, use_virtual_split, use_example_sharding, worker_sharding_enabled
+        return (
+            split_start,
+            split_end,
+            use_virtual_split,
+            use_example_sharding,
+            worker_sharding_enabled,
+        )
 
     def _get_file_length(self, file_idx: int, arrow_file: str) -> tuple[int, bool]:
         """
@@ -1232,7 +1238,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         file_idx: int,
         arrow_file: str,
         use_virtual_split: bool,
-        use_example_sharding: bool
+        use_example_sharding: bool,
     ) -> tuple[bool, int]:
         """
         Check if file should be skipped and compute global index delta.
@@ -1272,7 +1278,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         split_start: int,
         split_end: int,
         use_virtual_split: bool,
-        use_example_sharding: bool
+        use_example_sharding: bool,
     ) -> tuple[int, int, int]:
         """
         Compute the range of examples to read from this file.
@@ -1323,7 +1329,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 desired_global_end = min(desired_global_end, shard_global_end)
 
             # Check if file intersects with desired range
-            if file_global_end <= desired_global_start or file_global_start >= desired_global_end:
+            if (
+                file_global_end <= desired_global_start
+                or file_global_start >= desired_global_end
+            ):
                 # File is completely outside desired range - return empty range
                 return file_start_idx, file_start_idx, global_example_idx + file_len
 
@@ -1343,7 +1352,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         file_len: int,
         file_start_idx: int,
         file_end_idx: int,
-        file_len_cached: bool
+        file_len_cached: bool,
     ) -> Dataset:
         """
         Load Arrow file and select the specified range of examples.
@@ -1380,7 +1389,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         reason: str,
         batch_buffer: list | None,
         batch_start_idx: int | None,
-        worker_files: list[str]
+        worker_files: list[str],
     ):
         """
         Handle early exit from iteration (split/shard exhausted).
@@ -1398,11 +1407,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             Any remaining buffered examples
         """
         # Flush pending batch buffer if needed
-        if (
-            self._map_batched
-            and self._map_function is not None
-            and batch_buffer
-        ):
+        if self._map_batched and self._map_function is not None and batch_buffer:
             yield from self._flush_batch_buffer(batch_buffer, batch_start_idx)
 
         # Cache exact length
@@ -1442,9 +1447,16 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         # Phase 1: Initialize iteration state
         start_input_count, start_output_count = self._prepare_iteration()
-        worker_files, is_fresh_iteration, worker_id, num_workers = self._initialize_iteration_state()
-        split_start, split_end, use_virtual_split, use_example_sharding, worker_sharding_enabled = \
-            self._compute_iteration_boundaries(num_workers, worker_id)
+        worker_files, is_fresh_iteration, worker_id, num_workers = (
+            self._initialize_iteration_state()
+        )
+        (
+            split_start,
+            split_end,
+            use_virtual_split,
+            use_example_sharding,
+            worker_sharding_enabled,
+        ) = self._compute_iteration_boundaries(num_workers, worker_id)
 
         # Phase 2: Initialize batch buffer for batched map operations
         if self._map_batched and self._map_function is not None:
@@ -1464,54 +1476,88 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                 global_example_idx += global_idx_delta
                 continue
 
-            # Get file length and compute range to read
+            # Get file length and compute range to read.
+            # `global_example_idx` here represents the global position of
+            # the FIRST example in this file (the sum of lengths of all
+            # preceding files). It is advanced by `file_len` at the bottom
+            # of the loop -- see the unified advancement after the per-example
+            # block. `_compute_file_range` returns local indices into this
+            # file; the per-example global position is `file_global_start +
+            # local_idx`.
             file_len, file_len_cached = self._get_file_length(file_idx, arrow_file)
-            file_start_idx, file_end_idx, global_example_idx = self._compute_file_range(
-                file_idx, file_len, global_example_idx, split_start, split_end,
-                use_virtual_split, use_example_sharding
+            file_global_start = global_example_idx
+            file_start_idx, file_end_idx, _ = self._compute_file_range(
+                file_idx,
+                file_len,
+                global_example_idx,
+                split_start,
+                split_end,
+                use_virtual_split,
+                use_example_sharding,
             )
 
-            # Skip if range is empty (file outside split boundaries)
+            # Skip if range is empty (file outside split/shard boundaries,
+            # or checkpoint resumption points past the end of this file).
+            # `global_example_idx` is advanced unconditionally after the
+            # loop body so skipped files still contribute their length.
             if file_start_idx >= file_end_idx:
                 if use_virtual_split or use_example_sharding:
-                    global_example_idx += file_len
+                    global_example_idx = file_global_start + file_len
                 continue
 
             # Load file and select range
-            ds = self._load_file_range(arrow_file, file_len, file_start_idx, file_end_idx, file_len_cached)
+            ds = self._load_file_range(
+                arrow_file, file_len, file_start_idx, file_end_idx, file_len_cached
+            )
 
             # Phase 4: Iterate over examples in the file
             # Note: enumerate starts from file_start_idx to maintain correct checkpoint indices
             for local_idx, example in enumerate(ds, start=file_start_idx):
-                # Check early exit conditions
-                if use_virtual_split and global_example_idx >= split_end:
+                # The current example's global position.
+                current_global_idx = file_global_start + local_idx
+
+                # Check early exit conditions using the absolute position,
+                # not a running counter -- this stays correct regardless of
+                # how many examples a previous partially-overlapping file
+                # contributed.
+                if use_virtual_split and current_global_idx >= split_end:
                     # Reached end of split
                     yield from self._handle_early_exit(
                         "split_exhausted",
-                        batch_buffer if self._map_batched and self._map_function is not None else None,
-                        batch_start_idx if self._map_batched and self._map_function is not None else None,
-                        worker_files
+                        (
+                            batch_buffer
+                            if self._map_batched and self._map_function is not None
+                            else None
+                        ),
+                        (
+                            batch_start_idx
+                            if self._map_batched and self._map_function is not None
+                            else None
+                        ),
+                        worker_files,
                     )
                     return
 
                 if use_example_sharding:
                     # Compute position relative to split start
-                    relative_idx = global_example_idx - split_start
+                    relative_idx = current_global_idx - split_start
                     if relative_idx >= self._shard_end_idx:
                         # Reached end of shard
                         yield from self._handle_early_exit(
                             "shard_exhausted",
-                            batch_buffer if self._map_batched and self._map_function is not None else None,
-                            batch_start_idx if self._map_batched and self._map_function is not None else None,
-                            worker_files
+                            (
+                                batch_buffer
+                                if self._map_batched and self._map_function is not None
+                                else None
+                            ),
+                            (
+                                batch_start_idx
+                                if self._map_batched and self._map_function is not None
+                                else None
+                            ),
+                            worker_files,
                         )
                         return
-
-                # Save index for map with_indices (before incrementing)
-                current_global_idx = global_example_idx
-
-                if use_virtual_split or use_example_sharding:
-                    global_example_idx += 1
 
                 # Update position for checkpointing (for next checkpoint)
                 self._current_file_index = file_idx
@@ -1563,6 +1609,15 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
                     # No map function, input = output
                     self._track_counts(1, 1)
                     yield example
+
+            # After finishing a file, advance the running global position
+            # by the file's full length. This is the counterpart to the
+            # per-example `current_global_idx = file_global_start + local_idx`
+            # computation inside the loop and keeps the running position
+            # correct for partially-overlapping files (where the loop only
+            # yielded a subset of the file's examples).
+            if use_virtual_split or use_example_sharding:
+                global_example_idx = file_global_start + file_len
 
             # After finishing a file, move to next file
             if file_idx >= self._current_file_index:
@@ -1623,7 +1678,7 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             yield from self._apply_shuffle_buffer(
                 self._base_iter(),
                 self._shuffle_buffer_size,
-                effective_seed  # Use effective seed
+                effective_seed,  # Use effective seed
             )
         else:
             # No shuffle buffer, use base iterator directly
@@ -1862,7 +1917,9 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         self._current_file_index = state_dict["current_file_index"]
         self._current_example_index = state_dict["current_example_index"]
         self._shuffle_seed = state_dict.get("shuffle_seed")
-        self._base_shuffle_seed = state_dict.get("base_shuffle_seed")  # Restore base seed
+        self._base_shuffle_seed = state_dict.get(
+            "base_shuffle_seed"
+        )  # Restore base seed
         self._epoch = state_dict.get("epoch", 0)  # Default to 0 for old checkpoints
         self._shuffle_buffer_size = state_dict.get("shuffle_buffer_size")
         self._shard_config = state_dict.get("shard_config")

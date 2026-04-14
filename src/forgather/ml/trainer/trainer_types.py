@@ -446,9 +446,20 @@ class TrainerCallback:
 
     Compatible with HuggingFace TrainerCallback for easier porting.
     See: https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_callback.py
+
+    Identification:
+        Each callback has a `name` property used for logging (e.g. when
+        the trainer reports which callback requested an early stop).
+        Subclasses inherit the default, which returns the class name, or
+        can override `name` to provide a more descriptive label (useful
+        when multiple instances of the same class are registered with
+        different configurations).
     """
 
-    pass
+    @property
+    def name(self) -> str:
+        """Human-readable identifier for this callback, used in log messages."""
+        return type(self).__name__
 
 
 class ExtensibleTrainer(AbstractBaseTrainer):

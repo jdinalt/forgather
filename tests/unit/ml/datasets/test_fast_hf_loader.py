@@ -237,7 +237,9 @@ def test_shuffle_buffer_checkpoint():
     # (state is in the nested dataset state)
     assert "dataset_state" in checkpoint or "_snapshot" in checkpoint
     dataset_state = checkpoint.get("dataset_state", checkpoint.get("_snapshot", {}))
-    assert dataset_state.get("shuffle_buffer_size") == 10, "Checkpoint should preserve buffer size"
+    assert (
+        dataset_state.get("shuffle_buffer_size") == 10
+    ), "Checkpoint should preserve buffer size"
 
     # Create fresh dataloader and restore
     ids_restored = fast_load_iterable_dataset(
@@ -2234,9 +2236,9 @@ def test_slice_composition():
     # Second slice: skip another 100 examples from the sliced dataset
     ds_sliced2 = ds_sliced1.slice(100, None)
     # Should compose to [10000 + 100, total) = [10100, total)
-    assert ds_sliced2._split_start_idx == 10100, (
-        f"Composed slice should start at 10100, got {ds_sliced2._split_start_idx}"
-    )
+    assert (
+        ds_sliced2._split_start_idx == 10100
+    ), f"Composed slice should start at 10100, got {ds_sliced2._split_start_idx}"
     assert ds_sliced2._split_end_idx == total
     assert len(ds_sliced2) == total - 10100
 
@@ -2338,14 +2340,18 @@ def test_set_epoch_basic():
     epoch1_examples = [ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 5]
 
     # Should be different
-    assert epoch0_examples != epoch1_examples, "Different epochs should produce different shuffle orders"
+    assert (
+        epoch0_examples != epoch1_examples
+    ), "Different epochs should produce different shuffle orders"
 
     # Collect first 5 examples from epoch 0 again
     ds_shuffled.set_epoch(0)
     epoch0_again = [ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 5]
 
     # Should match original epoch 0
-    assert epoch0_examples == epoch0_again, "Same epoch should produce same shuffle order (reproducibility)"
+    assert (
+        epoch0_examples == epoch0_again
+    ), "Same epoch should produce same shuffle order (reproducibility)"
 
 
 def test_set_epoch_reproducibility():
@@ -2374,7 +2380,9 @@ def test_set_epoch_reproducibility():
     ds2_examples = [ex["text"][:30] for i, ex in enumerate(ds2_shuffled) if i < 10]
 
     # Should be identical
-    assert ds1_examples == ds2_examples, "Same base seed + epoch should produce identical order"
+    assert (
+        ds1_examples == ds2_examples
+    ), "Same base seed + epoch should produce identical order"
 
 
 def test_set_epoch_without_shuffle():
@@ -2401,7 +2409,9 @@ def test_set_epoch_without_shuffle():
     epoch5_examples = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
 
     # Should be identical (no shuffling applied)
-    assert epoch1_examples == epoch5_examples, "set_epoch() on non-shuffled dataset should have no effect"
+    assert (
+        epoch1_examples == epoch5_examples
+    ), "set_epoch() on non-shuffled dataset should have no effect"
 
 
 def test_set_epoch_checkpoint():
@@ -2425,7 +2435,9 @@ def test_set_epoch_checkpoint():
 
     # Verify epoch is in state dict
     assert state_before_iter["epoch"] == 3, "Epoch should be saved in state_dict"
-    assert state_before_iter["base_shuffle_seed"] == 42, "Base seed should be saved in state_dict"
+    assert (
+        state_before_iter["base_shuffle_seed"] == 42
+    ), "Base seed should be saved in state_dict"
 
     # Create new dataset and restore
     ds_new = fast_load_iterable_dataset(
@@ -2436,19 +2448,27 @@ def test_set_epoch_checkpoint():
 
     # Verify epoch was restored
     assert ds_new_shuffled._epoch == 3, "Epoch should be restored from checkpoint"
-    assert ds_new_shuffled._base_shuffle_seed == 42, "Base seed should be restored from checkpoint"
+    assert (
+        ds_new_shuffled._base_shuffle_seed == 42
+    ), "Base seed should be restored from checkpoint"
 
     # Collect first 5 examples from both datasets
     original_examples = [ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 5]
-    restored_examples = [ex["text"][:30] for i, ex in enumerate(ds_new_shuffled) if i < 5]
+    restored_examples = [
+        ex["text"][:30] for i, ex in enumerate(ds_new_shuffled) if i < 5
+    ]
 
     # Both should produce the same order (epoch 3 with same seed)
-    assert original_examples == restored_examples, "Restored dataset should use same epoch 3 shuffle pattern"
+    assert (
+        original_examples == restored_examples
+    ), "Restored dataset should use same epoch 3 shuffle pattern"
 
     # Verify that changing epoch produces different results
     ds_new_shuffled.set_epoch(5)
     epoch5_examples = [ex["text"][:30] for i, ex in enumerate(ds_new_shuffled) if i < 5]
-    assert epoch5_examples != restored_examples, "Different epoch should produce different order"
+    assert (
+        epoch5_examples != restored_examples
+    ), "Different epoch should produce different order"
 
 
 def test_set_epoch_multi_epoch():
@@ -2466,7 +2486,9 @@ def test_set_epoch_multi_epoch():
     epochs_data = {}
     for epoch in [0, 1, 2]:
         ds_shuffled.set_epoch(epoch)
-        epochs_data[epoch] = [ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 10]
+        epochs_data[epoch] = [
+            ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 10
+        ]
 
     # All epochs should be different from each other
     assert epochs_data[0] != epochs_data[1], "Epoch 0 and 1 should differ"
@@ -2489,12 +2511,16 @@ def test_set_epoch_propagation():
     # Test slice preserves epoch
     ds_sliced = ds_shuffled.slice(0, 50)
     assert ds_sliced._epoch == 5, "slice() should preserve epoch"
-    assert ds_sliced._base_shuffle_seed == 42, "slice() should preserve base_shuffle_seed"
+    assert (
+        ds_sliced._base_shuffle_seed == 42
+    ), "slice() should preserve base_shuffle_seed"
 
     # Test shard preserves epoch
     ds_sharded = ds_shuffled.shard(num_shards=2, index=0)
     assert ds_sharded._epoch == 5, "shard() should preserve epoch"
-    assert ds_sharded._base_shuffle_seed == 42, "shard() should preserve base_shuffle_seed"
+    assert (
+        ds_sharded._base_shuffle_seed == 42
+    ), "shard() should preserve base_shuffle_seed"
 
     # Test map preserves epoch
     ds_mapped = ds_shuffled.map(lambda x: x)
@@ -2528,7 +2554,9 @@ def test_set_epoch_backward_compatibility():
 
     # Should default to epoch 0
     assert ds_new_shuffled._epoch == 0, "Old checkpoint should default to epoch=0"
-    assert ds_new_shuffled._base_shuffle_seed is None, "Old checkpoint should have None for base_shuffle_seed"
+    assert (
+        ds_new_shuffled._base_shuffle_seed is None
+    ), "Old checkpoint should have None for base_shuffle_seed"
 
 
 def test_set_epoch_effective_seed():
@@ -2552,7 +2580,9 @@ def test_set_epoch_effective_seed():
     first_ex = next(iter(ds_shuffled))
 
     # Check that effective seed was applied
-    assert ds_shuffled._shuffle_seed == 105, "Effective seed should be base_seed + epoch"
+    assert (
+        ds_shuffled._shuffle_seed == 105
+    ), "Effective seed should be base_seed + epoch"
     assert ds_shuffled._base_shuffle_seed == 100, "Base seed should remain unchanged"
     assert ds_shuffled._epoch == 5, "Epoch should be 5"
 
@@ -2674,9 +2704,9 @@ def test_length_not_cached_during_partial_iteration():
     ds_filtered = ds.map(filter_empty)
 
     # Verify initial state
-    assert ds_filtered._cached_exact_length is None, (
-        "Cached length should be None before iteration"
-    )
+    assert (
+        ds_filtered._cached_exact_length is None
+    ), "Cached length should be None before iteration"
 
     # Partially iterate through dataset (take first 50 examples)
     partial_examples = []
@@ -2704,9 +2734,9 @@ def test_length_not_cached_during_partial_iteration():
         all_examples.append(example)
 
     # After complete iteration, cached length should be set
-    assert ds_filtered._cached_exact_length is not None, (
-        "Cached length should be set after complete iteration"
-    )
+    assert (
+        ds_filtered._cached_exact_length is not None
+    ), "Cached length should be set after complete iteration"
 
     # Verify the cached length matches actual count
     actual_count = len(all_examples)
@@ -2723,9 +2753,9 @@ def test_length_not_cached_during_partial_iteration():
 
     # Verify the value persists across new iterations
     ds_filtered_again = iter(ds_filtered)
-    assert ds_filtered._cached_exact_length == actual_count, (
-        "Cached length should persist across iterations"
-    )
+    assert (
+        ds_filtered._cached_exact_length == actual_count
+    ), "Cached length should persist across iterations"
 
     # Consume a few examples from new iteration
     for i, _ in enumerate(ds_filtered_again):
@@ -2733,6 +2763,75 @@ def test_length_not_cached_during_partial_iteration():
             break
 
     # Cached length should still be preserved
-    assert ds_filtered._cached_exact_length == actual_count, (
-        "Cached length should remain unchanged during subsequent iterations"
+    assert (
+        ds_filtered._cached_exact_length == actual_count
+    ), "Cached length should remain unchanged during subsequent iterations"
+
+
+def test_example_sharding_multi_file(tmp_path):
+    """Regression test for double-increment of global_example_idx on skipped files.
+
+    When a dataset spans multiple Arrow files and example-level sharding is
+    active (e.g. because a virtual split forces example-mode), ranks whose
+    shard range starts after file 0 must skip one or more whole files to
+    reach their data. A prior bug in `_base_iter` advanced
+    `global_example_idx` twice for each fully-skipped file -- once in
+    `_compute_file_range`'s return value, and again in the calling loop --
+    so position tracking ran ahead of the true example index. The symptom
+    was severely imbalanced per-rank delivery: rank 0 (no files to skip)
+    got its full share, but higher-index ranks terminated early when the
+    inflated counter reached their shard end, and the very last rank could
+    even over-iterate past its end.
+
+    This test creates a multi-file dataset, applies a virtual split, and
+    shards it 4 ways. All four ranks must return balanced example counts
+    summing to the split size.
+    """
+    from datasets import Dataset
+
+    # Build a dataset with enough examples that a 4-way shard forces
+    # several file skips on the high-index ranks. Save as 10 Arrow files so
+    # the iteration path that skips entire files is exercised for ranks 1+.
+    total = 10_000
+    ds = Dataset.from_dict({"idx": list(range(total)), "value": list(range(total))})
+    ds.save_to_disk(str(tmp_path / "multi_file"), num_shards=10)
+
+    # Virtual split: drop the first 100 examples so example-level sharding
+    # is forced (file-level is disabled when a virtual split is active).
+    split_start = 100
+    ids = fast_load_iterable_dataset(
+        str(tmp_path / "multi_file"), split=f"train[{split_start}:]"
+    )
+    expected_split_len = total - split_start
+    assert len(ids) == expected_split_len
+
+    num_shards = 4
+    shards = [
+        ids.shard(num_shards=num_shards, index=i, mode="example")
+        for i in range(num_shards)
+    ]
+
+    # Raw iteration: counts per rank must be balanced and sum to the split.
+    counts = [sum(1 for _ in s) for s in shards]
+    assert sum(counts) == expected_split_len, (
+        f"Sharded counts should sum to split length: "
+        f"{counts} sum={sum(counts)} expected={expected_split_len}"
+    )
+    expected_per_shard = expected_split_len // num_shards
+    for i, c in enumerate(counts):
+        assert abs(c - expected_per_shard) <= 1, (
+            f"Shard {i} has {c} examples, expected ~{expected_per_shard} "
+            f"(all shards: {counts})"
+        )
+
+    # And the examples should partition without overlap: every value in
+    # [split_start, total) must appear in exactly one shard.
+    seen = set()
+    for s in shards:
+        for ex in s:
+            seen.add(ex["value"])
+    assert seen == set(range(split_start, total)), (
+        f"Shards should exactly cover the virtual split; "
+        f"missing={set(range(split_start, total)) - seen}, "
+        f"extra={seen - set(range(split_start, total))}"
     )
