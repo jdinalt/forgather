@@ -11,11 +11,15 @@ generation_config: &generation_config !dict:@generation_config
 
     [text_gen_callback_args]
 # Periodically generate text at eval. step for subjective model evaluation.
+# Project templates can override the prompts file by setting
+# `ns.eval_prompts_file` (relative to the forgather dir) -- the
+# Open-Orca finetune project does this to swap in a ChatML reasoning
+# set instead of the default raw-continuation short stories.
 text_gen_callback_args: &text_gen_callback_args
     summary_writer: *summary_writer
-    prompts: {{ abspath(joinpath(ns.forgather_dir, "prompts/short_stories.yaml")) }}
+    prompts: {{ abspath(joinpath(ns.forgather_dir, ns.eval_prompts_file | default("prompts/short_stories.yaml"))) }}
     generation_config: *generation_config
-    max_new_tokens: 120
+    max_new_tokens: {{ ns.eval_max_new_tokens | default(120) }}
     generation_steps: 10000
 
 [peak_hardware_flops]

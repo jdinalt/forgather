@@ -38,6 +38,19 @@
     ## `forgather control save-stop`), then decays over this many tokens.
     -- set ns.annealing_tokens = annealing_tokens | default(200)
 
+    ## Text-generation eval prompts. Override the default
+    ## `prompts/short_stories.yaml` (intended for raw causal-LM
+    ## continuation eval) with a ChatML-formatted reasoning /
+    ## instruction-following set tuned to the Open-Orca distribution.
+    ## Each entry is a fully-rendered ChatML prompt ending in
+    ## `<|im_start|>assistant\n` so the textgen callback can feed it
+    ## directly to the tokenizer without going through
+    ## `apply_chat_template` -- see prompts/open_orca_eval.yaml header
+    ## for the format details. lm_callbacks.yaml reads ns.eval_prompts_file
+    ## (and ns.eval_max_new_tokens) when wiring the textgen callback.
+    -- set ns.eval_prompts_file = "prompts/open_orca_eval.yaml"
+    -- set ns.eval_max_new_tokens = 160
+
 [globals]
     == super()
     ## Pre-compute the WSD decay-start step. Because [trainer_args]
@@ -75,3 +88,4 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_schedule
     ## set to -1 to fall back to the manual-trigger flow.
     decay_start_step: {{ ns.decay_start_step }}
     start_decay: {{ start_annealing | toyaml(False) }}
+

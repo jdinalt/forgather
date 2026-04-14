@@ -1,0 +1,124 @@
+# Open-Orca / instruction-following eval prompts.
+#
+# These are formatted as raw ChatML so the textgen callback can feed
+# them directly to the tokenizer without going through
+# apply_chat_template. Each entry must end with `<|im_start|>assistant\n`
+# (the `|` literal block scalar preserves exactly one trailing newline),
+# matching what chat_templates/chatml.jinja emits when
+# add_generation_prompt=True. Using `|-` (strip-trailing-newline) would
+# put the model out-of-distribution on the very last token of the
+# prompt -- so always use `|` here, not `|-`.
+#
+# System prompts are drawn from (or closely paraphrase) prompts that
+# appear in the real Open-Orca distribution, so subjective evaluation
+# hits the same system-prompt styles the model was fine-tuned on.
+#
+# Used by the Open-Orca finetune project's textgen callback to log
+# eval-time generation samples to TensorBoard. Sized for the
+# max_new_tokens=120 default in lm_callbacks.yaml.
+
+# 1. Chain-of-thought math word problem. Tests explicit step-by-step reasoning.
+- |
+  <|im_start|>system
+  You are an AI assistant. User will you give you a task. Your goal is to complete the task as faithfully as you can. While performing the task think step-by-step and justify your steps.<|im_end|>
+  <|im_start|>user
+  Lena has 24 apples. She gives a third of them to her brother, then eats 2 herself. How many apples does she have left? Show your reasoning step by step.<|im_end|>
+  <|im_start|>assistant
+
+# 2. Logic puzzle / deductive reasoning. Tests constraint tracking.
+- |
+  <|im_start|>system
+  You are an AI assistant. User will you give you a task. Your goal is to complete the task as faithfully as you can. While performing the task think step-by-step and justify your steps.<|im_end|>
+  <|im_start|>user
+  Alice, Bob, and Carol each own exactly one pet: a cat, a dog, or a fish. Alice does not own the dog. Carol owns the fish. Who owns the dog? Explain briefly.<|im_end|>
+  <|im_start|>assistant
+
+# 3. Reading comprehension over a short passage.
+- |
+  <|im_start|>system
+  You are an AI assistant that follows instruction extremely well. Help as much as you can.<|im_end|>
+  <|im_start|>user
+  Passage: "Marie Curie was born in Warsaw in 1867. She later moved to Paris, where she conducted the research on radioactivity that earned her two Nobel Prizes, in Physics and in Chemistry."
+
+  Question: In which city did Marie Curie conduct the research that won her her Nobel Prizes?<|im_end|>
+  <|im_start|>assistant
+
+# 4. Multiple choice with explanation. The "answer first, then why others are wrong" Orca pattern.
+- |
+  <|im_start|>system
+  You are an AI assistant. You should describe the task and explain your answer. While answering a multiple choice question, first output the correct answer(s). Then explain why other answers are wrong.<|im_end|>
+  <|im_start|>user
+  Which of the following is a mammal?
+  A) Shark
+  B) Dolphin
+  C) Octopus
+  D) Salmon<|im_end|>
+  <|im_start|>assistant
+
+# 5. Common-sense "what happens next" continuation.
+- |
+  <|im_start|>system
+  You are an AI assistant that helps people find information.<|im_end|>
+  <|im_start|>user
+  A person is making tea. They have just poured boiling water into a cup containing a tea bag. What is the most likely next step? Answer in one sentence.<|im_end|>
+  <|im_start|>assistant
+
+# 6. Summarization of a short paragraph to a single sentence.
+- |
+  <|im_start|>system
+  You are an AI assistant. You will be given a task. You must generate a detailed and long answer.<|im_end|>
+  <|im_start|>user
+  Summarize the following paragraph in one sentence:
+
+  "The honeybee population has been declining steadily over the past two decades, driven by a combination of pesticide exposure, habitat loss, and the spread of parasitic mites. Researchers warn that without intervention, this trend could threaten global food production, since many crops depend on bee pollination."<|im_end|>
+  <|im_start|>assistant
+
+# 7. Instruction-following with an explicit format constraint (comma-separated list of exactly 5).
+- |
+  <|im_start|>system
+  You are an AI assistant that follows instruction extremely well. Help as much as you can.<|im_end|>
+  <|im_start|>user
+  List exactly 5 common kitchen utensils, separated by commas, on a single line, with no extra commentary.<|im_end|>
+  <|im_start|>assistant
+
+# 8. Translation. Tests cross-lingual generation.
+- |
+  <|im_start|>system
+  You are a helpful assistant, who always provide explanation. Think like you are answering to a five year old.<|im_end|>
+  <|im_start|>user
+  Translate the following English sentence into French, then briefly explain one interesting word choice: "The cat is sleeping on the warm windowsill."<|im_end|>
+  <|im_start|>assistant
+
+# 9. "Explain like I'm 5" -- Orca's distinctive tone-matching system prompt.
+- |
+  <|im_start|>system
+  You are a helpful assistant, who always provide explanation. Think like you are answering to a five year old.<|im_end|>
+  <|im_start|>user
+  Why is the sky blue?<|im_end|>
+  <|im_start|>assistant
+
+# 10. Factual question that benefits from structured explanation.
+- |
+  <|im_start|>system
+  You are an AI assistant. You will be given a task. You must generate a detailed and long answer.<|im_end|>
+  <|im_start|>user
+  What is photosynthesis, and why is it important for life on Earth? Answer in two or three sentences.<|im_end|>
+  <|im_start|>assistant
+
+# 11. Sentiment analysis. A common Orca task shape.
+- |
+  <|im_start|>system
+  You are an AI assistant. You should describe the task and explain your answer.<|im_end|>
+  <|im_start|>user
+  Classify the sentiment of the following review as positive, negative, or neutral, and briefly explain why:
+
+  "The food arrived cold and the waiter forgot half my order, but at least the dessert was okay."<|im_end|>
+  <|im_start|>assistant
+
+# 12. Short control prompt -- checks the model still gives concise answers when asked.
+- |
+  <|im_start|>system
+  You are an AI assistant that follows instruction extremely well. Help as much as you can.<|im_end|>
+  <|im_start|>user
+  What is the capital of Japan? Answer in one word.<|im_end|>
+  <|im_start|>assistant
