@@ -288,21 +288,34 @@ the right step regardless of the interruption.
 
 ### Post-training eval
 
-The textgen callback logs a sample of responses to TensorBoard on each
-eval step, but for a real end-of-run report it's worth running the
-prompts through the inference server against the final checkpoint
-directly, so the responses stop at `<|im_end|>` naturally and you can
-compare the same questions against earlier checkpoints:
+The textgen callback logs a sample of responses to TensorBoard at
+every eval step, but for a real end-of-run report it's worth running
+the prompts through the inference server against the final checkpoint
+directly:
 
 ```bash
-# Start the inference server on a free GPU with the latest checkpoint.
+# Start the server on a free GPU with the latest checkpoint. `-c`
+# tells it to look in ${OO_RUN}/checkpoints/ and load the newest one.
 CUDA_VISIBLE_DEVICES=5 forgather inf server -c -m "${OO_RUN}"
 
-# Send the new ChatML prompt set via the /v1/completions endpoint
-# (not /v1/chat/completions -- the YAML entries are already fully
-# rendered ChatML, we want raw text continuation, not another pass
-# through apply_chat_template).
+# In another terminal: interactive chat against the running model.
+forgather inf client --interactive
+
+# Or: one-shot chat with a system prompt (uses the tokenizer's chat
+# template automatically, so you just type plain messages).
+forgather inf client \
+    --system "You are a helpful AI assistant. Think step by step." \
+    --message "Lena has 24 apples. She gives a third to her brother, then eats 2 herself. How many does she have left?"
 ```
+
+The server exposes an OpenAI-compatible REST API at
+`http://localhost:8000/v1`, so anything that speaks that API — curl,
+the `openai` Python SDK, Open WebUI, LibreChat, etc. — works against
+it unchanged. For the batch eval that produced the results below,
+and for the details of sending raw ChatML prompts (which is what
+`open_orca_eval.yaml` contains) directly to `/v1/completions`, see
+[*Appendix: Talking to the inference server*](#appendix-talking-to-the-inference-server)
+at the end of this document.
 
 Representative responses from `checkpoint-32124`, with
 `temperature=0.7, top_p=0.9, stop=['<|im_end|>']` — six of the twelve
@@ -347,38 +360,98 @@ sentence.
 
 **3. Multiple choice with explanation (prompt #4).** The *format* is
 exactly right — "correct answer first, then why others are wrong" —
-but the model picks the wrong answer (octopus instead of dolphin) and
-then self-contradicts in the Option-B explanation ("Dolphin is
-incorrect because dolphins are marine mammals..."). Clear evidence
-that the Orca structural pattern has been learned even when the
-underlying knowledge hasn't.
+but the model picks the wrong answer and then self-contradicts in
+its own Option-B explanation. Clear evidence that the Orca
+structural pattern has been learned even when the underlying
+knowledge hasn't.
+
+> **User**: Which of the following is a mammal?
+> A) Shark
+> B) Dolphin
+> C) Octopus
+> D) Salmon
+>
+> **Assistant**:
+> The correct answer is C) Octopus.
+>
+> Octopuses are a type of mollusk that belong to the class Mollusca.
+> They are known for their elongated bodies and their ability to
+> regenerate lost limbs. Sharks, on the other hand, are a type of
+> fish that belong to the class Actinopterygii and are known for
+> their streamlined body shape and powerful jaws.
+>
+> Option A) Shark is incorrect because sharks are not mammals.
+>
+> Option B) Dolphin is incorrect because dolphins are marine mammals
+> that belong to the class Cetaceans and are not known for their
+> elongated bodies.
+>
+> Option D) Salmon is incorrect because salmon are freshwater fish
+> that belong to the class Salmoniformes and are not known for their
+> elongated bodies.
+
+Note the self-contradiction: "Dolphin is incorrect because dolphins
+are marine mammals" — the model's own explanation identifies the
+right answer while marking it wrong. The "answer-first then
+explain-others-wrong" template has been learned mechanically but the
+two halves don't talk to each other yet.
 
 **4. Summarization (prompt #6).** Perfect single-sentence compression.
 
 > **User**: Summarize the following paragraph in one sentence:
-> [honeybee decline paragraph]
+>
+> "The honeybee population has been declining steadily over the past
+> two decades, driven by a combination of pesticide exposure, habitat
+> loss, and the spread of parasitic mites. Researchers warn that
+> without intervention, this trend could threaten global food
+> production, since many crops depend on bee pollination."
 >
 > **Assistant**: The declining honeybee population is caused by a
 > combination of pesticide exposure, habitat loss, and the spread of
 > parasitic mites, and researchers warn that the trend could threaten
 > global food production unless intervention is implemented.
 
-**5. Logic puzzle (prompt #2).** Wrong answer. The model confidently
-says "Alice owns the dog" while directly citing the constraint that
-"Alice does not own the dog". The model has learned to *produce
-confident structured reasoning* but hasn't learned to *actually track
-constraints* at this capacity. Logic puzzles are a known weak spot
-for 1B-scale models and this isn't something Open-Orca fine-tuning
-alone will fix.
+**5. Logic puzzle (prompt #2).** Wrong answer. The model has learned
+to *produce confident structured reasoning* but hasn't learned to
+*actually track constraints* at this capacity. Logic puzzles are a
+known weak spot for 1B-scale models and this isn't something
+Open-Orca fine-tuning alone will fix.
+
+> **User**: Alice, Bob, and Carol each own exactly one pet: a cat, a
+> dog, or a fish. Alice does not own the dog. Carol owns the fish.
+> Who owns the dog? Explain briefly.
+>
+> **Assistant**:
+> Alice owns the dog. This is because the question states that Alice
+> does not own the dog, and the fact that the question is asking
+> about who owns the dog implies that the question is asking about
+> the ownership of the dog. Additionally, the question specifically
+> mentions that Carol owns the fish, which implies that the question
+> is asking about the ownership of the cat. Therefore, based on the
+> information provided, Alice owns the dog.
+
+Note the opening sentence: "Alice owns the dog. This is because the
+question states that Alice does not own the dog". The model literally
+cites the constraint that falsifies its own answer and then keeps
+going anyway. The correct answer here is Bob (Carol has the fish,
+Alice doesn't have the dog, so Bob has the dog by elimination) —
+straightforward for a human but apparently beyond what 1B parameters
+plus 1B tokens of Orca can pull off consistently.
 
 **6. Control prompt — capital of Japan (prompt #12).**
 
+> **User**: What is the capital of Japan? Answer in one word.
+>
 > **Assistant**: The capital of Japan is Tokyo.
 
-Correct. For comparison, the same prompt at `checkpoint-2560` (step
-2,560, ~84M tokens in) produced `by Tokugawa Ieyasu.` — a garbled
-fragment. The difference between the two checkpoints is a good
-summary of what the rest of the 1B-token budget bought.
+Correct. The model slightly overshoots the "one word" instruction
+— a strict-format-compliance miss — but the factual answer is
+right and the response stops cleanly. For comparison, the same
+prompt at `checkpoint-2560` (step 2,560, ~84M tokens in) produced
+the garbled fragment `by Tokugawa Ieyasu.` (a fine example of the
+early-training "learning the turn structure but not yet the
+content" phase). The difference between the two checkpoints is a
+good summary of what the rest of the 1B-token budget bought.
 
 Of the full 12-prompt set, all 12 stopped at `<|im_end|>` cleanly
 (finish_reason=`stop` on every call), and the Orca *structural*
@@ -501,3 +574,131 @@ mode — the same tooling applies here.
 - WSDScheduler theory:
   *Understanding Warmup-Stable-Decay Learning Rates* (Wen et al. 2024),
   <https://arxiv.org/abs/2410.05192>
+
+## Appendix: Talking to the inference server
+
+Everything beyond "just run `forgather inf client`" lives here: the
+API surface, the two gotchas that matter for Open-Orca eval, the
+`curl` shape for readers who want to see the bytes on the wire, and
+the ~20-line batch script that produced the measured results above.
+If you are using a standard OpenAI client (including the `openai`
+Python SDK, Open WebUI, LibreChat, llama-index, LangChain, etc.) none
+of this is necessary — just point it at `http://localhost:8000/v1`
+and leave the API key blank (or set to any non-empty string; the
+server ignores it).
+
+### The API surface
+
+`forgather inf server` exposes an **OpenAI-compatible REST API** at
+`http://localhost:8000/v1`:
+
+- `GET /v1/models` — list loaded models
+- `POST /v1/chat/completions` — chat endpoint; applies the
+  tokenizer's chat template to a `messages` list
+- `POST /v1/completions` — raw text completion endpoint; feeds the
+  prompt to the model verbatim
+
+The request/response shapes match the OpenAI API one-for-one, so any
+OpenAI-compatible client can drive it unmodified.
+
+### Two choices that matter for Open-Orca eval
+
+1. **Use `/v1/completions`, not `/v1/chat/completions`, for
+   `open_orca_eval.yaml` entries.** Those YAML entries are already
+   fully-rendered ChatML strings ending in
+   `<|im_start|>assistant\n`. The chat endpoint would run them
+   through `apply_chat_template` a second time, producing nested
+   tags the model has never seen. The completion endpoint feeds the
+   text straight to the model, which is what you want.
+2. **Set `stop: ["<|im_end|>"]`** on completion calls so generation
+   halts at the end of the assistant turn. The server configures
+   `<|im_end|>` as its EOS token at startup (look for
+   `Stop token IDs: [128256]` in the server log), but being explicit
+   in the request costs nothing and removes ambiguity.
+
+### Raw HTTP via `curl`
+
+Useful when you want to see the full request/response pair, when
+scripting against the server from a non-Python environment, or when
+you want to verify the server is actually listening:
+
+```bash
+curl -sS http://localhost:8000/v1/completions \
+    -H 'Content-Type: application/json' \
+    -d '{
+        "model": "default",
+        "prompt": "<|im_start|>system\nYou are an AI assistant that follows instruction extremely well. Help as much as you can.<|im_end|>\n<|im_start|>user\nWhat is the capital of Japan? Answer in one word.<|im_end|>\n<|im_start|>assistant\n",
+        "max_tokens": 64,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "stop": ["<|im_end|>"]
+    }' | python -m json.tool
+```
+
+Response shape:
+
+```json
+{
+    "id": "...",
+    "object": "text_completion",
+    "model": "default",
+    "choices": [
+        {
+            "text": "The capital of Japan is Tokyo.",
+            "index": 0,
+            "finish_reason": "stop"
+        }
+    ],
+    "usage": { "prompt_tokens": 60, "completion_tokens": 10, "total_tokens": 70 }
+}
+```
+
+`finish_reason` should be `stop` on every completion. If you see
+`length` the model hit `max_tokens` before emitting `<|im_end|>`,
+which usually means something is wrong (wrong stop token, wrong
+chat template, wrong checkpoint).
+
+### Batch-evaluating all prompts in one script
+
+For the measured results in the Post-training eval section above I
+ran all 12 entries from `open_orca_eval.yaml` through
+`/v1/completions` in a small Python loop. Stdlib-only, no
+dependencies beyond `pyyaml`:
+
+```python
+import json, urllib.request, yaml
+
+prompts = yaml.safe_load(open("prompts/open_orca_eval.yaml"))
+
+for i, prompt in enumerate(prompts, 1):
+    body = json.dumps({
+        "model": "default",
+        "prompt": prompt,
+        "max_tokens": 240,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "stop": ["<|im_end|>"],
+    }).encode()
+    req = urllib.request.Request(
+        "http://localhost:8000/v1/completions",
+        data=body, headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req) as resp:
+        data = json.loads(resp.read())
+    choice = data["choices"][0]
+    print(f"[{i}] finish={choice['finish_reason']} -> {choice['text'].strip()}")
+```
+
+Any OpenAI SDK wrapper works the same way; the stdlib version is
+just here so it can run without extra installs. Replace the
+`urllib.request.Request` call with `openai.OpenAI(base_url=..., api_key='x').completions.create(...)` if you prefer the official
+client.
+
+### See also
+
+- [`tools/inference_server/README.md`](../../../tools/inference_server/README.md)
+  — full inference server documentation, including
+  `forgather inf server --help` and the complete client flag list.
+- [Samantha README — Testing the Finetuned Model](../samantha/README.md#testing-the-finetuned-model)
+  — walk-through of interactive chat and text completion with
+  `forgather inf client` against a conversational finetune.
