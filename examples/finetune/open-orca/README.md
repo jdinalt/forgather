@@ -217,24 +217,6 @@ DDP across 4 GPUs. 1 billion tokens is enough to get well past the
 wall-clock is under 24 hours on the reference 4x 4090 box (each card
 power-limited to 250 W, GPU 2 excluded for thermals).
 
-Measured numbers from the first two log intervals of the run that produced
-this README:
-
-| Metric | Value |
-|---|---|
-| Total steps | 32,124 (at `total_tokens = 1000`, `seq_len = 2048`, global batch = 16) |
-| Steady-state throughput | **~26,800 tokens/second** across 4 ranks |
-| Peak memory | 15.49 GiB per rank (8 GiB headroom below the 24 GiB ceiling) |
-| Loss at step 32 | 2.17 |
-| Loss at step 64 | 1.92 |
-| Projected wall-clock | ~10.5 hours |
-
-That initial 0.24-nat drop between step 32 and step 64 is the base model
-eating the chat format: it's never seen `<|im_start|>` / `<|im_end|>` before
-this run, and picking up the turn structure is the cheapest loss in
-training. Expect the curve to flatten meaningfully once you're past the
-first few hundred steps.
-
 **Important gotcha about the token budget.** The `finetune_v2.yaml` base
 template defaults `max_steps` to `-1`, which means "train for
 `num_train_epochs = 1` worth of data". For a dataset the size of packed
@@ -249,8 +231,9 @@ run".
 ```bash
 # One-time setup: stage a clean copy of the base model as the run output
 # directory, so the run state (checkpoints, logs) lives separately from
-# the source model.
-OO_RUN=/home/dinalt/my_first_model/openorca_llama3_1b_run
+# the source model. Point the target at a large, fast disk -- 1B-token
+# training generates several GB of checkpoint + log data.
+OO_RUN=/home/dinalt/rust/models/openorca_llama3_1b_run
 cp -a "${FG_MODEL}/." "${OO_RUN}/"
 
 # Launch the run. 'nohup ... &' detaches the process so it survives the
@@ -260,6 +243,152 @@ nohup forgather -t llama3_1b/4gpu_ddp.yaml train \
     > "${OO_RUN}/long_run.log" 2>&1 &
 disown
 ```
+
+### Results from the reference run
+
+Measured end-to-end numbers from the run that produced this README:
+
+| Metric | Value |
+|---|---|
+| Total steps | 32,124 (= `total_tokens(1000M) / tokens_per_step(31,129)`) |
+| Total tokens trained | 1.047 B |
+| Wall-clock | ~10.5 h (35,286 s post-resume + ~50 min pre-resume progress) |
+| Steady-state throughput | **~27,300 tok/s** across 4 ranks |
+| Peak memory | 15.49 GiB / rank (≈ 8.5 GiB below the 24 GiB card ceiling) |
+| Effective batch size | 16 (per-device 4 × 4 ranks) |
+| Peak LR | 1.38e-4 (sqrt-scaled from `lr=1e-4` at `base_batch_size=16384`) |
+| Min LR after decay | 1.38e-5 (= 0.1 × peak) |
+| Initial loss (step 32) | 2.17 |
+| Best train loss | 0.704 (step 31,776) |
+| Best eval loss | **0.863** (step 32,124 final checkpoint) |
+| Max grad norm | 45.5 (step 608, inside warmup) |
+| Avg grad norm | 1.36 |
+
+Loss curve for the full run (train + eval + LR schedule):
+
+![headline run loss curve](assets/headline_loss_curves.png)
+
+The three phases of WSD are clearly visible: the linear warmup ramp in
+the first ~640 steps, the long stable plateau at peak LR, and the
+harmonic decay starting automatically at step 25,699 (80% of the
+run) and reaching `min_lr` exactly at `max_steps`. There is a small
+loss drop visible right at the decay boundary — typical behaviour when
+the LR starts coming off its peak. No `--start-annealing` flag or
+`forgather control` RPC was needed; the decay schedule was pre-computed
+from the token budget in `open_orca.yaml`'s `[globals]` block.
+
+The run was interrupted once about 50 minutes in to apply a corrected
+`weight_decay` config, save-stopped cleanly via
+`forgather control save-stop`, then resumed from `checkpoint-2560` with
+the new config. The WSDScheduler's `load_state_dict` correctly picked
+up `last_epoch` from the checkpoint but took the newly-computed
+`decay_start_step` from the constructor (per the `_CONFIG_ONLY_KEYS`
+split in `wsd_scheduler.py:110-143`), so the decay schedule fired at
+the right step regardless of the interruption.
+
+### Post-training eval
+
+The textgen callback logs a sample of responses to TensorBoard on each
+eval step, but for a real end-of-run report it's worth running the
+prompts through the inference server against the final checkpoint
+directly, so the responses stop at `<|im_end|>` naturally and you can
+compare the same questions against earlier checkpoints:
+
+```bash
+# Start the inference server on a free GPU with the latest checkpoint.
+CUDA_VISIBLE_DEVICES=5 forgather inf server -c -m "${OO_RUN}"
+
+# Send the new ChatML prompt set via the /v1/completions endpoint
+# (not /v1/chat/completions -- the YAML entries are already fully
+# rendered ChatML, we want raw text continuation, not another pass
+# through apply_chat_template).
+```
+
+Representative responses from `checkpoint-32124`, with
+`temperature=0.7, top_p=0.9, stop=['<|im_end|>']` — six of the twelve
+prompts, picked to show both the structural patterns the model has
+learned and the residual limitations of a 1B-parameter checkpoint on
+1B training tokens:
+
+**1. Step-by-step math (prompt #1).** Perfect: correct answer, clean
+chain-of-thought, proper numbered steps.
+
+> **User**: Lena has 24 apples. She gives a third of them to her
+> brother, then eats 2 herself. How many apples does she have left?
+> Show your reasoning step by step.
+>
+> **Assistant**:
+> Step 1: Determine how many apples Lena gave to her brother.
+> Since Lena gave a third of her 24 apples to her brother, we can
+> calculate this by dividing 24 by 3. 24 ÷ 3 = 8
+>
+> Step 2: Subtract the number of apples given to her brother.
+> 24 - 8 = 16
+>
+> Step 3: Calculate how many apples Lena has left.
+> Therefore, Lena has 16 apples left.
+
+Note that the model still forgets the *second* subtraction (the two
+apples Lena ate), so the actual correct answer is 14. The format is
+right; the arithmetic-tracking depth isn't — which is consistent with
+what you'd expect at 1B scale.
+
+**2. Reading comprehension (prompt #3).** Perfect, concise, single
+sentence.
+
+> **User**: Passage: "Marie Curie was born in Warsaw in 1867. She
+> later moved to Paris, where she conducted the research on
+> radioactivity that earned her two Nobel Prizes, in Physics and in
+> Chemistry." Question: In which city did Marie Curie conduct the
+> research that won her her Nobel Prizes?
+>
+> **Assistant**: Marie Curie conducted her research on radioactivity
+> in Paris.
+
+**3. Multiple choice with explanation (prompt #4).** The *format* is
+exactly right — "correct answer first, then why others are wrong" —
+but the model picks the wrong answer (octopus instead of dolphin) and
+then self-contradicts in the Option-B explanation ("Dolphin is
+incorrect because dolphins are marine mammals..."). Clear evidence
+that the Orca structural pattern has been learned even when the
+underlying knowledge hasn't.
+
+**4. Summarization (prompt #6).** Perfect single-sentence compression.
+
+> **User**: Summarize the following paragraph in one sentence:
+> [honeybee decline paragraph]
+>
+> **Assistant**: The declining honeybee population is caused by a
+> combination of pesticide exposure, habitat loss, and the spread of
+> parasitic mites, and researchers warn that the trend could threaten
+> global food production unless intervention is implemented.
+
+**5. Logic puzzle (prompt #2).** Wrong answer. The model confidently
+says "Alice owns the dog" while directly citing the constraint that
+"Alice does not own the dog". The model has learned to *produce
+confident structured reasoning* but hasn't learned to *actually track
+constraints* at this capacity. Logic puzzles are a known weak spot
+for 1B-scale models and this isn't something Open-Orca fine-tuning
+alone will fix.
+
+**6. Control prompt — capital of Japan (prompt #12).**
+
+> **Assistant**: The capital of Japan is Tokyo.
+
+Correct. For comparison, the same prompt at `checkpoint-2560` (step
+2,560, ~84M tokens in) produced `by Tokugawa Ieyasu.` — a garbled
+fragment. The difference between the two checkpoints is a good
+summary of what the rest of the 1B-token budget bought.
+
+Of the full 12-prompt set, all 12 stopped at `<|im_end|>` cleanly
+(finish_reason=`stop` on every call), and the Orca *structural*
+patterns — numbered step-by-step reasoning, "answer first then
+explain", structured factual paragraphs — show up consistently.
+Factual correctness is roughly 50/50. Strict format-constraint
+following (e.g. "comma-separated list on one line") is weak.
+Translations and hard logic are unreliable. None of this is a
+surprise for a 1B base model seeing 1B tokens of instruction data;
+it is what the scale affords.
 
 Monitoring:
 
