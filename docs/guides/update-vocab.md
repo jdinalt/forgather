@@ -139,5 +139,8 @@ embeddings), `"copy:ID"` (copy from token ID).
 
 - **[Model Conversion](model-conversion.md)** -- full HuggingFace/Forgather
   conversion (also supports `--add-tokens` and `-t`)
+- **[Fixing End-of-Sequence Token Issues](fixing-eos-token-issues.md)** --
+  common gotcha after adding ChatML-style stop tokens: runaway generation
+  when `generation_config.json` isn't updated to match
 - **[tools/update_vocab/README.md](../../tools/update_vocab/README.md)** --
   detailed reference with additional examples

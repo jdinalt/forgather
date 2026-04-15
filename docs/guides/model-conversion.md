@@ -207,3 +207,6 @@ The parameter mapping patterns are recursive regex substitution lists. See
 
 - **[Vocabulary and Chat Template](update-vocab.md)** -- add tokens or set chat
   templates on an existing model without converting between formats
+- **[Fixing End-of-Sequence Token Issues](fixing-eos-token-issues.md)** --
+  diagnose and fix runaway generation when an older conversion left
+  `generation_config.json` out of sync with the updated tokenizer EOS
