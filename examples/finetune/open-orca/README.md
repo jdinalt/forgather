@@ -277,6 +277,32 @@ the LR starts coming off its peak. No `--start-annealing` flag or
 `forgather control` RPC was needed; the decay schedule was pre-computed
 from the token budget in `open_orca.yaml`'s `[globals]` block.
 
+**On the max grad norm of 45.5 inside warmup.** That spike isn't a
+near-divergence — it's the newly-added `<|im_start|>`, `<|im_end|>`,
+and `<|pad|>` embeddings receiving their first gradient updates. The
+`forgather convert --add-tokens` pass randomly initialised those
+three rows in the embedding matrix, and once training starts on
+packed ChatML data the rest of the network suddenly has a very strong
+signal telling those three specific embeddings to move. Adafactor's
+row/column normalisation shrugs it off (the run never gets close to
+divergent and the detector stays quiet), and the grad norm settles
+to an average of **1.36** for the rest of training. It's a reliable
+fingerprint of "training just started on a model with newly-added
+embeddings" and is worth learning to recognise on future conversion
++ fine-tune runs.
+
+![headline run gradient norm](assets/headline_grad_norm.png)
+
+The curve above is plotted with `forgather logs plot --grad-norm
+--no-ignore-outliers` — the `--no-ignore-outliers` matters here, the
+default outlier-clipped view squashes the whole warmup region. The
+shape tells the whole story: a cluster of large spikes in the first
+~2,500 steps as the added embeddings are dragged into useful values,
+a handful of smaller residual spikes scattered through the first
+~12,000 steps, and then a clean settled band hugging ~1.0 for the
+rest of the run. No gradient clipping was applied; Adafactor absorbs
+the transient on its own.
+
 The run was interrupted once about 50 minutes in to apply a corrected
 `weight_decay` config, save-stopped cleanly via
 `forgather control save-stop`, then resumed from `checkpoint-2560` with
@@ -462,6 +488,196 @@ following (e.g. "comma-separated list on one line") is weak.
 Translations and hard logic are unreliable. None of this is a
 surprise for a 1B base model seeing 1B tokens of instruction data;
 it is what the scale affords.
+
+#### Baseline: the same questions against the untrained base model
+
+For context, here is what the **untrained** `fg_llama_1b` (the
+converted base model, zero fine-tuning steps) produces on the same
+questions. This is the "before" side of the comparison; the
+responses above are the "after".
+
+**The negative control (ChatML on base = noise).** ChatML is out of
+distribution for the base: the `<|im_start|>` / `<|im_end|>` tokens
+were added to its vocabulary during conversion but their embedding
+rows are still randomly initialised at this point, so any prompt
+wrapped in them looks like noise. A direct ChatML run on these five
+questions either echoes the user turn verbatim, re-emits the system
+prompt, or drifts into digit sequences and "I've been to the moon
+and back" loops. The result is uniformly useless and not worth
+quoting inline; it confirms only that the fine-tune, not the
+conversion step, is what teaches the model to use the ChatML turn
+format.
+
+**A format the base has actually seen.** To get a meaningful
+baseline we re-express the questions in a format that is
+in-distribution for pretraining. Plain `STUDENT:` / `TEACHER:`
+dialog transcripts are abundant in web text, and base models are
+known to pick up the structure of such a dialog in-context after
+only a couple of example turns. The harness below primes the model
+with a single trivial Q/A exchange, appends the real question, ends
+on `TEACHER:`, and asks the server to stop on the first
+`\n\nSTUDENT:` or `\n\nTEACHER:`, so we get exactly *one* teacher
+turn and nothing else:
+
+```python
+PREAMBLE = (
+    "The following is a short dialog between a student and a "
+    "helpful, knowledgeable teacher. The teacher always gives a "
+    "clear, complete answer.\n\n"
+    "STUDENT: What is 2 plus 2?\n\n"
+    "TEACHER: 2 plus 2 equals 4.\n\n"
+    "STUDENT: "
+)
+
+body = {
+    "model": "default",
+    "prompt": PREAMBLE + user_question + "\n\nTEACHER:",
+    "max_tokens": 240,
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "stop": ["\n\nSTUDENT:", "\n\nTEACHER:"],
+}
+```
+
+The `stop` list contains real newline characters. This matters
+because `forgather inf client --stop '\n\n'` does not translate
+escape sequences — it forwards the literal two-character string
+`\n\n` — so the cleanest way to get a `\n\n`-terminated stop is to
+POST a JSON body directly to `/v1/completions` (the call above).
+With this setup the base model produces a single teacher turn on
+four of the five questions.
+
+**Capital of Japan** (base model, few-shot + stop):
+
+> **Prompt**:
+> ```
+> The following is a short dialog between a student and a helpful, knowledgeable teacher. The teacher always gives a clear, complete answer.
+>
+> STUDENT: What is 2 plus 2?
+>
+> TEACHER: 2 plus 2 equals 4.
+>
+> STUDENT: What is the capital of Japan?
+>
+> TEACHER:
+> ```
+>
+> **Generated** (`finish_reason: stop`):
+> ```
+>  The capital of Japan is Tokyo.
+> ```
+
+Correct, and the model stopped at the first blank line on its own
+— the in-context example was enough to teach it "one teacher turn,
+then stop".
+
+**Reading comprehension: Marie Curie** (base model, few-shot + stop):
+
+> **Prompt** (last turn shown; the preamble is identical to above):
+> ```
+> STUDENT: Here is a passage: "Marie Curie was born in Warsaw in 1867. She later moved to Paris, where she conducted the research on radioactivity that earned her two Nobel Prizes, in Physics and in Chemistry." In which city did Marie Curie conduct the research that won her her Nobel Prizes?
+>
+> TEACHER:
+> ```
+>
+> **Generated** (`finish_reason: stop`):
+> ```
+>  Paris.
+> ```
+
+One word, correct, stopped at the blank line. The base model can
+clearly do simple extractive reading comprehension when prompted in
+a format it recognises.
+
+**Lena math** (base model, few-shot + stop):
+
+> **Prompt** (last turn shown):
+> ```
+> STUDENT: Lena has 24 apples. She gives a third of them to her brother, then eats 2 herself. How many apples does she have left? Please show your reasoning step by step.
+>
+> TEACHER:
+> ```
+>
+> **Generated** (`finish_reason: stop`):
+> ```
+>  Lena has 22 apples. She gives a third of them to her brother, then eats 2 herself. She has 20 apples left.
+> ```
+
+Terminates cleanly, but the content is wrong at the very first
+step: the base model restates the problem as "Lena has 22 apples"
+instead of 24 and then lands on 20 with no real arithmetic along
+the way. The fine-tuned model on the same problem (example 1 above)
+produces a structured three-step chain of thought — it too ends at
+the wrong number, but the *shape* of its answer is something the
+base never produced.
+
+**Logic puzzle** (base model, few-shot + stop):
+
+> **Prompt** (last turn shown):
+> ```
+> STUDENT: Alice, Bob, and Carol each own exactly one pet: a cat, a dog, or a fish. Alice does not own the dog. Carol owns the fish. Who owns the dog? Explain briefly.
+>
+> TEACHER:
+> ```
+>
+> **Generated** (`finish_reason: stop`):
+> ```
+>  The dog is owned by Carol.
+> ```
+
+Stops cleanly, but wrong — the prompt explicitly states that Carol
+owns the fish. The fine-tuned model also misses this puzzle (it
+says Alice); neither checkpoint has learned to track the
+constraints.
+
+**Why is the sky blue** (base model, few-shot + stop — the failure):
+
+> **Prompt** (last turn shown):
+> ```
+> STUDENT: Why is the sky blue? Please explain it simply.
+>
+> TEACHER:
+> ```
+>
+> **Generated** (`finish_reason: length`):
+> ```
+>  The sky is blue because the sun shines on it. The sun is red, and the sun shines on it. The sun is yellow, and the sun shines on it. The sun is orange, and the sun shines on it. [...continues repeating "The sun is X, and the sun shines on it" to max_tokens]
+> ```
+
+This is the one question the stop sequence couldn't rescue. The
+base model loops *inside a single paragraph* without ever emitting a
+blank line, so `\n\nSTUDENT:` never fires and the call hits
+`max_tokens`. It's not a formatting failure — it's a content
+failure the fine-tune would have to repair in the body of the
+response, which it does: example 9 above is the fine-tuned answer
+on the same question — also factually wrong, but at least a
+coherent ELI5 paragraph rather than a chant.
+
+**What the comparison actually shows.** Across these five questions
+the fine-tune cleanly added three capabilities:
+
+1. **The ChatML turn format.** ChatML on the base is pure noise; on
+   the fine-tuned model it's the *only* format that works, and
+   every one of the 12 post-training responses stops cleanly at
+   `<|im_end|>`. That format is entirely a fine-tuning artefact.
+2. **Self-terminating turns without external stop sequences.** The
+   base baseline above terminates cleanly only because the harness
+   asks the server to stop at `\n\nSTUDENT:` / `\n\nTEACHER:`. With
+   no stop sequence the base happily continues the transcript on
+   its own — second-turn `STUDENT:`, third-turn `TEACHER:`, and so
+   on, indefinitely. The fine-tuned model emits its own end-of-turn
+   token on every prompt, no external help required.
+3. **Structured answer templates.** Step-by-step reasoning, "answer
+   first then explain why the other options are wrong", structured
+   factual paragraphs — the fine-tuned model produces these
+   consistently. The base model, even in its in-distribution dialog
+   format, tends to restate the question or drop into repetition.
+
+What the fine-tune *didn't* add much of is factual accuracy or
+reasoning depth. Both checkpoints answer "capital of Japan"
+correctly; both mis-handle the Lena math problem; both get the
+logic puzzle wrong. That's a 1B-parameter scale ceiling, not
+something instruction fine-tuning on 1B tokens of Orca can fix.
 
 Monitoring:
 
