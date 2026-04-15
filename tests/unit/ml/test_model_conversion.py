@@ -61,7 +61,9 @@ class TestConverterRegistry(unittest.TestCase):
                 pass
 
         self.assertIn("test_model_a", self._reg_mod._CONVERTER_REGISTRY)
-        self.assertIs(self._reg_mod._CONVERTER_REGISTRY["test_model_a"], _TestConverterA)
+        self.assertIs(
+            self._reg_mod._CONVERTER_REGISTRY["test_model_a"], _TestConverterA
+        )
 
     def test_register_converter_returns_original_class(self):
         """The decorator should return the original class unchanged."""
@@ -314,7 +316,9 @@ class TestConverterRegistry(unittest.TestCase):
 
     def test_detect_model_type_from_forgather_returns_type(self):
         """detect_model_type_from_forgather returns model type for FG models."""
-        from forgather.ml.model_conversion.registry import detect_model_type_from_forgather
+        from forgather.ml.model_conversion.registry import (
+            detect_model_type_from_forgather,
+        )
 
         mock_config = MagicMock()
         mock_config.hf_model_type = "mistral"
@@ -327,7 +331,9 @@ class TestConverterRegistry(unittest.TestCase):
 
     def test_detect_model_type_from_forgather_returns_none_for_hf(self):
         """detect_model_type_from_forgather returns None for HF models (not forgather)."""
-        from forgather.ml.model_conversion.registry import detect_model_type_from_forgather
+        from forgather.ml.model_conversion.registry import (
+            detect_model_type_from_forgather,
+        )
 
         mock_config = MagicMock()
         del mock_config.hf_model_type
@@ -344,7 +350,9 @@ class TestConverterRegistry(unittest.TestCase):
 
     def test_discover_and_register_converters_with_custom_paths(self):
         """discover_and_register_converters calls discovery with custom paths."""
-        from forgather.ml.model_conversion.registry import discover_and_register_converters
+        from forgather.ml.model_conversion.registry import (
+            discover_and_register_converters,
+        )
 
         mock_discovery = MagicMock()
         with patch.dict(
@@ -361,7 +369,9 @@ class TestConverterRegistry(unittest.TestCase):
 
     def test_discover_and_register_converters_builtin(self):
         """discover_and_register_converters calls builtin discovery when no custom paths."""
-        from forgather.ml.model_conversion.registry import discover_and_register_converters
+        from forgather.ml.model_conversion.registry import (
+            discover_and_register_converters,
+        )
 
         mock_discovery = MagicMock()
         with patch.dict(
@@ -381,21 +391,27 @@ class TestDiscovery(unittest.TestCase):
 
     def test_discover_converters_in_directory_nonexistent(self):
         """Searching a nonexistent directory should not raise, just log a warning."""
-        from forgather.ml.model_conversion.discovery import discover_converters_in_directory
+        from forgather.ml.model_conversion.discovery import (
+            discover_converters_in_directory,
+        )
 
         # Should not raise
         discover_converters_in_directory("/nonexistent/path/abc123")
 
     def test_discover_converters_in_directory_not_a_dir(self):
         """Searching a file path (not a directory) should not raise."""
-        from forgather.ml.model_conversion.discovery import discover_converters_in_directory
+        from forgather.ml.model_conversion.discovery import (
+            discover_converters_in_directory,
+        )
 
         with tempfile.NamedTemporaryFile(suffix=".py") as f:
             discover_converters_in_directory(f.name)
 
     def test_discover_converters_in_directory_finds_converter_py(self):
         """Files named converter.py or *_converter.py should be discovered."""
-        from forgather.ml.model_conversion.discovery import discover_converters_in_directory
+        from forgather.ml.model_conversion.discovery import (
+            discover_converters_in_directory,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create converter files
@@ -426,7 +442,9 @@ class TestDiscovery(unittest.TestCase):
 
     def test_discover_converters_in_directory_recursive(self):
         """Recursive search should find converter files in subdirectories."""
-        from forgather.ml.model_conversion.discovery import discover_converters_in_directory
+        from forgather.ml.model_conversion.discovery import (
+            discover_converters_in_directory,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             subdir = Path(tmpdir) / "sub" / "deep"
@@ -447,7 +465,9 @@ class TestDiscovery(unittest.TestCase):
 
     def test_discover_converters_in_directory_non_recursive(self):
         """Non-recursive search should only find converter files at the top level."""
-        from forgather.ml.model_conversion.discovery import discover_converters_in_directory
+        from forgather.ml.model_conversion.discovery import (
+            discover_converters_in_directory,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             top_level = Path(tmpdir) / "converter.py"
@@ -520,15 +540,21 @@ class TestDiscovery(unittest.TestCase):
         """discover_from_paths should try builtin discovery then custom paths."""
         from forgather.ml.model_conversion.discovery import discover_from_paths
 
-        with patch(
-            "forgather.ml.model_conversion.discovery.discover_builtin_converters"
-        ) as mock_builtin, patch(
-            "forgather.ml.model_conversion.discovery.discover_converters_in_directory"
-        ) as mock_dir, patch(
-            "forgather.ml.model_conversion.discovery._can_find_forgather_root",
-            return_value=False,
+        with (
+            patch(
+                "forgather.ml.model_conversion.discovery.discover_builtin_converters"
+            ) as mock_builtin,
+            patch(
+                "forgather.ml.model_conversion.discovery.discover_converters_in_directory"
+            ) as mock_dir,
+            patch(
+                "forgather.ml.model_conversion.discovery._can_find_forgather_root",
+                return_value=False,
+            ),
         ):
-            discover_from_paths(["/custom/path1", "/custom/path2"], forgather_root="/root")
+            discover_from_paths(
+                ["/custom/path1", "/custom/path2"], forgather_root="/root"
+            )
 
         # Builtin is called with the provided forgather root
         mock_builtin.assert_called_once_with("/root")
@@ -541,13 +567,17 @@ class TestDiscovery(unittest.TestCase):
         """discover_from_paths skips builtin discovery when root is not found."""
         from forgather.ml.model_conversion.discovery import discover_from_paths
 
-        with patch(
-            "forgather.ml.model_conversion.discovery.discover_builtin_converters"
-        ) as mock_builtin, patch(
-            "forgather.ml.model_conversion.discovery.discover_converters_in_directory"
-        ) as mock_dir, patch(
-            "forgather.ml.model_conversion.discovery._can_find_forgather_root",
-            return_value=False,
+        with (
+            patch(
+                "forgather.ml.model_conversion.discovery.discover_builtin_converters"
+            ) as mock_builtin,
+            patch(
+                "forgather.ml.model_conversion.discovery.discover_converters_in_directory"
+            ) as mock_dir,
+            patch(
+                "forgather.ml.model_conversion.discovery._can_find_forgather_root",
+                return_value=False,
+            ),
         ):
             discover_from_paths(["/custom/path"], forgather_root=None)
 
@@ -598,14 +628,18 @@ class TestStandardMappings(unittest.TestCase):
 
     def test_standard_forgather_to_hf_is_non_empty(self):
         """STANDARD_FORGATHER_TO_HF should contain mapping entries."""
-        from forgather.ml.model_conversion.standard_mappings import STANDARD_FORGATHER_TO_HF
+        from forgather.ml.model_conversion.standard_mappings import (
+            STANDARD_FORGATHER_TO_HF,
+        )
 
         self.assertIsInstance(STANDARD_FORGATHER_TO_HF, dict)
         self.assertGreater(len(STANDARD_FORGATHER_TO_HF), 0)
 
     def test_standard_hf_to_forgather_is_non_empty(self):
         """STANDARD_HF_TO_FORGATHER should contain mapping entries."""
-        from forgather.ml.model_conversion.standard_mappings import STANDARD_HF_TO_FORGATHER
+        from forgather.ml.model_conversion.standard_mappings import (
+            STANDARD_HF_TO_FORGATHER,
+        )
 
         self.assertIsInstance(STANDARD_HF_TO_FORGATHER, dict)
         self.assertGreater(len(STANDARD_HF_TO_FORGATHER), 0)
@@ -647,7 +681,9 @@ class TestStandardMappings(unittest.TestCase):
 
     def test_standard_mappings_contain_expected_keys(self):
         """Standard mappings should contain key architectural fields."""
-        from forgather.ml.model_conversion.standard_mappings import STANDARD_FORGATHER_TO_HF
+        from forgather.ml.model_conversion.standard_mappings import (
+            STANDARD_FORGATHER_TO_HF,
+        )
 
         expected_keys = [
             "vocab_size",
@@ -659,7 +695,9 @@ class TestStandardMappings(unittest.TestCase):
         ]
         for key in expected_keys:
             self.assertIn(
-                key, STANDARD_FORGATHER_TO_HF, f"Expected key '{key}' in standard mapping"
+                key,
+                STANDARD_FORGATHER_TO_HF,
+                f"Expected key '{key}' in standard mapping",
             )
 
 
@@ -668,14 +706,18 @@ class TestLlamaMappings(unittest.TestCase):
 
     def test_llama_hf_to_forgather_is_non_empty(self):
         """LLAMA_HF_TO_FORGATHER should be a non-empty list of tuples."""
-        from forgather.ml.model_conversion.standard_mappings import LLAMA_HF_TO_FORGATHER
+        from forgather.ml.model_conversion.standard_mappings import (
+            LLAMA_HF_TO_FORGATHER,
+        )
 
         self.assertIsInstance(LLAMA_HF_TO_FORGATHER, list)
         self.assertGreater(len(LLAMA_HF_TO_FORGATHER), 0)
 
     def test_llama_forgather_to_hf_is_non_empty(self):
         """LLAMA_FORGATHER_TO_HF should be a non-empty list of tuples."""
-        from forgather.ml.model_conversion.standard_mappings import LLAMA_FORGATHER_TO_HF
+        from forgather.ml.model_conversion.standard_mappings import (
+            LLAMA_FORGATHER_TO_HF,
+        )
 
         self.assertIsInstance(LLAMA_FORGATHER_TO_HF, list)
         self.assertGreater(len(LLAMA_FORGATHER_TO_HF), 0)
@@ -692,7 +734,9 @@ class TestLlamaMappings(unittest.TestCase):
                 f"{name}[{i}] should have 3 elements (pattern, replacement, children)",
             )
             pattern, replacement, children = entry
-            self.assertIsInstance(pattern, str, f"{name}[{i}] pattern should be a string")
+            self.assertIsInstance(
+                pattern, str, f"{name}[{i}] pattern should be a string"
+            )
             self.assertIsInstance(
                 replacement, str, f"{name}[{i}] replacement should be a string"
             )
@@ -702,19 +746,29 @@ class TestLlamaMappings(unittest.TestCase):
 
             # Recursively validate children
             if children:
-                self._validate_mapping_tuple_structure(children, f"{name}[{i}].children")
+                self._validate_mapping_tuple_structure(
+                    children, f"{name}[{i}].children"
+                )
 
     def test_llama_hf_to_forgather_structure(self):
         """LLAMA_HF_TO_FORGATHER tuples should have (pattern, replacement, children) structure."""
-        from forgather.ml.model_conversion.standard_mappings import LLAMA_HF_TO_FORGATHER
+        from forgather.ml.model_conversion.standard_mappings import (
+            LLAMA_HF_TO_FORGATHER,
+        )
 
-        self._validate_mapping_tuple_structure(LLAMA_HF_TO_FORGATHER, "LLAMA_HF_TO_FORGATHER")
+        self._validate_mapping_tuple_structure(
+            LLAMA_HF_TO_FORGATHER, "LLAMA_HF_TO_FORGATHER"
+        )
 
     def test_llama_forgather_to_hf_structure(self):
         """LLAMA_FORGATHER_TO_HF tuples should have (pattern, replacement, children) structure."""
-        from forgather.ml.model_conversion.standard_mappings import LLAMA_FORGATHER_TO_HF
+        from forgather.ml.model_conversion.standard_mappings import (
+            LLAMA_FORGATHER_TO_HF,
+        )
 
-        self._validate_mapping_tuple_structure(LLAMA_FORGATHER_TO_HF, "LLAMA_FORGATHER_TO_HF")
+        self._validate_mapping_tuple_structure(
+            LLAMA_FORGATHER_TO_HF, "LLAMA_FORGATHER_TO_HF"
+        )
 
     def _collect_patterns(self, mapping):
         """Recursively collect all regex patterns from a mapping."""
@@ -727,7 +781,9 @@ class TestLlamaMappings(unittest.TestCase):
 
     def test_llama_hf_to_forgather_patterns_are_valid_regex(self):
         """All regex patterns in LLAMA_HF_TO_FORGATHER should compile without error."""
-        from forgather.ml.model_conversion.standard_mappings import LLAMA_HF_TO_FORGATHER
+        from forgather.ml.model_conversion.standard_mappings import (
+            LLAMA_HF_TO_FORGATHER,
+        )
 
         patterns = self._collect_patterns(LLAMA_HF_TO_FORGATHER)
         for pattern in patterns:
@@ -738,7 +794,9 @@ class TestLlamaMappings(unittest.TestCase):
 
     def test_llama_forgather_to_hf_patterns_are_valid_regex(self):
         """All regex patterns in LLAMA_FORGATHER_TO_HF should compile without error."""
-        from forgather.ml.model_conversion.standard_mappings import LLAMA_FORGATHER_TO_HF
+        from forgather.ml.model_conversion.standard_mappings import (
+            LLAMA_FORGATHER_TO_HF,
+        )
 
         patterns = self._collect_patterns(LLAMA_FORGATHER_TO_HF)
         for pattern in patterns:
@@ -749,7 +807,9 @@ class TestLlamaMappings(unittest.TestCase):
 
     def test_llama_mappings_contain_key_layers(self):
         """Llama mappings should contain key layer mapping entries."""
-        from forgather.ml.model_conversion.standard_mappings import LLAMA_HF_TO_FORGATHER
+        from forgather.ml.model_conversion.standard_mappings import (
+            LLAMA_HF_TO_FORGATHER,
+        )
 
         # Flatten all patterns to check they cover expected layers
         all_patterns = self._collect_patterns(LLAMA_HF_TO_FORGATHER)
@@ -960,7 +1020,9 @@ class TestAddTokensToTokenizerExtended(unittest.TestCase):
 
     def test_empty_config(self):
         """An empty config dict should result in 0 tokens added."""
-        from forgather.ml.model_conversion.resize_embeddings import add_tokens_to_tokenizer
+        from forgather.ml.model_conversion.resize_embeddings import (
+            add_tokens_to_tokenizer,
+        )
 
         tok = self._make_tokenizer()
         num_added, token_inits = add_tokens_to_tokenizer(tok, {})
@@ -970,7 +1032,9 @@ class TestAddTokensToTokenizerExtended(unittest.TestCase):
 
     def test_skip_named_token_with_invalid_format(self):
         """Named tokens with invalid format (not str or dict) should be skipped."""
-        from forgather.ml.model_conversion.resize_embeddings import add_tokens_to_tokenizer
+        from forgather.ml.model_conversion.resize_embeddings import (
+            add_tokens_to_tokenizer,
+        )
 
         tok = self._make_tokenizer()
         config = {"pad_token": 12345}  # Invalid: int
@@ -980,7 +1044,9 @@ class TestAddTokensToTokenizerExtended(unittest.TestCase):
 
     def test_skip_named_token_dict_missing_token_field(self):
         """A dict-format named token missing the 'token' key should be skipped."""
-        from forgather.ml.model_conversion.resize_embeddings import add_tokens_to_tokenizer
+        from forgather.ml.model_conversion.resize_embeddings import (
+            add_tokens_to_tokenizer,
+        )
 
         tok = self._make_tokenizer()
         config = {"pad_token": {"init": "zero"}}  # Missing 'token' field
@@ -990,7 +1056,9 @@ class TestAddTokensToTokenizerExtended(unittest.TestCase):
 
     def test_token_reassignment_existing_in_vocab(self):
         """Reassigning a token to a value already in vocab should just update the pointer."""
-        from forgather.ml.model_conversion.resize_embeddings import add_tokens_to_tokenizer
+        from forgather.ml.model_conversion.resize_embeddings import (
+            add_tokens_to_tokenizer,
+        )
 
         tok = self._make_tokenizer(
             pad_token="[PAD]",
@@ -1009,7 +1077,9 @@ class TestAddTokensToTokenizerExtended(unittest.TestCase):
 
     def test_token_reassignment_not_in_vocab_adds_new(self):
         """Reassigning a token to a new value not in vocab should add it."""
-        from forgather.ml.model_conversion.resize_embeddings import add_tokens_to_tokenizer
+        from forgather.ml.model_conversion.resize_embeddings import (
+            add_tokens_to_tokenizer,
+        )
 
         tok = self._make_tokenizer(
             pad_token="[PAD]",
@@ -1025,7 +1095,9 @@ class TestAddTokensToTokenizerExtended(unittest.TestCase):
 
     def test_existing_special_tokens_not_duplicated(self):
         """Additional special tokens that already exist should not be added again."""
-        from forgather.ml.model_conversion.resize_embeddings import add_tokens_to_tokenizer
+        from forgather.ml.model_conversion.resize_embeddings import (
+            add_tokens_to_tokenizer,
+        )
 
         tok = self._make_tokenizer(
             additional_special_tokens=["<|im_start|>", "<|im_end|>"]
@@ -1038,7 +1110,9 @@ class TestAddTokensToTokenizerExtended(unittest.TestCase):
 
     def test_existing_regular_tokens_not_duplicated(self):
         """Regular tokens that already exist in vocab should not be added again."""
-        from forgather.ml.model_conversion.resize_embeddings import add_tokens_to_tokenizer
+        from forgather.ml.model_conversion.resize_embeddings import (
+            add_tokens_to_tokenizer,
+        )
 
         tok = self._make_tokenizer()
         tok.get_vocab = Mock(return_value={"existing_token": 42})
@@ -1050,7 +1124,9 @@ class TestAddTokensToTokenizerExtended(unittest.TestCase):
 
     def test_mixed_config_all_token_types(self):
         """Config with named, special, and regular tokens should handle all types."""
-        from forgather.ml.model_conversion.resize_embeddings import add_tokens_to_tokenizer
+        from forgather.ml.model_conversion.resize_embeddings import (
+            add_tokens_to_tokenizer,
+        )
 
         tok = self._make_tokenizer()
         tok.pad_token_id = 200
@@ -1072,7 +1148,9 @@ class TestAddTokensToTokenizerExtended(unittest.TestCase):
 
     def test_yaml_file_loading(self):
         """Loading from a YAML file path should produce the same result as a dict."""
-        from forgather.ml.model_conversion.resize_embeddings import add_tokens_to_tokenizer
+        from forgather.ml.model_conversion.resize_embeddings import (
+            add_tokens_to_tokenizer,
+        )
 
         config_dict = {
             "pad_token": {"token": "<|pad|>", "init": "zero"},
@@ -1098,7 +1176,9 @@ class TestAddTokensToTokenizerExtended(unittest.TestCase):
 class TestResizeWordEmbeddingsExtended(unittest.TestCase):
     """Extended tests for resize_word_embeddings."""
 
-    def _make_model_and_tokenizer(self, old_size=100, new_size=110, hidden_dim=32, tied=False):
+    def _make_model_and_tokenizer(
+        self, old_size=100, new_size=110, hidden_dim=32, tied=False
+    ):
         """Helper to create a mock model with embeddings."""
         model = Mock()
         input_emb = torch.randn(new_size, hidden_dim)
@@ -1123,9 +1203,13 @@ class TestResizeWordEmbeddingsExtended(unittest.TestCase):
 
     def test_zero_init_both_embeddings(self):
         """Zero init should zero both input and output embeddings when untied."""
-        from forgather.ml.model_conversion.resize_embeddings import resize_word_embeddings
+        from forgather.ml.model_conversion.resize_embeddings import (
+            resize_word_embeddings,
+        )
 
-        model, tokenizer, input_emb, output_emb = self._make_model_and_tokenizer(tied=False)
+        model, tokenizer, input_emb, output_emb = self._make_model_and_tokenizer(
+            tied=False
+        )
 
         resize_word_embeddings(model, tokenizer, {105: "zero"})
 
@@ -1134,9 +1218,13 @@ class TestResizeWordEmbeddingsExtended(unittest.TestCase):
 
     def test_zero_init_tied_embeddings(self):
         """Zero init should only zero once when embeddings are tied."""
-        from forgather.ml.model_conversion.resize_embeddings import resize_word_embeddings
+        from forgather.ml.model_conversion.resize_embeddings import (
+            resize_word_embeddings,
+        )
 
-        model, tokenizer, input_emb, output_emb = self._make_model_and_tokenizer(tied=True)
+        model, tokenizer, input_emb, output_emb = self._make_model_and_tokenizer(
+            tied=True
+        )
 
         resize_word_embeddings(model, tokenizer, {105: "zero"})
 
@@ -1146,9 +1234,13 @@ class TestResizeWordEmbeddingsExtended(unittest.TestCase):
 
     def test_copy_init_strategy(self):
         """copy:N init strategy should copy embedding from token N."""
-        from forgather.ml.model_conversion.resize_embeddings import resize_word_embeddings
+        from forgather.ml.model_conversion.resize_embeddings import (
+            resize_word_embeddings,
+        )
 
-        model, tokenizer, input_emb, output_emb = self._make_model_and_tokenizer(tied=False)
+        model, tokenizer, input_emb, output_emb = self._make_model_and_tokenizer(
+            tied=False
+        )
 
         # Save original source embedding for comparison
         source_embedding = input_emb[5].clone()
@@ -1161,9 +1253,13 @@ class TestResizeWordEmbeddingsExtended(unittest.TestCase):
 
     def test_mean_init_strategy_is_noop(self):
         """Mean init strategy should be a no-op (handled by resize_token_embeddings)."""
-        from forgather.ml.model_conversion.resize_embeddings import resize_word_embeddings
+        from forgather.ml.model_conversion.resize_embeddings import (
+            resize_word_embeddings,
+        )
 
-        model, tokenizer, input_emb, output_emb = self._make_model_and_tokenizer(tied=False)
+        model, tokenizer, input_emb, output_emb = self._make_model_and_tokenizer(
+            tied=False
+        )
 
         original_105 = input_emb[105].clone()
 
@@ -1174,18 +1270,26 @@ class TestResizeWordEmbeddingsExtended(unittest.TestCase):
 
     def test_unsupported_init_strategy_logs_warning(self):
         """An unsupported init strategy should log a warning but not raise."""
-        from forgather.ml.model_conversion.resize_embeddings import resize_word_embeddings
+        from forgather.ml.model_conversion.resize_embeddings import (
+            resize_word_embeddings,
+        )
 
-        model, tokenizer, input_emb, output_emb = self._make_model_and_tokenizer(tied=False)
+        model, tokenizer, input_emb, output_emb = self._make_model_and_tokenizer(
+            tied=False
+        )
 
         # Should not raise
         resize_word_embeddings(model, tokenizer, {105: "random_unknown_strategy"})
 
     def test_multiple_token_inits(self):
         """Multiple tokens can have different init strategies."""
-        from forgather.ml.model_conversion.resize_embeddings import resize_word_embeddings
+        from forgather.ml.model_conversion.resize_embeddings import (
+            resize_word_embeddings,
+        )
 
-        model, tokenizer, input_emb, output_emb = self._make_model_and_tokenizer(tied=False)
+        model, tokenizer, input_emb, output_emb = self._make_model_and_tokenizer(
+            tied=False
+        )
 
         token_inits = {
             105: "zero",
@@ -1204,7 +1308,9 @@ class TestResizeWordEmbeddingsExtended(unittest.TestCase):
 
     def test_none_token_inits_skips_custom_init(self):
         """When token_inits is None, only resize should happen."""
-        from forgather.ml.model_conversion.resize_embeddings import resize_word_embeddings
+        from forgather.ml.model_conversion.resize_embeddings import (
+            resize_word_embeddings,
+        )
 
         model, tokenizer, _, _ = self._make_model_and_tokenizer(tied=False)
 
@@ -1214,7 +1320,9 @@ class TestResizeWordEmbeddingsExtended(unittest.TestCase):
 
     def test_empty_token_inits(self):
         """Empty token_inits dict should still resize but not modify embeddings."""
-        from forgather.ml.model_conversion.resize_embeddings import resize_word_embeddings
+        from forgather.ml.model_conversion.resize_embeddings import (
+            resize_word_embeddings,
+        )
 
         model, tokenizer, _, _ = self._make_model_and_tokenizer(tied=False)
 
@@ -1228,7 +1336,9 @@ class TestUpdateConfigFromTokenizerExtended(unittest.TestCase):
 
     def test_update_vocab_size_true(self):
         """When update_vocab_size=True, vocab_size should be updated to match tokenizer."""
-        from forgather.ml.model_conversion.resize_embeddings import update_config_from_tokenizer
+        from forgather.ml.model_conversion.resize_embeddings import (
+            update_config_from_tokenizer,
+        )
 
         config = Mock()
         config.vocab_size = 100
@@ -1245,7 +1355,9 @@ class TestUpdateConfigFromTokenizerExtended(unittest.TestCase):
 
     def test_update_vocab_size_false(self):
         """When update_vocab_size=False (default), vocab_size should NOT change."""
-        from forgather.ml.model_conversion.resize_embeddings import update_config_from_tokenizer
+        from forgather.ml.model_conversion.resize_embeddings import (
+            update_config_from_tokenizer,
+        )
 
         config = Mock()
         config.vocab_size = 100
@@ -1263,7 +1375,9 @@ class TestUpdateConfigFromTokenizerExtended(unittest.TestCase):
 
     def test_update_vocab_size_no_change_when_equal(self):
         """When vocab sizes already match, no update should occur."""
-        from forgather.ml.model_conversion.resize_embeddings import update_config_from_tokenizer
+        from forgather.ml.model_conversion.resize_embeddings import (
+            update_config_from_tokenizer,
+        )
 
         config = Mock()
         config.vocab_size = 100
@@ -1281,7 +1395,9 @@ class TestUpdateConfigFromTokenizerExtended(unittest.TestCase):
 
     def test_only_nonnull_token_ids_set(self):
         """Only non-None token IDs should be set on the config."""
-        from forgather.ml.model_conversion.resize_embeddings import update_config_from_tokenizer
+        from forgather.ml.model_conversion.resize_embeddings import (
+            update_config_from_tokenizer,
+        )
 
         config = MagicMock()
         config.vocab_size = 100
@@ -1385,7 +1501,12 @@ class TestModuleExports(unittest.TestCase):
 
         all_exports = mc_pkg.__all__
 
-        for name in ("validate_vllm_plans", "validate_tp_plan", "validate_pp_plan", "print_model_structure"):
+        for name in (
+            "validate_vllm_plans",
+            "validate_tp_plan",
+            "validate_pp_plan",
+            "print_model_structure",
+        ):
             self.assertNotIn(name, all_exports)
 
 
@@ -1428,6 +1549,95 @@ class TestHFConverterBase(unittest.TestCase):
         self.assertIn("get_hf_config_class", abstract_methods)
         self.assertIn("get_hf_model_class", abstract_methods)
         self.assertIn("get_project_info", abstract_methods)
+
+
+class TestSyncGenerationConfigEos(unittest.TestCase):
+    """Regression tests for HFConverter._sync_generation_config_eos.
+
+    When `forgather convert --add-tokens` adds a ChatML <|im_end|> to a
+    base model whose original EOS was something else (e.g.
+    <|end_of_text|> for Llama 3), the token-merge path in
+    convert_to_forgather() widens model_config.eos_token_id to a list
+    like [128256, 128001]. _copy_generation_config() at the top of the
+    same method copied generation_config.json verbatim from the
+    source, so without a post-merge sync the copied file keeps the
+    stale scalar and model.generate() won't stop at the added token.
+    """
+
+    def setUp(self):
+        import tempfile
+
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_gen_config(self, **fields):
+        import json
+        import os
+
+        path = os.path.join(self.tmp, "generation_config.json")
+        with open(path, "w") as f:
+            json.dump(fields, f)
+        return path
+
+    def _read_gen_config(self):
+        import json
+        import os
+
+        with open(os.path.join(self.tmp, "generation_config.json")) as f:
+            return json.load(f)
+
+    def test_scalar_to_list(self):
+        """The common case: scalar EOS widened to a list by token merge."""
+        from forgather.ml.model_conversion.hf_converter import HFConverter
+
+        self._write_gen_config(bos_token_id=128000, eos_token_id=128001, do_sample=True)
+        HFConverter._sync_generation_config_eos(self.tmp, [128256, 128001])
+        cfg = self._read_gen_config()
+        self.assertEqual(cfg["eos_token_id"], [128256, 128001])
+        # Unrelated fields preserved.
+        self.assertEqual(cfg["bos_token_id"], 128000)
+        self.assertTrue(cfg["do_sample"])
+
+    def test_already_in_sync_is_noop(self):
+        """If eos_token_id already matches, the method leaves the file alone."""
+        import json
+        import os
+
+        from forgather.ml.model_conversion.hf_converter import HFConverter
+
+        self._write_gen_config(eos_token_id=[128256, 128001], bos_token_id=128000)
+        before_mtime = os.path.getmtime(
+            os.path.join(self.tmp, "generation_config.json")
+        )
+        HFConverter._sync_generation_config_eos(self.tmp, [128256, 128001])
+        after_mtime = os.path.getmtime(os.path.join(self.tmp, "generation_config.json"))
+        # File not touched -> mtime preserved.
+        self.assertEqual(before_mtime, after_mtime)
+        # Content unchanged.
+        self.assertEqual(self._read_gen_config()["eos_token_id"], [128256, 128001])
+
+    def test_missing_gen_config_is_noop(self):
+        """If generation_config.json doesn't exist, don't create one."""
+        import os
+
+        from forgather.ml.model_conversion.hf_converter import HFConverter
+
+        HFConverter._sync_generation_config_eos(self.tmp, [128256, 128001])
+        self.assertFalse(
+            os.path.isfile(os.path.join(self.tmp, "generation_config.json"))
+        )
+
+    def test_scalar_to_scalar_update(self):
+        """Scalar -> scalar update also works (for non-token-merge edits)."""
+        from forgather.ml.model_conversion.hf_converter import HFConverter
+
+        self._write_gen_config(eos_token_id=2)
+        HFConverter._sync_generation_config_eos(self.tmp, 42)
+        self.assertEqual(self._read_gen_config()["eos_token_id"], 42)
 
 
 if __name__ == "__main__":
