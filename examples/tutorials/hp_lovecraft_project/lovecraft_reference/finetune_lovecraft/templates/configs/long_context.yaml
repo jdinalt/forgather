@@ -1,0 +1,45 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Lovecraft Long Context"
+    -- set ns.config_description = "Train at a user-specified context length (--seq-len, --window-size)"
+    -- set ns.log_name = log_name | default("long_context")
+    -- set ns.default_dataset_config = "long_context.yaml"
+
+[trainer_args]
+    == super()
+    per_device_train_batch_size: {{ batch_size | default(1) }}
+    per_device_eval_batch_size: 1
+    gradient_checkpointing: True
+    fuse_optim_with_backward: True
+    enable_activation_offloading: True
+    attn_implementation: "{{ attn_implementation | default('sdpa') }}"
+
+[datacollator]
+    == super()
+    max_length: {{ seq_len | default(4096) }}
+    padding: "max_length"
+
+[optimizer]
+    == super()
+    lr: 3.5e-6
+
+[dynamic_args]
+    == super()
+    seq_len:
+        names: "--seq-len"
+        type: "int"
+        help: "Context length in tokens"
+    batch_size:
+        names: "--batch-size"
+        type: "int"
+        help: "Per-device batch size"
+    window_size:
+        names: "--window-size"
+        type: "int"
+        help: "Dataset block length in tokens"
+    attn_implementation:
+        names: "--attn-implementation"
+        type: "str"
+        help: "Attention implementation (sdpa|flex_attention|eager|flash_attention_2)"

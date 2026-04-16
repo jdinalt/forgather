@@ -1,0 +1,12 @@
+-- extends 'configs/lovecraft.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Lovecraft Long Context"
+    -- set ns.config_description = "Block length selected by --window-size for long-context experiments"
+
+[map_function]
+.define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
+    max_length: {{ window_size | default(4096) }}
+    stride: 0
+    packed: {{ packed | default(False) }}
