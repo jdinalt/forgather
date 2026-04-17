@@ -1,5 +1,27 @@
 # H.P. Lovecraft long-context experiments — final findings
 
+## Background: RoPE, extrapolation, and YaRN
+
+Decoder-only transformers encode token position through **Rotary Position Embedding (RoPE)** -- Su et al. 2021, *RoFormer* ([arxiv:2104.09864](https://arxiv.org/abs/2104.09864)).  RoPE rotates each query/key vector by a position-dependent angle before the attention dot-product, so the similarity between two tokens depends on their *relative* distance.  The rotation frequencies `inv_freq_d = 1 / base ** (2d / D)` cover many scales: the highest-index dimension rotates by a tiny angle per token (useful for long-range attention), the lowest-index dimensions rotate fast (useful for local).  RoPE's distinguishing property is that distances only matter up to positions the model has *seen* during training -- the function itself is well-defined at any position, but Q/K projections were never optimised against angle values they didn't encounter.  A Llama-2 model trained at 4096 positions behaves strangely when asked about positions beyond 4096, especially for the slow-rotating high-index frequencies which effectively become new rotation *phases* past the training max.
+
+The simplest "fix" for extending context is **Position Interpolation** -- Chen et al. 2023, [arxiv:2306.15595](https://arxiv.org/abs/2306.15595) -- which divides every inverse frequency by a scale factor `s`, so positions `0..s·L_train` map back into the model's pretrained range `0..L_train`.  This works but compresses every frequency equally, including the high-frequency dimensions that already generalise fine.  The unnecessary compression of high-frequency dimensions pulls the model off-distribution even at positions inside the original range.
+
+**NTK-aware scaling** (community work summarised by bloc97; later formalised) observed that the high-frequency dimensions don't need rescaling -- only the low-frequency, slow-rotating ones drift out-of-distribution at new positions.  Applied per-frequency rather than uniformly, the model's short-range behaviour is preserved.
+
+**YaRN** -- Peng, Quesnelle, Fan, and Shippole 2023, *YaRN: Efficient Context Window Extension of Large Language Models* ([arxiv:2309.00071](https://arxiv.org/abs/2309.00071)) -- combines the above into a single method and adds a third component:
+
+1. **NTK-by-parts frequency scaling.**  For each RoPE frequency `inv_freq_d`, compute both an extrapolated version (unchanged) and an interpolated version (divided by `factor`).  Blend them via a linear ramp indexed by frequency band.  Two hyperparameters `beta_fast` and `beta_slow` determine where the ramp starts and ends: below the ramp, frequencies are unchanged; above, they are interpolated.  This keeps high-frequency dimensions faithful to the pretraining distribution while correcting the slow-rotating tail.
+2. **Length-dependent attention temperature.**  As sequences get longer, attention softmax tends to distribute its mass more uniformly -- a known problem for transformers at scale.  YaRN adds a small correction `mscale = 0.1 * ln(factor) + 1` that scales the final Q·K dot-products before the softmax, countering the entropy-increasing effect of longer sequences.
+3. **Original context window as an anchor.**  The ramp bounds depend on the model's original pretrained position limit, so YaRN's behaviour differs by architecture: a factor of 4 with `original_max_position_embeddings=4096` (Llama-2-7B's pretraining) scales differently than `original_max_position_embeddings=8192` or `32768`.
+
+These three components together recover most of the model's in-distribution behaviour at extrapolated positions while adding no trainable parameters.  YaRN can be applied at inference-time only (swap in a patched `config.json`) or during fine-tuning (for tighter adaptation).
+
+### Implementations drawn from
+
+- **HuggingFace Transformers `modeling_rope_utils.py`** -- YaRN, NTK, linear, LongRoPE reference implementations.  Forgather's `apply_yarn_scaling()` ports the same math but keeps the existing rotary-module structure.
+- **Mistral 7B** -- Jiang et al. 2023, [arxiv:2310.06825](https://arxiv.org/abs/2310.06825).  The sliding-window attention is documented in section 3.1; the 4096-token window is a deliberate architectural choice to cap the per-token attention cost and soften the long-context problem.
+- **Llama 2** -- Touvron et al. 2023, [arxiv:2307.09288](https://arxiv.org/abs/2307.09288).  Llama-2-7B was pretrained with `max_position_embeddings=4096` and no sliding window, so it is an archetypal extrapolation-fix target.
+
 ## Experimental setup
 
 Five 7B fine-tunes on the Lovecraft corpus, all at lr=5e-5, batch 1, 16K context, packed dataset.  Training stopped at comparable step counts (990-1270) via `forgather control save-stop`.  Stack: Adafactor, gradient checkpointing, activation offload, SDPA flash/mem-efficient backend, fused cross-entropy loss.
