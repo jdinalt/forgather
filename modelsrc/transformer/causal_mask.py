@@ -38,7 +38,7 @@ def causal_mask(
     """
     assert config is not None
 
-    window_size = getattr(config, "window_size", None)
+    window_size = getattr(config, "sliding_window", None)
 
     # When using SDPA, if just simple a simple causal attention mask
     # is required, bypass mask generation. SDPA will then use

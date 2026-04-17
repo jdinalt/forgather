@@ -1195,7 +1195,7 @@ class TestCausalMask(unittest.TestCase):
         config = PretrainedConfig(hidden_size=hidden_size)
         config._attn_implementation = attn_impl
         if window_size:
-            config.window_size = window_size
+            config.sliding_window = window_size
         return config
 
     def test_sdpa_returns_none_for_simple_causal(self):
