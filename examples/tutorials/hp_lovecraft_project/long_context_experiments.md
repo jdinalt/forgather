@@ -50,13 +50,13 @@ Windowed perplexity at each context length, evaluated on the held-out "At the Mo
 
 llama_yarn wins at every context length.  The improvement over llama_base grows with length (12% at 2K, 30% at 16K), consistent with YaRN's mechanism: negligible effect on positions within the pretrained range, strong effect where the model would otherwise be extrapolating into uncalibrated position territory.
 
-## Per-position NLL: the 4K "spike" is story-content, not architecture
+## Per-position NLL: a 4096-periodic spike pattern — cause unknown
 
 ![Per-position NLL across variants](assets/per_position_nll.png)
 
-All five variants show matched NLL spikes at positions ≈4352, 8448, 12544 — relative jumps of 2-3 NLL.  These are at the same positions regardless of sliding-window or RoPE setting, and are best explained by natural variation in the test story itself (likely section boundaries where local context doesn't help prediction).
+All five **trained** variants show NLL spikes at *exactly* 4096-token intervals.  On "At the Mountains of Madness" the spikes are at positions 4352, 8448, 12544 (spacing = 4096).  On "The Case of Charles Dexter Ward" they are at positions 2304, 6400, 10496, 14592 (spacing = 4096).  Each spike peaks 2-3 NLL above the baseline then decays over the following 4K tokens until the next spike.
 
-ΔNLL from pos 3328 to pos 4352 (the first "4K boundary" spike):
+ΔNLL from pos 3328 to pos 4352 (the first spike on ATMoM):
 
 | Variant | ΔNLL | Pre-spike NLL | At-spike NLL |
 |---------|-----:|---------------:|-------------:|
@@ -66,7 +66,28 @@ All five variants show matched NLL spikes at positions ≈4352, 8448, 12544 — 
 | llama_base | +2.75 | 1.88 | 4.63 |
 | llama_yarn | +2.79 | 1.71 | 4.50 |
 
-The intermediate eval suggested these spikes were caused by Mistral's sliding window.  That conclusion was an artifact of step mismatch — at step 480, mistral_noslide had uniformly high NLL everywhere, which flattened its curve relative to the better-trained mistral_base.  With step-matched training, every variant shows the same spike at every "boundary" position.
+What is actually going on is not yet fully understood.  Initial speculation attributed the first spike to Mistral's 4K sliding window losing the BOS token as context slides past it (a plausible mechanism for *one* discontinuity at 4K -- see Xiao et al. 2023, *Efficient Streaming Language Models with Attention Sinks*, [arxiv:2309.17453](https://arxiv.org/abs/2309.17453)).  That theory does not extend to three spikes at 4K, 8K, and 12K -- a sliding window is continuous past the first transition.  The "story-content" hypothesis is also ruled out: the spikes occur at different phases on different stories.
+
+Controls that have been run:
+
+- **Untrained base Mistral** (no Lovecraft fine-tuning): smooth NLL for the first ~9K tokens, then monotonic degradation beyond.  No 4K-periodic spikes at all.  **The pattern is introduced by fine-tuning.**
+- **Same story, shorter eval window**: evaluating just positions 0-5000 still produces the spike at 4352, identical to when the full 16K is evaluated.  **The spike is not a long-context or SDPA-backend artifact** — it is produced by the model's prediction of a specific token given the prior context.
+- **Different story, same model**: spikes still 4096 apart but with a different phase offset.  **The position of the first spike depends on story content.**
+- **Both trained Mistral variants** (`sliding_window=4096` vs `sliding_window=null` in the config): show identical spike patterns.  Investigation showed the sliding-window config is dead code under the SDPA backend in Forgather's current attention wiring (it reads `config.window_size`, but the config field is `sliding_window`).  So the two "sliding-window" variants are architecturally identical and the 4K pattern is not sliding-window-induced.
+
+Leading remaining hypotheses:
+
+1. **RoPE frequency resonance.**  With `rope_theta=10000` and `d_head=128`, the rotary dimension at index ~45 has a rotation period of approximately 4094 tokens (2π / 10000^(90/128)).  Every 4K positions the slow-rotating dim-45 phase returns to near its starting value, and if training caused this dimension to carry information the model treats as a structural cue, NLL could spike as that cue re-fires.
+2. **Training-data packing side-effect.**  Our training used `packed: True, packing_strategy: "greedy"` with max_length=16384.  The per-block document-start distribution is spread across 0-16K but has mild local clusters near 4K / 8K / 12K-ish positions.  The model may have learned an implicit "document-boundary at approximately every 4K" prior that does not fire at eval time when no boundary is present.
+3. **Something architectural we haven't identified yet.**  The phase-vs-content dependence argues against pure position-locking, and neither of the above fully explains the strong consistency across all five trained variants on matched content.
+
+**What the spike is NOT, based on the controls run:**
+- Not a sliding-window artifact (sliding-window config is not active in the SDPA path).
+- Not a pretrained-weight artifact (absent from the untrained base model).
+- Not a long-context or SDPA-backend artifact (survives a 5K-context eval).
+- Not a story-content artifact (different phase per story, but always exactly 4096 apart).
+
+This is flagged as an open question for future investigation.  Regardless of the cause, the llama_yarn PPL result below — measured as an average over the full 16K window, so it integrates over the spike pattern — remains valid.
 
 However, looking at the **absolute** NLL at each position rather than the jump, llama_yarn is consistently lowest:
 
