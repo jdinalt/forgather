@@ -103,6 +103,48 @@ def windowed_perplexity(
 
 
 @torch.no_grad()
+def per_position_nll(
+    model, tok, text: str, max_length: int, device: str, bucket_size: int = 512
+) -> list[tuple[int, float]]:
+    """Compute per-position NLL and return bucketed means.
+
+    This is the decisive diagnostic for long-context coherence breakdown:
+    if attention is windowed (or positional encoding loses fidelity) beyond
+    some position, per-position NLL spikes there while the early-context
+    NLL stays fine.  Returns a list of ``(bucket_center, mean_nll)`` tuples.
+    """
+    ids = tok(text, return_tensors="pt").input_ids[0].to(device)
+    if ids.numel() < max_length + 1:
+        max_length = ids.numel() - 1
+    chunk = ids[: max_length + 1].unsqueeze(0)
+
+    logits = model(chunk, return_dict=True).logits
+    shift_logits = logits[..., :-1, :].contiguous().float()
+    shift_labels = chunk[..., 1:].contiguous()
+
+    # Per-position NLL, shape (seq_len,)
+    per_pos = torch.nn.functional.cross_entropy(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1),
+        ignore_index=-100,
+        reduction="none",
+    )
+
+    # Bucket positions into fixed-size windows for readability.
+    buckets = []
+    n = per_pos.numel()
+    for start in range(0, n, bucket_size):
+        end = min(start + bucket_size, n)
+        center = (start + end) // 2
+        mean = float(per_pos[start:end].mean().item())
+        buckets.append((center, mean))
+
+    del logits, shift_logits, shift_labels, per_pos, chunk
+    torch.cuda.empty_cache()
+    return buckets
+
+
+@torch.no_grad()
 def generate_long(
     model,
     tok,
@@ -158,6 +200,13 @@ def main():
     )
     ap.add_argument("--output-md", default="/tmp/long_context_eval.md")
     ap.add_argument("--skip-generation", action="store_true")
+    ap.add_argument(
+        "--per-position-max",
+        type=int,
+        default=0,
+        help="If >0, compute per-position NLL up to this length (bucketed by --bucket-size)",
+    )
+    ap.add_argument("--bucket-size", type=int, default=512)
     args = ap.parse_args()
 
     windows = [int(w) for w in args.ppl_windows.split(",") if w]
@@ -207,6 +256,23 @@ def main():
             nll = ppl[w]
             p = math.exp(nll) if not math.isnan(nll) else float("nan")
             report_lines.append(f"| {w} | {nll:.4f} | {p:.2f} |")
+
+        if args.per_position_max > 0:
+            t0 = time.time()
+            pp = per_position_nll(
+                model,
+                tok,
+                test_text,
+                args.per_position_max,
+                args.device,
+                args.bucket_size,
+            )
+            dt = time.time() - t0
+            print(f"per-position NLL done in {dt:.1f}s", flush=True)
+            report_lines.append("\n**Per-position NLL** (bucket-averaged):\n")
+            report_lines.append(f"| pos | nll |\n|-----|-----|")
+            for pos, nll in pp:
+                report_lines.append(f"| {pos} | {nll:.4f} |")
 
         if not args.skip_generation:
             t0 = time.time()
