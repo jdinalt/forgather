@@ -101,3 +101,93 @@ Total GPU-hours: ~30.  LR was 5e-5 throughout; the default tutorial LR of 3.5e-6
 - **YaRN scaling** in `modelsrc/transformer/rotary_embeddings.py` (commit 7c36805, 3 unit tests).  Configure via `rope_parameters` in the model config.
 - **Long-context eval harness** at `examples/tutorials/hp_lovecraft_project/long_context_eval.py` (commits 1fe4831, 4e45a5a).  Windowed PPL + per-position NLL + long-form generation.
 - **`--lr` config-flow fix** in the tutorial's `long_context.yaml`.  Previously a hard-coded `lr: 3.5e-6` silently overrode the CLI arg.
+
+## Reproducing the experiments
+
+The five variants used these model directories (copies of the base model
+with `config.json` / `mistral.py` patched as appropriate):
+
+```bash
+# Base models are assumed already converted:
+#   ~/models/fg_mistral_7b      (Mistral-7B-v0.1, sliding_window=4096)
+#   ~/models/fg_llama_7b        (Llama-2-7B, no sliding window)
+
+# Mistral without sliding window
+cp -r ~/models/fg_mistral_7b ~/models/fg_mistral_7b_v_noslide
+python3 -c "
+import json
+p = '$HOME/models/fg_mistral_7b_v_noslide/config.json'
+c = json.load(open(p)); c['sliding_window'] = None
+json.dump(c, open(p, 'w'), indent=2); open(p, 'a').write('\n')
+"
+
+# Mistral + YaRN + no sliding window
+cp -r ~/models/fg_mistral_7b ~/models/fg_mistral_7b_v_yarn_noslide
+python3 -c "
+import json
+p = '$HOME/models/fg_mistral_7b_v_yarn_noslide/config.json'
+c = json.load(open(p))
+c['sliding_window'] = None
+c['rope_parameters'] = {
+    'rope_theta': 10000.0, 'rope_type': 'yarn',
+    'factor': 2.0, 'original_max_position_embeddings': 8192,
+    'beta_fast': 32, 'beta_slow': 1,
+}
+json.dump(c, open(p, 'w'), indent=2); open(p, 'a').write('\n')
+"
+
+# Llama-2-7B + YaRN
+cp -r ~/models/fg_llama_7b ~/models/fg_llama_7b_v_yarn
+python3 -c "
+import json
+p = '$HOME/models/fg_llama_7b_v_yarn/config.json'
+c = json.load(open(p))
+c['rope_parameters'] = {
+    'rope_theta': 10000.0, 'rope_type': 'yarn',
+    'factor': 4.0, 'original_max_position_embeddings': 4096,
+    'beta_fast': 32, 'beta_slow': 1,
+}
+json.dump(c, open(p, 'w'), indent=2); open(p, 'a').write('\n')
+"
+```
+
+Then train each variant (5 runs, 10 epochs, 16K context, `lr=5e-5`):
+
+```bash
+cd lovecraft_reference/finetune_lovecraft
+for pair in \
+    "0:fg_mistral_7b:lr5e5" \
+    "1:fg_mistral_7b_v_noslide:noslide_lr5e5" \
+    "3:fg_mistral_7b_v_yarn_noslide:yarn_noslide_lr5e5" \
+    "4:fg_llama_7b:llama_lr5e5" \
+    "5:fg_llama_7b_v_yarn:llama_yarn_lr5e5" ; do
+  IFS=':' read -r gpu model tag <<< "$pair"
+  PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    forgather -t long_context.yaml train \
+      --epochs 10 --dataset-config long_context_packed.yaml \
+      -M ~/models/${model} \
+      --output-dir ~/models/${model%/}_lovecraft_16k_${tag} \
+      --seq-len 16384 --window-size 16384 --batch-size 1 \
+      --attn-implementation sdpa --lr 5e-5 --log-name ${tag} \
+      -d ${gpu} -P &
+done
+wait
+```
+
+Then run the eval script pointing at the trained variants:
+
+```bash
+python3 long_context_eval.py \
+    --variant mistral_base:~/models/fg_mistral_7b:~/models/fg_mistral_7b_lovecraft_16k_lr5e5 \
+    --variant mistral_noslide:~/models/fg_mistral_7b_v_noslide:~/models/fg_mistral_7b_v_noslide_lovecraft_16k_noslide_lr5e5 \
+    --variant mistral_yarn_noslide:~/models/fg_mistral_7b_v_yarn_noslide:~/models/fg_mistral_7b_v_yarn_noslide_lovecraft_16k_yarn_noslide_lr5e5 \
+    --variant llama_base:~/models/fg_llama_7b:~/models/fg_llama_7b_lovecraft_16k_llama_lr5e5 \
+    --variant llama_yarn:~/models/fg_llama_7b_v_yarn:~/models/fg_llama_7b_v_yarn_lovecraft_16k_llama_yarn_lr5e5 \
+    --test-file hp_lovecraft/at_the_mountains_of_madness.txt \
+    --ppl-windows 2048,4096,8192,12288,16384 \
+    --per-position-max 16384 \
+    --gen-tokens 16384 \
+    --output-md lovecraft_eval.md
+```
+
+On 5 × RTX 4090 running in parallel, full training + eval takes roughly 6-8 hours.
