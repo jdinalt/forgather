@@ -77,9 +77,24 @@ Controls that have been run:
 
 Leading remaining hypotheses:
 
-1. **RoPE frequency resonance.**  With `rope_theta=10000` and `d_head=128`, the rotary dimension at index ~45 has a rotation period of approximately 4094 tokens (2π / 10000^(90/128)).  Every 4K positions the slow-rotating dim-45 phase returns to near its starting value, and if training caused this dimension to carry information the model treats as a structural cue, NLL could spike as that cue re-fires.
-2. **Training-data packing side-effect.**  Our training used `packed: True, packing_strategy: "greedy"` with max_length=16384.  The per-block document-start distribution is spread across 0-16K but has mild local clusters near 4K / 8K / 12K-ish positions.  The model may have learned an implicit "document-boundary at approximately every 4K" prior that does not fire at eval time when no boundary is present.
-3. **Something architectural we haven't identified yet.**  The phase-vs-content dependence argues against pure position-locking, and neither of the above fully explains the strong consistency across all five trained variants on matched content.
+1. **RoPE frequency resonance at 4096-token multiples (likely).**  With `rope_theta=10000` and `d_head=128`, the rotary frequency distribution places *many* consecutive dimensions (roughly dims 28 through 45) at periods that are integer-fraction harmonics of 4096:
+
+   | dim range | period (tokens) | alignment |
+   |-----------|----------------:|-----------|
+   | 28-29 | 353, 408 | 4096 / 10 or 11 |
+   | 30-31 | 471, 544 | 4096 / 8 or 9 |
+   | 32-33 | 628, 726 | 4096 / 6 or 7 |
+   | 34 | 838 | 4096 / 5 |
+   | 35-36 | 968, 1117 | 4096 / 4 |
+   | 37-38 | 1290, 1490 | 4096 / 3 |
+   | 40 | 1987 | 4096 / 2 |
+   | 45 | 4080 | **4096 / 1** |
+
+   At position 4096, all ~18 of these dimensions return to (near) their phase-0 angles simultaneously.  Same at 8192 and 12288.  This happens because the geometric distribution of RoPE inv-freqs ends up concentrating slow-frequency harmonics around periods that divide 4096 evenly -- a direct consequence of `base=10000` paired with token positions at powers of 2.  This resonance is an inherent property of default RoPE, not anything in Forgather.  Training presumably lets the model learn a distinctive signature of that phase configuration; at inference on a sequence without any content anchored to it, the response manifests as an NLL spike.  See the plot at `assets/rope_phase_alignment.png` for the full phase heatmap.
+2. **Training-data packing side-effect.**  Our training used `packed: True, packing_strategy: "greedy"` with max_length=16384.  The per-block document-start distribution is spread across 0-16K but has mild local clusters near 4K / 8K / 12K.  A contributing (though not sole) cause.
+3. **Interaction between (1) and (2).**  The model might learn to treat the RoPE-phase-0 configuration at 4K/8K/12K as a document boundary because training data roughly aligns boundaries there; on continuous eval sequences without boundaries, that learned signal has nowhere to attach and fires as an NLL spike.
+
+The RoPE resonance alone does *not* explain the phase-varies-by-story observation (different stories have different first-spike positions).  Resolving that would require matching the story's first 4K of token-content to some reference anchor -- possibly the BOS token, possibly something in the attention sinks (Xiao et al.) established by early tokens.  Full diagnosis is left as follow-up.
 
 **What the spike is NOT, based on the controls run:**
 - Not a sliding-window artifact (sliding-window config is not active in the SDPA path).
