@@ -23,7 +23,7 @@
 
 [optimizer]
     == super()
-    lr: 3.5e-6
+    lr: !!float {{ lr | default(3.5e-6) }}
 
 [dynamic_args]
     == super()
