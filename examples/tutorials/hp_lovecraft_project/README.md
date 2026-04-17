@@ -14,6 +14,10 @@ This tutorial walks through:
   reaches **~42K tokens on Mistral-7B and ~53K tokens on Llama-2-7B** on a
   single 24 GB card, and documents exactly how
 - Serving the resulting model and generating long-form Lovecraftian prose
+- **Making long-context generation actually work:** training at 16K isn't
+  enough to get coherent 16K generation -- see
+  [long_context_experiments.md](long_context_experiments.md) for YaRN, sliding-window,
+  and precision experiments across Mistral-7B and Llama-2-7B
 
 **Time required**: ~2-3 hours, depending on context length and epoch count.\
 **Hardware requirements**: One GPU with 24 GB of VRAM (RTX 3090, 4090, 5090).
@@ -668,3 +672,31 @@ Files worth looking at:
 - [`finetune_lovecraft/templates/project.yaml`](lovecraft_reference/finetune_lovecraft/templates/project.yaml) -- project defaults
 - [`finetune_lovecraft/templates/configs/1gpu/default.yaml`](lovecraft_reference/finetune_lovecraft/templates/configs/1gpu/default.yaml) -- 4K/single-GPU training
 - [`finetune_lovecraft/templates/configs/long_context.yaml`](lovecraft_reference/finetune_lovecraft/templates/configs/long_context.yaml) -- parametrised context-length training config, used to reproduce the memory table above
+
+## Long-context generation quality experiments
+
+Fitting a 16K-context training run into VRAM is only half the problem.  The
+other half is getting the trained model to *generate coherently at 16K*.
+[long_context_experiments.md](long_context_experiments.md) documents five
+Mistral / Llama variants (sliding-window on / off, YaRN on / off) trained at
+matched step counts and evaluated on a held-out 16K story.
+
+Headline findings:
+- **YaRN on Llama-2-7B reduces 16K perplexity by 30%** (29.7 → 20.5).
+  Llama-2-7B was pretrained at 4K, so any 16K use is extrapolation, and
+  YaRN's per-frequency-band rescaling directly addresses that.
+- **YaRN is neutral for Mistral** — it was pretrained at 32K, so a 16K
+  fine-tune isn't extrapolating in the first place.
+- **Mistral's sliding window is not the main limiter** for next-token
+  prediction quality at the token-level.  An early version of this
+  experiment suggested it was, but that was a step-mismatch artifact; with
+  step-matched training every variant shows the same story-content NLL
+  spikes at the same positions, regardless of attention pattern.
+- **The default tutorial LR of 3.5e-6 was severely under-trained.**  A
+  binary-search LR probe established 5e-5 as stable-and-effective for
+  Adafactor at this batch/seq size.  At 5e-5, loss plateaus around 2.0
+  instead of 5.3 in comparable step budgets.
+
+YaRN support was added to Forgather's rotary-embedding module as part of
+this work; enable it by setting `rope_type: "yarn"` in your model's
+`config.json`.
