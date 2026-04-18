@@ -75,26 +75,44 @@ Controls that have been run:
 - **Different story, same model**: spikes still 4096 apart but with a different phase offset.  **The position of the first spike depends on story content.**
 - **Both trained Mistral variants** (`sliding_window=4096` vs `sliding_window=null` in the config): show identical spike patterns.  Investigation showed the sliding-window config is dead code under the SDPA backend in Forgather's current attention wiring (it reads `config.window_size`, but the config field is `sliding_window`).  So the two "sliding-window" variants are architecturally identical and the 4K pattern is not sliding-window-induced.
 
-Leading remaining hypotheses:
+### RoPE resonance hypothesis — partially tested, not cleanly confirmed
 
-1. **RoPE frequency resonance at 4096-token multiples (likely).**  With `rope_theta=10000` and `d_head=128`, the rotary frequency distribution places *many* consecutive dimensions (roughly dims 28 through 45) at periods that are integer-fraction harmonics of 4096:
+An appealing hypothesis was that the geometric spacing of RoPE inv-freqs (with `rope_theta=10000`, `d_head=128`) places many consecutive dimensions at periods that divide 4096, producing a "phase alignment" at 4K multiples that the model learns as a structural cue.  The relevant dimensions:
 
-   | dim range | period (tokens) | alignment |
-   |-----------|----------------:|-----------|
-   | 28-29 | 353, 408 | 4096 / 10 or 11 |
-   | 30-31 | 471, 544 | 4096 / 8 or 9 |
-   | 32-33 | 628, 726 | 4096 / 6 or 7 |
-   | 34 | 838 | 4096 / 5 |
-   | 35-36 | 968, 1117 | 4096 / 4 |
-   | 37-38 | 1290, 1490 | 4096 / 3 |
-   | 40 | 1987 | 4096 / 2 |
-   | 45 | 4080 | **4096 / 1** |
+| dim range | period (tokens) | naive alignment with 4096 |
+|-----------|----------------:|---------------------------|
+| 28-29 | 353, 408 | 4096 / 10 or 11 |
+| 30-31 | 471, 544 | 4096 / 8 or 9 |
+| 32-33 | 628, 726 | 4096 / 6 or 7 |
+| 34 | 838 | 4096 / 5 |
+| 35-36 | 968, 1117 | 4096 / 4 |
+| 37-38 | 1290, 1490 | 4096 / 3 |
+| 40 | 1987 | 4096 / 2 |
+| 45 | 4080 | **4096 / 1** |
 
-   At position 4096, all ~18 of these dimensions return to (near) their phase-0 angles simultaneously.  Same at 8192 and 12288.  This happens because the geometric distribution of RoPE inv-freqs ends up concentrating slow-frequency harmonics around periods that divide 4096 evenly -- a direct consequence of `base=10000` paired with token positions at powers of 2.  This resonance is an inherent property of default RoPE, not anything in Forgather.  Training presumably lets the model learn a distinctive signature of that phase configuration; at inference on a sequence without any content anchored to it, the response manifests as an NLL spike.  See the plot at `assets/rope_phase_alignment.png` for the full phase heatmap.
-2. **Training-data packing side-effect.**  Our training used `packed: True, packing_strategy: "greedy"` with max_length=16384.  The per-block document-start distribution is spread across 0-16K but has mild local clusters near 4K / 8K / 12K.  A contributing (though not sole) cause.
-3. **Interaction between (1) and (2).**  The model might learn to treat the RoPE-phase-0 configuration at 4K/8K/12K as a document boundary because training data roughly aligns boundaries there; on continuous eval sequences without boundaries, that learned signal has nowhere to attach and fires as an NLL spike.
+These dimensions *individually* return to their phase-0 angle at 4096 multiples.  However, a closer analysis invalidates the simple version of the story: the summed RoPE similarity to the identity rotation, `sum_d cos(P * inv_freq_d)`, shows the top peaks at positions 580, 1189, 1835, 2445, 3261, 4348, 5020, 5798, 6696, 7733, 8940, ... -- **not at 4K multiples**.  Position 4096 itself has a negative similarity score (-3.38), meaning the RoPE vector there is anti-aligned with the origin, not aligned.  Position 4348 happens to be near ATMoM's 4352 spike, but the peak structure does not repeat at 4K spacing.
 
-The RoPE resonance alone does *not* explain the phase-varies-by-story observation (different stories have different first-spike positions).  Resolving that would require matching the story's first 4K of token-content to some reference anchor -- possibly the BOS token, possibly something in the attention sinks (Xiao et al.) established by early tokens.  Full diagnosis is left as follow-up.
+So:
+
+- **The per-dimension harmonics table above is true but misleading.**  Individual dims 28-45 do align at 4096, but the RoPE vector as a whole does *not* return to the identity rotation at 4K multiples -- other dimensions are in different phases.
+- **Phase alignment is a more general phenomenon than the 4K spikes.**  Strong alignment occurs at many positions (580, 1189, 1835, ...), but the NLL spikes are only at 4K multiples.  So alignment alone is not sufficient to cause spikes.
+- **The 4K-spike periodicity is unexplained** by the simple RoPE story.  The spike positions are still training-induced (absent on the untrained model), still content-phase-dependent (different offsets per story), and still exactly 4096 apart.
+
+### Experiments that would help invalidate the hypothesis
+
+To nail this down, the productive next steps are:
+
+1. **Vary `rope_theta` and retrain.**  If the spike spacing is set by dim-45's period, retraining with `rope_theta=8000` or `20000` should move the spikes proportionally.  If the spacing stays at 4096, RoPE is not the cause.
+2. **Llama-3 RoPE variant.**  Llama-3 uses `rope_theta=500000`, making dim-45's period roughly 63K tokens.  A fine-tune with Llama-3-style RoPE should show no 4K spikes at all within a 16K eval window.
+3. **Pack on randomised document-start offsets.**  The current packing puts document starts at content-determined positions.  Force document_starts at uniformly-random offsets during packing and retrain.  If the spikes disappear, they were induced by the packing geometry, not RoPE.
+4. **Train on a non-Lovecraft corpus at the same seq_len.**  Spikes that appear at identical absolute positions regardless of corpus argue for a position-anchored (RoPE / packing) cause.  Spikes at different positions argue for content-specific attention-sink effects.
+5. **Vary `max_position_embeddings` at fine-tune time.**  At 8K context, do spikes still happen at 4K or do they halve to 2K?  A spacing that tracks context length suggests something about packing or attention-window propagation; a spacing that stays at 4K points at a position-encoding or pretraining-induced cause.
+
+### Why 4K and not other powers of 2?
+
+Taking the user's observation seriously: if simple phase alignment caused spikes, we'd see them at many powers of 2 (1024, 2048, 4096, 8192, ...), not just 4096.  We don't -- spikes are *only* at 4K multiples.  This favours interpretations where 4K is special for some *non-generic* reason: Mistral's pretrain sliding-window was 4096, so the pretrained weights may encode features keyed to a 4K window.  Llama-2-7B's pretrain `max_position_embeddings` was 4096.  Both base models have "first-4K-only" experience from pretraining, and a 16K fine-tune may surface that as periodic NLL artefacts.
+
+Worth noting that this resonance / aliasing phenomenon shows up in many unrelated domains: timing-wheels in real-time systems, sampling artefacts in signal processing, etc.  A standard trick is to make all periods mutually prime so no two frequencies alias at any reachable position.  Substituting `inv_freq = 1 / prime[d]` (for a list of increasing primes) in RoPE would preserve the rough geometric spread but eliminate integer-ratio alignments -- plausibly worth trying as a future experiment.
 
 **What the spike is NOT, based on the controls run:**
 - Not a sliding-window artifact (sliding-window config is not active in the SDPA path).
