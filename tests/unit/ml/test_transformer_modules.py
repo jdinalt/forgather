@@ -695,6 +695,254 @@ class TestEagerScaledDotProductAttention(unittest.TestCase):
 
 
 # ===================================================================
+# ALiBi Attention Interface
+# ===================================================================
+
+
+class TestAlibiAttentionInterface(unittest.TestCase):
+    """Tests for the ALiBi attention backends in attention_interface.py.
+
+    We compare eager/sdpa/flex outputs (each of which adds ALiBi biases
+    differently) to verify they agree up to numerical precision, and verify
+    that gradients flow to trainable slopes under the flex path — which
+    uses a materialized (H, Q, KV) bias tensor as a workaround for a
+    PyTorch 2.10 performance issue where capturing a rank-1 trainable
+    tensor in `score_mod` pushes backward onto a slow codepath.
+    """
+
+    def setUp(self):
+        torch.manual_seed(42)
+        self.batch = 2
+        self.num_heads = 4
+        self.seq_len = 16
+        self.head_dim = 8
+
+    def _make_qkv(self, dtype=torch.float32, device="cpu", requires_grad=False):
+        q = torch.randn(
+            self.batch, self.num_heads, self.seq_len, self.head_dim,
+            dtype=dtype, device=device, requires_grad=requires_grad,
+        )
+        k = torch.randn(
+            self.batch, self.num_heads, self.seq_len, self.head_dim,
+            dtype=dtype, device=device, requires_grad=requires_grad,
+        )
+        v = torch.randn(
+            self.batch, self.num_heads, self.seq_len, self.head_dim,
+            dtype=dtype, device=device, requires_grad=requires_grad,
+        )
+        return q, k, v
+
+    def _default_slopes(self, device="cpu", dtype=torch.float32):
+        return 1.0 / torch.logspace(
+            0, self.num_heads - 1, self.num_heads, base=2, dtype=dtype, device=device
+        )
+
+    def test_eager_and_sdpa_agree_on_alibi_output(self):
+        """Eager and SDPA backends produce the same output for ALiBi+causal."""
+        from attention_interface import (
+            eager_attention_forward,
+            sdpa_attention_forward,
+        )
+
+        q, k, v = self._make_qkv()
+        slopes = self._default_slopes()
+
+        # Build a 4D causal float mask for eager/sdpa
+        causal = torch.triu(
+            torch.full((self.seq_len, self.seq_len), float("-inf")), diagonal=1
+        )
+        mask_4d = causal.view(1, 1, self.seq_len, self.seq_len)
+
+        scaling = 1.0 / math.sqrt(self.head_dim)
+
+        out_eager, _ = eager_attention_forward(
+            module=nn.Module(),
+            query=q, key=k, value=v,
+            attention_mask=mask_4d,
+            scaling=scaling,
+            alibi_slopes=slopes,
+        )
+        out_sdpa, _ = sdpa_attention_forward(
+            module=nn.Module(),
+            query=q, key=k, value=v,
+            attention_mask=mask_4d,
+            scaling=scaling,
+            alibi_slopes=slopes,
+        )
+
+        # eager returns (batch, seq, heads, d_head) after internal transpose
+        # sdpa does the same. Shapes should match.
+        self.assertEqual(out_eager.shape, out_sdpa.shape)
+        self.assertTrue(
+            torch.allclose(out_eager, out_sdpa, atol=1e-5, rtol=1e-4),
+            f"max diff: {(out_eager - out_sdpa).abs().max().item():.3e}",
+        )
+
+    def test_alibi_gradient_flows_to_slopes(self):
+        """With trainable slopes, backward through eager attention produces
+        non-zero grad on the slope tensor."""
+        from attention_interface import eager_attention_forward
+
+        q, k, v = self._make_qkv(requires_grad=True)
+        slopes = nn.Parameter(self._default_slopes())
+
+        causal = torch.triu(
+            torch.full((self.seq_len, self.seq_len), float("-inf")), diagonal=1
+        )
+        mask_4d = causal.view(1, 1, self.seq_len, self.seq_len)
+
+        out, _ = eager_attention_forward(
+            module=nn.Module(),
+            query=q, key=k, value=v,
+            attention_mask=mask_4d,
+            scaling=1.0 / math.sqrt(self.head_dim),
+            alibi_slopes=slopes,
+        )
+        out.pow(2).mean().backward()
+        self.assertIsNotNone(slopes.grad)
+        self.assertFalse(torch.isnan(slopes.grad).any())
+        self.assertGreater(slopes.grad.abs().sum().item(), 0.0)
+
+    def test_flex_split_bias_matches_closure_form(self):
+        """Regression guard for the ALiBi-flex perf fix.
+
+        The current trainable path uses distributivity to split the ALiBi
+        bias `slopes[h]*(kv-q)` into `bias_kv[h, kv] - bias_q[h, q]`,
+        which reduces captured-tensor memory from O(H*S^2) to O(H*S).
+        Mathematically it's identical to the naive closure form; this
+        test verifies equivalence on both forward output and the slope
+        gradient produced by backward.
+
+        Runs only when CUDA + flex_attention are available.
+        """
+        if not torch.cuda.is_available():
+            self.skipTest("flex_attention requires CUDA")
+        try:
+            from torch.nn.attention.flex_attention import (
+                create_block_mask,
+                flex_attention,
+            )
+        except ImportError:
+            self.skipTest("flex_attention not available")
+
+        device = "cuda"
+        dtype = torch.bfloat16
+
+        def causal(b, h, q, kv):
+            return q >= kv
+
+        block_mask = create_block_mask(
+            causal, B=None, H=None,
+            Q_LEN=self.seq_len, KV_LEN=self.seq_len, device=device,
+        )
+
+        slopes_init = self._default_slopes(device=device, dtype=torch.float32)
+        q = torch.randn(
+            self.batch, self.num_heads, self.seq_len, self.head_dim,
+            device=device, dtype=dtype,
+        )
+        k = torch.randn_like(q)
+        v = torch.randn_like(q)
+
+        # Closure form: slopes captured directly; correct but slow backward.
+        slopes_a = nn.Parameter(slopes_init.clone())
+        q1 = q.clone().requires_grad_(True)
+        k1 = k.clone().requires_grad_(True)
+        v1 = v.clone().requires_grad_(True)
+
+        def sm_closure(score, b, h, q_idx, kv_idx):
+            return score + slopes_a[h] * (kv_idx - q_idx)
+
+        out_closure = flex_attention(
+            q1, k1, v1, score_mod=sm_closure, block_mask=block_mask,
+            scale=1.0 / math.sqrt(self.head_dim),
+        )
+        out_closure.pow(2).mean().backward()
+
+        # Split form (current fix).
+        slopes_b = nn.Parameter(slopes_init.clone())
+        q2 = q.clone().requires_grad_(True)
+        k2 = k.clone().requires_grad_(True)
+        v2 = v.clone().requires_grad_(True)
+        pos = torch.arange(self.seq_len, device=device, dtype=torch.float32)
+        bias_kv = slopes_b.view(-1, 1) * pos.view(1, -1)
+        bias_q = slopes_b.view(-1, 1) * pos.view(1, -1)
+
+        def sm_split(score, b, h, q_idx, kv_idx):
+            return score + bias_kv[h, kv_idx] - bias_q[h, q_idx]
+
+        out_split = flex_attention(
+            q2, k2, v2, score_mod=sm_split, block_mask=block_mask,
+            scale=1.0 / math.sqrt(self.head_dim),
+        )
+        out_split.pow(2).mean().backward()
+
+        # Forward outputs should match to bf16 precision.
+        diff_out = (out_closure.float() - out_split.float()).abs().max().item()
+        self.assertLess(
+            diff_out, 1e-2,
+            f"closure and split-bias ALiBi forward diverge: max diff {diff_out:.3e}",
+        )
+
+        # Slope gradients should match to bf16 precision too. The gradient
+        # magnitude is ~0.1, so rtol of 1e-2 corresponds to atol ~1e-3.
+        diff_sl = (slopes_a.grad - slopes_b.grad).abs().max().item()
+        mag_sl = slopes_a.grad.abs().mean().item()
+        self.assertLess(
+            diff_sl, 1e-3,
+            f"closure and split-bias slope gradients diverge: "
+            f"max diff {diff_sl:.3e} (grad mag ~{mag_sl:.3e})",
+        )
+
+    def test_flex_attention_forward_runs_with_trainable_slopes(self):
+        """End-to-end sanity: flex_attention_forward with trainable slopes
+        runs forward and produces gradients on the slope tensor."""
+        if not torch.cuda.is_available():
+            self.skipTest("flex_attention requires CUDA")
+        try:
+            from torch.nn.attention.flex_attention import create_block_mask
+        except ImportError:
+            self.skipTest("flex_attention not available")
+
+        from attention_interface import flex_attention_forward
+
+        device = "cuda"
+        dtype = torch.bfloat16
+
+        def causal(b, h, q, kv):
+            return q >= kv
+
+        block_mask = create_block_mask(
+            causal, B=None, H=None,
+            Q_LEN=self.seq_len, KV_LEN=self.seq_len, device=device,
+        )
+
+        q = torch.randn(
+            self.batch, self.num_heads, self.seq_len, self.head_dim,
+            device=device, dtype=dtype, requires_grad=True,
+        )
+        k = torch.randn_like(q, requires_grad=True)
+        v = torch.randn_like(q, requires_grad=True)
+        slopes = nn.Parameter(self._default_slopes(device=device, dtype=torch.float32))
+
+        # Disable torch.compile for the test so it runs fast even in CI
+        # (steady-state perf is verified by the benchmark, not this test).
+        out, _ = flex_attention_forward(
+            module=nn.Module(),
+            query=q, key=k, value=v,
+            attention_mask=block_mask,
+            scaling=1.0 / math.sqrt(self.head_dim),
+            alibi_slopes=slopes,
+            compile_flex=False,
+        )
+        out.pow(2).mean().backward()
+
+        self.assertIsNotNone(slopes.grad)
+        self.assertFalse(torch.isnan(slopes.grad).any())
+        self.assertGreater(slopes.grad.abs().sum().item(), 0.0)
+
+
+# ===================================================================
 # Init Weights
 # ===================================================================
 
