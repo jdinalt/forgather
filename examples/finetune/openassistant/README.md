@@ -26,21 +26,12 @@ forgather -t 7b_4gpu.yaml train -M /path/to/model
 
 ## Test Trained Model Performance
 
-From examples/evaluate/eval
+Measure loss/perplexity on the OpenAssistant test split with `forgather eval`:
 
 ```bash
-# One GPU
-forgather train -M /path/to/model --dataset-proj ../../datasets/OpenAssistant/ \
---dataset-config openassistant_packed.yaml --batch-size 4 --dtype bfloat16 \
---attn-implementation flex_attention --max-length 4096 --max-steps 24
-
-# Two GPUs
-forgather -t pp_2gpu.yaml train -M /path/to/model --dataset-proj ../../datasets/OpenAssistant/ \
---dataset-config openassistant_packed.yaml --batch-size 8 --dtype bfloat16 \
---attn-implementation flex_attention --max-length 4096 --max-steps 12
-
-# Four GPUs
-forgather -t pp_2gpu.yaml train -M /path/to/model --dataset-proj ../../datasets/OpenAssistant/ \
---dataset-config openassistant_packed.yaml --batch-size 16 --dtype bfloat16 \
---attn-implementation flex_attention --max-length 4096 --max-steps 6
+forgather eval test openassistant -M /path/to/model --dtype bfloat16
 ```
+
+See [docs/guides/evaluating-models.md](../../../docs/guides/evaluating-models.md)
+for the full workflow (trainer choices, multi-GPU, pipeline parallelism, ...)
+and `forgather eval list` for the other shipped configs.

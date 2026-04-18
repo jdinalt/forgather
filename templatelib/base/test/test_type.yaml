@@ -1,0 +1,44 @@
+## Base template for evaluation configurations.
+##
+## An eval config is a pure metadata project: it names a dataset (project +
+## config) to evaluate on, plus defaults for batch size and max length. No
+## tokenizer, model, dataset, collator, or trainer is constructed here.
+##
+## The ``main`` output below materializes to a plain dict that maps 1:1 onto
+## the ``TestConfig`` dataclass in ``scripts/eval_script.py``. That script
+## loads the tokenizer directly from ``--model``, materializes the named
+## dataset project (passing ``max_length`` / ``stride`` as Jinja kwargs and
+## the tokenizer as a context var), builds the data collator in Python, and
+## hands everything to the chosen trainer (``ddp``, ``simple``, or
+## ``pipeline``).
+##
+## The only field the CLI reads from ``meta`` is ``config_class``
+## (``type.evaluation``), which is how ``forgather eval list/show`` discovers
+## these configs. Every other field — display name, dataset pointer,
+## defaults — lives in ``main`` and is the single source of truth.
+
+-- extends "config_type.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_class = "type.evaluation"
+    -- set ns.eval_name = ns.eval_name | default("")
+    ## -- set ns.eval_name = "my_test_dataset"
+
+[main_body]
+test_config: &test_config
+    eval_name: "{{ ns.eval_name }}"
+    dataset_target: "test_dataset"
+    name: "{{ ns.config_name }}"
+    description: "{{ ns.config_description }}"
+    ## **Required**
+    ## dataset_proj: /path/to/dataset/project
+    ## dataset_config: my_dataset_config.yaml
+    ## **Optional**
+    ## default_max_length: 2048
+    ## default_batch_size: 8
+    ## stride: 0
+
+[main_output]
+main: *test_config
+    

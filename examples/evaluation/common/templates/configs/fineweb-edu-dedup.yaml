@@ -1,0 +1,12 @@
+-- extends "test/test_type.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Eval: FineWeb-Edu-Dedup"
+    -- set ns.config_description = "Evaluate on the packed HuggingFaceTB/smollm-corpus fineweb-edu-dedup test split"
+    -- set ns.eval_name = "fineweb-edu-dedup"
+
+[main_body]
+    == super()
+    dataset_proj: "{{ abspath(joinpath(ns.forgather_dir, "examples", "datasets", "HuggingFaceTB")) }}"
+    dataset_config: "smollm-corpus/fineweb-edu-packed.yaml"

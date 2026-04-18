@@ -1,8 +1,20 @@
 """Compute summary statistics from training logs."""
 
+import math
 from typing import Any, Dict, Optional
 
 from .log_parser import TrainingLog
+
+
+def get_perplexity(value, metrics=None):
+    """Compute perplexity = exp(value), returning inf on overflow.
+
+    The metrics argument is accepted for compatibility with TBLogger transform signatures.
+    """
+    try:
+        return math.exp(value)
+    except OverflowError:
+        return float("inf")
 
 
 def compute_summary_statistics(log: TrainingLog) -> Dict[str, Any]:

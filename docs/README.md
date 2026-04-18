@@ -39,6 +39,7 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 - **[Creating a Dataset Project](guides/creating-a-dataset-project.md)** - Load, pack, and interleave HuggingFace datasets
 - **[Debugging Configuration Errors](guides/debugging.md)** - Systematic troubleshooting and common error patterns
 - **[Interactive CLI](guides/interactive-cli.md)** - Interactive shell with tab completion and editor integration
+- **[Evaluating Models](guides/evaluating-models.md)** - Loss/perplexity evaluation via `forgather eval`
 - **[Log Analysis](logs-analysis.md)** - Training log summaries, plots, and heatmaps
 
 ## Tutorials

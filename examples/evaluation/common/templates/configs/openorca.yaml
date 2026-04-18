@@ -1,0 +1,12 @@
+-- extends "test/test_type.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Eval: Open Orca"
+    -- set ns.config_description = "Evaluate on the packed Open-Orca test split"
+    -- set ns.eval_name = "openorca"
+
+[main_body]
+    == super()
+    dataset_proj: "{{ abspath(joinpath(ns.forgather_dir, "examples", "datasets", "Open-Orca")) }}"
+    dataset_config: "openorca-packed.yaml"

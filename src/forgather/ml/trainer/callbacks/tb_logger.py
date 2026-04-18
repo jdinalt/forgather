@@ -1,7 +1,7 @@
-import math
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from forgather.ml.analysis.metrics import get_perplexity
 from forgather.ml.trainer.logging import (
     _merge_spec_dicts,
     format_mapping,
@@ -10,13 +10,7 @@ from forgather.ml.trainer.logging import (
 
 from ..trainer_types import TrainerCallback
 
-
-def get_perplexity(value, metrics):
-    try:
-        pp = math.exp(value)
-    except OverflowError:
-        pp = float("inf")
-    return pp
+__all__ = ["get_perplexity", "TBLogger", "TBScalarSpec", "default_tb_scalars"]
 
 
 # ---------------------------------------------------------------------------

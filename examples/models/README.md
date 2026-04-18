@@ -89,7 +89,7 @@ can rebuild the model definition, load the old weights, and save them with the n
 # Rebuild model from sources, load an existing (compatible) checkpoint,
 # and save the checkpoint with the new model.
 forgather -t CONFIG_NAME model -r --device cpu --save-checkpoint --safetensors \
-    --load-from-checkpoint CHECKPOINT_PATH construct
+    --no-init-weights --output-dir path/to/save --load-from-checkpoint CHECKPOINT_PATH construct
 ```
 
 ### Output Options

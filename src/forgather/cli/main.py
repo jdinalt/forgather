@@ -82,6 +82,7 @@ def get_subcommand_registry():
     from .control_args import create_control_parser
     from .dataset_args import create_dataset_parser
     from .diloco_args import create_diloco_parser
+    from .eval_args import create_eval_parser
     from .logs_args import create_logs_parser
     from .model_args import create_model_parser
     from .plot_args import create_plot_parser
@@ -120,6 +121,7 @@ def get_subcommand_registry():
         "logs": create_logs_parser,
         "plot": create_plot_parser,
         "diloco": create_diloco_parser,
+        "eval": create_eval_parser,
     }
 
 
@@ -426,6 +428,10 @@ def main():
                 from .diloco import diloco_cmd
 
                 diloco_cmd(args)
+            case "eval":
+                from .eval import eval_cmd
+
+                eval_cmd(args)
             case _:
                 index_cmd(args)
     except SystemExit:
