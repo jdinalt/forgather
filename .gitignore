@@ -13,7 +13,10 @@ data
 .vscode
 settings.json
 !.claude/settings.json
-/examples/tutorials/hp_lovecraft_project
+# Extracted tarball contents + incidental histogram SVGs the dataset CLI
+# writes during standalone dataset runs.
+/examples/tutorials/hp_lovecraft_project/hp_lovecraft/
+/examples/tutorials/hp_lovecraft_project/lovecraft_reference/lovecraft_dataset/*.svg
 
 # Vim swap files
 *.swp

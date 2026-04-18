@@ -1,0 +1,18 @@
+-- extends 'project.yaml'
+
+## Single-GPU 4K-context default.  All of the real defaults (batch size,
+## token budget, memory knobs, compile off) live in project.yaml so that
+## sibling configs (e.g. 16k.yaml) inherit them without copying.  This
+## config just supplies the run's name.
+##
+## Override any of the following on the CLI:
+##   --seq-len N          sequence length (also the dataset block size)
+##   --batch-size N       per-device batch size
+##   --total-tokens N     token budget (millions), drives total_steps
+##   --lr X               base learning rate (auto-scaled by batch size)
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Lovecraft Default"
+    -- set ns.config_description = "Single-GPU 4K-context fine-tune on the Lovecraft corpus"
+    -- set ns.log_name = log_name | default("default")

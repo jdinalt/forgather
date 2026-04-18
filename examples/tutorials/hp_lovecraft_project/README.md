@@ -14,10 +14,12 @@ This tutorial walks through:
   reaches **~42K tokens on Mistral-7B and ~53K tokens on Llama-2-7B** on a
   single 24 GB card, and documents exactly how
 - Serving the resulting model and generating long-form Lovecraftian prose
-- **Making long-context generation actually work:** training at 16K isn't
-  enough to get coherent 16K generation -- see
-  [long_context_experiments.md](long_context_experiments.md) for YaRN, sliding-window,
-  and precision experiments across Mistral-7B and Llama-2-7B
+- Long-context generation quality experiments (YaRN, sliding window,
+  rope_theta sweeps) -- see
+  [long_context_experiments.md](long_context_experiments.md) for the
+  writeup and [4k_spike_investigation.md](4k_spike_investigation.md) for
+  the plumbing-gap story that took the headline numbers from "final" back
+  to "preliminary"
 
 **Time required**: ~2-3 hours, depending on context length and epoch count.\
 **Hardware requirements**: One GPU with 24 GB of VRAM (RTX 3090, 4090, 5090).
@@ -29,8 +31,13 @@ workspace is already checked in at `lovecraft_reference/`. Extract the
 corpus, download + convert the base model (next section), then:
 
 ```bash
+# 4K single-GPU default; ~30 min on a 24 GB card
 cd lovecraft_reference/finetune_lovecraft
-forgather train --epochs 3 -M ~/models/fg_mistral_7b -d 0
+forgather train -M ~/models/fg_mistral_7b -d 0
+
+# 16K long-context variant (requires extended tokenizer max_length, see below)
+forgather -t 16k.yaml train -M ~/models/fg_mistral_7b \
+    --attn-implementation sdpa -d 0
 ```
 
 The rest of this document explains how the reference was built, what each
@@ -202,14 +209,25 @@ etc.).
 Open `templates/configs/lovecraft.yaml` (in interactive mode: `edit`, then
 pick `lovecraft.yaml` from the menu).
 
-The stock config is almost right, but needs a few edits:
+The stock `sliding_window.yaml` uses `load_from_disk`; we have loose `.txt`
+files so we swap in `load_dataset`, point at the corpus directory, and
+switch the `block_tokenize_fn` over to the newer `preprocess_args`-based
+API so the *training* project can inject `max_length = seq_len` at runtime:
 
 ```yaml
+-- extends 'datasets/tokenized_dataset.yaml'
+
 [config_metadata]
     == super()
     -- set ns.config_name = "Lovecraft"
     -- set ns.config_description = "The complete works of H.P. Lovecraft"
     -- set ns.dataset_path = joinpath(project_dir, "../../hp_lovecraft")
+
+[map_function]
+.define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
+    max_length: {{ max_length | default(4096) }}
+    stride: {{ stride | default(0) }}
+    min_len: {{ min_length | default(1) }}
 
 [dataset_dict]
 dataset_dict: &dataset_dict !singleton:datasets:load_dataset
@@ -220,10 +238,68 @@ dataset_dict: &dataset_dict !singleton:datasets:load_dataset
         train: "*.txt"                           # train on all files
         validation: "the_call_of_cthulhu.txt"    # validate on this one
         test: "at_the_mountains_of_madness.txt"
+
+# Use a YAML merge to share the common dataset arguments across splits;
+# `fn_kwargs: !var "preprocess_args"` is the critical bit -- the training
+# project injects its `seq_len` through this variable at runtime.
+
+[train_dataset]
+train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
+    <<: &common_dataset_args
+        tokenizer: *tokenizer
+        fn_kwargs: !var { name: "preprocess_args", default: null }
+        map_fn: *map_function
+    dataset: *train_dataset_split
+    desc: "Tokenizing train"
+
+[eval_dataset]
+eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
+    <<: *common_dataset_args
+    dataset: *validation_dataset_split
+    desc: "Tokenizing validation"
+
+[test_dataset]
+test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
+    <<: *common_dataset_args
+    dataset: *validation_dataset_split
+    desc: "Tokenizing test"
+
+[dynamic_args]
+    == super()
+    dataset_path:
+        names: "--dataset-path"
+        type: path
+        help: "Local path to dataset"
+    max_length:
+        names: "--max-length"
+        type: "int"
+        help: "Maximum tokens per output block"
+    stride:
+        names: "--stride"
+        type: "int"
+        help: "Number of tokens to overlap between blocks"
+    min_length:
+        names: "--min-length"
+        type: "int"
+        help: "Minimum example length (tokens)"
 ```
 
 For simplicity, we validate on a file that is also in the training split.
 In a real run you would exclude it, but this keeps the tutorial small.
+
+The `max_length` template variable has two roles:
+
+- When the dataset is exercised standalone (e.g. `forgather -t lovecraft.yaml
+  dataset --max-length 4096 ...`), it takes its default `4096` unless the
+  `--max-length` CLI flag is supplied.
+- When the dataset is consumed by a finetune project, the parent's
+  `[datasets_preprocessor_args]` block passes `max_length` via the
+  `preprocess_args` runtime variable.  The `!var { name: "preprocess_args",
+  default: null }` spelling causes `fn_kwargs` to *override* the template
+  default at runtime, so the training `seq_len` wins when both are present.
+
+This two-way plumbing is what lets a single `lovecraft.yaml` power both
+standalone inspection and training at any `seq_len` the parent asks for.
 
 ### Test the configuration
 
@@ -245,41 +321,60 @@ construct --target dataset_dict
 dataset --target train_dataset_split -n 1
 ```
 
-Next, try the block tokenizer. It needs a tokenizer path (`-T`), a
-`--window-size` (tokens per block), and a `--stride` (token overlap
-between consecutive blocks). Small values make it easy to see what is
-happening:
+Next, try the block tokenizer. It needs a tokenizer path (`-T`), and
+optionally `--max-length` and `--stride`. Small values make it easy to
+see what is happening:
 
 ```bash
 dataset --target train_dataset \
     -T ~/models/fg_mistral_7b \
-    --window-size 64 --stride 8 -s -n 3
+    --max-length 64 --stride 8 -s -n 3
 ```
 
-### Add a 4K block-size config
+### Add a packed block-size config
 
-We will train with 4096-token blocks. Create a derived config so the
-settings stay in one place:
+For long-context training we want packed blocks (multiple short stories
+concatenated into each block, with document-start markers for the
+collator) rather than one-document-per-block. Create a derived config:
 
 ```bash
-project new_config 4k.yaml templates/configs/lovecraft.yaml
-edit                              # pick 4k.yaml
+project new_config lovecraft-packed.yaml templates/configs/lovecraft.yaml
+edit                              # pick lovecraft-packed.yaml
 ```
 
 Replace everything except the metadata with:
 
 ```yaml
--- extends 'configs/lovecraft.yaml'
+-- extends "configs/lovecraft.yaml"
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Lovecraft 4K"
-    -- set ns.config_description = "Lovecraft with 4K Blocks"
+    -- set ns.config_name = "Lovecraft Packed"
+    -- set ns.config_description = "Densely-packed Lovecraft blocks"
 
 [map_function]
 .define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
-    max_length: 4096
-    stride: 512
+    max_length: {{ max_length | default(4096) }}
+    stride: {{ stride | default(0) }}
+    packed: True
+    packing_strategy: "best_fit"
+    shuffle_output: True
+    min_len: {{ min_length | default(64) }}
+
+[train_dataset]
+    == super()
+    map_kwargs:
+        batch_size: 1000    # Larger batches let the packer find better fits.
+
+[eval_dataset]
+    == super()
+    map_kwargs:
+        batch_size: 1000
+
+[test_dataset]
+    == super()
+    map_kwargs:
+        batch_size: 1000
 ```
 
 Verify it parses and produces the expected distribution:
@@ -287,32 +382,22 @@ Verify it parses and produces the expected distribution:
 ```bash
 forgather ls
 # Lovecraft Dataset : The complete works of H.P. Lovecraft
-#     4k.yaml                        Lovecraft 4K : Lovecraft with 4K Blocks
+#     lovecraft-packed.yaml          Lovecraft Packed : Densely-packed Lovecraft blocks
 #     [lovecraft.yaml]               Lovecraft : The complete works of H.P. Lovecraft
 
 # Peek at a couple of tokenized blocks
-forgather -t 4k.yaml dataset --target train_dataset \
-    -T ~/models/fg_mistral_7b -s -n 2 | head
+forgather -t lovecraft-packed.yaml dataset --target train_dataset \
+    -T ~/models/fg_mistral_7b --max-length 4096 -s -n 2 | head
 
 # Token-length histogram (--tokenized / -s tells it the split is already
 # tokenised, so it reads `input_ids` instead of retokenising `text`).
-forgather -t 4k.yaml dataset --target train_dataset \
-    -T ~/models/fg_mistral_7b -s --histogram
+forgather -t lovecraft-packed.yaml dataset --target train_dataset \
+    -T ~/models/fg_mistral_7b --max-length 4096 -s --histogram
 ```
 
-Typical output:
-
-```
-sample size: 208
-min: 519
-max: 4096
-mean: 3491.60
-median: 4096.0
-```
-
-Most blocks hit the 4K cap; the short tail comes from end-of-story
-windows shorter than `window_size`. A histogram SVG is written next to
-the config.
+Packed blocks are tightly clustered just below the `max_length` cap -- the
+`best_fit` packer bundles short stories together to minimise padding
+waste. A histogram SVG is written next to the config.
 
 ## Create the Finetune Project
 
@@ -324,82 +409,173 @@ cd ..                 # back to the workspace root
 ```
 
 The finetune project is a separate project that reads examples from the
-dataset project. We start from Samantha's single-GPU Llama-7B config
-because it already wires up activation offloading, gradient
-checkpointing, and the fused loss kernel.
+dataset project. We build it on `projects/finetune_v2.yaml`, which extends
+`projects/lm_training_project.yaml`. Between them these templates give us:
+
+- A token-budget-driven step count (specify `total_tokens`, `warmup_tokens`,
+  `annealing_tokens` in millions; step counts are derived from sequence
+  length and batch size).
+- Automatic LR scaling from global batch size (power-law rule, sqrt scaling
+  by default).
+- A WSD (warmup-stable-decay) learning-rate scheduler with auto-triggered
+  annealing at `total_steps - annealing_steps`.
+- A text-generation eval callback that periodically samples from the model
+  during training so quality regressions are visible in TensorBoard.
+- Critically for this tutorial: `[datasets_preprocessor_args].max_length`
+  is wired to `ns.seq_len`, so the dataset's `block_tokenize_fn` really
+  receives the training sequence length -- no silent 4K defaults.
+
+Create an empty project and we'll fill in the template:
 
 ```bash
 forgather project create --name "Finetune Lovecraft" \
     --description "Finetune a model on the complete works of H.P. Lovecraft" \
-    --default-config 1gpu/default.yaml \
-    ../../../finetune/samantha/templates/configs/llama2_7b/1gpu_default.yaml
+    --default-config default.yaml
 
 cd finetune_lovecraft/
 forgather -i
 ```
 
-### Wire up the project template
+### Write the project template
 
-Samantha's default config depends on a project-level `samantha.yaml`.
-Copy that template in too -- `--type project` tells `new_config` that
-this goes into `templates/` directly, not `templates/configs/`:
+Create `templates/project.yaml` (inside the project, not in `configs/`).
+This is where we pin the dataset project, sensible defaults for the
+tutorial's token budget, and the LR-scheduler's auto-decay trigger:
 
 ```bash
-project new_config --type project project.yaml \
-    ../../../../finetune/samantha/templates/samantha.yaml
+project new_config --type project project.yaml
+edit                              # pick project.yaml
 ```
 
-You now have:
-- `templates/project.yaml` -- project-wide defaults
-- `templates/configs/1gpu/default.yaml` -- the single-GPU training config
-
-Edit `project.yaml` so it points at our dataset project instead of
-Samantha's:
+Contents:
 
 ```yaml
+-- extends 'projects/finetune_v2.yaml'
+
 [config_metadata]
     == super()
-    -- set ns.default_dataset_proj = joinpath(workspace_root, 'lovecraft_dataset')
-    -- set ns.default_dataset_config = "4k.yaml"
+    -- set ns.config_name = "Lovecraft Finetune"
+    -- set ns.config_description = "Fine-tune a causal LM on H.P. Lovecraft"
+
+    ## Dataset: point at the sibling dataset project in this workspace.
+    -- set ns.dataset_proj = joinpath(workspace_root, 'lovecraft_dataset')
+    -- set ns.dataset_config = dataset_config | default("lovecraft-packed.yaml")
+
+    ## Batching.  seq_len is threaded into the dataset's block_tokenize_fn
+    ## via [datasets_preprocessor_args].max_length, so blocks are really
+    ## this long.
+    -- set ns.seq_len = seq_len | default(4096)
+    -- set ns.per_device_train_batch_size = batch_size | default(1)
+
+    ## Token budget (millions).  ~7M tokens is roughly 10 epochs on the
+    ## 63-story corpus at 4K context.
+    -- set ns.total_tokens = total_tokens | default(7)
+
+    ## Compile: finetune_v2 defaults torch_compile=True with max-autotune,
+    ## which is memory-hungry.  Off by default for the 24 GB target.
+    -- set ns.torch_compile = compile | default(False)
+
+    ## Small corpus: log more often than the library defaults by scaling
+    ## ns.step_cadence (which multiplies base log/eval/save token intervals).
+    -- set ns.step_cadence = step_cadence | default(0.02)
+
+    ## LR annealing budget (millions of tokens).  WSDScheduler holds LR
+    ## constant until decay_start_step kicks in below.
+    -- set ns.annealing_tokens = annealing_tokens | default(10)
+
+    ## LR calibration (from an LR sweep on this project).  lm_training_project
+    ## scales ns.base_lr by (actual_tokens_per_step / ns.base_batch_size) ^
+    ## ns.lr_alpha (sqrt scaling by default), so a longer seq_len is
+    ## automatically given a proportionally larger LR.
+    -- set ns.base_lr = lr | default(5.0e-5)
+    -- set ns.base_batch_size = 4096
+
+    ## Lovecraft-flavoured prompts for the TextgenCallback.  Resolved from
+    ## project_dir so it's independent of the shell's CWD at training time.
+    -- set ns.eval_prompts_file = eval_prompts_file | default(abspath(joinpath(project_dir, "../../prompts/lovecraft_seeds.yaml")))
+    -- set ns.eval_max_new_tokens = eval_max_new_tokens | default(256)
+
+[globals]
+    == super()
+    ## Auto-decay trigger: WSD switches from stable -> decay at this step.
+    -- set ns.decay_start_step = [ns.warmup_steps, (ns.total_steps - ns.annealing_steps)] | max | int
+
+[variable_listing]
+    == super()
+# ns.decay_start_step: {{ ns.decay_start_step }}
+
+[trainer_args]
+    == super()
+    ## Single-GPU memory knobs.  Together these fit 7B + 16K context on
+    ## a 24 GB card; on larger cards they can be disabled for speed.
+    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
+    fuse_optim_with_backward: {{ fuse_optim_with_backward | default(True) }}
+    enable_activation_offloading: {{ activation_offloading | default(True) }}
+
+    ## finetune_v2 defaults max_steps = -1 (one epoch).  Rebind to ns.total_steps
+    ## so --total-tokens actually bounds training.
+    max_steps: {{ max_steps | toyaml(ns.total_steps) }}
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    decay_steps: {{ ns.annealing_steps }}
+    decay_start_step: {{ ns.decay_start_step }}
+    start_decay: {{ start_annealing | toyaml(False) }}
 ```
 
-Edit `configs/1gpu/default.yaml` and update its metadata + max_length so
-it matches our 4K dataset config:
+### Write the default training config
+
+Because `project.yaml` already holds the batch size, token budget, compile
+setting, and memory knobs, the per-config file is very thin -- it just
+names the run. Sibling configs (like the `16k.yaml` below) can inherit
+everything from `project.yaml` without copying it.
+
+```bash
+project new_config default.yaml        # create templates/configs/default.yaml
+edit                                    # pick default.yaml
+```
+
+Contents:
 
 ```yaml
 -- extends 'project.yaml'
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Finetune Lovecraft Default"
-    -- set ns.config_description = "Train with 4096 token context on single GPU, 24 GB"
-    -- set ns.log_name = "1gpu_4096"
-
-[trainer_args]
-    == super()
-    per_device_train_batch_size: 4
-    per_device_eval_batch_size: 6
-    gradient_checkpointing: True
-    fuse_optim_with_backward: True
-    enable_activation_offloading: True
-
-[datacollator]
-    == super()
-    max_length: 4096
-
-[optimizer]
-    == super()
-    lr: 3.5e-6           # rescaled for the smaller batch
+    -- set ns.config_name = "Lovecraft Default"
+    -- set ns.config_description = "Single-GPU 4K-context fine-tune on the Lovecraft corpus"
+    -- set ns.log_name = log_name | default("default")
 ```
+
+And the 16K sibling, which overrides only the sequence length:
+
+```yaml
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Lovecraft 16K"
+    -- set ns.config_description = "16K-context single-GPU fine-tune"
+    -- set ns.log_name = log_name | default("16k")
+    -- set ns.seq_len = seq_len | default(16384)
+```
+
+Add a matching `prompts/lovecraft_seeds.yaml` at the tutorial root
+(`../../prompts/lovecraft_seeds.yaml` from the finetune project, per the
+`ns.eval_prompts_file` path above).  The format is a YAML list of strings;
+see [`prompts/lovecraft_seeds.yaml`](prompts/lovecraft_seeds.yaml) for the
+reference's invented Lovecraftian openings.
 
 Verify:
 
 ```bash
 forgather ls
 # Finetune Lovecraft : Finetune a model on the complete works of H.P. Lovecraft
-#     [1gpu/default.yaml]            Finetune Lovecraft Default : Train with 4096 token context on single GPU, 24 GB
+#     [default.yaml]                 Lovecraft Default : Single-GPU 4K-context fine-tune on the Lovecraft corpus
 
-forgather pp               # inspect the fully-resolved config
+forgather pp                        # inspect the fully-resolved config
 ```
 
 ## Train
@@ -410,18 +586,31 @@ See what parameters the config accepts:
 train --help
 ```
 
+Key flags from `finetune_v2`:
+
+- `-M / --model-id-or-path` -- HF ID or local Forgather model directory.
+- `--total-tokens N` -- total training tokens (millions).
+- `--seq-len N` -- sequence length; passed through to the dataset as
+  `max_length`, so blocks are really this long.
+- `--batch-size N` -- per-device training batch size.
+- `--lr X` -- base learning rate (scaled by global batch size).
+- `--attn-implementation {flex_attention, sdpa, eager}`.
+
 Smoke-test first to confirm everything is wired correctly:
 
 ```bash
 train --max-steps 10 --save-strategy no \
-    -M ~/models/fg_mistral_7b -d 0
+    -M ~/models/fg_mistral_7b -d 1
 ```
 
-Then the real run (on an RTX 4090 the 4K config finishes 3 epochs in
-about 30 minutes with ~208 training blocks):
+(We pin the smoke test to `-d 1` so GPU 0 stays free for other work --
+adjust to whichever device you prefer.)
+
+Then the real run (on an RTX 4090 the 4K default finishes its ~7M-token
+budget in about 30 minutes):
 
 ```bash
-train --epochs 3 -M ~/models/fg_mistral_7b -d 0
+train -M ~/models/fg_mistral_7b -d 1
 ```
 
 Checkpoints land under `${FG_MODEL}/checkpoints/`; training logs under
@@ -466,26 +655,38 @@ Llama-7B's 32 heads, and the card can't absorb it on top of weights and
 saved activations. That's why the modern backends matter: they're the
 difference between "ceiling at 4K" and "ceiling at 50K+".
 
-A generic `long_context.yaml` is checked into the reference project with
-`--seq-len`, `--window-size`, and `--attn-implementation` as CLI args.
-Paired with `long_context_packed.yaml` (a packed-dataset variant so every
-token is real, not padding), you can reproduce the numbers above:
+A `16k.yaml` config is checked into the reference project as a long-context
+sibling of `default.yaml`. Because `finetune_v2` threads `ns.seq_len` all
+the way into the dataset's `block_tokenize_fn`, a single `--seq-len` flag
+reshapes both training and the packed dataset -- no separate dataset
+config toggle is needed:
 
 ```bash
 # From lovecraft_reference/finetune_lovecraft/
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-forgather -t long_context.yaml train \
+forgather -t 16k.yaml train \
     --max-steps 3 --save-strategy no \
-    --dataset-config long_context_packed.yaml \
     -M ~/models/fg_mistral_7b \
-    --seq-len 32768 --window-size 32768 --batch-size 1 \
     --attn-implementation sdpa \
-    -d 0 -P
+    -d 1
 ```
 
-`-P` / `--log-peak-memory` prints peak CUDA memory at each log step, which
-is the easiest way to find where your particular card starts rejecting
-allocations.
+To sweep context length from the default 16K upwards, just override
+`--seq-len`:
+
+```bash
+forgather -t 16k.yaml train \
+    --max-steps 3 --save-strategy no \
+    --seq-len 32768 \
+    -M ~/models/fg_mistral_7b \
+    --attn-implementation sdpa \
+    -d 1
+```
+
+At 32K+, `flex_attention` (the `finetune_v2` default) currently hits a
+tensor-stride assertion; force `sdpa` until that's investigated. At
+seq_len > 32768 on Mistral, also bump the tokenizer's `model_max_length`
+(see "Optional: extend the Mistral context limit" above).
 
 ### What actually pays off
 
@@ -615,12 +816,24 @@ forgather logs plot --loss-curves ~/models/fg_mistral_7b/runs/*/trainer_logs.jso
 
 ### Multiple GPUs / multiple nodes
 
-The Samantha tutorial's `llama2_7b/2gpu_pp.yaml`, `llama2_7b/4gpu_pp.yaml`,
-and `llama2_7b/fsdp2.yaml` configs transfer directly to this project --
-copy one into `templates/configs/`, swap the `extends` line to inherit
-from `project.yaml`, and you have a multi-GPU Lovecraft run. With
-pipeline parallel across 4 GPUs you can train Mistral at roughly 32K
-context with per-device batch size >1.
+`finetune_v2` exposes a `--trainer-type` CLI flag that selects between
+`basic` (single-GPU, the default), `ddp`, `fsdp2`, and `pipeline`. The
+same `default.yaml` / `16k.yaml` configs work across all of them; the
+training project reads `nproc_per_node` from the trainer class when
+launched. For example:
+
+```bash
+# 2-GPU DDP
+forgather -t default.yaml train -M ~/models/fg_mistral_7b \
+    --trainer-type ddp -d 1,2
+
+# Pipeline parallel across 4 GPUs (roughly 32K context at PBS > 1)
+forgather -t 16k.yaml train -M ~/models/fg_mistral_7b \
+    --trainer-type pipeline -d 1,2,3,4 \
+    --attn-implementation sdpa
+```
+
+See `docs/trainers/trainer_options.md` for the per-trainer option matrix.
 
 ### Alternative optimizers
 
@@ -631,18 +844,26 @@ At 7B scale your optimizer choices are thin, but a few are worth trying:
   `Adafactor(lr=..., decay_rate=-0.8)` for LLaMA-style decoupling.
 - **torchao 4-bit AdamW**: see `torchao.optim.AdamW4bit`. Fits AdamW-like
   adaptivity into roughly the same footprint as Adafactor. Works with
-  stochastic rounding via the `stochastic_rounding=True` kwarg. See the
-  `llama3_1b/ddp_adam4bit.yaml` config in the Samantha project for a
-  working example.
+  stochastic rounding via the `stochastic_rounding=True` kwarg.
 
-### Tune the schedule, not just the optimizer
+Override the optimizer by adding a `[optimizer]` block to a config that
+extends `default.yaml`:
 
-- The reference uses `warmup_steps: 50` and constant LR after. Try cosine
-  annealing by setting `cooldown_steps > 0` in the `lr_scheduler` block.
-  With ~200 blocks x 3 epochs that's a very short run -- warmup might
-  not even be worth it.
-- Log more frequently (`logging_steps: 2`) if you want a higher-resolution
-  loss curve to compare schedules.
+```yaml
+[optimizer]
+optimizer: &optimizer !partial:torchao.optim:AdamW4bit
+    lr: {{ ns.global_lr | toyaml }}
+    stochastic_rounding: True
+```
+
+### Tune the schedule
+
+`project.yaml` wires in a WSDScheduler that holds LR flat during the
+"stable" phase and anneals over the final `ns.annealing_tokens` tokens.
+The auto-decay trigger is derived from `ns.total_steps` and
+`ns.annealing_steps`; override the annealing budget via `--annealing-tokens`
+(millions), or force an early decay at any step with
+`forgather control save` followed by `--start-annealing` on resume.
 
 ### Push to Llama-2-7B for the highest context
 
@@ -664,39 +885,42 @@ dataset project reads its tokenizer from the model path.
 A fully-working copy of the workspace is at `lovecraft_reference/`.
 Files worth looking at:
 
-- [`lovecraft_dataset/templates/configs/lovecraft.yaml`](lovecraft_reference/lovecraft_dataset/templates/configs/lovecraft.yaml) -- the base dataset config
-- [`lovecraft_dataset/templates/configs/4k.yaml`](lovecraft_reference/lovecraft_dataset/templates/configs/4k.yaml) -- 4K block-size child config
-- [`lovecraft_dataset/templates/configs/32k.yaml`](lovecraft_reference/lovecraft_dataset/templates/configs/32k.yaml) -- 32K block-size child config
-- [`lovecraft_dataset/templates/configs/long_context.yaml`](lovecraft_reference/lovecraft_dataset/templates/configs/long_context.yaml) -- parametrised `--window-size` (non-packed)
-- [`lovecraft_dataset/templates/configs/long_context_packed.yaml`](lovecraft_reference/lovecraft_dataset/templates/configs/long_context_packed.yaml) -- densely-packed variant used for the memory table
-- [`finetune_lovecraft/templates/project.yaml`](lovecraft_reference/finetune_lovecraft/templates/project.yaml) -- project defaults
-- [`finetune_lovecraft/templates/configs/1gpu/default.yaml`](lovecraft_reference/finetune_lovecraft/templates/configs/1gpu/default.yaml) -- 4K/single-GPU training
-- [`finetune_lovecraft/templates/configs/long_context.yaml`](lovecraft_reference/finetune_lovecraft/templates/configs/long_context.yaml) -- parametrised context-length training config, used to reproduce the memory table above
+- [`lovecraft_dataset/templates/configs/lovecraft.yaml`](lovecraft_reference/lovecraft_dataset/templates/configs/lovecraft.yaml) -- base dataset config (non-packed; one document per block)
+- [`lovecraft_dataset/templates/configs/lovecraft-packed.yaml`](lovecraft_reference/lovecraft_dataset/templates/configs/lovecraft-packed.yaml) -- packed-block variant used for training (parametrised by `--max-length`)
+- [`finetune_lovecraft/templates/project.yaml`](lovecraft_reference/finetune_lovecraft/templates/project.yaml) -- extends `projects/finetune_v2.yaml`; pins the dataset project, the TextgenCallback prompts, and the WSDScheduler auto-decay trigger
+- [`finetune_lovecraft/templates/configs/default.yaml`](lovecraft_reference/finetune_lovecraft/templates/configs/default.yaml) -- 4K single-GPU fine-tune (memory-saving knobs enabled by default)
+- [`finetune_lovecraft/templates/configs/16k.yaml`](lovecraft_reference/finetune_lovecraft/templates/configs/16k.yaml) -- 16K-context single-GPU variant; override `--seq-len` for a broader context sweep
+- [`prompts/lovecraft_seeds.yaml`](prompts/lovecraft_seeds.yaml) -- invented Lovecraftian openings used by the TextgenCallback during training
 
 ## Long-context generation quality experiments
 
-Fitting a 16K-context training run into VRAM is only half the problem.  The
+Fitting a 16K-context training run into VRAM is only half the problem. The
 other half is getting the trained model to *generate coherently at 16K*.
 [long_context_experiments.md](long_context_experiments.md) documents five
-Mistral / Llama variants (sliding-window on / off, YaRN on / off) trained at
-matched step counts and evaluated on a held-out 16K story.
+Mistral / Llama variants (sliding-window on / off, YaRN on / off) and the
+investigation that led to discovering a plumbing gap in the pre-`finetune_v2`
+template stack.
 
-Headline findings:
-- **YaRN on Llama-2-7B reduces 16K perplexity by 30%** (29.7 → 20.5).
-  Llama-2-7B was pretrained at 4K, so any 16K use is extrapolation, and
-  YaRN's per-frequency-band rescaling directly addresses that.
-- **YaRN is neutral for Mistral** — it was pretrained at 32K, so a 16K
-  fine-tune isn't extrapolating in the first place.
-- **Mistral's sliding window is not the main limiter** for next-token
-  prediction quality at the token-level.  An early version of this
-  experiment suggested it was, but that was a step-mismatch artifact; with
-  step-matched training every variant shows the same story-content NLL
-  spikes at the same positions, regardless of attention pattern.
+**Caveat.**  The headline numbers in that document were produced on the
+pre-migration template, which didn't thread `--window-size` into the
+dataset tokenizer -- so every "16K training" was actually 4K-tokenized data
+padded/packed to 16K. `projects/finetune_v2.yaml` fixes this via
+`[datasets_preprocessor_args].max_length = ns.seq_len`. The apples-to-apples
+comparisons across variants (YaRN on/off, rope_theta sweep) remain valid,
+but the absolute PPL numbers need re-verification on a properly-plumbed
+run before being treated as definitive.
+
+What held up under the investigation:
+- **YaRN support** was added to Forgather's rotary-embedding module; enable
+  it by setting `rope_type: "yarn"` in a model's `config.json`.
 - **The default tutorial LR of 3.5e-6 was severely under-trained.**  A
   binary-search LR probe established 5e-5 as stable-and-effective for
-  Adafactor at this batch/seq size.  At 5e-5, loss plateaus around 2.0
-  instead of 5.3 in comparable step budgets.
+  Adafactor at this batch/seq size -- loss plateaus around 2.0 instead of
+  5.3 in comparable step budgets.
+- **Mistral's sliding window is dead code** under the SDPA backend (the
+  config field is `sliding_window`, the attention wiring read
+  `config.window_size`); both variants were architecturally identical.
+  Fixed in a separate commit.
 
-YaRN support was added to Forgather's rotary-embedding module as part of
-this work; enable it by setting `rope_type: "yarn"` in your model's
-`config.json`.
+See [`4k_spike_investigation.md`](4k_spike_investigation.md) for the full
+plumbing-gap writeup.

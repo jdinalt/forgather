@@ -1,10 +1,23 @@
 # H.P. Lovecraft fine-tunes: investigation of the 4K-periodic NLL spike
 
-This document is a live investigation log for the 4096-token-periodic per-token
+This document is the investigation log for the 4096-token-periodic per-token
 NLL spikes observed in all Lovecraft long-context fine-tunes.  See
-`long_context_experiments.md` for the parent experiment.  Findings are noted
-as they come in; some hypotheses are refuted here without being removed so the
-reasoning trail is visible.
+`long_context_experiments.md` for the parent experiment.
+
+**TL;DR.**  The spikes were a configuration artefact, not a model phenomenon.
+The tutorial's old `base_finetune_proj.yaml` template declared `--window-size`
+as a CLI flag but its `dataset_pp_kwargs` block only forwarded `chat_template`
+to the dataset project.  The block tokenizer therefore received the default
+`max_length=4096` regardless of what was passed on the command line.  Every
+"16K training" was 4K-tokenized data padded to 16K by the collator; the model
+learned a 4K block structure and reproduced it as periodic NLL spikes on
+continuous-text evaluation.  The fix was to migrate to `projects/finetune_v2.yaml`,
+which correctly threads `ns.seq_len` through `datasets_preprocessor_args.max_length`.
+
+The surviving reasoning trail below is kept because two earlier root-cause
+theories (packed-data document boundaries, RoPE resonance) looked plausible
+enough to be written up before the plumbing gap was found.  They are wrong;
+what ruled them out and what replaced them is described at the bottom.
 
 ## Observation
 
@@ -45,7 +58,7 @@ observations:
    `config.window_size` but the field is named `sliding_window`, so the
    create_sliding_window_causal_mask branch was never taken.  Both "with
    sliding" and "without sliding" variants were architecturally identical.
-   (Separately fixed -- see parent doc.)
+   (Separately fixed.)
 
 ### RoPE frequency resonance (refuted)
 
@@ -73,82 +86,141 @@ theta=500000, where the fundamental RoPE period (63866) is almost 4× the
 entire eval window, spikes still land at exactly 4K intervals.  RoPE is not
 the cause.
 
-## Confirmed cause: packed-data document-boundary distribution
+### Packed-data document-boundary distribution (refuted)
 
-![Packed vs non-packed NLL comparison](assets/spike_root_cause_packed_vs_nonpacked.png)
+A working hypothesis at one point was that the spikes came from the
+document-boundary statistics of the packed training data -- the Lovecraft
+corpus has a median story length near 4K tokens, so greedy packing into long
+blocks would concentrate `document_starts` near 4K multiples.  The model was
+assumed to be learning "attention resets every ~4K tokens" from these
+boundaries.  Supporting evidence at the time: non-packed training (single
+document per block, padded) showed a flat NLL profile with no 4K spikes.
 
-Context-length sweep (8K, 12K, 16K training with packed data) all show 4K
-spikes -- spike spacing is *not* set by training context length.  Even
-8K-context-trained models show spikes at positions 4224, 8320, 12672 on a
-16K evaluation sequence, despite never having seen positions beyond 8192
-during training.
+This theory is also wrong -- or rather, it was a correct description of the
+*symptom* but not the mechanism.  The real mechanism is below; the
+document-boundary statistics of the *4K-tokenized* data happened to align
+with the 4K spike pattern because the blocks were literally 4K tokens long.
 
-The decisive test was **non-packed training** (`packed: False`, each 16K
-block is one padded document with no mid-block document boundaries).  Its
-per-position NLL is *flat* (3.3-4.4 range, no local maxima) -- no 4K
-spikes.  Conclusion: the 4K-periodic pattern is introduced by packed
-training, specifically by the distribution of document boundaries in the
-packed data.
+## Actual cause: the `window_size` plumbing gap
 
-### Why exactly 4096 (for this corpus)?
+At this point the eval-side hypotheses had been exhausted; further progress
+required instrumenting the training-side to confirm what the model was
+*actually* being trained on.
 
-The Lovecraft corpus has median story length ≈ 4527 tokens.  31 of 63
-stories are in the 2K-6K range.  With greedy packing into 16K blocks, a
-typical block contains 3-4 stories and document boundaries concentrate
-around multiples of the median story length -- which for this corpus
-happens to be near 4K.  The "4K" is not an architectural constant; it is
-a property of the specific corpus.
+A single print in `block_tokenize_fn` settled it:
 
-During training, the data collator uses `document_starts` to build
-position_ids that reset at each document boundary.  The attention mask
-also confines each document's tokens to attend only within their own
-document.  The model learns "attention resets every ~4K tokens" as a
-feature of the training data.  At eval on a continuous story (no
-boundaries), the model still fires the learned reset expectation at ~4K
-multiples -- producing the NLL spikes.
+```
+block_tokenize_fn called: max_length=4096 packed=True ...
+```
 
-### What this explains
+...despite every training command passing `--window-size 16384`.  The
+training command line was accepting the flag without error, and the
+preprocessed config was showing `window_size: 16384`, but the value was never
+reaching the tokenizer.
 
-- **Untrained model**: no spikes -- hasn't seen packed training.
-- **Any `rope_theta`**: same spikes -- it's not RoPE.
-- **Any training context length**: same spikes -- it's not the training window.
-- **Non-packed training**: **no spikes** -- decisive.
-- **Phase varies by story**: spike position tracks where the learned
-  reset cadence aligns with the story's token stream.  Story-specific
-  phase is what you would expect from a learned expectation colliding
-  with unfamiliar content.
+Tracing back through the templates, the problem was in the old
+`templatelib/finetune/projects/base_finetune_proj.yaml`.  That template
+declared `window_size` as a dynamic CLI arg, but its `[dataset_pp_kwargs]`
+block only forwarded `chat_template` to the dataset project.  Nothing in the
+chain fed `ns.window_size` into the dataset's `block_tokenize_fn` call --
+so the tokenizer kept its built-in default of `max_length=4096`.
 
-### Implications
+At 16K sequence length, the data collator then padded each real 4K block out
+to 16K tokens.  Pre-packed data (most of this tutorial's experiments) was
+slightly different: 4K-tokenized blocks got concatenated into 16K blocks at
+collator time, but each 4K region came from a single `block_tokenize_fn`
+call with `max_length=4096`, which is exactly what creates the 4K structural
+cadence the model eventually learned.
 
-For long-context fine-tunes where coherent generation matters, the choice
-is between:
+The newer `projects/finetune_v2.yaml` + newer dataset API does this
+correctly: the training project sets `ns.seq_len`, which feeds into
+`[datasets_preprocessor_args]` under the `max_length` key, which the dataset
+template unpacks into `block_tokenize_fn`'s `max_length` kwarg.  After
+migrating the reference project, instrumenting the tokenizer again shows:
 
-1. **Packed training with corpus-aware spike**: efficient use of data
-   (~95% token utilisation) at the cost of periodic NLL artefacts tied to
-   the typical document length of the corpus.
-2. **Non-packed training**: smoother NLL profile but worse data
-   efficiency, since each block has one document plus padding.
-3. **Randomised-offset packing**: packed data with document boundaries
-   deliberately placed at uniformly random positions (not implemented
-   here).  Would keep the data efficiency while breaking the
-   deterministic 4K-periodic learned signal.
+```
+block_tokenize_fn called: max_length=16384 packed=True ...
+```
 
-For the Lovecraft headline YaRN result (30% PPL reduction at 16K on
-Llama-2-7B), the spike pattern is averaged over and doesn't affect the
-conclusion -- but it does mean the *local* NLL shape of packed-trained
-models is less usable as a diagnostic than it first appeared.
+which is what it should have been saying all along.
 
-### What this does *not* explain
+### Why this produces exactly-4K-periodic NLL spikes
 
-Why the spike has magnitude ~2-3 NLL (not smaller).  A single "expected
-reset" event at an attention-head level ought to be correctable through
-later forward compute.  Some understanding of why the model fails to
-recover quickly from the spurious-reset expectation (and whether it
-recovers at all past the spike) would be a useful follow-up -- probably
-requires inspection of which attention heads fire the periodic signal
-and whether the per-head contributions can be surgically disabled.
+With `max_length=4096` at tokenization time, every training block is a
+4K-token packed bundle of complete-or-truncated documents.  Whatever
+statistical structure the corpus has -- story boundaries, `<BOS>` tokens,
+long-range coreference decays -- it *repeats* every 4K tokens across
+training.  The model learns the joint of "token at position p within a 4K
+bundle" rather than the joint over a true 16K context.
 
-## Infrastructure
+At eval on a continuous 16K story, absolute positions 0..4095 look like
+familiar within-bundle positions and NLL is low.  Positions 4096..8191
+still look like within-bundle positions to the model's learned weights, but
+the *content* continues from the previous 4K smoothly -- which conflicts
+with the learned expectation that attention structure resets at each 4K
+boundary.  Peak NLL lands a few hundred tokens past each 4K boundary (4352,
+8448, 12544) because it takes a little content to wedge against the
+model's expectation; NLL then decays over the following 4K.
+
+### Why the story phase varies
+
+The model's learned expectation is "after N tokens of familiar within-bundle
+context, something structural happens."  The *exact* NLL peak inside each
+4K window is where story content first surprises the learned expectation --
+a content-dependent phase, which is why ATMoM peaks at 4352 and Charles
+Dexter Ward peaks at 2304.
+
+### Why non-packed training had no spikes
+
+Non-packed training produces one document per 4K block (padded), so the
+learned joint is effectively "token position within a single document,
+documents up to 4K long."  There is no periodic reset of content structure
+at 4K -- the content doesn't continue past the document end, it hits
+padding.  Evaluating on a continuous story doesn't trigger the same
+expectation-collision.
+
+This is consistent with the earlier observation that non-packed training
+had a flat NLL profile.  That observation was correct; the *interpretation*
+(packed document boundaries are the cause) was wrong.  The actual cause is
+the 4K tokenization window, which non-packed training exposes to the model
+as document-length-truncation rather than as a periodic boundary.
+
+### What the parent doc's experiments actually measured
+
+Every result in `long_context_experiments.md` was produced with
+`max_length=4096` at tokenization time, not the intended 16K.  What was
+being compared across variants (YaRN on/off, sliding-window on/off,
+rope_theta sweep, context-length sweep) is still a valid comparison of
+*fine-tunes on 4K-tokenized data evaluated at 16K*, because the plumbing
+gap affected every variant identically.  But the headline numbers should
+not be read as "what long-context fine-tuning buys you"; they are "what a
+4K fine-tune buys you when evaluated at 16K, with/without each
+intervention."
+
+See the parent doc for updated caveats.
+
+## Lessons
+
+- **Instrument the leaf, not the config.**  The preprocessed config
+  (`forgather pp`) looked right -- `window_size: 16384` was everywhere --
+  which made the plumbing gap invisible from the template side.  A
+  single print in `block_tokenize_fn` closed the investigation that
+  multiple months of hypothesis-testing couldn't.
+- **Template inheritance hides declarations.**  The old template accepted
+  `--window-size` without forwarding it, which is worse than rejecting
+  it: the user gets no error, and the config that was "obviously right"
+  silently runs on default data.  `finetune_v2.yaml` narrows the
+  declaration surface and explicitly passes `ns.seq_len` as
+  `max_length` in `datasets_preprocessor_args`, which is harder to
+  forget.
+- **Believe the unusual but consistent behaviour.**  Three spikes at
+  exactly 4096-token spacing, independent of rope_theta, context length,
+  model family, and variant, is not a subtle architectural resonance --
+  it is 4K shouting its existence at the evaluator.  The early "4K is
+  weirdly special" framing in the parent doc should have been read as a
+  hint that 4K was literally the block size, not an emergent property.
+
+## Infrastructure (archived)
 
 - `/tmp/run_theta_sweep_eval.sh` -- parallel eval across 5 GPUs
 - `/tmp/analyze_spikes.py` -- extract spike positions from eval reports

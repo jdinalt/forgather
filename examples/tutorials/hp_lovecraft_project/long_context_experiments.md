@@ -1,4 +1,21 @@
-# H.P. Lovecraft long-context experiments — final findings
+# H.P. Lovecraft long-context experiments — preliminary findings
+
+> **Important caveat (2026-04).**  Every experiment in this document was
+> produced with the tutorial's pre-`finetune_v2` template stack, which had a
+> plumbing gap: the training project exposed `--window-size` as a CLI flag
+> but never forwarded it into the dataset's `block_tokenize_fn`.  The
+> tokenizer therefore kept its default `max_length=4096` on every run,
+> regardless of the CLI argument.  "16K training" was actually 4K-tokenized
+> data, packed or padded to a 16K sequence by the data collator.
+>
+> What was being compared across variants -- YaRN on/off, sliding window
+> on/off, rope_theta sweep -- is still a valid *apples-to-apples* comparison,
+> because every variant hit the same plumbing gap.  But the absolute numbers
+> below are "what a 4K fine-tune does when evaluated at 16K", not "what a
+> real 16K fine-tune does."  The YaRN headline in particular should be
+> re-verified on a properly-plumbed 16K fine-tune before being treated as a
+> definitive claim.  See `4k_spike_investigation.md` for the plumbing-gap
+> write-up and how the newer `projects/finetune_v2.yaml` template closes it.
 
 ## Background: RoPE, extrapolation, and YaRN
 
@@ -50,7 +67,17 @@ Windowed perplexity at each context length, evaluated on the held-out "At the Mo
 
 llama_yarn wins at every context length.  The improvement over llama_base grows with length (12% at 2K, 30% at 16K), consistent with YaRN's mechanism: negligible effect on positions within the pretrained range, strong effect where the model would otherwise be extrapolating into uncalibrated position territory.
 
-## Per-position NLL: a 4096-periodic spike pattern — cause unknown
+## Per-position NLL: a 4096-periodic spike pattern
+
+**Resolved (2026-04).**  The spikes are a direct consequence of the
+4K-tokenized training data described in the caveat above.  The model learned
+a 4K "within-bundle" structure and reproduced it as periodic NLL spikes when
+evaluated on continuous text.  See `4k_spike_investigation.md` for the full
+walk-through of the hypotheses that were refuted before the plumbing gap was
+identified.
+
+The historical hypothesis chain below is preserved for reference; the text
+predates the plumbing-gap discovery.
 
 ![Per-position NLL across variants](assets/per_position_nll.png)
 
@@ -179,6 +206,14 @@ Total GPU-hours: ~30.  LR was 5e-5 throughout; the default tutorial LR of 3.5e-6
 - **`--lr` config-flow fix** in the tutorial's `long_context.yaml`.  Previously a hard-coded `lr: 3.5e-6` silently overrode the CLI arg.
 
 ## Reproducing the experiments
+
+> **Heads up.**  The commands below are preserved for reference but target
+> the *pre-migration* template stack (`long_context.yaml` +
+> `long_context_packed.yaml`), which is what produced the numbers in this
+> document.  Those configs have been removed from the reference project and
+> replaced with the `finetune_v2`-based `default.yaml` / `16k.yaml`
+> (finetune side) and `lovecraft-packed.yaml` (dataset side).  Adapt the
+> commands below to the new template names before re-running.
 
 The five variants used these model directories (copies of the base model
 with `config.json` / `mistral.py` patched as appropriate):

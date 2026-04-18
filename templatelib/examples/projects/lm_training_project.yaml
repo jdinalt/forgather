@@ -630,7 +630,7 @@ optimizer_groups: &optimizer_groups
         help: "Microbatch scale factor (pipeline trainer only)"
     gradient_checkpointing:
         names: [ "--gradient-checkpointing", "-G" ]
-        action: "store_true"
+        type: bool
         help: "Enable gradient (activation) checkpointing, when supported"
     fuse_optim_with_backward:
         names: "--fuse-optim-with-backward"

@@ -12,8 +12,9 @@ searchdir:
 
 -- block searchdir_common
     - "{{ joinpath(workspace_root, 'forgather_workspace') }}"
-    - "{{ joinpath(ns.templatelib_dir, 'base') }}"
     - "{{ joinpath(ns.templatelib_dir, 'finetune') }}"
+    - "{{ joinpath(ns.templatelib_dir, 'examples') }}"
+    - "{{ joinpath(ns.templatelib_dir, 'base') }}"
 -- endblock searchdir_common
 
 

@@ -1,0 +1,12 @@
+-- extends 'project.yaml'
+
+## Long-context variant.  Trains at 16K context on a single 24 GB GPU.
+## Inherits batch size, token budget, and memory knobs from project.yaml;
+## only the context length differs from `default.yaml`.
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Lovecraft 16K"
+    -- set ns.config_description = "16K-context single-GPU fine-tune"
+    -- set ns.log_name = log_name | default("16k")
+    -- set ns.seq_len = seq_len | default(16384)

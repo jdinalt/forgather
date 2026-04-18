@@ -1,5 +1,17 @@
 -- extends 'datasets/tokenized_dataset.yaml'
 
+## Base Lovecraft dataset configuration.  Loads all 63 stories as three
+## splits (train / validation / test) and tokenises them into blocks of
+## up to ``max_length`` tokens with optional overlap (``stride``).  This
+## config is non-packed: each block holds tokens from exactly one story.
+## For a denser packed variant see ``lovecraft-packed.yaml``.
+##
+## ``max_length`` is consumed as both a template default (for standalone
+## dataset CLI runs) and a runtime ``fn_kwargs`` entry (so a parent
+## project template -- e.g. ``projects/finetune_v2.yaml`` -- can inject
+## its training ``seq_len`` automatically).  The training-time value
+## wins when both are present.
+
 [config_metadata]
     == super()
     -- set ns.config_name = "Lovecraft"
@@ -8,8 +20,8 @@
 
 [map_function]
 .define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
-    max_length: {{ window_size | default(512)}}
-    stride: {{ stride | default(64) }}
+    max_length: {{ max_length | default(4096) }}
+    stride: {{ stride | default(0) }}
     min_len: {{ min_length | default(1) }}
 
 [dataset_dict]
@@ -32,7 +44,7 @@ validation_dataset_split: &validation_dataset_split !call:getitem [ *dataset_dic
 train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
     <<: &common_dataset_args
         tokenizer: *tokenizer
-        fn_kwargs: !var "preprocess_args"
+        fn_kwargs: !var { name: "preprocess_args", default: null }
         map_fn: *map_function
     dataset: *train_dataset_split
     desc: "Tokenizing train"
@@ -55,10 +67,10 @@ test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@
         names: "--dataset-path"
         type: path
         help: "Local path to dataset"
-    window_size:
-        names: "--window-size"
+    max_length:
+        names: "--max-length"
         type: "int"
-        help: "Sliding window block-size (tokens)"
+        help: "Maximum tokens per output block"
     stride:
         names: "--stride"
         type: "int"
