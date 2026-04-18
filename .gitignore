@@ -13,6 +13,7 @@ data
 .vscode
 settings.json
 !.claude/settings.json
+/examples/tutorials/hp_lovecraft_project
 
 # Vim swap files
 *.swp
