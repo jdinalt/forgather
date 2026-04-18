@@ -179,8 +179,12 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
                     process_group=self.ddp_group,
                 )
 
-        assert self.optimizer is not None
-        if self.args.post_local_sgd.enabled:
+        # Optimizer is only required for training. When running under
+        # ``trainer.evaluate()`` alone, ``do_train`` is False and no optimizer
+        # is constructed, which is fine — we just need the DDP wrapping above.
+        if self.do_train:
+            assert self.optimizer is not None
+        if self.do_train and self.args.post_local_sgd.enabled:
             logger.info(f"Enabling post-local-SGD: {self.args.post_local_sgd}")
             self.post_local_sgd_state = PostLocalSGDState(
                 process_group=self.ddp_group,
