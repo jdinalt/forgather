@@ -80,13 +80,11 @@ model: &model !call:getitem [ *model_dict, 'model' ]
 optimizer: &optimizer !partial:torch:optim.AdamW
     lr: 1.0e-3
 
-## Override the default LR Scheduler
+## Override the default LR Scheduler (None) with cosine-decay
 [lr_scheduler]
-# https://arxiv.org/html/2503.02844v1
-lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim:CosineLRScheduler@lr_scheduler
     warmup_steps: 500
-    cooldown_steps: 50000
-    constant_lr: 1.0e-6
+    total_steps: 65000 # This is roughly one epoch on the full Tiny Stories dataset
 
 [datacollator]
     == super()
