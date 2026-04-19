@@ -1247,9 +1247,13 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             while True:
                 self.control.should_epoch_stop = False
                 if self.args.set_dataset_epoch and self.state.raw_epoch > 0:
-                    # If supported, reshuffle dataset at the start of each epoch
-                    logger.debug(f"Setting dataset epoch {self.state.raw_epoch}")
-                    self.train_dataloader.dataset.set_epoch(self.state.raw_epoch)  # type: ignore[union-attr]
+                    # If supported, reshuffle dataset at the start of each epoch.
+                    # Datasets without set_epoch (e.g. standard HF Dataset) are
+                    # silently skipped rather than crashing mid-training.
+                    dataset = self.train_dataloader.dataset  # type: ignore[union-attr]
+                    if hasattr(dataset, "set_epoch"):
+                        logger.debug(f"Setting dataset epoch {self.state.raw_epoch}")
+                        dataset.set_epoch(self.state.raw_epoch)
                 data_iterator = iter(self.train_dataloader)
                 self._dispatch_event("on_epoch_begin")
 
