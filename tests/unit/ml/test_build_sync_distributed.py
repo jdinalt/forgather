@@ -12,6 +12,9 @@ Usage:
     # Test with local process group (per-node sync)
     torchrun --nproc_per_node 4 --standalone tests/unit/ml/test_build_sync_distributed.py --local
 """
+# Mark this module as a torchrun-only script, not a pytest test module
+__test__ = False
+
 import argparse
 import os
 import sys
