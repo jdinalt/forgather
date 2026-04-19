@@ -85,7 +85,7 @@ def causal_mask(
     mask_fn = create_sliding_window_causal_mask if window_size else create_causal_mask
     attention_mask = mask_fn(
         config=config,
-        input_embeds=input_embeds,
+        inputs_embeds=input_embeds,
         attention_mask=attention_mask,
         cache_position=cache_position,
         past_key_values=past_key_values,
