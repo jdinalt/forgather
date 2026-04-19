@@ -10,8 +10,8 @@ class PeriodicFunction:
         epoch_period: int,
         first_step=0,
     ):
-        if period < 1:
-            period = 1
+        assert period > 0, "period must be positive"
+        assert epoch_period > 0, "epoch_period must be positive"
         # Present global step
         self.global_step = global_step
 
@@ -28,7 +28,6 @@ class PeriodicFunction:
             case "steps":
                 self.period = period
             case "epoch":
-                assert epoch_period > 0
                 self.period = epoch_period
             case _:
                 raise ValueError(f"Unknown strategy: {strategy}")
