@@ -982,6 +982,26 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
         return files
 
+    def _local_to_global_file_idx(self, local_file_idx: int) -> int:
+        """
+        Map an iteration-local file index to the global index used by
+        ``self.file_lengths`` and ``self._shuffled_lengths``.
+
+        Iteration walks the shard-filtered list from ``_get_files_for_shard``,
+        but cached length arrays parallel the full (possibly shuffled) file
+        list. Under file-level sharding the filtered list keeps every Nth
+        entry (N=num_shards, starting at shard_index), so local index k
+        corresponds to global index ``shard_index + k * num_shards``.
+        """
+        if self._shard_config is None:
+            return local_file_idx
+        shard_mode = self._shard_config[2] if len(self._shard_config) >= 3 else "file"
+        if shard_mode == "file":
+            num_shards, shard_index = self._shard_config[0], self._shard_config[1]
+            return shard_index + local_file_idx * num_shards
+        # Example-level sharding doesn't filter files, local == global.
+        return local_file_idx
+
     @staticmethod
     def _get_worker_info():
         # Get worker info for multi-worker DataLoader support
@@ -1218,16 +1238,20 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         Get length of Arrow file, using cache if available.
 
         Args:
-            file_idx: Index of file in files list
+            file_idx: Iteration-local index into the shard-filtered files list
+                (``_get_files_for_shard``). Translated to the global index
+                used by the cached length arrays via
+                ``_local_to_global_file_idx``.
             arrow_file: Path to Arrow file
 
         Returns:
             (file_len, file_len_cached): Length and whether it came from cache
         """
+        global_idx = self._local_to_global_file_idx(file_idx)
         if self._shuffled_lengths:
-            return self._shuffled_lengths[file_idx], True
+            return self._shuffled_lengths[global_idx], True
         elif self.file_lengths:
-            return self.file_lengths[file_idx], True
+            return self.file_lengths[global_idx], True
         else:
             # No cached length - must load file to get it
             ds = Dataset.from_file(arrow_file)
@@ -1258,10 +1282,13 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
             # Skip entire file, but track global position
             if use_virtual_split or use_example_sharding:
                 # Use cached file lengths instead of loading file (FAST!)
+                # file_idx is iteration-local; translate to the global index
+                # used by the cached length arrays.
+                global_idx = self._local_to_global_file_idx(file_idx)
                 if self._shuffled_lengths:
-                    file_len = self._shuffled_lengths[file_idx]
+                    file_len = self._shuffled_lengths[global_idx]
                 elif self.file_lengths:
-                    file_len = self.file_lengths[file_idx]
+                    file_len = self.file_lengths[global_idx]
                 else:
                     # Fallback: must load file to get length (rare case)
                     ds = Dataset.from_file(arrow_file)
