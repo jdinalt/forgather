@@ -280,11 +280,11 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
         torch.manual_seed(42)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def _create_test_model(self, hidden_dim=256, vocab_size=1000):
+    def _create_test_model(self, hidden_dim=256, vocab_size=1000, bias=True):
         """Create a simple output embeddings layer for testing."""
         import torch.nn as nn
 
-        output_layer = nn.Linear(hidden_dim, vocab_size, bias=True, device=self.device)
+        output_layer = nn.Linear(hidden_dim, vocab_size, bias=bias, device=self.device)
         return output_layer
 
     def _create_test_data(
@@ -424,7 +424,7 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
         except ImportError:
             self.skipTest("cut-cross-entropy not installed")
 
-        output_layer = self._create_test_model()
+        output_layer = self._create_test_model(bias=False)
         loss_fn = LinearCrossEntropyLoss(output_layer, impl="cce")
 
         self.assertEqual(loss_fn.actual_impl, "cce")
@@ -500,6 +500,7 @@ class TestSoftcappedLoss(unittest.TestCase):
 
     def _make_softcapped(self, hidden_dim, vocab_size, softcap):
         import sys
+
         sys.path.insert(0, "/home/dinalt/code/forgather/modelsrc/transformer")
         from softcapped_linear import SoftcappedLinear
 
@@ -537,6 +538,7 @@ class TestSoftcappedLoss(unittest.TestCase):
     def test_softcapped_linear_none_matches_nn_linear(self):
         """With softcap=None, SoftcappedLinear output must match nn.Linear exactly."""
         import sys
+
         sys.path.insert(0, "/home/dinalt/code/forgather/modelsrc/transformer")
         from softcapped_linear import SoftcappedLinear
 
@@ -552,6 +554,7 @@ class TestSoftcappedLoss(unittest.TestCase):
     def test_softcapped_linear_applies_cap(self):
         """With softcap set, output must equal softcap * tanh(raw / softcap)."""
         import sys
+
         sys.path.insert(0, "/home/dinalt/code/forgather/modelsrc/transformer")
         from softcapped_linear import SoftcappedLinear
 
@@ -600,9 +603,7 @@ class TestSoftcappedLoss(unittest.TestCase):
         loss_fn = LinearCrossEntropyLoss(lm_head, impl="pytorch", chunk_size=64)
         fused_loss = loss_fn(hidden, labels)
 
-        torch.testing.assert_close(
-            fused_loss.float(), ref_loss, rtol=1e-4, atol=1e-4
-        )
+        torch.testing.assert_close(fused_loss.float(), ref_loss, rtol=1e-4, atol=1e-4)
 
     def test_pytorch_backend_softcap_none(self):
         self._assert_pytorch_matches_reference(softcap=None)
@@ -618,9 +619,7 @@ class TestSoftcappedLoss(unittest.TestCase):
         lm_head = self._make_softcapped(hidden_dim, vocab_size, self.SOFTCAP)
         hidden, labels = self._make_data(hidden_dim=hidden_dim)
 
-        ref_loss = self._reference_loss(
-            hidden, labels, lm_head.weight, self.SOFTCAP
-        )
+        ref_loss = self._reference_loss(hidden, labels, lm_head.weight, self.SOFTCAP)
 
         for chunk_size in (32, 64, 128, 256):
             loss_fn = LinearCrossEntropyLoss(
@@ -640,9 +639,9 @@ class TestSoftcappedLoss(unittest.TestCase):
         from forgather.ml.loss import LinearCrossEntropyLoss
 
         hidden_dim, vocab_size = 64, 256
-        lm_head = self._make_softcapped(
-            hidden_dim, vocab_size, self.SOFTCAP
-        ).to(torch.bfloat16)
+        lm_head = self._make_softcapped(hidden_dim, vocab_size, self.SOFTCAP).to(
+            torch.bfloat16
+        )
         hidden, labels = self._make_data(hidden_dim=hidden_dim)
         hidden_bf16 = hidden.to(torch.bfloat16)
 
@@ -667,9 +666,9 @@ class TestSoftcappedLoss(unittest.TestCase):
         from forgather.ml.loss import LinearCrossEntropyLoss
 
         hidden_dim, vocab_size = 64, 256
-        lm_head = self._make_softcapped(
-            hidden_dim, vocab_size, self.SOFTCAP
-        ).to(torch.bfloat16)
+        lm_head = self._make_softcapped(hidden_dim, vocab_size, self.SOFTCAP).to(
+            torch.bfloat16
+        )
         hidden, labels = self._make_data(hidden_dim=hidden_dim)
         hidden_bf16 = hidden.to(torch.bfloat16)
 

@@ -326,7 +326,7 @@ class LinearCrossEntropyLoss:
             )
 
         if impl == "auto":
-            if self.bias:
+            if self.bias is not None:
                 # Only pytorch support bias at present
                 candidates = ["pytorch"]
             else:
@@ -355,7 +355,7 @@ class LinearCrossEntropyLoss:
             )
 
         elif impl == "cce":
-            assert not self.bias, "Bias is not supported by CCE v25.1.1"
+            assert self.bias is None, "Bias is not supported by CCE v25.1.1"
 
             try:
                 # Detect which kwargs the installed version supports by
