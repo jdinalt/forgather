@@ -27,11 +27,21 @@ class SynchronizedDataLoader:
     This prevents deadlocks when dataset shards have uneven lengths.
 
     Synchronization strategy:
-    At the start of each iteration, all ranks exchange their dataloader lengths
-    via a single all_reduce(MIN).  Each rank then iterates for exactly that
-    many batches with zero per-step synchronization.  This avoids the GPU-CPU
-    sync (.item()) that would break the CUDA pipeline and force the GPU idle
-    while the CPU prepares the next batch.
+    Per-step all_reduce(MIN) on a small int32 "has_batch" flag. All ranks
+    continue only while every rank successfully fetched a batch; as soon as
+    any rank's underlying iterator raises StopIteration, every rank stops
+    together on the same iteration. To keep the overhead small, the next
+    batch is prefetched and the next all_reduce is launched *before* yielding,
+    so the .item() at the top of the loop typically overlaps with the
+    caller's forward/backward and doesn't stall the CUDA pipeline.
+
+    This replaces an earlier design that did a single upfront all_reduce(MIN)
+    on len(dataloader) and then iterated that many steps with zero per-step
+    sync. That was fragile because len() on iterable datasets is an estimate:
+    when the real length drifted below the estimate on one rank, that rank
+    would StopIteration early and move on to end-of-training collectives
+    while the other ranks were still doing DDP gradient all-reduces, causing
+    a cross-op NCCL hang.
 
     Usage:
         train_dataloader = SynchronizedDataLoader(
@@ -75,44 +85,52 @@ class SynchronizedDataLoader:
             yield from self._dataloader
             return
 
-        # Determine the minimum length across all ranks with a single
-        # all_reduce at the start of iteration.  This avoids a per-step
-        # GPU-CPU sync (.item()) that would break the CUDA pipeline.
-        local_len = len(self._dataloader)
-        len_tensor = torch.tensor(local_len, dtype=torch.int64, device=self._device)
-        dist.all_reduce(len_tensor, op=dist.ReduceOp.MIN, group=self._process_group)
-        min_len = int(len_tensor.item())
-
-        if min_len != local_len:
-            logger.debug(
-                f"SynchronizedDataLoader: local length {local_len}, "
-                f"global min {min_len} (dropping {local_len - min_len} batches)"
-            )
-
         iterator = iter(self._dataloader)
-        for _ in range(min_len):
+        # Reused GPU-side int32 scalar for the per-step MIN reduction.
+        has_batch = torch.zeros(1, dtype=torch.int32, device=self._device)
+
+        def prefetch():
+            """Fetch next batch from the local iterator; fill has_batch flag."""
             try:
-                batch = next(iterator)
+                b = next(iterator)
+                has_batch.fill_(1)
+                return b
             except StopIteration:
-                # Underlying dataloader exhausted before reaching min_len.
-                # `min_len` is computed from len(dataloader) at the start of
-                # iteration; for iterable datasets with a dynamic length
-                # estimator the real length can drift below the estimate,
-                # in which case next() raises StopIteration here. Letting
-                # that StopIteration propagate would violate PEP 479 -- this
-                # method is a generator, and a StopIteration raised inside
-                # a generator body is converted to `RuntimeError: generator
-                # raised StopIteration` by the interpreter -- bypassing the
-                # trainer's end-of-training save path. Instead, `return`
-                # cleanly so the outer `for batch in loader` loop sees a
-                # normal iteration end.
-                logger.warning(
-                    "SynchronizedDataLoader: underlying dataloader exhausted "
-                    "before reaching the all-ranks minimum length "
-                    f"({min_len}); returning early."
-                )
+                has_batch.fill_(0)
+                return None
+
+        # Prefetch first batch and launch the first MIN all_reduce so that
+        # the .item() at the top of the loop can overlap with the caller's
+        # compute on subsequent iterations.
+        batch = prefetch()
+        dist.all_reduce(has_batch, op=dist.ReduceOp.MIN, group=self._process_group)
+
+        while True:
+            # Block until the previously-launched all_reduce has completed.
+            # For all steps after the first, this is typically cheap: the
+            # all_reduce was launched before the last yield, and the caller
+            # has since run forward+backward, so the result is already here.
+            if has_batch.item() == 0:
+                if batch is not None:
+                    # This rank had a batch prefetched but at least one
+                    # peer rank is exhausted. Drop it to stay in lockstep.
+                    logger.warning(
+                        "SynchronizedDataLoader: another rank exhausted "
+                        "before this one; dropping 1 prefetched local batch "
+                        "to keep all ranks aligned."
+                    )
                 return
-            yield batch
+
+            current = batch
+
+            # Prefetch the next batch and launch the next MIN all_reduce
+            # BEFORE yielding, so the collective overlaps with the caller's
+            # compute. On the next loop iteration, has_batch.item() just
+            # reads an already-completed value.
+            batch = prefetch()
+            dist.all_reduce(has_batch, op=dist.ReduceOp.MIN, group=self._process_group)
+
+            yield current
 
     def __len__(self):
         """Return length of underlying dataloader (may differ across ranks!)."""

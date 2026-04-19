@@ -1,12 +1,16 @@
 """
 Tests for SynchronizedDataLoader.
 
-Focused regression tests for the StopIteration → PEP 479 conversion bug
-that caused an open-orca run to crash without a final checkpoint save:
-`yield next(iterator)` inside the __iter__ generator leaked StopIteration
-out of the generator body, which Python 3.7+ converts to `RuntimeError:
-generator raised StopIteration`. The fix catches StopIteration explicitly
-and returns from the generator so callers see a normal iteration end.
+Covers:
+  - Pass-through when disabled (non-distributed).
+  - Clean termination when the local iterator exhausts earlier than
+    len() suggested (regression for the original PEP 479 bug and for
+    the later hang when a rank ran past its real length in DDP).
+  - Exact-length iteration when all ranks agree.
+  - Per-step MIN synchronization: when a peer rank signals exhaustion,
+    this rank stops on the same iteration and drops any prefetched
+    batch to stay in lockstep with DDP gradient all-reduces.
+  - state_dict / load_state_dict forwarding for checkpoint round-trip.
 """
 
 from unittest.mock import MagicMock
@@ -54,45 +58,72 @@ def test_passthrough_when_disabled():
 
 
 def test_early_exhaustion_returns_cleanly(monkeypatch):
-    """StopIteration raised before min_len must not propagate as RuntimeError.
+    """When the local iterator runs out, iteration terminates cleanly.
 
-    Regression for: `yield next(iterator)` inside __iter__ leaked
-    StopIteration out of the generator body and triggered PEP 479
-    (`RuntimeError: generator raised StopIteration`), bypassing the
-    trainer's clean end-of-training save path.
-
-    We simulate a dataloader whose reported length overshoots the real
-    length by stubbing the distributed all_reduce so min_len matches the
-    reported length; then iteration should terminate cleanly once the
-    underlying loader runs out.
+    With per-step MIN synchronization this also regresses against two
+    historical bugs:
+      (1) PEP 479 `RuntimeError: generator raised StopIteration` when
+          StopIteration from `next()` leaked out of the generator body.
+      (2) A DDP hang when one rank ran past its real length: the old
+          one-shot len()-based sync let the shorter rank StopIteration
+          early and move on to end-of-training collectives while peers
+          were still doing gradient all-reduces.
     """
     import torch
     from torch import distributed as dist
 
-    # Reported length is 10, real length is 3: iteration must end at 3
-    # without raising RuntimeError.
+    # Reported length (10) overshoots real length (3); iteration must
+    # end cleanly at 3.
     loader = _FiniteLoader(real_len=3, reported_len=10)
 
-    # Force the wrapper to believe distributed is enabled so the
-    # synchronization path runs. We then stub dist.is_initialized /
-    # get_world_size / all_reduce so the wrapper's min_len becomes
-    # reported_len (10).
     monkeypatch.setattr(dist, "is_initialized", lambda: True)
     monkeypatch.setattr(dist, "get_world_size", lambda: 2)
-
-    def fake_all_reduce(tensor, op=None, group=None):
-        # Leave the tensor alone; its initial value is reported_len(10),
-        # which will be used as min_len. This simulates "all ranks agree
-        # on len=10" while our real iterator only has 3 items.
-        return None
-
-    monkeypatch.setattr(dist, "all_reduce", fake_all_reduce)
+    # No-op all_reduce: simulates a peer rank that never signals
+    # exhaustion, so stopping is driven entirely by local StopIteration.
+    monkeypatch.setattr(dist, "all_reduce", lambda t, op=None, group=None: None)
 
     wrapped = SynchronizedDataLoader(loader, device=torch.device("cpu"))
 
-    # Must not raise RuntimeError from PEP 479. The loop should just
-    # terminate early when the underlying iterator is exhausted.
     items = list(wrapped)
+    assert items == [0, 1, 2]
+
+
+def test_peer_rank_exhaustion_stops_this_rank(monkeypatch):
+    """When a peer rank signals StopIteration (has_batch=0 after MIN),
+    this rank stops on the same iteration even if its own iterator still
+    has batches. Any prefetched local batch is dropped so all ranks
+    remain in lockstep for DDP gradient all-reduces.
+    """
+    import torch
+    from torch import distributed as dist
+
+    # This rank has 10 batches locally.
+    loader = _FiniteLoader(real_len=10)
+
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+
+    # Simulate a peer rank that announces exhaustion after 3 batches:
+    # the first 3 all_reduce calls leave has_batch at 1, the 4th clamps
+    # it to 0 as if the peer had finished its shard.
+    call_count = {"n": 0}
+
+    def simulated_all_reduce(tensor, op=None, group=None):
+        call_count["n"] += 1
+        # After 3 successful all_reduces, the peer signals done.
+        if call_count["n"] >= 4:
+            tensor.zero_()
+        return None
+
+    monkeypatch.setattr(dist, "all_reduce", simulated_all_reduce)
+
+    wrapped = SynchronizedDataLoader(loader, device=torch.device("cpu"))
+
+    items = list(wrapped)
+
+    # We expect exactly 3 items to be yielded before this rank stops to
+    # stay aligned with the peer that exhausted first. The remaining
+    # 7 local batches are dropped (warning logged).
     assert items == [0, 1, 2]
 
 
