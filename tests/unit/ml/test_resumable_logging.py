@@ -560,19 +560,8 @@ class TestJsonLoggerResume:
             state.epoch = 0.1
             control = TrainerControl()
 
-            # Force an exception during truncation
-            with patch(
-                "builtins.open",
-                side_effect=[
-                    OSError("simulated read error"),  # First open (read) fails
-                    open(log_path + ".bak", "w"),  # Backup rename
-                    open(log_path, "w"),  # Fresh start
-                ],
-            ):
-                # We need a different approach -- mock at a higher level
-                pass
-
-            # Simpler approach: make _parse_json_log raise
+            # Force the parse path to raise so the except branch (which backs up
+            # the original file and starts fresh) is exercised.
             with patch(
                 "forgather.ml.trainer.callbacks.json_logger._parse_json_log",
                 side_effect=RuntimeError("parse failed"),
