@@ -566,7 +566,8 @@ def compute_tensor_checksum(name: str, tensor: torch.Tensor) -> TensorChecksum:
             # Convert to float32 for stats (bfloat16 doesn't support some ops)
             stats_tensor = cpu_tensor.float()
             mean = float(stats_tensor.mean().item())
-            std = float(stats_tensor.std().item())
+            if stats_tensor.numel() > 1:
+                std = float(stats_tensor.std().item())
             tensor_min = float(stats_tensor.min().item())
             tensor_max = float(stats_tensor.max().item())
         except Exception as e:
