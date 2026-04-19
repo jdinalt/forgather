@@ -83,11 +83,14 @@ def causal_mask(
     # Use HuggingFace's create_causal_mask utility
     assert cache_position is not None
     mask_fn = create_sliding_window_causal_mask if window_size else create_causal_mask
+    # Pass embed tensor positionally: kwarg name differs across transformers
+    # versions (input_embeds in <=5.1, inputs_embeds in >=5.5 with a deprecation
+    # shim on the old name). past_key_values is keyword-only in 5.5+.
     attention_mask = mask_fn(
-        config=config,
-        inputs_embeds=input_embeds,
-        attention_mask=attention_mask,
-        cache_position=cache_position,
+        config,
+        input_embeds,
+        attention_mask,
+        cache_position,
         past_key_values=past_key_values,
         position_ids=position_ids,
     )

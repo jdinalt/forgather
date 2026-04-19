@@ -58,17 +58,25 @@ def gemma_mask_fn(
             seq_length = input_embeds.shape[1]
         cache_position = torch.arange(0, seq_length, device=device)
 
-    common_kwargs = dict(
-        config=config,
-        inputs_embeds=input_embeds,
-        attention_mask=attention_mask,
-        cache_position=cache_position,
+    # Pass embed tensor positionally: kwarg name differs across transformers
+    # versions (input_embeds in <=5.1, inputs_embeds in >=5.5 with a deprecation
+    # shim on the old name). past_key_values is keyword-only in 5.5+.
+    full_mask = create_causal_mask(
+        config,
+        input_embeds,
+        attention_mask,
+        cache_position,
         past_key_values=past_key_values,
         position_ids=position_ids,
     )
-
-    full_mask = create_causal_mask(**common_kwargs)
-    sliding_mask = create_sliding_window_causal_mask(**common_kwargs)
+    sliding_mask = create_sliding_window_causal_mask(
+        config,
+        input_embeds,
+        attention_mask,
+        cache_position,
+        past_key_values=past_key_values,
+        position_ids=position_ids,
+    )
 
     return {
         "full_attention": full_mask,
