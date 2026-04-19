@@ -587,19 +587,31 @@ class TrainerControlCallback(TrainerCallback):
                 if event_loop is None or event_loop.is_closed():
                     return
 
-                # Shut down aiohttp runner while the loop is still running
-                if self.server_runner is not None:
-                    asyncio.run_coroutine_threadsafe(
-                        self.server_runner.cleanup(), event_loop
-                    ).result(timeout=5)
-
-                # Cancel the server task then stop the loop atomically
-                def _shutdown():
+                # Shut down the aiohttp runner and cancel the server task on
+                # the loop, awaiting the task so the CancelledError is actually
+                # delivered before the loop stops. If we only scheduled the
+                # cancel and then stopped the loop, run_forever() would return
+                # with the task still pending, producing "Task was destroyed
+                # but it is pending!".
+                async def _shutdown_coro():
+                    if self.server_runner is not None:
+                        try:
+                            await self.server_runner.cleanup()
+                        except Exception as e:
+                            logger.warning(f"aiohttp runner cleanup error: {e}")
                     if self.server_task and not self.server_task.done():
                         self.server_task.cancel()
-                    event_loop.stop()
+                        try:
+                            await self.server_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
 
-                event_loop.call_soon_threadsafe(_shutdown)
+                asyncio.run_coroutine_threadsafe(_shutdown_coro(), event_loop).result(
+                    timeout=10
+                )
+
+                # Task is done; now it's safe to stop the loop.
+                event_loop.call_soon_threadsafe(event_loop.stop)
 
                 # Wait for the server thread to exit cleanly
                 if self.server_thread:
