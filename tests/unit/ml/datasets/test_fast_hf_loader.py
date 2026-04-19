@@ -14,6 +14,13 @@ except ImportError:
 from forgather.ml.datasets import fast_load_iterable_dataset, interleave_datasets
 
 
+def _mp_ctx(num_workers):
+    """Force spawn when workers > 0 to avoid fork-in-threaded-parent warnings
+    on Python 3.12 and the underlying deadlock hazard. Returns None when no
+    workers are spawned (StatefulDataLoader accepts None for the default)."""
+    return "spawn" if num_workers > 0 else None
+
+
 @pytest.mark.skipif(
     not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
 )
@@ -38,7 +45,12 @@ def test_stateful_checkpoint_restore(num_workers):
     ids = ids.shuffle(seed=42, buffer_size=0)
 
     # Create dataloader and iterate 5 batches
-    dataloader = StatefulDataLoader(ids, batch_size=4, num_workers=num_workers)
+    dataloader = StatefulDataLoader(
+        ids,
+        batch_size=4,
+        num_workers=num_workers,
+        multiprocessing_context=_mp_ctx(num_workers),
+    )
 
     checkpoint = None
     for i, batch in enumerate(dataloader):
@@ -54,7 +66,10 @@ def test_stateful_checkpoint_restore(num_workers):
     )
     ids_fresh = ids_fresh.shuffle(seed=42, buffer_size=0)
     dataloader_fresh = StatefulDataLoader(
-        ids_fresh, batch_size=4, num_workers=num_workers
+        ids_fresh,
+        batch_size=4,
+        num_workers=num_workers,
+        multiprocessing_context=_mp_ctx(num_workers),
     )
 
     # Get batch 5 from fresh dataloader (this is what restored should yield as batch 0)
@@ -72,7 +87,10 @@ def test_stateful_checkpoint_restore(num_workers):
     )
     ids_restored = ids_restored.shuffle(seed=42, buffer_size=0)
     dataloader_restored = StatefulDataLoader(
-        ids_restored, batch_size=4, num_workers=num_workers
+        ids_restored,
+        batch_size=4,
+        num_workers=num_workers,
+        multiprocessing_context=_mp_ctx(num_workers),
     )
     dataloader_restored.load_state_dict(checkpoint)
 
@@ -530,7 +548,12 @@ def test_example_sharding_checkpoint(num_workers):
     ids_shard = ids.shard(num_shards=2, index=0, mode="example")
 
     # Create dataloader and iterate a few batches
-    dataloader = StatefulDataLoader(ids_shard, batch_size=4, num_workers=num_workers)
+    dataloader = StatefulDataLoader(
+        ids_shard,
+        batch_size=4,
+        num_workers=num_workers,
+        multiprocessing_context=_mp_ctx(num_workers),
+    )
 
     checkpoint = None
     for i, batch in enumerate(dataloader):
@@ -546,7 +569,10 @@ def test_example_sharding_checkpoint(num_workers):
     )
     ids_fresh_shard = ids_fresh.shard(num_shards=2, index=0, mode="example")
     dataloader_fresh = StatefulDataLoader(
-        ids_fresh_shard, batch_size=4, num_workers=num_workers
+        ids_fresh_shard,
+        batch_size=4,
+        num_workers=num_workers,
+        multiprocessing_context=_mp_ctx(num_workers),
     )
 
     expected_batch = None
@@ -563,7 +589,10 @@ def test_example_sharding_checkpoint(num_workers):
     )
     ids_restored_shard = ids_restored.shard(num_shards=2, index=0, mode="example")
     dataloader_restored = StatefulDataLoader(
-        ids_restored_shard, batch_size=4, num_workers=num_workers
+        ids_restored_shard,
+        batch_size=4,
+        num_workers=num_workers,
+        multiprocessing_context=_mp_ctx(num_workers),
     )
     dataloader_restored.load_state_dict(checkpoint)
 
