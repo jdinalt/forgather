@@ -143,12 +143,15 @@ class MockTrainer(BaseTrainer, Stateful):
                 model=self.model,
             )
 
-            # Restore from checkpoint if specified (after state is initialized)
+            # Restore from checkpoint if specified (after state is initialized).
+            # Mirror the real trainer's resolve-then-load pattern: resolve to a
+            # concrete path first; skip loading (and clear the flag) if none is found.
             if self.args.resume_from_checkpoint:
-                checkpoint_path = self.args.resume_from_checkpoint
-                if isinstance(checkpoint_path, bool):
-                    checkpoint_path = None
-                self.load_checkpoint(checkpoint_path)
+                checkpoint_path = self._resolve_checkpoint_path()
+                if checkpoint_path is None:
+                    self.args.resume_from_checkpoint = False
+                else:
+                    self.load_checkpoint(checkpoint_path)
 
     def _resolve_checkpoint_path(self):
         assert self.checkpoint_manager
