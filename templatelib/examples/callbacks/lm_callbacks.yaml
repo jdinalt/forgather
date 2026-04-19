@@ -20,7 +20,7 @@ text_gen_callback_args: &text_gen_callback_args
     prompts: {{ abspath(joinpath(ns.forgather_dir, ns.eval_prompts_file | default("prompts/short_stories.yaml"))) }}
     generation_config: *generation_config
     max_new_tokens: {{ ns.eval_max_new_tokens | default(120) }}
-    generation_steps: 10000
+    generation_steps: {{ ns.generation_steps | default(10000) }}
 
 [peak_hardware_flops]
 .define: &peak_hardware_flops {{ ns.total_peak_hardware_flops | toyaml }}

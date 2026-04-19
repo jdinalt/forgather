@@ -449,7 +449,7 @@ model: &model !call:getitem [ *model_dict, 'model' ]
 [trainer_args]
     == super()
     seed: {{ seed | toyaml(42) }}
-    eval_strategy: "steps"
+    eval_strategy: steps
     save_strategy: {{ save_strategy | toyaml('steps') }}
 
     logging_steps: {{ (ns.logging_tokens // ns.tokens_per_step) | int }}
