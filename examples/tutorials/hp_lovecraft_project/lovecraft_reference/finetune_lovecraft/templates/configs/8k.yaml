@@ -1,0 +1,19 @@
+-- extends 'project.yaml'
+
+## 8K-context single-GPU variant used for the Llama-2 RoPE comparison
+## experiment.  Matches default.yaml for everything except seq_len and
+## dataset_config -- switches the dataset to the held-out-packed variant
+## so the_call_of_cthulhu.txt stays out of the training set.
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Lovecraft 8K (held out)"
+    -- set ns.config_description = "8K-context fine-tune, cthulhu.txt held out"
+    -- set ns.log_name = log_name | default("8k")
+    -- set ns.seq_len = seq_len | default(8192)
+    -- set ns.dataset_config = dataset_config | default("lovecraft-heldout-packed.yaml")
+
+[trainer_args]
+    == super()
+    ## Intermediate saves so a late-run divergence doesn't lose the model.
+    save_steps: 200

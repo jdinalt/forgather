@@ -14,12 +14,10 @@ This tutorial walks through:
   reaches **~42K tokens on Mistral-7B and ~53K tokens on Llama-2-7B** on a
   single 24 GB card, and documents exactly how
 - Serving the resulting model and generating long-form Lovecraftian prose
-- Long-context generation quality experiments (YaRN, sliding window,
-  rope_theta sweeps) -- see
+- Long-context RoPE-variant experiments (plain, YaRN, Llama-3 NTK-by-parts
+  scaling, bumped `rope_theta`) -- see
   [long_context_experiments.md](long_context_experiments.md) for the
-  writeup and [4k_spike_investigation.md](4k_spike_investigation.md) for
-  the plumbing-gap story that took the headline numbers from "final" back
-  to "preliminary"
+  full writeup, including implications for pretraining recipes
 
 **Time required**: ~2-3 hours, depending on context length and epoch count.\
 **Hardware requirements**: One GPU with 24 GB of VRAM (RTX 3090, 4090, 5090).
@@ -895,32 +893,33 @@ Files worth looking at:
 ## Long-context generation quality experiments
 
 Fitting a 16K-context training run into VRAM is only half the problem. The
-other half is getting the trained model to *generate coherently at 16K*.
-[long_context_experiments.md](long_context_experiments.md) documents five
-Mistral / Llama variants (sliding-window on / off, YaRN on / off) and the
-investigation that led to discovering a plumbing gap in the pre-`finetune_v2`
-template stack.
+other half is getting the trained model to *generate coherently beyond its
+training window*.
+[long_context_experiments.md](long_context_experiments.md) documents a
+four-way Llama-2-7B comparison — plain RoPE, YaRN, Llama-3 NTK-by-parts
+scaling, and a bumped base frequency (`rope_theta=500 000`) — all
+fine-tuned identically at 8K context and evaluated at 2K-16K on held-out
+text.
 
-**Caveat.**  The headline numbers in that document were produced on the
-pre-migration template, which didn't thread `--window-size` into the
-dataset tokenizer -- so every "16K training" was actually 4K-tokenized data
-padded/packed to 16K. `projects/finetune_v2.yaml` fixes this via
-`[datasets_preprocessor_args].max_length = ns.seq_len`. The apples-to-apples
-comparisons across variants (YaRN on/off, rope_theta sweep) remain valid,
-but the absolute PPL numbers need re-verification on a properly-plumbed
-run before being treated as definitive.
+Headline findings:
 
-What held up under the investigation:
-- **YaRN support** was added to Forgather's rotary-embedding module; enable
-  it by setting `rope_type: "yarn"` in a model's `config.json`.
-- **The default tutorial LR of 3.5e-6 was severely under-trained.**  A
-  binary-search LR probe established 5e-5 as stable-and-effective for
-  Adafactor at this batch/seq size -- loss plateaus around 2.0 instead of
-  5.3 in comparable step budgets.
-- **Mistral's sliding window is dead code** under the SDPA backend (the
-  config field is `sliding_window`, the attention wiring read
-  `config.window_size`); both variants were architecturally identical.
-  Fixed in a separate commit.
+- **Plain Llama-2 RoPE cannot extrapolate past its training window.**
+  Fine-tuned at 8K, evaluated at 16K → PPL grows 3.5×.
+- **A bumped `rope_theta` alone captures most of the extrapolation benefit.**
+  θ=500 000 with no other scaling: 15% PPL growth from 8K → 16K.
+- **Llama-3-style NTK-by-parts scaling adds a small further improvement**
+  on top of the high θ.
+- **YaRN with a factor that doesn't cover the eval window is catastrophic.**
+  `factor=2, orig=4096` trained at 8K blows up to 24× the 8K PPL at 16K.
 
-See [`4k_spike_investigation.md`](4k_spike_investigation.md) for the full
-plumbing-gap writeup.
+The experiments doc also includes a section on **implications for
+pretraining**: in short, if `θ` can be swapped at fine-tune time and
+recover long-context extrapolation from a 4K-pretrained model in ~4M
+tokens of adaptation, the compute-efficient recipe is to pretrain short
+with a deployment-sized `θ`, not to pretrain long. A proposed follow-up
+study is sketched there.
+
+For the earlier investigation into a 4K-periodic NLL spike pattern —
+ultimately traced to a configuration gap in the pre-`finetune_v2`
+template — see [`4k_spike_investigation.md`](4k_spike_investigation.md).
+That artefact does not appear in the current properly-plumbed runs.
