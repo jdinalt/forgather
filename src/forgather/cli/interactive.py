@@ -1175,8 +1175,9 @@ class ForgatherShell(cmd.Cmd):
                 cli_main()
 
             except SystemExit as e:
-                # Normal exit from CLI (e.g., help commands)
-                pass
+                # String messages haven't been printed yet; integer codes were already output
+                if isinstance(e.code, str) and e.code:
+                    print(e.code, file=sys.stderr)
             except KeyboardInterrupt:
                 print("\nCommand interrupted")
             except Exception as e:
