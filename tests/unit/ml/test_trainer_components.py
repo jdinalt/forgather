@@ -12,10 +12,12 @@ Tests the following components:
 
 import json
 import os
+import sys
 import tempfile
 from contextlib import nullcontext
 from dataclasses import fields
 from io import StringIO
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -35,6 +37,7 @@ from forgather.ml.trainer.callbacks.default_callbacks import (
 )
 from forgather.ml.trainer.callbacks.json_logger import JsonLogger
 from forgather.ml.trainer.periodic_function import PeriodicFunction
+from forgather.ml.trainer.trainer import Trainer
 from forgather.ml.trainer.trainer_types import (
     IntervalStrategy,
     MinimalTrainingArguments,
@@ -871,6 +874,72 @@ class TestMinimalTrainingArguments:
         assert args.output_dir == "my_model"
         assert args.per_device_train_batch_size == 32
         assert args.max_steps == 5000
+
+
+# ---------------------------------------------------------------------------
+# Trainer._update_training_steps tests
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateTrainingSteps:
+    """Tests for Trainer._update_training_steps max_steps computation.
+
+    Exercised with a SimpleNamespace stub so we can focus on the arithmetic
+    without constructing a full Trainer. A list satisfies ``Sized`` and fails
+    the ``StatefulDataLoader`` isinstance check, so the dataset-state sync
+    branch is skipped.
+    """
+
+    def _make_stub(
+        self,
+        num_train_epochs: int,
+        max_steps: int,
+        gradient_accumulation_steps: int = 1,
+        dataloader_len: int = 100,
+    ) -> SimpleNamespace:
+        args = SimpleNamespace(
+            num_train_epochs=num_train_epochs,
+            max_steps=max_steps,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+        )
+        return SimpleNamespace(
+            args=args,
+            train_dataloader=[None] * dataloader_len,
+            epoch_train_steps=0,
+            max_steps=0,
+            state=None,
+        )
+
+    def test_positive_epochs_no_max_cap(self):
+        stub = self._make_stub(num_train_epochs=3, max_steps=-1, dataloader_len=100)
+        Trainer._update_training_steps(stub)  # type: ignore[arg-type]
+        assert stub.max_steps == 300
+
+    def test_positive_epochs_with_max_cap_clamps_down(self):
+        stub = self._make_stub(num_train_epochs=10, max_steps=50, dataloader_len=100)
+        Trainer._update_training_steps(stub)  # type: ignore[arg-type]
+        assert stub.max_steps == 50
+
+    def test_positive_epochs_with_gradient_accumulation(self):
+        stub = self._make_stub(
+            num_train_epochs=2,
+            max_steps=-1,
+            gradient_accumulation_steps=4,
+            dataloader_len=100,
+        )
+        Trainer._update_training_steps(stub)  # type: ignore[arg-type]
+        # effective_epoch_steps = 100 // 4 = 25; 25 * 2 epochs = 50
+        assert stub.max_steps == 50
+
+    def test_negative_epochs_uses_sys_maxsize(self):
+        stub = self._make_stub(num_train_epochs=-1, max_steps=-1, dataloader_len=100)
+        Trainer._update_training_steps(stub)  # type: ignore[arg-type]
+        assert stub.max_steps == sys.maxsize
+
+    def test_negative_epochs_respects_explicit_max_steps(self):
+        stub = self._make_stub(num_train_epochs=-1, max_steps=500, dataloader_len=100)
+        Trainer._update_training_steps(stub)  # type: ignore[arg-type]
+        assert stub.max_steps == 500
 
 
 # ---------------------------------------------------------------------------

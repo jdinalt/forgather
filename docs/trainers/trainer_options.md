@@ -58,8 +58,8 @@ HuggingFace-compatible baseline. Defined in
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `num_train_epochs` | int | 1 | Total epochs to train. May be fractional. |
-| `max_steps` | int | -1 | If > 0, overrides `num_train_epochs` with an absolute step count. |
+| `num_train_epochs` | int | 1 | Total epochs to train. May be fractional. A negative value disables the epoch cap so training runs until `max_steps` (or an external stop signal) -- useful with schedulers like WSD / InfiniteLR where the budget is expressed purely in steps. |
+| `max_steps` | int | -1 | If > 0, overrides `num_train_epochs` with an absolute step count. When `num_train_epochs < 0`, `max_steps` is the only training-length cap, so it must be > 0. |
 | `epoch_train_steps` | int | 100000 | Fallback epoch length for datasets that don't implement `len()`. Forgather extension. |
 
 ### Batching and data loading

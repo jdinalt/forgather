@@ -3,6 +3,7 @@
 import gc
 import logging
 import os
+import sys
 import time
 from collections.abc import Sized
 from contextlib import ExitStack, contextmanager
@@ -1271,7 +1272,10 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                     except StopIteration:
                         self.state.raw_epoch += 1
                         self.state.epoch_start_step = self.state.global_step
-                        if self.state.raw_epoch >= self.args.num_train_epochs:
+                        if (
+                            self.args.num_train_epochs >= 0
+                            and self.state.raw_epoch >= self.args.num_train_epochs
+                        ):
                             self.control.should_epoch_stop = True
                         self._dispatch_event("on_step_end")
                         break
@@ -1540,10 +1544,14 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             self.epoch_train_steps // self.args.gradient_accumulation_steps
         )
 
-        # The total number of global training steps (optimizer updates) in all epochs
-        self.max_steps = self.args.num_train_epochs * effective_epoch_steps
+        # The total number of global training steps (optimizer updates) in all epochs.
+        # num_train_epochs < 0 means "no epoch cap" -- rely entirely on max_steps.
+        if self.args.num_train_epochs >= 0:
+            self.max_steps = self.args.num_train_epochs * effective_epoch_steps
+        else:
+            self.max_steps = sys.maxsize
 
-        # If limit is specified, constrain to limit.
+        # If an explicit max_steps limit is specified, constrain to it.
         if self.args.max_steps >= 0:
             self.max_steps = min(self.args.max_steps, self.max_steps)
 
