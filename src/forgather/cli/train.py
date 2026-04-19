@@ -1,5 +1,6 @@
 import json
 import os
+import signal
 import subprocess
 
 from forgather.latent import Latent
@@ -80,4 +81,10 @@ def train_cmd(args):
 
     # Run the command
     if not args.dry_run:
-        subprocess.run(cmd_args, env=env)
+        proc = subprocess.Popen(cmd_args, env=env, preexec_fn=os.setsid)
+
+        def _sigint_handler(sig, frame):
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+
+        signal.signal(signal.SIGINT, _sigint_handler)
+        proc.wait()
