@@ -2,6 +2,10 @@
 
 Forgather ships several optimizers and learning rate schedulers, available as configuration templates or directly via the Python API.
 
+**Related documentation:**
+
+- [Adafactor Triton Performance](../trainers/adafactor-triton-performance.md) — performance analysis and benchmarks for the Triton-optimized Adafactor kernel
+
 ## Optimizers
 
 ::: forgather.ml.optim.adamw.AdamW

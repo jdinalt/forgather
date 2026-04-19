@@ -1,6 +1,6 @@
 # Analysis
 
-Tools for parsing, summarizing, and visualizing training logs produced by Forgather's JSON logger.
+Tools for parsing, summarizing, and visualizing training logs produced by Forgather's JSON logger. For CLI usage, plots, and the full `forgather logs` command reference, see [Log Analysis](../guides/logs-analysis.md).
 
 ## Quick Example
 

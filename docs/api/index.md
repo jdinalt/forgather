@@ -9,7 +9,7 @@ Most interaction with Forgather happens through the CLI or configuration files, 
 | [Project System](project.md) | `Project`, `MetaConfig`, `ConfigEnvironment` |
 | [Trainers](trainers.md) | `BaseTrainer`, `AccelTrainer`, `PipelineTrainer` |
 | [Optimizers](optimizers.md) | `AdamW`, `Adafactor`, `Apollo`, schedulers |
-| [Datasets](datasets.md) | `FastHFLoader`, `BlockTokenizer`, dataset utilities |
+| [Datasets](datasets.md) | `FastDatasetLoaderSimple`, `InterleavedDataset`, dataset utilities |
 | [Analysis](analysis.md) | `TrainingLog`, plotting, summary statistics |
 
 ## Quick Example

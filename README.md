@@ -6,7 +6,7 @@ and enable systematic experimentation. Instead of copying and modifying
 entire training scripts, you inherit from base templates and specify
 only what changes.
 
-> 📚 **Documentation:** [`docs/README.md`](./docs/README.md) is the
+> 📚 **Documentation:** [forgather.readthedocs.io](https://forgather.readthedocs.io/en/latest/) is the
 > complete documentation index. New users should head straight to
 > **[Getting Started](./docs/getting-started/README.md)**.
 
