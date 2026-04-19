@@ -8,3 +8,11 @@
     -- set ns.dataset_proj = abspath(joinpath(project_dir, 'tiny-stories_small-lm'))
     -- set ns.dataset_config = "default.yaml"
     -- set ns.model_name = model_name | default("tiny_x_small_lm")
+
+    ## Extend to 10x Chinchilla
+    -- set ns.total_tokens = total_tokens | default(24970)
+    -- set ns.annealing_tokens = annealing_tokens | default(2497)
+
+[lr_scheduler]
+    == super()
+    checkpoint_step: {{ ns.decay_start_step }}
