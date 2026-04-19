@@ -1,0 +1,24 @@
+test_id: small_llm_default
+project_dir: examples/pretrain/small-llm
+config: default.yaml
+dynamic_args:
+  max_steps: 80
+  save_strategy: "no"
+  nproc_per_node: 2
+loss:
+  final_max: 10.0
+  no_nan: true
+stderr:
+  forbidden_patterns:
+    - "RuntimeError"
+    - "CUDA error"
+    - "Traceback"
+  warn_patterns: []
+expected_files:
+  - trainer_logs.json
+min_steps_logged: 1
+timeout: 1800
+gpu_requirement: 2
+markers:
+  - integration
+  - slow
