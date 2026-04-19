@@ -4,3 +4,4 @@
 # Jinja2 templates that look like Python files
 modelsrc/templates/hf_causal.py
 modelsrc/templates/*.py
+examples/tutorials/dynamic_lm/templates/causal_lm.py

@@ -7,7 +7,6 @@ Uses Alpine.js (CDN) for reactivity. No build step or static file directory.
 
 from http.server import BaseHTTPRequestHandler
 
-
 DASHBOARD_HTML = """\
 <!DOCTYPE html>
 <html lang="en">

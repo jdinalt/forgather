@@ -312,7 +312,7 @@ def discover_checkpoint_files(checkpoint_path: str, component: str) -> List[str]
     manifest_path = checkpoint_path / "checkpoint_manifest.json"
     if manifest_path.exists():
         try:
-            with open(manifest_path, 'r') as f:
+            with open(manifest_path, "r") as f:
                 manifest = json.load(f)
 
             component_info = manifest.get("components", {}).get(component)
@@ -329,7 +329,9 @@ def discover_checkpoint_files(checkpoint_path: str, component: str) -> List[str]
                 elif pattern == "per_rank":
                     # Per-rank files
                     for rank in component_info["ranks"]:
-                        file_path = checkpoint_path / f"{component}_state_rank_{rank}.pt"
+                        file_path = (
+                            checkpoint_path / f"{component}_state_rank_{rank}.pt"
+                        )
                         if file_path.exists():
                             files.append(str(file_path))
 
@@ -440,7 +442,7 @@ def modify_state_dict(
     state_dict: dict,
     modifications: List[Tuple[str, str, Any]],
     component: str,
-    param_group_idx: Optional[int] = None
+    param_group_idx: Optional[int] = None,
 ) -> Tuple[dict, List[dict]]:
     """
     Apply modifications to checkpoint component state dict.
@@ -503,13 +505,15 @@ def modify_state_dict(
 
                 pg[key] = new_value
 
-                changes.append({
-                    "param_group": pg_idx,
-                    "parameter": key,
-                    "old_value": old_value,
-                    "new_value": new_value,
-                    "operation": operation,
-                })
+                changes.append(
+                    {
+                        "param_group": pg_idx,
+                        "parameter": key,
+                        "old_value": old_value,
+                        "new_value": new_value,
+                        "operation": operation,
+                    }
+                )
 
     elif component == "scheduler":
         # Modify scheduler state directly
@@ -536,12 +540,14 @@ def modify_state_dict(
 
             state_dict[key] = new_value
 
-            changes.append({
-                "parameter": key,
-                "old_value": old_value,
-                "new_value": new_value,
-                "operation": operation,
-            })
+            changes.append(
+                {
+                    "parameter": key,
+                    "old_value": old_value,
+                    "new_value": new_value,
+                    "operation": operation,
+                }
+            )
 
     else:
         # Generic component modification
@@ -568,21 +574,20 @@ def modify_state_dict(
 
             state_dict[key] = new_value
 
-            changes.append({
-                "parameter": key,
-                "old_value": old_value,
-                "new_value": new_value,
-                "operation": operation,
-            })
+            changes.append(
+                {
+                    "parameter": key,
+                    "old_value": old_value,
+                    "new_value": new_value,
+                    "operation": operation,
+                }
+            )
 
     return state_dict, changes
 
 
 def save_checkpoint_atomically(
-    file_path: str,
-    state_dict: dict,
-    backup: bool = True,
-    verbose: bool = False
+    file_path: str, state_dict: dict, backup: bool = True, verbose: bool = False
 ) -> bool:
     """
     Atomically save modified checkpoint with optional backup.
@@ -610,7 +615,7 @@ def save_checkpoint_atomically(
 
     # Step 1: Create backup with fsync
     if backup:
-        backup_path = Path(str(file_path) + '.bak')
+        backup_path = Path(str(file_path) + ".bak")
         if verbose:
             print(f"  Creating backup: {backup_path}")
 
@@ -627,7 +632,7 @@ def save_checkpoint_atomically(
         os.close(dir_fd)
 
     # Step 2: Write to temp file
-    temp_path = Path(str(file_path) + '.tmp')
+    temp_path = Path(str(file_path) + ".tmp")
     if verbose:
         print(f"  Writing to temp file: {temp_path}")
 
@@ -643,7 +648,7 @@ def save_checkpoint_atomically(
         print(f"  Validating temp file...")
 
     try:
-        loaded = torch.load(temp_path, map_location='cpu')
+        loaded = torch.load(temp_path, map_location="cpu")
 
         # Verify structure matches
         if set(loaded.keys()) != set(state_dict.keys()):
@@ -665,7 +670,9 @@ def save_checkpoint_atomically(
         raise RuntimeError(
             f"Modified checkpoint failed validation: {e}\n"
             f"Deleted temp file, original unchanged.\n"
-            f"Backup available at: {file_path}.bak" if backup else ""
+            f"Backup available at: {file_path}.bak"
+            if backup
+            else ""
         )
 
     # Step 4: Atomic replace
@@ -689,7 +696,7 @@ def update_checkpoint_manifest(
     checkpoint_dir: str,
     component: str,
     modified_files: List[str],
-    verbose: bool = False
+    verbose: bool = False,
 ) -> None:
     """
     Atomically update checkpoint_manifest.json after modifying component files.
@@ -721,7 +728,7 @@ def update_checkpoint_manifest(
         print(f"\nUpdating checkpoint manifest (atomic)...")
 
     # Step 1: Create backup
-    backup_path = Path(str(manifest_path) + '.bak')
+    backup_path = Path(str(manifest_path) + ".bak")
     if verbose:
         print(f"  Backing up manifest: {backup_path}")
 
@@ -738,7 +745,7 @@ def update_checkpoint_manifest(
     os.close(dir_fd)
 
     # Step 2: Load and update manifest
-    with open(manifest_path, 'r') as f:
+    with open(manifest_path, "r") as f:
         manifest = json.load(f)
 
     # Update component info
@@ -761,11 +768,11 @@ def update_checkpoint_manifest(
         component_info["metadata"]["modified_at"] = datetime.now().isoformat()
 
     # Step 3: Write to temp file
-    temp_path = Path(str(manifest_path) + '.tmp')
+    temp_path = Path(str(manifest_path) + ".tmp")
     if verbose:
         print(f"  Writing updated manifest: {temp_path}")
 
-    with open(temp_path, 'w') as f:
+    with open(temp_path, "w") as f:
         json.dump(manifest, f, indent=2)
 
     # Fsync temp file
@@ -790,7 +797,7 @@ def format_value(value: Any) -> str:
     if isinstance(value, float):
         if abs(value) < 1e-3 or abs(value) > 1e4:
             return f"{value:.2e}"
-        return f"{value:.6f}".rstrip('0').rstrip('.')
+        return f"{value:.6f}".rstrip("0").rstrip(".")
     return str(value)
 
 
@@ -811,18 +818,30 @@ def print_changes_table(changes: List[dict], component: str) -> None:
         pg_width = 0
         param_width = max(len("Parameter"), max(len(c["parameter"]) for c in changes))
 
-    old_width = max(len("Old Value"), max(len(format_value(c["old_value"])) for c in changes))
-    new_width = max(len("New Value"), max(len(format_value(c["new_value"])) for c in changes))
+    old_width = max(
+        len("Old Value"), max(len(format_value(c["old_value"])) for c in changes)
+    )
+    new_width = max(
+        len("New Value"), max(len(format_value(c["new_value"])) for c in changes)
+    )
 
     # Print header
     print("\nChanges to apply:")
     if has_param_group:
-        print(f"┌─{'─' * pg_width}─┬─{'─' * param_width}─┬─{'─' * old_width}─┬─{'─' * new_width}─┐")
-        print(f"│ {'Group':<{pg_width}} │ {'Parameter':<{param_width}} │ {'Old Value':<{old_width}} │ {'New Value':<{new_width}} │")
-        print(f"├─{'─' * pg_width}─┼─{'─' * param_width}─┼─{'─' * old_width}─┼─{'─' * new_width}─┤")
+        print(
+            f"┌─{'─' * pg_width}─┬─{'─' * param_width}─┬─{'─' * old_width}─┬─{'─' * new_width}─┐"
+        )
+        print(
+            f"│ {'Group':<{pg_width}} │ {'Parameter':<{param_width}} │ {'Old Value':<{old_width}} │ {'New Value':<{new_width}} │"
+        )
+        print(
+            f"├─{'─' * pg_width}─┼─{'─' * param_width}─┼─{'─' * old_width}─┼─{'─' * new_width}─┤"
+        )
     else:
         print(f"┌─{'─' * param_width}─┬─{'─' * old_width}─┬─{'─' * new_width}─┐")
-        print(f"│ {'Parameter':<{param_width}} │ {'Old Value':<{old_width}} │ {'New Value':<{new_width}} │")
+        print(
+            f"│ {'Parameter':<{param_width}} │ {'Old Value':<{old_width}} │ {'New Value':<{new_width}} │"
+        )
         print(f"├─{'─' * param_width}─┼─{'─' * old_width}─┼─{'─' * new_width}─┤")
 
     # Print rows
@@ -833,27 +852,35 @@ def print_changes_table(changes: List[dict], component: str) -> None:
         if has_param_group:
             pg = str(change["param_group"])
             param = change["parameter"]
-            print(f"│ {pg:<{pg_width}} │ {param:<{param_width}} │ {old_val:<{old_width}} │ {new_val:<{new_width}} │")
+            print(
+                f"│ {pg:<{pg_width}} │ {param:<{param_width}} │ {old_val:<{old_width}} │ {new_val:<{new_width}} │"
+            )
         else:
             param = change["parameter"]
-            print(f"│ {param:<{param_width}} │ {old_val:<{old_width}} │ {new_val:<{new_width}} │")
+            print(
+                f"│ {param:<{param_width}} │ {old_val:<{old_width}} │ {new_val:<{new_width}} │"
+            )
 
     # Print footer
     if has_param_group:
-        print(f"└─{'─' * pg_width}─┴─{'─' * param_width}─┴─{'─' * old_width}─┴─{'─' * new_width}─┘")
+        print(
+            f"└─{'─' * pg_width}─┴─{'─' * param_width}─┴─{'─' * old_width}─┴─{'─' * new_width}─┘"
+        )
     else:
         print(f"└─{'─' * param_width}─┴─{'─' * old_width}─┴─{'─' * new_width}─┘")
 
 
 def list_components_command(args):
     """List available components in a checkpoint directory."""
-    import sys
     import glob
+    import sys
 
     checkpoint_path = Path(args.checkpoint_path).resolve()
 
     if not checkpoint_path.exists():
-        print(f"Error: Checkpoint path does not exist: {checkpoint_path}", file=sys.stderr)
+        print(
+            f"Error: Checkpoint path does not exist: {checkpoint_path}", file=sys.stderr
+        )
         return 1
 
     if checkpoint_path.is_file():
@@ -913,7 +940,9 @@ def list_components_command(args):
         print("Use --verbose to see individual file details")
         print()
 
-    print(f"Use 'forgather checkpoint list CHECKPOINT --component COMPONENT' to inspect parameters")
+    print(
+        f"Use 'forgather checkpoint list CHECKPOINT --component COMPONENT' to inspect parameters"
+    )
 
     return 0
 
@@ -926,14 +955,17 @@ def list_params_command(args):
         files = discover_checkpoint_files(args.checkpoint_path, args.component)
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
-        print(f"\nHint: Use 'forgather checkpoint components {args.checkpoint_path}' to see available components", file=sys.stderr)
+        print(
+            f"\nHint: Use 'forgather checkpoint components {args.checkpoint_path}' to see available components",
+            file=sys.stderr,
+        )
         return 1
 
     print(f"\nComponent: {args.component}")
     print(f"Files: {', '.join(Path(f).name for f in files)}")
 
     # Load first file to inspect structure
-    state_dict = torch.load(files[0], map_location='cpu')
+    state_dict = torch.load(files[0], map_location="cpu")
     modifiable = list_modifiable_parameters(state_dict, args.component)
 
     if args.component == "optimizer" and "param_groups" in modifiable:
@@ -967,39 +999,49 @@ def modify_params_command(args):
     modifications = []
 
     for set_arg in args.set:
-        if '=' not in set_arg:
+        if "=" not in set_arg:
             print(f"Error: Invalid --set format: {set_arg}", file=sys.stderr)
             print("Expected: KEY=VALUE", file=sys.stderr)
             return 1
 
-        key, value_str = set_arg.split('=', 1)
+        key, value_str = set_arg.split("=", 1)
         try:
             value = parse_value(value_str)
         except Exception as e:
-            print(f"Error: Failed to parse value '{value_str}' for parameter '{key}': {e}", file=sys.stderr)
+            print(
+                f"Error: Failed to parse value '{value_str}' for parameter '{key}': {e}",
+                file=sys.stderr,
+            )
             return 1
 
         modifications.append((key, "set", value))
 
     for scale_arg in args.scale:
-        if '=' not in scale_arg:
+        if "=" not in scale_arg:
             print(f"Error: Invalid --scale format: {scale_arg}", file=sys.stderr)
             print("Expected: KEY=FACTOR", file=sys.stderr)
             return 1
 
-        key, factor_str = scale_arg.split('=', 1)
+        key, factor_str = scale_arg.split("=", 1)
         try:
             factor = parse_value(factor_str)
             if not isinstance(factor, (int, float)):
-                raise ValueError(f"Scale factor must be numeric, got {type(factor).__name__}")
+                raise ValueError(
+                    f"Scale factor must be numeric, got {type(factor).__name__}"
+                )
         except Exception as e:
-            print(f"Error: Failed to parse scale factor '{factor_str}' for parameter '{key}': {e}", file=sys.stderr)
+            print(
+                f"Error: Failed to parse scale factor '{factor_str}' for parameter '{key}': {e}",
+                file=sys.stderr,
+            )
             return 1
 
         modifications.append((key, "scale", factor))
 
     if not modifications:
-        print("Error: No modifications specified (use --set or --scale)", file=sys.stderr)
+        print(
+            "Error: No modifications specified (use --set or --scale)", file=sys.stderr
+        )
         return 1
 
     # Discover checkpoint files
@@ -1007,7 +1049,10 @@ def modify_params_command(args):
         files = discover_checkpoint_files(args.checkpoint_path, args.component)
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
-        print(f"\nHint: Use 'forgather checkpoint components {args.checkpoint_path}' to see available components", file=sys.stderr)
+        print(
+            f"\nHint: Use 'forgather checkpoint components {args.checkpoint_path}' to see available components",
+            file=sys.stderr,
+        )
         return 1
 
     print(f"\nDiscovering checkpoint files...")
@@ -1018,7 +1063,7 @@ def modify_params_command(args):
         print(f"Found: {', '.join(Path(f).name for f in files)}")
 
     # Load first file to preview changes
-    state_dict = torch.load(files[0], map_location='cpu')
+    state_dict = torch.load(files[0], map_location="cpu")
 
     print(f"\nComponent: {args.component}")
     if args.component == "optimizer":
@@ -1031,7 +1076,7 @@ def modify_params_command(args):
             state_dict.copy() if args.component != "optimizer" else state_dict,
             modifications,
             args.component,
-            args.param_group
+            args.param_group,
         )
     except ValueError as e:
         print(f"\nError: {e}", file=sys.stderr)
@@ -1054,12 +1099,12 @@ def modify_params_command(args):
         print()
         if not args.no_backup:
             response = input("Create backup? [Y/n]: ").strip().lower()
-            create_backup = response != 'n'
+            create_backup = response != "n"
         else:
             create_backup = False
 
         response = input("Proceed with modification? [y/N]: ").strip().lower()
-        if response != 'y':
+        if response != "y":
             print("Aborted.")
             return 0
     else:
@@ -1075,14 +1120,11 @@ def modify_params_command(args):
     for file_path in files:
         try:
             # Load state
-            state_dict = torch.load(file_path, map_location='cpu')
+            state_dict = torch.load(file_path, map_location="cpu")
 
             # Apply modifications
             modified_state, _ = modify_state_dict(
-                state_dict,
-                modifications,
-                args.component,
-                args.param_group
+                state_dict, modifications, args.component, args.param_group
             )
 
             # Save atomically
@@ -1090,10 +1132,7 @@ def modify_params_command(args):
                 print(f"\nModifying {file_path}...")
 
             save_checkpoint_atomically(
-                file_path,
-                modified_state,
-                backup=create_backup,
-                verbose=args.verbose
+                file_path, modified_state, backup=create_backup, verbose=args.verbose
             )
 
             modified_files.append(file_path)
@@ -1112,10 +1151,7 @@ def modify_params_command(args):
 
     try:
         update_checkpoint_manifest(
-            str(checkpoint_dir),
-            args.component,
-            modified_files,
-            verbose=args.verbose
+            str(checkpoint_dir), args.component, modified_files, verbose=args.verbose
         )
     except Exception as e:
         print(f"\nWarning: Failed to update checkpoint manifest: {e}", file=sys.stderr)

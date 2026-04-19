@@ -88,7 +88,9 @@ class TensorTracker:
 
     def get_stats(self):
         """Get current tensor statistics"""
-        device_stats: defaultdict[str, dict[str, float]] = defaultdict(lambda: {"count": 0, "memory_mb": 0.0})
+        device_stats: defaultdict[str, dict[str, float]] = defaultdict(
+            lambda: {"count": 0, "memory_mb": 0.0}
+        )
         dtype_stats = defaultdict(int)
         shape_stats = defaultdict(int)
 

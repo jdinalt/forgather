@@ -78,7 +78,9 @@ def compute_summary_statistics(log: TrainingLog) -> Dict[str, Any]:
     if final_record:
         summary["train_runtime"] = final_record.get("train_runtime")
         summary["train_samples"] = final_record.get("train_samples")
-        summary["train_samples_per_second"] = final_record.get("train_samples_per_second")
+        summary["train_samples_per_second"] = final_record.get(
+            "train_samples_per_second"
+        )
         summary["train_steps_per_second"] = final_record.get("train_steps_per_second")
         summary["effective_batch_size"] = final_record.get("effective_batch_size")
 
@@ -214,7 +216,9 @@ def format_summary_markdown(summary: Dict[str, Any]) -> str:
         lines.append("|--------|-------|------|")
 
         if summary.get("final_loss") is not None:
-            lines.append(f"| Final Loss | {summary['final_loss']:.4f} | {summary.get('total_steps', 'N/A')} |")
+            lines.append(
+                f"| Final Loss | {summary['final_loss']:.4f} | {summary.get('total_steps', 'N/A')} |"
+            )
 
         if summary.get("best_loss") is not None:
             lines.append(
@@ -242,13 +246,17 @@ def format_summary_markdown(summary: Dict[str, Any]) -> str:
         lines.append("")
 
         if summary.get("train_samples_per_second"):
-            lines.append(f"- **Samples/sec:** {summary['train_samples_per_second']:.2f}")
+            lines.append(
+                f"- **Samples/sec:** {summary['train_samples_per_second']:.2f}"
+            )
 
         if summary.get("train_steps_per_second"):
             lines.append(f"- **Steps/sec:** {summary['train_steps_per_second']:.2f}")
 
         if summary.get("effective_batch_size"):
-            lines.append(f"- **Effective Batch Size:** {summary['effective_batch_size']}")
+            lines.append(
+                f"- **Effective Batch Size:** {summary['effective_batch_size']}"
+            )
 
         lines.append("")
 
@@ -265,12 +273,12 @@ def format_summary_oneline(summary: Dict[str, Any]) -> str:
         Single line formatted string with key metrics
     """
     # Extract key metrics
-    run_name = summary.get('run_name', 'Unknown')[:30]
-    steps = summary.get('total_steps', 0)
-    duration = summary.get('train_runtime', 0)
-    final_loss = summary.get('final_loss')
-    best_eval = summary.get('best_eval_loss')
-    samples_sec = summary.get('train_samples_per_second')
+    run_name = summary.get("run_name", "Unknown")[:30]
+    steps = summary.get("total_steps", 0)
+    duration = summary.get("train_runtime", 0)
+    final_loss = summary.get("final_loss")
+    best_eval = summary.get("best_eval_loss")
+    samples_sec = summary.get("train_samples_per_second")
 
     # Format duration as MM:SS
     if duration:

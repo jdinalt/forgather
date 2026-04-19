@@ -90,7 +90,7 @@ def soft_sequential(
         weights.append(weight)
 
         # Reduce remaining probability for subsequent datasets
-        remaining_prob *= (1.0 - proportion)
+        remaining_prob *= 1.0 - proportion
 
     # Handle edge case where all weights are 0
     if sum(weights) == 0:

@@ -102,7 +102,7 @@ class TokenizerTrainer:
         self.args = args
         self.output_dir = output_dir
         self.feature = feature
-        
+
         if select_range is not None:
             select_range = normalize_range(len(self.train_dataset), select_range)
             print(f"Selecting range {select_range} from dataset")

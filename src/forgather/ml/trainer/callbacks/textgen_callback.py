@@ -114,7 +114,12 @@ class TextgenCallback(TrainerCallback):
         # Coordinate "should we generate this step?" across all ranks.
         # Only rank 0 has the authoritative next_gen_step counter.
         should_gen = torch.tensor(
-            [int(state.is_world_process_zero and state.global_step >= self.next_gen_step)],
+            [
+                int(
+                    state.is_world_process_zero
+                    and state.global_step >= self.next_gen_step
+                )
+            ],
             dtype=torch.long,
             device=args.device,
         )
@@ -161,11 +166,17 @@ class TextgenCallback(TrainerCallback):
 
         # Only rank 0 decodes and logs.
         if state.is_world_process_zero:
-            texts = processing_class.batch_decode(generated_ids, skip_special_tokens=True)
+            texts = processing_class.batch_decode(
+                generated_ids, skip_special_tokens=True
+            )
             body = ""
             for prompt, decoded in zip(self.prompts, texts):
-                body += prompt + " [START] " + decoded[len(prompt) + 1:] + "\n\n---\n\n"
-            self.summary_writer.add_text("eval-text", body, global_step=state.global_step)
+                body += (
+                    prompt + " [START] " + decoded[len(prompt) + 1 :] + "\n\n---\n\n"
+                )
+            self.summary_writer.add_text(
+                "eval-text", body, global_step=state.global_step
+            )
             self.summary_writer.flush()
 
     def generate(self, device, model, tokenizer):

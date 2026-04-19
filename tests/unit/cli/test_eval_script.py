@@ -28,9 +28,7 @@ def eval_script():
 class TestResolveCheckpoint:
     @staticmethod
     def _ns(checkpoint=None, no_checkpoint=False):
-        return argparse.Namespace(
-            checkpoint=checkpoint, no_checkpoint=no_checkpoint
-        )
+        return argparse.Namespace(checkpoint=checkpoint, no_checkpoint=no_checkpoint)
 
     def test_default_is_auto_find(self, eval_script):
         arg, use = eval_script.resolve_checkpoint(self._ns())
@@ -43,9 +41,7 @@ class TestResolveCheckpoint:
         assert use is False
 
     def test_explicit_path(self, eval_script):
-        arg, use = eval_script.resolve_checkpoint(
-            self._ns(checkpoint="/tmp/ckpt-100")
-        )
+        arg, use = eval_script.resolve_checkpoint(self._ns(checkpoint="/tmp/ckpt-100"))
         assert arg == "/tmp/ckpt-100"
         assert use is True
 

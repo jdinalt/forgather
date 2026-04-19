@@ -44,7 +44,7 @@ def discover_checkpoint_files(checkpoint_path: str, component: str) -> List[str]
     manifest_path = checkpoint_path / "checkpoint_manifest.json"
     if manifest_path.exists():
         try:
-            with open(manifest_path, 'r') as f:
+            with open(manifest_path, "r") as f:
                 manifest = json.load(f)
 
             component_info = manifest.get("components", {}).get(component)
@@ -61,7 +61,9 @@ def discover_checkpoint_files(checkpoint_path: str, component: str) -> List[str]
                 elif pattern == "per_rank":
                     # Per-rank files
                     for rank in component_info["ranks"]:
-                        file_path = checkpoint_path / f"{component}_state_rank_{rank}.pt"
+                        file_path = (
+                            checkpoint_path / f"{component}_state_rank_{rank}.pt"
+                        )
                         if file_path.exists():
                             files.append(str(file_path))
 
@@ -172,7 +174,7 @@ def modify_state_dict(
     state_dict: dict,
     modifications: List[Tuple[str, str, Any]],
     component: str,
-    param_group_idx: Optional[int] = None
+    param_group_idx: Optional[int] = None,
 ) -> Tuple[dict, List[dict]]:
     """
     Apply modifications to checkpoint component state dict.
@@ -235,13 +237,15 @@ def modify_state_dict(
 
                 pg[key] = new_value
 
-                changes.append({
-                    "param_group": pg_idx,
-                    "parameter": key,
-                    "old_value": old_value,
-                    "new_value": new_value,
-                    "operation": operation,
-                })
+                changes.append(
+                    {
+                        "param_group": pg_idx,
+                        "parameter": key,
+                        "old_value": old_value,
+                        "new_value": new_value,
+                        "operation": operation,
+                    }
+                )
 
     elif component == "scheduler":
         # Modify scheduler state directly
@@ -268,12 +272,14 @@ def modify_state_dict(
 
             state_dict[key] = new_value
 
-            changes.append({
-                "parameter": key,
-                "old_value": old_value,
-                "new_value": new_value,
-                "operation": operation,
-            })
+            changes.append(
+                {
+                    "parameter": key,
+                    "old_value": old_value,
+                    "new_value": new_value,
+                    "operation": operation,
+                }
+            )
 
     else:
         # Generic component modification
@@ -300,21 +306,20 @@ def modify_state_dict(
 
             state_dict[key] = new_value
 
-            changes.append({
-                "parameter": key,
-                "old_value": old_value,
-                "new_value": new_value,
-                "operation": operation,
-            })
+            changes.append(
+                {
+                    "parameter": key,
+                    "old_value": old_value,
+                    "new_value": new_value,
+                    "operation": operation,
+                }
+            )
 
     return state_dict, changes
 
 
 def save_checkpoint_atomically(
-    file_path: str,
-    state_dict: dict,
-    backup: bool = True,
-    verbose: bool = False
+    file_path: str, state_dict: dict, backup: bool = True, verbose: bool = False
 ) -> bool:
     """
     Atomically save modified checkpoint with optional backup.
@@ -342,7 +347,7 @@ def save_checkpoint_atomically(
 
     # Step 1: Create backup with fsync
     if backup:
-        backup_path = Path(str(file_path) + '.bak')
+        backup_path = Path(str(file_path) + ".bak")
         if verbose:
             print(f"  Creating backup: {backup_path}")
 
@@ -359,7 +364,7 @@ def save_checkpoint_atomically(
         os.close(dir_fd)
 
     # Step 2: Write to temp file
-    temp_path = Path(str(file_path) + '.tmp')
+    temp_path = Path(str(file_path) + ".tmp")
     if verbose:
         print(f"  Writing to temp file: {temp_path}")
 
@@ -375,7 +380,7 @@ def save_checkpoint_atomically(
         print(f"  Validating temp file...")
 
     try:
-        loaded = torch.load(temp_path, map_location='cpu')
+        loaded = torch.load(temp_path, map_location="cpu")
 
         # Verify structure matches
         if set(loaded.keys()) != set(state_dict.keys()):
@@ -397,7 +402,9 @@ def save_checkpoint_atomically(
         raise RuntimeError(
             f"Modified checkpoint failed validation: {e}\n"
             f"Deleted temp file, original unchanged.\n"
-            f"Backup available at: {file_path}.bak" if backup else ""
+            f"Backup available at: {file_path}.bak"
+            if backup
+            else ""
         )
 
     # Step 4: Atomic replace
@@ -421,7 +428,7 @@ def update_checkpoint_manifest(
     checkpoint_dir: str,
     component: str,
     modified_files: List[str],
-    verbose: bool = False
+    verbose: bool = False,
 ) -> None:
     """
     Atomically update checkpoint_manifest.json after modifying component files.
@@ -453,7 +460,7 @@ def update_checkpoint_manifest(
         print(f"\nUpdating checkpoint manifest (atomic)...")
 
     # Step 1: Create backup
-    backup_path = Path(str(manifest_path) + '.bak')
+    backup_path = Path(str(manifest_path) + ".bak")
     if verbose:
         print(f"  Backing up manifest: {backup_path}")
 
@@ -470,7 +477,7 @@ def update_checkpoint_manifest(
     os.close(dir_fd)
 
     # Step 2: Load and update manifest
-    with open(manifest_path, 'r') as f:
+    with open(manifest_path, "r") as f:
         manifest = json.load(f)
 
     # Update component info
@@ -490,15 +497,16 @@ def update_checkpoint_manifest(
             component_info["metadata"] = {}
 
         from datetime import datetime
+
         component_info["metadata"]["modified_by"] = "forgather checkpoint modify"
         component_info["metadata"]["modified_at"] = datetime.now().isoformat()
 
     # Step 3: Write to temp file
-    temp_path = Path(str(manifest_path) + '.tmp')
+    temp_path = Path(str(manifest_path) + ".tmp")
     if verbose:
         print(f"  Writing updated manifest: {temp_path}")
 
-    with open(temp_path, 'w') as f:
+    with open(temp_path, "w") as f:
         json.dump(manifest, f, indent=2)
 
     # Fsync temp file
@@ -523,7 +531,7 @@ def format_value(value: Any) -> str:
     if isinstance(value, float):
         if abs(value) < 1e-3 or abs(value) > 1e4:
             return f"{value:.2e}"
-        return f"{value:.6f}".rstrip('0').rstrip('.')
+        return f"{value:.6f}".rstrip("0").rstrip(".")
     return str(value)
 
 
@@ -544,18 +552,30 @@ def print_changes_table(changes: List[dict], component: str) -> None:
         pg_width = 0
         param_width = max(len("Parameter"), max(len(c["parameter"]) for c in changes))
 
-    old_width = max(len("Old Value"), max(len(format_value(c["old_value"])) for c in changes))
-    new_width = max(len("New Value"), max(len(format_value(c["new_value"])) for c in changes))
+    old_width = max(
+        len("Old Value"), max(len(format_value(c["old_value"])) for c in changes)
+    )
+    new_width = max(
+        len("New Value"), max(len(format_value(c["new_value"])) for c in changes)
+    )
 
     # Print header
     print("\nChanges to apply:")
     if has_param_group:
-        print(f"┌─{'─' * pg_width}─┬─{'─' * param_width}─┬─{'─' * old_width}─┬─{'─' * new_width}─┐")
-        print(f"│ {'Group':<{pg_width}} │ {'Parameter':<{param_width}} │ {'Old Value':<{old_width}} │ {'New Value':<{new_width}} │")
-        print(f"├─{'─' * pg_width}─┼─{'─' * param_width}─┼─{'─' * old_width}─┼─{'─' * new_width}─┤")
+        print(
+            f"┌─{'─' * pg_width}─┬─{'─' * param_width}─┬─{'─' * old_width}─┬─{'─' * new_width}─┐"
+        )
+        print(
+            f"│ {'Group':<{pg_width}} │ {'Parameter':<{param_width}} │ {'Old Value':<{old_width}} │ {'New Value':<{new_width}} │"
+        )
+        print(
+            f"├─{'─' * pg_width}─┼─{'─' * param_width}─┼─{'─' * old_width}─┼─{'─' * new_width}─┤"
+        )
     else:
         print(f"┌─{'─' * param_width}─┬─{'─' * old_width}─┬─{'─' * new_width}─┐")
-        print(f"│ {'Parameter':<{param_width}} │ {'Old Value':<{old_width}} │ {'New Value':<{new_width}} │")
+        print(
+            f"│ {'Parameter':<{param_width}} │ {'Old Value':<{old_width}} │ {'New Value':<{new_width}} │"
+        )
         print(f"├─{'─' * param_width}─┼─{'─' * old_width}─┼─{'─' * new_width}─┤")
 
     # Print rows
@@ -566,14 +586,20 @@ def print_changes_table(changes: List[dict], component: str) -> None:
         if has_param_group:
             pg = str(change["param_group"])
             param = change["parameter"]
-            print(f"│ {pg:<{pg_width}} │ {param:<{param_width}} │ {old_val:<{old_width}} │ {new_val:<{new_width}} │")
+            print(
+                f"│ {pg:<{pg_width}} │ {param:<{param_width}} │ {old_val:<{old_width}} │ {new_val:<{new_width}} │"
+            )
         else:
             param = change["parameter"]
-            print(f"│ {param:<{param_width}} │ {old_val:<{old_width}} │ {new_val:<{new_width}} │")
+            print(
+                f"│ {param:<{param_width}} │ {old_val:<{old_width}} │ {new_val:<{new_width}} │"
+            )
 
     # Print footer
     if has_param_group:
-        print(f"└─{'─' * pg_width}─┴─{'─' * param_width}─┴─{'─' * old_width}─┴─{'─' * new_width}─┘")
+        print(
+            f"└─{'─' * pg_width}─┴─{'─' * param_width}─┴─{'─' * old_width}─┴─{'─' * new_width}─┘"
+        )
     else:
         print(f"└─{'─' * param_width}─┴─{'─' * old_width}─┴─{'─' * new_width}─┘")
 
@@ -590,7 +616,7 @@ def cmd_list(args):
     print(f"Files: {', '.join(Path(f).name for f in files)}")
 
     # Load first file to inspect structure
-    state_dict = torch.load(files[0], map_location='cpu')
+    state_dict = torch.load(files[0], map_location="cpu")
     modifiable = list_modifiable_parameters(state_dict, args.component)
 
     if args.component == "optimizer" and "param_groups" in modifiable:
@@ -622,39 +648,49 @@ def cmd_modify(args):
     modifications = []
 
     for set_arg in args.set:
-        if '=' not in set_arg:
+        if "=" not in set_arg:
             print(f"Error: Invalid --set format: {set_arg}", file=sys.stderr)
             print("Expected: KEY=VALUE", file=sys.stderr)
             return 1
 
-        key, value_str = set_arg.split('=', 1)
+        key, value_str = set_arg.split("=", 1)
         try:
             value = parse_value(value_str)
         except Exception as e:
-            print(f"Error: Failed to parse value '{value_str}' for parameter '{key}': {e}", file=sys.stderr)
+            print(
+                f"Error: Failed to parse value '{value_str}' for parameter '{key}': {e}",
+                file=sys.stderr,
+            )
             return 1
 
         modifications.append((key, "set", value))
 
     for scale_arg in args.scale:
-        if '=' not in scale_arg:
+        if "=" not in scale_arg:
             print(f"Error: Invalid --scale format: {scale_arg}", file=sys.stderr)
             print("Expected: KEY=FACTOR", file=sys.stderr)
             return 1
 
-        key, factor_str = scale_arg.split('=', 1)
+        key, factor_str = scale_arg.split("=", 1)
         try:
             factor = parse_value(factor_str)
             if not isinstance(factor, (int, float)):
-                raise ValueError(f"Scale factor must be numeric, got {type(factor).__name__}")
+                raise ValueError(
+                    f"Scale factor must be numeric, got {type(factor).__name__}"
+                )
         except Exception as e:
-            print(f"Error: Failed to parse scale factor '{factor_str}' for parameter '{key}': {e}", file=sys.stderr)
+            print(
+                f"Error: Failed to parse scale factor '{factor_str}' for parameter '{key}': {e}",
+                file=sys.stderr,
+            )
             return 1
 
         modifications.append((key, "scale", factor))
 
     if not modifications:
-        print("Error: No modifications specified (use --set or --scale)", file=sys.stderr)
+        print(
+            "Error: No modifications specified (use --set or --scale)", file=sys.stderr
+        )
         return 1
 
     # Discover checkpoint files
@@ -672,7 +708,7 @@ def cmd_modify(args):
         print(f"Found: {', '.join(Path(f).name for f in files)}")
 
     # Load first file to preview changes
-    state_dict = torch.load(files[0], map_location='cpu')
+    state_dict = torch.load(files[0], map_location="cpu")
 
     print(f"\nComponent: {args.component}")
     if args.component == "optimizer":
@@ -685,7 +721,7 @@ def cmd_modify(args):
             state_dict.copy() if args.component != "optimizer" else state_dict,
             modifications,
             args.component,
-            args.param_group
+            args.param_group,
         )
     except ValueError as e:
         print(f"\nError: {e}", file=sys.stderr)
@@ -708,12 +744,12 @@ def cmd_modify(args):
         print()
         if not args.no_backup:
             response = input("Create backup? [Y/n]: ").strip().lower()
-            create_backup = response != 'n'
+            create_backup = response != "n"
         else:
             create_backup = False
 
         response = input("Proceed with modification? [y/N]: ").strip().lower()
-        if response != 'y':
+        if response != "y":
             print("Aborted.")
             return 0
     else:
@@ -729,14 +765,11 @@ def cmd_modify(args):
     for file_path in files:
         try:
             # Load state
-            state_dict = torch.load(file_path, map_location='cpu')
+            state_dict = torch.load(file_path, map_location="cpu")
 
             # Apply modifications
             modified_state, _ = modify_state_dict(
-                state_dict,
-                modifications,
-                args.component,
-                args.param_group
+                state_dict, modifications, args.component, args.param_group
             )
 
             # Save atomically
@@ -744,10 +777,7 @@ def cmd_modify(args):
                 print(f"\nModifying {file_path}...")
 
             save_checkpoint_atomically(
-                file_path,
-                modified_state,
-                backup=create_backup,
-                verbose=args.verbose
+                file_path, modified_state, backup=create_backup, verbose=args.verbose
             )
 
             modified_files.append(file_path)
@@ -766,10 +796,7 @@ def cmd_modify(args):
 
     try:
         update_checkpoint_manifest(
-            str(checkpoint_dir),
-            args.component,
-            modified_files,
-            verbose=args.verbose
+            str(checkpoint_dir), args.component, modified_files, verbose=args.verbose
         )
     except Exception as e:
         print(f"\nWarning: Failed to update checkpoint manifest: {e}", file=sys.stderr)
@@ -784,86 +811,75 @@ def main():
         description="Modify optimizer, scheduler, and other component parameters in Forgather checkpoints"
     )
 
-    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
 
     # List command
     list_parser = subparsers.add_parser(
-        'list',
-        help='List modifiable parameters in a checkpoint component'
+        "list", help="List modifiable parameters in a checkpoint component"
     )
     list_parser.add_argument(
-        'checkpoint_path',
-        help='Path to checkpoint directory or file'
+        "checkpoint_path", help="Path to checkpoint directory or file"
     )
     list_parser.add_argument(
-        '--component',
-        default='optimizer',
-        help='Component to inspect (default: optimizer)'
+        "--component",
+        default="optimizer",
+        help="Component to inspect (default: optimizer)",
     )
     list_parser.add_argument(
-        '--verbose', '-v',
-        action='store_true',
-        help='Show value types and detailed information'
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Show value types and detailed information",
     )
 
     # Modify command
     modify_parser = subparsers.add_parser(
-        'modify',
-        help='Modify parameters in a checkpoint component'
+        "modify", help="Modify parameters in a checkpoint component"
     )
     modify_parser.add_argument(
-        'checkpoint_path',
-        help='Path to checkpoint directory or file'
+        "checkpoint_path", help="Path to checkpoint directory or file"
     )
     modify_parser.add_argument(
-        '--component',
-        default='optimizer',
-        help='Component to modify (default: optimizer)'
+        "--component",
+        default="optimizer",
+        help="Component to modify (default: optimizer)",
     )
     modify_parser.add_argument(
-        '--set',
-        action='append',
+        "--set",
+        action="append",
         default=[],
-        metavar='KEY=VALUE',
-        help='Set parameter to exact value (can be used multiple times)'
+        metavar="KEY=VALUE",
+        help="Set parameter to exact value (can be used multiple times)",
     )
     modify_parser.add_argument(
-        '--scale',
-        action='append',
+        "--scale",
+        action="append",
         default=[],
-        metavar='KEY=FACTOR',
-        help='Multiply parameter by factor (can be used multiple times)'
+        metavar="KEY=FACTOR",
+        help="Multiply parameter by factor (can be used multiple times)",
     )
     modify_parser.add_argument(
-        '--param-group',
+        "--param-group",
         type=int,
-        metavar='INDEX',
-        help='For optimizer: target specific param group (default: all)'
+        metavar="INDEX",
+        help="For optimizer: target specific param group (default: all)",
     )
     modify_parser.add_argument(
-        '--dry-run',
-        action='store_true',
-        help='Preview changes without saving'
+        "--dry-run", action="store_true", help="Preview changes without saving"
     )
     modify_parser.add_argument(
-        '--no-backup',
-        action='store_true',
-        help='Skip backup creation (still uses atomic operations)'
+        "--no-backup",
+        action="store_true",
+        help="Skip backup creation (still uses atomic operations)",
     )
     modify_parser.add_argument(
-        '--force',
-        action='store_true',
-        help='Skip confirmation prompts'
+        "--force", action="store_true", help="Skip confirmation prompts"
     )
     modify_parser.add_argument(
-        '--verbose', '-v',
-        action='store_true',
-        help='Detailed logging'
+        "--verbose", "-v", action="store_true", help="Detailed logging"
     )
     modify_parser.add_argument(
-        '--quiet', '-q',
-        action='store_true',
-        help='Minimal output'
+        "--quiet", "-q", action="store_true", help="Minimal output"
     )
 
     args = parser.parse_args()
@@ -872,14 +888,14 @@ def main():
         parser.print_help()
         return 1
 
-    if args.command == 'list':
+    if args.command == "list":
         return cmd_list(args)
-    elif args.command == 'modify':
+    elif args.command == "modify":
         return cmd_modify(args)
     else:
         parser.print_help()
         return 1
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

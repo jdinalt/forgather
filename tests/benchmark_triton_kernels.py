@@ -18,7 +18,7 @@ from glu_feedforward import _HAS_TRITON
 
 if _HAS_TRITON:
     import triton
-    from glu_feedforward import _FusedSiLUMul, _FusedGELUMul
+    from glu_feedforward import _FusedGELUMul, _FusedSiLUMul
     from rotary_embeddings import (
         _FusedRoPERotation,
         _prepare_cos_sin_for_triton,
@@ -95,7 +95,10 @@ def benchmark_silu_mul():
     )
     print("-" * 70)
 
-    for n_tokens, d_ff, label in [(512, 11008, "Llama-7B"), (2048, 11008, "Long Llama")]:
+    for n_tokens, d_ff, label in [
+        (512, 11008, "Llama-7B"),
+        (2048, 11008, "Long Llama"),
+    ]:
         gate = torch.randn(
             n_tokens, d_ff, device=device, dtype=torch.float32, requires_grad=True
         )
@@ -173,9 +176,7 @@ def benchmark_rope():
                 return (q * cos) + (rotate_half(q) * sin)
 
             # Triton fused
-            cos_t, sin_t = _prepare_cos_sin_for_triton(
-                cos, sin, batch, seq_len, d_head
-            )
+            cos_t, sin_t = _prepare_cos_sin_for_triton(cos, sin, batch, seq_len, d_head)
             q_c = q.contiguous()
 
             def triton_fn():
@@ -291,7 +292,9 @@ def memory_bandwidth_analysis():
     bw_rope = total_bytes_rope / (triton_ms_rope / 1000) / 1e9
 
     print(f"\nRoPE ({batch}x{seq_len}x{num_heads}x{d_head}, bf16):")
-    print(f"  Forward:  {triton_ms_rope:.3f} ms, {bw_rope:.1f} GB/s effective bandwidth")
+    print(
+        f"  Forward:  {triton_ms_rope:.3f} ms, {bw_rope:.1f} GB/s effective bandwidth"
+    )
 
 
 def main():

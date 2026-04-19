@@ -167,7 +167,10 @@ class StateComponent:
                     "must specify process_group_name"
                 )
 
-        if self.validate_replication and self.sharing_pattern != SharingPattern.REPLICATED:
+        if (
+            self.validate_replication
+            and self.sharing_pattern != SharingPattern.REPLICATED
+        ):
             raise ValueError(
                 f"StateComponent '{self.key}' has validate_replication=True "
                 f"but sharing_pattern is {self.sharing_pattern.value}. "
@@ -389,9 +392,11 @@ def _state_dict_to_serializable(obj: Any) -> Any:
             "dtype": str(obj.dtype),
             "device": device_str,
             # Sample a few values for lightweight validation
-            "sample": obj.flatten()[:min(10, obj.numel())].tolist()
-            if obj.numel() > 0
-            else [],
+            "sample": (
+                obj.flatten()[: min(10, obj.numel())].tolist()
+                if obj.numel() > 0
+                else []
+            ),
         }
     elif isinstance(obj, (int, float, str, bool, type(None))):
         return obj

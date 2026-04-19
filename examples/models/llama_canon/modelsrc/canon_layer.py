@@ -46,10 +46,18 @@ if _HAS_TRITON:
 
     @triton.jit
     def _causal_dconv1d_fwd_kernel(
-        x_ptr, w_ptr, out_ptr,
-        T, C, K: tl.constexpr,
-        stride_xb, stride_xt, stride_xc,
-        stride_ob, stride_ot, stride_oc,
+        x_ptr,
+        w_ptr,
+        out_ptr,
+        T,
+        C,
+        K: tl.constexpr,
+        stride_xb,
+        stride_xt,
+        stride_xc,
+        stride_ob,
+        stride_ot,
+        stride_oc,
         RESIDUAL: tl.constexpr,
         BLOCK_C: tl.constexpr,
     ):
@@ -59,10 +67,24 @@ if _HAS_TRITON:
         c_offs = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
         c_mask = c_offs < C
 
-        w0 = tl.load(w_ptr + c_offs * K + (K - 1), mask=c_mask, other=0.0).to(tl.float32)
-        w1 = tl.load(w_ptr + c_offs * K + (K - 2), mask=c_mask, other=0.0).to(tl.float32) if K > 1 else tl.zeros([BLOCK_C], dtype=tl.float32)
-        w2 = tl.load(w_ptr + c_offs * K + (K - 3), mask=c_mask, other=0.0).to(tl.float32) if K > 2 else tl.zeros([BLOCK_C], dtype=tl.float32)
-        w3 = tl.load(w_ptr + c_offs * K + (K - 4), mask=c_mask, other=0.0).to(tl.float32) if K > 3 else tl.zeros([BLOCK_C], dtype=tl.float32)
+        w0 = tl.load(w_ptr + c_offs * K + (K - 1), mask=c_mask, other=0.0).to(
+            tl.float32
+        )
+        w1 = (
+            tl.load(w_ptr + c_offs * K + (K - 2), mask=c_mask, other=0.0).to(tl.float32)
+            if K > 1
+            else tl.zeros([BLOCK_C], dtype=tl.float32)
+        )
+        w2 = (
+            tl.load(w_ptr + c_offs * K + (K - 3), mask=c_mask, other=0.0).to(tl.float32)
+            if K > 2
+            else tl.zeros([BLOCK_C], dtype=tl.float32)
+        )
+        w3 = (
+            tl.load(w_ptr + c_offs * K + (K - 4), mask=c_mask, other=0.0).to(tl.float32)
+            if K > 3
+            else tl.zeros([BLOCK_C], dtype=tl.float32)
+        )
 
         buf0 = tl.zeros([BLOCK_C], dtype=tl.float32)
         buf1 = tl.zeros([BLOCK_C], dtype=tl.float32)
@@ -78,7 +100,8 @@ if _HAS_TRITON:
             buf1 = buf0
             buf0 = tl.load(
                 base_x + t * stride_xt + c_offs * stride_xc,
-                mask=c_mask, other=0.0,
+                mask=c_mask,
+                other=0.0,
             ).to(tl.float32)
 
             acc = w0 * buf0 + w1 * buf1
@@ -93,10 +116,20 @@ if _HAS_TRITON:
 
     @triton.jit
     def _causal_dconv1d_bwd_kernel(
-        dout_ptr, x_ptr, w_ptr, dx_ptr, dw_ptr,
-        T, C, K: tl.constexpr,
-        stride_db, stride_dt, stride_dc,
-        stride_xb, stride_xt, stride_xc,
+        dout_ptr,
+        x_ptr,
+        w_ptr,
+        dx_ptr,
+        dw_ptr,
+        T,
+        C,
+        K: tl.constexpr,
+        stride_db,
+        stride_dt,
+        stride_dc,
+        stride_xb,
+        stride_xt,
+        stride_xc,
         RESIDUAL: tl.constexpr,
         BLOCK_C: tl.constexpr,
     ):
@@ -113,10 +146,24 @@ if _HAS_TRITON:
         c_mask = c_offs < C
 
         # Load weights for dx computation
-        w0 = tl.load(w_ptr + c_offs * K + (K - 1), mask=c_mask, other=0.0).to(tl.float32)
-        w1 = tl.load(w_ptr + c_offs * K + (K - 2), mask=c_mask, other=0.0).to(tl.float32) if K > 1 else tl.zeros([BLOCK_C], dtype=tl.float32)
-        w2 = tl.load(w_ptr + c_offs * K + (K - 3), mask=c_mask, other=0.0).to(tl.float32) if K > 2 else tl.zeros([BLOCK_C], dtype=tl.float32)
-        w3 = tl.load(w_ptr + c_offs * K + (K - 4), mask=c_mask, other=0.0).to(tl.float32) if K > 3 else tl.zeros([BLOCK_C], dtype=tl.float32)
+        w0 = tl.load(w_ptr + c_offs * K + (K - 1), mask=c_mask, other=0.0).to(
+            tl.float32
+        )
+        w1 = (
+            tl.load(w_ptr + c_offs * K + (K - 2), mask=c_mask, other=0.0).to(tl.float32)
+            if K > 1
+            else tl.zeros([BLOCK_C], dtype=tl.float32)
+        )
+        w2 = (
+            tl.load(w_ptr + c_offs * K + (K - 3), mask=c_mask, other=0.0).to(tl.float32)
+            if K > 2
+            else tl.zeros([BLOCK_C], dtype=tl.float32)
+        )
+        w3 = (
+            tl.load(w_ptr + c_offs * K + (K - 4), mask=c_mask, other=0.0).to(tl.float32)
+            if K > 3
+            else tl.zeros([BLOCK_C], dtype=tl.float32)
+        )
 
         # dw accumulators (per-channel partial sums for this batch element)
         dw0 = tl.zeros([BLOCK_C], dtype=tl.float32)
@@ -140,12 +187,14 @@ if _HAS_TRITON:
             x_buf1 = x_buf0
             x_buf0 = tl.load(
                 base_x + t * stride_xt + c_offs * stride_xc,
-                mask=c_mask, other=0.0,
+                mask=c_mask,
+                other=0.0,
             ).to(tl.float32)
 
             dout_val = tl.load(
                 base_d + t * stride_dt + c_offs * stride_dc,
-                mask=c_mask, other=0.0,
+                mask=c_mask,
+                other=0.0,
             ).to(tl.float32)
 
             # dw[c, K-1-k] += dout[b,t,c] * x[b,t-k,c]
@@ -180,7 +229,8 @@ if _HAS_TRITON:
             d_buf1 = d_buf0
             d_buf0 = tl.load(
                 base_d + t * stride_dt + c_offs * stride_dc,
-                mask=c_mask, other=0.0,
+                mask=c_mask,
+                other=0.0,
             ).to(tl.float32)
 
             acc = w0 * d_buf0 + w1 * d_buf1
@@ -204,10 +254,18 @@ class _CausalDConv1dFn(torch.autograd.Function):
         grid = (B, triton.cdiv(C, BLOCK_C))
 
         _causal_dconv1d_fwd_kernel[grid](
-            x, weight, out,
-            T, C, weight.shape[1],
-            x.stride(0), x.stride(1), x.stride(2),
-            out.stride(0), out.stride(1), out.stride(2),
+            x,
+            weight,
+            out,
+            T,
+            C,
+            weight.shape[1],
+            x.stride(0),
+            x.stride(1),
+            x.stride(2),
+            out.stride(0),
+            out.stride(1),
+            out.stride(2),
             RESIDUAL=residual,
             BLOCK_C=BLOCK_C,
         )
@@ -229,10 +287,20 @@ class _CausalDConv1dFn(torch.autograd.Function):
         grid = (B, triton.cdiv(C, BLOCK_C))
 
         _causal_dconv1d_bwd_kernel[grid](
-            grad_out, x, weight, grad_x, grad_w,
-            T, C, K,
-            grad_out.stride(0), grad_out.stride(1), grad_out.stride(2),
-            x.stride(0), x.stride(1), x.stride(2),
+            grad_out,
+            x,
+            weight,
+            grad_x,
+            grad_w,
+            T,
+            C,
+            K,
+            grad_out.stride(0),
+            grad_out.stride(1),
+            grad_out.stride(2),
+            x.stride(0),
+            x.stride(1),
+            x.stride(2),
             RESIDUAL=ctx.residual,
             BLOCK_C=BLOCK_C,
         )

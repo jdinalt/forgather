@@ -24,15 +24,14 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, UTC
+from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 import torch
 from torch import distributed as dist
 from torch.distributed.elastic.multiprocessing.errors import record
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-
-from dataclasses import asdict
 
 from forgather.eval_config import EvalResult, TestConfig
 
@@ -53,7 +52,9 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Evaluate a model on a named eval config",
     )
-    parser.add_argument("--eval-project", required=True, help="Path to eval-config project")
+    parser.add_argument(
+        "--eval-project", required=True, help="Path to eval-config project"
+    )
     parser.add_argument("--eval-config", required=True, help="Config template name")
     parser.add_argument("--model", required=True, help="Path to model directory")
     parser.add_argument(
@@ -145,8 +146,8 @@ def resolve_checkpoint(args):
 
 def build_trainer(args, model_init, eval_dataset, data_collator, tokenizer, device):
     """Construct the selected trainer directly, no project involved."""
-    from forgather.ml.loss import CausalLoss
     from forgather.ml.distributed import DistributedEnvironment
+    from forgather.ml.loss import CausalLoss
 
     checkpoint_arg, _ = resolve_checkpoint(args)
     output_dir = args.output_dir or args.model
@@ -199,8 +200,14 @@ def build_trainer(args, model_init, eval_dataset, data_collator, tokenizer, devi
             distributed_env=from_env(),
         )
     elif args.trainer == "pipeline":
-        from forgather.ml.trainer.pipeline import PipelineTrainer, PipelineTrainingArguments, create_manual_causal_lm_splitter
         from torch.distributed.pipelining import ScheduleGPipe
+
+        from forgather.ml.trainer.pipeline import (
+            PipelineTrainer,
+            PipelineTrainingArguments,
+            create_manual_causal_lm_splitter,
+        )
+
         common["n_microbatches"] = 4
 
         distributed_env = DistributedEnvironment()
@@ -221,6 +228,7 @@ def build_trainer(args, model_init, eval_dataset, data_collator, tokenizer, devi
 
     return trainer
 
+
 def format_header(record):
     lines = [
         "=" * 72,
@@ -230,14 +238,16 @@ def format_header(record):
     ]
     if record.get("checkpoint_path"):
         lines.append(f"Checkpoint:       {record['checkpoint_path']}")
-    lines.extend([
-        f"Dataset:          {record['dataset_proj']}  [{record['dataset_config']}]",
-        f"Target:           {record['dataset_target']}",
-        f"Trainer:          {record['trainer']}  (world_size={record['world_size']})",
-        f"Batch size:       {record['batch_size']}  max_length={record['max_length']}",
-        f"Dtype:            {record['dtype']}  attn={record['attn_implementation']}",
-        "=" * 72,
-    ])
+    lines.extend(
+        [
+            f"Dataset:          {record['dataset_proj']}  [{record['dataset_config']}]",
+            f"Target:           {record['dataset_target']}",
+            f"Trainer:          {record['trainer']}  (world_size={record['world_size']})",
+            f"Batch size:       {record['batch_size']}  max_length={record['max_length']}",
+            f"Dtype:            {record['dtype']}  attn={record['attn_implementation']}",
+            "=" * 72,
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -273,20 +283,27 @@ def main():
         args.max_length = test_config.default_max_length
     if args.stride is None:
         args.stride = test_config.default_stride
-    
+
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     # Load dataset from project
-    dataset_proj = Project(test_config.dataset_config, test_config.dataset_proj, max_length=args.max_length, stride=args.stride)
+    dataset_proj = Project(
+        test_config.dataset_config,
+        test_config.dataset_proj,
+        max_length=args.max_length,
+        stride=args.stride,
+    )
     dataset_proj_meta: dict = dataset_proj("meta")
     dataset_config_class = dataset_proj_meta["config_class"]
     if dataset_config_class != "type.dataset":
         raise TypeError(f"Expected class type.dataset, found {dataset_config_class}")
-    
-    eval_dataset = dataset_proj(test_config.dataset_target, tokenizer=tokenizer, preprocess_args=dict())
+
+    eval_dataset = dataset_proj(
+        test_config.dataset_target, tokenizer=tokenizer, preprocess_args=dict()
+    )
 
     # Device for model construction.
     local_rank = int(os.environ.get("LOCAL_RANK", rank))
@@ -296,9 +313,7 @@ def main():
     attn_impl = args.attn_implementation
 
     checkpoint_arg, use_checkpoint = resolve_checkpoint(args)
-    model_init = build_model_init(
-        args.model, dtype, attn_impl, device, use_checkpoint
-    )
+    model_init = build_model_init(args.model, dtype, attn_impl, device, use_checkpoint)
 
     data_collator = DataCollatorForCausalLM(
         tokenizer=tokenizer,
@@ -315,7 +330,11 @@ def main():
         resolved_ckpt = (
             args.checkpoint
             if (args.checkpoint and use_checkpoint)
-            else (getattr(trainer.args, "resume_from_checkpoint", None) if use_checkpoint else None)
+            else (
+                getattr(trainer.args, "resume_from_checkpoint", None)
+                if use_checkpoint
+                else None
+            )
         )
         if resolved_ckpt is True:
             resolved_ckpt = None  # trainer may leave as True if no checkpoint existed

@@ -347,13 +347,9 @@ def main():
 
             if args.save_format == "huggingface":
                 logger.info("Using HuggingFace save_pretrained() format")
-                model.save_pretrained(
-                    output_path, safe_serialization=args.safetensors
-                )
+                model.save_pretrained(output_path, safe_serialization=args.safetensors)
                 tokenizer.save_pretrained(output_path)
-                logger.info(
-                    "Model and tokenizer saved (config saved automatically)"
-                )
+                logger.info("Model and tokenizer saved (config saved automatically)")
 
             elif args.save_format == "sharded":
                 logger.info("Using Forgather sharded checkpoint format")

@@ -36,10 +36,9 @@ class PreLNLayer(nn.Module):
 
     def extra_repr(self):
         return (
-            f"dropout={self.dropout_p}, "
-            f"residual_dropout={self.residual_dropout_p}"
+            f"dropout={self.dropout_p}, " f"residual_dropout={self.residual_dropout_p}"
         )
-    
+
     def forward(self, x: FloatTensor, **kwargs) -> FloatTensor:
         residual = self.residual_dropout(x)
         x = self.norm1(x)

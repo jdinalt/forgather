@@ -6,8 +6,8 @@ Tests the TrainingScript dataclass and its run() method.
 """
 
 import unittest
-from unittest.mock import Mock, patch, MagicMock
 from dataclasses import dataclass
+from unittest.mock import MagicMock, Mock, patch
 
 from forgather.dotdict import DotDict
 from forgather.ml.training_script import TrainingScript
@@ -55,7 +55,9 @@ class TestTrainingScript(unittest.TestCase):
         trainer = Mock()
         trainer.train.return_value = "train_output"
 
-        ts = TrainingScript(meta=meta, trainer=trainer, do_train=True, do_eval=False, do_save=False)
+        ts = TrainingScript(
+            meta=meta, trainer=trainer, do_train=True, do_eval=False, do_save=False
+        )
         ts.run()
 
         trainer.train.assert_called_once()
@@ -68,7 +70,9 @@ class TestTrainingScript(unittest.TestCase):
         trainer = Mock()
         trainer.evaluate.return_value = {}
 
-        ts = TrainingScript(meta=meta, trainer=trainer, do_train=False, do_eval=True, do_save=False)
+        ts = TrainingScript(
+            meta=meta, trainer=trainer, do_train=False, do_eval=True, do_save=False
+        )
         ts.run()
 
         trainer.train.assert_not_called()
@@ -80,7 +84,9 @@ class TestTrainingScript(unittest.TestCase):
         meta = self._make_meta()
         trainer = Mock()
 
-        ts = TrainingScript(meta=meta, trainer=trainer, do_train=False, do_eval=False, do_save=True)
+        ts = TrainingScript(
+            meta=meta, trainer=trainer, do_train=False, do_eval=False, do_save=True
+        )
         ts.run()
 
         trainer.train.assert_not_called()
@@ -108,7 +114,9 @@ class TestTrainingScript(unittest.TestCase):
         meta = self._make_meta()
         trainer = Mock()
 
-        ts = TrainingScript(meta=meta, trainer=trainer, do_train=False, do_eval=False, do_save=False)
+        ts = TrainingScript(
+            meta=meta, trainer=trainer, do_train=False, do_eval=False, do_save=False
+        )
         ts.run()
 
         trainer.train.assert_not_called()
@@ -150,6 +158,7 @@ class TestRescaleLoss(unittest.TestCase):
     def test_rescale_applies_factor(self):
         """Test that RescaleLoss multiplies loss by scale_factor."""
         import torch
+
         from forgather.ml.loss import RescaleLoss
 
         base_loss_fn = Mock(return_value=torch.tensor(2.0))
@@ -163,6 +172,7 @@ class TestRescaleLoss(unittest.TestCase):
     def test_rescale_factor_of_one(self):
         """Test that scale_factor=1 returns unchanged loss."""
         import torch
+
         from forgather.ml.loss import RescaleLoss
 
         base_loss_fn = Mock(return_value=torch.tensor(3.0))
@@ -175,6 +185,7 @@ class TestRescaleLoss(unittest.TestCase):
     def test_no_rescale_context_manager(self):
         """Test that no_rescale() context manager disables rescaling."""
         import torch
+
         from forgather.ml.loss import RescaleLoss
 
         base_loss_fn = Mock(return_value=torch.tensor(4.0))
@@ -196,6 +207,7 @@ class TestRescaleLoss(unittest.TestCase):
     def test_no_rescale_restores_on_exception(self):
         """Test that no_rescale() restores state even after exception."""
         import torch
+
         from forgather.ml.loss import RescaleLoss
 
         base_loss_fn = Mock(return_value=torch.tensor(2.0))
@@ -214,6 +226,7 @@ class TestRescaleLoss(unittest.TestCase):
     def test_functools_update_wrapper(self):
         """Test that RescaleLoss wraps the underlying function metadata."""
         import torch
+
         from forgather.ml.loss import RescaleLoss
 
         def my_loss_fn(logits, labels):
@@ -229,6 +242,7 @@ class TestRescaleLoss(unittest.TestCase):
     def test_rescale_with_zero_factor(self):
         """Test rescaling with factor 0 returns zero loss."""
         import torch
+
         from forgather.ml.loss import RescaleLoss
 
         base_loss_fn = Mock(return_value=torch.tensor(5.0))

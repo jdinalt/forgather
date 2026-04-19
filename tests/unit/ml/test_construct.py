@@ -290,7 +290,9 @@ class TestShouldWriteFile(unittest.TestCase):
         """When file does not exist, should return True regardless of policy."""
         for policy in ("ok", "warn", "skip", "raise"):
             result = _should_write_file(self.nonexistent_file, policy)
-            self.assertTrue(result, f"Expected True for policy '{policy}' when file does not exist")
+            self.assertTrue(
+                result, f"Expected True for policy '{policy}' when file does not exist"
+            )
 
     def test_existing_file_ok(self):
         """With 'ok' policy and existing file, should return True."""

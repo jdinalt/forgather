@@ -17,11 +17,10 @@ import torch
 # Ensure project root is in path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.forgather.ml.optim.adafactor import Adafactor, _adafactor
-from src.forgather.ml.optim import adafactor_triton as triton_new
-
 # Import original triton for comparison
+from src.forgather.ml.optim import adafactor_triton as triton_new
 from src.forgather.ml.optim import adafactor_triton_original as triton_old
+from src.forgather.ml.optim.adafactor import Adafactor, _adafactor
 
 
 def make_test_tensors(n_rows, n_cols, device, dtype=torch.bfloat16):
@@ -48,7 +47,7 @@ def reference_step_2d(param, grad, row, col, beta2t, eps1, lr, wd, clip_thr):
     if wd > 0:
         p.add_(p, alpha=(-lr * wd))
     g32 = g.float()
-    update = g32 ** 2 + eps1
+    update = g32**2 + eps1
     r32 = r.float()
     c32 = c.float()
     r32.lerp_(update.sum(dim=-1), 1.0 - beta2t)
@@ -71,7 +70,7 @@ def reference_step_1d(param, grad, state, beta2t, eps1, lr, wd, clip_thr):
     if wd > 0:
         p.add_(p, alpha=(-lr * wd))
     g32 = g.float()
-    upd = g32 ** 2 + eps1
+    upd = g32**2 + eps1
     s32 = s.float()
     s32.lerp_(upd, 1.0 - beta2t)
     upd = g32 / s32.sqrt()
@@ -109,7 +108,10 @@ def test_correctness_2d(device, sizes=None):
 
         # New Triton
         p_new, g_new, r_new, c_new = (
-            param.clone(), grad.clone(), row.clone(), col.clone(),
+            param.clone(),
+            grad.clone(),
+            row.clone(),
+            col.clone(),
         )
         triton_new.adafactor_step_2d_triton(
             p_new, g_new, r_new, c_new, beta2t, eps1, lr, wd, clip_thr
@@ -121,7 +123,10 @@ def test_correctness_2d(device, sizes=None):
 
         # Compare new Triton vs old Triton (should match closely)
         p_old, g_old, r_old, c_old = (
-            param.clone(), grad.clone(), row.clone(), col.clone(),
+            param.clone(),
+            grad.clone(),
+            row.clone(),
+            col.clone(),
         )
         triton_old.adafactor_step_2d_triton(
             p_old, g_old, r_old, c_old, beta2t, eps1, lr, wd, clip_thr
@@ -134,9 +139,11 @@ def test_correctness_2d(device, sizes=None):
         all_pass = all_pass and passed
         status = "PASS" if passed else "FAIL"
 
-        print(f"  [{status}] {n_rows}x{n_cols}: "
-              f"vs_ref={p_diff:.2e}, vs_old_triton={new_vs_old:.2e}, "
-              f"row_diff={r_diff:.2e}, col_diff={c_diff:.2e}")
+        print(
+            f"  [{status}] {n_rows}x{n_cols}: "
+            f"vs_ref={p_diff:.2e}, vs_old_triton={new_vs_old:.2e}, "
+            f"row_diff={r_diff:.2e}, col_diff={c_diff:.2e}"
+        )
 
     return all_pass
 
@@ -200,7 +207,7 @@ def benchmark_step_2d(device, n_rows, n_cols, n_warmup=10, n_iter=50):
         if wd > 0:
             p.add_(p, alpha=(-lr * wd))
         g32 = g.float()
-        upd = g32 ** 2 + eps1
+        upd = g32**2 + eps1
         r32 = r.float()
         c32 = c.float()
         r32.lerp_(upd.sum(dim=-1), 1.0 - beta2t)
@@ -269,7 +276,7 @@ def benchmark_step_1d(device, n, n_warmup=10, n_iter=50):
         if wd > 0:
             p.add_(p, alpha=(-lr * wd))
         g32 = g.float()
-        upd = g32 ** 2 + eps1
+        upd = g32**2 + eps1
         s32 = s.float()
         s32.lerp_(upd, 1.0 - beta2t)
         upd = g32 / s32.sqrt()
@@ -336,7 +343,9 @@ def main():
 
     # 2D benchmarks
     print("\n=== 2D Benchmarks (ms per step) ===")
-    print(f"{'Size':>14s} | {'PyTorch':>10s} | {'Old Triton':>10s} | {'New Triton':>10s} | {'Speedup':>8s}")
+    print(
+        f"{'Size':>14s} | {'PyTorch':>10s} | {'Old Triton':>10s} | {'New Triton':>10s} | {'Speedup':>8s}"
+    )
     print("-" * 70)
 
     sizes_2d = [
@@ -362,7 +371,9 @@ def main():
 
     # 1D benchmarks
     print("\n=== 1D Benchmarks (ms per step) ===")
-    print(f"{'Size':>14s} | {'PyTorch':>10s} | {'Old Triton':>10s} | {'New Triton':>10s} | {'Speedup':>8s}")
+    print(
+        f"{'Size':>14s} | {'PyTorch':>10s} | {'Old Triton':>10s} | {'New Triton':>10s} | {'Speedup':>8s}"
+    )
     print("-" * 70)
 
     sizes_1d = [512, 1024, 2048, 4096, 8192]

@@ -11,9 +11,9 @@ import unittest
 import torch
 
 from forgather.ml.remap_params import (
-    sub_param_name,
     remap_parameter_fqns,
     remap_state_dict,
+    sub_param_name,
 )
 
 

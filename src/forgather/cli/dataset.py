@@ -60,7 +60,9 @@ def dataset_cmd(args):
         template_args["select_range"] = args.select_range
 
     if args.tokenizer_path:
-        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(
+            args.tokenizer_path, trust_remote_code=True
+        )
         data += "Tokenizer:\n" + repr(tokenizer) + "\n"
         template_args["tokenizer"] = tokenizer
 

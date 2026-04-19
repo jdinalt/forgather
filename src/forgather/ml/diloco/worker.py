@@ -147,7 +147,9 @@ class DiLoCoWorker:
         # result. The main thread applies the result before starting the
         # next fragment submission.
         self._inflight_thread: Optional[threading.Thread] = None
-        self._inflight_result: Optional[Tuple[int, Optional[Dict[str, torch.Tensor]]]] = None
+        self._inflight_result: Optional[
+            Tuple[int, Optional[Dict[str, torch.Tensor]]]
+        ] = None
 
     @staticmethod
     def _generate_worker_id() -> str:
@@ -262,8 +264,7 @@ class DiLoCoWorker:
         if torch.cuda.is_available():
             info["num_gpus"] = torch.cuda.device_count()
             info["gpu_names"] = [
-                torch.cuda.get_device_name(i)
-                for i in range(torch.cuda.device_count())
+                torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())
             ]
 
         return info
@@ -341,9 +342,7 @@ class DiLoCoWorker:
         pseudograds = self._compute_pseudogradients()
 
         # Track send size
-        send_bytes = sum(
-            p.numel() * p.element_size() for p in pseudograds.values()
-        )
+        send_bytes = sum(p.numel() * p.element_size() for p in pseudograds.values())
         self._last_sync_send_bytes = send_bytes
 
         # Submit with retry on connection failure
@@ -418,9 +417,7 @@ class DiLoCoWorker:
             self._reconnections += 1
             logger.info(f"DiLoCoWorker {self.worker_id}: reconnected successfully")
         except Exception as e:
-            logger.warning(
-                f"DiLoCoWorker {self.worker_id}: reconnection failed: {e}"
-            )
+            logger.warning(f"DiLoCoWorker {self.worker_id}: reconnection failed: {e}")
 
     # --- Streaming fragment methods ---
 
@@ -442,9 +439,7 @@ class DiLoCoWorker:
             fragment_id, self._global_params, self.model, self.bf16_comm
         )
 
-        send_bytes = sum(
-            p.numel() * p.element_size() for p in pseudograds.values()
-        )
+        send_bytes = sum(p.numel() * p.element_size() for p in pseudograds.values())
 
         logger.info(
             f"DiLoCoWorker {self.worker_id}: submitting fragment {fragment_id} "

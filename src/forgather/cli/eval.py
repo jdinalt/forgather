@@ -54,9 +54,7 @@ def _iter_eval_configs(search_paths):
         for template_name, _template_path in meta.find_templates(meta.config_prefix):
             try:
                 proj = Project(template_name, project_dir)
-                cfg_class = Latent.materialize(proj.config.meta).get(
-                    "config_class", ""
-                )
+                cfg_class = Latent.materialize(proj.config.meta).get("config_class", "")
             except Exception:
                 continue
             if not cfg_class.startswith("type.evaluation"):
@@ -66,9 +64,9 @@ def _iter_eval_configs(search_paths):
             except Exception:
                 continue
             # Use eval_name if present, otherwise strip extension from template.
-            name = data.eval_name or os.path.splitext(
-                os.path.basename(template_name)
-            )[0]
+            name = (
+                data.eval_name or os.path.splitext(os.path.basename(template_name))[0]
+            )
             yield name, project_dir, template_name, data
 
 

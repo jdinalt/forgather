@@ -50,7 +50,9 @@ class HealthMonitor:
     ):
         self._server = server
         self.heartbeat_timeout = heartbeat_timeout
-        self.check_interval = check_interval if check_interval > 0 else heartbeat_timeout / 3
+        self.check_interval = (
+            check_interval if check_interval > 0 else heartbeat_timeout / 3
+        )
         self._thread = None
         self._stop_event = threading.Event()
 

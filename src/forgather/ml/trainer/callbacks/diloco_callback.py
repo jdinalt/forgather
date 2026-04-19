@@ -103,24 +103,21 @@ class DiLoCoCallback(TrainerCallback):
         # Resolve with env var fallbacks
         self.server_addr = server_addr or os.environ.get("DILOCO_SERVER", "")
         self.sync_every = (
-            sync_every if sync_every is not None
-            else _env_int("DILOCO_SYNC_EVERY", 500)
+            sync_every if sync_every is not None else _env_int("DILOCO_SYNC_EVERY", 500)
         )
         self.worker_id = worker_id or os.environ.get("DILOCO_WORKER_ID", "") or None
         self.bf16_comm = (
-            bf16_comm if bf16_comm is not None
-            else _env_bool("DILOCO_BF16_COMM", True)
+            bf16_comm if bf16_comm is not None else _env_bool("DILOCO_BF16_COMM", True)
         )
-        self.dylu = (
-            dylu if dylu is not None
-            else _env_bool("DILOCO_DYLU", False)
-        )
+        self.dylu = dylu if dylu is not None else _env_bool("DILOCO_DYLU", False)
         self.heartbeat_interval = (
-            heartbeat_interval if heartbeat_interval is not None
+            heartbeat_interval
+            if heartbeat_interval is not None
             else _env_float("DILOCO_HEARTBEAT_INTERVAL", 30.0)
         )
         self.num_fragments = (
-            num_fragments if num_fragments is not None
+            num_fragments
+            if num_fragments is not None
             else _env_int("DILOCO_NUM_FRAGMENTS", 1)
         )
         self.timeout = timeout
@@ -267,6 +264,4 @@ class DiLoCoCallback(TrainerCallback):
         if not state_dict:
             return
         self._pending_state = state_dict
-        logger.debug(
-            "DiLoCoCallback: checkpoint state deferred until on_train_begin"
-        )
+        logger.debug("DiLoCoCallback: checkpoint state deferred until on_train_begin")

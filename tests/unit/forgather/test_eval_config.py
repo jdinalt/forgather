@@ -6,7 +6,6 @@ import pytest
 
 from forgather.eval_config import EvalResult, TestConfig
 
-
 REQUIRED = dict(
     eval_name="x",
     name="X",

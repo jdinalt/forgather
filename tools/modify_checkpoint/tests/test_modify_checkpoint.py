@@ -5,14 +5,15 @@ Tests for checkpoint parameter modification tool.
 import json
 import os
 import shutil
+
+# Add parent directory to path for imports
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 import torch
 
-# Add parent directory to path for imports
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from modify_checkpoint import (
@@ -131,14 +132,10 @@ def test_single_file_modification(temp_dir, sample_optimizer_state):
     torch.save(sample_optimizer_state, checkpoint_path)
 
     # Load and modify
-    state_dict = torch.load(checkpoint_path, map_location='cpu')
+    state_dict = torch.load(checkpoint_path, map_location="cpu")
     modifications = [("weight_decay", "set", 0.01)]
 
-    modified_state, changes = modify_state_dict(
-        state_dict,
-        modifications,
-        "optimizer"
-    )
+    modified_state, changes = modify_state_dict(state_dict, modifications, "optimizer")
 
     # Verify modification
     assert modified_state["param_groups"][0]["weight_decay"] == 0.01
@@ -157,14 +154,10 @@ def test_scheduler_modification(temp_dir, sample_scheduler_state):
     torch.save(sample_scheduler_state, checkpoint_path)
 
     # Load and modify
-    state_dict = torch.load(checkpoint_path, map_location='cpu')
+    state_dict = torch.load(checkpoint_path, map_location="cpu")
     modifications = [("last_epoch", "set", 200)]
 
-    modified_state, changes = modify_state_dict(
-        state_dict,
-        modifications,
-        "scheduler"
-    )
+    modified_state, changes = modify_state_dict(state_dict, modifications, "scheduler")
 
     # Verify modification
     assert modified_state["last_epoch"] == 200
@@ -189,11 +182,7 @@ def test_multiple_param_groups(temp_dir):
     modifications = [("weight_decay", "set", 0.02)]
 
     # Modify all param groups
-    modified_state, changes = modify_state_dict(
-        state_dict,
-        modifications,
-        "optimizer"
-    )
+    modified_state, changes = modify_state_dict(state_dict, modifications, "optimizer")
 
     assert modified_state["param_groups"][0]["weight_decay"] == 0.02
     assert modified_state["param_groups"][1]["weight_decay"] == 0.02
@@ -214,10 +203,7 @@ def test_specific_param_group(temp_dir):
 
     # Modify only param group 0
     modified_state, changes = modify_state_dict(
-        state_dict,
-        modifications,
-        "optimizer",
-        param_group_idx=0
+        state_dict, modifications, "optimizer", param_group_idx=0
     )
 
     assert modified_state["param_groups"][0]["weight_decay"] == 0.02
@@ -231,9 +217,7 @@ def test_scale_operation(temp_dir, sample_optimizer_state):
     modifications = [("lr", "scale", 0.5)]
 
     modified_state, changes = modify_state_dict(
-        sample_optimizer_state,
-        modifications,
-        "optimizer"
+        sample_optimizer_state, modifications, "optimizer"
     )
 
     assert modified_state["param_groups"][0]["lr"] == 0.0005  # 0.001 * 0.5
@@ -249,9 +233,7 @@ def test_multiple_modifications(temp_dir, sample_optimizer_state):
     ]
 
     modified_state, changes = modify_state_dict(
-        sample_optimizer_state,
-        modifications,
-        "optimizer"
+        sample_optimizer_state, modifications, "optimizer"
     )
 
     assert modified_state["param_groups"][0]["weight_decay"] == 0.01
@@ -265,11 +247,7 @@ def test_parameter_not_found(sample_optimizer_state):
     modifications = [("nonexistent_param", "set", 0.01)]
 
     with pytest.raises(ValueError, match="Parameter 'nonexistent_param' not found"):
-        modify_state_dict(
-            sample_optimizer_state,
-            modifications,
-            "optimizer"
-        )
+        modify_state_dict(sample_optimizer_state, modifications, "optimizer")
 
 
 def test_scale_non_numeric(sample_optimizer_state):
@@ -277,11 +255,7 @@ def test_scale_non_numeric(sample_optimizer_state):
     modifications = [("betas", "scale", 2.0)]
 
     with pytest.raises(ValueError, match="Cannot scale non-numeric parameter"):
-        modify_state_dict(
-            sample_optimizer_state,
-            modifications,
-            "optimizer"
-        )
+        modify_state_dict(sample_optimizer_state, modifications, "optimizer")
 
 
 def test_atomic_save(temp_dir, sample_optimizer_state):
@@ -294,28 +268,25 @@ def test_atomic_save(temp_dir, sample_optimizer_state):
 
     # Save atomically
     success = save_checkpoint_atomically(
-        str(checkpoint_path),
-        sample_optimizer_state,
-        backup=True,
-        verbose=False
+        str(checkpoint_path), sample_optimizer_state, backup=True, verbose=False
     )
 
     assert success
 
     # Verify backup exists
-    backup_path = Path(str(checkpoint_path) + '.bak')
+    backup_path = Path(str(checkpoint_path) + ".bak")
     assert backup_path.exists()
 
     # Verify temp file doesn't exist
-    temp_path = Path(str(checkpoint_path) + '.tmp')
+    temp_path = Path(str(checkpoint_path) + ".tmp")
     assert not temp_path.exists()
 
     # Verify modified checkpoint loads correctly
-    loaded = torch.load(checkpoint_path, map_location='cpu')
+    loaded = torch.load(checkpoint_path, map_location="cpu")
     assert loaded["param_groups"][0]["weight_decay"] == 0.01
 
     # Verify backup has original value
-    backup = torch.load(backup_path, map_location='cpu')
+    backup = torch.load(backup_path, map_location="cpu")
     assert backup["param_groups"][0]["weight_decay"] == 0.0
 
 
@@ -327,20 +298,17 @@ def test_atomic_save_without_backup(temp_dir, sample_optimizer_state):
     sample_optimizer_state["param_groups"][0]["weight_decay"] = 0.01
 
     success = save_checkpoint_atomically(
-        str(checkpoint_path),
-        sample_optimizer_state,
-        backup=False,
-        verbose=False
+        str(checkpoint_path), sample_optimizer_state, backup=False, verbose=False
     )
 
     assert success
 
     # Verify no backup
-    backup_path = Path(str(checkpoint_path) + '.bak')
+    backup_path = Path(str(checkpoint_path) + ".bak")
     assert not backup_path.exists()
 
     # Verify modified checkpoint loads correctly
-    loaded = torch.load(checkpoint_path, map_location='cpu')
+    loaded = torch.load(checkpoint_path, map_location="cpu")
     assert loaded["param_groups"][0]["weight_decay"] == 0.01
 
 
@@ -352,33 +320,30 @@ def test_validation_failure_cleanup(temp_dir, monkeypatch):
 
     # Mock torch.load to fail on temp file validation
     original_load = torch.load
-    temp_path_str = str(checkpoint_path) + '.tmp'
+    temp_path_str = str(checkpoint_path) + ".tmp"
 
     def mock_load(path, *args, **kwargs):
         if str(path) == temp_path_str:
             raise RuntimeError("Simulated validation failure")
         return original_load(path, *args, **kwargs)
 
-    monkeypatch.setattr(torch, 'load', mock_load)
+    monkeypatch.setattr(torch, "load", mock_load)
 
     # Attempt save - should fail
     with pytest.raises(RuntimeError, match="Modified checkpoint failed validation"):
         save_checkpoint_atomically(
-            str(checkpoint_path),
-            {"modified": "state"},
-            backup=True,
-            verbose=False
+            str(checkpoint_path), {"modified": "state"}, backup=True, verbose=False
         )
 
     # Verify temp file was deleted
     assert not Path(temp_path_str).exists()
 
     # Verify original file is unchanged
-    loaded = torch.load(checkpoint_path, map_location='cpu')
+    loaded = torch.load(checkpoint_path, map_location="cpu")
     assert loaded == {"valid": "state"}
 
     # Verify backup exists
-    backup_path = Path(str(checkpoint_path) + '.bak')
+    backup_path = Path(str(checkpoint_path) + ".bak")
     assert backup_path.exists()
 
 
@@ -420,11 +385,11 @@ def test_discover_with_manifest(temp_dir, sample_optimizer_state):
                 "ranks": [0],
                 "size_bytes": os.path.getsize(optimizer_path),
             }
-        }
+        },
     }
 
     manifest_path = Path(temp_dir) / "checkpoint_manifest.json"
-    with open(manifest_path, 'w') as f:
+    with open(manifest_path, "w") as f:
         json.dump(manifest, f)
 
     files = discover_checkpoint_files(str(temp_dir), "optimizer")
@@ -450,11 +415,11 @@ def test_manifest_update(temp_dir, sample_optimizer_state):
                 "size_bytes": original_size,
                 "checksum": "abc123",
             }
-        }
+        },
     }
 
     manifest_path = Path(temp_dir) / "checkpoint_manifest.json"
-    with open(manifest_path, 'w') as f:
+    with open(manifest_path, "w") as f:
         json.dump(manifest, f)
 
     # Modify checkpoint (change size)
@@ -463,14 +428,11 @@ def test_manifest_update(temp_dir, sample_optimizer_state):
 
     # Update manifest
     update_checkpoint_manifest(
-        str(temp_dir),
-        "optimizer",
-        [str(optimizer_path)],
-        verbose=False
+        str(temp_dir), "optimizer", [str(optimizer_path)], verbose=False
     )
 
     # Verify manifest was updated
-    with open(manifest_path, 'r') as f:
+    with open(manifest_path, "r") as f:
         updated_manifest = json.load(f)
 
     optimizer_info = updated_manifest["components"]["optimizer"]
@@ -488,7 +450,7 @@ def test_manifest_update(temp_dir, sample_optimizer_state):
     assert "modified_at" in optimizer_info["metadata"]
 
     # Backup should exist
-    backup_path = Path(str(manifest_path) + '.bak')
+    backup_path = Path(str(manifest_path) + ".bak")
     assert backup_path.exists()
 
 
@@ -497,23 +459,18 @@ def test_manifest_update_atomic(temp_dir):
     manifest_path = Path(temp_dir) / "checkpoint_manifest.json"
     manifest = {"test": "data"}
 
-    with open(manifest_path, 'w') as f:
+    with open(manifest_path, "w") as f:
         json.dump(manifest, f)
 
     # Update manifest
-    update_checkpoint_manifest(
-        str(temp_dir),
-        "optimizer",
-        [],
-        verbose=False
-    )
+    update_checkpoint_manifest(str(temp_dir), "optimizer", [], verbose=False)
 
     # Verify temp file doesn't exist
-    temp_path = Path(str(manifest_path) + '.tmp')
+    temp_path = Path(str(manifest_path) + ".tmp")
     assert not temp_path.exists()
 
     # Verify manifest still loads
-    with open(manifest_path, 'r') as f:
+    with open(manifest_path, "r") as f:
         loaded = json.load(f)
     assert loaded is not None
 
@@ -525,10 +482,7 @@ def test_no_manifest_graceful(temp_dir, sample_optimizer_state):
 
     # Should not raise error
     update_checkpoint_manifest(
-        str(temp_dir),
-        "optimizer",
-        [str(optimizer_path)],
-        verbose=False
+        str(temp_dir), "optimizer", [str(optimizer_path)], verbose=False
     )
 
     # No manifest should be created
@@ -587,7 +541,7 @@ def test_end_to_end_workflow(temp_dir):
 
     # Step 1: List parameters
     files = discover_checkpoint_files(str(checkpoint_dir), "optimizer")
-    state = torch.load(files[0], map_location='cpu')
+    state = torch.load(files[0], map_location="cpu")
     modifiable = list_modifiable_parameters(state, "optimizer")
 
     assert "param_groups" in modifiable
@@ -599,28 +553,21 @@ def test_end_to_end_workflow(temp_dir):
         ("lr", "scale", 0.5),
     ]
 
-    modified_state, changes = modify_state_dict(
-        state,
-        modifications,
-        "optimizer"
-    )
+    modified_state, changes = modify_state_dict(state, modifications, "optimizer")
 
     # Step 3: Save atomically
     save_checkpoint_atomically(
-        str(optimizer_path),
-        modified_state,
-        backup=True,
-        verbose=False
+        str(optimizer_path), modified_state, backup=True, verbose=False
     )
 
     # Step 4: Verify modifications
-    loaded = torch.load(optimizer_path, map_location='cpu')
+    loaded = torch.load(optimizer_path, map_location="cpu")
     assert loaded["param_groups"][0]["weight_decay"] == 0.01
     assert loaded["param_groups"][0]["lr"] == 0.0005
 
     # Step 5: Verify backup
-    backup_path = Path(str(optimizer_path) + '.bak')
-    backup = torch.load(backup_path, map_location='cpu')
+    backup_path = Path(str(optimizer_path) + ".bak")
+    backup = torch.load(backup_path, map_location="cpu")
     assert backup["param_groups"][0]["weight_decay"] == 0.0
     assert backup["param_groups"][0]["lr"] == 0.001
 
