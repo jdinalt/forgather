@@ -1,0 +1,15 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Ten Chinchilla"
+    -- set ns.config_description = "10x Chinchilla + 1x Chinchilla annealing phase"
+    -- set ns.model_name = model_name | default("long_cooldown")
+
+    ## Extend to 10x Chinchilla
+    -- set ns.total_tokens = total_tokens | default(24970)
+    -- set ns.annealing_tokens = annealing_tokens | default(2497)
+
+[lr_scheduler]
+    == super()
+    checkpoint_step: {{ ns.decay_start_step }}

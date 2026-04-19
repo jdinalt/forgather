@@ -1,0 +1,86 @@
+-- extends "projects/small.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Experimental SinkGD"
+    -- set ns.config_description = "Single SinkGD for all params"
+    -- set ns.log_name = log_name | default("exp")
+
+    -- set ns.base_lr = lr | default(0.02)
+    ## Disable LR scaling
+    -- set ns.lr_alpha = 0.0
+    -- set ns.weight_decay = weight_decay | default(0.0)
+
+    -- set ns.sinkgd_alpha = sinkgd_alpha | default(0.05)
+    -- set ns.normalize_output = normalize_output | default(False)
+    -- set ns.momentum = momentum | default(0.0)
+    -- set ns.nesterov = nesterov | default(False)
+    -- set ns.num_iters = num_iters | default(1)
+
+[globals]
+    == super()
+    -- set ns.sinkgd_lr = ns.global_lr * ns.sinkgd_alpha
+
+[variable_listing]
+    == super()
+# ns.sinkgd_lr: {{ ns.sinkgd_lr }}
+
+[trainer_args]
+    == super()
+    debug_optimizer_groups: True
+
+[optimizer]
+# The optimizer factory
+# This uses the definition from the project's 'src' directory
+optimizer: &optimizer !partial:./src/sinkgd_exp.py:SinkGD
+    lr: {{ ns.sinkgd_lr | toyaml }}
+    mode: "sr_sinkhorn"
+    num_iters: {{ns.num_iters | toyaml }}
+    weight_decay: {{ ns.weight_decay | toyaml }}
+    normalize_output: {{ ns.normalize_output | toyaml }}
+    momentum: {{ ns.momentum | toyaml }}
+    nesterov: {{ ns.nesterov | toyaml }}
+
+[optimizer_groups]
+optimizer_groups: &optimizer_groups
+    small:
+        regex: 'norm|bias'
+        config:
+            mode: "adam"
+            lr: {{ ns.global_lr }}
+            weight_decay: 0.0
+    embed:
+        regex: 'embed'
+        config:
+            mode: "adam"
+            lr: {{ ns.global_lr }}
+            weight_decay: 0.0
+    lm_head:
+        regex: 'lm_head'
+        config:
+            mode: "adam"
+            lr: {{ ns.global_lr }}
+            weight_decay: 0.0
+
+[dynamic_args]
+    == super()
+    sinkgd_alpha:
+        names: "--sinkgd-alpha"
+        type: float
+        help: "SinkGD Alpha"
+    num_iters:
+        names: "--num-iters"
+        type: int
+        help: "Number of SinkGD iterations."
+    weight_decay:
+        names: "--weight-decay"
+        type: float
+        help: "Decoupled weight decay"
+    momentum:
+        names: "--momentum"
+        type: float
+        help: "Momentum coefficient (0 = off)"
+    nesterov:
+        names: "--nesterov"
+        type: bool
+        help: "Use Nesterov momentum"

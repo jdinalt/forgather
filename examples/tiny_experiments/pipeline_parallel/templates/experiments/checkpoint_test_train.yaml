@@ -6,16 +6,6 @@
     -- set ns.config_description = "Train pipeline model with multiple checkpoints to test checkpoint saving"
     -- set ns.log_name = "checkpoint_test_train"
     -- set ns.model_name = "checkpoint_test"
-
-[trainer_definition]
-    -- include 'experiment.checkpoint_test_trainer_config'
-
-#-------------------- experiment.checkpoint_test_trainer_config --------------------
--- extends 'base_pipeline_project.trainer_config'
-
-[trainer_meta_config]
-    == super()
-    ## Use same small model as tiny_gpipe_2gpu for fast testing
     -- set ns.nproc_per_node = 2
 
 [trainer_args]
@@ -28,10 +18,6 @@
     save_safetensors: False
     save_total_limit: 2              # Keep 2 checkpoints
     save_on_each_node: False
-    save_optimizer_state: True       # Test optimizer state saving per rank
-    save_scheduler_state: True       # Test scheduler state saving per rank
-    save_rng_state: True             # Test RNG state saving per rank
-    overwrite_output_dir: True
     
     # Quick testing settings
     per_device_train_batch_size: 16

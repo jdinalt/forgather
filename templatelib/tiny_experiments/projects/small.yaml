@@ -1,0 +1,61 @@
+-- extends "projects/lm_training_project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Tiny Experiment (Small)"
+    -- set ns.config_description = "Tiny Experiment with Small Llama model and Fineweb-Edu Packed"
+    -- set ns.model_name = model_name | default("small")
+    -- set ns.trainer_type = trainer_type | default("ddp")
+
+    ## Dataset
+    -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, "examples", "datasets", "HuggingFaceTB"))
+    -- set ns.dataset_config = dataset_config | default("smollm-corpus/fineweb-edu-packed.yaml")
+    -- set ns.dispatch_batches = dispatch_batches | default(False)
+
+    ## Model
+    -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "llama"))))
+    -- set ns.model_project_config = model_config | default("small.yaml")
+
+    -- set ns.base_lr = lr | default(5e-4)
+
+[trainer_args]
+    == super()
+    # **Tiny Experiment (Small)**
+    save_strategy: {{ save_strategy | toyaml('no') }}
+    float32_matmul_precision: {{ float32_matmul_precision | toyaml("high") }}
+    default_dtype: {{ default_dtype | toyaml("float32") }}
+    mixed_precision: {{ mixed_precision | toyaml("bf16") }}
+    fp8_recipe: {{ fp8_recipe | toyaml(None) }}
+
+    # Enable compile by default, with maximum performance
+    torch_compile: {{ compile | default(True) }}
+    torch_compile_full_graph: True
+    torch_compile_dynamic: False
+-- if ns.gradient_accumulation_steps == 1
+    ## This setting appears to cause issues when using gradient accumulation
+    torch_compile_mode: "max-autotune"
+-- endif
+
+[datacollator]
+    == super()
+    max_length: {{ ns.seq_len }}
+    ## Pad batches to 'max_length'; This minimizes recompiles, but should
+    ## may be inefficient if not using a 'packed' dataset configuration.
+    padding: "max_length"
+
+[trainer_callbacks]
+    -- include 'project.callbacks'
+
+#-------------------- project.callbacks --------------------
+-- extends 'callbacks/tiny_callbacks.yaml'
+
+[callback_list]
+    == super()
+    text_gen_callback: null # Disable text gen
+    # Monitor weight norm -- useful for checking weight decay parameters
+    weight_norm: !call:forgather.ml.trainer.callbacks:WeightNormLogger
+
+[tb_scalars]
+.define: &tb_scalars !dict
+    weight-norm: {}
+    tok-per-sec: {}

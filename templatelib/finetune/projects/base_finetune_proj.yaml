@@ -13,7 +13,6 @@
     -- set ns.config_name = 'Finetune'
     -- set ns.config_description = 'Experiments in finetuning'
     -- set ns.trainer_class = 'trainers/trainer.yaml'
-    -- set ns.trust_remote_code = True
     -- set ns.model_name = 'default_model'
     -- set ns.log_name = log_name | default('log')
     
@@ -72,11 +71,48 @@ train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
     [eval_dataset]
 eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 
+## Setup some defaults for this type of project
+[trainer_args]
+    == super()
 
+    # **finetune**
+    seed: 42
+    logging_steps: 10
+    eval_steps: 100
+    eval_strategy: "steps"
+    max_eval_steps: -1
+    num_train_epochs: {{ epochs | default(1) }}
+    dataloader_num_workers: 1
+    float32_matmul_precision: "high"
+    default_dtype: bfloat16
+    gradient_checkpointing: {{ gradient_checkpointing | default(False) }}
+
+    # Checkpoint Save Settings
+    save_strategy: "{{ save_strategy | default('steps') }}" # Set to "steps" to save every "save_steps"; set to "no" to disable
+    save_steps: 1000                 # Checkpoint every N steps
+    save_safetensors: False          # Safe tensors don't support shared weights
+    save_total_limit: 3              # Keep at most N checkpoints
+    save_on_each_node: False         # Save common files on each node
+    save_rng_state: True             # Save RNG state with checkpoint
+    save_on_each_node: {{ save_on_each_node | default(False) }}
+
+    # Load model from latest checkpoint
+    resume_from_checkpoint: {{ resume_from_checkpoint | default(True) }}
+
+    # Where to construct the model: ["default"|"device"|"meta"]
+    construct_model_on: "device"    # Construct model on accelerator device
+    # Enable all SDPA backends and let PyTorch choose which to use.
+    sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
+    sdpa_set_priority: False # If list, interpret as priority order
+
+[fused_loss_factory]
+# Fused output-linear x cross-entropy-loss kernel
+.define: &fused_loss_factory !partial:forgather.ml.loss:LinearCrossEntropyLoss
+
+[trainer_definition]
 ## Defaults to the basic trainer implementation
 ## Note: This is unsuitable for multiple GPUs.
 ## Override 'ns.trainer_class' to change the trainer class.
-[trainer_definition]
     ## See definition below
     -- include 'finetune.trainer'
 
@@ -126,6 +162,15 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:In
     # Exponetial decay limit
     min_lr: 1.0e-8
 
+    # Begin annealing from current step on checkpoint resume
+    start_annealing: {{ start_annealing | default(False) }}
+
+    # Annealing type: "exponential" (default) or "rsqrt" (harmonic/WSD-S)
+    annealing_type: "{{ annealing_type | default('exponential') }}"
+
+    # Total annealing steps for rsqrt type (ignored for exponential)
+    annealing_steps: {{ annealing_steps | default(0) }}
+
 ## Add a default memory efficient optimizer
 [optimizer]
 optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
@@ -157,7 +202,7 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     output_dir:
         names: "--output-dir"
         type: "path"
-        help: "Training output director. Defaults to model_id_or_path"
+        help: "Training output directory. Defaults to model_id_or_path"
     gradient_checkpointing:
         names: [ "--gradient-checkpointing", "-G"]
         action: "store_true"
@@ -211,44 +256,3 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
 ## This has a side effect of not being able to statically resolve the
 ## parent template, which is named in the 'ns.trainer_class' variable,
 ## the value of which is defined in the 'config_metadata' block, above.
-
-## Setup some defaults for this type of project
-[trainer_args]
-    == super()
-
-    # **finetune**
-    seed: 42
-    logging_steps: 10
-    eval_steps: 100
-    eval_strategy: "steps"
-    max_eval_steps: -1
-    num_train_epochs: {{ epochs | default(1) }}
-    dataloader_num_workers: 1
-    float32_matmul_precision: "high"
-    default_dtype: bfloat16
-    gradient_checkpointing: {{ gradient_checkpointing | default(False) }}
-
-    # Checkpoint Save Settings
-    save_strategy: "{{ save_strategy | default('steps') }}" # Set to "steps" to save every "save_steps"; set to "no" to disable
-    save_steps: 1000                 # Checkpoint every N steps
-    save_safetensors: False          # Safe tensors don't support shared weights
-    save_total_limit: 3              # Keep at most N checkpoints
-    save_on_each_node: False         # Save common files on each node
-    save_rng_state: True             # Save RNG state with checkpoint
-    save_on_each_node: {{ save_on_each_node | default(False) }}
-
-    # Load model from latest checkpoint
-    resume_from_checkpoint: {{ resume_from_checkpoint | default(True) }}
-
-    # Where to construct the model: ["default"|"device"|"meta"]
-    construct_model_on: "device"    # Construct model on accelerator device
-    # Enable all SDPA backends and let PyTorch choose which to use.
-    sdpa_backend: [ "math", "flash", "efficient", "cudnn" ]
-    sdpa_set_priority: False # If list, interpret as priority order
-
-[trainer_constructor]
-    == super()
-    # If supported, use fused-causal-cross-entropy
-    # else, fallback to basic causal-cross-entropy
-    fused_loss_factory: !partial:forgather.ml.loss:LinearCrossEntropyLoss
-    

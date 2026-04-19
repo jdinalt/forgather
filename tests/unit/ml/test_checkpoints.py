@@ -6,37 +6,40 @@ Tests the new optimizer/scheduler state saving and loading, automatic checkpoint
 discovery, and checkpoint validation functionality.
 """
 
-import unittest
-import tempfile
-import shutil
+import json
 import os
+import shutil
+import tempfile
 import time
+import unittest
+from dataclasses import dataclass
+from datetime import datetime
+from unittest.mock import Mock, patch
+
 import torch
 import torch.nn as nn
-from torch.distributed.checkpoint.stateful import Stateful
-from torch.utils.data import IterableDataset, DataLoader
-from torchdata.stateful_dataloader import StatefulDataLoader
-from unittest.mock import Mock, patch
-from dataclasses import dataclass
 import transformers
+from torch.distributed.checkpoint.stateful import Stateful
+from torch.utils.data import DataLoader, IterableDataset
+from torchdata.stateful_dataloader import StatefulDataLoader
 
-from forgather.ml.trainer.trainer_types import TrainerState
-from forgather.ml.trainer.base_trainer import BaseTrainer
-from forgather.ml.trainer.trainer import Trainer, TrainingArguments
-from forgather.ml.sharded_checkpoint import (
-    validate_checkpoint,
-    find_latest_checkpoint,
-)
 from forgather.ml.distributed import (
     DistributedEnvInterface,
     StaticDistributedEnvironment,
 )
-
+from forgather.ml.sharded_checkpoint import (
+    CHECKPOINT_MANIFEST_FILENAME,
+    find_latest_checkpoint,
+    validate_checkpoint,
+)
+from forgather.ml.trainer.base_trainer import BaseTrainer
 from forgather.ml.trainer.checkpoint_manager import (
+    CheckpointConfig,
     CheckpointManager,
     RNGState,
-    CheckpointConfig,
 )
+from forgather.ml.trainer.trainer import Trainer, TrainingArguments
+from forgather.ml.trainer.trainer_types import TrainerState
 
 
 class SimpleMockModel(nn.Module):
@@ -109,6 +112,7 @@ class MockTrainer(BaseTrainer, Stateful):
             eval_steps=10,
             train_batch_size=8,
             max_steps=100,
+            max_eval_steps=-1,
             save_steps=20,
             best_metric=None,
             best_model_checkpoint=None,
@@ -127,7 +131,10 @@ class MockTrainer(BaseTrainer, Stateful):
                 save_total_limit=self.args.save_total_limit,
             )
 
-            self.train_dataloader = StatefulDataLoader(dataset=MockDataset())
+            if isinstance(train_dataset, IterableDataset):
+                self.train_dataloader = StatefulDataLoader(dataset=train_dataset)
+            else:
+                self.train_dataloader = StatefulDataLoader(dataset=MockDataset())
 
             self.checkpoint_manager = CheckpointManager(
                 config=cp_config,
@@ -136,12 +143,15 @@ class MockTrainer(BaseTrainer, Stateful):
                 model=self.model,
             )
 
-            # Restore from checkpoint if specified (after state is initialized)
+            # Restore from checkpoint if specified (after state is initialized).
+            # Mirror the real trainer's resolve-then-load pattern: resolve to a
+            # concrete path first; skip loading (and clear the flag) if none is found.
             if self.args.resume_from_checkpoint:
-                checkpoint_path = self.args.resume_from_checkpoint
-                if isinstance(checkpoint_path, bool):
-                    checkpoint_path = None
-                self.load_checkpoint(checkpoint_path)
+                checkpoint_path = self._resolve_checkpoint_path()
+                if checkpoint_path is None:
+                    self.args.resume_from_checkpoint = False
+                else:
+                    self.load_checkpoint(checkpoint_path)
 
     def _resolve_checkpoint_path(self):
         assert self.checkpoint_manager
@@ -177,10 +187,6 @@ class TestCheckpointFunctionality(unittest.TestCase):
         # Create training arguments
         self.args = TrainingArguments(
             output_dir=self.test_dir,
-            save_optimizer_state=True,
-            save_scheduler_state=True,
-            restore_optimizer_state=True,
-            restore_scheduler_state=True,
             save_total_limit=3,
         )
 
@@ -264,6 +270,26 @@ class TestCheckpointFunctionality(unittest.TestCase):
         latest = find_latest_checkpoint(self.test_dir)
         self.assertIsNone(latest)
 
+    def test_find_latest_checkpoint_prefers_manifest_timestamp(self):
+        """Test that manifest timestamp is preferred over mtime for ordering."""
+        # Create checkpoint-100 first (older mtime), but give it the NEWEST manifest timestamp
+        cp100 = self.create_mock_checkpoint(100, delay=0.1)
+        manifest_newest = {"timestamp": datetime(2026, 6, 1, 12, 0, 0).isoformat()}
+        with open(os.path.join(cp100, CHECKPOINT_MANIFEST_FILENAME), "w") as f:
+            json.dump(manifest_newest, f)
+
+        # Create checkpoint-200 second (newer mtime), but give it an OLDER manifest timestamp
+        cp200 = self.create_mock_checkpoint(200, delay=0.1)
+        manifest_older = {"timestamp": datetime(2026, 1, 1, 12, 0, 0).isoformat()}
+        with open(os.path.join(cp200, CHECKPOINT_MANIFEST_FILENAME), "w") as f:
+            json.dump(manifest_older, f)
+
+        latest = find_latest_checkpoint(self.test_dir)
+
+        # Should return checkpoint-100 because its manifest timestamp is newer,
+        # even though checkpoint-200 has a newer mtime
+        self.assertEqual(latest, cp100)
+
     def test_resolve_checkpoint_path_auto_discovery(self):
         """Test automatic checkpoint discovery when resume_from_checkpoint=True."""
         self.create_mock_checkpoint(100, delay=0.1)
@@ -316,7 +342,7 @@ class TestCheckpointFunctionality(unittest.TestCase):
         optimizer_state_path = os.path.join(checkpoint_path, "optimizer_state.pt")
         scheduler_state_path = os.path.join(checkpoint_path, "scheduler_state.pt")
         dataset_state_path = os.path.join(checkpoint_path, "dataset_state.pt")
-        rng_state_path = os.path.join(checkpoint_path, "rng_state.pt")
+        rng_state_path = os.path.join(checkpoint_path, "rng_state_rank_0.pt")
 
         self.assertTrue(os.path.exists(optimizer_state_path))
         self.assertTrue(os.path.exists(scheduler_state_path))
@@ -333,37 +359,23 @@ class TestCheckpointFunctionality(unittest.TestCase):
         # Verify scheduler state was saved
         self.assertIn("last_epoch", scheduler_state)
 
-    def test_save_training_state_optimizer_only(self):
-        """Test saving only optimizer state when scheduler saving is disabled."""
-        self.args.save_scheduler_state = False
+    def test_all_state_always_saved(self):
+        """Test that all state is always saved to checkpoints."""
         checkpoint_path = os.path.join(self.checkpoints_dir, "checkpoint-test")
         os.makedirs(checkpoint_path, exist_ok=True)
 
         self.trainer.checkpoint_manager._save_training_state(checkpoint_path)
 
+        # All components should be saved
         optimizer_state_path = os.path.join(checkpoint_path, "optimizer_state.pt")
         scheduler_state_path = os.path.join(checkpoint_path, "scheduler_state.pt")
+        trainer_state_path = os.path.join(checkpoint_path, "trainer_state.pt")
+        rng_state_path = os.path.join(checkpoint_path, "rng_state_rank_0.pt")
 
-        # Optimizer state should exist
         self.assertTrue(os.path.exists(optimizer_state_path))
-
-        # Scheduler state should not exist when disabled
-        self.assertFalse(os.path.exists(scheduler_state_path))
-
-    def test_save_training_state_disabled(self):
-        """Test that optimizer and scheduler state are not saved when disabled."""
-        self.args.save_optimizer_state = False
-        self.args.save_scheduler_state = False
-        self.args.save_dataset_state = False
-        self.args.save_rng_state = False
-        checkpoint_path = os.path.join(self.checkpoints_dir, "checkpoint-test")
-        os.makedirs(checkpoint_path, exist_ok=True)
-
-        self.trainer.checkpoint_manager._save_training_state(checkpoint_path)
-
-        training_state_path = os.path.join(checkpoint_path, "training_state.pt")
-        # With all state saving disabled, no file should be created
-        self.assertFalse(os.path.exists(training_state_path))
+        self.assertTrue(os.path.exists(scheduler_state_path))
+        self.assertTrue(os.path.exists(trainer_state_path))
+        self.assertTrue(os.path.exists(rng_state_path))
 
     def test_load_training_state_optimizer_and_scheduler(self):
         """Test loading optimizer and scheduler state."""
@@ -377,11 +389,9 @@ class TestCheckpointFunctionality(unittest.TestCase):
         initial_scheduler_state = self.trainer.lr_scheduler.state_dict()
         self.trainer.checkpoint_manager._save_training_state(checkpoint_path)
 
-        # Reset to different state
+        # Reset to different state (modify in-place to keep coordinator's reference)
         self.trainer.optimizer.param_groups[0]["lr"] = 0.01
-        self.trainer.lr_scheduler = torch.optim.lr_scheduler.StepLR(
-            self.trainer.optimizer, step_size=10
-        )
+        self.trainer.lr_scheduler.last_epoch = 0
 
         # Load saved state
         self.trainer.checkpoint_manager._load_training_state(checkpoint_path)
@@ -402,23 +412,69 @@ class TestCheckpointFunctionality(unittest.TestCase):
         # Should not raise exception
         self.trainer.checkpoint_manager._load_training_state(checkpoint_path)
 
-    def test_load_training_state_selective_restore(self):
-        """Test selective restoration of optimizer vs scheduler."""
+    def test_partial_checkpoint_load_missing_optimizer(self):
+        """Test loading checkpoint with missing optimizer state."""
         checkpoint_path = os.path.join(self.checkpoints_dir, "checkpoint-test")
         os.makedirs(checkpoint_path, exist_ok=True)
 
-        # Save state
+        # Save full checkpoint
         self.trainer.optimizer.param_groups[0]["lr"] = 0.005
         self.trainer.checkpoint_manager._save_training_state(checkpoint_path)
 
-        # Reset and disable scheduler restoration
-        self.trainer.optimizer.param_groups[0]["lr"] = 0.01
-        self.args.restore_scheduler_state = False
+        # Delete optimizer state file
+        optimizer_state_path = os.path.join(checkpoint_path, "optimizer_state.pt")
+        os.remove(optimizer_state_path)
 
-        # Load - should only restore optimizer
+        # Reset optimizer
+        self.trainer.optimizer.param_groups[0]["lr"] = 0.01
+
+        # Should load successfully with warning (optimizer not restored)
         self.trainer.checkpoint_manager._load_training_state(checkpoint_path)
 
-        self.assertEqual(self.trainer.optimizer.param_groups[0]["lr"], 0.005)
+        # Optimizer should keep current state (not restored)
+        self.assertEqual(self.trainer.optimizer.param_groups[0]["lr"], 0.01)
+
+    def test_partial_checkpoint_load_missing_scheduler(self):
+        """Test loading checkpoint with missing scheduler state."""
+        checkpoint_path = os.path.join(self.checkpoints_dir, "checkpoint-test")
+        os.makedirs(checkpoint_path, exist_ok=True)
+
+        # Save full checkpoint
+        self.trainer.lr_scheduler.step()
+        initial_epoch = self.trainer.lr_scheduler.state_dict()["last_epoch"]
+        self.trainer.checkpoint_manager._save_training_state(checkpoint_path)
+
+        # Delete scheduler state file
+        scheduler_state_path = os.path.join(checkpoint_path, "scheduler_state.pt")
+        os.remove(scheduler_state_path)
+
+        # Reset scheduler
+        self.trainer.lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            self.trainer.optimizer, step_size=10
+        )
+
+        # Should load successfully with warning (scheduler not restored)
+        self.trainer.checkpoint_manager._load_training_state(checkpoint_path)
+
+        # Scheduler should be fresh (not restored)
+        self.assertEqual(self.trainer.lr_scheduler.state_dict()["last_epoch"], 0)
+
+    def test_partial_checkpoint_load_missing_dataset(self):
+        """Test loading checkpoint with missing dataset state."""
+        # This test verifies that missing dataset state is handled gracefully
+        checkpoint_path = os.path.join(self.checkpoints_dir, "checkpoint-test")
+        os.makedirs(checkpoint_path, exist_ok=True)
+
+        # Save full checkpoint
+        self.trainer.checkpoint_manager._save_training_state(checkpoint_path)
+
+        # Delete dataset state file if it exists
+        dataset_state_path = os.path.join(checkpoint_path, "dataset_state.pt")
+        if os.path.exists(dataset_state_path):
+            os.remove(dataset_state_path)
+
+        # Should load successfully with warning
+        self.trainer.checkpoint_manager._load_training_state(checkpoint_path)
 
     def test_save_checkpoint_cleanup_by_modification_time(self):
         """Test that checkpoint cleanup uses modification time, not step numbers."""
@@ -429,6 +485,7 @@ class TestCheckpointFunctionality(unittest.TestCase):
             eval_steps=10,
             train_batch_size=8,
             max_steps=100,
+            max_eval_steps=-1,
             save_steps=20,
             global_step=400,
             best_metric=None,
@@ -492,10 +549,6 @@ class TestCheckpointFunctionality(unittest.TestCase):
         # Step 2: Create new trainer instance with resume enabled
         args_with_resume = TrainingArguments(
             output_dir=self.test_dir,
-            save_optimizer_state=True,
-            save_scheduler_state=True,
-            restore_optimizer_state=True,
-            restore_scheduler_state=True,
             resume_from_checkpoint=True,
         )
 
@@ -508,6 +561,132 @@ class TestCheckpointFunctionality(unittest.TestCase):
         self.assertEqual(new_trainer.lr_scheduler.last_epoch, 1)
 
 
+class TestDoubleCheckpointDeletion(unittest.TestCase):
+    """Test that checkpoint deletion only happens once (in CheckpointManager, not CheckpointCoordinator)."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.test_dir = tempfile.mkdtemp()
+
+        self.args = TrainingArguments(
+            output_dir=self.test_dir,
+            save_total_limit=4,
+        )
+
+        self.trainer = MockTrainer(self.args)
+        self.trainer._prepare(train_dataset=Mock(), eval_dataset=None)
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def create_mock_checkpoint(self, step: int, delay: float = 0):
+        """Create a mock checkpoint directory with model files."""
+        if delay > 0:
+            time.sleep(delay)
+
+        checkpoints_dir = os.path.join(self.test_dir, "checkpoints")
+        os.makedirs(checkpoints_dir, exist_ok=True)
+        checkpoint_path = os.path.join(checkpoints_dir, f"checkpoint-{step}")
+        os.makedirs(checkpoint_path, exist_ok=True)
+
+        mock_state_dict = {
+            "linear.weight": torch.randn(1, 10),
+            "linear.bias": torch.randn(1),
+        }
+        torch.save(
+            mock_state_dict,
+            os.path.join(checkpoint_path, "pytorch_model.bin"),
+            _use_new_zipfile_serialization=True,
+        )
+        return checkpoint_path
+
+    def test_save_total_limit_respected_with_best_checkpoints(self):
+        """Test that save_total_limit and best checkpoint preservation work correctly.
+
+        Regression test for double-deletion bug where CheckpointCoordinator
+        deleted checkpoints with default save_total_limit=2 and no preservation,
+        before CheckpointManager could apply the correct limits.
+        """
+        self.trainer.state = TrainerState(
+            logging_steps=10,
+            eval_steps=10,
+            train_batch_size=8,
+            max_steps=1000,
+            max_eval_steps=-1,
+            save_steps=20,
+            global_step=600,
+            best_metric=None,
+            best_model_checkpoint=None,
+            num_train_epochs=1,
+        )
+
+        # Simulate saving 5 checkpoints with decreasing loss (lower = better).
+        # Checkpoints 100 and 200 have the best (lowest) loss values.
+        steps_and_losses = [
+            (100, 0.10),  # Best
+            (200, 0.15),  # Second best
+            (300, 0.50),
+            (400, 0.40),
+            (500, 0.30),
+        ]
+
+        with patch.object(self.trainer.checkpoint_manager, "_save_model") as mock_save:
+
+            def mock_save_with_model_file(path):
+                mock_state_dict = {
+                    "linear.weight": torch.randn(1, 10),
+                    "linear.bias": torch.randn(1),
+                }
+                torch.save(
+                    mock_state_dict,
+                    os.path.join(path, "pytorch_model.bin"),
+                    _use_new_zipfile_serialization=True,
+                )
+
+            mock_save.side_effect = mock_save_with_model_file
+
+            for step, loss in steps_and_losses:
+                self.trainer.state.global_step = step
+                checkpoint_path = self.trainer.checkpoint_manager.save_checkpoint(
+                    checkpoint_id=str(step),
+                )
+
+                # Update best checkpoints (replicating real trainer flow)
+                self.trainer.checkpoint_manager.update_best_checkpoints(
+                    checkpoint_path=checkpoint_path,
+                    metrics={"loss": loss},
+                    metric_key="loss",
+                    greater_is_better=False,
+                    preserve_n_best=2,
+                )
+
+                time.sleep(0.05)  # Ensure distinct modification times
+
+        # Verify: exactly 4 checkpoints remain (save_total_limit=4)
+        checkpoints_dir = os.path.join(self.test_dir, "checkpoints")
+        remaining = sorted(os.listdir(checkpoints_dir))
+        self.assertEqual(
+            len(remaining),
+            4,
+            f"Expected 4 checkpoints (save_total_limit=4), got {len(remaining)}: {remaining}",
+        )
+
+        # Verify: both best checkpoints still exist
+        best_paths = [cp[0] for cp in self.trainer.checkpoint_manager.best_checkpoints]
+        for best_path in best_paths:
+            self.assertTrue(
+                os.path.exists(best_path),
+                f"Best checkpoint was deleted: {best_path}",
+            )
+
+        # Verify: the most recent checkpoint exists
+        latest_checkpoint = os.path.join(checkpoints_dir, "checkpoint-500")
+        self.assertTrue(
+            os.path.exists(latest_checkpoint),
+            f"Most recent checkpoint was deleted: {latest_checkpoint}",
+        )
+
+
 class TestTrainerIntegration(unittest.TestCase):
     """Test integration with the actual Trainer class."""
 
@@ -515,8 +694,6 @@ class TestTrainerIntegration(unittest.TestCase):
         self.test_dir = tempfile.mkdtemp()
         self.args = TrainingArguments(
             output_dir=self.test_dir,
-            save_optimizer_state=True,
-            save_scheduler_state=True,
             resume_from_checkpoint=True,
             num_train_epochs=1,
             per_device_train_batch_size=2,
@@ -563,12 +740,12 @@ class TestTrainerIntegration(unittest.TestCase):
             temp_scheduler.state_dict(),
             os.path.join(checkpoint_path, "scheduler_state.pt"),
         )
-        torch.save(
-            {"global_step": 50}, os.path.join(checkpoint_path, "dataset_state.pt")
-        )
+        # Note: dataset_state.pt intentionally omitted - a fake state dict
+        # would cause StatefulDataLoader to crash during iterator creation.
+        # The coordinator handles missing optional components gracefully.
         torch.save(
             {"torch_rng_state": torch.get_rng_state()},
-            os.path.join(checkpoint_path, "rng_state.pt"),
+            os.path.join(checkpoint_path, "rng_state_rank_0.pt"),
         )
 
         # Create trainer
@@ -602,11 +779,9 @@ class TestDataloaderStateHandling(unittest.TestCase):
         self.checkpoints_dir = os.path.join(self.test_dir, "checkpoints")
         os.makedirs(self.checkpoints_dir, exist_ok=True)
 
-        # Create training arguments with dataset state enabled
+        # Create training arguments
         self.args = TrainingArguments(
             output_dir=self.test_dir,
-            save_dataset_state=True,
-            restore_dataset_state=True,
             save_total_limit=3,
         )
 
@@ -622,11 +797,9 @@ class TestDataloaderStateHandling(unittest.TestCase):
         # Create a stateful dataset
         dataset = MockDataset(examples=20)
 
-        # Prepare trainer first
+        # Prepare trainer - _prepare creates StatefulDataLoader with the provided dataset,
+        # which is properly referenced by the coordinator's state components
         trainer._prepare(train_dataset=dataset, eval_dataset=None)
-
-        # Now set our specific StatefulDataLoader after prepare
-        trainer.train_dataloader = StatefulDataLoader(dataset=dataset, batch_size=1)
 
         # Advance the dataset state by creating an iterator and consuming items
         dataloader_iter = iter(trainer.train_dataloader)
@@ -639,11 +812,13 @@ class TestDataloaderStateHandling(unittest.TestCase):
         # Save state
         checkpoint_path = os.path.join(self.checkpoints_dir, "checkpoint-stateful")
         os.makedirs(checkpoint_path, exist_ok=True)
-        statefuls = trainer.get_statefuls_for_save()
+        components = trainer.get_state_components()
 
-        # Should include dataset in statefuls
-        self.assertIn("dataset", statefuls)
-        self.assertEqual(statefuls["dataset"], trainer.train_dataloader)
+        # Should include dataset in components
+        component_keys = [c.key for c in components]
+        self.assertIn("dataset", component_keys)
+        dataset_component = next(c for c in components if c.key == "dataset")
+        self.assertEqual(dataset_component.stateful, trainer.train_dataloader)
 
         # Save the checkpoint
         trainer.checkpoint_manager._save_training_state(checkpoint_path)
@@ -661,9 +836,6 @@ class TestDataloaderStateHandling(unittest.TestCase):
         new_trainer = MockTrainer(self.args)
         new_dataset = MockDataset(examples=20)
         new_trainer._prepare(train_dataset=new_dataset, eval_dataset=None)
-        new_trainer.train_dataloader = StatefulDataLoader(
-            dataset=new_dataset, batch_size=1
-        )
 
         # Verify new dataset starts at 0
         self.assertEqual(new_dataset.i, 0)
@@ -702,68 +874,48 @@ class TestDataloaderStateHandling(unittest.TestCase):
         trainer._prepare(train_dataset=dataset, eval_dataset=None)
         trainer.train_dataloader = DataLoader(dataset=dataset, batch_size=1)
 
-        # Should warn about missing state_dict method and not include dataset in statefuls
-        with patch("forgather.ml.trainer.base_trainer.logger") as mock_logger:
-            statefuls = trainer.get_statefuls_for_save()
+        # Dataset component should not be included if dataloader is not stateful
+        components = trainer.get_state_components()
+        component_keys = [c.key for c in components]
 
-            # Should warn about missing state_dict method
-            mock_logger.warning.assert_called_with(
-                "train_dataloader doesn't have state_dict method"
-            )
+        # Should not include dataset in components
+        self.assertNotIn("dataset", component_keys)
+        # Trainer should still be included
+        self.assertIn("trainer", component_keys)
 
-            # Should not include dataset in statefuls (but trainer is still included)
-            self.assertNotIn("dataset", statefuls)
-            # Trainer should still be included because save_dataset_state controls trainer state
-            self.assertIn("trainer", statefuls)
-
-    def test_dataset_state_disabled(self):
-        """Test that dataset state is not saved when disabled in args."""
-        # Create training arguments with dataset state disabled
-        args = TrainingArguments(
-            output_dir=self.test_dir,
-            save_dataset_state=False,  # Disabled
-            restore_dataset_state=False,  # Disabled
-            save_total_limit=3,
-        )
-
-        trainer = MockTrainer(args)
+    def test_dataset_always_saved_if_stateful(self):
+        """Test that dataset state is always saved if dataloader is stateful."""
+        trainer = MockTrainer(self.args)
         dataset = MockDataset(examples=20)
         trainer.train_dataloader = StatefulDataLoader(dataset=dataset, batch_size=1)
 
         trainer._prepare(train_dataset=dataset, eval_dataset=None)
-        statefuls = trainer.get_statefuls_for_save()
+        components = trainer.get_state_components()
 
-        # Should not include dataset or trainer in statefuls when disabled
-        self.assertNotIn("dataset", statefuls)
-        self.assertNotIn("trainer", statefuls)
+        # Should include dataset component if dataloader is stateful
+        component_keys = [c.key for c in components]
+        self.assertIn("dataset", component_keys)
+        self.assertIn("trainer", component_keys)
 
-    def test_restore_dataset_state_missing_load_method(self):
-        """Test graceful handling when dataloader lacks load_state_dict method."""
+    def test_dataset_component_missing_if_not_stateful(self):
+        """Test that dataset component is not included if dataloader is not stateful."""
 
-        # Create custom dataloader that has state_dict but no load_state_dict
-        class PartialStatefulDataLoader:
-            def state_dict(self):
-                return {"some": "state"}
-
-            # Missing load_state_dict method
+        # Create custom dataloader without state_dict method
+        class NonStatefulDataLoader:
+            pass
 
         trainer = MockTrainer(self.args)
         trainer._prepare(train_dataset=MockDataset(), eval_dataset=None)
         # Set after _prepare to avoid it being overridden
-        trainer.train_dataloader = PartialStatefulDataLoader()
+        trainer.train_dataloader = NonStatefulDataLoader()
 
-        # Should warn about missing load method
-        with patch("forgather.ml.trainer.base_trainer.logger") as mock_logger:
-            statefuls = trainer.get_statefuls_for_load()
+        components = trainer.get_state_components()
+        component_keys = [c.key for c in components]
 
-            mock_logger.warning.assert_called_with(
-                "Could not restored Dataloader state, as it does not have a load method"
-            )
-
-            # Should not include dataset in load statefuls
-            self.assertNotIn("dataset", statefuls)
-            # Trainer should still be included because restore_dataset_state controls trainer state
-            self.assertIn("trainer", statefuls)
+        # Should not include dataset component
+        self.assertNotIn("dataset", component_keys)
+        # But trainer should still be included
+        self.assertIn("trainer", component_keys)
 
     def test_stateful_dataloader_state_consistency(self):
         """Test that StatefulDataLoader state properly tracks dataset iteration."""

@@ -4,6 +4,12 @@ A simple OpenAI API-compatible inference server for testing HuggingFace models.
 
 The server and client should both work with other tools which support the OpenAI protocol.
 
+---
+
+**For Maintainers**: See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed technical documentation on the codebase structure, design patterns, and implementation details.
+
+---
+
 ## Installation
 
 The base Forgather install should be sufficient. 
@@ -97,6 +103,7 @@ Options:
 - `--chat-template`: Path to custom Jinja2 chat template file (optional)
 - `--dtype`: Model data type (optional, see Data Types section)
 - `--stop-sequences`: Custom stop sequences to halt generation (optional)
+- `--ignore-eos`: Ignore EOS tokens during generation (optional, default: False)
 - `--log-level`: Logging level - DEBUG, INFO, WARNING, ERROR (default: INFO)
 
 **Note**: CLI arguments always override values from the configuration file.
@@ -257,6 +264,42 @@ forgather inf server --model /path/to/model --stop-sequences "</s>" "<|endoftext
 # Instruct format stopping
 forgather inf server --model /path/to/model --stop-sequences "### Human:" "### Assistant:"
 ```
+
+### EOS Token Control
+
+By default, generation stops when the model produces an EOS (End-Of-Sequence) token. You can override this behavior to force the model to generate exactly `max_tokens` tokens regardless of EOS.
+
+**Server-level default**:
+```bash
+# All requests will ignore EOS by default
+forgather inf server --model /path/to/model --ignore-eos
+```
+
+**Request-level override** (using client):
+```bash
+# Ignore EOS for this specific request
+forgather inf client --completion "Once upon a time" --max-tokens 512 --ignore-eos
+
+# Or with Python OpenAI client
+python -c "
+from openai import OpenAI
+client = OpenAI(base_url='http://localhost:8000/v1', api_key='dummy')
+response = client.completions.create(
+    model='test',
+    prompt='Once upon a time',
+    max_tokens=512,
+    extra_body={'ignore_eos': True}
+)
+print(response.choices[0].text)
+"
+```
+
+**Use cases**:
+- Benchmarking: Generate fixed-length outputs for fair comparison
+- Data generation: Produce exactly N tokens for datasets
+- Testing: Verify model behavior at maximum context length
+
+**Note**: Other stop conditions (max_tokens, stop_sequences) still apply when `ignore_eos` is enabled.
 
 ## Logging
 
@@ -460,6 +503,7 @@ When in interactive mode, use these commands:
 - `--num-beams` - Number of beams for beam search
 - `--min-length` - Minimum length of generated sequence
 - `--seed` - Random seed for reproducible generation
+- `--ignore-eos` - Ignore EOS tokens (continue past EOS until max_tokens or stop_sequence)
 
 ### Test with curl
 
@@ -578,7 +622,7 @@ This mechanism allows you to use any HuggingFace generation parameter while main
 - **Automatic Device Selection**: Smart GPU/CPU device placement
 - **Detailed Logging**: Structured request/response logging with token-level information
 - **Token Usage Tracking**: Accurate prompt, completion, and total token counts
-- **EOS Token Handling**: Proper early stopping on end-of-sequence tokens
+- **EOS Token Control**: Configurable EOS token handling - stop on EOS (default) or ignore to generate exact token counts
 - **Extra Body Parameter Support**: Client supports HuggingFace parameters via OpenAI's extra_body mechanism
 - **Pipeline Support**: Stdin input support for Unix-style command chaining and automation
 - **Smart Echo Defaults**: Completion mode includes prompt by default for better pipeline compatibility

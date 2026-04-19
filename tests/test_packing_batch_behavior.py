@@ -7,8 +7,9 @@ This test explores:
 3. Understanding when the map function is called and with what data
 """
 
-from datasets import Dataset
 from transformers import AutoTokenizer
+
+from datasets import Dataset
 from forgather.ml.datasets import block_tokenize_fn
 
 

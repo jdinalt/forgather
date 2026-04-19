@@ -8,16 +8,36 @@
 from typing import Callable, Generator, Protocol
 
 from torch.distributed.pipelining.schedules import _PipelineSchedule
-from torchtitan.components.dataloader import BaseDataLoader
-from torchtitan.components.loss import LossFunction
-from torchtitan.components.metrics import MetricsProcessor
-from torchtitan.components.tokenizer import BaseTokenizer
-from torchtitan.components.validate import BaseValidator
-from torchtitan.components.validate import Validator as TitanValidator
-from torchtitan.config import JobConfig
-from torchtitan.datasets.hf_datasets import build_hf_validation_dataloader
-from torchtitan.distributed import ParallelDims
-from torchtitan.tools.logging import logger
+from torchtitan.components.dataloader import (
+    BaseDataLoader,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.components.loss import (
+    LossFunction,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.components.metrics import (
+    MetricsProcessor,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.components.tokenizer import (
+    BaseTokenizer,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.components.validate import (
+    BaseValidator,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.components.validate import (
+    Validator as TitanValidator,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.config import (
+    JobConfig,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.datasets.hf_datasets import (
+    build_hf_validation_dataloader,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.distributed import (
+    ParallelDims,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
+from torchtitan.tools.logging import (
+    logger,  # type: ignore[import-untyped]  # torchtitan is an optional dependency
+)
 
 
 class ValidatorFactory(Protocol):

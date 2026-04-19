@@ -1,15 +1,21 @@
 import contextlib
 import functools
-from typing import Optional
+import logging
+from typing import Any, Callable, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch import FloatTensor, LongTensor, Tensor
+from torch import Tensor
 from torch.nn.functional import cross_entropy
 
+from forgather.ml.distributed import prefix_logger_rank
 
-def _causal_loss_fn(logits: FloatTensor, labels: LongTensor) -> FloatTensor:
+logger = logging.getLogger(__name__)
+prefix_logger_rank(logger)
+
+
+def _causal_loss_fn(logits: Tensor, labels: Tensor) -> Tensor:
     # Shift so that tokens < n predict n
     shift_logits = logits[..., :-1, :].contiguous()
     shift_labels = labels[..., 1:].contiguous()
@@ -26,11 +32,11 @@ def _causal_loss_fn(logits: FloatTensor, labels: LongTensor) -> FloatTensor:
 
 
 def _chunked_causal_loss_fn(
-    logits: FloatTensor,
-    labels: LongTensor,
+    logits: Tensor,
+    labels: Tensor,
     chunk_size: int = 4096,
     ignore_index: int = -100,
-) -> FloatTensor:
+) -> Tensor:
     """
     Compute causal cross-entropy loss with chunked vocabulary processing.
 
@@ -130,7 +136,7 @@ class CausalLoss:
     def __repr__(self):
         return f"{type(self).__name__}(compile={self.compile})"
 
-    def __call__(self, logits: FloatTensor, labels: LongTensor) -> FloatTensor:
+    def __call__(self, logits: Tensor, labels: Tensor) -> Tensor:
         return self.loss_fn(logits, labels)
 
 
@@ -174,7 +180,7 @@ class ChunkedCausalLoss:
     def __repr__(self):
         return f"{type(self).__name__}(chunk_size={self.chunk_size}, compile={self.compile})"
 
-    def __call__(self, logits: FloatTensor, labels: LongTensor) -> FloatTensor:
+    def __call__(self, logits: Tensor, labels: Tensor) -> Tensor:
         return self.loss_fn(logits, labels)
 
 
@@ -236,6 +242,9 @@ class LinearCrossEntropyLoss:
         3. Loss is computed directly: loss_fn(hidden_states, labels)
     """
 
+    weight: Tensor
+    bias: Optional[Tensor]
+
     def __init__(
         self,
         output_embeddings: nn.Module,
@@ -243,6 +252,7 @@ class LinearCrossEntropyLoss:
         chunk_size: int = 4096,
         ignore_index: int = -100,
         compile: bool = False,
+        softcap: Optional[float] = None,
         **kwargs,
     ):
         self.output_embeddings = output_embeddings
@@ -253,27 +263,70 @@ class LinearCrossEntropyLoss:
         self.kwargs = kwargs
 
         # Extract weight and bias from output embeddings
-        self.weight = output_embeddings.weight
+        _weight = output_embeddings.weight
+        if not isinstance(_weight, Tensor):
+            raise TypeError(
+                f"Expected output_embeddings.weight to be a Tensor, got {type(_weight)}"
+            )
+        self.weight = _weight
         self.bias = getattr(output_embeddings, "bias", None)
+
+        # Auto-discover softcap from the lm_head module if not explicitly provided.
+        # Models like Gemma attach a ``softcap`` attribute to their lm_head module
+        # (via SoftcappedLinear). The fused-loss path bypasses the lm_head's forward,
+        # so we read the softcap value directly off the module here and apply it
+        # inside each backend.
+        if softcap is None:
+            softcap = getattr(output_embeddings, "softcap", None)
+        self.softcap = softcap
 
         # Select and initialize implementation
         self.actual_impl, self._compute_fn = self._select_implementation(impl, **kwargs)
         if self.compile:
             self._compute_fn = torch.compile(self._compute_fn)
 
-    def _select_implementation(self, impl: str, **kwargs) -> tuple[str, callable]:
+    def _select_implementation(
+        self, impl: str, impl_was_auto: bool = False, **kwargs
+    ) -> tuple[str, Callable[..., Any]]:
         """
         Select and initialize the loss implementation.
 
         Returns:
             (actual_impl_name, compute_function)
         """
-        import logging
 
-        logger = logging.getLogger(__name__)
+        # Detect DTensor weights (FSDP2-sharded lm_head). None of the three
+        # backends — CCE, Liger, or pytorch chunked — handle DTensor inputs:
+        # CCE and Liger are Triton kernels that expect plain tensors and
+        # silently produce zero gradients, and the pytorch path does a
+        # ``hidden_states @ weight.T`` which mixes plain tensor with DTensor
+        # and raises "aten.mm.default got mixed torch.Tensor and DTensor".
+        # Fused loss under FSDP2 requires either gathering the full lm_head
+        # weight up front (losing the memory benefit) or a DTensor-native
+        # implementation; neither is in place yet, so refuse construction
+        # here and let the caller fall back to the standard logits path.
+        try:
+            from torch.distributed.tensor import DTensor as _DTensor
+        except ImportError:
+            _DTensor = None  # type: ignore[assignment]
+        weight_is_dtensor = _DTensor is not None and isinstance(self.weight, _DTensor)
+
+        if weight_is_dtensor:
+            raise RuntimeError(
+                "LinearCrossEntropyLoss cannot be constructed against a "
+                "DTensor lm_head weight (detected FSDP2 / tensor-parallel "
+                "sharding). None of the CCE / Liger / pytorch backends "
+                "handle DTensor inputs correctly: CCE and Liger silently "
+                "produce zero gradients, and the pytorch chunked path "
+                "raises on the hidden_states @ weight.T matmul. Disable "
+                "fused loss for the sharded code path (the FSDP2 trainer "
+                "does this automatically) and use the standard logits "
+                "path, whose lm_head forward composes with FSDP2 via the "
+                "normal all_gather hooks."
+            )
 
         if impl == "auto":
-            if self.bias:
+            if self.bias is not None:
                 # Only pytorch support bias at present
                 candidates = ["pytorch"]
             else:
@@ -284,7 +337,7 @@ class LinearCrossEntropyLoss:
             for candidate in candidates:
                 try:
                     actual_impl, compute_fn = self._select_implementation(
-                        candidate, **kwargs
+                        candidate, impl_was_auto=True, **kwargs
                     )
                     logger.info(
                         f"LinearCrossEntropyLoss: auto-selected '{actual_impl}' implementation"
@@ -302,10 +355,21 @@ class LinearCrossEntropyLoss:
             )
 
         elif impl == "cce":
-            assert not self.bias, "Bias is not supported by CCE v25.1.1"
+            assert self.bias is None, "Bias is not supported by CCE v25.1.1"
 
             try:
+                # Detect which kwargs the installed version supports by
+                # inspecting the function signature.  The pip-installable
+                # v25.1.1 lacks accum_e_fp32 / accum_c_fp32 (among others);
+                # the source-installable v25.9.3+ has them.
+                import inspect
+
                 from cut_cross_entropy import linear_cross_entropy
+
+                _cce_params = set(
+                    inspect.signature(linear_cross_entropy).parameters.keys()
+                )
+                self._cce_supported_params = _cce_params
 
                 self.cce_impl = kwargs.get("cce_impl", "cce")
                 if self.cce_impl == "cce" and not (
@@ -316,8 +380,45 @@ class LinearCrossEntropyLoss:
                         "Optimized Cross-Cut-Entropy implementation requires bfloat16 or float16 dtype. Using 'torch_compile'"
                     )
                     self.cce_impl = "torch_compile"
+
+                # For half-precision weights, default to fp32 gradient accumulation
+                # to prevent spectral norm explosion in lm_head during training.
+                # When explicitly requested, warn instead of overriding.
+                _has_fp32_accum = "accum_e_fp32" in _cce_params
+                if self.weight.dtype in (torch.bfloat16, torch.float16):
+                    if _has_fp32_accum:
+                        if impl_was_auto:
+                            self.kwargs.setdefault("accum_e_fp32", True)
+                            self.kwargs.setdefault("accum_c_fp32", True)
+                        else:
+                            if not kwargs.get("accum_e_fp32", False):
+                                logger.warning(
+                                    "CCE with %s weights: accum_e_fp32 is not enabled. "
+                                    "This may cause numerical instability (lm_head spectral norm explosion) "
+                                    "during long training runs. Consider setting accum_e_fp32=True.",
+                                    self.weight.dtype,
+                                )
+                            if not kwargs.get("accum_c_fp32", False):
+                                logger.warning(
+                                    "CCE with %s weights: accum_c_fp32 is not enabled. "
+                                    "This may cause numerical instability (lm_head spectral norm explosion) "
+                                    "during long training runs. Consider setting accum_c_fp32=True.",
+                                    self.weight.dtype,
+                                )
+                    else:
+                        logger.warning(
+                            "Installed cut-cross-entropy does not support "
+                            "accum_e_fp32/accum_c_fp32 (needed for numerical stability "
+                            "with %s weights). Training may exhibit lm_head spectral "
+                            "norm explosion. Install the latest version from source:\n"
+                            '  pip install "cut-cross-entropy @ '
+                            'git+https://github.com/apple/ml-cross-entropy.git"',
+                            self.weight.dtype,
+                        )
+
                 logger.info(
-                    f"LinearCrossEntropyLoss: using Apple CCE ({self.cce_impl}) implementation"
+                    f"LinearCrossEntropyLoss: using Apple CCE ({self.cce_impl}), "
+                    f"kwargs={self.kwargs}"
                 )
                 return "cce", self._compute_cce
             except ImportError as e:
@@ -332,11 +433,30 @@ class LinearCrossEntropyLoss:
             try:
                 from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
 
-                logger.info("LinearCrossEntropyLoss: using Liger Kernel implementation")
+                # For half-precision weights, default to fp32 accumulation
+                # to prevent spectral norm explosion in lm_head during training.
+                liger_kwargs = dict(self.kwargs)
+                if self.weight.dtype in (torch.bfloat16, torch.float16):
+                    if impl_was_auto:
+                        liger_kwargs.setdefault("accum_dtype", torch.float32)
+                    elif liger_kwargs.get("accum_dtype") is None:
+                        logger.warning(
+                            "Liger with %s weights: accum_dtype is not set. "
+                            "This may cause numerical instability (lm_head spectral norm explosion) "
+                            "during long training runs. Consider setting accum_dtype=torch.float32.",
+                            self.weight.dtype,
+                        )
+
+                logger.info(
+                    f"LinearCrossEntropyLoss: using Liger Kernel, kwargs={liger_kwargs}, "
+                    f"softcap={self.softcap}"
+                )
 
                 # Initialize Liger loss function
                 self._liger_loss = LigerFusedLinearCrossEntropyLoss(
-                    ignore_index=self.ignore_index, **self.kwargs
+                    ignore_index=self.ignore_index,
+                    softcap=self.softcap,
+                    **liger_kwargs,
                 )
                 return "liger", self._compute_liger
             except ImportError as e:
@@ -346,7 +466,9 @@ class LinearCrossEntropyLoss:
                 ) from e
 
         elif impl == "pytorch":
-            logger.info("LinearCrossEntropyLoss: using pure PyTorch implementation")
+            logger.info(
+                f"LinearCrossEntropyLoss: using pure PyTorch, kwargs={self.kwargs}"
+            )
             return "pytorch", self._compute_pytorch
 
         else:
@@ -355,11 +477,14 @@ class LinearCrossEntropyLoss:
                 "Must be one of: 'auto', 'cce', 'liger', 'pytorch'"
             )
 
-    def _compute_cce(
-        self, hidden_states: FloatTensor, labels: LongTensor
-    ) -> FloatTensor:
+    def _compute_cce(self, hidden_states: Tensor, labels: Tensor) -> Tensor:
         """Use Apple's CCE implementation."""
         from cut_cross_entropy import linear_cross_entropy
+
+        # Filter kwargs to only those the installed version accepts.
+        cce_kwargs = {
+            k: v for k, v in self.kwargs.items() if k in self._cce_supported_params
+        }
 
         return linear_cross_entropy(
             hidden_states,
@@ -367,16 +492,15 @@ class LinearCrossEntropyLoss:
             labels,
             # Bias is not supported by v25.1.1
             # bias=self.bias,
-            shift=1,  # Automatic causal shifting
+            shift=True,  # Automatic causal shifting
             ignore_index=self.ignore_index,
+            softcap=self.softcap,
             impl=self.cce_impl,
             reduction="mean",
-            **self.kwargs,
+            **cce_kwargs,
         )
 
-    def _compute_liger(
-        self, hidden_states: FloatTensor, labels: LongTensor
-    ) -> FloatTensor:
+    def _compute_liger(self, hidden_states: Tensor, labels: Tensor) -> Tensor:
         """Use Liger Kernel implementation."""
         # Liger expects: loss_fn(weight, input, target)
         # Shift for causal prediction
@@ -389,9 +513,7 @@ class LinearCrossEntropyLoss:
 
         return self._liger_loss(self.weight, flat_hidden, flat_labels)
 
-    def _compute_pytorch(
-        self, hidden_states: FloatTensor, labels: LongTensor
-    ) -> FloatTensor:
+    def _compute_pytorch(self, hidden_states: Tensor, labels: Tensor) -> Tensor:
         """Use pure PyTorch chunked implementation."""
         # Shift for causal prediction
         shift_hidden = hidden_states[..., :-1, :].contiguous()
@@ -409,22 +531,28 @@ class LinearCrossEntropyLoss:
             self.bias,
             chunk_size=self.chunk_size,
             ignore_index=self.ignore_index,
+            softcap=self.softcap,
         )
 
     def _fused_linear_cross_entropy_pytorch(
         self,
-        hidden_states: FloatTensor,
-        labels: LongTensor,
+        hidden_states: Tensor,
+        labels: Tensor,
         weight: Tensor,
         bias: Optional[Tensor],
         chunk_size: int,
         ignore_index: int,
-    ) -> FloatTensor:
+        softcap: Optional[float] = None,
+    ) -> Tensor:
         """
         Pure PyTorch implementation of fused linear + cross-entropy.
 
         This is the same algorithm as FusedLinearCrossEntropy._fused_forward_loss,
         but as a standalone function for use with external weight matrices.
+
+        If ``softcap`` is provided, ``cap * tanh(chunk_logits / cap)`` is applied
+        to each materialized vocab chunk immediately after the linear, before any
+        reduction. Softcap is element-wise so it commutes with the chunk boundary.
         """
         n_tokens = hidden_states.size(0)
         vocab_size = weight.size(0)
@@ -457,6 +585,8 @@ class LinearCrossEntropyLoss:
             chunk_weight = weight[start_idx:end_idx]
             chunk_bias = bias[start_idx:end_idx] if bias is not None else None
             chunk_logits = F.linear(hidden_states, chunk_weight, chunk_bias)
+            if softcap is not None:
+                chunk_logits = softcap * torch.tanh(chunk_logits / softcap)
 
             chunk_max = chunk_logits.max(dim=-1).values
             max_logit = torch.maximum(max_logit, chunk_max)
@@ -474,10 +604,12 @@ class LinearCrossEntropyLoss:
             chunk_weight = weight[start_idx:end_idx]
             chunk_bias = bias[start_idx:end_idx] if bias is not None else None
             chunk_logits = F.linear(hidden_states, chunk_weight, chunk_bias)
+            if softcap is not None:
+                chunk_logits = softcap * torch.tanh(chunk_logits / softcap)
 
             # Accumulate exp(logit - max)
             chunk_exp = torch.exp(chunk_logits - max_logit.unsqueeze(-1))
-            sum_exp += chunk_exp.sum(dim=-1)
+            sum_exp += chunk_exp.sum(dim=-1).to(sum_exp.dtype)
 
             # Extract target logits for labels in this chunk
             chunk_labels = labels - start_idx
@@ -488,7 +620,7 @@ class LinearCrossEntropyLoss:
                 selected_logits = torch.gather(
                     chunk_logits[in_chunk], dim=-1, index=indices
                 ).squeeze(-1)
-                target_logits[in_chunk] = selected_logits
+                target_logits[in_chunk] = selected_logits.to(target_logits.dtype)
 
         # Step 3: Compute cross-entropy
         log_sum_exp = max_logit + torch.log(sum_exp)
@@ -500,7 +632,7 @@ class LinearCrossEntropyLoss:
 
         return loss
 
-    def __call__(self, hidden_states: FloatTensor, labels: LongTensor) -> FloatTensor:
+    def __call__(self, hidden_states: Tensor, labels: Tensor) -> Tensor:
         """
         Compute fused loss from hidden states.
 
@@ -513,7 +645,7 @@ class LinearCrossEntropyLoss:
         """
         return self._compute_fn(hidden_states, labels)
 
-    def forward_logits(self, hidden_states: FloatTensor) -> FloatTensor:
+    def forward_logits(self, hidden_states: Tensor) -> Tensor:
         """
         Inference mode: materialize logits for generation.
 
@@ -525,7 +657,10 @@ class LinearCrossEntropyLoss:
         Returns:
             logits: [batch, seq_len, vocab_size]
         """
-        return F.linear(hidden_states, self.weight, self.bias)
+        logits = F.linear(hidden_states, self.weight, self.bias)
+        if self.softcap is not None:
+            logits = self.softcap * torch.tanh(logits / self.softcap)
+        return logits
 
     def __repr__(self):
         return (
@@ -533,7 +668,8 @@ class LinearCrossEntropyLoss:
             f"impl='{self.actual_impl}', "
             f"vocab_size={self.weight.size(0)}, "
             f"hidden_dim={self.weight.size(1)}, "
-            f"chunk_size={self.chunk_size}), "
+            f"chunk_size={self.chunk_size}, "
+            f"softcap={self.softcap}, "
             f"compile={self.compile})"
         )
 

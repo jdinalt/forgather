@@ -1,0 +1,17 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    ## Overrides
+    -- set ns.config_name = "Train with PP"
+    -- set ns.config_description = "Experiment in training a small LM with Pipeline Parallel"
+    -- set ns.model_name = model_name | default("pp")
+    -- set ns.trainer_type = trainer_type | default("pipeline")
+    ## The "ZeroBubble" schedules appear to have issues with flex-attention.
+    ##-- set ns.pipe_schedule_factory = pipeline_schedule | default("ScheduleInterleavedZeroBubble")
+
+[trainer_args]
+    == super()
+
+    # "max-autotune" x Flex-Attention x PP = No Bueno!
+    torch_compile_mode: max-autotune-no-cudagraphs

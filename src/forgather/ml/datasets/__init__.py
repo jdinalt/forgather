@@ -1,9 +1,29 @@
 from .block_tokenizer import block_tokenize_fn
-from .datasets import (
+from .dataloader_utils import (
+    LengthSyncCallback,
+    create_length_sync_callback,
+    sync_dataset_state_from_dataloader,
+)
+from .fast_hf_loader import (
+    FastDatasetLoaderSimple,
+    SimpleArrowIterableDataset,
+    fast_load_iterable_dataset,
+    get_default_loader,
+)
+from .histogram import plot_token_length_histogram
+from .interleaved import (
+    InterleavedDataset,
+    balance_remaining_examples,
+    interleave_datasets,
+)
+from .soft_sequential import soft_sequential
+from .iterable_with_length import (
     IterableDatasetWithLength,
-    plot_token_length_histogram,
-    preprocess_dataset,
     to_iterable_dataset_with_length,
+)
+from .preprocess import (
+    default_tokenize_map_fn,
+    preprocess_dataset,
 )
 
 __all__ = [
@@ -12,4 +32,19 @@ __all__ = [
     "preprocess_dataset",
     "plot_token_length_histogram",
     "block_tokenize_fn",
+    "default_tokenize_map_fn",
+    # Fast HF loader
+    "fast_load_iterable_dataset",
+    "FastDatasetLoaderSimple",
+    "SimpleArrowIterableDataset",
+    "get_default_loader",
+    # Interleaving
+    "interleave_datasets",
+    "InterleavedDataset",
+    "balance_remaining_examples",
+    "soft_sequential",
+    # DataLoader utilities
+    "sync_dataset_state_from_dataloader",
+    "create_length_sync_callback",
+    "LengthSyncCallback",
 ]

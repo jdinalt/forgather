@@ -1,0 +1,36 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Post Local SGD"
+    -- set ns.config_description = "Test Post Local SGD on 4 GPUs"
+    -- set ns.log_name = "post_local"
+    -- set ns.nproc_per_node = 4
+
+[dataset_project]
+    == super()
+    shard_dataset: True
+
+[trainer_args]
+    == super()
+    # **Post Local SGD**
+    dispatch_batches: False
+    post_local_sgd:
+        enabled: True
+        start_step: {{ start_step | toyaml(2000) }}
+        period: {{ post_local_period | toyaml(4) }}
+
+[optimizer]
+    == super()
+    lr: 2.0e-3
+
+[dynamic_args]
+    == super()
+    start_step:
+        names: "--start-step"
+        type: int
+        help: "Post-Local-SGD start step"
+    post_local_period:
+        names: "--post-local-period"
+        type: int
+        help: "Post-local-SGD sync period"

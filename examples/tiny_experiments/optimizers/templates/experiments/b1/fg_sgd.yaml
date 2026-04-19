@@ -1,0 +1,14 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "FG SGD Batch-1"
+    -- set ns.config_description = "Batch size 1"
+    -- set ns.log_name = log_name | default("fg_sgd-b1")
+    -- set ns.lr_alpha = 1.0
+    -- set ns.base_lr = lr | default(1e0)
+    -- set ns.per_device_train_batch_size = 1
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim:SGD
+    lr: {{ ns.global_lr | toyaml }}

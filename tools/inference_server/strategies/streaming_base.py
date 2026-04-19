@@ -6,12 +6,13 @@ import time
 from abc import abstractmethod
 from threading import Thread
 from typing import Iterator, Optional, Union
+
 import torch
 from transformers import TextIteratorStreamer
 
-from .base import GenerationStrategy
 from ..models.chat import ChatCompletionRequest
 from ..models.completion import CompletionRequest
+from .base import GenerationStrategy
 
 
 class StreamingStrategy(GenerationStrategy):
@@ -144,12 +145,15 @@ class StreamingStrategy(GenerationStrategy):
             self.service.logger.log_generated_tokens(request_id, generated_token_ids)
 
             # 13. Determine finish reason
+            # Pass ignore_eos flag to finish detector
+            ignore_eos = getattr(request, "ignore_eos", False)
             finish_reason = (
                 self.service.finish_detector.determine_finish_reason_streaming(
                     completion_tokens,
                     request.max_tokens,
                     stop_sequences,
                     full_response,
+                    ignore_eos=ignore_eos,
                 )
             )
 

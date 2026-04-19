@@ -1,4 +1,4 @@
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import torch.utils.checkpoint as checkpoint
 from torch import FloatTensor, nn
@@ -25,7 +25,7 @@ class LayerStack(nn.Module):
         *,
         enable_checkpoint: bool = True,
         checkpoint_stride: int = 1,
-        checkpoint_kwargs: dict = None,
+        checkpoint_kwargs: Optional[dict[str, Any]] = None,
         post_norm_factory: Optional[Callable] = None,
     ):
         super().__init__()
@@ -59,7 +59,11 @@ class LayerStack(nn.Module):
             self.layer_norm = post_norm_factory()
 
     def extra_repr(self):
-        return f"gradient_checkpointing={self.gradient_checkpointing}, checkpoint_stride={self.checkpoint_stride}"
+        return (
+            f"gradient_checkpointing={self.gradient_checkpointing}, "
+            f"checkpoint_stride={self.checkpoint_stride}, "
+            f"checkpoint_kwargs={self.checkpoint_kwargs}"
+        )
 
     def forward(
         self,
@@ -73,7 +77,7 @@ class LayerStack(nn.Module):
                     hidden_states = checkpoint.checkpoint(
                         layer,
                         hidden_states,
-                        **kwargs,
+                        **kwargs,  # type: ignore[arg-type]
                         **self.checkpoint_kwargs,
                     )
                 else:

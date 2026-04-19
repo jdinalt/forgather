@@ -4,15 +4,16 @@ Streaming chat completion generation strategy.
 
 import time
 from typing import Iterator, Optional
+
 from transformers import TextIteratorStreamer
 
-from .streaming_base import StreamingStrategy
 from ..models.chat import (
-    ChatCompletionStreamResponse,
+    ChatCompletionRequest,
     ChatCompletionStreamChoice,
     ChatCompletionStreamDelta,
-    ChatCompletionRequest,
+    ChatCompletionStreamResponse,
 )
+from .streaming_base import StreamingStrategy
 
 
 class StreamingChatStrategy(StreamingStrategy):

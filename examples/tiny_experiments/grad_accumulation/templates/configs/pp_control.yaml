@@ -7,12 +7,15 @@
     -- set ns.model_name = "control"
     -- set ns.log_name = "piepline"
     -- set ns.trainer_class = 'trainers/pipeline_trainer.yaml'
+    -- set ns.nproc_per_node = 2
+
+[trainer_args]
+    == super()
+    # **pipeline**
+    n_microbatches: 4
 
 [trainer_callbacks]
     -- include 'pipeline.callbacks'
-
-[trainer_definition]
-    -- include 'pipeline.trainer_config'
 
 [datacollator]
     == super()
@@ -20,18 +23,6 @@
     # Pipeline Parallel requires constant input tensor shapes
     padding: "max_length"
     truncation: True
-
-#-------------------- pipeline.trainer_config --------------------
--- extends 'project.trainer_config'
-
-[trainer_meta_config]
-    == super()
-    -- set ns.nproc_per_node = 2
-
-[trainer_args]
-    == super()
-    # **pipeline**
-    n_microbatches: 4
 
 #-------------------- pipeline.callbacks --------------------
 -- extends 'tiny.callbacks'

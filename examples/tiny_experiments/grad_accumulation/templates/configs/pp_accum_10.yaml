@@ -7,6 +7,16 @@
     -- set ns.model_name = "control"
     -- set ns.log_name = "pp_10"
 
+[trainer_args]
+    == super()
+    # **Experiment overrides**
+    gradient_accumulation_steps: 10
+
+    # Scale steps by factor of gradient_accumulation_steps, relative to baseline
+    logging_steps: 10
+    eval_steps: 50
+    save_steps: 1000
+
 [lr_scheduler]
     == super()
     
@@ -20,19 +30,3 @@
     # **experiment**
     # Scale LR by sqrt(10)
     lr: 3.16e-3
-
-[trainer_definition]
-    -- include 'experiment.trainer_config'
-
-#-------------------- experiment.trainer_config --------------------
--- extends 'pipeline.trainer_config'
-
-[trainer_args]
-    == super()
-    # **Experiment overrides**
-    gradient_accumulation_steps: 10
-
-    # Scale steps by factor of gradient_accumulation_steps, relative to baseline
-    logging_steps: 10
-    eval_steps: 50
-    save_steps: 1000

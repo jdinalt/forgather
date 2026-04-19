@@ -13,9 +13,13 @@ import signal
 import socket
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    import aiohttp
+    import aiohttp.web
 
 try:
     import aiohttp
@@ -44,7 +48,7 @@ class ControlCommand:
 
     command: str
     timestamp: float
-    data: Dict[str, Any] = None
+    data: Optional[Dict[str, Any]] = field(default=None)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -79,7 +83,12 @@ class TrainerControlCallback(TrainerCallback):
     via torch.distributed for coordination.
     """
 
-    def __init__(self, job_id: str = None, port: int = None, enable_http: bool = None):
+    def __init__(
+        self,
+        job_id: Optional[str] = None,
+        port: Optional[int] = None,
+        enable_http: Optional[bool] = None,
+    ):
         """
         Initialize the control callback.
 
@@ -227,13 +236,16 @@ class TrainerControlCallback(TrainerCallback):
             logger.error(f"HTTP server error: {e}")
             raise
 
+    async def _start_http_server(self):
+        """Schedule the HTTP server as a cancellable background task."""
+        self.server_task = asyncio.create_task(self._run_http_server())
+
     def _run_server_thread(self):
         """Run HTTP server in separate thread."""
         asyncio.set_event_loop(self.event_loop)
+        assert self.event_loop is not None
         try:
-            self.event_loop.run_until_complete(self._run_http_server())
-        except asyncio.CancelledError:
-            pass
+            self.event_loop.run_forever()
         except Exception as e:
             logger.error(f"Server thread error: {e}")
 
@@ -258,7 +270,9 @@ class TrainerControlCallback(TrainerCallback):
                 command=command, timestamp=time.time(), data=data.get("data", {})
             )
 
-            await self.command_queue.put(control_command)
+            command_queue = self.command_queue
+            assert command_queue is not None
+            await command_queue.put(control_command)
 
             return aiohttp.web.json_response(
                 {
@@ -429,7 +443,7 @@ class TrainerControlCallback(TrainerCallback):
                 torch.distributed.broadcast(size_tensor, src=0)
 
                 # Then receive the commands tensor with the correct size
-                tensor_size = size_tensor.item()
+                tensor_size = int(size_tensor.item())
                 if tensor_size > 0:
                     commands_tensor = torch.zeros(
                         tensor_size, dtype=torch.long, device=device
@@ -463,7 +477,12 @@ class TrainerControlCallback(TrainerCallback):
             if (
                 self.trainer_args
                 and self.trainer_args.load_best_model_at_end
-                and self.trainer_args.eval_strategy.value != "no"
+                and getattr(
+                    self.trainer_args.eval_strategy,
+                    "value",
+                    self.trainer_args.eval_strategy,
+                )
+                != "no"
             ):
                 control.should_evaluate = True
             logger.info("Checkpoint save requested")
@@ -473,7 +492,12 @@ class TrainerControlCallback(TrainerCallback):
             if (
                 self.trainer_args
                 and self.trainer_args.load_best_model_at_end
-                and self.trainer_args.eval_strategy.value != "no"
+                and getattr(
+                    self.trainer_args.eval_strategy,
+                    "value",
+                    self.trainer_args.eval_strategy,
+                )
+                != "no"
             ):
                 control.should_evaluate = True
             control.should_training_stop = True
@@ -518,8 +542,11 @@ class TrainerControlCallback(TrainerCallback):
                 )
                 self.server_thread.start()
 
-                # Give server time to start
+                # Give the thread time to start the loop, then schedule the server task
                 time.sleep(0.1)
+                asyncio.run_coroutine_threadsafe(
+                    self._start_http_server(), self.event_loop
+                ).result(timeout=5)
 
                 logger.info(f"Trainer control system initialized for job {self.job_id}")
 
@@ -532,7 +559,7 @@ class TrainerControlCallback(TrainerCallback):
         args: MinimalTrainingArguments,
         state: TrainerState,
         control: TrainerControl,
-        logs: dict = None,
+        logs: Optional[dict] = None,
         **kwargs,
     ):
         """Check for control commands on each log event."""
@@ -556,19 +583,39 @@ class TrainerControlCallback(TrainerCallback):
         """Clean up when training ends."""
         if state.is_world_process_zero and self.enable_http:
             try:
-                # Cancel server task
-                if self.server_task and not self.server_task.done():
-                    self.server_task.cancel()
+                event_loop = self.event_loop
+                if event_loop is None or event_loop.is_closed():
+                    return
 
-                # Shutdown server
-                if self.server_runner:
-                    asyncio.run_coroutine_threadsafe(
-                        self.server_runner.cleanup(), self.event_loop
-                    ).result(timeout=5)
+                # Shut down the aiohttp runner and cancel the server task on
+                # the loop, awaiting the task so the CancelledError is actually
+                # delivered before the loop stops. If we only scheduled the
+                # cancel and then stopped the loop, run_forever() would return
+                # with the task still pending, producing "Task was destroyed
+                # but it is pending!".
+                async def _shutdown_coro():
+                    if self.server_runner is not None:
+                        try:
+                            await self.server_runner.cleanup()
+                        except Exception as e:
+                            logger.warning(f"aiohttp runner cleanup error: {e}")
+                    if self.server_task and not self.server_task.done():
+                        self.server_task.cancel()
+                        try:
+                            await self.server_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
 
-                # Stop event loop
-                if self.event_loop and not self.event_loop.is_closed():
-                    self.event_loop.call_soon_threadsafe(self.event_loop.stop)
+                asyncio.run_coroutine_threadsafe(_shutdown_coro(), event_loop).result(
+                    timeout=10
+                )
+
+                # Task is done; now it's safe to stop the loop.
+                event_loop.call_soon_threadsafe(event_loop.stop)
+
+                # Wait for the server thread to exit cleanly
+                if self.server_thread:
+                    self.server_thread.join(timeout=10)
 
                 # Clean up endpoint file
                 endpoint_file = self.control_dir / "endpoint.json"

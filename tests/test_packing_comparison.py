@@ -6,8 +6,10 @@ improvements in packing efficiency.
 """
 
 import random
-from datasets import Dataset
+
 from transformers import AutoTokenizer
+
+from datasets import Dataset
 from forgather.ml.datasets import block_tokenize_fn
 
 

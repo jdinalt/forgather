@@ -3,9 +3,8 @@
 /projects
 /tutorial
 /tokenizers
-*.sh
 .forgather_history
-.claude
+.claude/
 forgather.code-workspace
 output_models/
 tmp/
@@ -13,6 +12,10 @@ data
 .env
 .vscode
 settings.json
+# Extracted tarball contents + incidental histogram SVGs the dataset CLI
+# writes during standalone dataset runs.
+/examples/tutorials/hp_lovecraft_project/hp_lovecraft/
+/examples/tutorials/hp_lovecraft_project/lovecraft_reference/lovecraft_dataset/*.svg
 
 # Vim swap files
 *.swp
@@ -183,3 +186,6 @@ cython_debug/
 .project*
 *.swo
 
+
+# Claude Code development notes (not part of library)
+.claude_notes/

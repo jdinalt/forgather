@@ -1,5 +1,8 @@
 from enum import Enum
-from typing import Any, Set
+from functools import wraps
+from typing import Any, Callable, Set, TypeVar
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 
 class ConversionDescriptor:
@@ -33,50 +36,13 @@ def format_line_numbers(text: str) -> str:
     return "".join(map(lambda x: f"{x[0]+1:>6}: {x[1]}\n", enumerate(text.split("\n"))))
 
 
-def add_exception_notes(error: Exception, *args):
+def add_exception_notes(error: Exception, *args) -> Exception:
     """
-    Add a note to an exception.
-
-    Python 3.11 supports adding additional details to exceptions via notes.
-    Unfortunately, our present target is Python 3.10...
-
-    We will try to add a note to an exception anyway via adding it to something
-    in the exception which will be printed with the exception.
-
-    This is most definitely a hack, but it's the 'least-bad-thing,' as the line
-    numbers reported by Yaml will likely correspond to a pre-processed Yaml file,
-    making the line-numbers relatively useless, unless you have access to the
-    preprocessed data, with line-numbers.
-
-    Ideally, at some later point, when we upgrade to a newer version of Python, this
-    should be replaced with the native method of adding notes.
+    Add notes to an exception using the native Python 3.11+ add_note() API.
     """
-    note = ""
     for arg in args:
-        note += "\n\n" + str(arg)
-
-    # Some Yaml exceptions have a 'note' attribute, which will be printed with
-    # the exception. If it has this, use it.
-    if hasattr(error, "note"):
-        if isinstance(error, str):
-            error.note += note
-        else:
-            error.note = note
-        return error
-    # Try appending the note to the first str in the exception's args.
-    else:
-        # Not all exception have a string in the first arg. For example, "yaml.MarkedYAMLError"
-        # We try to be generic here by find the first string in args, but it's impossible to
-        # know if there could be side effects -- probably not, but committed to Python 3.10 at present,
-        # so "add_not() is not an option, so do the least-bad-thing.
-        error_args = list(error.args)
-        for i, arg in enumerate(error_args):
-            if isinstance(arg, str):
-                error_args[i] += "\n" + note
-                error.args = tuple(error_args)
-                return error
-    # Fallback to generic exception, which at least should chain them.
-    raise Exception(note)
+        error.add_note(str(arg))
+    return error
 
 
 class AutoName:
@@ -127,9 +93,10 @@ class AutoName:
         return name + "_"
 
 
-def track_depth(method):
+def track_depth(method: _F) -> _F:
     """Decorator to track the recursion depth of a class method."""
 
+    @wraps(method)
     def wrapper(self, *args, **kwargs):
         # Increment the recursion level
         self.level += 1
@@ -141,10 +108,10 @@ def track_depth(method):
             self.level -= 1
         return result
 
-    return wrapper
+    return wrapper  # type: ignore[return-value]
 
 
-def indent_block(block):
+def indent_block(block, indent_level=4):
     indent = " " * indent_level
     s = "".join(map(lambda s: indent + s + "\n", block.split("\n")))
     return s[:-1]

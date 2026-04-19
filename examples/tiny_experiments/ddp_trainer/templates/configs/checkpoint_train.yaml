@@ -1,0 +1,27 @@
+## DDP Trainer checkpoint save test - train for 500 steps
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DDP Checkpoint Train"
+    -- set ns.config_description = "Train DDPTrainer for 500 steps with checkpointing"
+    -- set ns.log_name = "checkpoint"
+
+[trainer_args]
+    == super()
+
+    # Enable checkpoint features
+    save_strategy: "steps"
+    eval_strategy: "steps"
+    save_steps: 200
+    eval_steps: 100
+    logging_steps: 50
+    save_safetensors: True
+    save_total_limit: 3
+
+    # Train for 500 steps
+    max_steps: 500
+
+    # Small batch size for quick testing
+    per_device_train_batch_size: 8
+    per_device_eval_batch_size: 16

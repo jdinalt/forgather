@@ -4,7 +4,36 @@ from typing import Callable, Iterable, Tuple
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from torch.distributed.tensor import DTensor
 from torch.optim import Optimizer
+
+from .rounding_utils import fp32_to_bf16_stochastic_round
+
+
+def _local_shard(t: Tensor) -> Tensor:
+    """Return the local shard of a DTensor, or the tensor unchanged.
+
+    Under FSDP2, parameters and gradients are DTensors on a device mesh.
+    The per-parameter optimizer step is entirely elementwise and needs no
+    cross-rank communication, so we unshard to the local tensor before the
+    compiled kernel runs. This matters for two independent reasons:
+
+    1. Sizing of scratch state (row/col moment buffers) must come from the
+       local shard shape, not the DTensor's global shape. DTensor.numel()
+       returns the global element count, so naive ``torch.zeros(grad[...,0]
+       .numel(), ...)`` produces a buffer sized for the unsharded parameter
+       and then fails the mixed-tensor guard on the first in-place op.
+    2. ``torch.compile(_adafactor, fullgraph=True)`` is not safe over
+       DTensor ops today; running the kernel against plain-tensor local
+       shards keeps the compiled graph on stable ground.
+
+    In-place mutations on the returned tensor update the DTensor's local
+    storage directly, so p -= lr*update inside the kernel still writes
+    back into the live parameter.
+    """
+    if isinstance(t, DTensor):
+        return t.to_local()
+    return t
 
 
 class Adafactor(Optimizer):
@@ -20,11 +49,11 @@ class Adafactor(Optimizer):
         clip_threshold: float = 1.0,
         betas: Tuple[float, float] = (0.9, 0.999),
         eps: Tuple[float, float] = (1e-30, 1e-3),
-        weight_decay: float = 0.0,
+        weight_decay: float = 0.01,
         relative_step: bool = False,
-        torch_compile: bool = False,
-        bf16_stochastic_round: bool = False,
-        use_triton: bool = True,
+        torch_compile: bool = True,
+        bf16_stochastic_round: bool = True,
+        use_triton: bool = False,
     ):
         self.compile = torch_compile
         self.use_triton = use_triton
@@ -32,8 +61,8 @@ class Adafactor(Optimizer):
         # Import Triton kernels if needed
         if use_triton:
             assert (
-                bf16_stochastic_round == False and relative_step == False
-            ), "bf16_stochastic_round and relative_step are not supported by Adafactor tritan kernel. Set use_triton = False"
+                relative_step == False
+            ), "relative_step is not supported by Adafactor Triton kernel. Set use_triton = False"
             try:
                 from . import adafactor_triton
 
@@ -56,14 +85,35 @@ class Adafactor(Optimizer):
         )
         super().__init__(params, defaults)
 
+        # Dedicated generator for stochastic rounding. Using a fixed seed
+        # ensures all DDP ranks produce identical rounding decisions,
+        # preventing parameter divergence across ranks. The generator is
+        # only advanced by SR draws (not shared with dropout, data loading,
+        # etc.) so it stays in sync as long as all ranks process the same
+        # parameters in the same order -- which DDP guarantees.
+        self._sr_generator = torch.Generator()
+        self._sr_generator.manual_seed(5489)
+        self._sr_cuda_generators = {}  # device -> Generator, lazily created
+
+    def add_param_group(self, param_group: dict):
+        super().add_param_group(param_group)
+        if not self.use_triton:
+            group = self.param_groups[-1]
+            if not isinstance(group["lr"], Tensor):
+                group["lr"] = torch.tensor(group["lr"], dtype=torch.float32)
+
     def _init_state(self, state, group, p, grad):
         state["step"] = torch.tensor(0.0, dtype=torch.float32)
         if grad.dim() <= 1:
-            state["row"] = torch.zeros_like(grad, dtype=p.dtype)
+            state["row"] = torch.zeros_like(grad, dtype=torch.float32)
             state["col"] = None
         else:
-            state["row"] = torch.zeros(grad.shape[0], dtype=p.dtype, device=grad.device)
-            state["col"] = torch.zeros(grad.shape[1], dtype=p.dtype, device=grad.device)
+            state["row"] = torch.zeros(
+                grad[..., 0].numel(), dtype=torch.float32, device=grad.device
+            )
+            state["col"] = torch.zeros(
+                grad.shape[-1], dtype=torch.float32, device=grad.device
+            )
 
     @torch.no_grad()
     def step(self, closure: Callable = None):
@@ -74,14 +124,27 @@ class Adafactor(Optimizer):
         with torch._dynamo.utils.disable_cache_limit():
             for group in self.param_groups:
                 for p in group["params"]:
-                    if p.grad is None:
-                        continue
                     grad = p.grad
+                    if grad is None:
+                        continue
+                    # Optimizer state must be keyed by the DTensor-backed
+                    # Parameter so save/load via get_optimizer_state_dict
+                    # round-trips correctly; do the state lookup before
+                    # unsharding.
                     state = self.state[p]
+                    # Under FSDP2, p and p.grad are DTensors. The kernel
+                    # below operates entirely on local shards; see
+                    # _local_shard docstring. The returned tensors are
+                    # views over the DTensor's local storage, so in-place
+                    # ops flow back into the live parameter.
+                    grad = _local_shard(grad)
+                    p = _local_shard(p)
 
                     # Init state
                     if "step" not in state:
                         self._init_state(state, group, p, grad)
+
+                    lr = group["lr"]
 
                     state["step"] += 1
                     beta1, beta2 = group["betas"]
@@ -92,9 +155,23 @@ class Adafactor(Optimizer):
                         max=beta2
                     )
 
+                    # Draw SR seed from dedicated generator (same across DDP ranks)
+                    bf16_sr = group["bf16_stochastic_round"]
+                    if bf16_sr:
+                        sr_seed = int(
+                            torch.randint(
+                                0,
+                                2**31,
+                                (1,),
+                                generator=self._sr_generator,
+                            ).item()
+                        )
+                    else:
+                        sr_seed = 0
+
                     # Route to Triton or PyTorch implementation
                     if self.use_triton and grad.is_cuda:
-                        # Use Triton kernels for memory-efficient implementation
+                        # Use Triton kernels
                         if state["col"] is None:
                             # 1D case
                             self.triton_module.adafactor_step_1d_triton(
@@ -103,9 +180,11 @@ class Adafactor(Optimizer):
                                 state["row"],
                                 beta2t,
                                 eps1,
-                                group["lr"],
+                                lr,
                                 group["weight_decay"],
                                 group["clip_threshold"],
+                                bf16_sr,
+                                sr_seed,
                             )
                         else:
                             # 2D case
@@ -116,11 +195,43 @@ class Adafactor(Optimizer):
                                 state["col"],
                                 beta2t,
                                 eps1,
-                                group["lr"],
+                                lr,
                                 group["weight_decay"],
                                 group["clip_threshold"],
+                                bf16_sr,
+                                sr_seed,
                             )
                     else:
+                        assert isinstance(
+                            lr, Tensor
+                        ), "Someone changed our lr to a non-Tensor!?"
+
+                        # Pre-generate stochastic rounding noise.
+                        # torch.Generator can't be traced by dynamo, so we
+                        # generate the random bits here (outside compile) and
+                        # pass the resulting tensor into the compiled function.
+                        sr_rand_bits = None
+                        if bf16_sr:
+                            device = p.device
+                            if device.type == "cuda":
+                                if device not in self._sr_cuda_generators:
+                                    self._sr_cuda_generators[device] = torch.Generator(
+                                        device=device
+                                    )
+                                sr_gen = self._sr_cuda_generators[device]
+                                sr_gen.manual_seed(sr_seed)
+                            else:
+                                sr_gen = torch.Generator(device=device)
+                                sr_gen.manual_seed(sr_seed)
+                            sr_rand_bits = torch.randint(
+                                0,
+                                1 << 16,
+                                p.shape,
+                                device=device,
+                                dtype=torch.int32,
+                                generator=sr_gen,
+                            )
+
                         # Use standard PyTorch implementation
                         args = [
                             p,
@@ -128,7 +239,7 @@ class Adafactor(Optimizer):
                             state["step"],
                             state["row"],
                             state["col"],
-                            group["lr"],
+                            lr,
                             beta1,
                             beta2,
                             group["decay_rate"],
@@ -137,7 +248,8 @@ class Adafactor(Optimizer):
                             eps2,
                             group["weight_decay"],
                             group["relative_step"],
-                            group["bf16_stochastic_round"],
+                            bf16_sr,
+                            sr_rand_bits,
                         ]
                         if self.compile:
                             torch.compile(_adafactor, fullgraph=True, dynamic=False)(
@@ -148,42 +260,53 @@ class Adafactor(Optimizer):
 
         return loss
 
+    def state_dict(self):
+        """Return optimizer state handling conditional col=None."""
+        state_dict = super().state_dict()
 
-"""
-TODO: Implement Stochastic Rounding
-https://arxiv.org/abs/2010.06192
+        # Validate state structure
+        for param_id, param_state in state_dict["state"].items():
+            expected_keys = {"step", "row", "col"}
+            if not expected_keys.issubset(param_state.keys()):
+                missing = expected_keys - param_state.keys()
+                raise ValueError(
+                    f"Adafactor state missing keys for param {param_id}: {missing}"
+                )
 
-Source for implementation is from:
-https://github.com/pytorch/ao/blob/main/torchao/optim/quant_utils.py#L120
-"""
+            # Ensure col=None is handled correctly (not converted to tensor)
+            if param_state["col"] is not None and not torch.is_tensor(
+                param_state["col"]
+            ):
+                raise ValueError(
+                    f"Adafactor col must be tensor or None, got {type(param_state['col'])}"
+                )
 
+        # Save SR generator state for deterministic resume
+        state_dict["sr_generator_state"] = self._sr_generator.get_state()
 
-def _fp32_to_bf16_sr(x_f32: Tensor) -> Tensor:
-    # For an FP32 number      [a31, ..., a16, a15, ..., a0] to be converted to BF16
-    # - Round towards zero:   [a31, ..., a16,   0, ...,  0]
-    # - Round away from zero: [a31, ..., a16+1, 0, ...,  0]
-    # (since the value can be negative, we use round towards/away from zero instead of round up/down)
-    #
-    # For stochastic rounding, we round away from zero with the probability of
-    # [a15, ..., a0] / 2^16, where the bit pattern [a15, ..., a0] is interpreted as uint16
-    #
-    # we have to use int32 since most arithmetic ops are not implemented for uint32/int16/uint16
-    rand_16bit = torch.randint(
-        0, 1 << 16, x_f32.shape, device=x_f32.device, dtype=torch.int32
-    )
-    x_f32_bits = x_f32.view(torch.int32)
-    x_fraction = x_f32_bits & 0xFFFF  # lower 16 bits
-    x_bf16_towards_zero = x_f32_bits & 0xFFFF0000  # upper 16 bits
+        return state_dict
 
-    x_f32_bits = torch.where(
-        rand_16bit < x_fraction,  # this is True with the probability of p_fraction
-        x_bf16_towards_zero
-        + 0x10000,  # this might overflow, which will result in UB due to signed integer
-        x_bf16_towards_zero,
-    )
-    # alternative, slightly faster
-    # x_f32_bits = (x_f32_bits + rand_16bit) & 0xFFFF0000
-    return x_f32_bits.view(torch.float32).bfloat16()
+    def load_state_dict(self, state_dict):
+        """Load optimizer state handling conditional col=None."""
+        # Shallow copy to avoid mutating caller's dict
+        state_dict = dict(state_dict)
+        # Extract SR generator state before super() processes the dict
+        sr_gen_state = state_dict.pop("sr_generator_state", None)
+
+        # Validate structure
+        for param_id, param_state in state_dict["state"].items():
+            expected_keys = {"step", "row", "col"}
+            if not expected_keys.issubset(param_state.keys()):
+                missing = expected_keys - param_state.keys()
+                raise ValueError(
+                    f"Cannot load Adafactor: missing keys for param {param_id}: {missing}"
+                )
+
+        super().load_state_dict(state_dict)
+
+        # Restore SR generator state for deterministic resume
+        if sr_gen_state is not None:
+            self._sr_generator.set_state(sr_gen_state)
 
 
 """
@@ -203,7 +326,7 @@ def adagrad_update_ref(
     G, eps,
 ):
     # In the paper, these are 1n and 1m, where n and m are subscripts
-    # Colmun vectors of ones.
+    # Column vectors of ones.
     n, m = G.shape
     ones_n = torch.ones(n, 1, device=G.device)
     ones_m = torch.ones(m, 1, device=G.device)
@@ -219,7 +342,7 @@ Breaking this down:
     - eps * ones_n @ tones_m.T
     This is the cross-product of ones-vectors, multiplies by eps. Effectively,
     this is just a n x m matrix with 'eps' in all elements. This is equivalent to
-    'G**2 + eps,' using PyTorch broadcast symantics.
+    'G**2 + eps,' using PyTorch broadcast semantics.
     
     - X @ ones_m
     X is a (m x n) matrix and ones_m is a (m x 1) column vector of ones. This operation is
@@ -239,7 +362,7 @@ def adagrad_update_ref(
     V_hat = (R @ C) / R.sum()
     return 1. / torch.sqrt(V_hat)
 
-Finally, we can compute the reciprocol-square-roots of the rows and columns before 
+Finally, we can compute the reciprocal-square-roots of the rows and columns before 
 computing their outer product, which, in theory, saves a few floating-point ops.
 
 Also note that 'sum()' can be replaced by 'mean(),' which you see in the Huggingface implementation,
@@ -254,7 +377,7 @@ def adagrad_update_opt2(
     C_rsqrt = torch.rsqrt(G_sq.sum(dim=0))
     return torch.outer(R_rsqrt, C_rsqrt)
 
-Surprisingly, when profing the above functions, torch seems pretty good at optimization and there's much 
+Surprisingly, when profiling the above functions, torch seems pretty good at optimization and there's much 
 less difference in performance than one would think.
 
 ---
@@ -269,7 +392,7 @@ If relative_step is disabled, we just use 'lr,' as with Adam.
 
 If enabled, we use the specified 'lr' becomes the relative step size, 'p'
 
-There seems to be some confusion surounding this in the Pytoch implementation, which 
+There seems to be some confusion surrounding this in the Pytoch implementation, which 
 instead sets 'p' to min(lr, 1/sqrt(t)).
 
 As best I can tell, this appears to be a misinterpretation. In Table 2, in the relative-step-size
@@ -305,7 +428,7 @@ def _adafactor(
     step: Tensor,
     r: Tensor,
     c: Tensor,
-    lr: float,
+    lr: Tensor,
     beta1: float,
     beta2: float,
     decay_rate: float,
@@ -315,6 +438,7 @@ def _adafactor(
     weight_decay: float,
     relative_step: bool,
     bf16_stochastic_round: bool,
+    sr_rand_bits: Tensor | None = None,
 ):
     """
     Adafactor: Adaptive Learning Rates with Sublinear Memory Cost
@@ -330,8 +454,11 @@ def _adafactor(
 
     We use the above method for implementing weight decay, which scales with lr.
     """
-    if weight_decay > 0.0:
-        p.add_(p, alpha=(-lr * weight_decay))
+    # For float32 params, apply decay directly (no precision loss).
+    # For lower-precision params (bf16), decay is folded into the float32
+    # update below to avoid the small multiplicative change rounding away.
+    if weight_decay > 0.0 and p.dtype == torch.float32:
+        p.mul_(1.0 - lr * weight_decay)
 
     grad32 = grad.float()
     update = grad32**2 + eps1
@@ -348,10 +475,16 @@ def _adafactor(
     # Matrix
     else:
         c32 = c.float()
+        orig_shape = grad32.shape
+        if grad32.dim() > 2:
+            grad32 = grad32.reshape(-1, grad32.shape[-1])
+            update = update.reshape_as(grad32)
         # See adagrad_update_ref() for explanation of this implementation
         r32.lerp_(update.sum(dim=-1), 1.0 - beta2t)
         c32.lerp_(update.sum(dim=-2), 1.0 - beta2t)
         update = grad32 * torch.outer(torch.rsqrt(r32 / r32.sum()), torch.rsqrt(c32))
+        if update.shape != orig_shape:
+            update = update.reshape(orig_shape)
         if c32.dtype != c.dtype:
             c.copy_(c32)
 
@@ -363,9 +496,15 @@ def _adafactor(
 
     # Update parameter
     if p.dtype == update.dtype:
-        p.add_(update, alpha=-lr)
+        p -= lr * update
     else:
-        update = p.float() - lr * update
-        if bf16_stochastic_round:
-            update = _fp32_to_bf16_sr(update)
+        # Fold weight decay into float32 computation to avoid precision
+        # loss from applying decay directly to bf16 weights.
+        # Matches the Triton kernel: param = param * (1 - lr*wd) - lr*update
+        if weight_decay > 0.0:
+            update = p.float() * (1.0 - lr * weight_decay) - lr * update
+        else:
+            update = p.float() - lr * update
+        if bf16_stochastic_round and p.dtype == torch.bfloat16:
+            update = fp32_to_bf16_stochastic_round(update, rand_bits=sr_rand_bits)
         p.copy_(update)

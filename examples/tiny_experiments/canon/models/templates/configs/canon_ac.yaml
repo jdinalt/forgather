@@ -1,0 +1,22 @@
+-- extends "configs/baseline.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Canon-AC 4M"
+    -- set ns.config_description = "LlamaCanon 4M with only Canon-A (pre-attn) and Canon-C (pre-FFN)"
+    -- set ns.model_name = "canon_ac_4m"
+
+[model_definition]
+    -- include "config.canon_ac.model"
+
+#------------- config.canon_ac.model --------------
+-- extends "config.baseline.model"
+
+## Canon-AC: Keep Canon layers in the transformer layer (A + C),
+## but use standard attention and feedforward (disabling B and D).
+
+[feedforward_factory]
+    == super.super()
+
+[attention_factory]
+    == super.super()

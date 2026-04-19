@@ -1,0 +1,28 @@
+-- extends 'open_orca.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Open-Orca Llama3 1B"
+    -- set ns.config_description = "Single-GPU 1B for smoke-testing and iteration"
+    -- set ns.log_name = "1gpu_default"
+
+    ## Short token budget for iteration runs; override with --total-tokens
+    ## to turn this into a real fine-tune.
+    -- set ns.total_tokens = total_tokens | default(50)
+
+    ## Batching
+    -- set ns.seq_len = seq_len | default(2048)
+    -- set ns.per_device_train_batch_size = batch_size | default(4)
+
+    ## Compile settings (off by default; first step eats several minutes
+    ## under max-autotune, which dwarfs short iteration runs).
+    -- set ns.torch_compile = compile | default(False)
+
+[trainer_args]
+    == super()
+    ## Single-GPU basic trainer: fuse the optimizer update into the
+    ## backward grad hook so gradients are consumed and freed one
+    ## parameter at a time. Incompatible with DDP (needs grads intact
+    ## for all-reduce), max_grad_norm clipping, gradient_accumulation > 1,
+    ## and fp16 AMP -- none of which this config uses.
+    fuse_optim_with_backward: {{ fuse_optim_with_backward | default(True) }}

@@ -1,0 +1,20 @@
+-- extends 'experiments/amp/adamw.yaml'
+
+## Same as grad32/adamw.yaml but WITHOUT beta2 scaling.
+## Uses the default beta2=0.999 instead of the token-scaled value.
+## Tests whether Jia et al.'s beta2 scaling matters at large batch sizes.
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Torch AdamW-32 (no beta2 scaling)"
+    -- set ns.config_description = "AdamW ga=32, default beta2=0.999 (no token-based scaling)"
+    -- set ns.log_name = log_name | default("adamw-32-noscale")
+    -- set ns.gradient_accumulation_steps = 32
+
+[optimizer]
+optimizer: &optimizer !partial:torch:optim.AdamW
+    lr: {{ ns.global_lr | toyaml }}
+    betas:
+        - !!float 0.9
+        - !!float 0.999
+    fused: True

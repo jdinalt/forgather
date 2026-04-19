@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Pre-commit hook to run isort and black on staged Python files
+
+set -e
+
+# Function to check if a file matches any pattern in .formatting-ignore
+should_skip() {
+    local file="$1"
+    local ignore_file=".formatting-ignore"
+
+    if [ ! -f "$ignore_file" ]; then
+        return 1  # No ignore file, don't skip
+    fi
+
+    # Read patterns from .formatting-ignore (skip comments and empty lines)
+    while IFS= read -r pattern || [ -n "$pattern" ]; do
+        # Skip comments and empty lines
+        [[ "$pattern" =~ ^#.*$ ]] && continue
+        [[ -z "$pattern" ]] && continue
+
+        # Check if file matches pattern (supports glob patterns)
+        if [[ "$file" == $pattern ]]; then
+            return 0  # Match found, skip this file
+        fi
+    done < "$ignore_file"
+
+    return 1  # No match, don't skip
+}
+
+# Get list of staged Python files
+STAGED_PY_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
+
+if [ -z "$STAGED_PY_FILES" ]; then
+    # No Python files staged, exit successfully
+    exit 0
+fi
+
+# Filter out files that should be ignored
+PYTHON_FILES=""
+SKIPPED_FILES=""
+
+for file in $STAGED_PY_FILES; do
+    if should_skip "$file"; then
+        SKIPPED_FILES="$SKIPPED_FILES $file"
+    else
+        PYTHON_FILES="$PYTHON_FILES $file"
+    fi
+done
+
+if [ -n "$SKIPPED_FILES" ]; then
+    echo "Skipping formatting for excluded files:"
+    for file in $SKIPPED_FILES; do
+        echo "  - $file"
+    done
+    echo ""
+fi
+
+if [ -z "$PYTHON_FILES" ]; then
+    # All Python files were excluded
+    echo "All staged Python files are excluded from formatting."
+    exit 0
+fi
+
+echo "Running isort and black on staged Python files..."
+
+# Run isort
+echo "Running isort..."
+if ! isort $PYTHON_FILES; then
+    echo "Error: isort failed. Please fix the issues and try again."
+    exit 1
+fi
+
+# Run black
+echo "Running black..."
+if ! black $PYTHON_FILES; then
+    echo "Error: black failed. Please fix the issues and try again."
+    exit 1
+fi
+
+# Check if formatting changed any files
+CHANGED_FILES=$(git diff --name-only $PYTHON_FILES || true)
+
+if [ -n "$CHANGED_FILES" ]; then
+    echo ""
+    echo "Files were reformatted by isort and/or black:"
+    for file in $CHANGED_FILES; do
+        echo "  - $file"
+    done
+    echo ""
+    echo "Re-staging modified files..."
+    git add $PYTHON_FILES
+fi
+
+echo "Formatting complete!"
+exit 0

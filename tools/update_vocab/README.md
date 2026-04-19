@@ -1,32 +1,43 @@
-# Vocabulary Update Tool
+# Vocabulary and Chat Template Update Tool
 
-The vocabulary update tool provides an easy way to add tokens to an existing model's vocabulary and resize embeddings accordingly. It works seamlessly with both HuggingFace and Forgather models using the same HuggingFace APIs.
+This tool adds tokens to a model's vocabulary, resizes embeddings, and/or sets a
+chat template on the tokenizer. It works seamlessly with both HuggingFace and
+Forgather models using the same HuggingFace APIs.
 
 ## Quick Start
 
 ### Basic Usage
 
 ```bash
-# Add tokens from YAML configuration
+# Set chat template in-place (only rewrites tokenizer files, fast)
+./update_vocab.py --skip-default-tokens -t template.jinja /path/to/model
+
+# Add chat tokens and set chat template in-place
+./update_vocab.py --add-tokens chat_tokens.yaml -t template.jinja /path/to/model
+
+# Add tokens, save to a new directory
 ./update_vocab.py --add-tokens tokens.yaml /path/to/model /path/to/output
 
 # Use default behavior (adds missing PAD token)
 ./update_vocab.py /path/to/model /path/to/output
-
-# Skip default tokens for complete control
-./update_vocab.py --skip-default-tokens /path/to/model /path/to/output
 ```
+
+When `OUTPUT_PATH` is omitted the model is modified **in-place**. If only the
+chat template or special-token metadata changed (no new tokens added), only the
+tokenizer files are rewritten -- model weights are not touched.
 
 ### Via Forgather CLI
 
 ```bash
 # The tool can also be invoked via the forgather command
+forgather update-vocab --skip-default-tokens -t template.jinja /path/to/model
 forgather update-vocab --add-tokens tokens.yaml /path/to/model /path/to/output
 ```
 
 ## Features
 
 - **Universal Model Support**: Works with both HuggingFace and Forgather models
+- **Chat Template**: Set or replace the tokenizer's chat template from a Jinja2 file
 - **Token Configuration**: Add named special tokens (BOS, EOS, PAD, UNK) and custom tokens
 - **Flexible Save Formats**: Save as HuggingFace format or Forgather sharded checkpoints
 - **Multiple Serialization Options**: Choose between safetensors or PyTorch format
@@ -51,12 +62,27 @@ Requirements:
 ### Basic Arguments
 
 ```bash
-./update_vocab.py [OPTIONS] MODEL_PATH OUTPUT_PATH
+./update_vocab.py [OPTIONS] MODEL_PATH [OUTPUT_PATH]
 ```
 
 **Positional Arguments:**
 - `MODEL_PATH`: Path to source model (HuggingFace or Forgather)
-- `OUTPUT_PATH`: Output directory for updated model
+- `OUTPUT_PATH`: Output directory for updated model. If omitted, modifies in-place.
+
+### Chat Template
+
+```bash
+-t, --chat-template-path FILE
+```
+Path to a Jinja2 chat template file to apply to the tokenizer. The file contents
+are assigned directly to `tokenizer.chat_template`. This flag is independent of
+`--add-tokens` -- you can use either, both, or neither.
+
+To set a chat template without changing the vocabulary, combine with
+`--skip-default-tokens`:
+```bash
+./update_vocab.py --skip-default-tokens -t template.jinja /path/to/model /path/to/output
+```
 
 ### Token Configuration
 
@@ -97,9 +123,10 @@ Torch dtype for model loading. If not specified, uses model's existing dtype.
 Device for model operations. Default: `cpu`
 
 ```bash
---trust-remote-code
+--no-trust-remote-code
 ```
-Trust remote code when loading model (required for some custom models).
+Disable trusting remote code when loading model. Remote code is trusted by
+default since this tool operates on local model directories.
 
 ### Utility Options
 
@@ -171,9 +198,21 @@ pad_token:
 
 ## Usage Examples
 
-### Example 1: Add Chat Template Tokens
+### Example 1: Set Chat Template Only
 
-Add instruction-tuning tokens to a base model:
+Apply a chat template to a pretrained model in-place. Only tokenizer files are
+rewritten -- model weights are not touched:
+
+```bash
+./update_vocab.py --skip-default-tokens \
+    -t ~/templates/chatml.jinja \
+    ~/models/llama-7b
+```
+
+### Example 2: Add Chat Tokens and Set Chat Template
+
+Add instruction-tuning tokens and apply a chat template in one pass
+(typical pre-finetune workflow):
 
 ```bash
 cat > chat_tokens.yaml << EOF
@@ -186,11 +225,11 @@ special_tokens:
 EOF
 
 ./update_vocab.py --add-tokens chat_tokens.yaml \
-    ~/models/llama-7b \
-    ~/models/llama-7b-chat
+    -t ~/templates/chatml.jinja \
+    ~/models/llama-7b
 ```
 
-### Example 2: Replace PAD Token
+### Example 3: Replace PAD Token
 
 Change the PAD token from `[PAD]` to `<|pad|>`:
 
@@ -204,7 +243,7 @@ EOF
     ~/models/my_model_new_pad
 ```
 
-### Example 3: Add BOS Token to Qwen3
+### Example 4: Add BOS Token to Qwen3
 
 Qwen3 models don't have a BOS token by default. Add one for document packing:
 
@@ -221,7 +260,7 @@ EOF
     ~/models/qwen3-8b-with-bos
 ```
 
-### Example 4: Add Multiple Token Types
+### Example 5: Add Multiple Token Types
 
 Add a mix of named tokens and custom tokens:
 
@@ -253,7 +292,7 @@ EOF
     ~/models/specialized_model
 ```
 
-### Example 5: Dry Run Mode
+### Example 6: Dry Run Mode
 
 Preview changes without saving:
 
@@ -269,7 +308,7 @@ Output shows:
 - New vocabulary size
 - But doesn't save the model
 
-### Example 6: Save as Sharded Checkpoint with Safetensors
+### Example 7: Save as Sharded Checkpoint with Safetensors
 
 ```bash
 ./update_vocab.py --add-tokens tokens.yaml \
@@ -279,7 +318,7 @@ Output shows:
     ~/models/my_model_updated
 ```
 
-### Example 7: Skip Default PAD Token
+### Example 8: Skip Default PAD Token
 
 If you want complete control and don't want automatic PAD token addition:
 
@@ -291,7 +330,7 @@ If you want complete control and don't want automatic PAD token addition:
 
 This creates an exact copy without modifying vocabulary.
 
-### Example 8: Load with Specific DType
+### Example 9: Load with Specific DType
 
 ```bash
 ./update_vocab.py --add-tokens tokens.yaml \
@@ -420,12 +459,12 @@ forgather -t config.yaml train
 
 ### Instruction Tuning Workflow
 
-1. Add chat template tokens
+1. Add chat template tokens and set chat template
 2. Train on instruction data
 3. Deploy as chat model
 
 ```bash
-# Add instruction tokens
+# Add instruction tokens and set chat template in one pass
 cat > inst_tokens.yaml << EOF
 special_tokens:
   - "<|im_start|>"
@@ -436,6 +475,7 @@ special_tokens:
 EOF
 
 ./update_vocab.py --add-tokens inst_tokens.yaml \
+    -t ~/templates/chatml.jinja \
     ~/models/base_model \
     ~/models/base_model_inst
 

@@ -2,9 +2,11 @@
 Unit tests for StopSequenceProcessor.
 """
 
+from unittest.mock import Mock
+
 import pytest
 import torch
-from unittest.mock import Mock
+
 from ..core.stop_processor import StopSequenceProcessor
 
 

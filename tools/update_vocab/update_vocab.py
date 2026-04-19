@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-Update vocabulary of an existing HuggingFace or Forgather model.
+Update vocabulary and chat template of an existing HuggingFace or Forgather model.
 
-This tool adds tokens to a model's vocabulary and resizes embeddings accordingly.
-Works with both HuggingFace and Forgather models using the same HuggingFace APIs.
+This tool adds tokens to a model's vocabulary, resizes embeddings, and/or sets a
+chat template on the tokenizer. Works with both HuggingFace and Forgather models
+using the same HuggingFace APIs.
 """
 
-import os
-import sys
 import argparse
 import logging
+import os
+import sys
 from argparse import RawTextHelpFormatter
 from contextlib import ExitStack
 
 import torch
-from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 # Add forgather to path
 from forgather import MetaConfig
@@ -24,10 +25,10 @@ if forgather_root not in sys.path:
     sys.path.insert(0, forgather_root)
 
 from forgather.ml.model_conversion.resize_embeddings import (
+    DEFAULT_TOKEN_CONFIG,
     add_tokens_to_tokenizer,
     resize_word_embeddings,
     update_config_from_tokenizer,
-    DEFAULT_TOKEN_CONFIG,
 )
 from forgather.ml.sharded_checkpoint import save_checkpoint
 from forgather.ml.utils import default_dtype
@@ -42,17 +43,17 @@ def parse_args(args=None):
         epilog=(
             "Examples:\n"
             "\n"
-            "Add tokens from YAML config:\n"
+            "Set chat template in-place (no copy, no vocab changes):\n"
+            "  ./update_vocab.py --skip-default-tokens -t template.jinja ~/models/llama\n"
+            "\n"
+            "Add chat tokens and set chat template in-place:\n"
+            "  ./update_vocab.py --add-tokens chat_tokens.yaml -t template.jinja ~/models/llama\n"
+            "\n"
+            "Add tokens, save to a new directory:\n"
             "  ./update_vocab.py --add-tokens tokens.yaml ~/models/llama ~/models/llama_updated\n"
             "\n"
             "Use default PAD token handling:\n"
             "  ./update_vocab.py ~/models/llama ~/models/llama_updated\n"
-            "\n"
-            "Skip default tokens and save as sharded checkpoint:\n"
-            "  ./update_vocab.py --skip-default-tokens --save-format sharded ~/models/llama ~/models/llama_updated\n"
-            "\n"
-            "Save with safetensors format:\n"
-            "  ./update_vocab.py --add-tokens tokens.yaml --safetensors ~/models/llama ~/models/llama_updated\n"
         ),
     )
     parser.add_argument(
@@ -62,8 +63,10 @@ def parse_args(args=None):
     )
     parser.add_argument(
         "output_path",
+        nargs="?",
         type=os.path.expanduser,
-        help="Output directory for updated model",
+        default=None,
+        help="Output directory for updated model. If omitted, modifies in-place.",
     )
     parser.add_argument(
         "--add-tokens",
@@ -75,6 +78,13 @@ def parse_args(args=None):
         "--skip-default-tokens",
         action="store_true",
         help="Skip default token handling (e.g., adding missing PAD token)",
+    )
+    parser.add_argument(
+        "-t",
+        "--chat-template-path",
+        type=os.path.expanduser,
+        default=None,
+        help="Path to a Jinja2 chat template file to apply to the tokenizer",
     )
     parser.add_argument(
         "--save-format",
@@ -106,9 +116,9 @@ def parse_args(args=None):
         help="Device for model operations (default: cpu)",
     )
     parser.add_argument(
-        "--trust-remote-code",
+        "--no-trust-remote-code",
         action="store_true",
-        help="Trust remote code when loading model",
+        help="Disable trusting remote code when loading model (trusted by default for local models)",
     )
     parser.add_argument(
         "--log-level",
@@ -128,12 +138,21 @@ def parse_args(args=None):
 
 
 def validate_paths(model_path, output_path):
-    """Validate model and output paths."""
+    """Validate model and output paths.
+
+    Returns:
+        Tuple of (model_path, output_path, in_place) where in_place is True
+        when the model is being modified in its original directory.
+    """
     model_path = os.path.abspath(model_path)
-    output_path = os.path.abspath(output_path)
 
     if not os.path.isdir(model_path):
         raise ValueError(f"Model path does not exist: {model_path}")
+
+    if output_path is None:
+        return model_path, model_path, True
+
+    output_path = os.path.abspath(output_path)
 
     if os.path.exists(output_path):
         raise ValueError(
@@ -144,7 +163,7 @@ def validate_paths(model_path, output_path):
     if not os.path.isdir(output_dir):
         raise ValueError(f"Output directory does not exist: {output_dir}")
 
-    return model_path, output_path
+    return model_path, output_path, False
 
 
 def main():
@@ -161,13 +180,18 @@ def main():
 
     # Validate paths
     try:
-        model_path, output_path = validate_paths(args.model_path, args.output_path)
+        model_path, output_path, in_place = validate_paths(
+            args.model_path, args.output_path
+        )
     except ValueError as e:
         logger.error(str(e))
         sys.exit(1)
 
     logger.info(f"Source model: {model_path}")
-    logger.info(f"Output path: {output_path}")
+    if in_place:
+        logger.info("Mode: in-place modification")
+    else:
+        logger.info(f"Output path: {output_path}")
     logger.info(f"Save format: {args.save_format}")
     logger.info(f"Safetensors: {args.safetensors}")
 
@@ -199,13 +223,13 @@ def main():
                 stack.enter_context(default_dtype(torch_dtype))
 
             config = AutoConfig.from_pretrained(
-                model_path, trust_remote_code=args.trust_remote_code
+                model_path, trust_remote_code=not args.no_trust_remote_code
             )
             tokenizer = AutoTokenizer.from_pretrained(
-                model_path, trust_remote_code=args.trust_remote_code
+                model_path, trust_remote_code=not args.no_trust_remote_code
             )
             model = AutoModelForCausalLM.from_pretrained(
-                model_path, trust_remote_code=args.trust_remote_code
+                model_path, trust_remote_code=not args.no_trust_remote_code
             )
 
         logger.info(f"Model loaded: {type(model).__name__}")
@@ -223,6 +247,9 @@ def main():
         logger.error(f"Failed to load model: {e}")
         sys.exit(1)
 
+    # Track whether model weights changed (embeddings resized)
+    weights_changed = False
+
     # Add tokens if configuration provided
     if token_config is not None:
         logger.info("=" * 60)
@@ -235,6 +262,7 @@ def main():
             logger.info(f"New vocab size: {len(tokenizer)}")
 
             if num_added > 0:
+                weights_changed = True
                 logger.info("Resizing model embeddings...")
                 resize_word_embeddings(model, tokenizer, token_inits)
 
@@ -267,56 +295,96 @@ def main():
     else:
         logger.info("No token configuration specified, vocabulary unchanged")
 
-    # Save model
+    # Apply chat template if provided
+    if args.chat_template_path:
+        logger.info("=" * 60)
+        chat_template_path = os.path.abspath(args.chat_template_path)
+        if not os.path.isfile(chat_template_path):
+            logger.error(f"Chat template file not found: {chat_template_path}")
+            sys.exit(1)
+        with open(chat_template_path, "r") as f:
+            chat_template = f.read()
+        tokenizer.chat_template = chat_template
+        logger.info(f"Chat template set from: {chat_template_path}")
+        logger.info(f"Chat template length: {len(chat_template)} characters")
+
+    # Determine what needs saving
+    tokenizer_changed = weights_changed or args.chat_template_path
+    if not tokenizer_changed and not weights_changed:
+        logger.info("=" * 60)
+        logger.info("No changes to save")
+        return
+
+    # Save
     if args.dry_run:
         logger.info("=" * 60)
         logger.info("DRY RUN: Skipping save operation")
-        logger.info(f"Would have saved to: {output_path}")
-        logger.info(f"Save format: {args.save_format}")
-        logger.info(f"Safetensors: {args.safetensors}")
+        if in_place:
+            logger.info(f"Would have modified in-place: {model_path}")
+        else:
+            logger.info(f"Would have saved to: {output_path}")
+        if weights_changed:
+            logger.info("Model weights would be saved (embeddings resized)")
+        if tokenizer_changed:
+            logger.info("Tokenizer would be saved")
+        if args.chat_template_path:
+            logger.info(f"Chat template: {os.path.abspath(args.chat_template_path)}")
         return
 
     logger.info("=" * 60)
-    logger.info(f"Saving updated model to: {output_path}")
 
     try:
-        if args.save_format == "huggingface":
-            logger.info("Using HuggingFace save_pretrained() format")
-            model.save_pretrained(output_path, safe_serialization=args.safetensors)
+        if in_place and not weights_changed:
+            # Only tokenizer/config changed -- save just those files in-place
+            logger.info("Saving tokenizer in-place (model weights unchanged)")
             tokenizer.save_pretrained(output_path)
-            logger.info("Model and tokenizer saved (config saved automatically)")
+            logger.info(f"Tokenizer saved to: {output_path}")
+        else:
+            if in_place:
+                logger.info(f"Saving model in-place: {output_path}")
+            else:
+                logger.info(f"Saving updated model to: {output_path}")
 
-        elif args.save_format == "sharded":
-            logger.info("Using Forgather sharded checkpoint format")
+            if args.save_format == "huggingface":
+                logger.info("Using HuggingFace save_pretrained() format")
+                model.save_pretrained(
+                    output_path, safe_serialization=args.safetensors
+                )
+                tokenizer.save_pretrained(output_path)
+                logger.info(
+                    "Model and tokenizer saved (config saved automatically)"
+                )
 
-            # Create output directory
-            os.makedirs(output_path, exist_ok=True)
+            elif args.save_format == "sharded":
+                logger.info("Using Forgather sharded checkpoint format")
 
-            # Save sharded checkpoint
-            save_checkpoint(
-                output_dir=output_path,
-                module=model,
-                safetensors=args.safetensors,
-                include_param_sharing=True,
-            )
+                # Create output directory
+                os.makedirs(output_path, exist_ok=True)
 
-            # Save tokenizer and config separately
-            tokenizer.save_pretrained(output_path)
-            config.save_pretrained(output_path)
+                # Save sharded checkpoint
+                save_checkpoint(
+                    output_dir=output_path,
+                    module=model,
+                    safetensors=args.safetensors,
+                    include_param_sharing=True,
+                )
 
-            logger.info("Model saved as sharded checkpoint")
-            logger.info("Tokenizer and config saved separately")
+                # Save tokenizer and config separately
+                tokenizer.save_pretrained(output_path)
+                config.save_pretrained(output_path)
+
+                logger.info("Model saved as sharded checkpoint")
+                logger.info("Tokenizer and config saved separately")
 
     except Exception as e:
-        logger.error(f"Failed to save model: {e}")
+        logger.error(f"Failed to save: {e}")
         import traceback
 
         traceback.print_exc()
         sys.exit(1)
 
     logger.info("=" * 60)
-    logger.info("Vocabulary update complete!")
-    logger.info(f"Updated model saved to: {output_path}")
+    logger.info("Done!")
 
 
 if __name__ == "__main__":

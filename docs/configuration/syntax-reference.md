@@ -184,6 +184,7 @@ A number of globals have been introduced to the Jinja2 environment to assist wit
 - normpath(path) : Normalize a file path; os.path.normpath()
 - abspath(path) : Convert path to absolute path; os.path.abspath()
 - relpath(path) : Convert a path to a relative path; os.path.relpath()
+- getenv(name, default) : Call os.environ.get(name, default)
 - repr(obj) : Get Python representation of object; repr()
 - modname_from_path(module_name) : Given a module file path, return the module name
 - user_home_dir() : Return absolute path of user's home directory  
@@ -509,7 +510,7 @@ graph()
 ---
 #### !partial
 
-Alias (depricated): !lambda
+Alias (deprecated): !lambda
 
 Synatx: !partial:\<import-spec\>[@\<name\>\] (\<sequence\> | \<mapping\> | ({ args: \<sequence\>, kwargs: \<mapping\> }))
 
@@ -532,6 +533,36 @@ pow(2, 3)
 
 ```yaml
 
+```
+
+---
+#### !meta
+
+Syntax: !meta:\<import-spec\>[@\<name\>\] (\<sequence\> | \<mapping\> | ({ args: \<sequence\>, kwargs: \<mapping\> }))
+
+A MetaNode is a specialized SingletonNode that interrupts the normal depth-first
+construction of the configuration graph. When a MetaNode is encountered, its child
+nodes are **not** constructed first. Instead, the raw (unconstructed) graph below the
+`!meta` tag is passed directly to the callable for processing.
+
+This allows the callable to inspect or transform the configuration graph before
+construction continues. The primary use case is model code generation, where the
+configuration below the `!meta` tag describes a model architecture and the callable
+converts that description into dynamically generated Python code used for model
+construction.
+
+In principle, `!meta` can be used for any graph transformation -- the callable receives
+the raw configuration, can modify it arbitrarily, and returns the result that replaces
+the `!meta` node in the graph.
+
+```yaml
+# Model code generation: the config below !meta describes the model architecture.
+# The callable generates Python source code from this description.
+model: !meta:forgather.codegen:code_gen
+    [model_definition]
+        type: "transformer"
+        hidden_size: 512
+        num_layers: 6
 ```
 
 ---

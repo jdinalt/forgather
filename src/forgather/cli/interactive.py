@@ -13,6 +13,11 @@ from typing import List, Optional
 
 from forgather.meta_config import MetaConfig
 
+# Commands that run in a fresh subprocess to avoid stale module cache issues.
+# These commands import and execute user/project code that changes during
+# iterative development in the interactive shell.
+SUBPROCESS_COMMANDS = {"model", "dataset", "construct"}
+
 from .commands import get_env
 from .main import get_subcommand_registry
 from .main import main as cli_main
@@ -42,7 +47,6 @@ class ForgatherShell(cmd.Cmd):
             project_found = False
 
         self.current_template = None
-        self._cached_templates = None
         self._cached_commands = None
 
         # Setup command history
@@ -211,15 +215,11 @@ class ForgatherShell(cmd.Cmd):
 
     def _get_available_templates(self) -> List[str]:
         """Get list of available template names."""
-        if self._cached_templates is not None:
-            return self._cached_templates
-
         try:
             meta = MetaConfig(self.project_dir)
             templates = []
             for config_name, path in meta.find_templates(meta.config_prefix):
                 templates.append(config_name)
-            self._cached_templates = templates
             return templates
         except Exception:
             return []
@@ -278,7 +278,6 @@ class ForgatherShell(cmd.Cmd):
 
     def _invalidate_cache(self):
         """Invalidate cached template and command lists."""
-        self._cached_templates = None
         self._cached_commands = None
         # Note: targets are not cached as they depend on current template
 
@@ -1111,8 +1110,21 @@ class ForgatherShell(cmd.Cmd):
         # Execute the forgather command
         print(f"Executing: forgather {' '.join(forgather_args)}")
 
+        # Commands needing fresh imports run in a subprocess to avoid stale
+        # module cache from previous in-process invocations.
+        if command_args[0] in SUBPROCESS_COMMANDS:
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "forgather.cli"] + forgather_args
+                )
+                if result.returncode not in (0, None):
+                    print(f"Command exited with code {result.returncode}")
+            except KeyboardInterrupt:
+                print("\nCommand interrupted")
+            return
+
         # Check if this is a command that should use pager in interactive mode
-        should_page = command_args[0] in ["pp", "graph", "code", "construct", "dataset"]
+        should_page = command_args[0] in ["pp", "graph", "code"]
 
         if should_page:
             # Capture output for paging
@@ -1163,8 +1175,9 @@ class ForgatherShell(cmd.Cmd):
                 cli_main()
 
             except SystemExit as e:
-                # Normal exit from CLI (e.g., help commands)
-                pass
+                # String messages haven't been printed yet; integer codes were already output
+                if isinstance(e.code, str) and e.code:
+                    print(e.code, file=sys.stderr)
             except KeyboardInterrupt:
                 print("\nCommand interrupted")
             except Exception as e:

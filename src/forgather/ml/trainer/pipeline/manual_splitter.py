@@ -12,7 +12,7 @@ and supports external attention mask creation.
 
 import copy
 import logging
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple, cast
 
 import torch
 from torch.distributed.pipelining import PipelineStage
@@ -89,7 +89,7 @@ def create_manual_causal_lm_splitter(
                     "Cannot auto-detect num_layers: model.config.num_hidden_layers not found. "
                     "Please provide num_layers explicitly to create_manual_causal_lm_splitter()"
                 )
-            actual_num_layers = model.config.num_hidden_layers
+            actual_num_layers = int(model.config.num_hidden_layers)  # type: ignore[attr-defined]
             if rank == 0:
                 logger.info(
                     f"Auto-detected {actual_num_layers} layers from model config"
@@ -147,7 +147,7 @@ def create_manual_causal_lm_splitter(
         return (
             all_pipeline_modules,
             pipeline_modules,
-            pipeline_stages,
+            cast(List[_PipelineStageBase], pipeline_stages),
             attention_mask_creator,
         )
 
@@ -176,7 +176,7 @@ def _get_mask_creator(model: Module, rank: int) -> Optional[Callable]:
             logger.info(
                 "Using external attention mask creation (model.get_attn_mask_fn())"
             )
-        return model.get_attn_mask_fn()
+        return model.get_attn_mask_fn()  # type: ignore[attr-defined]
 
     # No external mask creator found - model will handle masks internally
     if rank == 0:

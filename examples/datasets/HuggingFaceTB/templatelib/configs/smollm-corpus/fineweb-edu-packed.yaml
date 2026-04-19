@@ -1,72 +1,18 @@
 -- extends "configs/smollm-corpus/fineweb-edu-dedup.yaml"
+-- from "packed.yaml" import map_function, map_kwargs, dynamic_args
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "FineWeb-Edu-Dedup"
-    -- set ns.config_description = "FineWeb-Edu-Dedup Packed Sequences"
-
-[train_dataset_split]
-    == super()
--- if abridged | default(False)
-    split: "train[10000:5000000]"
--- endif
+    -- set ns.config_name = "Fast FineWeb-Edu-Dedup Packed"
+    -- set ns.config_description = "Fast FineWeb-Edu-Dedup Packed Sequences"
 
 [map_function]
-## Note: Values in "preprocess_args" override the defaults specified here.
-.define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
-    max_length: {{ max_length | default(512)}}
-    overflow: True
-    packed: True
-    shuffle_output: True
-    stride: {{ stride | default(0)}}
-    packing_strategy: "best_fit"
-    min_len: 16
-    add_bos: True
-    add_eos: True
+{{ map_function(max_length | default(512), stride | default(0)) }}
 
-[train_dataset]
-train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
-    dataset: *train_dataset_split
-    tokenizer: *tokenizer
-    desc: "Tokenizing train"
-    to_iterable: True
-    map_kwargs:
-        batch_size: 1000
-    num_shards: 1024
-    map_fn: *map_function
-    fn_kwargs: !var { name: "preprocess_args", default: null }
-
-[eval_dataset]
-eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
-    dataset: *validation_dataset_split
-    tokenizer: *tokenizer
-    desc: "Tokenizing validation"
-    map_kwargs:
-        batch_size: 1000
-    map_fn: *map_function
-    fn_kwargs: !var { name: "preprocess_args", default: null }
-
-[test_dataset]
-test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
-    dataset: *test_dataset_split
-    tokenizer: *tokenizer
-    desc: "Tokenizing test"
-    map_kwargs:
-        batch_size: 1000
-    map_fn: *map_function
-    fn_kwargs: !var { name: "preprocess_args", default: null }
+[map_kwargs]
+    == super()
+{{ map_kwargs() }}
 
 [dynamic_args]
     == super()
-    max_length:
-        names: "--max-length"
-        type: "int"
-        help: "Maximum length of output sequences."
-    stride:
-        names: "--stride"
-        type: "int"
-        help: "Number of tokens to repeat from previous overflowing example."
-    abridged:
-        names: "--abridged"
-        action: "store_true"
-        help: "Abridged length for faster loading"
+{{ dynamic_args() }}

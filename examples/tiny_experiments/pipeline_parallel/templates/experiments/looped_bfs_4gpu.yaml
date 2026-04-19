@@ -5,26 +5,11 @@
     -- set ns.config_name = "Looped BFS with 4 GPUs"
     -- set ns.config_description = "Pipeline with 4 GPUs"
     -- set ns.log_name = "lbfs_4gpu"
-
-[trainer_definition]
-    -- include 'experiment.trainer_config'
-
-#-------------------- experiment.trainer_config --------------------
--- extends 'base_pipeline_project.trainer_config'
-
-[trainer_meta_config]
-    == super()
     -- set ns.nproc_per_node = 4
-    -- set ns.pipeline_segments = 8
-    -- set ns.pipeline_microbatches = 8
+    -- set ns.pipe_schedule_factory = "ScheduleLoopedBFS"
 
 [trainer_args]
     == super()
     # Experiment Overrides
     is_multistage: True
     stages_per_rank: 2
-
-[trainer_constructor]
-    == super()
-    # Experiment Overrides
-    pipe_schedule_factory: !lambda:torch.distributed.pipelining:ScheduleLoopedBFS

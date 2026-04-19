@@ -1,0 +1,17 @@
+-- extends 'samantha.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DDP Llama3 1B"
+    -- set ns.config_description = "DDP Llama3 1B"
+    -- set ns.log_name = "ddp"
+
+    ## Batching
+    -- set ns.seq_len = seq_len | default(4096)
+    -- set ns.per_device_train_batch_size = batch_size | default(1)
+
+    ## Trainer selection
+    -- set ns.trainer_type = trainer_type | default("ddp")
+
+    ## Compile settings
+    -- set ns.torch_compile = compile | default(False)

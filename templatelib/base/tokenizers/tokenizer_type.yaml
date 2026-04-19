@@ -79,7 +79,7 @@ tokenizer_args: &tokenizer_args !dict:@tokenizer_args
 
     -- filter trim()
     -- block tokenizer_trainer
-tokenizer_trainer: &tokenizer_trainer !lambda:forgather.ml.tokenizer:train_tokenizer@tokenizer_trainer
+tokenizer_trainer: &tokenizer_trainer !partial:forgather.ml.tokenizer:train_tokenizer@tokenizer_trainer
     output_dir: "{{ ns.output_dir }}"
     dataset: *tokenizer_dataset
     args: *tokenizer_args
@@ -109,6 +109,9 @@ tokenizer_trainer: &tokenizer_trainer !lambda:forgather.ml.tokenizer:train_token
 main: !singleton:forgather.ml.construct:build_rule
     target: "{{ joinpath(ns.output_dir, 'tokenizer.json') }}"
     recipe: *tokenizer_trainer
-    loader: !lambda:transformers:AutoTokenizer.from_pretrained
-        - "{{ ns.output_dir }}"
+    loader: !partial:transformers:AutoTokenizer.from_pretrained
+        arg0: "{{ ns.output_dir }}"
+        # Loading the tokenizer triggers loading the model's config, which 
+        # triggers the "trust_remote_code" pathway in Transformers 5.0.
+        trust_remote_code: True
 << endblock main_output

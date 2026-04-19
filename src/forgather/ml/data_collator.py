@@ -40,12 +40,14 @@ def _pos_ids_from_boundaries(x: Tensor, document_starts: Tensor) -> Tensor:
             # Generate position IDs that reset at each boundary
             current_pos = 0
             for i, start in enumerate(starts):
+                start_clamped = min(int(start), T)
                 # Calculate end position (next boundary or end of sequence)
-                end = starts[i + 1] if i + 1 < len(starts) else T
+                end = min(int(starts[i + 1]), T) if i + 1 < len(starts) else T
 
                 # Fill positions from start to end
-                doc_length = end - start
-                pos_ids[batch_idx, start:end] = torch.arange(doc_length, device=device)
+                doc_length = end - start_clamped
+                if doc_length > 0:
+                    pos_ids[batch_idx, start_clamped:end] = torch.arange(doc_length, device=device)
 
     return pos_ids
 
@@ -168,7 +170,7 @@ class DataCollatorForCausalLM:
         labels_name: str | None = "labels",
         packed_sequences: Optional[bool] = None,
         **pad_kwargs,
-    ) -> dict[str, Tensor] | Tuple[dict[str, Tensor], Tensor]:
+    ) -> None:
         """
         Initializes the data collator with tokenizer and padding/truncation options.
         Args:
@@ -225,10 +227,10 @@ class DataCollatorForCausalLM:
     def __repr__(self):
         return (
             f"{type(self).__name__}(tokenizer={self.tokenizer}, truncation={self.truncation}, "
-            f"ignore_index={self.ignore_index }), pad_kwargs={self.pad_kwargs}"
+            f"ignore_index={self.ignore_index}, pad_kwargs={self.pad_kwargs})"
         )
 
-    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any] | Tuple[Dict[str, Any], Tensor]:
         # print(f"{type(features)=}")
         # print(f"{len(features)=}")
         # print(f"{type(features[0])=}")

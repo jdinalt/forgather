@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
+import argparse
+import logging
 import os
 import sys
-import argparse
 from argparse import RawTextHelpFormatter
-import logging
 
 # Add forgather root to sys.path to enable importing from examples/
 # Find the workspace directory (forgather root)
@@ -14,10 +14,10 @@ if forgather_root not in sys.path:
     sys.path.insert(0, forgather_root)
 
 from forgather.ml.model_conversion import (
-    get_converter,
     detect_model_type,
-    list_converters,
     discover_and_register_converters,
+    get_converter,
+    list_converters,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ def parse_args(args=None):
     parser.add_argument(
         "--model-type",
         type=str,
-        choices=["llama", "mistral", "qwen3"],
+        choices=["llama", "mistral", "qwen3", "gemma3_text"],
         default="llama",
         help="Override auto-detected model type for FG->HF conversion (default: llama if auto-detection fails)",
     )
@@ -126,6 +126,12 @@ def parse_args(args=None):
         type=str,
         default="The old bookstore at the corner of Elm Street had always held secrets, but today, something unusual caught Emma's eye.",
         help="Destination model test prompt",
+    )
+    parser.add_argument(
+        "--compare-text-file",
+        type=os.path.expanduser,
+        default=None,
+        help="Path to a text file whose contents will be used as the comparison prompt instead of --prompt.",
     )
     parser.add_argument(
         "--debug-params",
@@ -271,6 +277,16 @@ def main():
         level=getattr(logging, args.log_level),
         format="%(levelname)s:%(name)s:%(message)s",
     )
+
+    # Override prompt with file contents if --compare-text-file is provided
+    if args.compare_text_file:
+        compare_text_path = os.path.abspath(args.compare_text_file)
+        if not os.path.isfile(compare_text_path):
+            print(f"ERROR: Compare text file not found: {compare_text_path}")
+            sys.exit(1)
+        with open(compare_text_path, "r") as f:
+            args.prompt = f.read()
+        logger.info(f"Using comparison text from file: {compare_text_path}")
 
     # Discover and register converters from builtin and custom paths
     custom_paths = args.converter_paths if args.converter_paths else None

@@ -7,31 +7,6 @@
     -- set ns.model_name = "control"
     -- set ns.log_name = "accumulate_10"
 
-[lr_scheduler]
-    == super()
-    
-    # **experiment**
-    # Scale by same factor as accumulation steps
-    warmup_steps: 50
-    cooldown_steps: 5000
-
-
-[optimizer]
-    == super()
-
-    # **experiment**
-    # Scale LR by sqrt(10)
-    lr: 3.16e-3
-
-[trainer_definition]
-    -- include 'experiment.trainer_config'
-
-[trainer_callbacks]
-    -- include 'experiment.callbacks'
-
-#-------------------- experiment.trainer_config --------------------
--- extends 'tiny.trainer_config'
-
 [trainer_args]
     == super()
 
@@ -42,6 +17,24 @@
     logging_steps: 10
     eval_steps: 50
     save_steps: 1000
+
+[lr_scheduler]
+    == super()
+    
+    # **experiment**
+    # Scale by same factor as accumulation steps
+    warmup_steps: 50
+    cooldown_steps: 5000
+
+[optimizer]
+    == super()
+
+    # **experiment**
+    # Scale LR by sqrt(10)
+    lr: 3.16e-3
+
+[trainer_callbacks]
+    -- include 'experiment.callbacks'
 
 #-------------------- experiment.callbacks --------------------
 -- extends 'tiny.callbacks'

@@ -1,0 +1,5 @@
+[flake8]
+# Match Black's default line length
+max-line-length = 120
+# Ignore specific rules that conflict with Black's formatting
+extend-ignore = E203, W503

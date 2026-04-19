@@ -34,6 +34,9 @@ class TensorTracker:
         self.tensor_info: Dict[int, tuple] = (
             {}
         )  # tensor_id -> (shape, dtype, device, creation_stack)
+        self._weak_refs: Dict[int, weakref.ref] = (
+            {}
+        )  # tensor_id -> weakref, prevents the weakref from being GC'd
         self.step_tensors: Dict[int, Set[int]] = defaultdict(
             set
         )  # step -> tensor_ids created in that step
@@ -57,12 +60,16 @@ class TensorTracker:
         """Called when tensor is garbage collected"""
         self.tensors.discard(tensor_id)
         self.tensor_info.pop(tensor_id, None)
+        self._weak_refs.pop(tensor_id, None)
 
     def track_tensor(self, tensor: torch.Tensor, creation_info: str = ""):
         """Track a tensor with automatic cleanup detection"""
         self.register_tensor(tensor, creation_info)
         # Use weakref to detect when tensor is garbage collected
-        weakref.ref(tensor, lambda ref: self.tensor_finalizer(id(tensor)))
+        tensor_id = id(tensor)
+        self._weak_refs[tensor_id] = weakref.ref(
+            tensor, lambda ref: self.tensor_finalizer(tensor_id)
+        )
 
     def step(self):
         """Mark start of new step"""
@@ -81,7 +88,7 @@ class TensorTracker:
 
     def get_stats(self):
         """Get current tensor statistics"""
-        device_stats = defaultdict(lambda: {"count": 0, "memory_mb": 0})
+        device_stats: defaultdict[str, dict[str, float]] = defaultdict(lambda: {"count": 0, "memory_mb": 0.0})
         dtype_stats = defaultdict(int)
         shape_stats = defaultdict(int)
 
@@ -179,6 +186,8 @@ class ComprehensiveMemoryMonitor:
             "vms_mb": memory_info.vms / 1024 / 1024,
         }
 
+        if self.initial_memory is None:
+            self.initial_memory = current_memory
         growth = {
             "rss_growth": current_memory["rss_mb"] - self.initial_memory["rss_mb"],
             "vms_growth": current_memory["vms_mb"] - self.initial_memory["vms_mb"],

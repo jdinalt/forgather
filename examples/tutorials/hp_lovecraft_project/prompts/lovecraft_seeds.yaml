@@ -1,0 +1,14 @@
+# Lovecraft-style story openings and invented titles, used by the
+# TextgenCallback in finetune_v2 during training.  The fine-tuned model
+# should gradually produce increasingly coherent cosmic-horror prose on
+# these seeds as training progresses.
+- "The Stranger (1923)\n\n"
+- "In the year 1890, when the fog hung thick over the old sea-port of Arkham,"
+- "It was during the final weeks of my residency at Miskatonic that the terrible"
+- "I still recall the night the old keeper of the Innsmouth light unburdened himself to me"
+- "Of such great powers or beings there may be conceivably a survival"
+- "The House on Benefit Street (1921)\n\n"
+- "My uncle's letter arrived in the autumn of 1927, and bore no return address save"
+- "There are certain days in New England when the light falls at a peculiar angle"
+- "I did not know, in those credulous years before the Expedition,"
+- "The Terrible Old Man was not much regarded by the children of Kingsport,"

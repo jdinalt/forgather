@@ -1,5 +1,6 @@
 from typing import Callable, Optional
 
+import torch
 from torch import FloatTensor, nn
 
 
@@ -18,7 +19,7 @@ class DeepnetLayer(nn.Module):
         feedforward_factory: Callable,
         attention_factory: Callable,
         norm_factory: Callable,
-        dropout: Optional[float] = 0.1,
+        dropout: Optional[float] = 0.0,
         residual_dropout: Optional[float] = 0.0,
         alpha=1.0,  # See deepnet_alpha()
         **kwargs,
@@ -28,17 +29,31 @@ class DeepnetLayer(nn.Module):
         self.attention = attention_factory(**kwargs)
         self.norm1 = norm_factory()
         self.norm2 = norm_factory()
-        if dropout == 0.0:
+        self.dropout_p = dropout
+        self.residual_dropout_p = residual_dropout
+        if not dropout:
             self.dropout = nn.Identity()
         else:
             self.dropout = nn.Dropout(dropout)
         # Residual Dropout:A Simple Approach to Improve Transformer’s Data Efficiency
         # https://aclanthology.org/2024.sigul-1.35.pdf
-        if residual_dropout == 0.0:
+        if not residual_dropout:
             self.residual_dropout = nn.Identity()
         else:
             self.residual_dropout = nn.Dropout(residual_dropout)
-        self.alpha = alpha
+        self._alpha = alpha
+        self.alpha = nn.Buffer(torch.empty((1,)))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        self.alpha.fill_(float(self._alpha))
+
+    def extra_repr(self):
+        return (
+            f"dropout={self.dropout_p}, "
+            f"residual_dropout={self.residual_dropout_p}, "
+            f"alpha={self._alpha}"
+        )
 
     def forward(self, x: FloatTensor, **kwargs) -> FloatTensor:
         residual = self.residual_dropout(x)
@@ -52,7 +67,9 @@ class DeepnetLayer(nn.Module):
         return x
 
 
-def deepnet_alpha(n_decoder_layers: int, n_encoder_layers: int, which: str = None):
+def deepnet_alpha(
+    n_decoder_layers: int, n_encoder_layers: int, which: Optional[str] = None
+):
     """
     Compute deeepnet "alpha", which is passed to DeepnetLayer.
     The residuals are scaled by this value.
@@ -82,7 +99,9 @@ def deepnet_alpha(n_decoder_layers: int, n_encoder_layers: int, which: str = Non
                 raise Exception("Which argument must be either encoder or decoder")
 
 
-def deepnet_beta(n_decoder_layers: int, n_encoder_layers: int, which: str = None):
+def deepnet_beta(
+    n_decoder_layers: int, n_encoder_layers: int, which: Optional[str] = None
+):
     """
     Compute deeepnet "beta", which passed as "std" or "gain" when
     initialiizing feedforard, value_projection, and out_projection weights.

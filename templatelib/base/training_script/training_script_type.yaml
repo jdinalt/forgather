@@ -7,8 +7,8 @@
     == super()
     -- set ns.config_class = ns.config_class + ".training_script"
     ## This block introduces new settings and defines defautls.
-    -- set ns.log_name = "log"
-    -- set ns.model_name = "default_model"
+    -- set ns.model_name = model_name | default("default")
+    -- set ns.log_name = log_name | default("log")
     ## Assume single process training, unless overridden
     -- set ns.nproc_per_node = 1
 << endblock config_metadata
@@ -16,7 +16,7 @@
 
 -- block globals
     ## Generate directories from above blocks.
-    -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
+    -- set ns.output_dir = output_dir | default(joinpath(ns.models_dir, ns.model_name))
     -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
 << endblock globals
 
@@ -48,6 +48,8 @@
     -- filter trim()
     -- block distributed_environment
 distributed_env: &distributed_env !singleton:forgather.ml.distributed:DistributedEnvironment@distributed_env
+    backend: {{ dist_backend | toyaml("cuda:nccl,cpu:gloo") }}
+    no_accelerator: {{ no_accelerator | toyaml(False) }}
     << endblock distributed_environment
     -- endfilter
 
@@ -122,6 +124,13 @@ optimizer: &optimizer ~
     -- endfilter
 
 
+    -- filter trim()
+    -- block optimizer_groups
+optimizer_groups: &optimizer_groups ~
+    << endblock optimizer_groups
+    -- endfilter
+
+
 == h2('LR Scheduler')
 
     -- filter trim()
@@ -130,6 +139,23 @@ lr_scheduler: &lr_scheduler ~
     << endblock lr_scheduler
     -- endfilter
 
+
+== h2('Trainer Args')
+
+    -- filter trim()
+    -- block trainer_args
+trainer_args: &trainer_args !dict
+    << endblock trainer_args
+    -- endfilter
+
+
+== h3('Trainer Dependencies')
+
+    -- filter trim()
+    -- block trainer_dependencies
+    << endblock trainer_dependencies
+    -- endfilter
+    
 
 == h2('Trainer')
 
@@ -151,6 +177,23 @@ lr_scheduler: &lr_scheduler ~
         choices: [ "no", "steps", "epoch" ]
         type: "str"
         help: "When to save checkpoints"
+    no_accelerator:
+        names: "--no-accelerator"
+        action: "store_true"
+        help: "Disable use of accelerator, when available. e.g. 'don't use GPU'"
+    dist_backend:
+        names: "--dist-backend"
+        help: "The name of the torch-distributed backend to use"
+    output_dir:
+        names: "--output-dir"
+        type: path
+        help: "Overrides default model output directory path"
+    model_name:
+        names: "--model-name"
+        help: "Set custom model name"
+    log_name:
+        names: "--log-name"
+        help: "Set log name prefix"
 << endblock dynamic_args
 
 -- block meta_output

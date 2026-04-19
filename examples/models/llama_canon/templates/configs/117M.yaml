@@ -1,0 +1,27 @@
+-- extends "configs/canon.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "LlamaCanon 117M"
+    -- set ns.config_description = "A LlamaCanon with 117M parameters"
+    -- set ns.model_name = "llama_canon_117m"
+
+[model_definition]
+    -- include "config.117M.model"
+
+#------------- config.117M.model --------------
+-- extends "config.default.model"
+
+[model_tokenizer]
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "8k.yaml"
+    pp_debug: False
+
+[model_config]
+    == super()
+    # **117M Overrides**
+    hidden_size: {{ hidden_size | toyaml(1024) }}
+    intermediate_size: {{ intermediate_size | toyaml(2816) }}
+    num_attention_heads: {{ num_attention_heads | toyaml(8) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(8) }}

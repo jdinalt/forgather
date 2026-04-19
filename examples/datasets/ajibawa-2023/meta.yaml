@@ -1,8 +1,7 @@
 -- extends "meta_defaults.yaml"
 
--- block configs
+[configs]
 name: "ajibawa-2023"
 description: "Datasets by Feynman Innovations"
 config_prefix: "configs"
-default_config: "General-Stories-Collection-abridged.yaml"
-<< endblock configs
+default_config: "General-Stories-Collection.yaml"

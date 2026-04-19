@@ -1,0 +1,12 @@
+-- extends "meta_defaults.yaml"
+
+[searchdir_project]
+    == super()
+    ## Include LlamaCanon model templates in search path
+    - "{{ joinpath(ns.forgather_dir, 'examples/models/llama_canon/templates') }}"
+
+[configs]
+name: "Custom Canon"
+description: "Custom Canon model"
+config_prefix: "configs"
+default_config: "custom_canon.yaml"

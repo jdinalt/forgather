@@ -11,9 +11,9 @@ class FeedforwardLayer(nn.Module):
         d_model: int,
         d_feedforward: int,
         *,
-        activation_factory: Optional[Callable] = lambda: nn.ReLU(),
+        activation_factory: Callable = lambda: nn.ReLU(),
         dropout: Optional[float] = 0.0,
-        bias: Optional[bool] = True,
+        bias: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -21,12 +21,21 @@ class FeedforwardLayer(nn.Module):
         self.d_feedforward = d_feedforward
 
         self.linear1 = nn.Linear(self.d_model, self.d_feedforward, bias=bias)
-        self.dropout = nn.Dropout(dropout) if dropout != 0.0 else nn.Identity()
+        setattr(self.linear1, "init_prefix", "ff.up_proj")
+        self.dropout_p = dropout
+        self.dropout = nn.Dropout(dropout) if dropout else nn.Identity()
+        self.bias = bias
         self.activation = activation_factory()
         self.linear2 = nn.Linear(self.d_feedforward, self.d_model, bias=bias)
+        setattr(self.linear2, "init_prefix", "ff.down_proj")
 
     def extra_repr(self):
-        return f"d_model={self.d_model}, d_feedforward={self.d_feedforward}"
+        return (
+            f"d_model={self.d_model}, "
+            f"d_feedforward={self.d_feedforward}, "
+            f"dropout={self.dropout_p}, "
+            f"bias={self.bias}, "
+        )
 
     def forward(self, x: FloatTensor, **kwargs) -> FloatTensor:
         x = self.linear1(x)

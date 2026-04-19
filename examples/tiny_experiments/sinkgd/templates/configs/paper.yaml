@@ -1,0 +1,26 @@
+-- extends "exp.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "SinkGD"
+    -- set ns.config_description = "Baseline SingGD implementation"
+    -- set ns.log_name = log_name | default("paper")
+
+[optimizer]
+    [sinkgd]
+.define: &sinkgd !partial:forgather.ml.optim.sinkgd:SinkGD
+    lr: {{ (0.02 * 0.05) | toyaml }}
+    num_iters: 5
+    normalize_output: False
+
+    [multiopt]
+optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
+    optimizer_map:
+        - [ "embed|lm_head|norm|bias", "adam" ]
+        - [ ".*", "sinkgd" ]
+    factories:
+        sinkgd: *sinkgd
+        adam: !partial:torch.optim:Adam
+            lr: !!float 0.02
+            weight_decay: !!float 0.0
+    debug: True

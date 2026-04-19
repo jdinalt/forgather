@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+[configs]
+name: "Canon Experiments"
+description: "Experiments with Canon layer configurations"
+config_prefix: "configs"
+default_config: "train_baseline.yaml"

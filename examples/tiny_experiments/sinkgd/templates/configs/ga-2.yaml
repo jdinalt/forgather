@@ -1,0 +1,8 @@
+-- extends "exp.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Unified SinkGD GA=2"
+    -- set ns.config_description = "Gradient accumulation 2 (32K tokens/step)"
+    -- set ns.log_name = log_name | default("ga-2")
+    -- set ns.gradient_accumulation_steps = 2

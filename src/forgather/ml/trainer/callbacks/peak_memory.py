@@ -3,7 +3,6 @@ import os
 from pprint import pformat
 
 import torch
-import torch.distributed as dist
 
 from forgather.ml.trainer.logging import format_mapping
 
@@ -81,6 +80,11 @@ class PeakMemory(TrainerCallback):
         self.file_prefix = file_prefix
 
     def on_train_begin(self, args, state, control, **kwargs):
+        # Disable, if not CUDA
+        device = torch.device(args.device)
+        if device.type != "cuda":
+            self.enabled = False
+
         if not self.enabled:
             return
         self.max_allocated = 0
@@ -108,7 +112,8 @@ class PeakMemory(TrainerCallback):
         s += "```"
         return s
 
-    def on_log(self, args, state, control, logs, **kwargs):
+    def on_log(self, args, state, control, **kwargs):
+        logs = kwargs.get("logs", {})
         if not self.enabled or (not self.do_log and not self.summary_writer):
             return
         device = torch.cuda.current_device()
@@ -124,25 +129,16 @@ class PeakMemory(TrainerCallback):
             # Only take a single snapshot
             self.enable_memory_snapshot = False
 
-        max_allocated = torch.cuda.max_memory_allocated(device=device)
-        torch.cuda.reset_peak_memory_stats(device=device)
-        self.max_allocated = max(self.max_allocated, max_allocated)
-        if self.world_size > 1:
-            max_allocated_tensor = torch.tensor(max_allocated, device=device)
-            if self.rank == 0:
-                gather_list = [
-                    torch.zeros_like(max_allocated_tensor, device=device)
-                    for i in range(self.world_size)
-                ]
-            else:
-                gather_list = None
-            dist.gather(max_allocated_tensor, gather_list, dst=0)
-            if self.rank != 0:
-                return
-            # Only rank 0 will log the peak memory
-            max_allocated_list = [i.item() for i in gather_list]
-        else:
-            max_allocated_list = [max_allocated]
+        # peak_mem_allocated is a per-rank list populated by Trainer._log_step
+        # via _distributed_peak_mem. Every rank sees the full list.
+        max_allocated_list = logs.get("peak_mem_allocated")
+        if not max_allocated_list:
+            return
+        self.max_allocated = max(self.max_allocated, max_allocated_list[self.rank])
+
+        # Per-rank TB scalars and the console line are rank-0 only.
+        if self.rank != 0:
+            return
 
         if self.summary_writer:
             for i, mem in enumerate(max_allocated_list):

@@ -1,0 +1,18 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "bfloat16"
+    -- set ns.config_description = "Train with bf16 weights"
+    -- set ns.model_name = model_name | default("bf16_adamw")
+    ## https://arxiv.org/pdf/2502.20566
+    -- set ns.base_lr = lr | default(4.0e-4)
+
+[trainer_args]
+    == super()
+    # **bf16**
+    default_dtype: "bfloat16"
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim:AdamW
+    lr: {{ ns.global_lr | toyaml }}

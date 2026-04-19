@@ -1,5 +1,6 @@
 """Base HuggingFace model converter implementation."""
 
+import json
 import logging
 import os
 import shutil
@@ -16,7 +17,7 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizer,
 )
-from transformers.modeling_utils import no_init_weights as hf_no_init_weights
+from transformers.initialization import no_init_weights as hf_no_init_weights
 
 from forgather import MetaConfig, Project
 from forgather.ml.no_init_weights import no_init_weights
@@ -248,7 +249,9 @@ class HFConverter(ModelConverter):
         logger.debug(src_model)
 
         # Load tokenizer
-        src_tokenizer = AutoTokenizer.from_pretrained(src_model_path)
+        src_tokenizer = AutoTokenizer.from_pretrained(
+            src_model_path, trust_remove_code=True
+        )
 
         if kwargs.get("debug_params"):
             self._print_params(src_model, "Source HuggingFace model")
@@ -388,6 +391,19 @@ class HFConverter(ModelConverter):
             model_config.save_pretrained(save_directory=dst_model_path)
             tokenizer.save_pretrained(save_directory=dst_model_path)
 
+            # Sync generation_config.json eos_token_id with model_config.
+            # The eos_set merge above may have widened eos_token_id to a
+            # list (e.g. when --add-tokens added a ChatML <|im_end|> to a
+            # base model that previously only had a single <|end_of_text|>
+            # EOS). _copy_generation_config() at the top of this method
+            # did a plain shutil.copy of the source generation_config.json,
+            # so without this step the copied file keeps the stale scalar
+            # and model.generate() won't stop at the added stop token --
+            # only the tokenizer_config.json eos_token field gets updated,
+            # and model.generate() reads from generation_config.json, not
+            # tokenizer_config.json.
+            self._sync_generation_config_eos(dst_model_path, model_config.eos_token_id)
+
             save_checkpoint(
                 output_dir=dst_model_path,
                 module=model,
@@ -445,7 +461,9 @@ class HFConverter(ModelConverter):
         src_model_config = AutoConfig.from_pretrained(
             src_model_path, trust_remote_code=True
         )
-        tokenizer = AutoTokenizer.from_pretrained(src_model_path)
+        tokenizer = AutoTokenizer.from_pretrained(
+            src_model_path, trust_remove_code=True
+        )
 
         # Auto-detect dtype if not specified
         if dtype is None:
@@ -508,7 +526,12 @@ class HFConverter(ModelConverter):
         )
 
         # Determine max length
-        max_model_length = src_model_config.max_sequence_length
+        # Use max_position_embeddings which is the standard HF config field
+        max_model_length = getattr(
+            src_model_config,
+            "max_position_embeddings",
+            getattr(src_model_config, "max_sequence_length", None),
+        )
         if max_length:
             max_model_length = max_length
 
@@ -525,7 +548,8 @@ class HFConverter(ModelConverter):
             hf_model = hf_model_class(hf_config)
 
         # The hf_no_init_weights() context manager disabled tie_weights() in post_init(), so
-        # we need to call it explicitly.
+        # we need to call it explicitly. In v5.0, tie_weights() has optional parameters but
+        # defaults work fine for our use case.
         if hasattr(hf_model, "tie_weights"):
             hf_model.tie_weights()
 
@@ -573,6 +597,7 @@ class HFConverter(ModelConverter):
             src_model,
             hf_model,
             tokenizer,
+            tokenizer,  # Use same tokenizer for both source and destination
             prompt,
             "Source Forgather",
             f"Destination HuggingFace {self.model_type}",
@@ -594,11 +619,53 @@ class HFConverter(ModelConverter):
         config_name = "generation_config.json"
         src_config_path = os.path.join(src_model_path, config_name)
         if os.path.isfile(src_config_path):
+            # Ensure destination directory exists
+            os.makedirs(dst_model_path, exist_ok=True)
             dst_config_path = os.path.join(dst_model_path, config_name)
             logger.info(
                 f"Copy generation config from {src_config_path} to {dst_config_path}"
             )
             shutil.copyfile(src_config_path, dst_config_path)
+
+    @staticmethod
+    def _sync_generation_config_eos(dst_model_path: str, eos_token_id):
+        """Overwrite generation_config.json's eos_token_id with a new value.
+
+        Called after the eos_set merge in convert_to_forgather() so the
+        destination generation_config.json's eos_token_id matches the
+        (possibly list-valued) eos_token_id on model_config. HF
+        model.generate() reads the stopping criterion from
+        generation_config.json, not from tokenizer_config.json or the
+        model's own config.json, so if we don't update this file the
+        added ChatML <|im_end|> stop token won't actually terminate
+        generation -- the model keeps emitting until max_tokens.
+
+        Args:
+            dst_model_path: Destination Forgather-format model directory
+                (must already contain a copied generation_config.json).
+            eos_token_id: New eos_token_id value. Can be a scalar int or
+                a list of ints; HF EosTokenCriteria accepts both and
+                stops on ANY listed token via torch.isin.
+        """
+        gen_config_path = os.path.join(dst_model_path, "generation_config.json")
+        if not os.path.isfile(gen_config_path):
+            # No generation_config.json to update (source didn't have one).
+            # That's fine; HF's generate() will fall back to the tokenizer
+            # eos_token_id in that case, which should already be correct.
+            return
+        with open(gen_config_path, "r") as f:
+            gen_config = json.load(f)
+        old_eos = gen_config.get("eos_token_id")
+        if old_eos == eos_token_id:
+            return  # already in sync
+        gen_config["eos_token_id"] = eos_token_id
+        with open(gen_config_path, "w") as f:
+            json.dump(gen_config, f, indent=2)
+            f.write("\n")
+        logger.info(
+            f"Updated generation_config.json eos_token_id "
+            f"{old_eos!r} -> {eos_token_id!r}"
+        )
 
     def _print_params(self, model, label: str):
         """Print parameter names for debugging."""

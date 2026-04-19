@@ -7,12 +7,6 @@
     -- set ns.model_name = "checkpoint"
     -- set ns.log_name = "bf16_fused_ckpt"
 
-[trainer_definition]
-    -- include 'experiment.trainer_config'
-
-#-------------------- experiment.trainer_config --------------------
--- extends 'project.trainer_config'
-
 [trainer_args]
     == super()
     # experiment overrides

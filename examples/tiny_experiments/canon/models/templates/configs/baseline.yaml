@@ -1,0 +1,17 @@
+-- extends "configs/4M.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Canon Baseline 4M"
+    -- set ns.config_description = "LlamaCanon 4M baseline for Canon layer experiments"
+    -- set ns.model_name = "canon_baseline_4m"
+
+[model_definition]
+    -- include "config.baseline.model"
+
+#------------- config.baseline.model --------------
+-- extends "config.4M.model"
+
+[model_submodule_searchpath]
+    - "{{ joinpath(ns.forgather_dir, 'examples/models/llama_canon/modelsrc') }}"
+    == super()

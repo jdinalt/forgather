@@ -1,54 +1,41 @@
 import logging
-import re
-from typing import List, Tuple
-
-from torch.export.unflatten import InterpreterModule, UnflattenedModule
-from torch.fx import GraphModule
-from torch.utils.checkpoint import checkpoint
-
-from ..trainer import has_gradient_checkpointing_enable
+from typing import List, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
 
-def insert_activation_checkpoints(rank, module, targets):
+def assert_no_duplicate_fqns(state_dicts):
     """
-    Enable activation on graph-module (automatic-split)
+    Assert that no FQN appears in multiple state dictionaries.
+
+    This is a critical invariant for pipeline checkpoint saving - duplicate FQNs
+    cause multiple processes to write to the same shard file, resulting in
+    checkpoint corruption.
     """
-    targets_re = re.compile(targets)
+    all_fqns: Set[str] = set()
+    duplicate_fqns: Set[str] = set()
 
-    for name, submod in module.named_modules():
-        if isinstance(
-            submod,
-            (
-                GraphModule,
-                InterpreterModule,
-                UnflattenedModule,
-            ),
-        ):
-            dirty = False
-            logger.debug(f"Processing Checkpoint for: {name}, {type(submod)}")
-            for node in submod.graph.nodes:
-                if node.op == "call_module":
-                    if not targets_re.match(node.target):
-                        continue
-                    dirty = True
-                    logger.debug(f"fixing up node {node.target}")
-                    node.args = (submod.get_submodule(node.target), *node.args)  # type: ignore
-                    node.kwargs = dict(use_reentrant=False, **node.kwargs)
-                    node.target = checkpoint
-                    node.op = "call_function"
+    for i, state_dict in enumerate(state_dicts):
+        for fqn in state_dict.keys():
+            if fqn in all_fqns:
+                duplicate_fqns.add(fqn)
+                logger.error(f"Duplicate FQN found: '{fqn}' in pipeline modules")
+            all_fqns.add(fqn)
 
-            if not dirty:
-                continue
+    if duplicate_fqns:
+        # Show which modules contain each duplicate FQN for debugging
+        for fqn in duplicate_fqns:
+            modules_with_fqn = []
+            for i, state_dict in enumerate(state_dicts):
+                if fqn in state_dict:
+                    modules_with_fqn.append(f"module_{i}")
+            logger.error(f"FQN '{fqn}' appears in: {modules_with_fqn}")
 
-            if isinstance(submod, GraphModule):
-                submod.graph.lint()
-                submod.recompile()
-            else:
-                submod.graph.lint()
-                # Recompiing appears to trigger a syntax error!? By default, these
-                # are interpreted, so recompilation is not required, but why the error?
+        raise AssertionError(
+            f"Duplicate FQNs detected across pipeline modules: {duplicate_fqns}. "
+            f"This will cause checkpoint saving conflicts. Each FQN must appear "
+            f"in exactly one pipeline module."
+        )
 
 
 def missing_buffers(mod):
@@ -63,61 +50,6 @@ def missing_buffers(mod):
         if not name in sd:
             bset.add(name)
     return bset
-
-
-def persist_buffers(mod, bset, mod_fqn=""):
-    """
-    Walk module and all module's children recusively.
-
-    If a buffer is in the set bset of fully-qualified-named (FQN), then convert the
-    buffer to a persistent buffer.
-    """
-    # Convert buffers to persistent buffers.
-    for name, buffer in mod.named_buffers(recurse=False):
-        fqn = mod_fqn + "." + name
-        if fqn in bset:
-            logger.debug(
-                f"Converting buffer non-persistent buffer {fqn} to persistent buffer"
-            )
-            mod.register_buffer(name, buffer.data)
-
-    # And now for our children too...
-    for name, child in mod.named_children():
-        if len(mod_fqn):
-            name = mod_fqn + "." + name
-        persist_buffers(child, bset, name)
-
-
-def set_parameter(mod, fqn, p):
-    """
-    Given a module, a FQN, and a paramm replace FQN in module with p
-
-    This works with either buffers or parameters.
-    """
-    atoms = fqn.split(".")
-    for atom in atoms[:-1]:
-        mod = getattr(mod, atom)
-    setattr(mod, atoms[-1], p)
-
-
-def replace_parameters(to_mod, from_mod):
-    """
-    Replace the parameters in to_mod with those in from_mod
-
-    IMPORTANT: Use remove_duplicate=False to ensure shared parameters are handled correctly
-    """
-    for name, p in to_mod.named_parameters(remove_duplicate=False):
-        set_parameter(to_mod, name, from_mod.get_parameter(name))
-
-
-def replace_buffers(to_mod, from_mod):
-    """
-    Replace the buffers in to_mod with those in from_mod
-
-    IMPORTANT: Use remove_duplicate=False to ensure shared buffers are handled correctly
-    """
-    for name, p in to_mod.named_buffers(remove_duplicate=False):
-        set_parameter(to_mod, name, from_mod.get_buffer(name))
 
 
 def pipeline_stage_indices(

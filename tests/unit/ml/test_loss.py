@@ -7,6 +7,7 @@ while using less memory for large vocabulary models.
 """
 
 import unittest
+
 import torch
 from torch import FloatTensor, LongTensor
 
@@ -279,11 +280,11 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
         torch.manual_seed(42)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    def _create_test_model(self, hidden_dim=256, vocab_size=1000):
+    def _create_test_model(self, hidden_dim=256, vocab_size=1000, bias=True):
         """Create a simple output embeddings layer for testing."""
         import torch.nn as nn
 
-        output_layer = nn.Linear(hidden_dim, vocab_size, bias=True, device=self.device)
+        output_layer = nn.Linear(hidden_dim, vocab_size, bias=bias, device=self.device)
         return output_layer
 
     def _create_test_data(
@@ -327,7 +328,7 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
 
     def test_pytorch_backend_matches_standard(self):
         """Test that pytorch backend matches standard loss computation."""
-        from forgather.ml.loss import LinearCrossEntropyLoss, CausalLoss
+        from forgather.ml.loss import CausalLoss, LinearCrossEntropyLoss
 
         hidden_dim, vocab_size = 128, 500
         output_layer = self._create_test_model(
@@ -423,7 +424,7 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
         except ImportError:
             self.skipTest("cut-cross-entropy not installed")
 
-        output_layer = self._create_test_model()
+        output_layer = self._create_test_model(bias=False)
         loss_fn = LinearCrossEntropyLoss(output_layer, impl="cce")
 
         self.assertEqual(loss_fn.actual_impl, "cce")
@@ -472,6 +473,243 @@ class TestLinearCrossEntropyLoss(unittest.TestCase):
         self.assertIsInstance(loss, torch.Tensor)
         self.assertFalse(torch.isnan(loss))
         self.assertGreater(loss.item(), 0)
+
+
+class TestSoftcappedLoss(unittest.TestCase):
+    """
+    Tests for final logit softcapping via SoftcappedLinear and the corresponding
+    softcap pass-through in LinearCrossEntropyLoss.
+
+    Softcapping applies ``y = cap * tanh(x / cap)`` to the lm_head output before
+    the cross-entropy softmax. The test verifies:
+
+    1. SoftcappedLinear is an nn.Linear drop-in (identical output with softcap=None)
+       and applies the cap correctly when set.
+    2. LinearCrossEntropyLoss auto-discovers the softcap from its output_embeddings
+       argument and forwards it correctly to each backend.
+    3. All available backends (pytorch, cce, liger) produce the same loss as a
+       reference implementation that manually softcaps and calls F.cross_entropy.
+    4. forward_logits applies softcap consistently with the loss path.
+    """
+
+    SOFTCAP = 5.0
+
+    def setUp(self):
+        torch.manual_seed(42)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def _make_softcapped(self, hidden_dim, vocab_size, softcap):
+        import sys
+
+        sys.path.insert(0, "/home/dinalt/code/forgather/modelsrc/transformer")
+        from softcapped_linear import SoftcappedLinear
+
+        lm_head = SoftcappedLinear(
+            hidden_dim, vocab_size, bias=False, softcap=softcap
+        ).to(self.device)
+        return lm_head
+
+    def _make_data(self, batch_size=2, seq_len=8, hidden_dim=64):
+        hidden = torch.randn(
+            batch_size, seq_len, hidden_dim, dtype=torch.float32, device=self.device
+        )
+        labels = torch.randint(
+            0, 256, (batch_size, seq_len), dtype=torch.long, device=self.device
+        )
+        return hidden, labels
+
+    def _reference_loss(self, hidden, labels, weight, softcap):
+        """
+        Reference softcapped loss: materialize full logits, apply softcap, do a
+        next-token shift, and call F.cross_entropy. Used to check every backend.
+        """
+        logits = torch.nn.functional.linear(hidden, weight)
+        if softcap is not None:
+            logits = softcap * torch.tanh(logits / softcap)
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        return torch.nn.functional.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)).float(),
+            shift_labels.view(-1),
+            ignore_index=-100,
+            reduction="mean",
+        )
+
+    def test_softcapped_linear_none_matches_nn_linear(self):
+        """With softcap=None, SoftcappedLinear output must match nn.Linear exactly."""
+        import sys
+
+        sys.path.insert(0, "/home/dinalt/code/forgather/modelsrc/transformer")
+        from softcapped_linear import SoftcappedLinear
+
+        torch.manual_seed(1)
+        ref = torch.nn.Linear(32, 64, bias=False).to(self.device)
+
+        capped = SoftcappedLinear(32, 64, bias=False, softcap=None).to(self.device)
+        capped.weight.data.copy_(ref.weight.data)
+
+        x = torch.randn(4, 32, device=self.device)
+        self.assertTrue(torch.equal(ref(x), capped(x)))
+
+    def test_softcapped_linear_applies_cap(self):
+        """With softcap set, output must equal softcap * tanh(raw / softcap)."""
+        import sys
+
+        sys.path.insert(0, "/home/dinalt/code/forgather/modelsrc/transformer")
+        from softcapped_linear import SoftcappedLinear
+
+        capped = SoftcappedLinear(16, 32, bias=False, softcap=self.SOFTCAP).to(
+            self.device
+        )
+        x = torch.randn(4, 16, device=self.device) * 10.0  # Large values
+        raw = torch.nn.functional.linear(x, capped.weight)
+        expected = self.SOFTCAP * torch.tanh(raw / self.SOFTCAP)
+        torch.testing.assert_close(capped(x), expected)
+
+    def test_auto_discovery_from_softcapped_lm_head(self):
+        """LinearCrossEntropyLoss should read softcap off its output_embeddings."""
+        from forgather.ml.loss import LinearCrossEntropyLoss
+
+        lm_head = self._make_softcapped(
+            hidden_dim=64, vocab_size=256, softcap=self.SOFTCAP
+        )
+        loss_fn = LinearCrossEntropyLoss(lm_head, impl="pytorch")
+        self.assertEqual(loss_fn.softcap, self.SOFTCAP)
+
+    def test_auto_discovery_plain_linear_stays_none(self):
+        """Plain nn.Linear has no softcap attribute; discovery yields None."""
+        from forgather.ml.loss import LinearCrossEntropyLoss
+
+        lm_head = torch.nn.Linear(64, 256, bias=False).to(self.device)
+        loss_fn = LinearCrossEntropyLoss(lm_head, impl="pytorch")
+        self.assertIsNone(loss_fn.softcap)
+
+    def test_explicit_softcap_overrides_discovery(self):
+        """Explicit softcap kwarg overrides whatever the module carries."""
+        from forgather.ml.loss import LinearCrossEntropyLoss
+
+        lm_head = self._make_softcapped(hidden_dim=64, vocab_size=256, softcap=3.0)
+        loss_fn = LinearCrossEntropyLoss(lm_head, impl="pytorch", softcap=10.0)
+        self.assertEqual(loss_fn.softcap, 10.0)
+
+    def _assert_pytorch_matches_reference(self, softcap):
+        from forgather.ml.loss import LinearCrossEntropyLoss
+
+        hidden_dim, vocab_size = 64, 256
+        lm_head = self._make_softcapped(hidden_dim, vocab_size, softcap)
+        hidden, labels = self._make_data(hidden_dim=hidden_dim)
+
+        ref_loss = self._reference_loss(hidden, labels, lm_head.weight, softcap)
+        loss_fn = LinearCrossEntropyLoss(lm_head, impl="pytorch", chunk_size=64)
+        fused_loss = loss_fn(hidden, labels)
+
+        torch.testing.assert_close(fused_loss.float(), ref_loss, rtol=1e-4, atol=1e-4)
+
+    def test_pytorch_backend_softcap_none(self):
+        self._assert_pytorch_matches_reference(softcap=None)
+
+    def test_pytorch_backend_softcap_set(self):
+        self._assert_pytorch_matches_reference(softcap=self.SOFTCAP)
+
+    def test_pytorch_backend_softcap_across_chunk_boundary(self):
+        """Softcap must commute with vocab chunking."""
+        from forgather.ml.loss import LinearCrossEntropyLoss
+
+        hidden_dim, vocab_size = 64, 250  # Not divisible by chunk_size
+        lm_head = self._make_softcapped(hidden_dim, vocab_size, self.SOFTCAP)
+        hidden, labels = self._make_data(hidden_dim=hidden_dim)
+
+        ref_loss = self._reference_loss(hidden, labels, lm_head.weight, self.SOFTCAP)
+
+        for chunk_size in (32, 64, 128, 256):
+            loss_fn = LinearCrossEntropyLoss(
+                lm_head, impl="pytorch", chunk_size=chunk_size
+            )
+            loss = loss_fn(hidden, labels).float()
+            torch.testing.assert_close(loss, ref_loss, rtol=1e-4, atol=1e-4)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CCE requires CUDA")
+    def test_cce_backend_softcap_set(self):
+        """CCE natively supports softcap; loss must match the reference."""
+        try:
+            import cut_cross_entropy  # noqa: F401
+        except ImportError:
+            self.skipTest("cut-cross-entropy not installed")
+
+        from forgather.ml.loss import LinearCrossEntropyLoss
+
+        hidden_dim, vocab_size = 64, 256
+        lm_head = self._make_softcapped(hidden_dim, vocab_size, self.SOFTCAP).to(
+            torch.bfloat16
+        )
+        hidden, labels = self._make_data(hidden_dim=hidden_dim)
+        hidden_bf16 = hidden.to(torch.bfloat16)
+
+        ref_loss = self._reference_loss(
+            hidden_bf16, labels, lm_head.weight, self.SOFTCAP
+        )
+        loss_fn = LinearCrossEntropyLoss(lm_head, impl="cce")
+        fused_loss = loss_fn(hidden_bf16, labels)
+
+        torch.testing.assert_close(
+            fused_loss.float(), ref_loss.float(), rtol=5e-3, atol=5e-3
+        )
+
+    @unittest.skipUnless(torch.cuda.is_available(), "Liger requires CUDA")
+    def test_liger_backend_softcap_set(self):
+        """Liger natively supports softcap; loss must match the reference."""
+        try:
+            import liger_kernel  # noqa: F401
+        except ImportError:
+            self.skipTest("liger-kernel not installed")
+
+        from forgather.ml.loss import LinearCrossEntropyLoss
+
+        hidden_dim, vocab_size = 64, 256
+        lm_head = self._make_softcapped(hidden_dim, vocab_size, self.SOFTCAP).to(
+            torch.bfloat16
+        )
+        hidden, labels = self._make_data(hidden_dim=hidden_dim)
+        hidden_bf16 = hidden.to(torch.bfloat16)
+
+        ref_loss = self._reference_loss(
+            hidden_bf16, labels, lm_head.weight, self.SOFTCAP
+        )
+        loss_fn = LinearCrossEntropyLoss(lm_head, impl="liger")
+        fused_loss = loss_fn(hidden_bf16, labels)
+
+        torch.testing.assert_close(
+            fused_loss.float(), ref_loss.float(), rtol=5e-3, atol=5e-3
+        )
+
+    def test_forward_logits_applies_softcap(self):
+        """forward_logits must return softcapped logits matching the reference."""
+        from forgather.ml.loss import LinearCrossEntropyLoss
+
+        hidden_dim, vocab_size = 64, 256
+        lm_head = self._make_softcapped(hidden_dim, vocab_size, self.SOFTCAP)
+        hidden, _ = self._make_data(hidden_dim=hidden_dim)
+
+        loss_fn = LinearCrossEntropyLoss(lm_head, impl="pytorch")
+        fused_logits = loss_fn.forward_logits(hidden)
+
+        raw = torch.nn.functional.linear(hidden, lm_head.weight)
+        expected = self.SOFTCAP * torch.tanh(raw / self.SOFTCAP)
+        torch.testing.assert_close(fused_logits, expected)
+
+    def test_forward_logits_none_passthrough(self):
+        """forward_logits with softcap=None must equal raw F.linear exactly."""
+        from forgather.ml.loss import LinearCrossEntropyLoss
+
+        hidden_dim, vocab_size = 64, 256
+        lm_head = self._make_softcapped(hidden_dim, vocab_size, softcap=None)
+        hidden, _ = self._make_data(hidden_dim=hidden_dim)
+
+        loss_fn = LinearCrossEntropyLoss(lm_head, impl="pytorch")
+        fused_logits = loss_fn.forward_logits(hidden)
+
+        expected = torch.nn.functional.linear(hidden, lm_head.weight)
+        self.assertTrue(torch.equal(fused_logits, expected))
 
 
 if __name__ == "__main__":

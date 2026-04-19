@@ -1,0 +1,12 @@
+-- extends "meta_defaults.yaml"
+
+[searchdir_project]
+    == super()
+    ## Include plain Llama model templates in search path
+    - "{{ joinpath(ns.forgather_dir, 'examples/models/llama/templates') }}"
+
+[configs]
+name: "Llama NoPE"
+description: "Llama model without positional encoding, for Canon layer comparison"
+config_prefix: "configs"
+default_config: "nope_4M.yaml"

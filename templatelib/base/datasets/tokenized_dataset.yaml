@@ -28,6 +28,12 @@ tokenizer: &tokenizer !var "tokenizer"
     -- endfilter
 
 
+    -- filter trim()
+    -- block map_kwargs
+    << endblock map_kwargs
+    -- endfilter
+
+
     -- block datasets
         -- filter trim()
         -- block dataset_splits

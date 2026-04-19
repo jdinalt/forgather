@@ -1,0 +1,27 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Medium Deepone"
+    -- set ns.config_description = "A Deepone with ~160M parameters"
+    -- set ns.model_name = "medium"
+
+[model_definition]
+    -- include "config.model"
+
+#------------- config.model --------------
+-- extends "models/transformers/deepone.yaml"
+
+[model_tokenizer]
+tokenizer: &tokenizer !call:forgather:from_project
+    project_dir: "{{ joinpath(ns.forgather_dir, 'examples', 'tokenizers', 'wikitext') }}"
+    config_template: "32k.yaml"
+    pp_debug: False
+
+[model_config]
+    == super()
+    # **Medium Deepone Overrides**
+    hidden_size: 768
+    intermediate_size: 2048
+    num_attention_heads: 8
+    num_hidden_layers: 16

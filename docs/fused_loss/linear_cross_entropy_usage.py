@@ -68,7 +68,8 @@ def example_huggingface_model():
     # This example shows the pattern, but doesn't actually load a model
     # to avoid downloading large model files
     print("\nPattern for using with HuggingFace models:")
-    print("""
+    print(
+        """
     # Load model
     model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen-1.7B")
 
@@ -90,7 +91,8 @@ def example_huggingface_model():
     )
 
     trainer.train()
-    """)
+    """
+    )
 
 
 def example_explicit_backends():
@@ -182,7 +184,8 @@ if __name__ == "__main__":
     print("\n" + "=" * 80)
     print("Summary")
     print("=" * 80)
-    print("""
+    print(
+        """
 LinearCrossEntropyLoss provides:
 1. Unified interface for multiple fused loss backends
 2. Automatic fallback (liger → cce → pytorch)
@@ -195,4 +198,5 @@ By computing loss directly from hidden states without materializing logits,
 we avoid the memory spike that makes large vocabulary models difficult to train.
 
 For Qwen3 (151K vocab), this reduces peak memory from 20GB to 3-4GB!
-    """)
+    """
+    )

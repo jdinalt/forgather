@@ -2,9 +2,11 @@
 Unit tests for GenerationLogger.
 """
 
-import pytest
 import logging
 from unittest.mock import Mock, call
+
+import pytest
+
 from ..core.generation_logger import GenerationLogger
 
 

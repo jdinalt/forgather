@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+[configs]
+name: "SinkGD"
+description: "Experiments with Sinkhorn GD optmizer"
+config_prefix: "configs"
+default_config: "experimental.yaml"

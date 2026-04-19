@@ -4,7 +4,7 @@ import sys
 from abc import ABCMeta
 from functools import partial
 from itertools import chain
-from typing import Any, Callable, Final, Hashable, List, Optional, Tuple
+from typing import Any, Callable, Final, Generator, Hashable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
@@ -59,7 +59,7 @@ class Node(metaclass=ABCMeta):
     def identity(self):
         return getattr(self, "_identity", id(self))
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args, **kwargs) -> Any:
         return Latent.materialize(self, *args, **kwargs)
 
 
@@ -67,8 +67,9 @@ class VarNode(Node):
     def __init__(
         self,
         name: str,
-        _identity: Hashable = None,
         default: Any = Undefined,
+        *,
+        _identity: Hashable = None,
     ):
         super().__init__(name, _identity=_identity)
         self.value = default
@@ -128,17 +129,17 @@ class CallableNode(Node, metaclass=ABCMeta):
         return getattr(self, "_submodule_searchpath", [])
 
     @property
-    def callable(self):
+    def callable(self) -> Callable:
         # The object has not yet been constructed. Verify that the
         # constructor has been resolved.
-        callable = getattr(self, "_callable", None)
-        if callable is not None:
-            return callable
+        resolved = getattr(self, "_callable", None)
+        if resolved is not None:
+            return resolved
 
         logger.debug(f"Resolving Callable: {self.constructor}")
         if ":" in self.constructor:
             try:
-                callable = dynamic_import(
+                resolved = dynamic_import(
                     self.constructor, searchpath=self.submodule_searchpath
                 )
             except Exception as e:
@@ -147,26 +148,26 @@ class CallableNode(Node, metaclass=ABCMeta):
                     f"Exception occured while resolving symbol {repr(self.constructor)} in {self} ",
                 )
         else:
-            callable = get_builtin(self.constructor)
-            if callable is None:
-                callable = self.BUILT_INS.get(self.constructor, None)
-            if callable is None:
+            resolved = get_builtin(self.constructor)
+            if resolved is None:
+                resolved = self.BUILT_INS.get(self.constructor, None)
+            if resolved is None:
                 raise NameError(f"Built-in callable {self.constructor} was not found")
 
-        if not isinstance(callable, Callable):
+        if not callable(resolved):
             raise TypeError(
-                f"Imported constructor is not Callable: [{type(callable)}] {self.constructor}"
+                f"Imported constructor is not Callable: [{type(resolved)}] {self.constructor}"
             )
         # Cache the resolved symbol
-        setattr(self, "_callable", callable)
-        return callable
+        setattr(self, "_callable", resolved)
+        return resolved
 
 
 # While these nodes types are a CallableNodes, without overrides,
 # their type is used to determine how they are processed in a graph.
 class FactoryNode(CallableNode):
     """
-    A FactoryNode generates a new object instance for every occurance in a graph.
+    A FactoryNode generates a new object instance for every occurrence in a graph.
     """
 
     pass
@@ -174,18 +175,16 @@ class FactoryNode(CallableNode):
 
 class SingletonNode(CallableNode):
     """
-    A SingletonNode only generates a single instance of an object. All other occurances
+    A SingletonNode only generates a single instance of an object. All other occurrences
     are references to the same constructed object.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.instance = None
+    instance: Any = None
 
 
 class MetaNode(SingletonNode):
     """
-    When a MetaNode is encountered in a graph, the nodes arguments are not constructed
+    When a MetaNode is encountered in a graph, the argument nodes are not constructed
     before calling the node.
 
     This allows for MetaNode to do things like modifying the graph, before continuing, or
@@ -195,19 +194,16 @@ class MetaNode(SingletonNode):
     pass
 
 
-class LambdaNode(CallableNode):
+class PartialNode(CallableNode):
     """
-    A LambdaNode returns a Callable for constructing the downstream graph, rather than
-    as a constructed object.
+    A PartialNode returns a partial function for constructing the downstream graph, rather than
+    calling and the function directly.
 
-    This can be used construct a Callable object, for example as a factory argument to
-    another object.
-
-    Note: This is very similar to s FactoryNode, with the difference being that s
-    FactoryNode is implicitly called, while a LambdaNode must be explicitly called.
+    As a partial function, additional arguments can be passed into the call, and merged with the base args,
+    at runtime.
     """
 
-    pass
+    instance: Any = None
 
 
 class Materializer:
@@ -216,13 +212,6 @@ class Materializer:
 
         mtargets = kwargs.pop("mtargets", None)
         self.context_vars = kwargs.pop("context_vars", {})
-        # if len(args):
-        #    print(f"args={args}, kwargs={kwargs}")
-        # Merge args with kwargs
-        # for i, arg in enumerate(args):
-        #    key = "arg" + str(i)
-        #    context_vars[key] = arg
-
         self.kwargs = kwargs
         self.args = args
 
@@ -236,7 +225,7 @@ class Materializer:
             return self._materialize(obj)
 
     @track_depth
-    def _selective_materialize(self, obj: Any, mtargets: set[str]):
+    def _selective_materialize(self, obj: Any, mtargets: set[str]) -> Any:
         if not isinstance(obj, dict):
             raise TypeError(
                 f"Root node is not a dictionary ({type(obj)}) and mtargets was specified."
@@ -245,7 +234,7 @@ class Materializer:
         return {key: self._materialize(value) for key, value in iterator}
 
     @track_depth
-    def _materialize(self, obj):
+    def _materialize(self, obj: Any) -> Any:
         if isinstance(obj, list):
             return [self._materialize(value) for value in obj]
 
@@ -264,34 +253,40 @@ class Materializer:
         elif isinstance(obj, CallableNode):
             try:
                 logger.debug(str(obj))
-                # If not the root-node, stop traversal and return callable.
-                if self.level > 0 and isinstance(obj, LambdaNode):
-                    return partial(obj, context_vars=self.context_vars)
 
-                if isinstance(obj, SingletonNode):
+                if isinstance(obj, (SingletonNode, PartialNode)):
                     # Have we already constructed this object?
                     if (value := obj.instance) is not None:
-                        logger.debug(f"Found Singleton {str(obj)}")
                         return value
 
                 if isinstance(obj, MetaNode):
+                    # MetaNode's args are not materialized -- and are passed 'as-is' for further transformation
                     value = obj.callable(*obj.args, **obj.kwargs)
                 else:
+                    # Materialize args
                     args = self._materialize(obj.args)
                     kwargs = self._materialize(obj.kwargs)
                     if obj.latent_args is not None:
                         latent_args = self._materialize(obj.latent_args)
                         assert isinstance(latent_args, dict)
                         kwargs |= latent_args
-                    if self.level == 0 and isinstance(obj, LambdaNode):
-                        args = list(args)
-                        args.extend(self.args)
-                        kwargs |= self.kwargs
-                    value = obj.callable(*args, **kwargs)
+                    if isinstance(obj, PartialNode):
+                        if self.level != 0:
+                            value = partial(obj.callable, *args, **kwargs)
+                        else:
+                            # TODO: This is special handling, for the case where the node is at the root of the
+                            # graph. It's unclear if we still need this? Test before removing.
+                            # Merge args with context args
+                            args = list(args)
+                            args.extend(self.args)
+                            kwargs |= self.kwargs
+                            value = obj.callable(*args, **kwargs)
+                    else:
+                        # Construct SingletonNode
+                        value = obj.callable(*args, **kwargs)
 
-                if isinstance(obj, SingletonNode):
+                if isinstance(obj, (SingletonNode, PartialNode)):
                     # Store object in map to return if called again.
-                    logger.debug(f"Constructed new Singleton {str(obj)}")
                     obj.instance = value
                 return value
             except Exception as e:
@@ -315,14 +310,14 @@ class Latent:
     """
 
     @staticmethod
-    def materialize(obj: Any, /, *args, **kwargs):
+    def materialize(obj: Any, /, *args, **kwargs) -> Any:
         materializer = Materializer()
         return materializer(obj, *args, **kwargs)
 
     @staticmethod
     def walk(
         node: Any, top_down: bool = True, level: int = 0
-    ) -> tuple[int, Any, dict[int | str, Any]]:
+    ) -> Generator[tuple[int, Any, dict[int | str, Any]], None, None]:
         """
         Generator for walking the node-graph
 
@@ -345,18 +340,17 @@ class Latent:
                 you don't wish to visit or by reordering the items.
                 This is roughtly similar to pathlib.Path.walk()
         """
+        sub_nodes: dict[int | str, Any]
         if isinstance(node, list):
-            generator = enumerate(node)
+            sub_nodes = dict(enumerate(node))
         elif isinstance(node, tuple):
-            generator = enumerate(node)
+            sub_nodes = dict(enumerate(node))
         elif isinstance(node, dict):
-            generator = node.items()
+            sub_nodes = dict(node.items())
         elif isinstance(node, CallableNode):
-            generator = chain(enumerate(node.args), node.kwargs.items())
+            sub_nodes = dict(chain(enumerate(node.args), node.kwargs.items()))
         else:
-            generator = []
-
-        sub_nodes = dict(generator)
+            sub_nodes = {}
         if top_down:
             yield (level, node, sub_nodes)
 

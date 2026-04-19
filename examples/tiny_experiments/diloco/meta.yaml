@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+[configs]
+name: "diloco"
+description: "DiLoCo distributed training"
+config_prefix: "configs"
+default_config: "default.yaml"

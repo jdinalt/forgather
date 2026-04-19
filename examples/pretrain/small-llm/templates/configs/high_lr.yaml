@@ -1,0 +1,8 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "High LR"
+    -- set ns.config_description = "Test upper limits of learning-rate"
+    -- set ns.model_name = model_name | default("high_lr")
+    -- set ns.base_lr = lr | default(3.0e-4)

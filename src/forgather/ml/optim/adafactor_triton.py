@@ -1,319 +1,251 @@
 """
-Memory-optimized Triton kernels for Adafactor optimizer.
+Triton kernels for Adafactor optimizer with deterministic RMS computation.
 
-This implementation focuses on reducing peak memory utilization by:
-1. Avoiding materialization of intermediate tensors (grad**2, update, etc.)
-2. Computing factored preconditioner element-wise without outer product
-3. In-place parameter updates
-4. Fused operations (weight decay, clipping, parameter update)
+Key design:
+1. Zero CPU-GPU synchronization (no .item() calls)
+2. RMS/clip_scale computed in PyTorch (deterministic reductions) before kernel launch
+3. Triton kernels only apply the clipped update to parameters
+4. Precomputed rsqrt vectors to reduce per-element work in kernels
+5. For 2D: factored RMS avoids materializing full update tensor:
+   sum(update^2) = dot(row_rsqrt^2, grad^2 @ col_rsqrt^2)
 
 Target configuration:
 - relative_step=False (use fixed lr)
-- bf16_stochastic_round=False (standard conversion)
-- weight_decay > 0 (typically 0.001)
+- bf16_stochastic_round: True or False
+- weight_decay >= 0
 - clip_threshold=1.0 (enabled)
 """
-
-import math
 
 import torch
 import triton
 import triton.language as tl
 
+# Cache SM count per device
+_num_sms_cache = {}
+
+
+def _get_num_sms(device):
+    idx = device.index if device.index is not None else torch.cuda.current_device()
+    if idx not in _num_sms_cache:
+        _num_sms_cache[idx] = torch.cuda.get_device_properties(
+            idx
+        ).multi_processor_count
+    return _num_sms_cache[idx]
+
+
+# ============================================================
+# Stochastic rounding helper
+# ============================================================
+
 
 @triton.jit
-def factored_row_reduction_kernel(
+def _stochastic_round_bf16(val, seed, offs):
+    """
+    Stochastically round f32 values to bf16-representable f32.
+
+    Extracts the lower 16 bits of the f32 representation (the bits lost
+    when converting to bf16), generates a random 16-bit value, and rounds
+    away from zero if the random value is less than the fractional bits.
+    This matches the behavior of fp32_to_bf16_stochastic_round().
+    """
+    val_bits = val.to(tl.int32, bitcast=True)
+    fraction = val_bits & 0xFFFF  # lower 16 bits (lost in bf16 truncation)
+    val_rounded = val_bits - fraction  # round toward zero (== val_bits & 0xFFFF0000)
+    rand_bits = tl.randint(seed, offs).to(tl.int32) & 0xFFFF
+    # Round away from zero with probability fraction/2^16
+    val_bits = tl.where(rand_bits < fraction, val_rounded + 0x10000, val_rounded)
+    return val_bits.to(tl.float32, bitcast=True)
+
+
+# ============================================================
+# Row/Col reduction kernels (no intermediate tensor)
+# ============================================================
+
+
+@triton.jit
+def _row_reduction_kernel(
     grad_ptr,
-    row_ptr,
-    row_sums_ptr,  # Temporary buffer for row sums
-    n_rows: tl.constexpr,
-    n_cols: tl.constexpr,
+    row_sums_ptr,
+    n_cols,
     eps1,
     BLOCK_SIZE_COL: tl.constexpr,
 ):
-    """
-    Compute row sums of grad**2 + eps1 without materializing full tensor.
-
-    Each program computes one row sum.
-    """
+    """Row sums of grad^2 + eps. One program per row, coalesced access."""
     row_idx = tl.program_id(0)
-    if row_idx < n_rows:
-        row_sum = 0.0
+    row_sum = 0.0
 
-        # Iterate over columns in blocks
-        for col_start in range(0, n_cols, BLOCK_SIZE_COL):
-            col_offs = col_start + tl.arange(0, BLOCK_SIZE_COL)
-            mask = col_offs < n_cols
+    for col_start in range(0, n_cols, BLOCK_SIZE_COL):
+        col_offs = col_start + tl.arange(0, BLOCK_SIZE_COL)
+        mask = col_offs < n_cols
+        grad_offs = row_idx * n_cols + col_offs
+        grad_vals = tl.load(grad_ptr + grad_offs, mask=mask, other=0.0).to(tl.float32)
+        grad_sq = grad_vals * grad_vals + eps1
+        row_sum += tl.sum(tl.where(mask, grad_sq, 0.0))
 
-            # Load gradient values
-            grad_offs = row_idx * n_cols + col_offs
-            grad_vals = tl.load(grad_ptr + grad_offs, mask=mask, other=0.0)
-
-            # Accumulate grad**2 + eps1
-            grad_sq = grad_vals * grad_vals + eps1
-            row_sum += tl.sum(grad_sq)
-
-        # Store row sum to temporary buffer
-        tl.store(row_sums_ptr + row_idx, row_sum)
+    tl.store(row_sums_ptr + row_idx, row_sum)
 
 
 @triton.jit
-def factored_col_reduction_kernel(
+def _col_reduction_kernel(
     grad_ptr,
-    col_ptr,
-    col_sums_ptr,  # Temporary buffer for column sums
-    n_rows: tl.constexpr,
-    n_cols: tl.constexpr,
+    col_sums_ptr,
+    n_rows,
+    n_cols,
     eps1,
     BLOCK_SIZE_ROW: tl.constexpr,
 ):
-    """
-    Compute column sums of grad**2 + eps1 without materializing full tensor.
-
-    Each program computes one column sum.
-    """
+    """Column sums of grad^2 + eps. One program per column."""
     col_idx = tl.program_id(0)
-
     if col_idx < n_cols:
         col_sum = 0.0
-
-        # Iterate over rows in blocks
         for row_start in range(0, n_rows, BLOCK_SIZE_ROW):
             row_offs = row_start + tl.arange(0, BLOCK_SIZE_ROW)
             mask = row_offs < n_rows
-
-            # Load gradient values
             grad_offs = row_offs * n_cols + col_idx
-            grad_vals = tl.load(grad_ptr + grad_offs, mask=mask, other=0.0)
-
-            # Accumulate grad**2 + eps1
+            grad_vals = tl.load(grad_ptr + grad_offs, mask=mask, other=0.0).to(
+                tl.float32
+            )
             grad_sq = grad_vals * grad_vals + eps1
-            col_sum += tl.sum(grad_sq)
-
-        # Store column sum to temporary buffer
+            col_sum += tl.sum(tl.where(mask, grad_sq, 0.0))
         tl.store(col_sums_ptr + col_idx, col_sum)
 
 
-@triton.jit
-def row_sum_kernel(
-    row_ptr,
-    row_sum_ptr,
-    n_rows: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """
-    Compute sum of row state for normalization.
-    Simple reduction kernel.
-    """
-    row_sum_acc = 0.0
-
-    for row_start in range(0, n_rows, BLOCK_SIZE):
-        row_offs = row_start + tl.arange(0, BLOCK_SIZE)
-        mask = row_offs < n_rows
-        row_vals = tl.load(row_ptr + row_offs, mask=mask, other=0.0)
-        row_sum_acc += tl.sum(row_vals)
-
-    # Store result (only program 0 does this)
-    if tl.program_id(0) == 0:
-        tl.store(row_sum_ptr, row_sum_acc)
+# ============================================================
+# 2D persistent kernel: apply precomputed clipped update
+# ============================================================
 
 
 @triton.jit
-def compute_update_rms_kernel(
-    grad_ptr,
-    row_ptr,
-    col_ptr,
-    update_sq_sum_ptr,
-    n_rows: tl.constexpr,
-    n_cols: tl.constexpr,
-    row_sum,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """
-    Compute sum of squared updates for RMS calculation.
-
-    This kernel computes update^2 element-wise and accumulates the sum
-    without materializing the update tensor.
-    """
-    block_start = tl.program_id(0) * BLOCK_SIZE
-    offs = block_start + tl.arange(0, BLOCK_SIZE)
-
-    # Convert 1D offset to 2D indices
-    row_idx = offs // n_cols
-    col_idx = offs % n_cols
-    mask = offs < (n_rows * n_cols)
-
-    # Load gradient
-    grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
-
-    # Load row and col preconditioner values
-    row_val = tl.load(row_ptr + row_idx, mask=mask, other=1.0)
-    col_val = tl.load(col_ptr + col_idx, mask=mask, other=1.0)
-
-    # Compute preconditioned update element-wise
-    row_scale = tl.rsqrt(row_val / row_sum)
-    col_scale = tl.rsqrt(col_val)
-    update = grad * row_scale * col_scale
-
-    # Accumulate update**2
-    update_sq_sum = tl.sum(tl.where(mask, update * update, 0.0))
-
-    # Atomic add to global sum
-    tl.atomic_add(update_sq_sum_ptr, update_sq_sum)
-
-
-@triton.jit
-def apply_update_with_clipping_kernel(
+def _persistent_apply_2d_kernel(
     param_ptr,
     grad_ptr,
-    row_ptr,
-    col_ptr,
-    n_rows: tl.constexpr,
-    n_cols: tl.constexpr,
-    row_sum,
+    row_rsqrt_ptr,
+    col_rsqrt_ptr,
+    clip_scale_ptr,
+    n_elements,
+    N_COLS: tl.constexpr,
     lr,
     weight_decay,
-    clip_scale,
+    seed,
+    NUM_SMS: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
+    BF16_STOCHASTIC_ROUND: tl.constexpr,
 ):
     """
-    Apply preconditioned update to parameters with clipping.
-
-    This kernel computes update element-wise and applies it with the
-    pre-computed clipping scale, along with weight decay.
+    Persistent kernel: apply clipped update to parameters.
+    clip_scale is precomputed on the host via deterministic PyTorch reductions.
     """
+    pid = tl.program_id(0)
+    clip_scale = tl.load(clip_scale_ptr)
+
+    chunk_id = pid
+    while chunk_id * BLOCK_SIZE < n_elements:
+        offs = chunk_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offs < n_elements
+
+        row_idx = offs // N_COLS
+        col_idx = offs % N_COLS
+
+        grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
+        r_rs = tl.load(row_rsqrt_ptr + row_idx, mask=mask, other=0.0)
+        c_rs = tl.load(col_rsqrt_ptr + col_idx, mask=mask, other=0.0)
+
+        update = grad * r_rs * c_rs / clip_scale
+
+        param = tl.load(param_ptr + offs, mask=mask, other=0.0)
+        param = param * (1.0 - lr * weight_decay) - lr * update
+        if BF16_STOCHASTIC_ROUND:
+            param = _stochastic_round_bf16(param, seed, offs)
+        tl.store(param_ptr + offs, param, mask=mask)
+
+        chunk_id += NUM_SMS
+
+
+# ============================================================
+# 2D non-persistent fallback: apply kernel
+# ============================================================
+
+
+@triton.jit
+def _apply_update_2d_kernel(
+    param_ptr,
+    grad_ptr,
+    row_rsqrt_ptr,
+    col_rsqrt_ptr,
+    clip_scale_ptr,
+    n_elements,
+    N_COLS: tl.constexpr,
+    lr,
+    weight_decay,
+    seed,
+    BLOCK_SIZE: tl.constexpr,
+    BF16_STOCHASTIC_ROUND: tl.constexpr,
+):
+    """Apply clipped update to parameters (2D). Reads precomputed clip_scale."""
     block_start = tl.program_id(0) * BLOCK_SIZE
     offs = block_start + tl.arange(0, BLOCK_SIZE)
+    mask = offs < n_elements
 
-    # Convert 1D offset to 2D indices
-    row_idx = offs // n_cols
-    col_idx = offs % n_cols
-    mask = offs < (n_rows * n_cols)
+    row_idx = offs // N_COLS
+    col_idx = offs % N_COLS
 
-    # Load gradient
+    clip_scale = tl.load(clip_scale_ptr)
+
     grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
+    r_rs = tl.load(row_rsqrt_ptr + row_idx, mask=mask, other=0.0)
+    c_rs = tl.load(col_rsqrt_ptr + col_idx, mask=mask, other=0.0)
 
-    # Load row and col preconditioner values
-    row_val = tl.load(row_ptr + row_idx, mask=mask, other=1.0)
-    col_val = tl.load(col_ptr + col_idx, mask=mask, other=1.0)
+    update = grad * r_rs * c_rs / clip_scale
 
-    # Compute preconditioned update element-wise
-    row_scale = tl.rsqrt(row_val / row_sum)
-    col_scale = tl.rsqrt(col_val)
-    update = grad * row_scale * col_scale
-
-    # Apply clipping
-    update = update / clip_scale
-
-    # Load parameter
     param = tl.load(param_ptr + offs, mask=mask, other=0.0)
-
-    # Apply weight decay
-    if weight_decay > 0.0:
-        param = param * (1.0 - lr * weight_decay)
-
-    # Apply update
-    param = param - lr * update
-
-    # Store updated parameter
+    param = param * (1.0 - lr * weight_decay) - lr * update
+    if BF16_STOCHASTIC_ROUND:
+        param = _stochastic_round_bf16(param, seed, offs)
     tl.store(param_ptr + offs, param, mask=mask)
 
 
-@triton.jit
-def vector_moment_update_kernel(
-    grad_ptr,
-    state_ptr,
-    n_elements: tl.constexpr,
-    beta2t,
-    eps1,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """
-    Update second moment state for 1D tensors (vectors/biases).
-
-    Performs:
-    - state.lerp_(grad**2 + eps1, 1-beta2t)
-    """
-    block_start = tl.program_id(0) * BLOCK_SIZE
-    offs = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offs < n_elements
-
-    # Load data
-    grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
-    state = tl.load(state_ptr + offs, mask=mask, other=0.0)
-
-    # Update second moment state
-    grad_sq = grad * grad + eps1
-    new_state = state * beta2t + grad_sq * (1.0 - beta2t)
-    tl.store(state_ptr + offs, new_state, mask=mask)
+# ============================================================
+# 1D kernel (biases, layernorm params)
+# ============================================================
 
 
 @triton.jit
-def vector_compute_update_rms_kernel(
-    grad_ptr,
-    state_ptr,
-    update_sq_sum_ptr,
-    n_elements: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-):
-    """
-    Compute sum of squared updates for RMS calculation (1D case).
-    """
-    block_start = tl.program_id(0) * BLOCK_SIZE
-    offs = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offs < n_elements
-
-    # Load data
-    grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
-    state = tl.load(state_ptr + offs, mask=mask, other=0.0)
-
-    # Compute update
-    update = grad / tl.sqrt(state)
-
-    # Accumulate update**2
-    update_sq_sum = tl.sum(tl.where(mask, update * update, 0.0))
-    tl.atomic_add(update_sq_sum_ptr, update_sq_sum)
-
-
-@triton.jit
-def vector_apply_update_kernel(
+def _apply_update_1d_kernel(
     param_ptr,
     grad_ptr,
     state_ptr,
-    n_elements: tl.constexpr,
+    clip_scale_ptr,
+    n_elements,
     lr,
     weight_decay,
-    clip_scale,
+    seed,
     BLOCK_SIZE: tl.constexpr,
+    BF16_STOCHASTIC_ROUND: tl.constexpr,
 ):
-    """
-    Apply preconditioned update to parameters (1D case).
-    """
+    """Apply clipped update to parameters (1D). Reads precomputed clip_scale."""
     block_start = tl.program_id(0) * BLOCK_SIZE
     offs = block_start + tl.arange(0, BLOCK_SIZE)
     mask = offs < n_elements
 
-    # Load data
+    clip_scale = tl.load(clip_scale_ptr)
+
     grad = tl.load(grad_ptr + offs, mask=mask, other=0.0)
-    state = tl.load(state_ptr + offs, mask=mask, other=0.0)
+    state = tl.load(state_ptr + offs, mask=mask, other=1.0)
+
+    update = grad * tl.rsqrt(state) / clip_scale
+
     param = tl.load(param_ptr + offs, mask=mask, other=0.0)
-
-    # Compute update
-    update = grad / tl.sqrt(state)
-
-    # Apply clipping
-    update = update / clip_scale
-
-    # Apply weight decay
-    if weight_decay > 0.0:
-        param = param * (1.0 - lr * weight_decay)
-
-    # Apply update
-    param = param - lr * update
+    param = param * (1.0 - lr * weight_decay) - lr * update
+    if BF16_STOCHASTIC_ROUND:
+        param = _stochastic_round_bf16(param, seed, offs)
     tl.store(param_ptr + offs, param, mask=mask)
 
 
-# Helper functions for launching kernels
+# ============================================================
+# Public API
+# ============================================================
+
+_PERSISTENT_THRESHOLD = 65536
 
 
 def adafactor_step_2d_triton(
@@ -326,102 +258,123 @@ def adafactor_step_2d_triton(
     lr: float,
     weight_decay: float,
     clip_threshold: float,
+    bf16_stochastic_round: bool = False,
+    sr_seed: int = 0,
 ):
     """
-    Launch Triton kernels for 2D parameter update.
+    Speed-optimized 2D Adafactor step.
 
-    Uses Triton for reductions to avoid materializing grad**2 tensor.
+    Uses Triton reduction kernels for row/col sums, then deterministic
+    PyTorch reductions for RMS/clip_scale (no atomic_add non-determinism),
+    followed by a Triton kernel for the parameter update.
     """
+    if grad.dim() > 2:
+        grad = grad.reshape(-1, grad.shape[-1])
     n_rows, n_cols = grad.shape
     n_elements = n_rows * n_cols
 
-    # Convert to float32 for computations
-    grad_f32 = grad.float() if grad.dtype != torch.float32 else grad
-    row_f32 = row.float() if row.dtype != torch.float32 else row
-    col_f32 = col.float() if col.dtype != torch.float32 else col
+    # Convert gradient to f32
+    if grad.dtype == torch.float32 and grad.is_contiguous():
+        grad_f32 = grad
+    else:
+        grad_f32 = grad.float().contiguous()
 
-    # Allocate temporary buffers for row/col sums (much smaller than grad_sq)
+    # Row/col reduction via Triton (no grad_sq materialization)
     row_sums = torch.empty(n_rows, device=grad.device, dtype=torch.float32)
     col_sums = torch.empty(n_cols, device=grad.device, dtype=torch.float32)
 
-    # Compute row sums using Triton (no grad_sq materialization)
-    BLOCK_SIZE_COL = 1024
-    BLOCK_SIZE_ROW = 256
-    factored_row_reduction_kernel[(n_rows,)](
+    BLOCK_COL = 1024
+    BLOCK_ROW = 256
+    _row_reduction_kernel[(n_rows,)](
         grad_f32,
-        row_f32,
         row_sums,
-        n_rows,
         n_cols,
         eps1,
-        BLOCK_SIZE_COL,
+        BLOCK_COL,
     )
-
-    # Compute column sums using Triton (no grad_sq materialization)
-    factored_col_reduction_kernel[(n_cols,)](
+    _col_reduction_kernel[(n_cols,)](
         grad_f32,
-        col_f32,
         col_sums,
         n_rows,
         n_cols,
         eps1,
-        BLOCK_SIZE_ROW,
+        BLOCK_ROW,
     )
 
-    # Update states with EMA using PyTorch (these are small 1D ops)
+    # EMA state update (small vectors, fast PyTorch ops)
+    row_f32 = row.float()
+    col_f32 = col.float()
     row_f32.lerp_(row_sums, 1.0 - beta2t)
     col_f32.lerp_(col_sums, 1.0 - beta2t)
-
-    # Copy back to original dtype if needed
     if row.dtype != torch.float32:
         row.copy_(row_f32)
     if col.dtype != torch.float32:
         col.copy_(col_f32)
 
-    # Compute row sum for normalization
-    row_sum = row_f32.sum().item()
+    # Precompute rsqrt vectors (small, cheap, stays on device)
+    row_sum = row_f32.sum()
+    row_rsqrt = torch.rsqrt(row_f32 / row_sum).contiguous()
+    col_rsqrt = torch.rsqrt(col_f32).contiguous()
 
-    # Compute RMS of updates using Triton (avoid materializing update tensor)
-    update_sq_sum = torch.zeros(1, device=grad.device, dtype=torch.float32)
+    # Deterministic RMS computation using factored form:
+    # sum(update^2) = sum_{i,j} grad[i,j]^2 * row_rsqrt[i]^2 * col_rsqrt[j]^2
+    #              = dot(row_rsqrt^2, grad^2 @ col_rsqrt^2)
+    grad_2d = grad_f32.reshape(n_rows, n_cols)
+    per_row = torch.mv(grad_2d.square(), col_rsqrt.square())
+    total_sq = torch.dot(row_rsqrt.square(), per_row)
+    rms_val = (total_sq / n_elements).sqrt()
+    clip_scale = torch.clamp(rms_val / clip_threshold, min=1.0)
+
+    # Flatten for 1D kernel indexing
+    grad_flat = grad_f32.reshape(-1)
+    if param.dtype == torch.float32:
+        param_flat = param.reshape(-1)
+    else:
+        param_flat = param.float().reshape(-1)
+
+    # Stochastic rounding only applies when converting f32 -> bf16
+    do_stochastic_round = bf16_stochastic_round and param.dtype != torch.float32
+    seed = sr_seed if do_stochastic_round else 0
+
     BLOCK_SIZE = 1024
+    num_sms = _get_num_sms(grad.device)
     n_blocks = triton.cdiv(n_elements, BLOCK_SIZE)
-    grid = (n_blocks,)
 
-    compute_update_rms_kernel[grid](
-        grad_f32,
-        row_f32,
-        col_f32,
-        update_sq_sum,
-        n_rows,
-        n_cols,
-        row_sum,
-        BLOCK_SIZE,
-    )
+    if n_elements >= _PERSISTENT_THRESHOLD:
+        grid_size = min(num_sms, n_blocks)
+        _persistent_apply_2d_kernel[(grid_size,)](
+            param_flat,
+            grad_flat,
+            row_rsqrt,
+            col_rsqrt,
+            clip_scale,
+            n_elements,
+            n_cols,
+            lr,
+            weight_decay,
+            seed,
+            grid_size,
+            BLOCK_SIZE,
+            do_stochastic_round,
+        )
+    else:
+        _apply_update_2d_kernel[(n_blocks,)](
+            param_flat,
+            grad_flat,
+            row_rsqrt,
+            col_rsqrt,
+            clip_scale,
+            n_elements,
+            n_cols,
+            lr,
+            weight_decay,
+            seed,
+            BLOCK_SIZE,
+            do_stochastic_round,
+        )
 
-    # Compute clipping scale
-    update_rms = torch.sqrt(update_sq_sum / n_elements)
-    clip_scale = max(1.0, update_rms.item() / clip_threshold)
-
-    # Apply updates with clipping using Triton (element-wise, no materialization)
-    param_f32 = param.float() if param.dtype != torch.float32 else param
-
-    apply_update_with_clipping_kernel[grid](
-        param_f32,
-        grad_f32,
-        row_f32,
-        col_f32,
-        n_rows,
-        n_cols,
-        row_sum,
-        lr,
-        weight_decay,
-        clip_scale,
-        BLOCK_SIZE,
-    )
-
-    # Copy back to original dtype if needed
     if param.dtype != torch.float32:
-        param.copy_(param_f32)
+        param.copy_(param_flat.view(param.shape))
 
 
 def adafactor_step_1d_triton(
@@ -433,58 +386,58 @@ def adafactor_step_1d_triton(
     lr: float,
     weight_decay: float,
     clip_threshold: float,
+    bf16_stochastic_round: bool = False,
+    sr_seed: int = 0,
 ):
     """
-    Launch Triton kernels for 1D parameter update.
+    Speed-optimized 1D Adafactor step.
 
-    For simplicity, use PyTorch for state update and Triton for parameter update.
+    Uses PyTorch for state update and deterministic RMS computation,
+    then a single Triton kernel for the parameter update.
     """
     n_elements = grad.numel()
 
-    # Convert to float32 for computations
-    grad_f32 = grad.float() if grad.dtype != torch.float32 else grad
-    state_f32 = state.float() if state.dtype != torch.float32 else state
+    # Convert to f32
+    grad_f32 = grad.float().contiguous()
+    state_f32 = state.float()
 
-    # Use PyTorch for moment update
-    grad_sq = grad_f32**2 + eps1
+    # Update second moment state
+    grad_sq = grad_f32 * grad_f32 + eps1
     state_f32.lerp_(grad_sq, 1.0 - beta2t)
-
-    # Copy back to original dtype if needed
+    del grad_sq
     if state.dtype != torch.float32:
         state.copy_(state_f32)
 
-    # Compute RMS of updates using Triton
-    update_sq_sum = torch.zeros(1, device=grad.device, dtype=torch.float32)
+    # Deterministic RMS computation in PyTorch
+    total_sq = (grad_f32.square() / state_f32).sum()
+    rms_val = (total_sq / n_elements).sqrt()
+    clip_scale = torch.clamp(rms_val / clip_threshold, min=1.0)
+
+    # Param in f32
+    if param.dtype == torch.float32:
+        param_f32 = param.contiguous()
+    else:
+        param_f32 = param.float().contiguous()
+
+    # Stochastic rounding only applies when converting f32 -> bf16
+    do_stochastic_round = bf16_stochastic_round and param.dtype != torch.float32
+    seed = sr_seed if do_stochastic_round else 0
+
     BLOCK_SIZE = 1024
     n_blocks = triton.cdiv(n_elements, BLOCK_SIZE)
-    grid = (n_blocks,)
 
-    vector_compute_update_rms_kernel[grid](
-        grad_f32,
-        state_f32,
-        update_sq_sum,
-        n_elements,
-        BLOCK_SIZE,
-    )
-
-    # Compute clipping scale
-    update_rms = torch.sqrt(update_sq_sum / n_elements)
-    clip_scale = max(1.0, update_rms.item() / clip_threshold)
-
-    # Apply updates with clipping using Triton
-    param_f32 = param.float() if param.dtype != torch.float32 else param
-
-    vector_apply_update_kernel[grid](
+    _apply_update_1d_kernel[(n_blocks,)](
         param_f32,
         grad_f32,
         state_f32,
+        clip_scale,
         n_elements,
         lr,
         weight_decay,
-        clip_scale,
+        seed,
         BLOCK_SIZE,
+        do_stochastic_round,
     )
 
-    # Copy back to original dtype if needed
     if param.dtype != torch.float32:
         param.copy_(param_f32)

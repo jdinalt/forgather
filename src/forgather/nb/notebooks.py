@@ -15,7 +15,7 @@ from forgather.dynamic import (
 )
 from forgather.latent import CallableNode, Latent
 from forgather.meta_config import MetaConfig, preprocessor_globals
-from forgather.ml.utils import count_parameters
+from forgather.ml.utils import count_parameters, fmt_si
 from forgather.template_utils import (
     extends_graph_iter,
     get_extends_graph,
@@ -191,9 +191,13 @@ def render_referenced_source_list(config, title="", deep=False):
 
 
 def render_model(model: "nn.Module") -> str:
-    params = count_parameters(model)
+    stats = count_parameters(model)
     md = render_codeblock("yaml", repr(model))
-    md += f"\n- Total Parameters: {params['total']}\n- Trainable Parameters: {params['trainable']}"
+    md += f"\n- Total Parameters: {fmt_si(stats.total)}"
+    md += f"\n- Trainable Parameters: {fmt_si(stats.trainable)}"
+    md += f"\n- Embedding Parameters: {fmt_si(stats.embedding)}"
+    md += f"\n- Non-embedding Parameters: {fmt_si(stats.non_embedding)}"
+    md += f"\n- Tied Embeddings: {stats.tied_embeddings}"
     return md
 
 

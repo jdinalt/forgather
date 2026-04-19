@@ -59,14 +59,6 @@ def llama_std_depth(layer_id: int) -> float:
     return 0.02 / (2 * (layer_id + 1)) ** 0.5
 
 
-def init_embeddings(weight: Tensor) -> None:
-    """
-    Init embeddings
-    Note that this is not scaled by 1/sqrt(d_model)
-    """
-    nn.init.normal_(weight)
-
-
 def hf_llama_weight_init(
     model: nn.Module,
     std: float = 0.02,

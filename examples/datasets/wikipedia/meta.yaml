@@ -1,8 +1,7 @@
 -- extends "meta_defaults.yaml"
 
--- block configs
+[configs]
 name: "Wikimedia - Wikipedia"
 description: "Wikipedia"
 config_prefix: "configs"
-default_config: "20231101/en-abridged.yaml"
-<< endblock configs
+default_config: "20231101/en.yaml"

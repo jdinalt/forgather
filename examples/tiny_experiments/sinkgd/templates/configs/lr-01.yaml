@@ -1,0 +1,8 @@
+-- extends "exp.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Unified SinkGD LR=0.01"
+    -- set ns.config_description = "Learning rate 0.01"
+    -- set ns.log_name = log_name | default("lr-01")
+    -- set ns.lr = 0.01

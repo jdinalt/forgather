@@ -1,18 +1,25 @@
+import json
 import os
+import signal
 import subprocess
 
 from forgather.latent import Latent
 
 from .dynamic_args import get_dynamic_args
-from .utils import BaseCommand
+from .utils import BaseCommand, assert_project_class
 
 
 def train_cmd(args):
     """Run configuration with train script."""
-    import json
+    assert_project_class(args, "type.training_script")
 
     cmd = BaseCommand(args)
-    config, pp_config = cmd.get_config()
+    # Dynamic args may override values consumed by the meta block (e.g.
+    # nproc_per_node), so they must be supplied to the preprocessor before
+    # we materialize meta — otherwise we read template defaults and pass
+    # the wrong --nproc-per-node to torchrun.
+    dynamic_args = get_dynamic_args(args)
+    config, _ = cmd.get_config(**dynamic_args)
     config_meta = Latent.materialize(config.meta)
     nproc_per_node = config_meta["nproc_per_node"]
     train_script_path = os.path.join(
@@ -56,7 +63,6 @@ def train_cmd(args):
         cmd_args.extend(["-s", cmd.meta.system_path])
 
     # Add dynamic arguments as JSON if any exist
-    dynamic_args = get_dynamic_args(args)
     if dynamic_args:
         # Serialize dynamic args to JSON and pass to training script
         dynamic_args_json = json.dumps(dynamic_args)
@@ -75,4 +81,10 @@ def train_cmd(args):
 
     # Run the command
     if not args.dry_run:
-        subprocess.run(cmd_args, env=env)
+        proc = subprocess.Popen(cmd_args, env=env, preexec_fn=os.setsid)
+
+        def _sigint_handler(sig, frame):
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+
+        signal.signal(signal.SIGINT, _sigint_handler)
+        proc.wait()

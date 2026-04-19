@@ -1,10 +1,9 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Tiny Causal"
     -- set ns.config_description = "A tiny causal Forgather transformer."
     -- set ns.model_name = "tiny_causal"
     -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'causal_lm')
     -- set ns.model_project_config = "4M.yaml"
--- endblock config_metadata

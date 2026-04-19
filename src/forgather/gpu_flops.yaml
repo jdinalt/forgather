@@ -1,0 +1,94 @@
+# GPU peak BF16 FLOP/s (with FP32 accumulation) reference table.
+#
+# Used by get_peak_hardware_flops() to auto-detect the current GPU's peak
+# throughput for MFU computation. Values are dense BF16 Tensor Core TFLOPS
+# with FP32 accumulation -- the figure PyTorch uses in mixed-precision
+# (autocast BF16) training.
+#
+# See docs/trainers/training-performance-metrics.md for sources and notes.
+#
+# FORMAT
+# ------
+# Each entry has:
+#   match:  list of substrings that must ALL appear in the device name
+#           returned by torch.cuda.get_device_name()
+#   tflops: peak BF16 dense TFLOPS (FP32 accumulation)
+#
+# ORDER MATTERS: entries are checked top-to-bottom; the first match wins.
+# Put more specific patterns before less specific ones within each GPU
+# family (e.g. "RTX 4080 SUPER" before "RTX 4080").
+
+# ---- NVIDIA Data Center GPUs ------------------------------------------------
+
+# Blackwell
+- { match: [B200],            tflops: 2250   }
+- { match: [B100],            tflops: 1750   }
+
+# Hopper (H200 has the same compute die as H100 SXM; only memory differs)
+- { match: [H200],            tflops: 989    }
+- { match: [H100, PCIe],      tflops: 756    }
+- { match: [H100],            tflops: 989    }
+- { match: [H800, PCIe],      tflops: 756    }
+- { match: [H800],            tflops: 989    }
+- { match: [H20],             tflops: 148    }
+
+# Ampere data center
+- { match: [A800],            tflops: 312    }
+- { match: [A100],            tflops: 312    }
+
+# ---- NVIDIA Data Center / Professional (Ada Lovelace) ------------------------
+
+- { match: [L40S],            tflops: 362    }
+- { match: [L40],             tflops: 181    }
+- { match: [L4],              tflops: 121    }
+- { match: [RTX 6000 Ada],    tflops: 181    }
+
+# ---- NVIDIA Professional (Ampere) -------------------------------------------
+# Must precede A40 -- "A40" is a substring of "A4000"
+
+- { match: [RTX A6000],       tflops: 154.8  }
+- { match: [RTX A5000],       tflops: 111.1  }
+- { match: [RTX A4000],       tflops: 76.7   }
+
+# ---- NVIDIA Data Center (Ampere, continued) ----------------------------------
+# A40/A30 must precede A10
+
+- { match: [A40],             tflops: 149.7  }
+- { match: [A30],             tflops: 165    }
+- { match: [A10],             tflops: 31.2   }
+
+# ---- NVIDIA Professional (Blackwell) ----------------------------------------
+
+- { match: [RTX PRO 6000],    tflops: 251.9  }
+
+# ---- NVIDIA Consumer GPUs -- RTX 50-series (Blackwell) -----------------------
+
+- { match: [RTX 5090],        tflops: 209.5  }
+- { match: [RTX 5080],        tflops: 112.6  }
+- { match: [RTX 5070 Ti],     tflops: 87.8   }
+- { match: [RTX 5070],        tflops: 61.8   }
+- { match: [RTX 5060 Ti],     tflops: 47.4   }
+- { match: [RTX 5060],        tflops: 38.4   }
+
+# ---- NVIDIA Consumer GPUs -- RTX 40-series (Ada Lovelace) --------------------
+
+- { match: [RTX 4090],        tflops: 165.2  }
+- { match: [RTX 4080 SUPER],  tflops: 104.4  }
+- { match: [RTX 4080],        tflops: 97.0   }
+- { match: [RTX 4070 Ti SUPER], tflops: 79.8 }
+- { match: [RTX 4070 Ti],     tflops: 40.1   }
+- { match: [RTX 4070 SUPER],  tflops: 35.5   }
+- { match: [RTX 4070],        tflops: 29.1   }
+- { match: [RTX 4060 Ti],     tflops: 22.1   }
+- { match: [RTX 4060],        tflops: 15.1   }
+
+# ---- NVIDIA Consumer GPUs -- RTX 30-series (Ampere) --------------------------
+
+- { match: [RTX 3090 Ti],     tflops: 79.8   }
+- { match: [RTX 3090],        tflops: 71.2   }
+- { match: [RTX 3080 Ti],     tflops: 59.8   }
+- { match: [RTX 3080],        tflops: 44.7   }
+- { match: [RTX 3070 Ti],     tflops: 43.5   }
+- { match: [RTX 3070],        tflops: 40.6   }
+- { match: [RTX 3060 Ti],     tflops: 32.4   }
+- { match: [RTX 3060],        tflops: 25.5   }

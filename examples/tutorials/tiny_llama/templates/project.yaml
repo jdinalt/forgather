@@ -27,46 +27,29 @@ tokenizer_args: &tokenizer_args !dict
 
 ## Pull dataset loader from template definition
 [datasets_definition]
-    -- include 'datasets/llm_dataset_project.yaml'
+.define: &dataset_dict !call:forgather:from_project
+    project_dir: "{{ ns.dataset_proj }}"
+    config_template: "{{ ns.dataset_config }}"
+    targets: [ "train_dataset", "eval_dataset" ] 
+    preprocess_args: *tokenizer_args
+    tokenizer: *tokenizer
+
+train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
+eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 
 ## Import a model from another Forgather project
 [construct_new_model]
-    -- include "models/causal_lm/import_model_project.yaml"
+.define: &model_dict !call:forgather:from_project
+    project_dir: "{{ ns.model_project_dir }}"
+    config_template: "{{ ns.model_project_config }}"
+    targets: [ "pretrained_tokenizer", "model" ] 
+    pp_kwargs:
+        output_dir: "{{ ns.output_dir }}"
+    pp_debug: {{ ns.debug_model_project | default(False) }}
+    model_constructor_args: *model_constructor_args
 
-## This includes an inline template, defined below.
-## The need to do this relates to Jinja2 disallowing a template from
-## directly having more than one parent template. We can get around 
-## this limitation by extending in 'project.model_config' and including
-## the resulting template.
-[trainer_definition]
-    -- include 'project.trainer_config'
-
-## Override loggers
-[trainer_callbacks]
-    -- include 'project.logger_config'
-
-## Explicitly set the optimizer.
-[optimizer]
-optimizer: &optimizer !partial:torch:optim.AdamW
-    lr: 1.0e-3
-
-## Override the default LR Scheduler
-[lr_scheduler]
-# https://arxiv.org/html/2503.02844v1
-lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
-    warmup_steps: 500
-    cooldown_steps: 50000
-    constant_lr: 1.0e-6
-
-[datacollator]
-    == super()
-    # Tiny Llama
-    ## Limit maximum sequence length 512 tokens, at the data-collator level.
-    truncation: True
-    max_length: 512
-
-#-------------------- project.trainer_config --------------------
--- extends 'trainers/trainer.yaml'
+tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
+model: &model !call:getitem [ *model_dict, 'model' ]
 
 [trainer_args]
     == super()
@@ -84,24 +67,59 @@ lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim.infinite_lr_scheduler:Inf
     num_train_epochs: 1
     dataloader_num_workers: 1
 
+## This includes an inline template, defined below.
+## The need to do this relates to Jinja2 disallowing a template from
+## directly having more than one parent template. We can get around 
+## this limitation by extending in 'project.model_config' and including
+## the resulting template.
+[trainer_callbacks]
+    -- include 'project.logger_config'
+
+## Explicitly set the optimizer.
+[optimizer]
+optimizer: &optimizer !partial:torch:optim.AdamW
+    lr: 1.0e-3
+
+## Override the default LR Scheduler (None) with cosine-decay
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !lambda:forgather.ml.optim:CosineLRScheduler@lr_scheduler
+    warmup_steps: 500
+    total_steps: 65000 # This is roughly one epoch on the full Tiny Stories dataset
+
+[datacollator]
+    == super()
+    # Tiny Llama
+    ## Limit maximum sequence length 512 tokens, at the data-collator level.
+    truncation: True
+    max_length: 512
+
 #-------------------- project.logger_config --------------------
 -- extends 'callbacks/loggers.yaml'
 ## Add experiment loggers to the callbacks list.
 ## The parent creates a Tensor Board SummaryWriter, which we can use.
 
-[callback_list]
-    -- include 'prompts/tiny_stories.yaml'
-
+[callback_dependencies]
     == super()
-    ## Flex attention does not work with the TextgenCallback at present
--- if attn_implementation | default("") != "flex_attention"
+
+    [generation_config]
+generation_config: &generation_config !dict:@generation_config
+    do_sample: True
+    top_k: 20
+    temperature: 0.7
+    repetition_penalty: 1.15
+
+    [text_gen_callback_args]
+text_gen_callback_args: &text_gen_callback_args
+    summary_writer: *summary_writer
+    prompts: {{ abspath(joinpath(ns.forgather_dir, "prompts/tiny_stories.yaml")) }}
+    generation_config: *generation_config
+    max_new_tokens: 40
+    generation_steps: 2000
+
+[callback_list]
+    == super()
     ## This adds a text-generationn sample every 'generation_steps'
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
-        summary_writer: *summary_writer
-        prompts: *testprompts
-        generation_config: *generation_config
-        max_new_tokens: 40
-        generation_steps: 1000
--- endif
+        <<: *text_gen_callback_args
     # Allow remote control of the training process
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback

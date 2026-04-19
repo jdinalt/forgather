@@ -1,0 +1,29 @@
+test_id: tiny_llama_inference
+project_dir: examples/tutorials/tiny_llama
+config: train_tiny_llama.yaml
+dynamic_args:
+  max_steps: 500
+  save_strategy: "steps"
+loss:
+  final_max: 5.0
+  no_nan: true
+stderr:
+  forbidden_patterns:
+    - "RuntimeError"
+    - "CUDA error"
+    - "Traceback"
+  warn_patterns: []
+expected_files:
+  - trainer_logs.json
+min_steps_logged: 5
+inference:
+  prompt: "Once upon a time"
+  max_tokens: 50
+  temperature: 0.7
+  perplexity_max: 500.0
+  server_timeout: 60
+timeout: 900
+gpu_requirement: 1
+markers:
+  - integration
+  - slow

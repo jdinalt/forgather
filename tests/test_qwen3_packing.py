@@ -6,14 +6,15 @@ packed sequences to work with Qwen3 models that lack BOS tokens.
 """
 
 import os
+
 import torch
 from transformers import AutoTokenizer
 
-from forgather.ml.datasets.block_tokenizer import block_tokenize_fn
 from forgather.ml.data_collator import (
     DataCollatorForCausalLM,
     get_pos_ids_for_packed_sequence,
 )
+from forgather.ml.datasets.block_tokenizer import block_tokenize_fn
 
 
 def test_qwen3_tokenizer_properties():

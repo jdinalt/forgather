@@ -4,13 +4,6 @@
 [config_metadata]
     == super()
     -- set ns.config_class = ns.config_class + ".causal_lm"
-    ## This needs to be set to True for a custom model.
-    -- set ns.trust_remote_code = False
-    -- set ns.load_empty_model = False
-
-[variable_listing]
-    == super()
-# ns.trust_remote_code: {{ ns.trust_remote_code }}
 
 [datasets_preprocessor_args]
 tokenizer_args: &tokenizer_args !dict
@@ -44,8 +37,19 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
     tokenizer: *tokenizer
     return_tensors: pt
 
+[trainer_args]
+    == super()
+    save_strategy: "{{ save_strategy | default('no') }}"
+    max_steps: {{ max_steps | default(-1) }}
+    output_dir: "{{ ns.output_dir }}"
+    logging_dir: "{{ ns.logging_dir }}"
+
+[trainer_dependencies]
+    [fused_loss_factory]
+.define: &fused_loss_factory null
+
 [trainer_definition]
-    ## Set defulat trainer
+    ## Set default trainer
     -- include 'trainers/trainer.yaml'
 
 [dynamic_args]
@@ -55,3 +59,7 @@ data_collator: &data_collator !singleton:forgather.ml.data_collator:DataCollator
         type: "str"
         choices: [ "eager", "sdpa", "flash_attention_2", "flex_attention" ]
         help: "Attention implementation"
+    verbose_info:
+        names: "--verbose-info"
+        action: "store_true"
+        help: "Display verbose training info on startup"

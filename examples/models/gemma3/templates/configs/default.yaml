@@ -1,0 +1,139 @@
+-- extends "projects/causal_lm_def.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Default Gemma-3"
+    -- set ns.config_description = "Google Gemma-3 270M"
+    -- set ns.model_name = model_name | default("gemma3_270m")
+
+[model_definition]
+    -- include "config.default.model"
+
+#------------- config.default.model --------------
+-- extends "models/transformers/dynamic_llama.yaml"
+
+[model_meta_config]
+    == super()
+    -- set ns.model_name = ns.config_name
+    -- set ns.model_description = ns.config_description
+    -- set ns.model_short_name = "gemma3"
+
+[model_tokenizer]
+tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer
+    arg0: {{ tokenizer_id_or_path | toyaml('google/gemma-3-270m') }}
+    model_max_length: {{ max_model_length | toyaml(32768) }}
+    trust_remote_code: True
+
+[layer_norm_factory]
+.define: &layer_norm_factory !partial:.gemma_rms_norm:GemmaRMSNorm@layer_norm_factory
+    normalized_shape: !var "hidden_size"
+    eps: !var "rms_norm_eps"
+
+[qk_norm_factory]
+.define: &qk_norm_factory !partial:.gemma_rms_norm:GemmaRMSNorm@qk_norm_factory
+    eps: !var "rms_norm_eps"
+
+[feedforward_factory]
+.define: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
+    d_model: !var "hidden_size"
+    d_feedforward: !var "intermediate_size"
+    activation_factory: !partial:torch.nn:GELU
+        approximate: 'tanh'
+    use_triton: False
+    dropout: !var "activation_dropout"
+
+[rel_positional_encoder]
+# Gemma-3 uses two different RoPE frequency bases, one for full-attention
+# layers and one for sliding-attention layers. GemmaDualRotaryEmbedding
+# computes both and returns a dict that GemmaDecoderLayer unpacks.
+.define: &rotary_emb !call:.gemma_dual_rope:GemmaDualRotaryEmbedding@rotary_emb
+    hidden_size: !var "hidden_size"
+    num_attention_heads: !var "num_attention_heads"
+    head_dim: !var "head_dim"
+    max_position_embeddings: !var "max_position_embeddings"
+    rope_parameters: !var "rope_parameters"
+
+# Stateless rotation function -- injected into attention as pos_encoder
+.define: &apply_rotary_pos_emb !partial:.rotary_embeddings:apply_rotary_pos_emb
+
+[attention_factory]
+.define: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
+    d_model: !var "hidden_size"
+    num_heads: !var "num_attention_heads"
+    num_kv_heads: !var "num_key_value_heads"
+    head_dim: !var "head_dim"
+    query_pre_attn_scalar: !var "query_pre_attn_scalar"
+    dropout: !var "attention_dropout"
+    pos_encoder: *apply_rotary_pos_emb
+    attn_implementation: !var "attn_implementation"
+    attn_functions: *attn_functions
+    qk_norm_factory: *qk_norm_factory
+    # Note: sliding_window is intentionally omitted here; GemmaDecoderLayer
+    # passes a per-layer value at construction time based on layer_types.
+    config: !var "config"
+
+[layer_factory]
+.define: &layer_factory !partial:.gemma_layer:GemmaDecoderLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+    config: !var "config"
+    dropout: !var "layer_dropout"
+    residual_dropout: !var "residual_dropout"
+
+[attn_mask_fn]
+# Build both full-attention and sliding-attention masks; GemmaDecoderLayer
+# selects the appropriate one per layer.
+.define: &attn_mask_fn !partial:.gemma_mask:gemma_mask_fn@attn_mask_fn
+
+[output_decoder]
+# Gemma uses SoftcappedLinear for its lm_head. With softcap=None (the default
+# for Gemma-3 270M), forward() is numerically identical to nn.Linear. Larger
+# Gemma variants with a non-null final_logit_softcapping get softcapping applied
+# here for inference, and the fused-loss path auto-discovers the same value off
+# this module via LinearCrossEntropyLoss's output_embeddings argument.
+.define: &output_decoder !partial:.softcapped_linear:SoftcappedLinear@output_decoder
+    in_features: !var "hidden_size"
+    out_features: !var "vocab_size"
+    bias: False
+    softcap: !var "final_logit_softcapping"
+
+[embedding]
+.define: &embedding !call:torch.nn.Embedding
+    num_embeddings: !var "vocab_size"
+    embedding_dim: !var "hidden_size"
+    padding_idx: !var "pad_token_id"
+
+[input_encoder]
+.define: &input_encoder !call:.input_encoder:InputEncoder@input_encoder
+    d_model: !var "hidden_size"
+    embedding: *embedding
+    dropout: !var "embedding_dropout"
+    positional_encoder: *absolute_pe
+    scale_sqrt_d_model: True
+
+[model_config]
+    == super()
+    # **Gemma-3 270M defaults**
+    hidden_size: {{ hidden_size | toyaml(640) }}
+    num_attention_heads: {{ num_attention_heads | toyaml(4) }}
+    num_key_value_heads: {{ num_key_value_heads | toyaml(1) }}
+    num_hidden_layers: {{ num_hidden_layers | toyaml(18) }}
+    intermediate_size: {{ intermediate_size | toyaml(2048) }}
+    head_dim: {{ head_dim | toyaml(256) }}
+    query_pre_attn_scalar: {{ query_pre_attn_scalar | toyaml(256) }}
+    rope_parameters: {{ rope_parameters | toyaml({
+        'full_attention': {'rope_type': 'default', 'rope_theta': 1000000.0},
+        'sliding_attention': {'rope_type': 'default', 'rope_theta': 10000.0},
+    }) }}
+    rms_norm_eps: {{ rms_norm_eps | toyaml(1.0e-06) }}
+    tie_word_embeddings: {{ tie_word_embeddings | toyaml(True) }}
+    layer_types: {{ layer_types | toyaml([]) }}
+    sliding_window: {{ sliding_window | toyaml(512) }}
+    hidden_activation: {{ hidden_activation | toyaml('gelu_pytorch_tanh') }}
+    final_logit_softcapping: {{ final_logit_softcapping | toyaml(None) }}
+
+[model_code_generator]
+    == super()
+    no_split_modules: ["GemmaDecoderLayer"]
+    tied_weights_keys: {causal_lm.input_encoder.embedding.weight: "lm_head.weight"}

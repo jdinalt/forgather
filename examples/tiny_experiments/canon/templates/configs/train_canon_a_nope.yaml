@@ -1,0 +1,8 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Train Canon-A NoPE"
+    -- set ns.config_description = "Train Canon 4M with only A (pre-attention convolution), no RoPE"
+    -- set ns.model_name = "canon_a_nope_4m"
+    -- set ns.model_project_config = "canon_a_nope.yaml"

@@ -1,0 +1,10 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Deepone"
+    -- set ns.config_description = "Train Deepone model"
+    -- set ns.model_name = model_name | default("deepone")
+
+    -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "deepone"))))
+    -- set ns.model_project_config = model_config | default("medium.yaml")

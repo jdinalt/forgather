@@ -54,40 +54,6 @@ trainer = PipelineTrainer(
 trainer.train()
 ```
 
-## Automatic Splitting (Legacy)
-
-For models that work with torch.export tracing:
-
-```python
-from forgather.ml.trainer.pipeline import (
-    PipelineTrainer,
-    PipelineTrainingArguments,
-    create_automatic_splitter,
-)
-
-# Create splitter with split_spec
-split_spec = {
-    "layer_stack.layers.4": "beginning",
-    "layer_stack.layers.8": "beginning",
-}
-
-splitter = create_automatic_splitter(split_spec=split_spec)
-
-args = PipelineTrainingArguments(
-    output_dir="./output",
-    pipeline_chunks=4,
-    stages_per_rank=1,
-    # ...
-)
-
-trainer = PipelineTrainer(
-    args=args,
-    model_splitter=splitter,
-    model_init=model_init_fn,
-    # ...
-)
-```
-
 ## Custom Splitters
 
 You can implement custom splitters by creating a function matching the ModelSplitter signature:
@@ -106,25 +72,6 @@ trainer = PipelineTrainer(
     model_splitter=my_custom_splitter,
     # ...
 )
-```
-
-## Key Differences from Previous Version
-
-### Before (split_spec in args):
-```python
-args = PipelineTrainingArguments(
-    split_spec={"layer_stack.layers.4": "beginning"},  # ❌ No longer supported
-    unified_model=True,  # ❌ Removed
-    # ...
-)
-trainer = PipelineTrainer(args=args, ...)
-```
-
-### After (splitter injection):
-```python
-splitter = create_automatic_splitter(split_spec={...})  # ✓ Explicit factory
-args = PipelineTrainingArguments(...)  # ✓ Only basic config
-trainer = PipelineTrainer(args=args, model_splitter=splitter, ...)  # ✓ Injected
 ```
 
 ## Benefits

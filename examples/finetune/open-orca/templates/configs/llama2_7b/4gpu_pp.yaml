@@ -1,0 +1,47 @@
+-- extends 'open_orca.yaml'
+## -----------------------------------------------------------------------------
+## 4-GPU Pipeline Parallel, Llama2 7B.
+##
+## The practical way to train a 7B model on the OpenOrca dataset on the
+## reference 4x 4090 hardware. Uses the ZBV zero-bubble schedule for
+## throughput. Per-device batch size and seq_len are tuned against the
+## 24 GB memory envelope -- see the Samantha project README for a longer
+## discussion of why these specific combinations sit right at the edge.
+## -----------------------------------------------------------------------------
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Open-Orca Llama2 7B PP"
+    -- set ns.config_description = "Pipeline Parallel Llama2 7B, 4 GPU, packed OpenOrca"
+    -- set ns.log_name = "4gpu_pp"
+    -- set ns.nproc_per_node = nproc_per_node | default(4)
+
+    ## Batching
+    -- set ns.seq_len = seq_len | default(2048)
+    -- set ns.per_device_train_batch_size = batch_size | default(2)
+
+    ## Token budget. At the measured ~8900 tok/s for 7B 4gpu_pp on the
+    ## reference hardware, 500M tokens ~ 15.5h wall-clock, leaving
+    ## headroom under a 24h budget for warmup/eval overhead.
+    -- set ns.total_tokens = total_tokens | default(500)
+    -- set ns.warmup_tokens = warmup_tokens | default(20)
+    -- set ns.annealing_tokens = annealing_tokens | default(100)
+
+    ## Trainer selection
+    -- set ns.trainer_type = trainer_type | default("pipeline")
+
+    ## Pipeline schedule
+    -- set ns.pipe_schedule_factory = pipeline_schedule | default("ScheduleZBVZeroBubble")
+
+    ## Compile settings. ZBV is incompatible with torch.compile; leave off.
+    -- set ns.torch_compile = compile | default(False)
+    -- set ns.torch_compile_mode = torch_compile_mode | default("max-autotune-no-cudagraphs")
+
+[trainer_args]
+    == super()
+    ## Pipeline trainer supports fuse_optim_with_backward (unlike DDP).
+    ## Combined with gradient_checkpointing on a memory-tight 7B config,
+    ## this avoids materialising a full gradient copy before the
+    ## optimizer step.
+    fuse_optim_with_backward: {{ fuse_optim_with_backward | default(True) }}
+    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}

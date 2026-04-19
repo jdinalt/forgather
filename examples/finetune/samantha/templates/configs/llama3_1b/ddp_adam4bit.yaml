@@ -1,0 +1,34 @@
+-- extends 'samantha.yaml'
+## -----------------------------------------------------------------------------
+## DDP + torchao 4-bit AdamW
+##
+## Swaps Adafactor for torchao's AdamW4bit. 4-bit first and second moments
+## (~1 byte/param total) buy back first-moment momentum at a small memory
+## cost, while stochastic rounding keeps pure-bf16 training stable.
+##
+## See the "Measured Throughput" section of the project README for a
+## comparison against the Adafactor-based DDP baseline.
+## -----------------------------------------------------------------------------
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DDP Llama3 1B + AdamW4bit"
+    -- set ns.config_description = "DDP Llama3 1B with torchao 4-bit AdamW + stochastic rounding"
+    -- set ns.log_name = "ddp_adam4bit"
+
+    ## Batching
+    -- set ns.seq_len = seq_len | default(4096)
+    -- set ns.per_device_train_batch_size = batch_size | default(1)
+
+    ## Trainer selection
+    -- set ns.trainer_type = trainer_type | default("ddp")
+
+    ## Compile settings
+    -- set ns.torch_compile = compile | default(False)
+
+[optimizer]
+optimizer: &optimizer !partial:torchao.optim:AdamW4bit
+    lr: {{ ns.global_lr | toyaml }}
+    ## Stochastic rounding is required for pure-bf16 training stability;
+    ## without it small updates are lost to round-to-nearest truncation.
+    bf16_stochastic_round: True

@@ -1,9 +1,10 @@
-import datetime
 import getpass
+import logging
 import os
 import re
-import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
 
 import yaml
 from jinja2 import FileSystemLoader, StrictUndefined, Undefined
@@ -19,9 +20,107 @@ from platformdirs import (
 
 from .utils import format_line_numbers
 
+logger = logging.getLogger(__name__)
+
 
 def forgather_config_dir():
     return user_config_dir("forgather", getpass.getuser())
+
+
+def forgather_home_dir():
+    return str(Path.home() / ".forgather")
+
+
+_HARDWARE_YAML = "hardware.yaml"
+_GPU_FLOPS_YAML = Path(__file__).with_name("gpu_flops.yaml")
+
+# Loaded lazily by _get_gpu_flops_table().
+_gpu_flops_table: list[tuple[list[str], float]] | None = None
+
+
+def _get_gpu_flops_table() -> list[tuple[list[str], float]]:
+    """Load and cache the GPU FLOPS reference table from gpu_flops.yaml."""
+    global _gpu_flops_table
+    if _gpu_flops_table is None:
+        entries = yaml.safe_load(_GPU_FLOPS_YAML.read_text())
+        _gpu_flops_table = [
+            (entry["match"], entry["tflops"] * 1e12) for entry in entries
+        ]
+    return _gpu_flops_table
+
+
+def _match_gpu_flops(device_name: str) -> float | None:
+    """Match a CUDA device name against the reference table."""
+    for patterns, flops in _get_gpu_flops_table():
+        if all(p in device_name for p in patterns):
+            return flops
+    return None
+
+
+def _detect_gpu_flops() -> tuple[str | None, float | None]:
+    """Detect the current GPU and return (device_name, peak_flops)."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None, None
+        device_name = torch.cuda.get_device_name(0)
+        flops = _match_gpu_flops(device_name)
+        return device_name, flops
+    except (ImportError, RuntimeError):
+        return None, None
+
+
+def get_peak_hardware_flops() -> float | None:
+    """
+    Return the peak BF16 FLOP/s (FP32 accumulation) for a single GPU.
+
+    Resolution order:
+
+    1. Read ``~/.forgather/hardware.yaml`` -- if it contains a
+       ``peak_hardware_flops`` value, return it immediately.
+    2. Detect the current GPU via ``torch.cuda.get_device_name(0)`` and
+       look it up in the built-in reference table.
+    3. If found, write the result to ``~/.forgather/hardware.yaml`` so
+       subsequent calls (and other sessions) skip detection.
+
+    Returns ``None`` when no GPU is available or the GPU is not in the
+    reference table. In that case the user can create
+    ``~/.forgather/hardware.yaml`` manually -- see
+    ``docs/trainers/training-performance-metrics.md`` for values.
+    """
+    home_dir = Path(forgather_home_dir())
+    hardware_file = home_dir / _HARDWARE_YAML
+
+    # 1. Check for a cached / manually specified value.
+    if hardware_file.is_file():
+        try:
+            data = yaml.safe_load(hardware_file.read_text())
+            if isinstance(data, dict) and "peak_hardware_flops" in data:
+                value = data["peak_hardware_flops"]
+                if value is not None:
+                    return float(value)
+        except (yaml.YAMLError, ValueError, OSError):
+            pass
+
+    # 2. Auto-detect from current GPU.
+    device_name, flops = _detect_gpu_flops()
+
+    # 3. Cache the result for future sessions.
+    if flops is not None:
+        try:
+            home_dir.mkdir(parents=True, exist_ok=True)
+            hardware_file.write_text(
+                f"# Forgather hardware settings\n"
+                f"# Auto-detected from: {device_name}\n"
+                f"# Edit this value to override, or delete the file to re-detect.\n"
+                f"# See docs/trainers/training-performance-metrics.md for reference values.\n"
+                f"peak_hardware_flops: {flops}\n"
+            )
+        except OSError as exc:
+            logger.debug("Could not write %s: %s", hardware_file, exc)
+
+    return flops
 
 
 def split_templates(template, name=None):
@@ -170,9 +269,9 @@ class PPLoader(FileSystemLoader):
         super().__init__(*args, **kwargs)
         self.templates = {}
 
-    def get_source(self, environment, template_name):
-        if (template_info := self.templates.get(template_name)) is None:
-            source, filename, uptodate = super().get_source(environment, template_name)
+    def get_source(self, environment, template):
+        if (template_info := self.templates.get(template)) is None:
+            source, filename, uptodate = super().get_source(environment, template)
             main_template = next(iter := split_templates(source))
             for sub in iter:
                 self.templates[sub[0]] = (sub[1], filename, uptodate)
@@ -230,7 +329,8 @@ class LineStatementProcessor(Extension):
     def preprocess(self, source, name, filename=None):
         source = preprocess(source)
         if LineStatementProcessor.pp_verbose:
-            print(f"{' '+name+' ':-^80}")
+            label = name or ""
+            print(f"{' '+label+' ':-^80}")
             print(format_line_numbers(source))
         return source
 
@@ -312,22 +412,30 @@ def toyaml(obj, default_value=Undefined):
     return yaml_str
 
 
+def utcnow():
+    return datetime.now(timezone.utc)
+
+
+def raise_helper(msg: str):
+    raise ValueError(msg)
+
+
+def assert_helper(condition: bool, msg: str):
+    assert condition, msg
+
+
 class PPEnvironment(SandboxedEnvironment):
     TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
     FILE_TIME_FORMAT = "%Y-%m-%dT%H-%M-%S"
 
     default_globals = {
-        "isotime": lambda: datetime.datetime.now().isoformat(timespec="seconds"),
-        "utcisotime": lambda: datetime.datetime.utcnow().isoformat(timespec="seconds"),
+        "isotime": lambda: datetime.now().isoformat(timespec="seconds"),
+        "utcisotime": lambda: utcnow().isoformat(timespec="seconds"),
         # An ISO 8601-like time, suitable for use in file names
-        "filetime": lambda: datetime.datetime.now().strftime(
-            PPEnvironment.FILE_TIME_FORMAT
-        ),
-        "utcfiletime": lambda: datetime.datetime.utcnow().strftime(
-            PPEnvironment.FILE_TIME_FORMAT
-        ),
-        "now": datetime.datetime.now,
-        "utcnow": datetime.datetime.utcnow,
+        "filetime": lambda: datetime.now().strftime(PPEnvironment.FILE_TIME_FORMAT),
+        "utcfiletime": lambda: utcnow().strftime(PPEnvironment.FILE_TIME_FORMAT),
+        "now": datetime.now,
+        "utcnow": utcnow,
         "joinpath": _os_path_join,
         "normpath": _os_path_normpath,
         "abspath": os.path.abspath,
@@ -335,12 +443,17 @@ class PPEnvironment(SandboxedEnvironment):
         "dirname": os.path.dirname,
         "basename": os.path.basename,
         "splitext": os.path.splitext,
+        "getenv": os.environ.get,
+        "raise": raise_helper,
+        "assert": assert_helper,
         "repr": repr,
         # Given a module file path, return the module name
         "modname_from_path": lambda path: os.path.splitext(os.path.basename(path))[0],
         "user_home_dir": lambda: os.path.expanduser("~"),
         "getcwd": os.getcwd,
         "forgather_config_dir": forgather_config_dir,
+        "forgather_home_dir": forgather_home_dir,
+        "get_peak_hardware_flops": get_peak_hardware_flops,
         # https://pypi.org/project/platformdirs/
         "user_data_dir": user_data_dir,
         "user_cache_dir": user_cache_dir,

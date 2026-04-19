@@ -9,15 +9,32 @@ from contextlib import contextmanager
 from types import NoneType
 from typing import Any, Callable, List, Optional
 
-from forgather.config import ConfigEnvironment
 from forgather.dynamic import walk_package_modules
 from forgather.latent import Undefined
-from forgather.meta_config import MetaConfig
+from forgather.ml.distributed import (
+    get_barrier_fn,
+    get_global_process_group,
+    get_local_process_group,
+    get_rank,
+    get_world_size,
+)
+
+# Import torch.distributed lazily to avoid issues when torch isn't installed
+_dist = None
+
+
+def _get_dist():
+    """Lazy import of torch.distributed."""
+    global _dist
+    if _dist is None:
+        from torch import distributed as _dist
+    return _dist
+
+
 from forgather.project import Project
 
-from .distributed import main_process_first
-
 logger = logging.getLogger(__name__)
+# logger.setLevel(logging.DEBUG)
 
 
 @contextmanager
@@ -39,6 +56,11 @@ def file_lock_build(
     The lock file is created alongside the target with .lock suffix.
     If the target already exists when entering the context and force_lock is False,
     construction is skipped.
+
+    IMPORTANT: Secondary processes must wait for the lock to be released before
+    proceeding, even if the target appears to exist. The lock release is the signal
+    that the build is complete, not the existence of the target (which may be a
+    directory that exists but contains incomplete files).
     """
     target_path = os.path.abspath(target)
     lock_path = f"{target_path}.lock"
@@ -93,10 +115,10 @@ def file_lock_build(
                         pass
                     lock_fd = None
 
-                # Check if target was created while waiting
-                if os.path.exists(target_path):
-                    yield False  # Construction not needed
-                    return
+                # DO NOT exit early just because the target exists!
+                # The target might be a directory that exists but contains incomplete files.
+                # We must wait for the lock to be released, which signals the build is complete.
+                # Only then can we safely check if construction is needed.
 
                 # Wait a bit before retrying
                 time.sleep(0.1)
@@ -121,6 +143,179 @@ def file_lock_build(
                 os.unlink(lock_path)
         except:
             pass
+
+
+@contextmanager
+def build_sync(target: str | os.PathLike, local: bool = False, timeout: float = 300.0):
+    """
+    Unified synchronization context manager for build operations.
+
+    This context manager ensures only one process performs a build operation,
+    using the most appropriate synchronization mechanism available:
+
+    1. When torch.distributed is initialized: Uses barrier-based synchronization.
+       Rank 0 of the process group builds while others wait at a barrier.
+       After rank 0 completes, all processes proceed together.
+
+    2. When torch.distributed is not initialized: Falls back to file-based locking.
+       The first process to acquire the lock builds, others wait for the lock
+       to be released before proceeding.
+
+    Args:
+        target: Path to the target being built (used for file locking fallback)
+        local: If False (default), synchronize globally across all ranks.
+               If True, synchronize only within the local node.
+        timeout: Maximum time to wait for synchronization (seconds), used for
+                 file locking fallback.
+
+    Yields:
+        True if this process should perform the build, False otherwise.
+
+    Example:
+        with build_sync("output_models/my_model") as should_build:
+            if should_build:
+                # Only one process executes this
+                generate_model_code()
+        # All processes continue here after build is complete
+        model = load_model()
+    """
+    dist = _get_dist()
+
+    # Use distributed barriers when available
+    if dist.is_available() and dist.is_initialized() and get_world_size() > 1:
+        logger.debug(
+            f"[Rank {get_rank()}] build_sync: distributed available and initialized, "
+            f"world_size={get_world_size()}, local={local}"
+        )
+        group = get_local_process_group() if local else get_global_process_group()
+
+        if group is not None:
+            logger.debug(
+                f"[Rank {get_rank()}] build_sync: using distributed barriers "
+                f"(group={'local' if local else 'global'})"
+            )
+            group_rank = dist.get_group_rank(group, get_rank())
+            barrier = get_barrier_fn(group)
+
+            if group_rank == 0:
+                # Main process: build first, then signal completion
+                logger.debug(
+                    f"[Rank {get_rank()}] build_sync: builder (rank 0 in group)"
+                )
+                yield True
+                barrier()
+            else:
+                # Other processes: wait for main process to complete
+                logger.debug(
+                    f"[Rank {get_rank()}] build_sync: waiter (rank {group_rank} in group)"
+                )
+                barrier()
+                yield False
+            # Final barrier ensures all processes are synchronized before continuing
+            barrier()
+            logger.debug(f"[Rank {get_rank()}] build_sync: exiting after barriers")
+            return
+        else:
+            logger.warning(
+                f"[Rank {get_rank()}] build_sync: distributed initialized but "
+                f"{'local' if local else 'global'} process group is None, "
+                f"falling back to file locking"
+            )
+
+    # Fallback: file locking (distributed not available, not initialized, or single process)
+    #
+    # Strategy: The first process to acquire the lock becomes the builder (yields True).
+    # Other processes wait for the lock. When they acquire it, they check if the target
+    # was modified while they were waiting. If so, someone else built it (yield False).
+    # If not, they become the builder (yield True).
+    #
+    # This works for both new builds (target doesn't exist) and rebuilds (target exists
+    # but needs updating). The target's mtime after building will be newer than when
+    # waiting processes started.
+    logger.debug(
+        f"[Rank {get_rank()}] build_sync: falling back to file locking "
+        f"(dist.is_available={dist.is_available()}, "
+        f"dist.is_initialized={dist.is_initialized()}, "
+        f"world_size={get_world_size()})"
+    )
+    target_path = os.path.abspath(target)
+    lock_path = f"{target_path}.build_lock"
+
+    # Ensure directory exists
+    lock_dir = os.path.dirname(lock_path)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
+
+    # Record target state before trying to acquire lock
+    pre_lock_exists = os.path.exists(target_path)
+    pre_lock_mtime = os.path.getmtime(target_path) if pre_lock_exists else None
+
+    lock_fd = None
+    start_time = time.time()
+
+    try:
+        # Acquire lock (blocking with timeout)
+        while time.time() - start_time < timeout:
+            try:
+                lock_fd = os.open(
+                    lock_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o644
+                )
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except (OSError, IOError):
+                if lock_fd is not None:
+                    try:
+                        os.close(lock_fd)
+                    except OSError:
+                        pass
+                    lock_fd = None
+                time.sleep(0.05)
+        else:
+            raise TimeoutError(f"Failed to acquire build lock for {target_path}")
+
+        # Lock acquired. Check if target was modified while we were waiting.
+        post_lock_exists = os.path.exists(target_path)
+        post_lock_mtime = os.path.getmtime(target_path) if post_lock_exists else None
+
+        logger.debug(
+            f"[Rank {get_rank()}] build_sync: acquired lock, "
+            f"pre_exists={pre_lock_exists}, post_exists={post_lock_exists}, "
+            f"pre_mtime={pre_lock_mtime}, post_mtime={post_lock_mtime}"
+        )
+
+        # Determine if another process built the target while we waited:
+        # - Target was created (didn't exist before, exists now)
+        # - Target was modified (mtime changed)
+        target_was_built = False
+        if not pre_lock_exists and post_lock_exists:
+            target_was_built = True
+        elif pre_lock_exists and post_lock_exists and post_lock_mtime != pre_lock_mtime:
+            target_was_built = True
+
+        if target_was_built:
+            # Another process built the target while we waited
+            logger.debug(
+                f"[Rank {get_rank()}] build_sync: target was built by another process"
+            )
+            yield False
+        else:
+            # We're the builder
+            logger.debug(f"[Rank {get_rank()}] build_sync: we are the builder")
+            yield True
+
+    finally:
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+            except OSError:
+                pass
+
+            # Clean up lock file (best effort)
+            try:
+                os.unlink(lock_path)
+            except OSError:
+                pass
 
 
 def register_for_auto_class(object, /, *args, **kwargs):
@@ -162,68 +357,92 @@ def add_special_tokens(tokenizer, token_map):
     return tokenizer
 
 
-@main_process_first()
+def _check_needs_build(
+    target: str | os.PathLike, prerequisites: List[str | os.PathLike]
+) -> bool:
+    """Check if target needs to be built based on existence and prerequisite modification times."""
+    if not os.path.exists(target):
+        return True
+    target_mtime = os.path.getmtime(target)
+    for dependency in prerequisites:
+        if os.path.exists(dependency):
+            if target_mtime < os.path.getmtime(dependency):
+                return True
+    return False
+
+
 def build_rule(
     target: str | os.PathLike,
-    recipe: Callable,
+    recipe: List[Callable] | Callable,
     loader: Callable,
     prerequisites: List[str | os.PathLike] = [],
 ) -> Any:
     """
-    Build a target using file-locking synchronization instead of torch.distributed barriers.
+    Build a target with automatic multiprocess synchronization.
 
-    This function ensures that only one process per node constructs the target,
-    supporting multi-node setups with non-shared filesystems while avoiding
-    torch.distributed initialization requirements.
+    This function acts like a lightweight makefile rule: it checks if the target
+    needs to be built (based on existence and prerequisite modification times),
+    and if so, ensures only one process performs the build while others wait.
+
+    Synchronization is handled by `build_sync`, which uses torch.distributed
+    barriers when available, or falls back to file locking when distributed
+    isn't initialized (e.g., with third-party training frameworks like Torch Titan).
 
     Args:
         target: Path to the target file/directory to build
-        recipe: Callable that constructs the target
+        recipe: A callable or list of callables to execute to construct the target
         loader: Callable that loads and returns the constructed target
-        prerequisites: List of dependency files to check modification times against
+        prerequisites: List of dependency files; if any are newer than target,
+                       the target will be rebuilt
 
     Returns:
         The result of calling loader()
+
+    Example:
+        model = build_rule(
+            target="output_models/my_model",
+            recipe=lambda: generate_model_code(),
+            loader=lambda: load_model("output_models/my_model"),
+            prerequisites=["templates/model.yaml"],
+        )
     """
-    assert isinstance(recipe, Callable)
+    assert isinstance(recipe, Callable | list)
     assert isinstance(loader, Callable)
 
-    # First check if we need to build based on target existence and dependencies
-    needs_build = True
-    if os.path.exists(target):
-        needs_build = False
-        target_mtime = os.path.getmtime(target)
-        for dependency in prerequisites:
-            if os.path.exists(dependency):
-                dep_mtime = os.path.getmtime(dependency)
-                if target_mtime < dep_mtime:
-                    needs_build = True
-                    break
+    # Quick check: if target is up-to-date, skip synchronization entirely.
+    # IMPORTANT: Only safe when distributed is NOT initialized, because with
+    # distributed barriers, ALL ranks must enter build_sync to participate in
+    # the barriers. Otherwise, we get a TOCTOU race where rank 0 creates the
+    # target, then other ranks see it exists and skip build_sync, causing rank 0
+    # to hang at the barrier waiting for them.
+    dist = _get_dist()
+    distributed_active = (
+        dist.is_available() and dist.is_initialized() and get_world_size() > 1
+    )
 
-    if not needs_build:
-        logger.debug(f"Target is up to date: {target}")
+    if not distributed_active and not _check_needs_build(target, prerequisites):
+        logger.debug(f"[Rank {get_rank()}] build_rule: target is up to date: {target}")
         return loader()
 
-    # Target needs to be built, use file locking to coordinate
-    with file_lock_build(target, force_lock=True) as should_build:
+    logger.debug(f"[Rank {get_rank()}] build_rule: target needs building: {target}")
+    # Target may need building; use build_sync to coordinate across processes
+    with build_sync(target) as should_build:
         if should_build:
-            # We have the lock, double-check if we still need to build
-            build_target = True
-            if os.path.exists(target):
-                build_target = False
-                target_mtime = os.path.getmtime(target)
-                for dependency in prerequisites:
-                    if os.path.exists(dependency):
-                        dep_mtime = os.path.getmtime(dependency)
-                        if target_mtime < dep_mtime:
-                            build_target = True
-                            break
-
-            if build_target:
+            # Double-check after acquiring synchronization (another process or
+            # concurrent run may have built the target while we were waiting)
+            if _check_needs_build(target, prerequisites):
                 logger.debug(f"Building target: {target}")
-                recipe()
+                if isinstance(recipe, Callable):
+                    recipe()
+                else:
+                    for fn in recipe:
+                        assert isinstance(
+                            fn, Callable
+                        ), f"Item in recipe list is not callable {type(fn)=}"
+                        fn()
+            else:
+                logger.debug(f"Target became up-to-date while waiting: {target}")
         else:
-            # Another process built it while we were waiting
             logger.debug(f"Target was built by another process: {target}")
 
     return loader()
@@ -291,7 +510,7 @@ def load_from_config(
     return proj(targets, **config_kwargs)
 
 
-def _should_write_file(file_path: str, exists: str) -> bool:
+def _should_write_file(file_path: str | os.PathLike, exists: Optional[str]) -> bool:
     """
     Process file overwriting policy
 
@@ -367,10 +586,10 @@ def copy_package_files(
             pkg = sys.modules[obj.__module__]
             for level, value in walk_package_modules(pkg):
                 # Ignore namespaces
-                if value.__spec__.origin is None:
+                if value.__spec__ is None or value.__spec__.origin is None:
                     continue
                 origin = value.__spec__.origin
-                package_name = value.__package__
+                package_name = value.__package__ or ""
 
                 file_name = os.path.basename(origin)
                 module_prefix = package_name.split(".")[1:]
@@ -411,7 +630,7 @@ def dependency_list(*args):
     return args[0]
 
 
-def _compare_file_to_str(file_path: str, string: str):
+def _compare_file_to_str(file_path: str | os.PathLike, string: str):
     """
     Compare the contents of a file and a string for equality
     """

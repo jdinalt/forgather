@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+[configs]
+name: "Singlehead"
+description: "A simple ALiBi transformer with a single attention head in each layer"
+config_prefix: "configs"
+default_config: "4M.yaml"

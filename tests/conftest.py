@@ -3,12 +3,13 @@
 Shared pytest fixtures and configuration for Forgather tests.
 """
 
-import pytest
-import tempfile
 import shutil
+import tempfile
+from unittest.mock import Mock
+
+import pytest
 import torch
 import torch.nn as nn
-from unittest.mock import Mock
 
 from forgather.ml.trainer import TrainingArguments
 

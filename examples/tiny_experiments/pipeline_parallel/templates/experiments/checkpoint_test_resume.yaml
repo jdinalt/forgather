@@ -6,19 +6,10 @@
     -- set ns.config_description = "Resume training from latest checkpoint to test checkpoint loading"
     -- set ns.log_name = "checkpoint_test_resume"
 
-[trainer_definition]
-    -- include 'experiment.checkpoint_resume_trainer_config'
-
-#-------------------- experiment.checkpoint_resume_trainer_config --------------------
--- extends 'experiment.checkpoint_test_trainer_config'
-
 [trainer_args]
     == super()
     # Resume from checkpoint settings
     resume_from_checkpoint: True
-    restore_optimizer_state: True    # Test optimizer state restoration per rank
-    restore_scheduler_state: True    # Test scheduler state restoration per rank
-    restore_rng_state: True          # Test RNG state restoration per rank
     
     # Continue training settings - train a bit more to verify resume works
     max_steps: {{ max_steps | default(500) }}

@@ -3,30 +3,17 @@
 [config_metadata]
     == super()
     -- set ns.config_name = "Samantha Llama 7B"
-    -- set ns.config_description = "Conservative setting to train a 7B Llaama model on 1 GPU"
+    -- set ns.config_description = "Conservative setting to train a 7B Llama model on 1 GPU"
     -- set ns.log_name = "default"
 
+    ## Batching
+    -- set ns.seq_len = seq_len | default(2048)
+    -- set ns.per_device_train_batch_size = batch_size | default(1)
 
-[trainer_definition]
-    -- include 'config.trainer_config'
-
-[datacollator]
-    == super()
-    max_length: 1300
-
-#-------------------- config.trainer_config --------------------
--- extends 'project.trainer'
+    ## Compile settings
+    -- set ns.torch_compile = compile | default(False)
 
 [trainer_args]
     == super()
-    # **config**
-    per_device_train_batch_size: 4
-    per_device_eval_batch_size: 4
-    gradient_checkpointing: True
-    fuse_optim_with_backward: True
-    # enable_activation_offloading: True
-
-[trainer_constructor]
-    == super()
-    # Disable fused logits-loss
-    fused_loss_factory: null
+    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
+    fuse_optim_with_backward: {{ fuse_optim_with_backward | default(True) }}

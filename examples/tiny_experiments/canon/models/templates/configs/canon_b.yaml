@@ -1,0 +1,23 @@
+-- extends "configs/baseline.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Canon-B 4M"
+    -- set ns.config_description = "LlamaCanon 4M with only Canon-B (attn QKV convolution)"
+    -- set ns.model_name = "canon_b_4m"
+
+[model_definition]
+    -- include "config.canon_b.model"
+
+#------------- config.canon_b.model --------------
+-- extends "config.baseline.model"
+
+## Canon-B only: Canon layers on Q/K/V projections in attention.
+## Standard transformer layer (no A/C) and standard feedforward (no D).
+
+[feedforward_factory]
+    == super.super()
+
+[layer_factory]
+    == super.super()
+

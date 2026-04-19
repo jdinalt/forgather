@@ -1,13 +1,15 @@
 import logging
 import math
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
+
+# YaRN default bounds from arxiv.org/abs/2309.00071
+_YARN_DEFAULT_BETA_FAST = 32
+_YARN_DEFAULT_BETA_SLOW = 1
 
 logger = logging.getLogger(__name__)
-
-""" Real-valued RoPE implementation (vs. complex) """
 
 
 def rotate_half(x: Tensor) -> Tensor:
@@ -68,354 +70,347 @@ def apply_llama3_scaling(inv_freq: Tensor, rope_scaling: Dict[str, Any]) -> Tens
     return inv_freq_llama
 
 
-class RotaryPE:
+def apply_yarn_scaling(
+    inv_freq: Tensor,
+    rope_scaling: Dict[str, Any],
+    d_head: int,
+) -> Tuple[Tensor, float]:
     """
-    Real-valued RoPE positional encoder module
+    Apply YaRN (Yet another RoPE extensioN) scaling. See arxiv.org/abs/2309.00071.
 
-    Supports two computation strategies:
-    - Cached (cache_embeddings=True, default): Precompute cos/sin for all positions once.
-      Best performance for dynamic KV cache scenarios. Caches inverse frequencies
-      to avoid recomputation on device movements.
-    - On-demand (cache_embeddings=False): Compute cos/sin on each forward pass.
-      Supports torch.export() which struggles with cached state. When combined with
-      compile_on_demand=True (default), provides reasonable performance through
-      kernel fusion, though still ~15% slower than cached for dynamic KV cache.
+    Blends extrapolated (unscaled) and interpolated (divided by ``factor``)
+    inverse frequencies using a linear ramp over the frequency index. The ramp
+    bounds come from ``beta_fast`` / ``beta_slow`` via the "correction dim"
+    formula (paper eq. 16): dim(r) = d * log(L / (2*pi*r)) / (2 * log(base)).
 
-    Performance (Llama 1B, dynamic KV cache, 512 token generation):
-    - cache_embeddings=True: ~135 tok/s (recommended default)
-    - cache_embeddings=False, compile_on_demand=True: ~115 tok/s
-    - cache_embeddings=False, compile_on_demand=False: ~92 tok/s
+    Args:
+        inv_freq: Base (unscaled) inverse frequencies of shape [d_head // 2].
+        rope_scaling: Dict containing:
+            - factor (required): Context-extension scaling factor.
+            - original_max_position_embeddings (required): Pretraining context length.
+            - beta_fast (default 32): Extrapolation-only frequency boundary.
+            - beta_slow (default 1): Interpolation-only frequency boundary.
+            - attention_factor (optional): Explicit override for the returned
+              attention scaling; otherwise inferred from ``factor``.
+            - mscale, mscale_all_dim (optional): HF-compatible ratio form for
+              inferring ``attention_factor`` when both are provided.
+        d_head: Head dimension (inv_freq length is d_head // 2).
 
-    Note: With static KV cache, both strategies perform equally (~160 tok/s).
-
-    For complex-valued RoPE (experimental), see complex_rotary_embeddings.py
+    Returns:
+        Tuple of (scaled inv_freq, attention_factor).
     """
+    if "original_max_position_embeddings" not in rope_scaling:
+        raise ValueError(
+            "YaRN scaling requires 'original_max_position_embeddings' in rope_scaling."
+        )
+    factor = rope_scaling["factor"]
+    original_max_pos = rope_scaling["original_max_position_embeddings"]
+    beta_fast = rope_scaling.get("beta_fast") or _YARN_DEFAULT_BETA_FAST
+    beta_slow = rope_scaling.get("beta_slow") or _YARN_DEFAULT_BETA_SLOW
+    attention_factor = rope_scaling.get("attention_factor")
+    mscale = rope_scaling.get("mscale")
+    mscale_all_dim = rope_scaling.get("mscale_all_dim")
+
+    # Recover the base used to build inv_freq: inv_freq[0] = 1.0, inv_freq[1] = base^(-2/d_head)
+    # so base = (inv_freq[0] / inv_freq[-1]) ** (d_head / (d_head - 2)) for d_head > 2.
+    # Simpler: use rope_scaling if present, else infer from inv_freq[1].
+    if inv_freq.numel() >= 2:
+        base = float(inv_freq[0] / inv_freq[1]) ** (d_head / 2.0)
+    else:
+        base = 10000.0
+
+    def get_mscale(scale: float, m: float = 1.0) -> float:
+        if scale <= 1:
+            return 1.0
+        return 0.1 * m * math.log(scale) + 1.0
+
+    if attention_factor is None:
+        if mscale and mscale_all_dim:
+            attention_factor = float(
+                get_mscale(factor, mscale) / get_mscale(factor, mscale_all_dim)
+            )
+        else:
+            attention_factor = get_mscale(factor)
+
+    def correction_dim(num_rotations: float) -> float:
+        return (d_head * math.log(original_max_pos / (num_rotations * 2 * math.pi))) / (
+            2 * math.log(base)
+        )
+
+    low = max(math.floor(correction_dim(beta_fast)), 0)
+    high = min(math.ceil(correction_dim(beta_slow)), d_head - 1)
+    if low == high:
+        high = low + 0.001
+
+    ramp = torch.clamp(
+        (torch.arange(d_head // 2, dtype=torch.float32, device=inv_freq.device) - low)
+        / (high - low),
+        0.0,
+        1.0,
+    )
+    # extrapolation_factor=1 keeps high-frequency (fast) dims unscaled; =0 scales by 1/factor.
+    extrapolation_factor = 1.0 - ramp
+    inv_freq_interp = inv_freq / factor
+    inv_freq_yarn = (
+        inv_freq_interp * (1.0 - extrapolation_factor) + inv_freq * extrapolation_factor
+    )
+    return inv_freq_yarn, float(attention_factor)
+
+
+class RotaryEmbedding(nn.Module):
+    """
+    Rotary Position Embedding module.
+
+    Computes (cos, sin) position embeddings from position_ids. Designed to be
+    instantiated once on the model (in CasualLM) and called once per forward pass.
+    The resulting (cos, sin) tuple is passed to attention layers via kwargs as
+    ``position_embeddings``.
+
+    Precision
+    ---------
+    Frequency computation (inv_freq, cos, sin) is always performed in float32
+    with autocast disabled, as bf16 rounding in periodic functions produces
+    large absolute errors at moderate-to-large positions.
+
+    The ``float32_output`` flag controls whether cos/sin are returned in float32
+    or cast to the input dtype. ``apply_rotary_pos_emb`` casts q/k to match,
+    so this flag effectively controls the rotation precision:
+
+    - **float32_output=True**: Rotation in float32. Recommended for long-context
+      training (>4K positions) and when maximum precision is needed. Matches
+      Flash Attention's Triton kernel behavior.
+    - **float32_output=False** (default): Rotation in model dtype. Matches
+      HF Transformers, torchtitan, and vLLM. Sufficient for most training
+      scenarios and uses less memory.
+
+    See ``docs/model-architecture.md`` for a detailed discussion of RoPE
+    precision tradeoffs.
+
+    Initialization
+    --------------
+    Follows the two-phase pattern for meta device support:
+
+    - ``__init__`` allocates an empty ``inv_freq`` buffer (non-persistent).
+    - ``reset_parameters()`` computes the actual frequency values.
+
+    The weight initialization system calls ``reset_parameters()`` as its
+    fallback for modules without ``init_prefix``. On meta device,
+    ``reset_parameters()`` is a no-op; values are computed after the buffer
+    is moved to a real device.
+
+    See ``docs/configuration/model-initialization.md`` for the full
+    initialization call chain.
+    """
+
+    inv_freq: Tensor
 
     def __init__(
         self,
         hidden_size: int,
         num_attention_heads: int,
-        max_sequence_length: int = 2048,
-        rope_theta: float = 10000.0,
+        max_position_embeddings: int = 2048,
+        rope_parameters: Optional[Dict[str, Any]] = None,
+        rope_theta: Optional[float] = None,
         rope_scaling: Optional[Dict[str, Any]] = None,
-        use_liger: bool = False,
-        cache_embeddings: bool = True,
-        compile_on_demand: bool = True,
+        float32_output: bool = False,
+        device=None,
     ):
+        """
+        Args:
+            hidden_size: Model hidden dimension.
+            num_attention_heads: Number of attention heads (used to compute d_head).
+            max_position_embeddings: Maximum sequence length (informational only,
+                does not limit forward pass).
+            rope_parameters: Unified dict with rope_theta, rope_type, and scaling
+                params (HF v5 format). Takes priority over legacy args.
+            rope_theta: (Legacy) Base frequency. Use rope_parameters instead.
+            rope_scaling: (Legacy) Scaling dict. Use rope_parameters instead.
+            float32_output: If True (default), return cos/sin in float32 so that
+                the rotation in ``apply_rotary_pos_emb`` is computed in float32.
+                If False, cast cos/sin to the input dtype before returning, so
+                the rotation stays in the model's native precision (matching HF
+                Transformers' default). Float32 is recommended for training
+                stability, especially with long sequences and bf16/fp16.
+            device: Device for initial buffer allocation.
+        """
+        super().__init__()
+
         self.d_head = hidden_size // num_attention_heads
-        self.max_sequence_length = max_sequence_length
-        self.rope_theta = rope_theta
-        self.rope_scaling = rope_scaling
-        self.dtype = torch.get_default_dtype()
-        self.cache_embeddings = cache_embeddings
-        self.compile_on_demand = compile_on_demand
+        self.max_position_embeddings = max_position_embeddings
 
-        # Cache inv_freq to avoid recomputation on device movements
-        # Stored as instance variable (not buffer) to avoid library issues
-        self._inv_freq_cached = None
-        if self.cache_embeddings:
-            self._inv_freq_cached = self._compute_inv_freq()
-
-        # Precompute cos/sin tensors once for the entire model
-        if self.cache_embeddings:
-            self.cos_cached, self.sin_cached = self._precompute_with_cached_inv_freq(
-                self.max_sequence_length, self.dtype
-            )
+        # Extract parameters from rope_parameters dict (v5 format)
+        # or fall back to legacy rope_theta/rope_scaling args
+        if rope_parameters is not None:
+            self.rope_theta = rope_parameters.get("rope_theta", 10000.0)
+            self.rope_type = rope_parameters.get("rope_type", "default")
+            self.rope_scaling = rope_parameters
         else:
-            # Store None to indicate we're using on-demand computation
-            self.cos_cached = None
-            self.sin_cached = None
-
-        # Compile the on-demand computation for performance
-        # This provides kernel fusion benefits without requiring full model compilation
-        self._compute_fn = None
-        if not self.cache_embeddings and self.compile_on_demand:
-            # Compile the computation function for better performance
-            # This will fuse operations and eliminate Python overhead
-            self._compute_fn = torch.compile(self._compute_embeddings_core)
-
-        self.liger_kernel = None
-
-        if use_liger:
-            try:
-                from liger_kernel.ops.rope import LigerRopeFunction
-
-                self.liger_kernel = LigerRopeFunction.apply
-
-            except ImportError as e:
-                logger.info(
-                    "liger-kernel not installed. Install with:\n"
-                    "  pip install liger-kernel\n"
-                    "Using eager RoPE implementation as fallback"
+            self.rope_theta = rope_theta if rope_theta is not None else 10000.0
+            self.rope_type = "default"
+            if rope_scaling is not None:
+                self.rope_type = rope_scaling.get(
+                    "rope_type", rope_scaling.get("type", "default")
                 )
+            self.rope_scaling = rope_scaling
 
-    def __repr__(self):
-        rope_type = "default"
-        if self.rope_scaling:
-            rope_type = self.rope_scaling.get(
-                "rope_type", self.rope_scaling.get("type", "default")
-            )
+        # Attention scaling factor (defaults 1.0; used by YaRN/LongRoPE)
+        self.attention_scaling = 1.0
+        self.float32_output = float32_output
+
+        # Allocate buffer; actual values are filled by reset_parameters().
+        self.register_buffer(
+            "inv_freq",
+            torch.empty(self.d_head // 2, device=device),
+            persistent=False,
+        )
+
+    def extra_repr(self) -> str:
         return (
-            f"d_head={self.d_head}, max_sequence_length={self.max_sequence_length}, "
-            f"rope_theta={self.rope_theta}, rope_type={rope_type}, "
-            f"cache_embeddings={self.cache_embeddings}, compile_on_demand={self.compile_on_demand}, "
-            f"liger_kernel={self.liger_kernel is not None}"
+            f"d_head={self.d_head}, "
+            f"max_position_embeddings={self.max_position_embeddings}, "
+            f"rope_theta={self.rope_theta}, "
+            f"rope_type={self.rope_type!r}, "
+            f"float32_output={self.float32_output}"
         )
 
-    def _compute_inv_freq(self) -> Tensor:
+    def reset_parameters(self):
+        """Compute inverse frequencies and fill the inv_freq buffer.
+
+        Called by the weight initialization system (``init_weights_by_regex``
+        falls back to ``reset_parameters()`` for modules without an
+        ``init_prefix``). Also handles meta-device construction: HF's loading
+        pipeline moves non-persistent buffers from meta to the target device,
+        then calls ``_init_weights`` -> ``reset_parameters()`` to populate them.
         """
-        Compute inverse frequencies once and cache them.
-        This avoids recomputing inv_freq on device movements.
+        if self.inv_freq.is_meta:
+            return
 
-        Returns:
-            Inverse frequencies tensor of shape (d_head // 2,)
-        """
-        # Compute base inverse frequencies
-        inv_freq = 1.0 / (
-            self.rope_theta ** (torch.arange(0, self.d_head, 2).float() / self.d_head)
-        )
-
-        # Apply scaling if specified
-        if self.rope_scaling is not None:
-            rope_type = self.rope_scaling.get(
-                "rope_type", self.rope_scaling.get("type", "default")
-            )
-            if rope_type == "llama3":
-                inv_freq = apply_llama3_scaling(inv_freq, self.rope_scaling)
-            elif rope_type != "default":
-                raise ValueError(
-                    f"Unsupported rope_type: {rope_type}. Only 'llama3' is currently supported."
-                )
-
-        return inv_freq
-
-    def _precompute_with_cached_inv_freq(
-        self, max_len: int, dtype: torch.dtype
-    ) -> Tuple[Tensor, Tensor]:
-        """
-        Precompute cos/sin using cached inv_freq.
-        This reuses the inv_freq computation across device movements.
-
-        Args:
-            max_len: Maximum sequence length
-            dtype: Data type for output tensors
-
-        Returns:
-            Tuple of (cos, sin) tensors of shape (max_len, d_head)
-        """
-        # Get cached inv_freq, moving to the correct device if needed
-        inv_freq = self._inv_freq_cached
-        if inv_freq.device == torch.device("meta"):
-            # Need to initialize on a real device
-            inv_freq = self._compute_inv_freq()
-            self._inv_freq_cached = inv_freq
-
-        # Create position indices
-        t = torch.arange(max_len, device=inv_freq.device, dtype=torch.float32)
-
-        # Compute frequencies for each position
-        freqs = torch.outer(t, inv_freq)
-
-        # Duplicate frequencies to match full dimension
-        emb = torch.cat((freqs, freqs), dim=-1)
-
-        # Compute cos and sin
-        cos = emb.cos().to(dtype=dtype)
-        sin = emb.sin().to(dtype=dtype)
-
-        return cos, sin
-
-    def _compute_embeddings_core(
-        self, position_ids: Tensor, device: torch.device, dtype: torch.dtype
-    ) -> Tuple[Tensor, Tensor]:
-        """
-        Core computation logic for on-demand RoPE embeddings.
-        This method can be compiled with torch.compile() for better performance.
-
-        Using only tensor operations (no Python dicts or list comprehensions)
-        to allow the compiler to fuse operations and eliminate overhead.
-
-        Args:
-            position_ids: Position indices tensor of shape (batch_size, seq_len) or (1, seq_len)
-            device: Device to compute on
-            dtype: Data type for the output tensors
-
-        Returns:
-            Tuple of (cos, sin) tensors of shape (batch_size, seq_len, d_head)
-        """
-        # Compute base inverse frequencies - shape: (d_head // 2,)
         inv_freq = 1.0 / (
             self.rope_theta
             ** (
-                torch.arange(0, self.d_head, 2, device=device, dtype=torch.float32)
+                torch.arange(
+                    0,
+                    self.d_head,
+                    2,
+                    dtype=torch.float32,
+                    device=self.inv_freq.device,
+                )
                 / self.d_head
             )
         )
 
-        # Apply scaling if specified
-        if self.rope_scaling is not None:
-            rope_type = self.rope_scaling.get(
-                "rope_type", self.rope_scaling.get("type", "default")
+        if self.rope_type == "llama3" and self.rope_scaling is not None:
+            inv_freq = apply_llama3_scaling(inv_freq, self.rope_scaling)
+        elif self.rope_type == "yarn" and self.rope_scaling is not None:
+            inv_freq, attention_factor = apply_yarn_scaling(
+                inv_freq, self.rope_scaling, self.d_head
             )
-            if rope_type == "llama3":
-                inv_freq = apply_llama3_scaling(inv_freq, self.rope_scaling)
-            elif rope_type != "default":
-                raise ValueError(
-                    f"Unsupported rope_type: {rope_type}. Only 'llama3' is currently supported."
-                )
+            self.attention_scaling = attention_factor
+        elif self.rope_type not in ("default", "llama3", "yarn"):
+            raise ValueError(
+                f"Unsupported rope_type: {self.rope_type}. "
+                "Supported: 'default', 'llama3', 'yarn'."
+            )
 
-        # Ensure position_ids is 2D: (batch_size, seq_len)
-        if position_ids.dim() == 1:
-            position_ids = position_ids.unsqueeze(0)
+        self.inv_freq.copy_(inv_freq)
 
-        # Convert position_ids to float for outer product
-        # Shape: (batch_size, seq_len)
-        position_ids_float = position_ids.float()
+    @torch.no_grad()
+    def forward(self, x: Tensor, position_ids: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+        Compute rotary position embeddings.
 
-        # For each position in position_ids, compute frequencies
-        # We need to handle batched position_ids properly
-        # Reshape for batch processing: (batch_size * seq_len,)
-        batch_size, seq_len = position_ids.shape
-        positions_flat = position_ids_float.reshape(-1)
+        Args:
+            x: Input tensor, used for device and (when ``float32_output=False``) dtype.
+            position_ids: Position indices of shape ``[batch_size, seq_len]``.
 
-        # Compute frequencies for all positions: (batch_size * seq_len, d_head // 2)
-        freqs = torch.outer(positions_flat, inv_freq)
+        Returns:
+            Tuple of ``(cos, sin)``, each of shape ``[batch_size, seq_len, d_head]``.
+            Dtype is float32 when ``float32_output=True``, otherwise ``x.dtype``.
+        """
+        # [1, d_head//2, 1] -> [batch, d_head//2, 1]
+        inv_freq_expanded = (
+            self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        )
+        # [batch, 1, seq_len]
+        position_ids_expanded = position_ids[:, None, :].float()
 
-        # Duplicate frequencies to match full dimension: (batch_size * seq_len, d_head)
-        emb = torch.cat((freqs, freqs), dim=-1)
+        # Force float32 for numerical stability (disable autocast).
+        # Note: torch.set_float32_matmul_precision() does NOT affect this
+        # matmul because the inner (contraction) dimension is 1 -- each
+        # output is a single multiply with no accumulation, so TF32/medium
+        # produce identical results to full float32.
+        device_type = x.device.type if x.device.type != "mps" else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):
+            # [batch, d_head//2, seq] -> [batch, seq, d_head//2]
+            freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            cos = emb.cos() * self.attention_scaling
+            sin = emb.sin() * self.attention_scaling
 
-        # Compute cos and sin, then reshape back to (batch_size, seq_len, d_head)
-        cos = emb.cos().to(dtype=dtype).reshape(batch_size, seq_len, self.d_head)
-        sin = emb.sin().to(dtype=dtype).reshape(batch_size, seq_len, self.d_head)
+        if not self.float32_output:
+            cos = cos.to(dtype=x.dtype)
+            sin = sin.to(dtype=x.dtype)
 
         return cos, sin
 
-    def compute_embeddings_on_demand(
-        self, position_ids: Tensor, device: torch.device, dtype: torch.dtype
-    ) -> Tuple[Tensor, Tensor]:
-        """
-        Compute cos/sin embeddings on-demand for specific positions.
 
-        This avoids caching large tensors and allows torch.compile() to potentially:
-        1. Recognize constant computations across layers
-        2. Optimize or cache the computation automatically
-        3. Better support torch.export() which struggles with cached state
+def apply_rotary_pos_emb(
+    q: Tensor,
+    k: Tensor,
+    position_embeddings: Tuple[Tensor, Tensor] = None,  # type: ignore[assignment]
+    **kwargs,
+) -> Tuple[Tensor, Tensor]:
+    """
+    Apply rotary position embeddings to query and key tensors.
 
-        The core computation can be compiled (via compile_on_demand=True) to provide:
-        - Kernel fusion for all tensor operations
-        - Elimination of Python interpreter overhead
-        - Optimized memory access patterns
+    Designed to be used as a ``pos_encoder`` callable in
+    :class:`CausalMultiheadAttn`. Receives ``position_embeddings`` via kwargs
+    from the attention forward pass (originally computed by
+    :class:`RotaryEmbedding` in ``CasualLM``).
 
-        For inference with KV caching, position_ids often contains a single index
-        (the current token position), making this very efficient when compiled.
+    The rotation precision is controlled by :class:`RotaryEmbedding`'s
+    ``float32_output`` flag:
 
-        Args:
-            position_ids: Position indices tensor of shape (batch_size, seq_len) or (1, seq_len)
-            device: Device to compute on
-            dtype: Data type for the output tensors
+    - **float32_output=True** (default): cos/sin arrive in float32, q/k are
+      upcast to float32 for the rotation, then cast back. Best precision,
+      important for long sequences and bf16/fp16 training.
+    - **float32_output=False**: cos/sin arrive in the model dtype, q/k stay
+      in their native dtype. Matches HF Transformers' default behavior.
+      Faster, less memory, but may lose precision.
 
-        Returns:
-            Tuple of (cos, sin) tensors of shape (batch_size, seq_len, d_head)
-        """
-        # Use compiled version if available, otherwise use eager execution
-        if self._compute_fn is not None:
-            return self._compute_fn(position_ids, device, dtype)
-        else:
-            return self._compute_embeddings_core(position_ids, device, dtype)
+    In both cases, q/k are cast to match the dtype of cos/sin, and the
+    result is cast back to the original q/k dtype. When dtypes already
+    match, the casts are no-ops.
 
-    def embeddings(self, device: torch.device):
-        """
-        Get cached embeddings, handling device movement.
-        Only used when cache_embeddings=True.
-        """
-        if not self.cache_embeddings:
-            raise RuntimeError(
-                "embeddings() method should not be called when cache_embeddings=False. "
-                "Use compute_embeddings_on_demand() instead."
-            )
+    Args:
+        q: Query tensor of shape ``[batch, seq, heads, d_head]``.
+        k: Key tensor of shape ``[batch, seq, heads, d_head]``.
+        position_embeddings: Tuple of ``(cos, sin)``, each
+            ``[batch, seq, d_head]``. Computed by :class:`RotaryEmbedding`.
+        **kwargs: Ignored (absorbs other forward kwargs).
 
-        if device == self.cos_cached.device:
-            return self.cos_cached, self.sin_cached
+    Returns:
+        Tuple of ``(rotated_q, rotated_k)`` with same shapes as input.
+    """
+    if position_embeddings is None:
+        raise ValueError(
+            "position_embeddings is None. When using apply_rotary_pos_emb as "
+            "pos_encoder, ensure that CasualLM is configured with a rotary_emb "
+            "module (RotaryEmbedding) so that position_embeddings are computed "
+            "and passed through kwargs."
+        )
+    cos, sin = position_embeddings
+    # Broadcast over heads: [batch, seq, 1, d_head]
+    cos = cos.unsqueeze(2)
+    sin = sin.unsqueeze(2)
 
-        # If we were on "meta" and have moved to a real device, we need to initialize the embeddings
-        if self.cos_cached.device == torch.device("meta"):
-            with torch.device(device):
-                # Use cached inv_freq to avoid recomputing
-                self.cos_cached, self.sin_cached = (
-                    self._precompute_with_cached_inv_freq(
-                        self.max_sequence_length, self.dtype
-                    )
-                )
-        else:
-            # This can happen when using HF device_map = "auto"
-            self.cos_cached = self.cos_cached.to(device)
-            self.sin_cached = self.sin_cached.to(device)
+    # Cast q/k to match cos/sin dtype. When RotaryEmbedding.float32_output
+    # is True, this upcasts to float32. When False, this is a no-op.
+    orig_dtype = q.dtype
+    q = q.to(cos.dtype)
+    k = k.to(cos.dtype)
 
-        return self.cos_cached, self.sin_cached
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
 
-    def __call__(
-        self, q: Tensor, k: Tensor, position_ids: Tensor = None
-    ) -> Tuple[Tensor, Tensor]:
-        """
-        Apply RoPE embedding to query and key
-
-        Args:
-            q: Query tensor of shape (batch_size, seq_len, num_heads, d_head)
-            k: Key tensor of shape (batch_size, seq_len, num_heads, d_head)
-            position_ids: Position indices tensor of shape (1, seq_len) or (batch_size, seq_len).
-                         If None, uses sequential positions [0, 1, 2, ..., seq_len-1]
-
-        Returns:
-            Tuple of (rotated_q, rotated_k) tensors with same shapes as input
-        """
-        seq_len = q.shape[1]
-        batch_size = q.shape[0]
-        assert seq_len == k.shape[1]
-
-        # Compute embeddings on-demand
-        if not self.cache_embeddings:
-            # Create position_ids if not provided
-            if position_ids is None:
-                position_ids = torch.arange(
-                    seq_len, device=q.device, dtype=torch.long
-                ).unsqueeze(0)
-
-            # Compute cos/sin for the specific positions needed
-            cos, sin = self.compute_embeddings_on_demand(
-                position_ids, q.device, q.dtype
-            )
-
-            # Reshape for broadcasting: [batch_size, seq_len, 1, d_head]
-            # cos/sin from compute_embeddings_on_demand are [batch_size, seq_len, d_head]
-            cos = cos.unsqueeze(2)  # [batch_size, seq_len, 1, d_head]
-            sin = sin.unsqueeze(2)  # [batch_size, seq_len, 1, d_head]
-
-            # Apply rotation
-            q_embed = (q * cos) + (rotate_half(q) * sin)
-            k_embed = (k * cos) + (rotate_half(k) * sin)
-            return q_embed, k_embed
-
-        # Use cached embeddings
-        cos_cached, sin_cached = self.embeddings(k.device)
-
-        if self.liger_kernel and q.is_cuda:
-            return self.liger_kernel(q, k, cos_cached, sin_cached, position_ids)
-
-        if position_ids is None:
-            # Default behavior: use sequential positions
-            assert (
-                seq_len <= cos_cached.shape[0]
-            ), f"seq_len {seq_len} > max_seq_len {cos_cached.shape[0]}"
-            cos = cos_cached[:seq_len]
-            sin = sin_cached[:seq_len]
-            # Reshape cos/sin for broadcasting to match input tensor dimensions
-            # Need cos/sin: [1, seq_len, 1, d_head] for broadcasting
-            cos = cos.unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1, d_head]
-            sin = sin.unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1, d_head]
-        else:
-            cos = cos_cached[position_ids].unsqueeze(2)
-            sin = sin_cached[position_ids].unsqueeze(2)
-
-        q_embed = (q * cos) + (rotate_half(q) * sin)
-        k_embed = (k * cos) + (rotate_half(k) * sin)
-        return q_embed, k_embed
+    return q_embed.to(orig_dtype), k_embed.to(orig_dtype)

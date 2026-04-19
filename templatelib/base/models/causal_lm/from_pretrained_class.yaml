@@ -26,11 +26,11 @@ model_config: &model_config !call:{{ ns.model_config_cls }}
 # This saves both the config and tokenizer to the output directory
 pretrained_config: &pretrained_config !singleton:forgather.ml.construct:build_rule
     target: "{{ joinpath(ns.output_dir, 'config.json') }}"
-    recipe: !partial:forgather.ml.construct:dependency_list
+    recipe:
         # Construct and save pretrained config to output_dir
-        - !singleton:call [ !singleton:getattr [ *model_config, "save_pretrained"], "{{ ns.output_dir }}" ]
+        - !partial:call [ !singleton:getattr [ *model_config, "save_pretrained"], "{{ ns.output_dir }}" ]
         # Construct and save pretrained tokenizer to output_dir
-        - !singleton:call [ !singleton:getattr [ *tokenizer, "save_pretrained"], "{{ ns.output_dir }}" ]
+        - !partial:call [ !singleton:getattr [ *tokenizer, "save_pretrained"], "{{ ns.output_dir }}" ]
     loader: !partial:transformers:AutoConfig.from_pretrained
         arg0: "{{ ns.output_dir }}"
 

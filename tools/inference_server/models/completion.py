@@ -2,8 +2,10 @@
 Pydantic models for text completion API.
 """
 
-from typing import List, Optional, Dict, Any, Union
+from typing import Any, Dict, List, Optional, Union
+
 from pydantic import BaseModel
+
 from .chat import ChatCompletionUsage  # Reuse usage model
 
 
@@ -44,6 +46,7 @@ class CompletionRequest(BaseModel):
     eta_cutoff: Optional[float] = None
     guidance_scale: Optional[float] = None
     seed: Optional[int] = None
+    ignore_eos: Optional[bool] = None
 
 
 class CompletionChoice(BaseModel):

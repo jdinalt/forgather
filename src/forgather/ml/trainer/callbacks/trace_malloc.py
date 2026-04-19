@@ -50,7 +50,8 @@ class TraceMalloc(TrainerCallback):
                     f"rank{self.rank}: Initial memory usage: {self.initial_memory:.1f} MB (RSS)"
                 )
 
-    def on_log(self, args, state, control, logs, **kwargs):
+    def on_log(self, args, state, control, **kwargs):
+        logs = kwargs.get("logs", {})
         step = logs.get("step", 0)
 
         if self.comprehensive_mode and self.memory_monitor:

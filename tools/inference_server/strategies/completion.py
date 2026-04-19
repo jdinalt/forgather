@@ -3,15 +3,17 @@ Non-streaming text completion generation strategy.
 """
 
 import time
+
 import torch
 from fastapi import HTTPException
-from .non_streaming_base import NonStreamingStrategy
+
 from ..models.completion import (
-    CompletionResponse,
-    CompletionChoice,
     ChatCompletionUsage,
+    CompletionChoice,
     CompletionRequest,
+    CompletionResponse,
 )
+from .non_streaming_base import NonStreamingStrategy
 
 
 class CompletionGenerationStrategy(NonStreamingStrategy):

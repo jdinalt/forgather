@@ -9,17 +9,21 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 
 
-def make_re_multiopt(named_parameters, optimizer_map, factories):
+def make_re_multiopt(named_parameters, optimizer_map, factories, debug=False):
     groups = {group_name: [] for regex, group_name in optimizer_map}
 
     for param_name, param_value in named_parameters:
         for regex, group_name in optimizer_map:
             m = re.search(regex, param_name)
             if m is not None:
+                if debug:
+                    print(f"param group: {group_name} <- {param_name}")
                 groups[group_name].append((param_name, param_value))
                 break
     optimizers = [
-        factories[group_name](params) for group_name, params in groups.items()
+        factories[group_name](params)
+        for group_name, params in groups.items()
+        if len(params)
     ]
 
     return Multiopt(optimizers)
@@ -59,3 +63,33 @@ class Multiopt(Optimizer):
     def zero_grad(self):
         for opt in self.optimizers:
             opt.zero_grad()
+
+    def state_dict(self):
+        """Return aggregated state from all wrapped optimizers."""
+        return {
+            "optimizers": [
+                {"index": i, "state_dict": opt.state_dict()}
+                for i, opt in enumerate(self.optimizers)
+            ]
+        }
+
+    def load_state_dict(self, state_dict):
+        """Load aggregated state into wrapped optimizers."""
+        if "optimizers" not in state_dict:
+            raise ValueError("Multiopt state_dict must contain 'optimizers' key")
+
+        opt_states = state_dict["optimizers"]
+
+        if len(opt_states) != len(self.optimizers):
+            raise ValueError(
+                f"Multiopt optimizer count mismatch: expected {len(self.optimizers)}, "
+                f"got {len(opt_states)}"
+            )
+
+        # Restore each optimizer by index
+        for opt_state in opt_states:
+            index = opt_state["index"]
+            if index >= len(self.optimizers):
+                raise ValueError(f"Invalid optimizer index in state_dict: {index}")
+
+            self.optimizers[index].load_state_dict(opt_state["state_dict"])

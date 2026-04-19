@@ -175,8 +175,9 @@ def add_tokens_to_tokenizer(
     special_tokens = token_config.get("special_tokens", [])
     if special_tokens:
         # Get existing additional_special_tokens to avoid duplicates
-        existing_special_tokens = set(
-            getattr(tokenizer, "additional_special_tokens", [])
+        _ast = getattr(tokenizer, "additional_special_tokens", None)
+        existing_special_tokens = (
+            set(_ast) if isinstance(_ast, (list, tuple, set)) else set()
         )
 
         # Filter out tokens that already exist
@@ -264,14 +265,16 @@ def update_config_from_tokenizer(
     model_config: PretrainedConfig,
     tokenizer: PreTrainedTokenizerBase,
     *,
-    update_vocab_size: bool = False,
+    update_vocab_size: bool = True,
 ):
     """Update model_config tokenizer meta-data from tokenizer
 
     Args:
         model_config: Model configuration to update
         tokenizer: Tokenizer to read metadata from
-        update_vocab_size: If True, update vocab_size to match tokenizer (only use when embeddings were resized)
+        update_vocab_size: If True (default), update vocab_size to match tokenizer length.
+            Pass False to skip vocab_size update when there is a known pre-existing mismatch
+            between model vocab_size and tokenizer size that should be preserved.
     """
     special_token_ids = [
         "bos_token_id",

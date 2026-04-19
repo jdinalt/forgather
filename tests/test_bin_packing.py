@@ -3,11 +3,11 @@ Unit tests for bin-packing algorithms in block_tokenizer.
 """
 
 from forgather.ml.datasets.block_tokenizer import (
-    Document,
     Bin,
-    split_document_optimally,
-    pack_sequences_optimized,
+    Document,
     _pack_single_document,
+    pack_sequences_optimized,
+    split_document_optimally,
 )
 
 

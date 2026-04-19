@@ -1,0 +1,24 @@
+-- extends "configs/baseline.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Canon-AB 4M"
+    -- set ns.config_description = "LlamaCanon 4M with Canon-A (pre-attn) and Canon-B (attn QKV)"
+    -- set ns.model_name = "canon_ab_4m"
+
+[model_definition]
+    -- include "config.canon_ab.model"
+
+#------------- config.canon_ab.model --------------
+-- extends "config.baseline.model"
+
+## Canon-AB: Pre-attention convolution (A) plus QKV convolution (B).
+## Standard feedforward (no D), no pre-FFN conv (no C).
+
+[feedforward_factory]
+    == super.super()
+
+[layer_factory]
+    == super()
+    # Disable Canon-C: use Identity (no-op) for the pre-FFN position
+    canon_c_factory: !partial:torch.nn:Identity

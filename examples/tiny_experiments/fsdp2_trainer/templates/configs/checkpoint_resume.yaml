@@ -1,0 +1,14 @@
+## FSDP2 Trainer sharded checkpoint resume test - resume from 500 to 1000 steps
+-- extends "configs/checkpoint_train.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "FSDP2 Checkpoint Resume"
+    -- set ns.config_description = "Resume FSDP2Trainer training from sharded checkpoint (500->1000 steps)"
+    -- set ns.log_name = "fsdp2_checkpoint_resume"
+
+[trainer_args]
+    == super()
+
+    resume_from_checkpoint: True
+    max_steps: 1000

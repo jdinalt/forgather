@@ -1,10 +1,9 @@
 -- extends 'project.yaml'
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Tiny Forgather Qwen3"
     -- set ns.config_description = "A tiny Qwen3 model"
     -- set ns.model_name = "tiny_fg_qwen3"
     -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'qwen3')
     -- set ns.model_project_config = "4M.yaml"
--- endblock config_metadata

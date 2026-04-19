@@ -1,0 +1,19 @@
+-- extends "configs/canon_a.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Canon-A NoPE 4M"
+    -- set ns.config_description = "LlamaCanon 4M with only Canon-A, no RoPE"
+    -- set ns.model_name = "canon_a_nope_4m"
+
+[model_definition]
+    -- include "config.canon_a_nope.model"
+
+#------------- config.canon_a_nope.model --------------
+-- extends "config.canon_a.model"
+
+## Canon-A without positional encoding.
+## Tests whether Canon-A's local token mixing compensates for lack of RoPE.
+
+[rel_positional_encoder]
+.define: &relative_pe null

@@ -1,0 +1,8 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Train Canon-BD"
+    -- set ns.config_description = "Train Canon 4M with only B (attn QKV) and D (FFN gate/up) layers"
+    -- set ns.model_name = "canon_bd_4m"
+    -- set ns.model_project_config = "canon_bd.yaml"

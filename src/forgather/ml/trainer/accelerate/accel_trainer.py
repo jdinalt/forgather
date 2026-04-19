@@ -1,14 +1,17 @@
 # A subclass of Trainer, which adds support for the Acclerate library.
 import logging
 from dataclasses import dataclass
-from typing import Dict, Optional, override
+from typing import Dict, Generic, List, Optional, TypeVar, cast, override
 
 import torch
 from accelerate import Accelerator
+from dacite import from_dict
 from torch import Tensor
+from torch.distributed.checkpoint.stateful import Stateful
 
-from ..trainer import Trainer, TrainingArguments
-from ..trainer_types import TrainerState
+from ..checkpoint_manager import RNGState
+from ..checkpoint_types import SharingPattern, StateComponent
+from ..trainer import Trainer, TrainerState, TrainingArguments
 
 logger = logging.getLogger(__name__)
 
@@ -18,21 +21,32 @@ class AccelTrainingArguments(TrainingArguments):
     pass
 
 
-class AccelTrainer(Trainer):
+TAccelTrainingArguments = TypeVar(
+    "TAccelTrainingArguments", bound=AccelTrainingArguments
+)
+
+
+class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArguments]):
     """
     Modify the base Trainer to use the Accelerate library.
     """
 
+    args: TAccelTrainingArguments
+
     def __init__(
         self,
         *,
-        args: AccelTrainingArguments,
+        args: TAccelTrainingArguments | dict,
         accelerator: Accelerator,
         **kwargs,
     ):
-        assert isinstance(args, AccelTrainingArguments)
-        self.args = args  # For type checking hint
+        if isinstance(args, dict):
+            args = cast(
+                TAccelTrainingArguments, from_dict(AccelTrainingArguments, args)
+            )
         assert isinstance(accelerator, Accelerator)
+        super().__init__(args=args, **kwargs)
+
         self.accelerator = accelerator
 
         # Ensure Accelerator and TrainingArguments gradient accumulation settings are consistent
@@ -50,26 +64,28 @@ class AccelTrainer(Trainer):
                     accelerator.gradient_accumulation_steps
                 )
 
-        super().__init__(args=args, **kwargs)
-
-    def _post_init(self) -> None:
-        super()._post_init()
         assert (
             not self.args.fuse_optim_with_backward
         ), "AccelTrainer does not support option fuse_optim_with_backward"
 
-        # Accel uses a special device target
-        self.args.device = self.accelerator.device
-        # Update process info
+        if self.args.mixed_precision is not None:
+            logger.warning(
+                "AccelTrainer ignores args.mixed_precision. "
+                "Configure mixed precision via Accelerator(mixed_precision=...) instead. "
+                f"Ignoring mixed_precision='{self.args.mixed_precision}'"
+            )
+            self.args.mixed_precision = None
+
+    @override
+    def _init_distributed(self):
         self.is_local_process_zero = self.accelerator.is_local_main_process
         self.is_world_process_zero = self.accelerator.is_main_process
         self.num_processes = self.accelerator.num_processes
 
     @override
-    def _wrap_loss_fn(self):
-        # Accelerate scales loss internaly
-        self.train_loss_fn = self.loss_fn
-        self.eval_loss_fn = self.loss_fn
+    def _init_device(self):
+        # Accel uses a special device target
+        self.args.device = self.accelerator.device
 
     @override
     def _wrap(
@@ -102,10 +118,6 @@ class AccelTrainer(Trainer):
             self._update_training_steps()
 
     @override
-    def _loss_post_scaler(self):
-        return 1.0 / self.args.gradient_accumulation_steps
-
-    @override
     def _distributed_loss(self, loss: Tensor) -> Tensor:
         """
         Reduces loss accross processes
@@ -113,6 +125,21 @@ class AccelTrainer(Trainer):
         reduced_loss = self.accelerator.reduce(loss, "mean")
         assert isinstance(reduced_loss, Tensor)
         return reduced_loss
+
+    @override
+    def _distributed_peak_mem(self, local_peak: int) -> list[int]:
+        """
+        All-gather per-rank peak CUDA memory via Accelerate.
+        """
+        if self.dist.world_size == 1:
+            return super()._distributed_peak_mem(local_peak)
+
+        value = torch.tensor(
+            [int(local_peak)], dtype=torch.long, device=self.args.device
+        )
+        gathered = self.accelerator.gather(value)
+        assert isinstance(gathered, Tensor)
+        return [int(v) for v in gathered.tolist()]
 
     @override
     def _prepare_batch(
@@ -143,8 +170,122 @@ class AccelTrainer(Trainer):
         return self.accelerator.unwrap_model(self.model)
 
     @override
+    def get_state_components(self) -> List[StateComponent]:
+        """
+        Get state components for Accelerate-based distributed training.
+
+        All training state is always saved to checkpoints. To skip loading a component,
+        delete its file from the checkpoint directory.
+
+        Accelerate uses DDP for multi-GPU training, which synchronizes model
+        and optimizer state across all ranks. Therefore, we use REPLICATED
+        pattern for these components with validation enabled to catch sync bugs.
+
+        Returns:
+            List of StateComponent objects with REPLICATED patterns for DDP state
+        """
+        components = []
+
+        # Model - REQUIRED, REPLICATED in DDP
+        # Accelerate synchronizes model weights across all ranks
+        # cast: nn.Module doesn't structurally satisfy Stateful (state_dict returns None, not dict)
+        components.append(
+            StateComponent(
+                key="model",
+                stateful=cast(Stateful, self.unwrapped_model()),
+                sharing_pattern=SharingPattern.REPLICATED,
+                validate_replication=True,  # Verify DDP synchronization
+                validation_level="tensor",  # Good balance of speed vs accuracy
+                required=True,  # Model is always required
+            )
+        )
+
+        # Optimizer - optional, REPLICATED in DDP
+        # Accelerate synchronizes optimizer state across all ranks
+        # Note: Validation disabled - AcceleratedOptimizer wrapper may have rank-specific state
+        if self.optimizer is not None:
+            components.append(
+                StateComponent(
+                    key="optimizer",
+                    stateful=cast(Stateful, self.optimizer),
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    validate_replication=False,  # Disabled: AcceleratedOptimizer has rank-specific state
+                    validation_level="quick",
+                    required=False,
+                )
+            )
+
+        # LR Scheduler - optional, REPLICATED
+        # Same schedule across all ranks
+        if self.lr_scheduler is not None:
+            components.append(
+                StateComponent(
+                    key="scheduler",
+                    stateful=cast(Stateful, self.lr_scheduler),
+                    sharing_pattern=SharingPattern.REPLICATED,
+                    required=False,
+                )
+            )
+
+        # Trainer state - optional, REPLICATED
+        # Training progress is synchronized across all ranks
+        components.append(
+            StateComponent(
+                key="trainer",
+                stateful=self,
+                sharing_pattern=SharingPattern.REPLICATED,
+                required=False,
+            )
+        )
+
+        # Dataset state - optional, depends on dataloader configuration
+        # Accelerate can use different data loading strategies
+        # cast: DataLoader doesn't structurally satisfy Stateful without stateful dataloader support
+        if hasattr(self.train_dataloader, "state_dict"):
+            components.append(
+                StateComponent(
+                    key="dataset",
+                    stateful=cast(Stateful, self.train_dataloader),
+                    sharing_pattern=self._get_dataset_sharing_pattern(),
+                    required=False,
+                )
+            )
+
+        # RNG state - optional, PER_RANK
+        # Each rank needs different random numbers for data augmentation, dropout, etc.
+        components.append(
+            StateComponent(
+                key="rng",
+                stateful=RNGState(),
+                sharing_pattern=SharingPattern.PER_RANK,
+                required=False,
+            )
+        )
+
+        return components
+
+    @override
+    def _get_dataset_sharing_pattern(self) -> SharingPattern:
+        """
+        Determine dataset sharing pattern for Accelerate training.
+
+        Accelerate can handle data loading in different ways:
+        - split_batches=True: Batches split across GPUs (needs coordination)
+        - split_batches=False: Each GPU gets full batch (independent)
+
+        For now, conservatively use PER_RANK for independent iteration.
+        In future, could detect DataloaderDispatcher and use GLOBAL.
+
+        Returns:
+            SharingPattern for dataset state
+        """
+        # TODO: Could check for DataloaderDispatcher and return GLOBAL
+        # For now, assume independent dataloaders per rank
+        return SharingPattern.PER_RANK
+
+    @override
     def _end_train_loop(
-        self, start_time: float, train_steps: int
+        self, start_time: float | None, train_steps: int
     ) -> dict[str, int | float]:
         self.accelerator.end_training()
         return super()._end_train_loop(start_time, train_steps)
@@ -153,6 +294,7 @@ class AccelTrainer(Trainer):
     def _clip_grad_norm(
         self, max_grad_norm: float | None, norm_type: float = 2.0
     ) -> Optional[Tensor]:
+        assert self.model is not None
         if max_grad_norm is None or max_grad_norm == 0:
             grads = [p.grad for p in self.model.parameters() if p.grad is not None]
 

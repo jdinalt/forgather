@@ -2,8 +2,9 @@
 Stop sequence processing for generation trimming.
 """
 
+from typing import Any, List, Optional, Tuple
+
 import torch
-from typing import List, Tuple, Optional, Any
 from transformers import PreTrainedTokenizer
 
 

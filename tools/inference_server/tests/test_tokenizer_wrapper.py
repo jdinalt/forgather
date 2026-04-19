@@ -2,9 +2,11 @@
 Unit tests for TokenizerWrapper.
 """
 
+from unittest.mock import MagicMock, Mock
+
 import pytest
 import torch
-from unittest.mock import Mock, MagicMock
+
 from ..core.tokenizer_wrapper import TokenizerWrapper
 
 

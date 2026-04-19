@@ -1,0 +1,24 @@
+-- extends "configs/baseline.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Canon-BD 4M"
+    -- set ns.config_description = "LlamaCanon 4M with only Canon-B (attn QKV) and Canon-D (FFN gate/up)"
+    -- set ns.model_name = "canon_bd_4m"
+
+[model_definition]
+    -- include "config.canon_bd.model"
+
+#------------- config.canon_bd.model --------------
+-- extends "config.baseline.model"
+
+## Canon-BD: Keep Canon layers inside attention (B) and feedforward (D),
+## but use standard transformer layer (disabling A and C).
+
+[layer_factory]
+.define: &layer_factory !partial:.pre_ln_layer:PreLNLayer@layer_factory
+    feedforward_factory: *feedforward_factory
+    attention_factory: *attention_factory
+    norm_factory: *layer_norm_factory
+    dropout: !var "layer_dropout"
+    residual_dropout: !var "residual_dropout"

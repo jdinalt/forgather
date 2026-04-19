@@ -15,11 +15,10 @@
 [model_tokenizer]
 tokenizer: &tokenizer !call:transformers:AutoTokenizer.from_pretrained@tokenizer
     arg0: "{{ ns.model_id_or_path }}"
+    trust_remote_code: True
 
 [model_constructor]
 model: &model !partial:transformers:AutoModelForCausalLM.from_pretrained@model
     arg0: "{{ ns.model_id_or_path }}"
-    -- if ns.trust_remote_code
     trust_remote_code: True
-    -- endif
     <<: *model_constructor_args

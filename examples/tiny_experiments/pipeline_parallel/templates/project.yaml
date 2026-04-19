@@ -8,11 +8,15 @@
     -- set ns.model_project_dir = joinpath(project_dir, 'models/causal')
     -- set ns.model_project_config = "pipeline_model.yaml"
 
-[trainer_definition]
-    -- include 'project.trainer_config'
-
-[trainer_callbacks]
-    -- include 'project.callbacks'
+[trainer_args]
+    == super()
+    # Project Overrides
+    per_device_train_batch_size: 64
+    per_device_eval_batch_size: 64
+    logging_steps: 10
+    eval_steps: 50
+    max_steps: {{ max_steps | default(250) }}
+    default_dtype: "bfloat16"
 
 [datacollator]
 # Pipeline Parallel requires constant input tensor shapes. Use the datacollator to
@@ -29,18 +33,8 @@ optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
     lr: 1.0e-3
     weight_decay: 0.01
 
-#-------------------- project.trainer_config --------------------
--- extends 'tiny.trainer_config'
-
-[trainer_args]
-    == super()
-    # Project Overrides
-    per_device_train_batch_size: 64
-    per_device_eval_batch_size: 64
-    logging_steps: 10
-    eval_steps: 50
-    max_steps: {{ max_steps | default(250) }}
-    default_dtype: "bfloat16"
+[trainer_callbacks]
+    -- include 'project.callbacks'
 
 #-------------------- project.callbacks --------------------
 -- extends 'tiny.callbacks'

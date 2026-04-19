@@ -1,32 +1,138 @@
--- extends 'projects/base_finetune_proj.yaml'
+-- extends 'projects/finetune_v2.yaml'
+
+## Lovecraft fine-tune base.  Extends the ``finetune_v2`` project template,
+## which in turn extends ``lm_training_project.yaml``.  The parent wires up
+## token-budget-driven step computation, automatic LR scaling from batch
+## size, and WSD learning-rate scheduler
+## See ``docs/project-templates/lm-training-projects.md`` for the full parameter
+## list.
 
 [config_metadata]
     == super()
-    -- set ns.config_name = "Samantha Finetune"
-    -- set ns.config_description = "Undefined"
-    -- set ns.log_name = "default"
-    -- set ns.default_dataset_proj = joinpath(workspace_root, 'lovecraft_dataset')
-    -- set ns.default_dataset_config = "4k.yaml"
+    -- set ns.config_name = "Lovecraft Finetune"
+    -- set ns.config_description = "Fine-tune a causal LM on H.P. Lovecraft"
 
-[optimizer]
-optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
-    lr: 4.0e-6
-    weight_decay: 0.001
+    ## Dataset.  Points at the sibling dataset project in this workspace.
+    -- set ns.dataset_proj = joinpath(workspace_root, 'lovecraft_dataset')
+    -- set ns.dataset_config = dataset_config | default("lovecraft-packed.yaml")
 
-[lr_scheduler]
-lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
-    warmup_steps: 50
-    cooldown_steps: 0 # Use constant learning-rate, after warmup
+    ## Batching.  Override from a child config or on the CLI via
+    ## ``--seq-len`` / ``--batch-size``.  The dataset's ``block_tokenize_fn``
+    ## receives ``ns.seq_len`` as ``max_length``.
+    -- set ns.seq_len = seq_len | default(4096)
+    -- set ns.per_device_train_batch_size = batch_size | default(1)
 
-#-------------------- project.trainer --------------------
--- extends "finetune.trainer"
+    ## Token budget.  The default (~7M tokens) works out to roughly 10 epochs
+    ## on the ~156-block packed corpus at 4K context.
+    -- set ns.total_tokens = total_tokens | default(7)
+
+    ## Compile.  finetune_v2 defaults torch_compile=True with max-autotune,
+    ## which is great for throughput on a spare GPU but expensive on memory;
+    ## disable by default for the tutorial's 24 GB target budget.  Enable
+    ## with ``--compile true`` from the CLI when you have headroom.
+    -- set ns.torch_compile = compile | default(False)
+
+    ## Log every 1M tokens, validate every 25M, save every 500M (these are
+    ## the ``lm_training_project`` defaults -- ``ns.step_cadence``
+    ## scales them all uniformly).  For a small dataset we want to log more
+    ## often; tighten the cadence so evaluation tracks training progress.
+    -- set ns.step_cadence = step_cadence | default(0.02)
+
+    ## LR schedule (millions of tokens).  WSD warmups, holds, then anneals
+    ## over the last ``annealing_tokens``.  Defaults sized so the tutorial's
+    ## default ~7M-token run still has a proper stable phase; override the
+    ## totals when training longer.  Adafactor + 7B + bf16 needs at least
+    ## a modest warmup -- step-1 grad norms were in the 200-600 range at
+    ## lr=5e-5 with warmup_tokens=0.
+    -- set ns.warmup_tokens = warmup_tokens | default(0.5)
+    -- set ns.annealing_tokens = annealing_tokens | default(1)
+
+    ## LR.  The earlier 5e-5 sweep on this corpus was run against the
+    ## pre-finetune_v2 template, where a plumbing gap silently fed the
+    ## tokenizer 4K blocks padded to 16K -- i.e. ~4K real tokens per
+    ## optimizer step.  With the gap fixed, a step processes ~4x more
+    ## real tokens, and the non-YaRN variants diverge on Adafactor+bf16
+    ## at 5e-5 (loss spikes + grad norms in the hundreds by step ~20).
+    ## 2e-5 is a conservative starting point; re-sweep on the properly
+    ## plumbed setup if you want a tighter bound.  lr_alpha=0 keeps it
+    ## constant across seq_len / batch size.
+    -- set ns.base_lr = lr | default(2.0e-5)
+    -- set ns.lr_alpha = lr_alpha | default(0.0)
+
+    ## Text-generation eval prompts.  finetune_v2's TextgenCallback
+    ## periodically samples from the model during training to make
+    ## quality regressions visible in tensorboard.  Default prompts are
+    ## generic short-story openings; swap in a Lovecraft-flavoured set
+    ## of invented titles and opening lines so the generated samples
+    ## show whether the fine-tune is actually picking up the target
+    ## style.  Path is set as an absolute path resolved from
+    ## ``project_dir`` (the training project dir) so it doesn't depend
+    ## on the shell's CWD at training time.
+    -- set ns.eval_prompts_file = eval_prompts_file | default(abspath(joinpath(project_dir, "../../prompts/lovecraft_seeds.yaml")))
+    -- set ns.eval_max_new_tokens = eval_max_new_tokens | default(256)
+
+[globals]
+    == super()
+    ## Auto-decay trigger: WSD switches from stable -> decay at this step.
+    ## Floor at 1 so that even if annealing_tokens >= total_tokens (or the
+    ## user passes --warmup-tokens 0 on a tiny budget) the stable phase
+    ## has at least one step and decay_start_step is never 0.
+    -- set ns.decay_start_step = [ns.warmup_steps, (ns.total_steps - ns.annealing_steps), 1] | max | int
+
+## finetune_v2 defaults to building a *fresh* model from config (pretraining
+## pattern).  Override with from_pretrained_model.yaml so the pretrained
+## weights are actually loaded into the model -- we're fine-tuning.
+[construct_new_model]
+    -- include 'models/causal_lm/from_pretrained_model.yaml'
+
+[variable_listing]
+    == super()
+# ns.decay_start_step: {{ ns.decay_start_step }}
 
 [trainer_args]
     == super()
-    # **project**
-    logging_steps: 10
-    eval_steps: 50
-    max_eval_steps: 10
-    save_steps: 250
-    per_device_train_batch_size: 8
-    per_device_eval_batch_size: 16
+    ## Single-GPU memory knobs.  Together these fit 7B + 16K context on
+    ## a 24 GB card; on larger cards they can be disabled for more speed.
+    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
+    fuse_optim_with_backward: {{ fuse_optim_with_backward | default(True) }}
+    enable_activation_offloading: {{ activation_offloading | default(True) }}
+
+    ## The dataset from preprocess_dataset doesn't implement set_epoch,
+    ## so the default True here crashes at each epoch boundary with
+    ## `AttributeError: 'Dataset' object has no attribute 'set_epoch'`.
+    ## Disable unless you swap in a dataset that supports reshuffling.
+    set_dataset_epoch: False
+
+    ## finetune_v2 defaults max_steps = -1, which runs for
+    ## `num_train_epochs` worth of data.  Here we rebind max_steps to
+    ## ns.total_steps so child configs' `total_tokens` parameter bounds
+    ## training.
+    ##
+    ## Tradeoff: epochs vs token budget.  The block tokenizer carries
+    ## unused tail tokens across block boundaries, so one epoch is an
+    ## approximately fixed number of *tokens* regardless of seq_len or
+    ## batch size -- which means epochs are seq_len-invariant too.  The
+    ## practical differences:
+    ##   - Epochs are easier to reason about when the goal is fitting a
+    ##     fixed corpus without over-training on the same data.
+    ##   - A token budget is easier to reason about when the axis of
+    ##     experimentation is context length, and it lets you set
+    ##     `decay_start_step` directly without first counting tokens per
+    ##     epoch for a given tokenizer.
+    ## Revert to epochs by setting `max_steps: -1` here and using
+    ## `--epochs N` on the CLI; warmup_tokens / annealing_tokens still work
+    ## (they're converted to step counts independently of max_steps).
+    max_steps: {{ max_steps | toyaml(ns.total_steps) }}
+    ## Disable the epoch cap so only max_steps bounds the run.  finetune_v2
+    ## defaults num_train_epochs=1, and HF Trainer stops at min(max_steps,
+    ## num_train_epochs*len(dataset)); a 40-block packed corpus would hit
+    ## 1 epoch at step 40, well before our token budget.
+    num_train_epochs: {{ epochs | default(-1) }}
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    decay_steps: {{ ns.annealing_steps }}
+    decay_start_step: {{ ns.decay_start_step }}
+    start_decay: {{ start_annealing | toyaml(False) }}

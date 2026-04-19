@@ -1,0 +1,15 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Torch AdamW"
+    -- set ns.config_description = "Torch AdamW; the baseline control"
+    -- set ns.log_name = log_name | default("adamw")
+
+[optimizer]
+optimizer: &optimizer !partial:torch:optim.AdamW
+    lr: {{ ns.global_lr | toyaml }}
+    betas: # [ beta1, beta2 ]
+        - !!float 0.9
+        - {{ ns.scaled_beta2 | toyaml }}
+    fused: True

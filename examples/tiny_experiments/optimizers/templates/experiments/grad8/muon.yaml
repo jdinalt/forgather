@@ -1,0 +1,8 @@
+-- extends 'experiments/amp/muon.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Torch Muon-8"
+    -- set ns.config_description = "Torch Muon optimizer w/ 8 gradient accumulation steps"
+    -- set ns.log_name = log_name | default("muon-8")
+    -- set ns.gradient_accumulation_steps = 8

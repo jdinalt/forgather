@@ -1,0 +1,16 @@
+-- extends "test/test_type.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Eval: TinyStories"
+    -- set ns.config_description = "Evaluate on the packed TinyStories test split"
+    -- set ns.eval_name = "tinystories"
+
+[main_body]
+    == super()
+    dataset_proj: "{{ abspath(joinpath(ns.forgather_dir, "examples", "datasets", "roneneldan")) }}"
+    dataset_config: "tinystories-packed.yaml"
+    default_max_length: 2048
+    default_batch_size: 16
+
+    

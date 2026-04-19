@@ -8,7 +8,7 @@
 
 
 -- block tokenizer_dataset
-tokenizer_dataset: &tokenizer_dataset !singleton:datasets:load_dataset@tokenizer_dataset
+tokenizer_dataset: &tokenizer_dataset !partial:datasets:load_dataset@tokenizer_dataset
     args: [ "roneneldan/TinyStories" ]
     kwargs: { split: "train" }
 << endblock tokenizer_dataset

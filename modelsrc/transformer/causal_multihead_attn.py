@@ -1,10 +1,9 @@
-import logging
 import math
-import os
 from typing import Any, Callable, Optional
 
 import torch
 from torch import FloatTensor, nn
+from transformers.cache_utils import Cache
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
 
@@ -19,7 +18,7 @@ class CausalMultiheadAttn(nn.Module):
         num_heads: int,
         *,
         attn_implementation: str,
-        attn_functions: Optional[dict[str, Callable]],
+        attn_functions: Optional[dict[str, Callable]] = None,
         config: Any = None,
         num_kv_heads: Optional[int] = None,
         pos_encoder: Optional[Callable] = None,
@@ -27,6 +26,9 @@ class CausalMultiheadAttn(nn.Module):
         dropout: float = 0.0,
         qk_norm_factory: Optional[Callable] = None,
         layer_idx: int,
+        sliding_window: Optional[int] = None,
+        head_dim: Optional[int] = None,
+        query_pre_attn_scalar: Optional[float] = None,
         **kwargs,
     ):
         """
@@ -40,17 +42,25 @@ class CausalMultiheadAttn(nn.Module):
             pos_encoder: A relative positional encoder
             bias: Apply bias to Q, K, V, and O
             dropout: Attention dropout -- not compatible with flex-attention!
+            head_dim: Optional explicit per-head dimension. When provided, Q/K/V/O
+                projections use ``num_heads * head_dim`` instead of ``d_model``.
+                Used by models like Gemma where ``head_dim * num_heads != d_model``.
+            query_pre_attn_scalar: Optional explicit scaling denominator. When
+                provided, attention scale is ``1 / sqrt(query_pre_attn_scalar)``
+                instead of ``1 / sqrt(d_head)``. Used by Gemma.
         """
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads or num_heads  # Default to MHA
+        self.bias = bias
         self.pos_encoder = pos_encoder
 
         # TODO: Temporary hack for flash-attention-2. Do this right!
         if attn_implementation == "flash_attention_2":
             self.is_causal = True
         self.config = config
+        self.sliding_window = sliding_window
 
         # Note: A variable with this name is required by vLLM
         self.layer_idx = layer_idx
@@ -63,26 +73,40 @@ class CausalMultiheadAttn(nn.Module):
             # Fallback to HF registry
             self.attn_fn = ALL_ATTENTION_FUNCTIONS[attn_implementation]
 
-        assert d_model % num_heads == 0, "d_model must be evenly divisible by num_heads"
         assert (
             num_heads % self.num_kv_heads == 0
         ), "num_heads must be divisible by num_kv_heads"
 
-        self.d_head = d_model // num_heads
-        self.scale = 1.0 / math.sqrt(self.d_head)
+        if head_dim is not None:
+            self.d_head = head_dim
+        else:
+            assert (
+                d_model % num_heads == 0
+            ), "d_model must be evenly divisible by num_heads"
+            self.d_head = d_model // num_heads
+
+        if query_pre_attn_scalar is not None:
+            self.scale = 1.0 / math.sqrt(query_pre_attn_scalar)
+        else:
+            self.scale = 1.0 / math.sqrt(self.d_head)
         self.num_key_value_groups = self.num_heads // self.num_kv_heads
 
         # Query projections for all heads
         self.query_linear = nn.Linear(d_model, self.num_heads * self.d_head, bias=bias)
+        setattr(self.query_linear, "init_prefix", "attn.query")
 
         # Key/Value projections for KV heads (potentially fewer than query heads)
         self.key_linear = nn.Linear(d_model, self.num_kv_heads * self.d_head, bias=bias)
+        setattr(self.key_linear, "init_prefix", "attn.key")
+
         self.value_linear = nn.Linear(
             d_model, self.num_kv_heads * self.d_head, bias=bias
         )
+        setattr(self.value_linear, "init_prefix", "attn.value")
 
         # Output projection
         self.output_linear = nn.Linear(self.num_heads * self.d_head, d_model, bias=bias)
+        setattr(self.output_linear, "init_prefix", "attn.output")
 
         # Store dropout probability for SDPA function
         self.dropout_p = dropout
@@ -101,17 +125,18 @@ class CausalMultiheadAttn(nn.Module):
             f"d_model={self.d_model}, "
             f"num_heads={self.num_heads}, "
             f"num_kv_heads={self.num_kv_heads}, "
+            f"bias={self.bias}, "
             f"attn_implementation={self.attn_implementation}, "
-            f"dropout_p={self.dropout_p}"
+            f"dropout_p={self.dropout_p}, "
+            f"sliding_window={self.sliding_window}"
         )
 
     def forward(
         self,
         hidden_states: FloatTensor,
         attention_mask: Optional[torch.Tensor] = None,
-        past_key_values: Optional["Cache"] = None,
+        past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> FloatTensor:
         batch_size, seq_len, d_model = hidden_states.shape
@@ -139,9 +164,11 @@ class CausalMultiheadAttn(nn.Module):
         if self.k_norm:
             key = self.k_norm(key)
 
-        # Apply relative positional embeddings to query and key tensors
+        # Apply relative positional embeddings to query and key tensors.
+        # The pos_encoder callable receives **kwargs which carries
+        # position_embeddings=(cos, sin) from the central RotaryEmbedding.
         if self.pos_encoder:
-            query, key = self.pos_encoder(query, key, position_ids)
+            query, key = self.pos_encoder(query, key, **kwargs)
 
         # Transpose to [batch, heads, seq_len, d_head], for attention function
         query = query.transpose(1, 2)
@@ -163,6 +190,7 @@ class CausalMultiheadAttn(nn.Module):
             dropout=(self.dropout_p if self.training else 0.0),
             scaling=self.scale,
             config=self.config,
+            sliding_window=self.sliding_window,
             **kwargs,
         )
 

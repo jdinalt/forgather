@@ -1,0 +1,11 @@
+-- extends 'bfloat16.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "FG Adafactor bf16"
+    -- set ns.config_description = "Forgather Triton Adafactor Implementation"
+    -- set ns.log_name = log_name | default("fg_adafactor_bf16")
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim:Adafactor
+    lr: {{ ns.global_lr | toyaml }}

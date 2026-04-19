@@ -17,8 +17,9 @@ tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@toke
     arg0: "mistralai/Mistral-7B-Instruct-v0.2"
     legacy: False
     model_max_length: 32768
+    trust_remote_code: True
 
 [model_config]
     == super()
     # **Mistral 7B Instruct**
-    rope_theta: {{ rope_theta | toyaml(1000000.0) }}
+    rope_parameters: {{ rope_parameters | toyaml({'rope_theta': 1000000.0}) }}

@@ -1,0 +1,17 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Nesterov SGD"
+    -- set ns.config_description = "Torch Nesterov SGD"
+    -- set ns.log_name = log_name | default("nesterov_sgd")
+    -- set ns.lr_alpha = 1.0
+    -- set ns.base_lr = lr | default(1e-1)
+
+[optimizer]
+optimizer: &optimizer !lambda:torch:optim.SGD
+    lr: {{ ns.global_lr | toyaml }}
+    momentum: 0.9
+    nesterov: True
+    fused: True
+    weight_decay: !!float 1e-6

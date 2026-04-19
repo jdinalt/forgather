@@ -9,12 +9,6 @@
     ## Set trainer; this is a variable defined in 'projects/tiny.yaml'
     -- set ns.trainer_class = 'trainers/trainer.yaml'
 
-[trainer_definition]
-    -- include 'trainer.trainer_config'
-
-#-------------------- trainer.trainer_config --------------------
--- extends 'project.trainer_config'
-
 [trainer_args]
     == super()
     # Not supported by HF trainer.

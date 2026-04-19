@@ -1,0 +1,28 @@
+-- extends 'project.yaml'
+##   Implements the WSD-S protocol from:
+##    "Understanding Warmup-Stable-Decay Learning Rates: A River Valley
+##    Loss Landscape Perspective"
+##    (https://arxiv.org/abs/2410.05192)
+##
+##    The schedule consists of three phases:
+##
+##        1. Warmup: Linear increase from 0 to base_lr over warmup_steps.
+##        2. Stable: Maintains base_lr indefinitely until decay is triggered.
+##        3. Decay: Harmonic/rational decay from base_lr to min_lr over
+##           decay_steps. Uses linear interpolation of inverse LR, which
+##           drops quickly at first then slows (convex decay curve).
+[config_metadata]
+    == super()
+    -- set ns.config_name = "WDS"
+    -- set ns.config_description = "Warmup Stable Decay Scheduler"
+    -- set ns.model_name = model_name | default("wds")
+    ## Run for 11x Chinchilla
+    -- set ns.total_tokens = total_tokens | default(24970)
+    -- set ns.annealing_tokens = annealing_tokens | default(2497)
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    decay_steps: {{ ns.annealing_steps }}
+    decay_start_step: {{ ns.decay_start_step }}

@@ -3,7 +3,6 @@
     == super()
     -- set ns.trainer_name = "forgather.ml.trainer.accelerate:AccelTrainer"
     -- set ns.trainer_description = "A lightweight, extensible trainer w/ Accelerate support"
-    -- set ns.nproc_per_node = "gpu"
     -- set ns.trainer_config_class = "forgather.ml.trainer.accelerate:AccelTrainingArguments"
     -- set ns.trainer_class = "forgather.ml.trainer.accelerate:AccelTrainer"
 
@@ -20,10 +19,6 @@
 accelerator: &accelerator !call:accelerate:Accelerator
     dataloader_config: *accel_dataloader_config
     project_dir: "{{ ns.output_dir }}"
-
-[trainer_args]
-    == super()
-    # **AccelTrainer**
 
 [trainer_constructor]
     == super()

@@ -2,7 +2,7 @@ import re
 from collections import defaultdict
 from pprint import pp
 from types import NoneType
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from forgather.preprocess import preprocess, split_templates
 
@@ -11,10 +11,12 @@ TemplateFilePath = str  # Path in file-system to template file
 TemplateData = str  # Actual template contents
 TemplateFileIter = Iterable[Tuple[TemplateName, TemplateFilePath]]
 TemplateDataIter = Iterable[Tuple[TemplateName, TemplateFilePath, TemplateData]]
-# (template_name, template_extends_name)
-TemplateExtendsIter = Iterable[Tuple[TemplateName, TemplateFilePath, TemplateName]]
+# (template_name, template_file_path, extends_name_or_none)
+TemplateExtendsIter = Iterable[
+    Tuple[TemplateName, TemplateFilePath, Optional[TemplateName]]
+]
 ExtendsNode = NoneType | List[Tuple[TemplateName, TemplateFilePath, "ExtendsNode"]]
-TemplateList = List[TemplateName]
+TemplateList = List[Tuple[TemplateName, TemplateFilePath]]
 
 
 def template_data_iter(template_iter: TemplateFileIter) -> TemplateDataIter:
@@ -81,6 +83,8 @@ def extends_graph_iter(
     """
     Given a template inheritance graph, returns an iterable of nodes in the graph.
     """
+    if extends_graph is None:
+        return
     for template_name, template_path, extended_by in extends_graph:
         yield level, template_name, template_path
         if extended_by:

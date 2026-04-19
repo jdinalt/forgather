@@ -1,4 +1,4 @@
--- extends "datasets/tokenized_dataset.yaml"
+-- extends "datasets/load_dataset.yaml"
 
 [config_metadata]
     == super()
@@ -7,44 +7,8 @@
     -- set ns.config_name = "https://huggingface.co/datasets/EleutherAI/wikitext_document_level"
     -- set ns.main_feature = "page"
 
-[train_dataset_split]
-train_dataset_split: &train_dataset_split !singleton:datasets:load_dataset@train_dataset_split
-    args: [ "EleutherAI/wikitext_document_level", "wikitext-103-raw-v1" ]
-    kwargs: { split: "train" }
-
-[validation_dataset_split]
-validation_dataset_split: &validation_dataset_split !singleton:datasets:load_dataset@validation_dataset_split
-    args: [ "EleutherAI/wikitext_document_level", "wikitext-103-raw-v1" ]
-    kwargs: { split: "validation" }
-
-[test_dataset_split]
-test_dataset_split: &test_dataset_split !singleton:datasets:load_dataset@test_dataset_split
-    args: [ "EleutherAI/wikitext_document_level", "wikitext-103-raw-v1" ]
-    kwargs: { split: "test" }
-
-[preprocess_args]
+[load_dataset_args]
     == super()
-
-[train_dataset]
-train_dataset: &train_dataset !singleton:forgather.ml.datasets:preprocess_dataset@train_dataset
-    dataset: *train_dataset_split
-    tokenizer: *tokenizer
-    desc: "Tokenizing train"
-    fn_kwargs: !var "preprocess_args"
-    feature: "{{ ns.main_feature }}"
-
-[eval_dataset]
-eval_dataset: &eval_dataset !singleton:forgather.ml.datasets:preprocess_dataset@eval_dataset
-    dataset: *validation_dataset_split
-    tokenizer: *tokenizer
-    desc: "Tokenizing eval"
-    fn_kwargs: !var "preprocess_args"
-    feature: "{{ ns.main_feature }}"
-
-[test_dataset]
-test_dataset: &test_dataset !singleton:forgather.ml.datasets:preprocess_dataset@test_dataset
-    dataset: *test_dataset_split
-    tokenizer: *tokenizer
-    desc: "Tokenizing test"
-    fn_kwargs: !var "preprocess_args"
-    feature: "{{ ns.main_feature }}"
+    path: "EleutherAI/wikitext_document_level"
+    name: "wikitext-103-raw-v1"
+    revision: "6472347"

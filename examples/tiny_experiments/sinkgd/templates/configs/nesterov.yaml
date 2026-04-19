@@ -1,0 +1,9 @@
+-- extends "exp.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "SinkGD Nesterov"
+    -- set ns.config_description = "SinkGD with Nesterov momentum=0.9"
+    -- set ns.log_name = log_name | default("nesterov")
+    -- set ns.momentum = 0.9
+    -- set ns.nesterov = True

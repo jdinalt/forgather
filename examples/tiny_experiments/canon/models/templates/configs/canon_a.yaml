@@ -1,0 +1,28 @@
+-- extends "configs/baseline.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Canon-A 4M"
+    -- set ns.config_description = "LlamaCanon 4M with only Canon-A (pre-attention convolution)"
+    -- set ns.model_name = "canon_a_4m"
+
+[model_definition]
+    -- include "config.canon_a.model"
+
+#------------- config.canon_a.model --------------
+-- extends "config.baseline.model"
+
+## Canon-A only: Depthwise causal convolution before attention.
+## Mixes adjacent token representations before attention sees them,
+## facilitating induction head formation.
+
+[feedforward_factory]
+    == super.super()
+
+[attention_factory]
+    == super.super()
+
+[layer_factory]
+    == super()
+    # Disable Canon-C: use Identity (no-op) for the pre-FFN position
+    canon_c_factory: !partial:torch.nn:Identity

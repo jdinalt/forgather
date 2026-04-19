@@ -1,0 +1,7 @@
+-- extends "meta_defaults.yaml"
+
+[configs]
+name: "Progressive Dataset"
+description: "Smoothly transitions from Tiny Stories to Small LM dataset"
+config_prefix: "configs"
+default_config: "default.yaml"

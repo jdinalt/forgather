@@ -1,0 +1,37 @@
+-- extends "configs/lovecraft.yaml"
+
+## Packed variant of the Lovecraft dataset.  Concatenates multiple stories
+## into each output block to make better use of the model's context window;
+## blocks tend to be close to ``max_length`` tokens of real content with
+## per-document ``document_starts`` recorded for the data collator.  Use
+## this when training at longer contexts where short stories would
+## otherwise produce short, padded sequences.
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Lovecraft Packed"
+    -- set ns.config_description = "Densely-packed Lovecraft blocks"
+
+[map_function]
+.define: &map_function !partial:forgather.ml.datasets:block_tokenize_fn
+    max_length: {{ max_length | default(4096) }}
+    stride: {{ stride | default(0) }}
+    packed: True
+    packing_strategy: "best_fit"
+    shuffle_output: True
+    min_len: {{ min_length | default(64) }}
+
+[train_dataset]
+    == super()
+    map_kwargs:
+        batch_size: 1000    # Larger batches let the packer find better fits.
+
+[eval_dataset]
+    == super()
+    map_kwargs:
+        batch_size: 1000
+
+[test_dataset]
+    == super()
+    map_kwargs:
+        batch_size: 1000

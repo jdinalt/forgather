@@ -1,0 +1,18 @@
+-- extends 'trainers/trainer.yaml'
+[trainer_meta_config]
+    == super()
+    -- set ns.trainer_name = "forgather.ml.trainer.fsdp2:FSDP2Trainer"
+    -- set ns.trainer_description = "Trainer with FSDP2 (fully_shard) sharded data parallel support"
+    -- set ns.trainer_config_class = "forgather.ml.trainer.fsdp2:FSDP2TrainingArguments"
+    -- set ns.trainer_class = "forgather.ml.trainer.fsdp2:FSDP2Trainer"
+
+[trainer_dependencies]
+    == super()
+
+[trainer_args]
+    == super()
+    # **FSDP2**
+
+[trainer_constructor]
+    == super()
+    # **FSDP2**

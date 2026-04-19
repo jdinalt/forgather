@@ -2,6 +2,24 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Claude Code Development Notes
+
+**Location**: `.claude_notes/`
+
+This directory contains development notes, implementation summaries, and progress tracking documents created by Claude Code during feature development. These files are useful for:
+- Tracking implementation progress across sessions
+- Documenting design decisions and issues encountered
+- Providing context for future work on related features
+- Keeping detailed records of what was implemented and tested
+
+**Important**: This directory is gitignored and should NOT be merged to main branches. These are working notes, not official documentation.
+
+**Examples**: PHASE1_IMPLEMENTATION_SUMMARY.md, CHECKPOINT_INTEGRATION_SUMMARY.md
+
+## Testing
+
+See `docs/development/testing.md` for the complete testing guide, including test organization, running tests, shared fixtures, and recommended workflows.
+
 ## Development Commands
 
 ### Forgather CLI (forgather) - Primary Interface
@@ -94,6 +112,58 @@ trainer = Trainer(
 
 The system works with **distributed training** - commands sent to any rank are automatically coordinated across all processes. See `examples/trainer_control/` for a complete working example and `docs/trainers/trainer-control.md` for full documentation.
 
+### Training Log Analysis
+
+Forgather provides powerful tools for analyzing and visualizing training logs through the `forgather logs` command. Training metrics are automatically logged to `trainer_logs.json` files during training.
+
+```bash
+# List available training logs
+forgather logs list
+
+# Generate summary statistics
+forgather logs summary                              # Auto-detect latest log
+forgather logs summary path/to/trainer_logs.json    # Specific log
+forgather logs summary --format json                # JSON output
+forgather logs summary --format one-line            # Compact one-line format
+forgather logs summary --all --format one-line      # All logs in compact table
+forgather logs summary --format md --output report.md
+
+# Generate plots (default: saves to tmp/ directory)
+forgather logs plot                                 # Save to tmp/training_plot.png
+forgather logs plot -e                              # Save and open in editor
+forgather logs plot --loss-curves                   # Loss curves with LR (tmp/loss_curves.png)
+forgather logs plot --output training.png           # Custom output location
+forgather logs plot --metrics "loss,grad_norm"      # Specific metrics
+forgather logs plot --x-axis epoch                  # Plot by epoch
+forgather logs plot --smooth 10                     # Apply smoothing
+forgather logs plot --format svg                    # SVG format (default: png)
+forgather logs plot --grad-norm --smooth 10         # Gradient norm plot
+forgather logs plot --perplexity --log-scale        # Convert losses to exp(loss)
+forgather logs plot --x-max 36448                   # Clip data to a step window
+forgather logs plot --y-min 2.2 --y-max 3.5         # Manual y-axis override
+forgather logs plot --no-ignore-outliers            # Disable percentile auto-scale
+
+# Compare multiple runs
+forgather logs plot --compare run1/trainer_logs.json run2/trainer_logs.json --loss-curves
+```
+
+Note: `forgather logs plot` now defaults to outlier-aware y-axis auto-scaling
+(5th/95th percentile window) for loss/eval-loss/grad-norm series, so a few
+huge early-training values no longer squash the tail of the curve. Pass
+`--no-ignore-outliers` to restore the old full-range behaviour.
+
+**Programmatic API:**
+
+```python
+from forgather.ml.analysis import TrainingLog, compute_summary_statistics
+
+log = TrainingLog.from_file("path/to/trainer_logs.json")
+summary = compute_summary_statistics(log)
+print(f"Best loss: {summary['best_loss']} at step {summary['best_loss_step']}")
+```
+
+For complete documentation, see `docs/logs-analysis.md` and `examples/log_analysis_example.py`.
+
 ### Inference
 
 Forgather includes a basic OpenAPI compatible inference server and client.
@@ -127,22 +197,9 @@ Detailed inference instructions are located in 'tools/inference_server/README.md
 
 Forgather models support distributed inference with [vLLM](https://docs.vllm.ai/) for high-throughput serving with tensor and pipeline parallelism.
 
-**Validate vLLM Support**
-
-```python
-from forgather.ml.model_conversion import validate_vllm_plans, print_model_structure
-from transformers import AutoModelForCausalLM
-
-# Load trained model
-model = AutoModelForCausalLM.from_pretrained("output_models/my_model")
-
-# Print model structure
-print_model_structure(model, max_depth=4)
-
-# Validate vLLM plans
-if hasattr(model, '_tp_plan') and model._tp_plan:
-    is_valid = validate_vllm_plans(model, tp_plan=model._tp_plan, pp_plan=model._pp_plan, strict=True)
-```
+> **Note (2026-03):** vLLM integration is currently broken due to Forgather's move to
+> Transformers v5, which vLLM does not yet support. The deployment commands below are
+> preserved for reference.
 
 **Deploy with vLLM**
 
@@ -198,32 +255,32 @@ forgather -t train_tiny_llama.yaml train            # Train with selected config
 
 ### Workspace and Project Creation
 
-Forgather uses a two-level structure: **Workspaces** contain **Projects**. Use the `forgather ws` commands to create and manage both.
+Forgather uses a two-level structure: **Workspaces** contain **Projects**. Use `forgather ws create` for workspaces and `forgather project create` for projects.
 
 #### Creating a New Workspace
 ```bash
 # Basic workspace creation
-forgather ws init --name "My ML Workspace" --description "Machine learning research experiments" --forgather-dir /path/to/forgather
+forgather ws create --name "My ML Workspace" --description "Machine learning research experiments" --forgather-dir /path/to/forgather
 
 # With additional template search paths
-forgather ws init --name "Advanced Workspace" --description "Advanced ML experiments" --forgather-dir /path/to/forgather /extra/templates/path /another/path
-
-# With no default search paths (minimal workspace)
-forgather ws init --name "Minimal Workspace" --description "Clean minimal setup" --forgather-dir /path/to/forgather --no-defaults
+forgather ws create --name "Advanced Workspace" --description "Advanced ML experiments" --forgather-dir /path/to/forgather --search-path /extra/templates/path
 ```
 
 This creates a `forgather_workspace/` directory containing:
 - `README.md` - Workspace documentation
-- `base_directories.yaml` - Base directory configuration  
+- `base_directories.yaml` - Base directory configuration
 - `meta_defaults.yaml` - Template search paths and workspace metadata
 
 #### Creating a New Project in a Workspace
 ```bash
-# Basic project creation (directory name auto-generated from project name)
-forgather ws project --name "Sentiment Analysis" --description "BERT-based sentiment analysis experiments"
+# Basic project creation (run from inside a workspace directory)
+forgather project create --name "Sentiment Analysis" --description "BERT-based sentiment analysis experiments"
 
 # With custom settings
-forgather ws project --name "Image Classification" --description "CNN experiments" --config-prefix "experiments" --default-config "baseline.yaml" custom_directory_name
+forgather project create --name "Image Classification" --description "CNN experiments" --config-prefix "experiments" --default-config "baseline.yaml" --project-dir-name custom_directory_name
+
+# Copy default config from an existing configuration file
+forgather project create --name "Custom Model" --description "Customized model" path/to/source_config.yaml
 ```
 
 This creates a project directory with:
@@ -232,17 +289,252 @@ This creates a project directory with:
 - `templates/configs/{default_config}` - Default configuration template
 
 #### Typical Workspace Setup Workflow
-1. **Create workspace**: `forgather ws init --name "My Research" --description "ML experiments" --forgather-dir /path/to/forgather`
-2. **Create project(s)**: `forgather ws project --name "Project 1" --description "First experiment"`
+1. **Create workspace**: `forgather ws create --name "My Research" --description "ML experiments" --forgather-dir /path/to/forgather`
+2. **Create project(s)**: `forgather project create --name "Project 1" --description "First experiment"`
 3. **Navigate to project**: `cd project_1`
 4. **List configurations**: `forgather ls`
-5. **Test configuration**: `forgather pp` 
+5. **Test configuration**: `forgather pp`
 6. **Train model**: `forgather train`
+
+#### Creating an Experiment Project That Extends a Model Project
+
+When creating an experiment project that builds on an existing model project (e.g., running experiments with a model defined in `examples/models/`), the recommended structure separates model definitions from training configs using a **models sub-project**:
+
+```
+my_experiment/
+├── meta.yaml                    # Training project metadata
+├── templates/
+│   ├── project.yaml             # Training base (extends projects/tiny.yaml)
+│   └── configs/
+│       ├── train_baseline.yaml  # Training configs reference model configs by name
+│       └── train_variant.yaml
+└── models/                      # Separate model definitions sub-project
+    ├── meta.yaml                # Adds base model templates to search path
+    └── templates/
+        └── configs/
+            ├── baseline.yaml    # Extends base model's config
+            └── variant.yaml     # Model variants with inline templates
+```
+
+**Step 1: Create the models sub-project** (`models/meta.yaml`):
+```yaml
+-- extends "meta_defaults.yaml"
+[searchdir_project]
+    == super()
+    ## Include base model templates in search path
+    - "{{ joinpath(ns.forgather_dir, 'examples/models/base_model/templates') }}"
+[configs]
+name: "models"
+description: "Model definitions for experiments"
+config_prefix: "configs"
+default_config: "baseline.yaml"
+```
+
+**Step 2: Create model configs** in `models/templates/configs/`. If the base model has a `modelsrc/` directory, the baseline config must override `[model_submodule_searchpath]` because `project_dir` resolves to the *current* project, not the base model:
+```yaml
+-- extends "configs/base_config.yaml"
+[config_metadata]
+    == super()
+    -- set ns.model_name = "my_baseline"
+[model_definition]
+    -- include "config.baseline.model"
+#------------- config.baseline.model --------------
+-- extends "config.base.model"
+[model_submodule_searchpath]
+    - "{{ joinpath(ns.forgather_dir, 'examples/models/base_model/modelsrc') }}"
+    == super()
+```
+
+Without this override, the code generator will fail with `ModuleNotFoundError`. If the base model has no `modelsrc/` (only uses standard `modelsrc/transformer/` components), no override is needed.
+
+**Step 3: Create the training project** (`meta.yaml` at the experiment root):
+```yaml
+-- extends "meta_defaults.yaml"
+[configs]
+name: "My Experiment"
+description: "Experiments with base_model variants"
+config_prefix: "configs"
+default_config: "train_baseline.yaml"
+```
+
+**Step 4: Create a training project template** (`templates/project.yaml`) that points to the models sub-project:
+```yaml
+-- extends 'projects/tiny.yaml'
+[config_metadata]
+    == super()
+    -- set ns.model_project_dir = abspath(joinpath(project_dir, "models"))
+    -- set ns.model_project_config = "baseline.yaml"
+```
+
+**Step 5: Create training configs** (`configs/train_*.yaml`) that select which model to train:
+```yaml
+-- extends 'project.yaml'
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Train My Variant"
+    -- set ns.model_name = "my_variant"
+    -- set ns.model_project_config = "variant.yaml"
+```
+
+**Why a separate models sub-project?** Model configs that extend other projects inherit templates from those projects. Mixing model configs and training configs in the same project's search path gets messy when they inherit from different base projects. A sub-project cleanly isolates the model template search path from the training template search path.
+
+See `examples/tiny_experiments/canon/` for a complete example: model variants in `canon/models/`, training configs in `canon/templates/configs/`, with models extending `examples/models/llama_canon/`.
 
 ### Project Installation
 ```bash
 pip install -e .
 ```
+
+## Checkpointing
+
+Forgather provides automatic distributed checkpoint coordination for multi-GPU and multi-node training. The system uses explicit state sharing patterns to handle complex parallelism strategies.
+
+### Basic Usage
+
+Enable checkpointing in training arguments:
+
+```python
+args = TrainingArguments(
+    output_dir="output_models/my_model",
+    save_strategy="steps",
+    save_steps=1000,                  # Save every 1000 steps
+    save_total_limit=3,               # Keep only last 3 checkpoints
+)
+
+trainer = Trainer(model=model, args=args, ...)
+trainer.train()  # Checkpoints saved automatically
+```
+
+All state is saved: model, optimizer, scheduler, dataset position, RNG, training progress.
+
+**Output:**
+```
+output_models/my_model/
+├── checkpoint-1000/
+│   ├── model.safetensors
+│   ├── optimizer_state.pt
+│   ├── scheduler_state.pt
+│   ├── dataset_state.pt
+│   ├── rng_state.pt
+│   ├── trainer_state.pt
+│   └── checkpoint_manifest.json    # Metadata for debugging
+├── checkpoint-2000/
+└── checkpoint-3000/
+```
+
+### Resuming from Checkpoint
+
+```python
+args = TrainingArguments(
+    output_dir="output_models/my_model",
+    resume_from_checkpoint=True,      # Auto-finds latest checkpoint
+    max_steps=5000,
+)
+
+trainer = Trainer(model=model, args=args, ...)
+trainer.train()  # Continues from checkpoint-3000
+```
+
+**To skip loading components** (e.g., changing dataset):
+```bash
+# Manually delete the checkpoint files you don't want to restore
+rm checkpoint-1000/dataset_state.pt
+rm checkpoint-1000/trainer_state.pt
+```
+Checkpoint loading will warn about missing components but continue with your current configuration.
+
+**Note:** Model weights are always required and cannot be skipped.
+
+### Distributed Training Patterns
+
+**Data Parallel (DDP):**
+```python
+from forgather.ml.trainer.ddp import DDPTrainer, DDPTrainingArguments
+
+args = DDPTrainingArguments(
+    dispatch_batches=True,            # Rank 0 loads and dispatches data
+    save_strategy="steps",
+    save_steps=1000,
+)
+
+# Launch with: torchrun --nproc_per_node=4 train.py
+trainer = DDPTrainer(model=model, args=args, ...)
+trainer.train()
+
+# Model/optimizer saved once (REPLICATED - DDP synchronizes)
+# Dataset saved once (GLOBAL - centralized loading)
+# RNG saved per rank (PER_RANK - each rank needs different random numbers)
+```
+
+**Pipeline Parallel:**
+```python
+from forgather.ml.trainer.pipeline import PipelineTrainer
+
+trainer = PipelineTrainer(
+    model_splitter=split_model_into_stages,
+    args=args,
+    ...
+)
+trainer.train()
+
+# Model/optimizer saved per rank (PER_RANK - different pipeline stages)
+# Dataset saved once (GLOBAL - rank 0 loads and broadcasts)
+```
+
+### Checkpoint Manifests
+
+Every checkpoint includes a manifest with complete metadata:
+
+```json
+{
+  "checkpoint_path": "/path/to/checkpoint-1000",
+  "world_size": 4,
+  "timestamp": "2026-01-24T10:30:45",
+  "components": {
+    "model": {
+      "sharing_pattern": "replicated",
+      "ranks": [0],
+      "size_bytes": 445678123
+    },
+    "rng": {
+      "sharing_pattern": "per_rank",
+      "ranks": [0, 1, 2, 3],
+      "size_bytes": 14042
+    }
+  }
+}
+```
+
+Use manifests for debugging checkpoint issues or verifying what was saved.
+
+### Common Issues
+
+**Training hangs during checkpoint save:**
+- Distributed barrier deadlock (fixed in built-in trainers)
+- Ensure all ranks call checkpoint save methods
+
+**Different results after resume:**
+- Ensure RNG and dataset state files were not deleted
+- Both are saved automatically for exact reproducibility
+
+**Validation failed for component 'optimizer':**
+- Known issue with AccelerateOptimizer wrapper (validation automatically disabled)
+- Model validation still works correctly
+
+### Documentation
+
+For complete documentation, see:
+- **User Guide**: `docs/checkpointing/user_guide.md` - Practical usage and troubleshooting
+- **Technical Details**: `docs/checkpointing/distributed_checkpoint_abstraction.md` - Architecture and patterns
+- **Migration Guide**: `docs/checkpointing/migration_guide.md` - Implementing custom trainers
+
+**Key Features:**
+- Automatic coordination for multi-GPU/multi-node training
+- All state always saved (model, optimizer, scheduler, dataset, RNG, training progress)
+- Explicit state sharing patterns (GLOBAL, PER_RANK, REPLICATED, PER_GROUP, PER_NODE)
+- Optional replication validation to catch DDP synchronization bugs
+- Complete checkpoint manifests for debugging
+- Partial loading via manual file deletion
 
 ## Architecture Overview
 
@@ -409,17 +701,29 @@ The framework emphasizes systematic experimentation through template-based confi
 
 **Key Example Projects**
 Refer to these when creating new projects.
-- A template project to copy for starting a new one : "examples/template_project/"
+- To start a new project, prefer `forgather project create` (inside an existing workspace) or `forgather ws create` over copying a template directory. For a bare harness that exercises the raw `projects/lm_training_project.yaml` base template, see "examples/base_lm_project/".
 - Projects overview : "examples/tutorials/projects_overview/"
-- Forgather project structure : "examples/tutorials/project_composition/" 
+- Forgather project structure : "examples/tutorials/project_composition/"
 - Model training tutorial project : "examples/tutorials/tiny_llama/"
 - Attention mechanisms testing project : "examples/tiny_experiments/attention/"
+- Cross-project model inheritance (with modelsrc) : "examples/tiny_experiments/canon/"
+- Cross-project model inheritance (without modelsrc) : "examples/pretrain/small-llm/custom_deepone/"
+
+**Common Template Override Patterns**
+- To override a block in the model template chain (e.g., `[rel_positional_encoder]`, `[attention_factory]`), you must do it in an **inline model template** (after `#--- config.*.model ---`), not in the main config section
+- To disable RoPE: override `[rel_positional_encoder]` with `.define: &relative_pe null` — attention modules guard with `if self.pos_encoder:`
+- To disable a factory-based component: set the anchor to `null` in the appropriate block
+- The `projects/tiny.yaml` template provides a complete training setup for small model experiments (TinyStories dataset, 1 epoch, AdamW + InfiniteLR scheduler)
+- Use `-- set ns.model_project_dir = abspath(joinpath(project_dir, "models"))` to reference a models sub-project from a training project template
 
 **Common Issues and Solutions**
 - Missing import errors (e.g., `Callable` not imported): Add missing imports to affected files
 - YAML tag errors: Use `!partial` for function objects, `!singleton`/`!factory` for function calls
 - Configuration validation: Run `forgather ls` to check all configs parse correctly
 - Complex64 serialization: RoPE models may fail to save due to safetensors limitations with complex tensors
+- `ModuleNotFoundError` when extending model projects with `modelsrc/`: The `project_dir` variable in `[model_submodule_searchpath]` resolves to the current project, not the base model project. Override the search path in the models sub-project's baseline config to point to the base model's modelsrc directory. See "Creating an Experiment Project That Extends a Model Project" above.
+- **Template name shadowing / RecursionError**: When multiple model projects are in the search path, their config files may shadow each other (e.g., both `llama/` and `llama_canon/` have `configs/4M.yaml`). A child config named `4M.yaml` that extends `configs/4M.yaml` will resolve to itself, causing infinite recursion. Fix: use a distinct config name (e.g., `nope_4M.yaml`) or use a separate models sub-project with its own search path.
+- **Extending multiple model projects**: When experiments need model variants from different base models (e.g., Canon + plain Llama), create a separate model project for each base rather than adding all templates to one search path. This avoids name shadowing and keeps template resolution predictable. Example: `examples/tiny_experiments/canon/llama_nope/` is a sub-project for the plain Llama NoPE variant, referenced from canon training configs via `ns.model_project_dir`.
 
 **Style**
 

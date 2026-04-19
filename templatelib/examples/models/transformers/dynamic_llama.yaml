@@ -10,8 +10,10 @@
     ## Default tokenizer
 
 [model_bits]
+    [llama_bits]
+## Override to add more bits to the base model
     [loss_fn]
-.define: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn []
+.define: &loss_fn !call:.causal_loss:CausalLoss@loss_fn
 
     [layer_norm_factory]
 .define: &layer_norm_factory !partial:torch.nn:RMSNorm@layer_norm_factory
@@ -22,25 +24,34 @@
 .define: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
     d_model: !var "hidden_size"
     d_feedforward: !var "intermediate_size"
-    activation_factory: !partial:torch.nn.SiLU []
+    activation_factory: !partial:torch.nn.SiLU
     dropout: !var "activation_dropout"
 
     [rel_positional_encoder]
-.define: &relative_pe !singleton:.rotary_embeddings:RotaryPE@relative_pe
+# Central nn.Module that computes (cos, sin) -- owned by CasualLM
+.define: &rotary_emb !call:.rotary_embeddings:RotaryEmbedding@rotary_emb
     hidden_size: !var "hidden_size"
     num_attention_heads: !var "num_attention_heads"
-    max_sequence_length: !var "max_position_embeddings"
-    rope_theta: !var "rope_theta"
-    rope_scaling: !var "rope_scaling"
+    max_position_embeddings: !var "max_position_embeddings"
+    rope_parameters: !var "rope_parameters"
+
+# Stateless rotation function -- injected into attention as pos_encoder
+.define: &apply_rotary_pos_emb !partial:.rotary_embeddings:apply_rotary_pos_emb
 
     [qk_norm_factory]
 .define: &qk_norm_factory null
 
-    [attn_functions]
-    -- include "attn_functions/default.yaml"
-
     [flex_attn_kernel_options]
-   -- include "flex_kernel_options/default.yaml"
+    # The default kernel options don't work properly with some GPUs at present
+    -- include "flex_kernel_options/default.yaml"
+
+    [attn_functions]
+.define: &attn_functions !dict
+    # Interfaces conforming to https://huggingface.co/docs/transformers/main/attention_interface
+    # Fallback to using ALL_ATTENTION_FUNCTIONS, if not in dict
+    eager: !partial:.attention_interface:eager_attention_forward
+    flex_attention: !partial:.attention_interface:flex_attention_forward
+        kernel_options: !var "flex_attn_kernel_options"
 
     [attention_factory]
 .define: &attention_factory !partial:.causal_multihead_attn:CausalMultiheadAttn@attention_factory
@@ -48,10 +59,12 @@
     num_heads: !var "num_attention_heads"
     num_kv_heads: !var "num_key_value_heads"
     dropout: !var "attention_dropout"
-    pos_encoder: *relative_pe
+    pos_encoder: *apply_rotary_pos_emb
     attn_implementation: !var "attn_implementation" # Value from &model_constructor_args
     attn_functions: *attn_functions
     qk_norm_factory: *qk_norm_factory
+    sliding_window: !var "sliding_window"
+    # Needed for vLLM attention interface
     config: !var "config"
 
     [layer_factory]
@@ -63,7 +76,7 @@
     residual_dropout: !var "residual_dropout"
 
     [layer_stack]
-.define: &layer_stack !factory:.checkpoint_layer_stack:LayerStack@layer_stack
+.define: &layer_stack !call:.checkpoint_layer_stack:LayerStack@layer_stack
     layer_factory: *layer_factory
     num_hidden_layers: !var "num_hidden_layers"
     post_norm_factory: *layer_norm_factory
@@ -79,35 +92,45 @@
     [abs_positional_encoder]
 .define: &absolute_pe null
 
+    [embedding]
+.define: &embedding !call:torch.nn.Embedding
+    num_embeddings: !var "vocab_size"
+    embedding_dim: !var "hidden_size"
+    padding_idx: !var "pad_token_id"
+
     [input_encoder]
-.define: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
+.define: &input_encoder !call:.input_encoder:InputEncoder@input_encoder
     d_model: !var "hidden_size"
-    vocab_size: !var "vocab_size"
+    embedding: *embedding
     dropout: !var "embedding_dropout"
     positional_encoder: *absolute_pe
-    scale_sqrt_d_model: False
 
     [init_weights]
+        [init_regex_list]
+.define: &init_regex_list !dlist
+    # Note: Yaml treats single and double quotes differently WRT escapes. Use single
+    # quotes for regex expressions, which prevents Yaml from interpreting escapes.
+    # For a literal ' use ''
+    zeros: 
+        - 'bias'
+        - !partial:torch.nn.init:zeros_
+    trunc_normal_magic:
+        - 'ff.up_proj.weight|attn.query.weight|attn.key.weight|attn.value.weight'
+        - !partial:.llama_init:trunc_normal_magic
+    trunc_normal:
+        - 'ff.gate_proj.weight|ff.down_proj.weight|attn.output.weight'
+        - !partial:.llama_init:trunc_normal
+            std: !call:.llama_init:llama_std [ !var "num_hidden_layers" ]
+    lm_head:
+        - 'lm_head.weight'
+        - !partial:.llama_init:init_output_layer
+            d_model: !var "hidden_size"
+
+        [init_function]
 # Init method based upon https://github.com/pytorch/torchtitan/blob/main/torchtitan/models/llama3/model/model.py
 .define: &init_weights !partial:.init_weights:init_weights_by_regex@init_weights
-    # Note: Yaml treats single and double quotes differently WRT escapes. Use single
-    # quotes for regex expressions, wihc prevents Yaml from interpreting escapes.
-    # For a literal ' use ''
-    regex_list:
-        - [ 'norm', "pass" ]
-        - [ 'bias', "zeros" ]
-        - [ 'embedding\.weight', "init_embeddings" ]
-        - [ 'up_proj|query_linear|key_linear|value_linear', "trunc_normal_magic" ]
-        - [ 'gate_proj|down_proj|output_linear', "trunc_normal" ]
-        - [ 'lm_head', "init_output_layer" ]
-    init_f_map:
-        pass: !partial:.init_weights:init_pass
-        zeros: !partial:torch.nn.init:zeros_ []
-        init_embeddings: !partial:.llama_init:init_embeddings []
-        trunc_normal_magic: !partial:.llama_init:trunc_normal_magic []
-        trunc_normal: !partial:.llama_init:trunc_normal
-            std: !call:.llama_init:llama_std [ !var "num_hidden_layers" ]
-        init_output_layer: !partial:.llama_init:init_output_layer { d_model: !var "hidden_size" }
+    regex_list: *init_regex_list
+    
     # Print how each param is being initialized.
     debug: False
 
@@ -122,6 +145,7 @@ model_factory: &model_factory !dict@model_factory
         layer_stack: *layer_stack
         init_weights: *init_weights
         attn_mask_fn: *attn_mask_fn
+        rotary_emb: *rotary_emb
     lm_head: *output_decoder
     loss_fn: *loss_fn
 
@@ -132,11 +156,11 @@ model_factory: &model_factory !dict@model_factory
     # Default to MHA when null
     num_key_value_heads: {{ num_key_value_heads | toyaml(None) }}
     num_hidden_layers: {{ num_hidden_layers | toyaml(32) }}
-    max_position_embeddings: !singleton:getattr
+    max_position_embeddings: !call:getattr
         - *tokenizer
         - "model_max_length"
     intermediate_size: {{ intermediate_size | toyaml(11008) }}
-    rope_theta: {{ rope_theta | toyaml(10000.0) }}
+    rope_parameters: {{ rope_parameters | toyaml({'rope_theta': 10000.0}) }}
     embedding_dropout: {{ embedding_dropout | toyaml(0.0) }}
     rms_norm_eps: {{ rms_norm_eps | toyaml(1.0e-05) }}
     layer_dropout: {{ layer_dropout | toyaml(0.0) }}
@@ -145,11 +169,9 @@ model_factory: &model_factory !dict@model_factory
     activation_dropout: {{ activation_dropout | toyaml(0.0) }}
     enable_activation_checkpoint: False
     checkpoint_stride: {{ checkpoint_stride | toyaml(1) }}
-    compile_flex: True # For debug flex, set to False
-    flex_attn_kernel_options: *flex_attn_kernel_options
     tie_word_embeddings: {{ tie_word_embeddings | toyaml(False) }}
-    rope_scaling: {{ rope_scaling | toyaml(None) }}
     sliding_window: {{ sliding_window | toyaml(None) }}
+    flex_attn_kernel_options: *flex_attn_kernel_options
     
 [model_code_generator]
     == super()
@@ -157,8 +179,8 @@ model_factory: &model_factory !dict@model_factory
     supports_gradient_checkpointing: True
     supports_sdpa: True
     supports_flex_attn: True
-    supports_attention_backend: True
     supports_flash_attn: True
+    supports_attention_backend: True
     tied_weights_keys: {causal_lm.input_encoder.embedding.weight: "lm_head.weight"}
     no_split_modules: ["PreLNLayer"]
     

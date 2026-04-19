@@ -10,8 +10,10 @@
     -- include 'tokenizers/wikitext/32k.yaml'
 
 [model_bits]
+    [deepone_bits]
+## Override to add more bits to the base model
     [loss_fn]
-.define: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn []
+.define: &loss_fn !singleton:.causal_loss:CausalLoss@loss_fn
 
     [layer_norm_factory]
 .define: &layer_norm_factory !partial:torch.nn:RMSNorm@layer_norm_factory
@@ -22,16 +24,39 @@
 .define: &feedforward_factory !partial:.glu_feedforward:GLUFeedforwardLayer@feedforward_factory
     d_model: !var "hidden_size"
     d_feedforward: !var "intermediate_size"
-    activation_factory: !partial:torch.nn.ReLU []
+    activation_factory: !partial:torch.nn.ReLU
     dropout: !var "activation_dropout"
-    
+
+    [rel_positional_encoder]
+.define: &relative_pe null
+
+    [qk_norm_factory]
+.define: &qk_norm_factory null
+
+    [flex_attn_kernel_options]
+    -- include "flex_kernel_options/default.yaml"
+
+    [attn_functions]
+.define: &attn_functions !dict
+    # The default HF implementations don't support ALiBi attention, while
+    # all of Forgather's implementations do.
+    eager: !partial:.attention_interface:eager_attention_forward
+    flex_attention: !partial:.attention_interface:flex_attention_forward
+        kernel_options: !var "flex_attn_kernel_options"
+    sdpa: !partial:.attention_interface:sdpa_attention_forward
+    # This implementation does not support packed examples or trainable ALIBi
+    # ...but's it's the fastest for inference with ALiBi
+    flash_attention_2: !partial:.attention_interface:flash_attn_2_forward
+
     [attention_factory]
 .define: &attention_factory !partial:.causal_alibi_attn:CausalAlibiAttn@attention_factory
     d_model: !var "hidden_size"
     num_heads: !var "num_attention_heads"
     dropout: !var "attention_dropout"
     bias: False
-    sdpa_function: !partial:torch.nn.functional:scaled_dot_product_attention []
+    attn_implementation: !var "attn_implementation" # Value from &model_constructor_args
+    attn_functions: *attn_functions
+    sliding_window: !var "sliding_window"
     # Make the ALiBi biases trainable weights
     trainable_alibi: True
     # Use alternative initialization for better trainable slope behavior
@@ -63,30 +88,41 @@
     [abs_positional_encoder]
 .define: &absolute_pe null
 
+    [embedding]
+.define: &embedding !call:torch.nn.Embedding
+    num_embeddings: !var "vocab_size"
+    embedding_dim: !var "hidden_size"
+    padding_idx: !var "pad_token_id"
+
     [input_encoder]
 .define: &input_encoder !factory:.input_encoder:InputEncoder@input_encoder
     d_model: !var "hidden_size"
-    vocab_size: !var "vocab_size"
+    embedding: *embedding
     dropout: !var "embedding_dropout"
     positional_encoder: *absolute_pe
-    scale_sqrt_d_model: False
 
     [init_weights]
-.define: &init_weights !partial:.init_weights:init_weights_by_regex@init_weights
-    regex_list:
-        - [ 'norm|alibi_slopes', "pass" ]
-        - [ 'bias', "zeros" ]
-        - [ 'embedding\.weight', "embedding" ]
-        - [ 'feedforward|value_linear|output_linear', "deepnet" ]
-        - [ 'attention|output_decoder', "linear" ]
-    init_f_map:
-        pass: !partial:.init_weights:init_pass
-        zeros: !partial:torch.nn.init:zeros_ []
-        embedding: !partial:.init_weights:init_embeddings
-            padding_index: !var "pad_token_id"
-        linear: !partial:torch.nn.init:xavier_uniform_ []
-        deepnet: !partial:torch.nn.init:xavier_uniform_
+        [init_regex_list]
+.define: &init_regex_list !dlist
+    zeros: 
+        - 'bias'
+        - !partial:torch.nn.init:zeros_
+    deepnet:
+        - 'ff\.|attn.value.weight|attn.output.weight'
+        - !partial:torch.nn.init:xavier_uniform_
             gain: !call:.deepnet:deepnet_beta [ !var "num_hidden_layers", 0 ]
+    linear:
+        - 'attn.key.weight|attn.query.weight'
+        - !partial:torch.nn.init:xavier_uniform_
+    embedding:
+        - 'embedding.weight'
+        - !partial:.init_weights:init_embeddings
+            padding_index: !var "pad_token_id"
+            scale_rsqrt_d_model: False
+
+        [init_function]
+.define: &init_weights !partial:.init_weights:init_weights_by_regex@init_weights
+    regex_list: *init_regex_list
     debug: False
 
     [attn_mask_fn]
@@ -121,17 +157,25 @@ model_factory: &model_factory !dict@model_factory
     enable_activation_checkpoint: False
     checkpoint_stride: 1
     tie_word_embeddings: {{ tie_word_embeddings | toyaml(False) }}
+    sliding_window: {{ sliding_window | toyaml(None) }}
+    flex_attn_kernel_options: *flex_attn_kernel_options
 
 [model_code_generator]
     == super()
     # Deepone
     supports_gradient_checkpointing: True
     supports_sdpa: True
+    supports_flash_attn: True
+    supports_flex_attn: True
     supports_attention_backend: False
     tied_weights_keys: {causal_lm.input_encoder.embedding.weight: "lm_head.weight"}
     no_split_modules: ["DeepnetLayer"]
     
     # vLLM Support
+    # While this should be correct, vLLM does not work at present with this model.
+    # The issue is the use of ALiBI relative positional encoding, as there does not
+    # appear to be support for this in their "transformers" compatibility layer.
+    # vLLM natively support this, but this would take time to complete.
     tp_plan:
         "causal_lm.layer_stack.layers.*.attention.query_linear": "colwise"
         "causal_lm.layer_stack.layers.*.attention.key_linear": "colwise"

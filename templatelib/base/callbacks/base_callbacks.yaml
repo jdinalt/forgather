@@ -3,16 +3,45 @@
 
 == h3('Dependencies')
 
+[step_columns]
+## Step-log column overrides, merged with ProgressCallback's built-in
+## defaults (see default_step_columns() in trainer/logging.py).
+## Each key maps a metric name to {label, width, fmt}.  fmt accepts a
+## Python format spec (".5f", ",d"), a named formatter ("si", "gib"),
+## or a callable via !partial.
+## Only the delta from defaults is needed:
+##   - Add a column:    key: {label: ..., width: ..., fmt: ...}
+##   - Override fields: key: {width: 12}  (unspecified fields kept)
+##   - Erase a column:  key: ~
+.define: &step_columns !dict
+
+[final_metrics]
+## Final summary metric overrides, merged with ProgressCallback's
+## built-in defaults (see default_final_metrics() in trainer/logging.py).
+## Each key maps a metric name to {label, fmt, suffix}.
+## Same delta semantics as step_columns above.
+.define: &final_metrics !dict
+
+[peak_hardware_flops]
+## Aggregate peak BF16 FLOP/s across all GPUs, for MFU computation.
+## Set via ns.total_peak_hardware_flops in project templates.
+## null disables MFU.
+## See docs/trainers/training-performance-metrics.md
+.define: &peak_hardware_flops null
+
 [callback_dependencies]
 ## Undefined
-
 [callback_list_definition]
 == h3('Callback List')
 
     [callback_list]
 trainer_callbacks: &trainer_callbacks !dlist:@trainer_callbacks
+    default_metrics: !singleton:forgather.ml.trainer.callbacks:DefaultMetrics
+        peak_hardware_flops: *peak_hardware_flops
     progress_callback: !singleton:forgather.ml.trainer.callbacks:ProgressCallback
         use_tqdm: null # Optional[bool] : Use TQDM, Auto, if unspecified
         output_stream: "stdout" #Literal["stderr", "stdout"]
+        step_columns: *step_columns
+        final_metrics: *final_metrics
     info_callback: !singleton:forgather.ml.trainer.callbacks:InfoCallback
-        verbose: False
+        verbose: {{ verbose_info | default(False) }}

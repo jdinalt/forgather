@@ -1,0 +1,45 @@
+-- extends "models/model_type.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Causal LM"
+    -- set ns.config_description = "Causal LM Project"
+    -- set ns.model_name = model_name | default("model")
+
+[model_definition]
+    ## Define Me!
+
+[dynamic_args]
+    == super()
+    output_dir:
+        names: "--output-dir"
+        type: "path"
+        help: "Model output directory"
+    model_name:
+        names: "--model-name"
+        type: "str"
+        help: "Model name"
+    tie_word_embeddings: 
+        names: "--tie-word-embeddings"
+        action: "store_true"
+        help: "Tie input and output word embeddings"
+    attention_dropout:
+        names: "--attention-dropout"
+        type: float
+        help: "Attention dropout probability"
+    hidden_size:
+        names: "--hidden-size"
+        type: "int"
+        help: "Model hidden dimension size (d_model)"
+    num_attention_heads:
+        names: --num-attention-heads"
+        type: "int"
+        help: "Number of query heads (and KV heads, if otherwise unspecified)"
+    num_hidden_layers:
+        names: "--num-hidden-layers"
+        type: "int"
+        help: "Number of hidden layers"
+    intermediate_size:
+        names: "--intermediate-size"
+        type: "int"
+        help: "Feedforward dimension"

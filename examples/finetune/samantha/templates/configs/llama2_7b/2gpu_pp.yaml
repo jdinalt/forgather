@@ -1,0 +1,22 @@
+-- extends 'samantha.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "PP Llama2 7B 2 GPU"
+    -- set ns.config_description = "Pipeline Parallel, Llama2 7B, 2 GPU"
+    -- set ns.log_name = "pp_2gpu"
+    -- set ns.nproc_per_node = nproc_per_node | default(2)
+
+    ## Batching
+    -- set ns.seq_len = seq_len | default(1280)
+    -- set ns.per_device_train_batch_size = batch_size | default(2)
+
+    ## Trainer selection
+    -- set ns.trainer_type = trainer_type | default("pipeline")
+
+    ## Pipeline Parallel inputs (only used when trainer_type == "pipeline")
+    -- set ns.pipe_schedule_factory = pipeline_schedule | default("ScheduleZBVZeroBubble")
+
+    ## Compile settings
+    -- set ns.torch_compile = compile | default(False)
+    -- set ns.torch_compile_mode = torch_compile_mode | default("max-autotune-no-cudagraphs")

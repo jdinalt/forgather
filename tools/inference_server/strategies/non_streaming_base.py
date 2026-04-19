@@ -5,10 +5,12 @@ Base class for non-streaming generation strategies using Template Method pattern
 import time
 from abc import abstractmethod
 from typing import Union
+
 import torch
-from .base import GenerationStrategy
+
 from ..models.chat import ChatCompletionRequest
 from ..models.completion import CompletionRequest
+from .base import GenerationStrategy
 
 
 class NonStreamingStrategy(GenerationStrategy):
@@ -113,10 +115,13 @@ class NonStreamingStrategy(GenerationStrategy):
         )
 
         # 12. Determine finish reason
+        # Pass ignore_eos flag to finish detector
+        ignore_eos = getattr(request, "ignore_eos", False)
         finish_reason = self.service.finish_detector.determine_finish_reason(
             generated_token_ids,
             request.max_tokens,
             stopped_by_sequence,
+            ignore_eos=ignore_eos,
         )
 
         # 13. Log stop sequence if triggered

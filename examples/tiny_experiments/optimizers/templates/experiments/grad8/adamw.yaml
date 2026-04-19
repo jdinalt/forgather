@@ -1,0 +1,8 @@
+-- extends 'experiments/amp/adamw.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Torch AdamW-8"
+    -- set ns.config_description = "Torch AdamW; the baseline control, with 8-grad-accumulation-steps"
+    -- set ns.log_name = log_name | default("adamw-8")
+    -- set ns.gradient_accumulation_steps = 8

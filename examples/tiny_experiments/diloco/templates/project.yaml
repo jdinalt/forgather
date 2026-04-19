@@ -1,0 +1,108 @@
+-- extends "projects/tiny.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DiLoCo Training"
+    -- set ns.config_description = "Tiny model with DiLoCo distributed local-SGD"
+    -- set ns.log_name = "diloco"
+
+[globals]
+    == super()
+    ## When dataset sharding is configured, append the shard index to the model
+    ## name so each worker gets a unique output directory. This prevents checkpoint
+    ## race conditions when multiple workers run concurrently.
+-- if shard_index is defined and shard_index is not none
+    -- set ns.model_name = ns.model_name + "_shard" + shard_index | string
+    -- set ns.output_dir = joinpath(ns.models_dir, ns.model_name)
+    -- set ns.logging_dir = joinpath(ns.output_dir, "runs", ns.log_name + '_' + filetime())
+-- endif
+
+[datasets_definition]
+    [dataset_project_pp_args]
+.define: &dataset_project_pp_args !dict
+    shard_eval: False
+
+    [dataset_project]
+-- set _shard_dataset = False
+-- if num_shards is defined and num_shards is not none and shard_index is defined and shard_index is not none
+-- set _shard_dataset = {"num_shards": num_shards, "index": shard_index}
+-- endif
+.define: &dataset_dict !call:forgather:from_project
+    project_dir: "{{ ns.dataset_proj }}"
+    config_template: "{{ ns.dataset_config }}"
+    targets: [ "train_dataset", "eval_dataset" ]
+    pp_kwargs: *dataset_project_pp_args
+    preprocess_args: *tokenizer_args
+    tokenizer: *tokenizer
+    shard_dataset: {{ _shard_dataset | toyaml }}
+
+    [dataset_splits]
+    == super()
+
+[trainer_callbacks]
+    -- include 'diloco_project.callbacks'
+
+[optimizer]
+    == super()
+    lr: 1.0e-3
+
+[dynamic_args]
+    == super()
+    num_shards:
+        names: "--num-shards"
+        type: int
+        help: "Number of dataset shards (for DiLoCo workers)"
+    shard_index:
+        names: "--shard-index"
+        type: int
+        help: "Dataset shard index for this worker"
+    diloco_server:
+        names: "--diloco-server"
+        type: str
+        help: "DiLoCo server address (host:port)"
+    diloco_sync_every:
+        names: "--diloco-sync-every"
+        type: int
+        help: "Local optimizer steps between DiLoCo syncs"
+    diloco_worker_id:
+        names: "--diloco-worker-id"
+        type: str
+        help: "Unique DiLoCo worker ID"
+    diloco_no_bf16:
+        names: "--diloco-no-bf16"
+        action: "store_true"
+        help: "Disable bfloat16 pseudo-gradient compression"
+    diloco_dylu:
+        names: "--diloco-dylu"
+        action: "store_true"
+        help: "Enable Dynamic Local Updates"
+    diloco_heartbeat_interval:
+        names: "--diloco-heartbeat"
+        type: float
+        help: "Seconds between heartbeats"
+    diloco_num_fragments:
+        names: "--diloco-fragments"
+        type: int
+        help: "Number of streaming fragments"
+
+#-------------------- diloco_project.callbacks --------------------
+-- extends 'tiny.callbacks'
+
+[callback_list]
+    == super()
+    diloco_callback: !singleton:forgather.ml.trainer.callbacks:DiLoCoCallback
+        server_addr: {{ diloco_server | toyaml(None) }}
+        sync_every: {{ diloco_sync_every | toyaml(None) }}
+        worker_id: {{ diloco_worker_id | toyaml(None) }}
+-- if diloco_no_bf16 is defined and diloco_no_bf16
+        bf16_comm: False
+-- else
+        bf16_comm: null
+-- endif
+-- if diloco_dylu is defined and diloco_dylu
+        dylu: True
+-- else
+        dylu: null
+-- endif
+        heartbeat_interval: {{ diloco_heartbeat_interval | toyaml(None) }}
+        num_fragments: {{ diloco_num_fragments | toyaml(None) }}

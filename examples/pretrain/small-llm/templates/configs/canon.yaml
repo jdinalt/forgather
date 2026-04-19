@@ -1,0 +1,10 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Canon"
+    -- set ns.config_description = "Use custom Canon model"
+    -- set ns.model_name = model_name | default("canon")
+
+    -- set ns.model_project_dir = abspath(model_project | default((joinpath(project_dir, "custom_canon"))))
+    -- set ns.model_project_config = model_config | default("custom_canon.yaml")

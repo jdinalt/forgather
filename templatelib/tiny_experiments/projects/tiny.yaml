@@ -7,21 +7,13 @@
 
 [config_metadata]
     == super()
-    ## Overrides
     -- set ns.config_name = "Tiny Experiments"
     -- set ns.config_description = "A project template for running tiny model experiments."
-    ## Defines
     -- set ns.trainer_class = 'trainers/trainer.yaml'
-    ## We make use of custom models in these projects
-    -- set ns.trust_remote_code = True
-
-    ## memory debugging
-    -- set ns.debug_memory_detials = False
-    ## Debug logging to TensorBoard vs console
-    -- set ns.log_memory_to_tb = False
+    -- set ns.model_name = model_name | default("tiny")
 
     ## The dataset sub-project to use
-    -- set ns.dataset_proj = dataset_proj | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
+    -- set ns.dataset_proj = dataset_project | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
 
     ## The configuration in the dataset sub-project
     ## Note: Switch to 'tinystories-iter.yaml' for the full dataset.
@@ -30,20 +22,35 @@
     ## The model project to import
     -- set ns.model_project_dir = joinpath(ns.forgather_dir, 'examples', 'models', 'causal_lm')
     -- set ns.model_project_config = "4M.yaml"
-    -- set ns.debug_model_project = False
 
-[pre_model_setup]
-    ## Add assets needed for text-gen sampling.
-    ## This adds a set of prompts and text-gen parameters.
-    == super()
-    -- include "prompts/tiny_stories.yaml"
+    ## Safe-default to SDPA -- it has fast startup and tends to have relatively few issues.
+    -- set ns.default_attn_implementation = "sdpa"
+
+    ## See docs/trainers/training-performance-metrics.md
+    -- set ns.total_peak_hardware_flops = peak_hardware_flops | default(get_peak_hardware_flops())
 
 [datasets_preprocessor_args]
 tokenizer_args: &tokenizer_args !dict
     truncation: True
 
 [datasets_definition]
-    -- include 'datasets/llm_dataset_project.yaml'
+    [dataset_project_pp_args]
+.define: &dataset_project_pp_args !dict
+
+    [dataset_project]
+.define: &dataset_dict !call:forgather:from_project
+    project_dir: "{{ ns.dataset_proj }}"
+    config_template: "{{ ns.dataset_config }}"
+    targets: [ "train_dataset", "eval_dataset" ]
+    # These are passed to the project preprocessor
+    pp_kwargs: *dataset_project_pp_args
+    # These are injected as variables as runtime
+    preprocess_args: *tokenizer_args
+    tokenizer: *tokenizer
+
+    [dataset_splits]
+train_dataset: &train_dataset !call:getitem [ *dataset_dict, 'train_dataset' ]
+eval_dataset: &eval_dataset !call:getitem [ *dataset_dict, 'eval_dataset' ]
 
 ## Defaults to the basic trainer implementation
 ## Note: This is unsuitable for multiple GPUs.
@@ -53,7 +60,36 @@ tokenizer_args: &tokenizer_args !dict
     -- include 'tiny.trainer_config'
 
 [construct_new_model]
-    -- include "models/causal_lm/import_model_project.yaml"
+    [model_project_pp_args]
+.define: &model_project_pp_args
+    output_dir: "{{ ns.output_dir }}"
+
+    [model_project]
+.define: &model_dict !call:forgather:from_project
+    project_dir: "{{ ns.model_project_dir }}"
+    config_template: "{{ ns.model_project_config }}"
+    targets: [ "pretrained_tokenizer", "model" ] 
+    pp_kwargs: *model_project_pp_args
+    model_constructor_args: *model_constructor_args
+
+    [model_assets]
+tokenizer: &tokenizer !call:getitem [ *model_dict, 'pretrained_tokenizer' ]
+model: &model !call:getitem [ *model_dict, 'model' ]
+
+[trainer_args]
+    == super()
+    # **Tiny Project**
+    seed: 42
+    per_device_train_batch_size: 32
+    per_device_eval_batch_size: 64
+    logging_steps: 100
+    eval_strategy: "steps"
+    eval_steps: 500
+    save_steps: 10000
+    num_train_epochs: 1
+    dataloader_num_workers: 1
+    torch_compile: {{ compile | default(False) }}
+    float32_matmul_precision: "high"
 
 [trainer_callbacks]
     ## See definition below
@@ -67,17 +103,13 @@ tokenizer_args: &tokenizer_args !dict
     max_length: 512
 
 [lr_scheduler]
-##-- include 'lr_schedulers/cosine_annealing_with_warmup.yaml'
-# https://arxiv.org/html/2503.02844v1
-lr_scheduler: &lr_scheduler !partial:forgather.ml.optim.infinite_lr_scheduler:InfiniteLRScheduler@lr_scheduler
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:CosineLRScheduler@lr_scheduler
     # Linear warm-up steps
     warmup_steps: 500
 
     # Cosine decay from end of warmp-up to constant-lr
-    cooldown_steps: 50000
-
-    # See paper for experimentally derived values.
-    constant_lr: 1.0e-4
+    # Tiny Stories, with a batch-size of 32, takes 66,241 steps to finish. 
+    total_steps: 67000
 
 [optimizer]
 optimizer: &optimizer !partial:torch:optim.AdamW
@@ -85,19 +117,31 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 
 [dynamic_args]
     == super()
+    dataset_project:
+        names: "--dataset-project"
+        type: path
+        help: "Path to a dataset project to override the default (Tiny Stories)"
+    dataset_config:
+        names: "--dataset-config"
+        type: str
+        default: "tinystories-abridged.yaml"
+        help: "Name of dataset configuration to use."
     log_peak_memory:
         names: "--log-peak-memory"
         action: "store_true"
         help: "Log peak GPU memory at each log step"
-    dataset_config:
-        names: "--dataset-config"
-        type: "str"
-        help: "The name of the dataset configuration to use"
-    dataset_proj:
-        names: "--dataset-proj"
-        type: "path"
-        help: "Path to dataset project to use"
-
+    debug_memory:
+        names: "--debug-memory"
+        action: "store_true"
+        help: "Record and display detailed memory usage."
+    compile:
+        names: "--compile"
+        action: "store_true"
+        help: "Enable Torch compile"
+    peak_hardware_flops:
+        names: "--peak-hardware-flops"
+        type: float
+        help: "See docs/trainers/training-performance-metrics.md"
 
 #-------------------- tiny.trainer_config --------------------
 -- extends ns.trainer_class
@@ -106,49 +150,41 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 ## parent template, which is named in the 'ns.trainer_class' variable,
 ## the value of which is defined in the 'config_metadata' block, above.
 
-[trainer_args]
-    == super()
-    
-    # **Tiny Project**
-    seed: 42
-    per_device_train_batch_size: 32
-    per_device_eval_batch_size: 64
-    logging_steps: 100
-    eval_strategy: "steps"
-    eval_steps: 500
-    save_steps: 10000
-    num_train_epochs: 1
-    dataloader_num_workers: 1
-    # Safetensors can't handle tied parameters/buffers, so fallback to PyTorch format.
-    save_safetensors: False
-
 #-------------------- tiny.callbacks --------------------
 -- extends 'callbacks/loggers.yaml'
 ## Add experiment loggers to the callbacks list.
 ## The parent creates a Tensor Board SummaryWriter, which we can use.
 
-[callback_dependencies]
+[loggers_dependencies]
     == super()
+
+    [generation_config]
+generation_config: &generation_config !dict:@generation_config
+    do_sample: True
+    top_k: 20
+    temperature: 0.7
+    repetition_penalty: 1.15
 
     [text_gen_callback_args]
 text_gen_callback_args: &text_gen_callback_args
     summary_writer: *summary_writer
-    prompts: *testprompts
+    prompts: {{ abspath(joinpath(ns.forgather_dir, "prompts/tiny_stories.yaml")) }}
     generation_config: *generation_config
     max_new_tokens: 40
     generation_steps: 2000
 
+[peak_hardware_flops]
+.define: &peak_hardware_flops {{ ns.total_peak_hardware_flops | toyaml }}
+
 ## This adds a text-generationn sample every 'generation_steps'
 [callback_list]
     == super()
-    -- if attn_implementation | default("") != "flex_attention"
+    ## Flex attention seems to occasionally crash when generating. Disabled until issue is resolved.
+    -- if (attn_implementation | default(ns.default_attn_implementation)) != "flex_attention"
     text_gen_callback: !singleton:forgather.ml.trainer.callbacks:TextgenCallback
         <<: *text_gen_callback_args
     -- endif
     peak_memory: !singleton:forgather.ml.trainer.callbacks:PeakMemory
-        show_details: {{ ns.debug_memory_detials }}
-        do_log: {{ log_peak_memory | default(False) }}
-    -- if ns.log_memory_to_tb
-        summary_writer: *summary_writer
-    -- endif
+        show_details: {{ debug_memory | toyaml(False) }}
+        do_log: {{ log_peak_memory | toyaml(False) }}
     trainer_control: !singleton:forgather.ml.trainer.callbacks:TrainerControlCallback

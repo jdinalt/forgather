@@ -25,3 +25,10 @@ Additional architectural features:
 - [Qwen/Qwen3-8B](https://huggingface.co/Qwen/Qwen3-8B)
 - [Qwen/Qwen3-1.7B](https://huggingface.co/Qwen/Qwen3-1.7B)
 - [Qwen/Qwen3-1.7B-Base](https://huggingface.co/Qwen/Qwen3-1.7B-Base)
+
+## Configuration Notes
+
+### 124M.yaml
+
+This configuration demonstrates how to tie the embedding layer with the output-linear layer. Beyond just setting 'tie_word_embeddings: True',
+the default Llama init needs to be updated.

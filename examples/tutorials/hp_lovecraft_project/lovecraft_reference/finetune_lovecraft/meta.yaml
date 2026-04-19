@@ -4,5 +4,5 @@
 name: "Finetune Lovecraft"
 description: "Finetune a model on the complete works of H.P. Lovecraft"
 config_prefix: "configs"
-default_config: "1gpu/default.yaml"
+default_config: "default.yaml"
 << endblock configs

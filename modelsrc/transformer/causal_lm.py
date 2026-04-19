@@ -1,8 +1,8 @@
 from functools import partial
-from typing import Callable, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 import torch
-from torch import FloatTensor, nn
+from torch import nn
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import BaseModelOutputWithPast
 
@@ -18,48 +18,50 @@ class CasualLM(nn.Module):
         layer_stack: Callable,
         init_weights: Callable,
         attn_mask_fn: Callable,
-        config=None,
+        config: Any = None,
+        rotary_emb: Optional[nn.Module] = None,
     ):
         super().__init__()
         self.config = config
         self.input_encoder = input_encoder
         self.layer_stack = layer_stack
+        self.rotary_emb = rotary_emb
         self.use_internal_mask = True
         self.attn_mask_fn = partial(
             attn_mask_fn,
             config=self.config,
             dtype=torch.get_default_dtype(),
         )
-        self.init_weights = init_weights
+        self._init_weights_fn = init_weights
 
     def initialize_weights(self):
-        self.init_weights(self)
+        self._init_weights_fn(self)
 
     def get_attn_mask_fn(self):
         self.use_internal_mask = False
         return self.attn_mask_fn
 
     def get_input_embeddings(self) -> nn.Embedding:
-        return self.input_encoder.get_input_embeddings()
+        return self.input_encoder.get_input_embeddings()  # type: ignore[union-attr]
 
     def set_input_embeddings(self, value: nn.Embedding):
-        self.input_encoder.set_input_embeddings(value)
+        self.input_encoder.set_input_embeddings(value)  # type: ignore[union-attr]
 
     def resize_position_embeddings(self, new_num_position_embeddings: int):
-        self.model.resize_position_embeddings(new_num_position_embeddings)
+        self.input_encoder.resize_position_embeddings(new_num_position_embeddings)  # type: ignore[union-attr]
 
     def get_position_embeddings(self) -> Union[nn.Embedding, tuple[nn.Embedding]]:
-        return self.model.get_position_embeddings()
+        return self.input_encoder.get_position_embeddings()  # type: ignore[union-attr]
 
     def forward(
         self,
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
         past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
         use_cache: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
+        cache_position: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> BaseModelOutputWithPast:
         """
@@ -100,18 +102,36 @@ class CasualLM(nn.Module):
             # Intermediate pipeline stage: input_ids is actually hidden_states
             hidden_states = input_ids
 
+        # Default position_ids from sequence length when not provided
+        if position_ids is None and self.rotary_emb is not None:
+            seq_length = hidden_states.shape[1]
+            past_seen_tokens = (
+                past_key_values.get_seq_length() if past_key_values is not None else 0
+            )
+            position_ids = torch.arange(
+                past_seen_tokens,
+                past_seen_tokens + seq_length,
+                device=hidden_states.device,
+            ).unsqueeze(0)
+
+        # Compute rotary position embeddings once for all layers
+        position_embeddings = None
+        if self.rotary_emb is not None:
+            position_embeddings = self.rotary_emb(hidden_states, position_ids)
+
         if self.layer_stack:
             # Pass the input through each of the layers.
             hidden_states = self.layer_stack(
                 hidden_states,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
+                position_embeddings=position_embeddings,
                 past_key_values=past_key_values,
                 cache_position=cache_position,
                 **kwargs,
             )
 
         return BaseModelOutputWithPast(
-            last_hidden_state=hidden_states,
+            last_hidden_state=hidden_states,  # type: ignore[arg-type]
             past_key_values=past_key_values,
         )

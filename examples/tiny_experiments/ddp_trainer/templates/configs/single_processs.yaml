@@ -1,0 +1,14 @@
+-- extends "project.yaml"
+
+## The DDP Trainer should revert to acting like the base-class when world-size == 1
+## This is a test to confirm this is the case.
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Single Process"
+    -- set ns.config_description = "Test DDP trainer on a single process"
+    -- set ns.log_name = "single_process"
+    -- set ns.nproc_per_node = 1
+
+[optimizer]
+    == super()
+    lr: 1.0e-3

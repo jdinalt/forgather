@@ -1,0 +1,16 @@
+-- extends "project.yaml"
+-- set diloco_num_fragments = diloco_num_fragments | default(4)
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DiLoCo Streaming"
+    -- set ns.config_description = "DiLoCo with 4-fragment streaming for overlapped communication"
+    -- set ns.log_name = "diloco_streaming"
+
+[trainer_args]
+    == super()
+    max_steps: 2000
+    logging_steps: 50
+    save_strategy: "steps"
+    save_steps: 500
+    save_total_limit: 3

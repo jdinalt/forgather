@@ -8,21 +8,21 @@ packed sequences to work with tokenizers that don't have BOS/EOS tokens
 
 import torch
 from transformers import PreTrainedTokenizerFast
-from tokenizers import Tokenizer, models, pre_tokenizers
 
-from forgather.ml.datasets.block_tokenizer import (
-    Document,
-    Bin,
-    pack_sequences_optimized,
-    block_tokenize_fn,
-    OutputTokenBlock,
-    InputTokenBlock,
-)
 from forgather.ml.data_collator import (
-    get_pos_ids_for_packed_sequence,
-    _pos_ids_from_boundaries,
     DataCollatorForCausalLM,
+    _pos_ids_from_boundaries,
+    get_pos_ids_for_packed_sequence,
 )
+from forgather.ml.datasets.block_tokenizer import (
+    Bin,
+    Document,
+    InputTokenBlock,
+    OutputTokenBlock,
+    block_tokenize_fn,
+    pack_sequences_optimized,
+)
+from tokenizers import Tokenizer, models, pre_tokenizers
 
 
 def create_simple_tokenizer():

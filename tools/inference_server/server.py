@@ -4,12 +4,13 @@ OpenAI API-compatible inference server for HuggingFace models.
 """
 
 import argparse
-from argparse import RawTextHelpFormatter
 import logging
-import yaml
 import os
 import sys
+from argparse import RawTextHelpFormatter
 from pathlib import Path
+
+import yaml
 
 # Support both module and standalone execution
 if __name__ == "__main__" and __package__ is None:
@@ -21,8 +22,8 @@ if __name__ == "__main__" and __package__ is None:
 
     # Import as if we're a package
     from inference_server.config import load_config_from_yaml, merge_config_with_args
-    from inference_server.service import InferenceService
     from inference_server.routes import create_app, set_inference_service
+    from inference_server.service import InferenceService
 else:
     # Running as module - use relative imports
     from .config import load_config_from_yaml, merge_config_with_args
@@ -106,7 +107,7 @@ def main():
     parser.add_argument(
         "--cache-implementation",
         default=None,
-        help="HF cache implementation See: https://huggingface.co/docs/transformers/en/kv_cache.",
+        help="HF cache implementation e.g. 'dynamic', 'static', etc. See: https://huggingface.co/docs/transformers/en/kv_cache.",
     )
     parser.add_argument(
         "--disable-kv-cache",
@@ -120,6 +121,11 @@ def main():
         const=True,
         default=False,
         help="Load model from specific checkpoint or latest checkpoint",
+    )
+    parser.add_argument(
+        "--ignore-eos",
+        action="store_true",
+        help="Ignore EOS tokens during generation (continue past EOS until max_tokens or stop_sequence)",
     )
 
     args = parser.parse_args()
@@ -179,6 +185,7 @@ def main():
         compile_args=compile_args,
         cache_implementation=args.cache_implementation,
         use_cache=use_cache,
+        ignore_eos=args.ignore_eos,
     )
 
     # Create FastAPI app and set service

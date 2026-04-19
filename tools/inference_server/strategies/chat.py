@@ -3,15 +3,17 @@ Non-streaming chat completion generation strategy.
 """
 
 import time
+
 import torch
-from .non_streaming_base import NonStreamingStrategy
+
 from ..models.chat import (
-    ChatCompletionResponse,
     ChatCompletionChoice,
-    ChatMessage,
-    ChatCompletionUsage,
     ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatCompletionUsage,
+    ChatMessage,
 )
+from .non_streaming_base import NonStreamingStrategy
 
 
 class ChatGenerationStrategy(NonStreamingStrategy):

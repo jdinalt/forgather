@@ -1,0 +1,7 @@
+-- extends "project.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "DiLoCo Default"
+    -- set ns.config_description = "Basic DiLoCo training with default settings"
+    -- set ns.log_name = "diloco_default"

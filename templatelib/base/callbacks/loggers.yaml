@@ -1,9 +1,22 @@
 -- extends 'callbacks/base_callbacks.yaml'
 
 [callback_dependencies]
-# Experiment tracking: Tensorboard SummaryWriter
-.define: &summary_writer !singleton:torch.utils.tensorboard:SummaryWriter
-    - "{{ ns.logging_dir }}"
+    [summary_writer]
+# Resumable TensorBoard SummaryWriter wrapper
+.define: &summary_writer !singleton:forgather.ml.trainer.callbacks:ResumableSummaryWriter
+    log_dir: "{{ ns.logging_dir }}"
+
+    [tb_scalars]
+## TensorBoard scalar overrides, merged with TBLogger's built-in
+## defaults (see default_tb_scalars() in callbacks/tb_logger.py).
+## Each key is a TensorBoard tag; value is a dict with optional
+## 'source' (metric key, defaults to tag with - -> _) and
+## 'transform' (callable(value, metrics) -> new_value).
+## Only the delta from defaults is needed:
+##   - Add a scalar:    tag: {}  or  tag: {source: "metric_key"}
+##   - Add transform:   tag: {transform: !partial:module:func}
+##   - Erase a scalar:  tag: ~
+.define: &tb_scalars !dict
 
     [experiment_info]
 # Additional data to record to experiment loggers
@@ -14,13 +27,19 @@ experiment_info: &experiment_info !dict:@experiment_info
     config: !var "pp_config"
     versions: {{ versions }}
 
+    [loggers_dependencies]
+## Undefined
 [callback_list]
     => super()
+    # ResumableSummaryWriter registered as callback for checkpoint state persistence
+    resumable_writer: *summary_writer
+
     # Log all training output to JSON
     json_logger: !singleton:forgather.ml.trainer.callbacks:JsonLogger
         <<: *experiment_info
 
     # Log configuration and metrics to Tensorboard file
     tb_logger: !singleton:forgather.ml.trainer.callbacks:TBLogger
-        arg0: *summary_writer
-        <<: *experiment_info
+        summary_writer: *summary_writer
+        scalars: *tb_scalars
+        experiment_info: *experiment_info

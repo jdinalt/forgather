@@ -1,0 +1,10 @@
+-- extends 'experiments/amp/fg_apollo.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "FG Apollo-8"
+    -- set ns.config_description = "Forgather Apollo w/ 8 gradient accumulation steps"
+    -- set ns.log_name = log_name | default("apollo-8")
+    -- set ns.gradient_accumulation_steps = 8
+    ## With alpha set to 0.5, training diverges
+    -- set ns.lr_alpha = 0.0

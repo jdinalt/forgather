@@ -1,0 +1,24 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Torch Muon"
+    -- set ns.config_description = "Torch Muon optimizer"
+    -- set ns.log_name = log_name | default("muon")
+
+[optimizer]
+    [muon]
+.define: &muon !partial:torch.optim:Muon
+    lr: {{ ns.global_lr | toyaml }}
+    adjust_lr_fn: "match_rms_adamw"
+
+    [optimizer_]
+optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
+    optimizer_map:
+        - [ "embed|lm_head|norm|bias", "adam" ]
+        - [ ".*", "muon" ]
+    factories:
+        muon: *muon
+        adam: !partial:torch:optim.AdamW
+            lr: !!float 0.02
+    debug: True

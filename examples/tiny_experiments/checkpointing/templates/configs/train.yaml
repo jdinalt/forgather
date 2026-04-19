@@ -1,10 +1,7 @@
 ## Initial training configuration with checkpointing enabled
 -- extends "project.yaml"
 
--- block config_metadata
+[config_metadata]
     == super()
     -- set ns.config_name = "Initial Training with Checkpoints"
     -- set ns.config_description = "Train a small model from scratch with optimizer/scheduler checkpointing enabled"
-    ## Init new model
-    -- set ns.create_new_model = True
-<< endblock config_metadata

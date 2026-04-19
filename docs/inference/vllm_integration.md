@@ -2,6 +2,12 @@
 
 This guide explains how to configure Forgather models for distributed inference with [vLLM](https://docs.vllm.ai/), including tensor parallelism and pipeline parallelism support.
 
+> **Status (2026-03):** vLLM integration is currently broken. Forgather has moved to
+> Transformers v5, which vLLM does not yet support. Until vLLM adds Transformers v5
+> compatibility (or Forgather adds a Transformers < 5 compatibility layer), the
+> deployment steps below will not work. The architectural information on TP/PP plans
+> remains accurate and is preserved here for reference.
+
 ## Overview
 
 vLLM is a high-throughput inference engine that supports distributed inference through:

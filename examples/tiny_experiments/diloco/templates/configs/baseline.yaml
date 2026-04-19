@@ -1,0 +1,7 @@
+-- extends "projects/tiny.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Baseline"
+    -- set ns.config_description = "Tiny Experiment baseline, for comparison"
+    -- set ns.log_name = "baseline"

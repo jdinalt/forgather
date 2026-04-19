@@ -5,7 +5,7 @@ Shared configuration utilities for inference server and client.
 import argparse
 import logging
 import sys
-from typing import Dict, Any
+from typing import Any, Dict
 
 
 def load_config_from_yaml(config_path: str, use_logging: bool = True) -> Dict[str, Any]:

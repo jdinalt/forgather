@@ -1,3 +1,5 @@
+import os
+import shutil
 from contextlib import ExitStack
 from functools import partial
 from pprint import pformat
@@ -10,11 +12,12 @@ from forgather import Project, from_project
 from forgather.ml.construct import torch_dtype
 from forgather.ml.data_collator import DataCollatorForCausalLM
 from forgather.ml.no_init_weights import no_init_weights
-from forgather.ml.sharded_checkpoint import load_checkpoint
-from forgather.ml.utils import count_parameters, default_dtype
+from forgather.ml.sharded_checkpoint import load_checkpoint, save_checkpoint
+from forgather.ml.trainer.amp import AMPContext
+from forgather.ml.utils import count_parameters, default_dtype, fmt_si
 
 from .dynamic_args import get_dynamic_args
-from .utils import write_output_or_edit
+from .utils import assert_project_class, write_output_or_edit
 
 
 def optimizer_hook(optimizer, name, parameter):
@@ -36,11 +39,25 @@ def load_model(args):
     if config_class != "type.model":
         raise TypeError(f"Expected class type.model, found {config_class}")
 
-    return proj("pretrained_config", "pretrained_tokenizer", "model")
+    output_dir = proj_meta["output_dir"]
+    if os.path.exists(output_dir):
+        if args.refresh_model:
+            if not os.path.isdir(output_dir):
+                raise NotADirectoryError("The model's output path is not a directory!?")
+            print(f"Deleting output directory at '{output_dir}'")
+            shutil.rmtree(output_dir)
+        else:
+            print(
+                f"Model definition already exist at '{output_dir}'. If you wish to rebuild the model from source code, pass '--refresh-model'"
+            )
+
+    return proj("pretrained_config", "pretrained_tokenizer", "model"), proj_meta
 
 
 def model_cmd(args):
     """Model test commands."""
+    assert_project_class(args, "type.model")
+
     print(f"{args=}")
     if hasattr(args, "model_subcommand"):
         match args.model_subcommand:
@@ -50,7 +67,9 @@ def model_cmd(args):
                 model_test_cmd(args)
 
 
-def construct_model(model_ctor, args):
+def construct_model(model_ctor, args, meta):
+    output_dir = meta["output_dir"]
+
     with ExitStack() as exit_stack:
         exit_stack.enter_context(torch.device(args.device))
         if args.dtype:
@@ -61,11 +80,18 @@ def construct_model(model_ctor, args):
     if args.load_from_checkpoint:
         assert (
             args.device != "meta"
-        ), "Load from checkpoint not supported on meta device"
-        print("Loading model from checkpoint {args.load_from_checkpoint}...")
+        ), "Load from checkpoint is not supported on meta device. Please specify a real device. e.g. '--device cpu'"
+        print(f"Loading model from checkpoint {args.load_from_checkpoint}...")
         load_checkpoint(
-            args.load_from_checkpoint, model, device=args.dtype, strict=True
+            args.load_from_checkpoint, model, device=args.device, strict=False
         )
+    if args.save_checkpoint:
+        assert (
+            args.device != "meta"
+        ), "Saving model from meta device is unsupported. Please specify a real device. e.g. '--device cpu'"
+        print("Saving model weights...")
+        save_checkpoint(output_dir, module=model, safetensors=args.safetensors)
+
     if args.gradient_checkpointing:
         assert hasattr(model, "gradient_checkpointing_enable")
         print(f"Enabling gradient checkpointing")
@@ -74,14 +100,22 @@ def construct_model(model_ctor, args):
 
 
 def model_construct_cmd(args):
-    config, tokenizer, model_ctor = load_model(args)
+    (config, tokenizer, model_ctor), meta = load_model(args)
     data = f"{'Model Configuration':-^80}\n" + pformat(config) + "\n\n"
     data += f"{'Model Tokenizer':-^80}\n" + pformat(tokenizer) + "\n\n"
 
-    model = construct_model(model_ctor, args)
+    model = construct_model(model_ctor, args, meta)
     model_header = f"Model on '{args.device}' device"
     data += f"{model_header:-^80}\n" + pformat(model) + "\n\n"
-    data += f"parameters={count_parameters(model)}\n"
+    stats = count_parameters(model)
+    data += f"{'Parameters':-^80}\n"
+    data += f"  Total:            {fmt_si(stats.total)}\n"
+    data += f"  Trainable:        {fmt_si(stats.trainable)}\n"
+    data += f"  Embedding:        {fmt_si(stats.embedding)}\n"
+    data += f"  Non-embedding:    {fmt_si(stats.non_embedding)}\n"
+    data += f"  Tied embeddings:  {stats.tied_embeddings}\n"
+    data += f"  Chinchilla tokens: {fmt_si(stats.chinchilla_optimal_tokens)}\n"
+    data += f"  FLOPs/token:      {stats.flops_per_token:.2e}\n"
     write_output_or_edit(args, data, ".txt")
 
 
@@ -108,9 +142,51 @@ class RandomDatasetIterator(IterableDataset):
 def model_test_cmd(args):
     torch.autograd.set_detect_anomaly(True)
     torch._dynamo.config.recompile_limit = 32
-    config, tokenizer, model_ctor = load_model(args)
 
-    model = construct_model(model_ctor, args)
+    # Ensure defaults for optional test args (may be missing when subcommand isn't 'test')
+    compile_enabled = getattr(args, "compile", False) or False
+    amp_mode = getattr(args, "amp", None)
+
+    # Dump test settings
+    device_type = args.device.split(":")[0]
+    print(f"{'Test Settings':-^60}")
+    print(f"  device:                {args.device}")
+    print(f"  dtype:                 {args.dtype}")
+    print(f"  batch_size:            {args.batch_size}")
+    print(f"  sequence_length:       {args.sequence_length}")
+    print(f"  steps:                 {args.steps}")
+    print(f"  lr:                    {args.lr}")
+    print(f"  gradient_checkpointing:{args.gradient_checkpointing}")
+    print(f"  fuse_optim_backward:   {args.fuse_optim_with_backward}")
+    print(f"  compile:               {compile_enabled}")
+    if compile_enabled:
+        print(f"    backend:             {args.compile_backend}")
+        print(f"    mode:                {args.compile_mode}")
+        print(f"    dynamic:             {args.compile_dynamic}")
+        print(f"    fullgraph:           {args.compile_fullgraph}")
+    print(f"  amp:                   {amp_mode or 'disabled'}")
+    print(f"{'':-^60}")
+
+    (config, tokenizer, model_ctor), meta = load_model(args)
+
+    model = construct_model(model_ctor, args, meta)
+
+    # torch.compile
+    if compile_enabled:
+        print(
+            f"Compiling model: backend={args.compile_backend}, mode={args.compile_mode}, "
+            f"dynamic={args.compile_dynamic}, fullgraph={args.compile_fullgraph}"
+        )
+        model.compile(
+            backend=args.compile_backend,
+            mode=args.compile_mode,
+            dynamic=args.compile_dynamic,
+            fullgraph=args.compile_fullgraph,
+        )
+
+    # AMP
+    amp_context = AMPContext(mixed_precision=amp_mode, device_type=device_type)
+
     print(f"Setting learning-rate={args.lr}")
     optimizer = SGD(model.parameters(), lr=args.lr)
 
@@ -170,12 +246,14 @@ def model_test_cmd(args):
         if i == 0:
             print(f"{batch.keys()=}")
 
-        loss, logits = model(**batch)
+        with amp_context.autocast():
+            loss, logits = model(**batch)
         print(f"step: {i+1}, loss: {loss}, logits.shape: {logits.shape}")
 
-        loss.backward()
+        amp_context.scale_loss(loss).backward()
+        amp_context.unscale_(optimizer)
         if not args.fuse_optim_with_backward:
-            optimizer.step()
+            amp_context.optimizer_step(optimizer)
         optimizer.zero_grad()
 
     print("Test Completed")

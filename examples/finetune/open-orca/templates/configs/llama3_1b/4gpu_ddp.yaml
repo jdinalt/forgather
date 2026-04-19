@@ -1,0 +1,64 @@
+-- extends 'open_orca.yaml'
+## -----------------------------------------------------------------------------
+## 4-GPU DDP, Llama3 1B -- the headline training config.
+##
+## Designed for a long single-machine fine-tune run on the reference 4x 4090
+## hardware. The per-device batch size + seq_len + world size land the
+## token-per-step count in the zone where sqrt LR scaling produces a
+## reasonable starting LR, and the total_tokens budget is sized to fit a
+## full run inside ~24h at the measured ~26K tok/s throughput for 1B
+## models under DDP on PCIe 4.0.
+##
+## Note on fuse_optim_with_backward: not enabled here because DDP's
+## gradient all-reduce runs after backward() and requires the gradients
+## to still exist at that point. The fused-update path consumes and
+## frees each gradient immediately, which would starve the all-reduce.
+## The basic-trainer and pipeline configs in this project do enable it.
+## -----------------------------------------------------------------------------
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Open-Orca Llama3 1B DDP"
+    -- set ns.config_description = "DDP Llama3 1B, 4 GPU, packed OpenOrca"
+    -- set ns.log_name = "4gpu_ddp"
+    -- set ns.nproc_per_node = nproc_per_node | default(4)
+
+    ## Batching
+    -- set ns.seq_len = seq_len | default(2048)
+    -- set ns.per_device_train_batch_size = batch_size | default(4)
+
+    ## Token budget (millions). 1000M is ~1/8 of an epoch on packed
+    ## OpenOrca at seq_len 2048 (total dataset ~8.2B tokens). Measured
+    ## 4x 4090 DDP throughput ~26K tok/s steady-state, so 1000M tokens
+    ## lands around 11h wall-clock -- comfortably inside a 24h budget.
+    -- set ns.total_tokens = total_tokens | default(1000)
+
+    ## Warmup and annealing (millions of tokens).
+    ## WSDScheduler: linear warmup, then stable LR until start_decay=True,
+    ## then cosine decay over annealing_tokens.
+    -- set ns.warmup_tokens = warmup_tokens | default(20)
+    -- set ns.annealing_tokens = annealing_tokens | default(200)
+
+    ## Trainer selection
+    -- set ns.trainer_type = trainer_type | default("ddp")
+
+    ## Compile settings. finetune_v2 defaults torch_compile=True +
+    ## max-autotune; that mode adds ~13 GiB of cudagraph scratch on this
+    ## model size (19 GiB peak vs 7 GiB without), which is too close to
+    ## the 24 GB edge for a multi-hour run. DDP on PCIe is bandwidth-bound
+    ## anyway -- compile gives marginal throughput improvement here.
+    ## Disable for safety; override with --compile true if you want to
+    ## measure the trade-off on your hardware.
+    -- set ns.torch_compile = compile | default(False)
+
+[optimizer]
+optimizer: &optimizer !partial:forgather.ml.optim.adafactor:Adafactor
+    lr: {{ ns.global_lr | toyaml }}
+    # Forgather's Adafactor defaults to weight_decay=0.01. An earlier
+    # open-orca run showed the model's weight norm climbing from ~725
+    # to ~789 over 192M tokens at the default, so bump it by ~10x to
+    # keep long runs bounded. Adafactor applies decoupled decay, so
+    # this affects the main transformer weights; the [optimizer_groups]
+    # block inherited from lm_training_project still zeroes decay for
+    # norms/biases/embed/lm_head.
+    weight_decay: 0.1

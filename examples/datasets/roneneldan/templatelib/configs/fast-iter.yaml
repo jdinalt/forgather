@@ -1,0 +1,7 @@
+-- extends "configs/tinystories.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Fast Iterable"
+    -- set ns.config_description = "Tiny Stories with Faster Iterable implementation"
+    -- set ns.load_method = "forgather.ml.datasets:fast_load_iterable_dataset"

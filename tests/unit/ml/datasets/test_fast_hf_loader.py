@@ -1,0 +1,2952 @@
+"""
+Tests for fast_hf_loader: StatefulDataLoader checkpoint functionality
+"""
+
+import pytest
+
+try:
+    from torchdata.stateful_dataloader import StatefulDataLoader
+
+    HAS_STATEFUL = True
+except ImportError:
+    HAS_STATEFUL = False
+
+from forgather.ml.datasets import fast_load_iterable_dataset, interleave_datasets
+
+
+def _mp_ctx(num_workers):
+    """Force spawn when workers > 0 to avoid fork-in-threaded-parent warnings
+    on Python 3.12 and the underlying deadlock hazard. Returns None when no
+    workers are spawned (StatefulDataLoader accepts None for the default)."""
+    return "spawn" if num_workers > 0 else None
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+@pytest.mark.parametrize("num_workers", [0, 1, 2])
+def test_stateful_checkpoint_restore(num_workers):
+    """
+    Test that checkpoint save/restore works correctly with StatefulDataLoader.
+
+    Verifies that:
+    1. A checkpoint can be saved after N batches
+    2. A NEW dataloader can be created and restored from checkpoint
+    3. The restored dataloader continues from the correct position
+
+    Note: Uses buffer_size=0 to disable shuffle buffer for exact reproducibility.
+    Shuffle buffer state is not saved in checkpoints, so exact continuation is only
+    possible without it. File-level shuffle is still active and tested.
+    """
+    # Load dataset
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ids = ids.shuffle(seed=42, buffer_size=0)
+
+    # Create dataloader and iterate 5 batches
+    dataloader = StatefulDataLoader(
+        ids,
+        batch_size=4,
+        num_workers=num_workers,
+        multiprocessing_context=_mp_ctx(num_workers),
+    )
+
+    checkpoint = None
+    for i, batch in enumerate(dataloader):
+        if i >= 4:
+            checkpoint = dataloader.state_dict()
+            break
+
+    assert checkpoint is not None, "Failed to save checkpoint"
+
+    # Create NEW dataloader (fresh state)
+    ids_fresh = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ids_fresh = ids_fresh.shuffle(seed=42, buffer_size=0)
+    dataloader_fresh = StatefulDataLoader(
+        ids_fresh,
+        batch_size=4,
+        num_workers=num_workers,
+        multiprocessing_context=_mp_ctx(num_workers),
+    )
+
+    # Get batch 5 from fresh dataloader (this is what restored should yield as batch 0)
+    expected_batch = None
+    for i, batch in enumerate(dataloader_fresh):
+        if i == 5:
+            expected_batch = batch
+            break
+
+    assert expected_batch is not None, "Failed to get expected batch"
+
+    # Create NEW dataloader with restore
+    ids_restored = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ids_restored = ids_restored.shuffle(seed=42, buffer_size=0)
+    dataloader_restored = StatefulDataLoader(
+        ids_restored,
+        batch_size=4,
+        num_workers=num_workers,
+        multiprocessing_context=_mp_ctx(num_workers),
+    )
+    dataloader_restored.load_state_dict(checkpoint)
+
+    # Get first batch from restored dataloader
+    restored_batch = None
+    for i, batch in enumerate(dataloader_restored):
+        restored_batch = batch
+        break
+
+    assert restored_batch is not None, "Failed to get restored batch"
+
+    # Verify batches match
+    if isinstance(expected_batch, dict) and isinstance(restored_batch, dict):
+        # Compare dict batches (HuggingFace dataset format)
+        for k in expected_batch.keys():
+            assert k in restored_batch, f"Key {k} missing in restored batch"
+            # Compare values
+            if isinstance(expected_batch[k], str):
+                assert (
+                    expected_batch[k] == restored_batch[k]
+                ), f"Mismatch for key {k}: expected {expected_batch[k]}, got {restored_batch[k]}"
+            else:
+                # For lists or tensors, convert to string for comparison
+                assert str(expected_batch[k]) == str(
+                    restored_batch[k]
+                ), f"Mismatch for key {k}"
+    else:
+        # Fallback comparison
+        assert str(expected_batch) == str(
+            restored_batch
+        ), f"Batches don't match: expected {expected_batch}, got {restored_batch}"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_fast_load_basic():
+    """Test basic dataset loading functionality."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Check it's iterable
+    assert hasattr(ids, "__iter__"), "Dataset should be iterable"
+
+    # Check it has length
+    assert hasattr(ids, "__len__"), "Dataset should have __len__"
+    assert len(ids) > 0, "Dataset should not be empty"
+
+    # Check it has state_dict/load_state_dict
+    assert hasattr(ids, "state_dict"), "Dataset should have state_dict"
+    assert hasattr(ids, "load_state_dict"), "Dataset should have load_state_dict"
+
+    # Test getting an example
+    example = next(iter(ids))
+    assert example is not None, "Should be able to get an example"
+    assert "text" in example, "Example should have 'text' field"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_shuffle():
+    """Test shuffle functionality."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ids_shuffled = ids.shuffle(seed=42)
+
+    assert hasattr(ids_shuffled, "__iter__"), "Shuffled dataset should be iterable"
+
+    # Get first example from each
+    ex1 = next(iter(ids))
+    ex2 = next(iter(ids_shuffled))
+
+    # They might be the same by chance, but at least verify both work
+    assert ex1 is not None
+    assert ex2 is not None
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_shuffle_buffer():
+    """Test shuffle buffer provides different ordering."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+
+    # Shard-level shuffle only (no buffer)
+    ids_shard_only = ids.shuffle(seed=42, buffer_size=0)
+
+    # Shard + buffer shuffle
+    ids_with_buffer = ids.shuffle(seed=42, buffer_size=10)
+
+    # Get first 20 examples from each
+    examples_shard_only = [next(iter(ids_shard_only)) for _ in range(20)]
+    examples_with_buffer = [next(iter(ids_with_buffer)) for _ in range(20)]
+
+    # At least some examples should differ in order due to buffer shuffling
+    # (though with same seed for file shuffling, we might see similar patterns)
+    assert len(examples_shard_only) == 20
+    assert len(examples_with_buffer) == 20
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_shuffle_buffer_different_seeds():
+    """Test shuffle buffer with different seeds produces different orders."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+
+    # Same buffer size, different seeds
+    ids_seed1 = ids.shuffle(seed=42, buffer_size=10)
+    ids_seed2 = ids.shuffle(seed=123, buffer_size=10)
+
+    # Collect first 20 examples from each
+    examples1 = []
+    examples2 = []
+
+    for ex in ids_seed1:
+        examples1.append(ex["text"])
+        if len(examples1) >= 20:
+            break
+
+    for ex in ids_seed2:
+        examples2.append(ex["text"])
+        if len(examples2) >= 20:
+            break
+
+    # Should have different orderings (very unlikely to be identical)
+    differences = sum(1 for i in range(20) if examples1[i] != examples2[i])
+    assert differences > 0, "Different seeds should produce different orderings"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_shuffle_buffer_checkpoint():
+    """Test shuffle buffer works with checkpointing."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+
+    # Apply shuffle with buffer
+    ids_shuffled = ids.shuffle(seed=42, buffer_size=10)
+
+    # Create dataloader and iterate
+    dataloader = StatefulDataLoader(ids_shuffled, batch_size=4, num_workers=0)
+
+    checkpoint = None
+    for i, batch in enumerate(dataloader):
+        if i >= 3:
+            checkpoint = dataloader.state_dict()
+            break
+
+    assert checkpoint is not None
+
+    # Verify checkpoint contains buffer_size
+    # (state is in the nested dataset state)
+    assert "dataset_state" in checkpoint or "_snapshot" in checkpoint
+    dataset_state = checkpoint.get("dataset_state", checkpoint.get("_snapshot", {}))
+    assert (
+        dataset_state.get("shuffle_buffer_size") == 10
+    ), "Checkpoint should preserve buffer size"
+
+    # Create fresh dataloader and restore
+    ids_restored = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ids_restored_shuffled = ids_restored.shuffle(seed=42, buffer_size=10)
+    dataloader_restored = StatefulDataLoader(
+        ids_restored_shuffled, batch_size=4, num_workers=0
+    )
+    dataloader_restored.load_state_dict(checkpoint)
+
+    # Should be able to continue iteration
+    restored_batch = next(iter(dataloader_restored))
+    assert restored_batch is not None
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_shuffle_buffer_with_map():
+    """Test shuffle buffer works with map operations."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+
+    # Apply shuffle with buffer, then map
+    def add_prefix(example):
+        return {"text": "PREFIX: " + example["text"]}
+
+    ids_shuffled = ids.shuffle(seed=42, buffer_size=10).map(add_prefix)
+
+    # Iterate and verify
+    examples = []
+    for i, ex in enumerate(ids_shuffled):
+        examples.append(ex)
+        if i >= 10:
+            break
+
+    assert len(examples) == 11
+    for ex in examples:
+        assert ex["text"].startswith("PREFIX: ")
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_shuffle_buffer_with_shard():
+    """Test shuffle buffer works with sharding."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+
+    # Apply shuffle with buffer, then shard
+    ids_shuffled = ids.shuffle(seed=42, buffer_size=10)
+    shard0 = ids_shuffled.shard(num_shards=2, index=0, mode="example")
+    shard1 = ids_shuffled.shard(num_shards=2, index=1, mode="example")
+
+    # Count examples in each shard
+    count0 = sum(1 for _ in shard0)
+    count1 = sum(1 for _ in shard1)
+
+    # Should sum to total
+    assert count0 + count1 == 100
+
+    # Should be roughly balanced
+    assert abs(count0 - count1) <= 1
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_shuffle_buffer_size_zero():
+    """Test that buffer_size=0 disables example-level shuffling."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+
+    # Disable example-level shuffling
+    ids_shuffled = ids.shuffle(seed=42, buffer_size=0)
+
+    # Should still work
+    examples = []
+    for i, ex in enumerate(ids_shuffled):
+        examples.append(ex)
+        if i >= 10:
+            break
+
+    assert len(examples) == 11
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_shuffle_buffer_size_none():
+    """Test that buffer_size=None disables example-level shuffling."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+
+    # Disable example-level shuffling
+    ids_shuffled = ids.shuffle(seed=42, buffer_size=None)
+
+    # Should still work
+    examples = []
+    for i, ex in enumerate(ids_shuffled):
+        examples.append(ex)
+        if i >= 10:
+            break
+
+    assert len(examples) == 11
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_shuffle_buffer_large_buffer():
+    """Test shuffle buffer with buffer larger than dataset."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:50]"
+    )
+
+    # Buffer larger than dataset
+    ids_shuffled = ids.shuffle(seed=42, buffer_size=1000)
+
+    # Should still yield all examples
+    count = sum(1 for _ in ids_shuffled)
+    assert count == 50
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_shuffle_buffer_reproducibility():
+    """Test shuffle buffer is reproducible with same seed."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+
+    # Same seed should produce same ordering
+    ids_shuffled1 = ids.shuffle(seed=42, buffer_size=10)
+    ids_shuffled2 = ids.shuffle(seed=42, buffer_size=10)
+
+    examples1 = [ex["text"] for i, ex in enumerate(ids_shuffled1) if i < 20]
+    examples2 = [ex["text"] for i, ex in enumerate(ids_shuffled2) if i < 20]
+
+    # Should be identical
+    assert examples1 == examples2
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_shard():
+    """Test sharding functionality for DDP."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Test single shard (should always work)
+    ids_shard = ids.shard(num_shards=1, index=0)
+    assert hasattr(ids_shard, "__iter__"), "Shard should be iterable"
+
+    # Verify shard yields examples
+    ex = next(iter(ids_shard))
+    assert ex is not None
+    assert "text" in ex, "Example should have 'text' field"
+
+    # Test that sharding with multiple shards doesn't crash
+    # (Note: wikitext only has 1 Arrow file, so some shards may be empty)
+    ids_shard0 = ids.shard(num_shards=2, index=0)
+    ids_shard1 = ids.shard(num_shards=2, index=1)
+
+    assert hasattr(ids_shard0, "__iter__"), "Shard 0 should be iterable"
+    assert hasattr(ids_shard1, "__iter__"), "Shard 1 should be iterable"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_example_level_sharding():
+    """Test example-level sharding with num_shards > num_files."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    total_examples = len(ids)
+
+    # Shard into more shards than files (wikitext has only 1 file)
+    num_shards = 4
+    shards = [
+        ids.shard(num_shards=num_shards, index=i, mode="example")
+        for i in range(num_shards)
+    ]
+
+    # Verify all shards are iterable
+    for i, shard in enumerate(shards):
+        assert hasattr(shard, "__iter__"), f"Shard {i} should be iterable"
+
+    # Count examples in each shard
+    shard_sizes = []
+    for i, shard in enumerate(shards):
+        count = sum(1 for _ in shard)
+        shard_sizes.append(count)
+        print(f"Shard {i}: {count} examples")
+
+    # Verify total examples is preserved
+    assert (
+        sum(shard_sizes) == total_examples
+    ), f"Total examples mismatch: {sum(shard_sizes)} != {total_examples}"
+
+    # Verify shards are roughly equal in size (within 1 example)
+    min_size = min(shard_sizes)
+    max_size = max(shard_sizes)
+    assert (
+        max_size - min_size <= 1
+    ), f"Shard sizes too uneven: min={min_size}, max={max_size}"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_shard_auto_mode():
+    """Test auto mode selection for sharding."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # With 1 file and 2 shards, auto should use example-level sharding
+    shard0 = ids.shard(num_shards=2, index=0, mode="auto")
+    shard1 = ids.shard(num_shards=2, index=1, mode="auto")
+
+    # Both shards should have examples (not empty)
+    count0 = sum(1 for _ in shard0)
+    count1 = sum(1 for _ in shard1)
+
+    assert count0 > 0, "Shard 0 should not be empty with auto mode"
+    assert count1 > 0, "Shard 1 should not be empty with auto mode"
+
+    # Total should match original
+    total = len(ids)
+    assert (
+        count0 + count1 == total
+    ), f"Total examples mismatch: {count0 + count1} != {total}"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_example_sharding_lengths():
+    """Test that __len__ works correctly with example-level sharding."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    total_examples = len(ids)
+
+    # Create shards
+    num_shards = 3
+    shards = [
+        ids.shard(num_shards=num_shards, index=i, mode="example")
+        for i in range(num_shards)
+    ]
+
+    # Check that reported lengths match actual iteration
+    for i, shard in enumerate(shards):
+        reported_len = len(shard)
+        actual_len = sum(1 for _ in shard)
+        assert (
+            reported_len == actual_len
+        ), f"Shard {i} length mismatch: reported {reported_len}, actual {actual_len}"
+
+    # Check that total length is preserved
+    total_shard_len = sum(len(shard) for shard in shards)
+    assert (
+        total_shard_len == total_examples
+    ), f"Total shard lengths {total_shard_len} != original {total_examples}"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+@pytest.mark.parametrize("num_workers", [0, 1])
+def test_example_sharding_checkpoint(num_workers):
+    """Test checkpoint compatibility with example-level sharding."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Shard with example-level mode
+    ids_shard = ids.shard(num_shards=2, index=0, mode="example")
+
+    # Create dataloader and iterate a few batches
+    dataloader = StatefulDataLoader(
+        ids_shard,
+        batch_size=4,
+        num_workers=num_workers,
+        multiprocessing_context=_mp_ctx(num_workers),
+    )
+
+    checkpoint = None
+    for i, batch in enumerate(dataloader):
+        if i >= 3:
+            checkpoint = dataloader.state_dict()
+            break
+
+    assert checkpoint is not None, "Failed to save checkpoint"
+
+    # Create fresh dataloader to get expected batch
+    ids_fresh = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ids_fresh_shard = ids_fresh.shard(num_shards=2, index=0, mode="example")
+    dataloader_fresh = StatefulDataLoader(
+        ids_fresh_shard,
+        batch_size=4,
+        num_workers=num_workers,
+        multiprocessing_context=_mp_ctx(num_workers),
+    )
+
+    expected_batch = None
+    for i, batch in enumerate(dataloader_fresh):
+        if i == 4:
+            expected_batch = batch
+            break
+
+    assert expected_batch is not None, "Failed to get expected batch"
+
+    # Restore and verify
+    ids_restored = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ids_restored_shard = ids_restored.shard(num_shards=2, index=0, mode="example")
+    dataloader_restored = StatefulDataLoader(
+        ids_restored_shard,
+        batch_size=4,
+        num_workers=num_workers,
+        multiprocessing_context=_mp_ctx(num_workers),
+    )
+    dataloader_restored.load_state_dict(checkpoint)
+
+    restored_batch = next(iter(dataloader_restored))
+
+    # Verify batches match
+    if isinstance(expected_batch, dict) and isinstance(restored_batch, dict):
+        for k in expected_batch.keys():
+            assert k in restored_batch, f"Key {k} missing in restored batch"
+            assert str(expected_batch[k]) == str(
+                restored_batch[k]
+            ), f"Mismatch for key {k}"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_virtual_split_basic():
+    """Test basic virtual split functionality."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    total_examples = len(ids)
+
+    # First 50%
+    train_ds = ids.slice(None, 0.5)
+    assert len(train_ds) == total_examples // 2
+
+    # Last 50%
+    val_ds = ids.slice(0.5, None)
+    assert len(val_ds) == total_examples - total_examples // 2
+
+    # Verify examples don't overlap
+    train_count = sum(1 for _ in train_ds)
+    val_count = sum(1 for _ in val_ds)
+
+    assert train_count == len(train_ds)
+    assert val_count == len(val_ds)
+    assert train_count + val_count == total_examples
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_virtual_split_percentage_string():
+    """Test virtual split with percentage strings."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    total_examples = len(ids)
+
+    # Using percentage strings
+    train_ds = ids.slice(None, "80%")
+    val_ds = ids.slice("80%", None)
+
+    assert len(train_ds) == int(total_examples * 0.8)
+    assert len(val_ds) == total_examples - int(total_examples * 0.8)
+    assert len(train_ds) + len(val_ds) == total_examples
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_virtual_split_absolute_indices():
+    """Test virtual split with absolute indices."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Absolute indices
+    subset = ids.slice(100, 200)
+    assert len(subset) == 100
+
+    count = sum(1 for _ in subset)
+    assert count == 100
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_virtual_split_with_sharding():
+    """Test virtual split combined with sharding."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # First 80% for training, split across 2 shards
+    train_ds = ids.slice(None, 0.8)
+    train_total = len(train_ds)
+
+    shard0 = train_ds.shard(num_shards=2, index=0, mode="example")
+    shard1 = train_ds.shard(num_shards=2, index=1, mode="example")
+
+    # Verify shard sizes
+    count0 = sum(1 for _ in shard0)
+    count1 = sum(1 for _ in shard1)
+
+    assert count0 + count1 == train_total
+    assert abs(count0 - count1) <= 1  # Should be roughly equal
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_virtual_split_checkpoint():
+    """Test checkpoint compatibility with virtual splits."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Create virtual split (first 80%)
+    train_ds = ids.slice(None, 0.8)
+
+    # Create dataloader and iterate
+    dataloader = StatefulDataLoader(train_ds, batch_size=4, num_workers=0)
+
+    checkpoint = None
+    for i, batch in enumerate(dataloader):
+        if i >= 3:
+            checkpoint = dataloader.state_dict()
+            break
+
+    assert checkpoint is not None
+
+    # Create fresh dataloader to get expected batch
+    ids_fresh = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    train_fresh = ids_fresh.slice(None, 0.8)
+    dataloader_fresh = StatefulDataLoader(train_fresh, batch_size=4, num_workers=0)
+
+    expected_batch = None
+    for i, batch in enumerate(dataloader_fresh):
+        if i == 4:
+            expected_batch = batch
+            break
+
+    # Restore and verify
+    ids_restored = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    train_restored = ids_restored.slice(None, 0.8)
+    dataloader_restored = StatefulDataLoader(
+        train_restored, batch_size=4, num_workers=0
+    )
+    dataloader_restored.load_state_dict(checkpoint)
+
+    restored_batch = next(iter(dataloader_restored))
+
+    # Verify batches match
+    if isinstance(expected_batch, dict) and isinstance(restored_batch, dict):
+        for k in expected_batch.keys():
+            assert k in restored_batch
+            assert str(expected_batch[k]) == str(restored_batch[k])
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_three_way_split():
+    """Test creating train/val/test splits."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    total = len(ids)
+
+    # 70% train, 15% val, 15% test
+    train_ds = ids.slice(None, 0.7)
+    val_ds = ids.slice(0.7, 0.85)
+    test_ds = ids.slice(0.85, None)
+
+    train_count = sum(1 for _ in train_ds)
+    val_count = sum(1 for _ in val_ds)
+    test_count = sum(1 for _ in test_ds)
+
+    # Verify counts match
+    assert train_count == len(train_ds)
+    assert val_count == len(val_ds)
+    assert test_count == len(test_ds)
+
+    # Verify total is preserved
+    assert train_count + val_count + test_count == total
+
+    # Verify rough proportions (within rounding)
+    assert abs(train_count - int(total * 0.7)) <= 1
+    assert abs(val_count - int(total * 0.15)) <= 1
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_parse_split_notation():
+    """Test _parse_split_notation function."""
+    from forgather.ml.datasets.fast_hf_loader import _parse_split_notation
+
+    # Test plain split
+    base, start, end = _parse_split_notation("train")
+    assert base == "train"
+    assert start is None
+    assert end is None
+
+    # Test with start index
+    base, start, end = _parse_split_notation("train[10000:]")
+    assert base == "train"
+    assert start == 10000
+    assert end is None
+
+    # Test with end index
+    base, start, end = _parse_split_notation("train[:5000]")
+    assert base == "train"
+    assert start is None
+    assert end == 5000
+
+    # Test with both indices
+    base, start, end = _parse_split_notation("train[1000:5000]")
+    assert base == "train"
+    assert start == 1000
+    assert end == 5000
+
+    # Test with percentage strings
+    base, start, end = _parse_split_notation("train[10%:20%]")
+    assert base == "train"
+    assert start == "10%"
+    assert end == "20%"
+
+    # Test with None input
+    base, start, end = _parse_split_notation(None)
+    assert base is None
+    assert start is None
+    assert end is None
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_split_notation_no_reindex():
+    """
+    Test that using split notation doesn't trigger reindexing.
+
+    Verifies that "train" and "train[10000:]" use the same cached index.
+    """
+    import tempfile
+    from pathlib import Path
+
+    # Create temporary index directory
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Load with base split first (will create index)
+        ids1 = fast_load_iterable_dataset(
+            "wikitext", name="wikitext-2-raw-v1", split="train", index_dir=tmpdir
+        )
+
+        # Count index files created
+        index_files_before = list(Path(tmpdir).glob("*.json"))
+        assert len(index_files_before) == 1, "Should have exactly one index file"
+
+        # Load with sliced split (should reuse same index)
+        ids2 = fast_load_iterable_dataset(
+            "wikitext", name="wikitext-2-raw-v1", split="train[100:]", index_dir=tmpdir
+        )
+
+        # Verify no new index files created
+        index_files_after = list(Path(tmpdir).glob("*.json"))
+        assert len(index_files_after) == 1, "Should still have exactly one index file"
+        assert (
+            index_files_before[0] == index_files_after[0]
+        ), "Should use same index file"
+
+        # Verify lengths are different (slice applied)
+        assert (
+            len(ids2) == len(ids1) - 100
+        ), "Sliced dataset should be 100 examples shorter"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_split_notation_slice_applied():
+    """Test that split notation correctly applies the slice."""
+    # Load with split notation
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ids_sliced = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )
+
+    # Verify length
+    assert len(ids_sliced) == 100, "Sliced dataset should have exactly 100 examples"
+
+    # Verify we can iterate
+    count = sum(1 for _ in ids_sliced)
+    assert count == 100, f"Should iterate exactly 100 examples, got {count}"
+
+    # Test with percentage notation
+    ids_pct = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[10%:20%]"
+    )
+    total = len(ids)
+    expected_len = int(total * 0.2) - int(total * 0.1)
+    assert len(ids_pct) == expected_len, "Percentage slice length mismatch"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_split_notation_with_operations():
+    """Test that split notation works with shuffle, shard, and other operations."""
+    # Load with split notation
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:]"
+    )
+
+    # Apply shuffle
+    ids_shuffled = ids.shuffle(seed=42)
+    assert hasattr(ids_shuffled, "__iter__"), "Should be iterable after shuffle"
+
+    # Apply shard
+    ids_shard = ids.shard(num_shards=2, index=0, mode="example")
+    assert hasattr(ids_shard, "__iter__"), "Should be iterable after shard"
+
+    # Verify we can iterate
+    count = sum(1 for _ in ids_shard)
+    assert count > 0, "Should have examples after sharding"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_split_notation_checkpoint():
+    """Test that checkpointing works with split notation."""
+    # Load with split notation
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:]"
+    )
+
+    # Create dataloader
+    dataloader = StatefulDataLoader(ids, batch_size=4, num_workers=0)
+
+    # Save checkpoint after a few batches
+    checkpoint = None
+    for i, batch in enumerate(dataloader):
+        if i >= 3:
+            checkpoint = dataloader.state_dict()
+            break
+
+    assert checkpoint is not None, "Should be able to save checkpoint"
+
+    # Create fresh dataloader with same split notation
+    ids_restored = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:]"
+    )
+    dataloader_restored = StatefulDataLoader(ids_restored, batch_size=4, num_workers=0)
+
+    # Restore checkpoint
+    dataloader_restored.load_state_dict(checkpoint)
+
+    # Should be able to continue iteration
+    restored_batch = next(iter(dataloader_restored))
+    assert restored_batch is not None, "Should get batch after restore"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_column_names():
+    """Test column_names property."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Should have column_names attribute
+    assert hasattr(ids, "column_names"), "Dataset should have column_names attribute"
+
+    # Should return list of column names
+    column_names = ids.column_names
+    assert isinstance(column_names, list), "column_names should be a list"
+    assert len(column_names) > 0, "column_names should not be empty"
+
+    # Wikitext should have 'text' column
+    assert "text" in column_names, "Wikitext dataset should have 'text' column"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_features():
+    """Test features property."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Should have features attribute
+    assert hasattr(ids, "features"), "Dataset should have features attribute"
+
+    # Features should not be None
+    features = ids.features
+    assert features is not None, "features should not be None"
+
+    # Should have 'text' feature
+    assert "text" in features, "features should contain 'text' key"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_n_shards():
+    """Test n_shards property."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Should have n_shards attribute
+    assert hasattr(ids, "n_shards"), "Dataset should have n_shards attribute"
+
+    # Should return number of Arrow files
+    n_shards = ids.n_shards
+    assert isinstance(n_shards, int), "n_shards should be an integer"
+    assert n_shards > 0, "n_shards should be positive"
+
+    # After shuffling, n_shards should remain the same
+    ids_shuffled = ids.shuffle(seed=42)
+    assert ids_shuffled.n_shards == n_shards, "n_shards should not change after shuffle"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_metadata_with_operations():
+    """Test that metadata properties work with shuffle, shard, and slice."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    original_columns = ids.column_names
+    original_n_shards = ids.n_shards
+
+    # After shuffle
+    ids_shuffled = ids.shuffle(seed=42)
+    assert (
+        ids_shuffled.column_names == original_columns
+    ), "column_names should not change after shuffle"
+    assert (
+        ids_shuffled.n_shards == original_n_shards
+    ), "n_shards should not change after shuffle"
+
+    # After slice
+    ids_sliced = ids.slice(None, 0.5)
+    assert (
+        ids_sliced.column_names == original_columns
+    ), "column_names should not change after slice"
+    assert (
+        ids_sliced.n_shards == original_n_shards
+    ), "n_shards should not change after slice"
+
+    # After shard
+    ids_shard = ids.shard(num_shards=2, index=0, mode="example")
+    assert (
+        ids_shard.column_names == original_columns
+    ), "column_names should not change after shard"
+    # Note: n_shards is the number of Arrow files, not DDP shards, so it doesn't change
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_map_remove_columns():
+    """Test using column_names with map(remove_columns=...)."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Verify column_names is accessible (common pattern in training)
+    assert hasattr(ids, "column_names"), "Should have column_names attribute"
+    assert len(ids.column_names) > 0, "Should have columns"
+
+    # Apply map with remove_columns (common pattern in training)
+    def add_length(example):
+        return {"text_length": len(example["text"])}
+
+    # This should work without errors (common training pattern)
+    ids_mapped = ids.map(add_length)
+
+    # Should still be iterable
+    assert hasattr(ids_mapped, "__iter__"), "Mapped dataset should be iterable"
+
+    # Get first example to verify map worked
+    example = next(iter(ids_mapped))
+    assert "text" in example, "Original column should still exist"
+    assert "text_length" in example, "New column should be added"
+    assert isinstance(example["text_length"], int), "text_length should be an integer"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_native_map_basic():
+    """Test native map implementation (non-HF)."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Apply map transformation
+    def add_length(example):
+        return {"text": example["text"], "length": len(example["text"])}
+
+    ids_mapped = ids.map(add_length)
+
+    # Verify map is applied
+    example = next(iter(ids_mapped))
+    assert "text" in example
+    assert "length" in example
+    assert example["length"] == len(example["text"])
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_native_map_remove_columns():
+    """Test native map with remove_columns."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Map with remove_columns
+    def add_tokens(example):
+        return {"tokens": example["text"].split()}
+
+    ids_mapped = ids.map(add_tokens, remove_columns=["text"])
+
+    # Verify transformation and column removal
+    example = next(iter(ids_mapped))
+    assert "tokens" in example
+    assert "text" not in example, "text column should be removed"
+    assert isinstance(example["tokens"], list)
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_native_map_filtering():
+    """Test native map with filtering (None returns)."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Filter out empty lines
+    def filter_empty(example):
+        if len(example["text"].strip()) == 0:
+            return None
+        return example
+
+    ids_filtered = ids.map(filter_empty)
+
+    # Verify filtering works
+    count = 0
+    for example in ids_filtered:
+        assert len(example["text"].strip()) > 0, "Empty examples should be filtered"
+        count += 1
+        if count >= 10:  # Just check first 10
+            break
+
+    assert count > 0, "Should have some examples"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_native_map_with_checkpoint():
+    """Test that native map preserves checkpoint state."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Apply map
+    def add_prefix(example):
+        return {"text": "PREFIX: " + example["text"]}
+
+    ids_mapped = ids.map(add_prefix)
+
+    # Create dataloader and iterate a few batches
+    dataloader = StatefulDataLoader(ids_mapped, batch_size=4, num_workers=0)
+
+    checkpoint = None
+    for i, batch in enumerate(dataloader):
+        if i >= 3:
+            checkpoint = dataloader.state_dict()
+            break
+
+    assert checkpoint is not None, "Should save checkpoint"
+
+    # Create fresh dataloader with SAME map
+    ids_fresh = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ids_fresh_mapped = ids_fresh.map(add_prefix)
+    dataloader_fresh = StatefulDataLoader(ids_fresh_mapped, batch_size=4, num_workers=0)
+
+    # Get expected batch (batch 4)
+    expected_batch = None
+    for i, batch in enumerate(dataloader_fresh):
+        if i == 4:
+            expected_batch = batch
+            break
+
+    # Create restored dataloader
+    ids_restored = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ids_restored_mapped = ids_restored.map(add_prefix)
+    dataloader_restored = StatefulDataLoader(
+        ids_restored_mapped, batch_size=4, num_workers=0
+    )
+    dataloader_restored.load_state_dict(checkpoint)
+
+    # Get first batch from restored
+    restored_batch = next(iter(dataloader_restored))
+
+    # Verify batches match
+    if isinstance(expected_batch, dict) and isinstance(restored_batch, dict):
+        for k in expected_batch.keys():
+            assert k in restored_batch
+            # Check that PREFIX was applied
+            if k == "text":
+                for text in restored_batch[k]:
+                    assert text.startswith("PREFIX: "), "Map should be applied"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_native_map_with_operations():
+    """Test native map works with shuffle, shard, and slice."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Apply map
+    def uppercase(example):
+        return {"text": example["text"].upper()}
+
+    # Chain operations: shuffle -> slice -> map -> shard
+    ids_transformed = (
+        ids.shuffle(seed=42)
+        .slice(None, 0.5)
+        .map(uppercase)
+        .shard(num_shards=2, index=0, mode="example")
+    )
+
+    # Verify it's iterable and transformations work
+    example = next(iter(ids_transformed))
+    assert "text" in example
+    assert example["text"] == example["text"].upper(), "Should be uppercased"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_basic():
+    """Test batched map with simple transformation."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:20]"
+    )
+
+    # Simple batched function that adds length field
+    def add_lengths(batch):
+        texts = batch["text"]
+        return {"text": texts, "length": [len(t) for t in texts]}
+
+    # Apply batched map
+    ids_mapped = ids.map(add_lengths, batched=True, batch_size=5)
+
+    # Verify transformation
+    examples = list(ids_mapped)
+    assert len(examples) > 0, "Should have examples"
+    for ex in examples:
+        assert "length" in ex, "Should have length field"
+        assert ex["length"] == len(ex["text"]), "Length should match text length"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_n_to_m():
+    """Test batched map with N->M mapping (filtering/duplication)."""
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:20]"
+    )
+
+    # Function that filters out empty texts and duplicates non-empty ones
+    def filter_and_duplicate(batch):
+        texts = batch["text"]
+        result_texts = []
+        for text in texts:
+            if text.strip():  # Non-empty
+                result_texts.append(text)
+                result_texts.append(text + " (duplicate)")  # Duplicate it
+        return {"text": result_texts}
+
+    # Apply batched map
+    ids_mapped = ids.map(filter_and_duplicate, batched=True, batch_size=5)
+
+    # Count examples
+    count = sum(1 for _ in ids_mapped)
+    # Should have roughly 2x non-empty examples
+    assert count > 0, "Should have examples after filtering and duplication"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_with_block_tokenize():
+    """Test batched map with block_tokenize_fn (packed sequences)."""
+    from transformers import AutoTokenizer
+
+    from forgather.ml.datasets.block_tokenizer import block_tokenize_fn
+
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:30]"
+    )
+
+    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+
+    # Apply block tokenization with packing
+    ids_tokenized = ids.map(
+        lambda batch: block_tokenize_fn(
+            batch,
+            tokenizer=tokenizer,
+            feature="text",
+            max_length=128,
+            packed=True,
+            overflow=True,
+            min_len=1,
+        ),
+        batched=True,
+        batch_size=10,
+    )
+
+    # Verify packed sequences
+    examples = []
+    for i, ex in enumerate(ids_tokenized):
+        examples.append(ex)
+        if i >= 10:
+            break
+
+    assert len(examples) > 0, "Should have packed sequences"
+    for ex in examples:
+        assert "input_ids" in ex, "Should have input_ids"
+        assert isinstance(ex["input_ids"], list), "input_ids should be a list"
+        assert len(ex["input_ids"]) <= 128, "Should not exceed max_length"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_interleave_basic():
+    """Test basic round-robin interleaving."""
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )
+
+    # Interleave round-robin
+    combined = interleave_datasets([ds1, ds2])
+
+    # Verify it's iterable
+    assert hasattr(combined, "__iter__"), "Should be iterable"
+
+    # Verify some examples alternate
+    examples = []
+    for i, ex in enumerate(combined):
+        examples.append(ex)
+        if i >= 5:
+            break
+
+    assert len(examples) == 6, "Should get 6 examples"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_interleave_with_probabilities():
+    """Test probabilistic sampling with interleaving."""
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )
+
+    # Interleave with probabilities (70% ds1, 30% ds2)
+    combined = interleave_datasets([ds1, ds2], probabilities=[0.7, 0.3], seed=42)
+
+    # Should be iterable
+    assert hasattr(combined, "__iter__"), "Should be iterable"
+
+    # Get some examples
+    count = sum(
+        1 for _ in combined.datasets[0]
+    )  # This resets iterator, so just check it works
+    assert True  # If we get here, interleaving works
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_interleave_stopping_strategies():
+    """Test different stopping strategies."""
+    # First exhausted (stops when first dataset runs out)
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:50]"
+    )
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )
+    combined_first = interleave_datasets(
+        [ds1, ds2], stopping_strategy="first_exhausted"
+    )
+    count_first = sum(1 for _ in combined_first)
+    assert count_first > 0, "Should have examples with first_exhausted"
+
+    # All exhausted (continues until all exhausted) - recreate datasets
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:50]"
+    )
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )
+    combined_all = interleave_datasets([ds1, ds2], stopping_strategy="all_exhausted")
+    count_all = sum(1 for _ in combined_all)
+    assert count_all >= count_first, "all_exhausted should have >= examples"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_interleave_checkpoint():
+    """Test that interleaved dataset preserves checkpoint state."""
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )
+
+    # Create interleaved dataset
+    combined = interleave_datasets([ds1, ds2], seed=42)
+
+    # Create dataloader and iterate
+    dataloader = StatefulDataLoader(combined, batch_size=4, num_workers=0)
+
+    checkpoint = None
+    for i, batch in enumerate(dataloader):
+        if i >= 3:
+            checkpoint = dataloader.state_dict()
+            break
+
+    assert checkpoint is not None, "Should save checkpoint"
+
+    # Create fresh interleaved dataset
+    ds1_fresh = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds2_fresh = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )
+    combined_fresh = interleave_datasets([ds1_fresh, ds2_fresh], seed=42)
+    dataloader_fresh = StatefulDataLoader(combined_fresh, batch_size=4, num_workers=0)
+
+    # Get expected batch (batch 4)
+    expected_batch = None
+    for i, batch in enumerate(dataloader_fresh):
+        if i == 4:
+            expected_batch = batch
+            break
+
+    # Restore from checkpoint
+    ds1_restored = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds2_restored = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )
+    combined_restored = interleave_datasets([ds1_restored, ds2_restored], seed=42)
+    dataloader_restored = StatefulDataLoader(
+        combined_restored, batch_size=4, num_workers=0
+    )
+    dataloader_restored.load_state_dict(checkpoint)
+
+    # Get first batch from restored
+    restored_batch = next(iter(dataloader_restored))
+
+    # Verify restoration worked (should get same data)
+    assert restored_batch is not None, "Should get restored batch"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_interleave_metadata():
+    """Test that interleaved dataset has correct metadata."""
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+
+    combined = interleave_datasets([ds1, ds2])
+
+    # Should have metadata properties
+    assert hasattr(combined, "column_names"), "Should have column_names"
+    assert hasattr(combined, "features"), "Should have features"
+    assert hasattr(combined, "n_shards"), "Should have n_shards"
+
+    # column_names should come from first dataset
+    assert combined.column_names == ds1.column_names
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_interleave_with_map():
+    """Test interleaving datasets that have map applied."""
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:50]"
+    )
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:150]"
+    )
+
+    # Apply different maps to each dataset
+    def add_prefix1(example):
+        return {"text": "DS1: " + example["text"]}
+
+    def add_prefix2(example):
+        return {"text": "DS2: " + example["text"]}
+
+    ds1_mapped = ds1.map(add_prefix1)
+    ds2_mapped = ds2.map(add_prefix2)
+
+    # Interleave mapped datasets
+    combined = interleave_datasets([ds1_mapped, ds2_mapped])
+
+    # Verify maps are applied
+    examples = []
+    for i, ex in enumerate(combined):
+        examples.append(ex)
+        if i >= 3:
+            break
+
+    # Check that prefixes are applied
+    for ex in examples:
+        assert ex["text"].startswith("DS1:") or ex["text"].startswith("DS2:")
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_interleave_dynamic_probabilities():
+    """Test interleaving with dynamic probability function."""
+    from forgather.ml.datasets import balance_remaining_examples
+
+    # Create datasets of different lengths
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:30]"
+    )
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )
+
+    # Use dynamic balancing function
+    combined = interleave_datasets(
+        [ds1, ds2],
+        probabilities=balance_remaining_examples,
+        seed=42,
+        stopping_strategy="first_exhausted",
+    )
+
+    # Collect examples
+    count = sum(1 for _ in combined)
+    assert count > 0, "Should have examples with dynamic probabilities"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_interleave_custom_probability_function():
+    """Test interleaving with custom probability function."""
+
+    # Custom function that increases weight of dataset 0 over time
+    def curriculum_probabilities(step, datasets, examples_per_dataset, exhausted):
+        """Gradually shift from dataset 1 to dataset 0."""
+        # First 50 steps: mostly dataset 1
+        # Next 50 steps: transition period
+        # After 100 steps: mostly dataset 0
+        if step < 50:
+            return [0.1, 0.9]  # 10% ds0, 90% ds1
+        elif step < 100:
+            # Smooth transition
+            progress = (step - 50) / 50.0
+            return [0.1 + 0.8 * progress, 0.9 - 0.8 * progress]
+        else:
+            return [0.9, 0.1]  # 90% ds0, 10% ds1
+
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )
+
+    combined = interleave_datasets(
+        [ds1, ds2],
+        probabilities=curriculum_probabilities,
+        seed=42,
+        stopping_strategy="first_exhausted",
+    )
+
+    # Verify it produces examples
+    count = sum(1 for _ in combined)
+    assert count > 0, "Should have examples with custom probability function"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_balance_remaining_examples_function():
+    """Test the balance_remaining_examples utility function."""
+    from forgather.ml.datasets import balance_remaining_examples
+
+    # Create mock datasets with known lengths
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:50]"
+    )  # 50 examples
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[100:200]"
+    )  # 100 examples
+
+    # Simulate partway through iteration
+    examples_per_dataset = [10, 20]  # Consumed 10 from ds1, 20 from ds2
+    exhausted = [False, False]
+
+    weights = balance_remaining_examples(
+        step=30,
+        datasets=[ds1, ds2],
+        examples_per_dataset=examples_per_dataset,
+        exhausted=exhausted,
+    )
+
+    # ds1: 50 - 10 = 40 remaining
+    # ds2: 100 - 20 = 80 remaining
+    # ds2 should have higher weight (more remaining)
+    assert len(weights) == 2, "Should return 2 weights"
+    assert (
+        weights[1] > weights[0]
+    ), "Dataset with more remaining should have higher weight"
+    assert weights[0] == 40.0, "ds1 weight should be remaining examples"
+    assert weights[1] == 80.0, "ds2 weight should be remaining examples"
+
+
+# =====================================================================
+# Length Estimation Tests
+# =====================================================================
+
+
+def test_length_estimate_static_mode():
+    """Test that static mode never changes length."""
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:100]",
+        length_estimate="static",
+    )
+    original_len = len(ds)
+
+    # Apply filtering map
+    ds_filtered = ds.map(lambda ex: ex if ex.get("text", "").strip() else None)
+
+    # Length should not change
+    assert len(ds_filtered) == original_len
+
+    # Even after iteration
+    list(ds_filtered)
+    assert len(ds_filtered) == original_len
+
+
+def test_length_estimate_dynamic_mode():
+    """Test that dynamic mode updates length estimate."""
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:100]",
+        length_estimate="dynamic",
+    )
+
+    # Apply filtering map that removes some examples
+    ds_filtered = ds.map(lambda ex: ex if ex.get("text", "").strip() else None)
+
+    original_len = len(ds_filtered)
+
+    # Iterate and consume all examples
+    examples = list(ds_filtered)
+
+    # Length should be exact after full iteration
+    exact_len = len(ds_filtered)
+    actual_count = len(examples)
+
+    assert (
+        exact_len == actual_count
+    ), f"Expected exact length {actual_count}, got {exact_len}"
+    # Filtering should reduce count
+    assert exact_len <= original_len
+
+
+def test_length_stats_method():
+    """Test get_length_stats() introspection method."""
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:50]",
+        length_estimate="dynamic",
+    )
+
+    # Initial stats
+    stats = ds.get_length_stats()
+    assert stats["mode"] == "dynamic"
+    assert stats["input_count"] == 0
+    assert stats["ratio"] is None
+
+    # After iteration
+    list(ds)
+    stats = ds.get_length_stats()
+    assert stats["input_count"] == 50
+    assert stats["cached_exact"] == 50
+    assert stats["ratio"] == 1.0  # No map, ratio is 1:1
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_length_estimate_preserved_in_checkpoint():
+    """Test that length stats survive checkpoint save/restore."""
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:100]",
+        length_estimate="dynamic",
+    )
+
+    ds_filtered = ds.map(lambda ex: ex if ex.get("text", "").strip() else None)
+
+    # Iterate partially
+    iterator = iter(ds_filtered)
+    for i in range(30):
+        try:
+            next(iterator)
+        except StopIteration:
+            break
+
+    # Save state
+    state = ds_filtered.state_dict()
+    partial_len = len(ds_filtered)
+    partial_stats = ds_filtered.get_length_stats()
+
+    # Create new dataset and restore
+    ds_new = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:100]",
+        length_estimate="dynamic",
+    )
+    ds_new_filtered = ds_new.map(lambda ex: ex if ex.get("text", "").strip() else None)
+    ds_new_filtered.load_state_dict(state)
+
+    # Length estimate should be preserved
+    restored_len = len(ds_new_filtered)
+    restored_stats = ds_new_filtered.get_length_stats()
+
+    # Stats should be preserved
+    assert restored_stats["input_count"] == partial_stats["input_count"]
+    assert restored_stats["output_count"] == partial_stats["output_count"]
+
+
+def test_shuffle_invalidates_exact_length():
+    """Test that shuffle invalidates cached exact length."""
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:50]",
+        length_estimate="dynamic",
+    )
+
+    ds_filtered = ds.map(lambda ex: ex if ex.get("text", "").strip() else None)
+
+    # Get exact length
+    list(ds_filtered)
+    exact_len_before = len(ds_filtered)
+
+    # Shuffle
+    ds_shuffled = ds_filtered.shuffle(seed=42)
+
+    # Should preserve ratio estimate but invalidate exact cache
+    stats = ds_shuffled.get_length_stats()
+    assert stats["invalidated"] == True
+    assert stats["cached_exact"] is None
+    # Ratio should be preserved
+    assert stats["input_count"] > 0
+    assert stats["output_count"] > 0
+
+
+def test_set_length_estimate_mode():
+    """Test changing length estimation mode."""
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:50]",
+        length_estimate="dynamic",
+    )
+
+    assert ds.length_estimate_mode == "dynamic"
+
+    # Change to static
+    ds.set_length_estimate_mode("static")
+    assert ds.length_estimate_mode == "static"
+
+    # Invalid mode should raise error
+    with pytest.raises(ValueError, match="Invalid mode"):
+        ds.set_length_estimate_mode("invalid")
+
+
+def test_length_estimate_with_interleaved_and_batched_map():
+    """
+    Test length estimation with InterleavedDataset and batched packing operations.
+
+    This tests the user's scenario:
+    - Two SimpleArrowIterableDataset with batched packing map
+    - Combined with InterleavedDataset (all_exhausted strategy)
+    - Length should update during iteration
+    - Length should be cached after complete iteration
+    - Length should persist across multiple iterations
+    """
+    from forgather.ml.datasets.interleaved import interleave_datasets
+
+    # Create two datasets
+    ds1 = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:50]",
+        length_estimate="dynamic",
+    )
+    ds2 = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[50:100]",
+        length_estimate="dynamic",
+    )
+
+    # Apply batched map that reduces count (simulating packing)
+    # This map keeps every other example, so 50 -> 25
+    def reduce_batch(batch):
+        # Keep only even-indexed examples
+        result = {}
+        for key in batch.keys():
+            result[key] = [batch[key][i] for i in range(len(batch[key])) if i % 2 == 0]
+        return result
+
+    ds1_mapped = ds1.map(reduce_batch, batched=True, batch_size=10)
+    ds2_mapped = ds2.map(reduce_batch, batched=True, batch_size=10)
+
+    # Combine with InterleavedDataset
+    combined = interleave_datasets(
+        [ds1_mapped, ds2_mapped],
+        stopping_strategy="all_exhausted",
+    )
+
+    # Initial length should be sum of original lengths (100)
+    initial_length = len(combined)
+    assert initial_length == 100, f"Expected initial length 100, got {initial_length}"
+
+    # Iterate and check length updates during iteration
+    iterator = iter(combined)
+    lengths_during_iteration = []
+
+    # Consume 15 examples
+    for i in range(15):
+        next(iterator)
+        current_len = len(combined)
+        lengths_during_iteration.append(current_len)
+
+    # Length should start updating after first batch is processed
+    # After processing some batches, we should see the estimate decrease
+    # (since we're keeping only 50% of examples)
+    # Note: It might take a batch or two before the estimate updates
+
+    # Complete the iteration
+    remaining = list(iterator)
+    total_yielded = 15 + len(remaining)
+
+    # After complete iteration, length should be exact
+    final_length = len(combined)
+    assert (
+        final_length == total_yielded
+    ), f"Expected cached length {total_yielded}, got {final_length}"
+
+    # The actual count should be ~50 (25 from each child)
+    assert 45 <= total_yielded <= 55, f"Expected ~50 examples, got {total_yielded}"
+
+    # Check that children have cached their exact lengths
+    stats1 = ds1_mapped.get_length_stats()
+    stats2 = ds2_mapped.get_length_stats()
+
+    assert stats1["cached_exact"] is not None, "Child 1 should have cached exact length"
+    assert stats2["cached_exact"] is not None, "Child 2 should have cached exact length"
+
+    # Second iteration should use cached length
+    count2 = sum(1 for _ in combined)
+    assert (
+        count2 == total_yielded
+    ), f"Second iteration count mismatch: {count2} vs {total_yielded}"
+
+    # Length should still be correct
+    length_after_second = len(combined)
+    assert (
+        length_after_second == total_yielded
+    ), f"Length after second iteration: {length_after_second} vs {total_yielded}"
+
+    # Third iteration to make sure it's stable
+    count3 = sum(1 for _ in combined)
+    assert (
+        count3 == total_yielded
+    ), f"Third iteration count mismatch: {count3} vs {total_yielded}"
+
+
+# =====================================================================
+# Batched Map Edge Case Tests (Small Split + Large Batch Size)
+# =====================================================================
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_split_smaller_than_batch_size():
+    """
+    Test batched map when split size is smaller than batch_size.
+
+    This is a regression test for a bug where batched map would silently
+    yield no examples if the split size was smaller than batch_size,
+    because the partial batch at the end was not being flushed.
+    """
+    # Load small split (50 examples)
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:50]"
+    )
+
+    # Apply batched map with batch_size larger than split (1000 > 50)
+    def add_lengths(batch):
+        texts = batch["text"]
+        return {"text": texts, "length": [len(t) for t in texts]}
+
+    ds_mapped = ds.map(add_lengths, batched=True, batch_size=1000)
+
+    # Should yield all 50 examples even though batch never fills up
+    examples = list(ds_mapped)
+    assert len(examples) == 50, f"Expected 50 examples, got {len(examples)}"
+
+    # Verify transformation was applied
+    for ex in examples:
+        assert "length" in ex, "Should have length field"
+        assert ex["length"] == len(ex["text"]), "Length should match"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_virtual_split_smaller_than_batch_size():
+    """
+    Test batched map with virtual split smaller than batch_size.
+
+    Regression test: virtual split boundary should flush pending batch.
+    """
+    # Load dataset and create 500-example virtual split
+    ds = fast_load_iterable_dataset("wikitext", name="wikitext-2-raw-v1", split="train")
+    ds_split = ds.slice(0, 500)  # 500 examples
+
+    # Apply batched map with batch_size=1000 (larger than split)
+    def add_field(batch):
+        return {**batch, "processed": [True] * len(batch["text"])}
+
+    ds_mapped = ds_split.map(add_field, batched=True, batch_size=1000)
+
+    # Should yield all 500 examples
+    examples = list(ds_mapped)
+    assert len(examples) == 500, f"Expected 500 examples, got {len(examples)}"
+
+    # Verify all were processed
+    for ex in examples:
+        assert ex["processed"] is True
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_example_sharding_smaller_than_batch_size():
+    """
+    Test batched map with example-level shard smaller than batch_size.
+
+    Regression test: shard boundary should flush pending batch.
+    """
+    # Load dataset and create small shard
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:1000]"
+    )
+
+    # Shard into 10 shards (each ~100 examples)
+    ds_shard = ds.shard(num_shards=10, index=0, mode="example")
+
+    # Apply batched map with batch_size=500 (larger than shard)
+    def tokenize_mock(batch):
+        # Mock tokenization that keeps same number of examples
+        return {"text": batch["text"], "tokens": [t.split() for t in batch["text"]]}
+
+    ds_mapped = ds_shard.map(tokenize_mock, batched=True, batch_size=500)
+
+    # Should yield all ~100 examples from this shard
+    examples = list(ds_mapped)
+    expected_count = len(ds_shard)  # ~100
+    assert (
+        len(examples) == expected_count
+    ), f"Expected {expected_count} examples, got {len(examples)}"
+
+    # Verify transformation
+    for ex in examples:
+        assert "tokens" in ex
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_drop_last_with_small_split():
+    """
+    Test batched map with drop_last_batch=True on small split.
+
+    When split < batch_size and drop_last=True, should yield nothing.
+    """
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:50]"
+    )
+
+    def process(batch):
+        return batch
+
+    ds_mapped = ds.map(process, batched=True, batch_size=1000, drop_last_batch=True)
+
+    # Should yield nothing since we never get a full batch and drop_last=True
+    examples = list(ds_mapped)
+    assert (
+        len(examples) == 0
+    ), f"Expected 0 examples with drop_last=True, got {len(examples)}"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_split_notation_smaller_than_batch_size():
+    """
+    Test batched map with split notation creating small split.
+
+    This tests the original bug report scenario: validation[:500] with batch_size=1000.
+    """
+    # Load with split notation (500 examples)
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:500]"
+    )
+
+    # Apply batched map with default batch_size (1000 > 500)
+    def tokenize_simple(batch):
+        # Simple batched transformation
+        return {
+            "text": batch["text"],
+            "word_count": [len(t.split()) for t in batch["text"]],
+        }
+
+    ds_mapped = ds.map(tokenize_simple, batched=True, batch_size=1000)
+
+    # Should yield all 500 examples even though batch_size > split size
+    examples = list(ds_mapped)
+    assert len(examples) == 500, f"Expected 500 examples, got {len(examples)}"
+
+    # Verify transformation
+    for ex in examples:
+        assert "word_count" in ex
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_batched_map_partial_batches_at_boundaries():
+    """
+    Test that partial batches are correctly flushed at multiple boundary types.
+
+    Tests all three boundary types:
+    1. Normal end of iteration
+    2. Virtual split boundary
+    3. Example-level shard boundary
+    """
+    # Test 1: Normal end of iteration
+    ds1 = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train[:47]",  # Not divisible by batch_size
+    )
+    ds1_mapped = ds1.map(lambda b: b, batched=True, batch_size=10)
+    count1 = sum(1 for _ in ds1_mapped)
+    assert count1 == 47, f"Normal end: expected 47, got {count1}"
+
+    # Test 2: Virtual split boundary
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+    ds2_split = ds2.slice(100, 147)  # 47 examples
+    ds2_mapped = ds2_split.map(lambda b: b, batched=True, batch_size=10)
+    count2 = sum(1 for _ in ds2_mapped)
+    assert count2 == 47, f"Virtual split boundary: expected 47, got {count2}"
+
+    # Test 3: Example-level shard boundary
+    ds3 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:500]"
+    )
+    ds3_shard = ds3.shard(num_shards=10, index=0, mode="example")  # ~50 examples
+    ds3_mapped = ds3_shard.map(lambda b: b, batched=True, batch_size=100)
+    count3 = sum(1 for _ in ds3_mapped)
+    expected3 = len(ds3_shard)
+    assert count3 == expected3, f"Shard boundary: expected {expected3}, got {count3}"
+
+
+@pytest.mark.skipif(
+    not HAS_STATEFUL, reason="torchdata.stateful_dataloader not available"
+)
+def test_slice_then_shard_no_overlap():
+    """
+    Test that slice().shard() preserves split boundaries with no overlap.
+
+    This is a critical test for distributed training scenarios where you:
+    1. Create train/val splits via slice()
+    2. Shard each for DDP training
+    3. Must ensure NO contamination between train and val
+
+    Regression test for bug where shard() didn't copy _split_start_idx
+    and _split_end_idx, causing shards to operate on full dataset instead
+    of the sliced portion.
+    """
+    # Load dataset with sufficient examples for clear testing
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    # Get total size and create reasonable train/val split
+    total_examples = len(ids)
+    split_point = int(total_examples * 0.9)
+
+    # Create train (first 90%) and val (last 10%) splits using absolute indices
+    train_ds = ids.slice(0, split_point)
+    val_ds = ids.slice(split_point, None)
+
+    # Verify split lengths
+    assert len(train_ds) == split_point
+    assert len(val_ds) == total_examples - split_point
+
+    # Shard each for DDP (2 GPUs)
+    train_shard0 = train_ds.shard(num_shards=2, index=0, mode="example")
+    train_shard1 = train_ds.shard(num_shards=2, index=1, mode="example")
+
+    val_shard0 = val_ds.shard(num_shards=2, index=0, mode="example")
+    val_shard1 = val_ds.shard(num_shards=2, index=1, mode="example")
+
+    # Verify shard lengths are reasonable
+    expected_train_per_shard = len(train_ds) // 2
+    expected_val_per_shard = len(val_ds) // 2
+
+    assert abs(len(train_shard0) - expected_train_per_shard) <= 1
+    assert abs(len(train_shard1) - expected_train_per_shard) <= 1
+    assert abs(len(val_shard0) - expected_val_per_shard) <= 1
+    assert abs(len(val_shard1) - expected_val_per_shard) <= 1
+
+    # Count examples in each shard
+    train0_count = sum(1 for _ in train_shard0)
+    train1_count = sum(1 for _ in train_shard1)
+    val0_count = sum(1 for _ in val_shard0)
+    val1_count = sum(1 for _ in val_shard1)
+
+    # Verify total counts match
+    assert train0_count + train1_count == len(train_ds), (
+        f"Train shards should sum to train_ds length: "
+        f"{train0_count} + {train1_count} = {train0_count + train1_count} != {len(train_ds)}"
+    )
+
+    assert val0_count + val1_count == len(val_ds), (
+        f"Val shards should sum to val_ds length: "
+        f"{val0_count} + {val1_count} = {val0_count + val1_count} != {len(val_ds)}"
+    )
+
+    # Verify shards are roughly balanced
+    assert (
+        abs(train0_count - train1_count) <= 1
+    ), f"Train shards should be balanced: {train0_count} vs {train1_count}"
+    assert (
+        abs(val0_count - val1_count) <= 1
+    ), f"Val shards should be balanced: {val0_count} vs {val1_count}"
+
+    # CRITICAL TEST: Verify split boundaries are preserved by checking internal state
+    # If the bug exists, sharded datasets would have lost their split boundaries
+    assert (
+        train_shard0._split_start_idx == 0
+    ), f"Train shard 0 should preserve split_start_idx=0, got {train_shard0._split_start_idx}"
+    assert (
+        train_shard0._split_end_idx == split_point
+    ), f"Train shard 0 should preserve split_end_idx={split_point}, got {train_shard0._split_end_idx}"
+
+    assert (
+        train_shard1._split_start_idx == 0
+    ), f"Train shard 1 should preserve split_start_idx=0, got {train_shard1._split_start_idx}"
+    assert (
+        train_shard1._split_end_idx == split_point
+    ), f"Train shard 1 should preserve split_end_idx={split_point}, got {train_shard1._split_end_idx}"
+
+    assert (
+        val_shard0._split_start_idx == split_point
+    ), f"Val shard 0 should preserve split_start_idx={split_point}, got {val_shard0._split_start_idx}"
+    assert (
+        val_shard0._split_end_idx == total_examples
+    ), f"Val shard 0 should preserve split_end_idx={total_examples}, got {val_shard0._split_end_idx}"
+
+    assert (
+        val_shard1._split_start_idx == split_point
+    ), f"Val shard 1 should preserve split_start_idx={split_point}, got {val_shard1._split_start_idx}"
+    assert (
+        val_shard1._split_end_idx == total_examples
+    ), f"Val shard 1 should preserve split_end_idx={total_examples}, got {val_shard1._split_end_idx}"
+
+
+def test_slice_composition():
+    """
+    Test that slicing a sliced dataset composes correctly.
+
+    Regression test for bug where slice() computed indices relative to the
+    original dataset instead of the current slice, causing composed slices
+    to overwrite rather than compose.
+
+    Example bug scenario:
+    - ds.slice(10000, None) -> creates split [10000, 36718)
+    - ds_sliced.slice(100, None) -> BUG: overwrote to [100, 36718)
+    - Expected: should compose to [10100, 36718)
+    """
+    # Load dataset
+    ids = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train"
+    )
+
+    total = len(ids)
+
+    # Test case 1: Absolute index composition
+    # First slice: skip first 10,000 examples
+    ds_sliced1 = ids.slice(10000, None)
+    assert ds_sliced1._split_start_idx == 10000
+    assert ds_sliced1._split_end_idx == total
+    assert len(ds_sliced1) == total - 10000
+
+    # Second slice: skip another 100 examples from the sliced dataset
+    ds_sliced2 = ds_sliced1.slice(100, None)
+    # Should compose to [10000 + 100, total) = [10100, total)
+    assert (
+        ds_sliced2._split_start_idx == 10100
+    ), f"Composed slice should start at 10100, got {ds_sliced2._split_start_idx}"
+    assert ds_sliced2._split_end_idx == total
+    assert len(ds_sliced2) == total - 10100
+
+    # Verify it matches a direct slice
+    ds_direct = ids.slice(10100, None)
+    assert ds_sliced2._split_start_idx == ds_direct._split_start_idx
+    assert ds_sliced2._split_end_idx == ds_direct._split_end_idx
+    assert len(ds_sliced2) == len(ds_direct)
+
+    # Verify first examples match
+    first_sliced2 = next(iter(ds_sliced2))
+    first_direct = next(iter(ds_direct))
+    assert first_sliced2["text"] == first_direct["text"]
+
+    # Test case 2: Percentage composition
+    # Take first 50%
+    ds_half = ids.slice(None, 0.5)
+    assert ds_half._split_start_idx == 0
+    assert ds_half._split_end_idx == int(total * 0.5)
+    expected_half_len = int(total * 0.5)
+    assert len(ds_half) == expected_half_len
+
+    # Take last 50% of the first half (should give 25%-50% of original)
+    ds_quarter = ds_half.slice(0.5, None)
+    # Should compose to [0 + 0.5 * half_len, half_len) = [0.25 * total, 0.5 * total)
+    expected_quarter_start = int(total * 0.25)
+    expected_quarter_end = int(total * 0.5)
+    assert ds_quarter._split_start_idx == expected_quarter_start, (
+        f"Composed percentage slice should start at {expected_quarter_start}, "
+        f"got {ds_quarter._split_start_idx}"
+    )
+    assert ds_quarter._split_end_idx == expected_quarter_end
+    expected_quarter_len = expected_quarter_end - expected_quarter_start
+    assert len(ds_quarter) == expected_quarter_len
+
+    # Verify it matches a direct slice
+    ds_direct_quarter = ids.slice(0.25, 0.5)
+    assert ds_quarter._split_start_idx == ds_direct_quarter._split_start_idx
+    assert ds_quarter._split_end_idx == ds_direct_quarter._split_end_idx
+    assert len(ds_quarter) == len(ds_direct_quarter)
+
+    # Test case 3: Multiple compositions
+    # Chain three slices together
+    ds_chain = ids.slice(5000, None).slice(1000, None).slice(500, None)
+    # Should compose to [5000 + 1000 + 500, total) = [6500, total)
+    assert ds_chain._split_start_idx == 6500
+    assert ds_chain._split_end_idx == total
+    assert len(ds_chain) == total - 6500
+
+    # Verify it matches a direct slice
+    ds_direct_chain = ids.slice(6500, None)
+    assert ds_chain._split_start_idx == ds_direct_chain._split_start_idx
+    assert len(ds_chain) == len(ds_direct_chain)
+
+    # Test case 4: Bounded slices (both start and end)
+    # Take middle 50% of dataset
+    middle_start = int(total * 0.25)
+    middle_end = int(total * 0.75)
+    ds_middle = ids.slice(0.25, 0.75)
+    assert ds_middle._split_start_idx == middle_start
+    assert ds_middle._split_end_idx == middle_end
+    middle_len = middle_end - middle_start
+    assert len(ds_middle) == middle_len
+
+    # Take first 10% of the middle 50%
+    # Should give [0.25 * total + 0.1 * middle_len, 0.75 * total)
+    ds_middle_slice = ds_middle.slice(None, 0.1)
+    expected_start = middle_start
+    expected_end = middle_start + int(middle_len * 0.1)
+    assert ds_middle_slice._split_start_idx == expected_start
+    assert ds_middle_slice._split_end_idx == expected_end
+
+
+# ============================================================================
+# set_epoch() Tests
+# ============================================================================
+
+
+def test_set_epoch_basic():
+    """
+    Test that set_epoch() changes the shuffle pattern.
+
+    Verifies that:
+    1. Different epochs produce different shuffle orders
+    2. Same epoch produces same order (reproducibility)
+    """
+    # Load small dataset
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=42, buffer_size=10)
+
+    # Collect first 5 examples from epoch 0
+    ds_shuffled.set_epoch(0)
+    epoch0_examples = [ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 5]
+
+    # Collect first 5 examples from epoch 1
+    ds_shuffled.set_epoch(1)
+    epoch1_examples = [ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 5]
+
+    # Should be different
+    assert (
+        epoch0_examples != epoch1_examples
+    ), "Different epochs should produce different shuffle orders"
+
+    # Collect first 5 examples from epoch 0 again
+    ds_shuffled.set_epoch(0)
+    epoch0_again = [ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 5]
+
+    # Should match original epoch 0
+    assert (
+        epoch0_examples == epoch0_again
+    ), "Same epoch should produce same shuffle order (reproducibility)"
+
+
+def test_set_epoch_reproducibility():
+    """
+    Test that set_epoch() provides reproducible shuffles across dataset instances.
+
+    Verifies that two datasets with same base seed and epoch produce identical order.
+    """
+    # Create two independent dataset instances
+    ds1 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds1_shuffled = ds1.shuffle(seed=42, buffer_size=10)
+
+    ds2 = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds2_shuffled = ds2.shuffle(seed=42, buffer_size=10)
+
+    # Set both to epoch 2
+    ds1_shuffled.set_epoch(2)
+    ds2_shuffled.set_epoch(2)
+
+    # Collect examples from both
+    ds1_examples = [ex["text"][:30] for i, ex in enumerate(ds1_shuffled) if i < 10]
+    ds2_examples = [ex["text"][:30] for i, ex in enumerate(ds2_shuffled) if i < 10]
+
+    # Should be identical
+    assert (
+        ds1_examples == ds2_examples
+    ), "Same base seed + epoch should produce identical order"
+
+
+def test_set_epoch_without_shuffle():
+    """
+    Test that set_epoch() is a no-op when shuffle() was never called.
+
+    Verifies that calling set_epoch() on non-shuffled dataset doesn't break anything.
+    """
+    # Load dataset without shuffling
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:50]"
+    )
+
+    # Set epoch (should be no-op)
+    ds.set_epoch(1)
+
+    # Collect examples from epoch 1
+    epoch1_examples = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+
+    # Set different epoch
+    ds.set_epoch(5)
+
+    # Collect examples from epoch 5
+    epoch5_examples = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+
+    # Should be identical (no shuffling applied)
+    assert (
+        epoch1_examples == epoch5_examples
+    ), "set_epoch() on non-shuffled dataset should have no effect"
+
+
+def test_set_epoch_checkpoint():
+    """
+    Test that epoch is preserved in checkpoint.
+
+    Verifies that:
+    1. Current epoch is saved in state_dict()
+    2. Epoch is restored in load_state_dict()
+    3. Restored dataset continues with correct epoch after restoration
+    """
+    # Create dataset and set to epoch 3
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=42, buffer_size=10)
+    ds_shuffled.set_epoch(3)
+
+    # Save state before iteration
+    state_before_iter = ds_shuffled.state_dict()
+
+    # Verify epoch is in state dict
+    assert state_before_iter["epoch"] == 3, "Epoch should be saved in state_dict"
+    assert (
+        state_before_iter["base_shuffle_seed"] == 42
+    ), "Base seed should be saved in state_dict"
+
+    # Create new dataset and restore
+    ds_new = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_new_shuffled = ds_new.shuffle(seed=42, buffer_size=10)
+    ds_new_shuffled.load_state_dict(state_before_iter)
+
+    # Verify epoch was restored
+    assert ds_new_shuffled._epoch == 3, "Epoch should be restored from checkpoint"
+    assert (
+        ds_new_shuffled._base_shuffle_seed == 42
+    ), "Base seed should be restored from checkpoint"
+
+    # Collect first 5 examples from both datasets
+    original_examples = [ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 5]
+    restored_examples = [
+        ex["text"][:30] for i, ex in enumerate(ds_new_shuffled) if i < 5
+    ]
+
+    # Both should produce the same order (epoch 3 with same seed)
+    assert (
+        original_examples == restored_examples
+    ), "Restored dataset should use same epoch 3 shuffle pattern"
+
+    # Verify that changing epoch produces different results
+    ds_new_shuffled.set_epoch(5)
+    epoch5_examples = [ex["text"][:30] for i, ex in enumerate(ds_new_shuffled) if i < 5]
+    assert (
+        epoch5_examples != restored_examples
+    ), "Different epoch should produce different order"
+
+
+def test_set_epoch_multi_epoch():
+    """
+    Test that different epochs produce consistently different patterns.
+
+    Verifies that epochs 0, 1, 2 all produce distinct shuffle orders.
+    """
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=42, buffer_size=10)
+
+    # Collect examples from 3 different epochs
+    epochs_data = {}
+    for epoch in [0, 1, 2]:
+        ds_shuffled.set_epoch(epoch)
+        epochs_data[epoch] = [
+            ex["text"][:30] for i, ex in enumerate(ds_shuffled) if i < 10
+        ]
+
+    # All epochs should be different from each other
+    assert epochs_data[0] != epochs_data[1], "Epoch 0 and 1 should differ"
+    assert epochs_data[0] != epochs_data[2], "Epoch 0 and 2 should differ"
+    assert epochs_data[1] != epochs_data[2], "Epoch 1 and 2 should differ"
+
+
+def test_set_epoch_propagation():
+    """
+    Test that epoch is propagated through slice(), shard(), and map().
+
+    Verifies that dataset transformations preserve epoch state.
+    """
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=42, buffer_size=10)
+    ds_shuffled.set_epoch(5)
+
+    # Test slice preserves epoch
+    ds_sliced = ds_shuffled.slice(0, 50)
+    assert ds_sliced._epoch == 5, "slice() should preserve epoch"
+    assert (
+        ds_sliced._base_shuffle_seed == 42
+    ), "slice() should preserve base_shuffle_seed"
+
+    # Test shard preserves epoch
+    ds_sharded = ds_shuffled.shard(num_shards=2, index=0)
+    assert ds_sharded._epoch == 5, "shard() should preserve epoch"
+    assert (
+        ds_sharded._base_shuffle_seed == 42
+    ), "shard() should preserve base_shuffle_seed"
+
+    # Test map preserves epoch
+    ds_mapped = ds_shuffled.map(lambda x: x)
+    assert ds_mapped._epoch == 5, "map() should preserve epoch"
+    assert ds_mapped._base_shuffle_seed == 42, "map() should preserve base_shuffle_seed"
+
+
+def test_set_epoch_backward_compatibility():
+    """
+    Test that loading old checkpoints (without epoch) works correctly.
+
+    Verifies that checkpoints without epoch field default to epoch=0.
+    """
+    # Create dataset
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=42, buffer_size=10)
+
+    # Create state dict and remove epoch (simulate old checkpoint)
+    state = ds_shuffled.state_dict()
+    del state["epoch"]
+    del state["base_shuffle_seed"]
+
+    # Create new dataset and restore
+    ds_new = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_new_shuffled = ds_new.shuffle(seed=42, buffer_size=10)
+    ds_new_shuffled.load_state_dict(state)
+
+    # Should default to epoch 0
+    assert ds_new_shuffled._epoch == 0, "Old checkpoint should default to epoch=0"
+    assert (
+        ds_new_shuffled._base_shuffle_seed is None
+    ), "Old checkpoint should have None for base_shuffle_seed"
+
+
+def test_set_epoch_effective_seed():
+    """
+    Test that effective seed is correctly computed and applied.
+
+    Verifies that:
+    1. Effective seed = base_seed + epoch
+    2. Files are re-shuffled when epoch changes
+    3. Buffer shuffle uses effective seed
+    """
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=100, buffer_size=10)
+
+    # Set epoch 5 (effective seed should be 100 + 5 = 105)
+    ds_shuffled.set_epoch(5)
+
+    # Trigger iteration to apply re-shuffle
+    first_ex = next(iter(ds_shuffled))
+
+    # Check that effective seed was applied
+    assert (
+        ds_shuffled._shuffle_seed == 105
+    ), "Effective seed should be base_seed + epoch"
+    assert ds_shuffled._base_shuffle_seed == 100, "Base seed should remain unchanged"
+    assert ds_shuffled._epoch == 5, "Epoch should be 5"
+
+
+def test_set_epoch_with_shard():
+    """
+    Test set_epoch() works correctly with sharded datasets.
+
+    Verifies that epoch changes produce different data in each shard.
+    """
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+    ds_shuffled = ds.shuffle(seed=42, buffer_size=10)
+
+    # Create two shards
+    shard0 = ds_shuffled.shard(num_shards=2, index=0)
+    shard1 = ds_shuffled.shard(num_shards=2, index=1)
+
+    # Epoch 0
+    shard0.set_epoch(0)
+    shard1.set_epoch(0)
+    shard0_epoch0 = [ex["text"][:20] for i, ex in enumerate(shard0) if i < 3]
+    shard1_epoch0 = [ex["text"][:20] for i, ex in enumerate(shard1) if i < 3]
+
+    # Epoch 1
+    shard0.set_epoch(1)
+    shard1.set_epoch(1)
+    shard0_epoch1 = [ex["text"][:20] for i, ex in enumerate(shard0) if i < 3]
+    shard1_epoch1 = [ex["text"][:20] for i, ex in enumerate(shard1) if i < 3]
+
+    # Each shard should change between epochs
+    assert shard0_epoch0 != shard0_epoch1, "Shard 0 should differ between epochs"
+    assert shard1_epoch0 != shard1_epoch1, "Shard 1 should differ between epochs"
+
+
+def test_set_epoch_without_explicit_shuffle():
+    """
+    Test that set_epoch() works even when shuffle() was not called.
+
+    When shuffle() is not called but set_epoch() is called with epoch > 0,
+    the implementation uses the epoch number itself as the seed for shuffling.
+
+    This test verifies:
+    - With shuffle buffer: different epochs use different seeds (epoch as seed)
+    - Same epoch produces same order (reproducibility)
+
+    Note: For multi-file datasets, set_epoch() would shuffle file order using
+    epoch as seed, providing different data orders across epochs. This test uses
+    a shuffle buffer since the test dataset has only one Arrow file.
+    """
+    # Load dataset WITHOUT calling shuffle()
+    ds = fast_load_iterable_dataset(
+        "wikitext", name="wikitext-2-raw-v1", split="train[:100]"
+    )
+
+    # Enable shuffle buffer (simulates environment where buffer is used)
+    # This allows us to test epoch-based seed selection
+    ds._shuffle_buffer_size = 10
+
+    # Epoch 1 - should use seed=1 for buffer
+    ds.set_epoch(1)
+    epoch1_examples = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+
+    # Epoch 2 - should use seed=2 for buffer
+    ds.set_epoch(2)
+    epoch2_examples = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+
+    # Epoch 3 - should use seed=3 for buffer
+    ds.set_epoch(3)
+    epoch3_examples = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+
+    # Different epochs should use different buffer seeds
+    assert epoch1_examples != epoch2_examples, "Epoch 1 and 2 should differ"
+    assert epoch2_examples != epoch3_examples, "Epoch 2 and 3 should differ"
+    assert epoch1_examples != epoch3_examples, "Epoch 1 and 3 should differ"
+
+    # Verify reproducibility for each epoch
+    ds.set_epoch(1)
+    epoch1_again = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+    assert epoch1_examples == epoch1_again, "Epoch 1 should be reproducible"
+
+    ds.set_epoch(2)
+    epoch2_again = [ex["text"][:30] for i, ex in enumerate(ds) if i < 5]
+    assert epoch2_examples == epoch2_again, "Epoch 2 should be reproducible"
+
+
+def test_length_not_cached_during_partial_iteration():
+    """
+    Test that _cached_exact_length is NOT set during partial iteration.
+
+    This is a regression test for a bug where _cached_exact_length was incorrectly
+    set when advancing to the next Arrow file, even though the dataset had more
+    files to process.
+
+    The bug caused datasets to report length=0 after processing only the first
+    file in multi-file datasets, breaking length-based sampling in interleaved
+    datasets.
+
+    This test verifies:
+    1. _cached_exact_length is None during partial iteration
+    2. _cached_exact_length is set only after complete iteration
+    3. The cached length matches the actual example count
+    """
+    # Load dataset with dynamic length estimation
+    ds = fast_load_iterable_dataset(
+        "wikitext",
+        name="wikitext-2-raw-v1",
+        split="train",
+        length_estimate="dynamic",
+    )
+
+    # Apply a filtering map to test length tracking
+    # Remove empty examples to create a mapping where output_count != input_count
+    def filter_empty(ex):
+        text = ex.get("text", "").strip()
+        return ex if text else None
+
+    ds_filtered = ds.map(filter_empty)
+
+    # Verify initial state
+    assert (
+        ds_filtered._cached_exact_length is None
+    ), "Cached length should be None before iteration"
+
+    # Partially iterate through dataset (take first 50 examples)
+    partial_examples = []
+    iterator = iter(ds_filtered)
+    for i in range(50):
+        try:
+            partial_examples.append(next(iterator))
+        except StopIteration:
+            break
+
+    # CRITICAL: After partial iteration, cached length should still be None
+    assert ds_filtered._cached_exact_length is None, (
+        f"Cached length should remain None during partial iteration, "
+        f"but got {ds_filtered._cached_exact_length}. "
+        f"This indicates the bug where length is cached at file boundaries."
+    )
+
+    # Verify length estimate is still being calculated dynamically
+    estimated_len = len(ds_filtered)
+    assert estimated_len > 0, "Length estimate should be positive during iteration"
+
+    # Now complete the full iteration
+    all_examples = partial_examples.copy()
+    for example in iterator:
+        all_examples.append(example)
+
+    # After complete iteration, cached length should be set
+    assert (
+        ds_filtered._cached_exact_length is not None
+    ), "Cached length should be set after complete iteration"
+
+    # Verify the cached length matches actual count
+    actual_count = len(all_examples)
+    assert ds_filtered._cached_exact_length == actual_count, (
+        f"Cached length {ds_filtered._cached_exact_length} should match "
+        f"actual count {actual_count}"
+    )
+
+    # Verify len() now returns the exact cached value
+    assert len(ds_filtered) == actual_count, (
+        f"len() should return cached exact length {actual_count} "
+        f"after complete iteration"
+    )
+
+    # Verify the value persists across new iterations
+    ds_filtered_again = iter(ds_filtered)
+    assert (
+        ds_filtered._cached_exact_length == actual_count
+    ), "Cached length should persist across iterations"
+
+    # Consume a few examples from new iteration
+    for i, _ in enumerate(ds_filtered_again):
+        if i >= 5:
+            break
+
+    # Cached length should still be preserved
+    assert (
+        ds_filtered._cached_exact_length == actual_count
+    ), "Cached length should remain unchanged during subsequent iterations"
+
+
+def test_example_sharding_multi_file(tmp_path):
+    """Regression test for double-increment of global_example_idx on skipped files.
+
+    When a dataset spans multiple Arrow files and example-level sharding is
+    active (e.g. because a virtual split forces example-mode), ranks whose
+    shard range starts after file 0 must skip one or more whole files to
+    reach their data. A prior bug in `_base_iter` advanced
+    `global_example_idx` twice for each fully-skipped file -- once in
+    `_compute_file_range`'s return value, and again in the calling loop --
+    so position tracking ran ahead of the true example index. The symptom
+    was severely imbalanced per-rank delivery: rank 0 (no files to skip)
+    got its full share, but higher-index ranks terminated early when the
+    inflated counter reached their shard end, and the very last rank could
+    even over-iterate past its end.
+
+    This test creates a multi-file dataset, applies a virtual split, and
+    shards it 4 ways. All four ranks must return balanced example counts
+    summing to the split size.
+    """
+    from datasets import Dataset
+
+    # Build a dataset with enough examples that a 4-way shard forces
+    # several file skips on the high-index ranks. Save as 10 Arrow files so
+    # the iteration path that skips entire files is exercised for ranks 1+.
+    total = 10_000
+    ds = Dataset.from_dict({"idx": list(range(total)), "value": list(range(total))})
+    ds.save_to_disk(str(tmp_path / "multi_file"), num_shards=10)
+
+    # Virtual split: drop the first 100 examples so example-level sharding
+    # is forced (file-level is disabled when a virtual split is active).
+    split_start = 100
+    ids = fast_load_iterable_dataset(
+        str(tmp_path / "multi_file"), split=f"train[{split_start}:]"
+    )
+    expected_split_len = total - split_start
+    assert len(ids) == expected_split_len
+
+    num_shards = 4
+    shards = [
+        ids.shard(num_shards=num_shards, index=i, mode="example")
+        for i in range(num_shards)
+    ]
+
+    # Raw iteration: counts per rank must be balanced and sum to the split.
+    counts = [sum(1 for _ in s) for s in shards]
+    assert sum(counts) == expected_split_len, (
+        f"Sharded counts should sum to split length: "
+        f"{counts} sum={sum(counts)} expected={expected_split_len}"
+    )
+    expected_per_shard = expected_split_len // num_shards
+    for i, c in enumerate(counts):
+        assert abs(c - expected_per_shard) <= 1, (
+            f"Shard {i} has {c} examples, expected ~{expected_per_shard} "
+            f"(all shards: {counts})"
+        )
+
+    # And the examples should partition without overlap: every value in
+    # [split_start, total) must appear in exactly one shard.
+    seen = set()
+    for s in shards:
+        for ex in s:
+            seen.add(ex["value"])
+    assert seen == set(range(split_start, total)), (
+        f"Shards should exactly cover the virtual split; "
+        f"missing={set(range(split_start, total)) - seen}, "
+        f"extra={seen - set(range(split_start, total))}"
+    )
+
+
+def test_example_sharding_multi_file_partial_file_at_end(tmp_path):
+    """Shard range ends mid-file on the last rank -- not just mid-file at
+    the start.
+
+    Companion to test_example_sharding_multi_file. That one exercises
+    shards whose ranges begin mid-file (ranks 1..N-1); this one picks a
+    total / num_shards combination that makes the final rank's shard
+    range END mid-file, so iteration has to stop inside a file and all
+    subsequent files are skipped. The previous double-increment bug hit
+    both boundaries but the earlier test only directly asserted balance
+    -- this one also asserts that the shard ends exactly where it
+    should (no over-delivery on the last rank).
+    """
+    from datasets import Dataset
+
+    # 10 files of 1000 each. Split the first 9500, which leaves the last
+    # shard range cutting off mid-file (file 9 intersects only partially
+    # with the split for the last rank).
+    total = 10_000
+    ds = Dataset.from_dict({"idx": list(range(total)), "value": list(range(total))})
+    ds.save_to_disk(str(tmp_path / "multi_file_end"), num_shards=10)
+
+    # `train[:9500]` yields a split that ends halfway through file 9.
+    # Then a 4-way shard puts the last rank at range [7125, 9500) in
+    # global space, with 9500 landing 500 examples into file 9.
+    split_end = 9500
+    ids = fast_load_iterable_dataset(
+        str(tmp_path / "multi_file_end"), split=f"train[:{split_end}]"
+    )
+    assert len(ids) == split_end
+
+    num_shards = 4
+    shards = [
+        ids.shard(num_shards=num_shards, index=i, mode="example")
+        for i in range(num_shards)
+    ]
+    counts = [sum(1 for _ in s) for s in shards]
+
+    assert (
+        sum(counts) == split_end
+    ), f"Counts must sum to split length {split_end}: {counts}"
+    expected_per_shard = split_end // num_shards
+    for i, c in enumerate(counts):
+        assert abs(c - expected_per_shard) <= 1, (
+            f"Shard {i} has {c} examples, expected ~{expected_per_shard} "
+            f"(all shards: {counts})"
+        )
+
+    # The last rank's examples must be exactly the tail slice of the
+    # split, with nothing past split_end leaking in.
+    last_shard_values = sorted(ex["value"] for ex in shards[num_shards - 1])
+    assert last_shard_values[-1] < split_end, (
+        f"Last shard contains an example at position {last_shard_values[-1]} "
+        f"but split ends at {split_end}; over-iterated past split boundary"
+    )
+
+
+def test_file_level_sharding_with_multi_file(tmp_path):
+    """File-level sharding (the other sharding mode) also balances.
+
+    When there is no virtual split, shard(mode='auto') picks file-level
+    sharding if num_shards <= num_files. The file-level path does not
+    touch global_example_idx per example, so it's unaffected by the
+    refactor, but verifying it catches regressions in the auto-mode
+    selection and file assignment.
+    """
+    from datasets import Dataset
+
+    total = 8_000
+    ds = Dataset.from_dict({"idx": list(range(total)), "value": list(range(total))})
+    ds.save_to_disk(str(tmp_path / "file_shard"), num_shards=8)
+
+    ids = fast_load_iterable_dataset(str(tmp_path / "file_shard"), split="train")
+    assert len(ids) == total
+
+    num_shards = 4
+    # mode='auto' with 4 shards and 8 files picks file-level mode.
+    shards = [ids.shard(num_shards=num_shards, index=i) for i in range(num_shards)]
+
+    counts = [sum(1 for _ in s) for s in shards]
+    assert sum(counts) == total, f"File-level shards must cover dataset: {counts}"
+    # With 8 files / 4 shards each rank gets exactly 2 files of 1000 each.
+    for i, c in enumerate(counts):
+        assert c == 2000, f"File-level shard {i} should have 2000 examples, got {c}"

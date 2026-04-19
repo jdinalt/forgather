@@ -1,0 +1,18 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Long Cooldown"
+    -- set ns.config_description = "10x Chinchilla, with extended cooldown, 0.7"
+    -- set ns.model_name = model_name | default("long_cooldown")
+
+    ## Extend to 10x Chinchilla
+    -- set ns.total_tokens = total_tokens | default(24970)
+    -- set ns.annealing_tokens = annealing_tokens | default(2497)
+
+    ## Extend cooldown to 70% (from 30%) of token budget
+    -- set ns.cooldown_p = 0.7
+
+[lr_scheduler]
+    == super()
+    checkpoint_step: {{ ns.decay_start_step }}

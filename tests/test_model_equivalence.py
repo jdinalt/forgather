@@ -12,13 +12,14 @@ The issues which were causing compatibility issues:
     2. The complex RoPE implementation seems to produce slightly different results.
 """
 
+import os
+import sys
+
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoConfig
-import sys
-import os
+from transformers import AutoConfig, AutoModelForCausalLM
 
-from forgather.ml.remap_params import remap_state_dict, hflamma_to_dllama
+from forgather.ml.remap_params import hflamma_to_dllama, remap_state_dict
 
 
 def issimilar(a, b, rtol=1e-5, atol=1e-8):

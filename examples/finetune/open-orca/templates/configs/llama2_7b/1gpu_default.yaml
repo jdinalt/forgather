@@ -1,0 +1,23 @@
+-- extends 'open_orca.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Open-Orca Llama2 7B"
+    -- set ns.config_description = "Single-GPU 7B smoke-test config"
+    -- set ns.log_name = "1gpu_default"
+
+    ## Short budget; this config is for verification only. A real 7B run
+    ## on one card is impractical for OpenOrca -- prefer llama2_7b/4gpu_pp.
+    -- set ns.total_tokens = total_tokens | default(20)
+
+    ## Batching
+    -- set ns.seq_len = seq_len | default(1536)
+    -- set ns.per_device_train_batch_size = batch_size | default(1)
+
+    ## Compile off for iteration
+    -- set ns.torch_compile = compile | default(False)
+
+[trainer_args]
+    == super()
+    gradient_checkpointing: {{ gradient_checkpointing | default(True) }}
+    fuse_optim_with_backward: {{ fuse_optim_with_backward | default(True) }}

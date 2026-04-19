@@ -5,8 +5,13 @@ from typing import Optional, Tuple
 
 import torch
 from torch import FloatTensor, LongTensor, Tensor, nn
-from transformers import (AutoConfig, AutoModelForCausalLM, GenerationMixin,
-                          PretrainedConfig, PreTrainedModel)
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    GenerationMixin,
+    PretrainedConfig,
+    PreTrainedModel,
+)
 from transformers.modeling_outputs import CausalLMOutput
 
 -- for module, name in imports:

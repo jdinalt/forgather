@@ -1,0 +1,8 @@
+-- extends "exp.yaml"
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "SinkGD Short Warmup"
+    -- set ns.config_description = "~5% warmup instead of 10%"
+    -- set ns.log_name = log_name | default("short-warmup")
+    -- set ns.warmup_tokens = 28

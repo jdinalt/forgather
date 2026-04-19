@@ -1,0 +1,13 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Base bfloat16"
+    -- set ns.config_description = "Base configuration for pure bfloat16 training"
+    -- set ns.log_name = "bf16"
+
+[trainer_args]
+    == super()
+    # **bf16**
+    default_dtype: "bfloat16"
+    mixed_precision: null

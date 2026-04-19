@@ -1,0 +1,24 @@
+-- extends "configs/smollm-corpus/interleaved.yaml"
+-- from "packed.yaml" import dynamic_args
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Small LM Interleaved Packed"
+    -- set ns.config_description = "Interleave and Pack all Small-LM datasets"
+
+[pp_kwargs]
+    == super()
+    stride: {{ stride | default(0)}}
+    max_length: {{ max_length | default(512)}}
+
+[fineweb]
+    == super()
+    config_template: "smollm-corpus/fineweb-edu-packed.yaml"
+
+[cosmopedia]
+    == super()
+    config_template: "smollm-corpus/cosmopedia-v2-packed.yaml"
+
+[dynamic_args]
+    == super()
+{{ dynamic_args() }}
