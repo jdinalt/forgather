@@ -183,7 +183,7 @@ class RotaryEmbedding(nn.Module):
       HF Transformers, torchtitan, and vLLM. Sufficient for most training
       scenarios and uses less memory.
 
-    See ``docs/model-architecture.md`` for a detailed discussion of RoPE
+    See ``docs/guides/model-architecture.md`` for a detailed discussion of RoPE
     precision tradeoffs.
 
     Initialization

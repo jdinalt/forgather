@@ -25,9 +25,11 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 - **[DiLoCo](trainers/diloco.md)** - Distributed Local-SGD training across heterogeneous machines on LAN
 - **[FP8 Training](trainers/fp8-training.md)** - FP8 training via torchao
 - **[Checkpointing](checkpointing/README.md)** - Distributed checkpoint system for multi-GPU and multi-node training
+- **[Torch Titan Integration](trainers/torchtitan.md)** - Forgather integration with PyTorch's Torch Titan training framework
+- **[Adafactor Triton Performance](trainers/adafactor-triton-performance.md)** - Performance analysis for the Triton-optimized Adafactor kernel
 
 **Models and inference:**
-- **[Model Architecture](model-architecture.md)** - Transformer module inventory, composition patterns, and optimization flags
+- **[Model Architecture](guides/model-architecture.md)** - Transformer module inventory, composition patterns, and optimization flags
 - **[Model Conversion](guides/model-conversion.md)** - Bidirectional HuggingFace / Forgather model conversion
 - **[Vocabulary and Chat Template](guides/update-vocab.md)** - Add tokens or set chat templates on existing models without conversion
 - **[Fixing EOS Token Issues](guides/fixing-eos-token-issues.md)** - Diagnose and fix runaway generation after adding ChatML-style stop tokens
@@ -35,11 +37,14 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 
 **Guides:**
 - **[Creating a Model Project](guides/creating-a-model-project.md)** - Define a custom model architecture from scratch
+- **[Model CLI Reference](guides/model-cli.md)** - `forgather model` command: construct, test, checkpoint, and use models
 - **[Creating a Dataset Project](guides/creating-a-dataset-project.md)** - Load, pack, and interleave HuggingFace datasets
+- **[Dataset CLI Reference](datasets/dataset-cli.md)** - `forgather dataset` command: inspect, sample, and histogram datasets
+- **[Working with Tokenizer Projects](guides/working-with-tokenizer-projects.md)** - CLI commands for tokenizer projects
 - **[Debugging Configuration Errors](guides/debugging.md)** - Systematic troubleshooting and common error patterns
 - **[Interactive CLI](guides/interactive-cli.md)** - Interactive shell with tab completion and editor integration
 - **[Evaluating Models](guides/evaluating-models.md)** - Loss/perplexity evaluation via `forgather eval`
-- **[Log Analysis](logs-analysis.md)** - Training log summaries, plots, and heatmaps
+- **[Log Analysis](guides/logs-analysis.md)** - Training log summaries, plots, and heatmaps
 
 ## Tutorials
 - **[Tiny Llama](../examples/tutorials/tiny_llama/README.md)** - Demonstration of basic usage
@@ -55,6 +60,10 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 - **[Finetune](../examples/finetune/README.md)** - A collection of finetuning examples
 - **[Tokenizers](../examples/tokenizers/README.md)** - Tokenizer definition examples
 - **[Models](../examples/models/README.md)** - Example model definitions
+
+## Development
+
+- **[Known Bugs](development/bugs.md)** - Known bugs in top-level modules, with corresponding xfail tests
 
 ## Getting Help
 
@@ -77,5 +86,4 @@ docs/
 ├── guides/              # How-to guides (models, datasets, CLI, conversion)
 ├── development/         # Testing and development workflow
 ├── fused_loss/          # Fused linear cross-entropy loss
-└── examples/            # Pointers to working examples
 ```

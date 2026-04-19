@@ -298,4 +298,4 @@ Template file doesn't exist. Create new_template.yaml? (y/N): y
 
 ---
 
-*For more information on Forgather CLI commands, see the [CLI Reference](../reference/cli.md) or run `forgather --help`.*
+*For more information on Forgather CLI commands, run `forgather --help`.*

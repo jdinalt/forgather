@@ -162,7 +162,7 @@ summary = compute_summary_statistics(log)
 print(f"Best loss: {summary['best_loss']} at step {summary['best_loss_step']}")
 ```
 
-For complete documentation, see `docs/logs-analysis.md` and `examples/log_analysis_example.py`.
+For complete documentation, see `docs/guides/logs-analysis.md` and `examples/log_analysis_example.py`.
 
 ### Inference
 
@@ -705,7 +705,6 @@ Refer to these when creating new projects.
 - Projects overview : "examples/tutorials/projects_overview/"
 - Forgather project structure : "examples/tutorials/project_composition/"
 - Model training tutorial project : "examples/tutorials/tiny_llama/"
-- Attention mechanisms testing project : "examples/tiny_experiments/attention/"
 - Cross-project model inheritance (with modelsrc) : "examples/tiny_experiments/canon/"
 - Cross-project model inheritance (without modelsrc) : "examples/pretrain/small-llm/custom_deepone/"
 

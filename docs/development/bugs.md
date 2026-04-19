@@ -74,19 +74,6 @@ should not be passed to the sync function.
 
 ---
 
-## `model_conversion.__init__` exported undefined symbols (Fixed)
-
-**File**: `src/forgather/ml/model_conversion/__init__.py`
-**Severity**: Fixed
-
-The `__all__` list previously included `validate_tp_plan`, `validate_pp_plan`,
-`validate_vllm_plans`, and `print_model_structure`, but these functions were never
-implemented. They have been removed from `__all__`. Additionally, vLLM integration
-is currently broken due to Forgather's move to Transformers v5 (see
-`docs/inference/vllm_integration.md`).
-
----
-
 ## `JsonLogger` uses deprecated `datetime.datetime.utcnow()`
 
 **File**: `src/forgather/ml/trainer/callbacks/json_logger.py`
@@ -104,13 +91,6 @@ Replace with timezone-aware equivalent:
 ```python
 timestamp=datetime.datetime.now(datetime.UTC).timestamp(),
 ```
-
----
-
-## ~`CasualLM` references non-existent `self.model`~ (Fixed)
-
-**File**: `modelsrc/transformer/causal_lm.py`
-**Severity**: High (runtime AttributeError)
 
 ### Description
 
@@ -151,15 +131,3 @@ def resize_position_embeddings(self, new_num_position_embeddings: int):
     )
     self.reset_parameters()
 ```
-
----
-
-## Summary Table
-
-| # | File | Severity | Description |
-|---|------|----------|-------------|
-| - | `latent.py` | Low | Pyright analysis times out due to circular package dependency |
-| 1 | `dataloader_utils.py` | Medium | LengthSyncCallback passes dataset as debug parameter |
-| 2 | `model_conversion/__init__.py` | Low | __all__ exports undefined symbols |
-| 3 | `json_logger.py` | Low | Uses deprecated `datetime.utcnow()` |
-| 4 | `sinusoidal_pe.py` | Medium | `resize_position_embeddings()` crashes due to buffer size mismatch |

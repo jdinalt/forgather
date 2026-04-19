@@ -246,5 +246,5 @@ With your first model trained, here are recommended paths for learning more:
   How template inheritance works.
 - [Configuration Syntax](../configuration/syntax-reference.md) --
   Complete reference for the YAML + Jinja2 configuration language.
-- [Model Architecture](../model-architecture.md) --
+- [Model Architecture](../guides/model-architecture.md) --
   Inventory of transformer components in `modelsrc/transformer/`.

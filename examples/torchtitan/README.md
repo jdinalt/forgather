@@ -2,54 +2,11 @@
 
 Forgather integration with Torch Titan
 
-https://github.com/pytorch/torchtitan/
+## Projects
 
-## Basic usage
+- **[llama3/](./llama3/README.md)** - Reproduces Torch Titan's Llama3 base configurations via Forgather, with a few derived configs demonstrating template-based config management.
+- **[tiny_titan/](./tiny_titan/README.md)** - First Forgather-native Torch Titan trainer using dependency injection for training assets; includes an FSDP config for a 117M Llama3 model.
+- **[test_parallelisms/](./test_parallelisms/README.md)** - Compares various parallelism strategies (DDP, tensor parallel, pipeline parallel, etc.) against a single-GPU control with matched effective batch size.
 
-```
-# List configurations
-forgather ls
 
-# Show details of preprocessed configuration
-forgather [-t CONFIG_NAME] pp
-
-# Train
-# This will lauch using "torchrun" with the correct settings
-forgather [-t CONFIG_NAME] train
-
-# Start Tensorboard (on another terminal)
-# Use "--bind_all," if you need to run on all interfaces, not just localhost
-forgather tb [-- --bind_all]
-```
-
-## Native Titan
-
-Just uses Forgather for setting up the configuraiton. No custom torchtian code
-
-### Llaam3
-
-Basic demonstration of using Forgather to manage Torch Titan configurations.
-
-This has been tested against mainline, using the nightly PyTorch build. As the support for bfloat16 was added 2 days ago, this will probably not work with the "stable" release.
-
-I haved reproduced two of the Llama3 base configurations, having only modified it them slighlty to use Forgather model output directory and meta-data conventions.
-
-From these base configurations, I have added a few derived configurations to demonstrate how this makes working with Torch Titan configurations easier.
-
-### Forgather Titan
-
-Constructs and registers a TrainSpec from the configuraiton. This allows one to use custom optimizers,
-lr-schedulers, datasets, etc., without having to define a TrainSpec in Python first.
-
-See [README.md](./tiny_titan/README.md)
-
-### Tiny Titan
-
-Reproduces the configuration in "examples/tutorials/tiny_llama"
-
-There is also a FSDP configuraiton for a 117M parameter Llama3 model.
-
-### Test Parallelisms
-
-Demonstrates how to use various parallelisms and is setup to compare the results of what *should* be eqivalent outcomes.
-
+For an overview of the Native Titan vs Forgather Titan approaches and general usage, see **[docs/trainers/torchtitan.md](../../docs/trainers/torchtitan.md)**.

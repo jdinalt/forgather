@@ -310,5 +310,5 @@ Forgather uses semantic layer naming that differs from standard HuggingFace nami
 - [vLLM Documentation](https://docs.vllm.ai/)
 - [vLLM Supported Models](https://docs.vllm.ai/en/latest/models/supported_models/)
 - [Distributed Inference Guide](https://docs.vllm.ai/en/stable/serving/parallelism_scaling/)
-- [Forgather Model Conversion](../model_conversion/overview.md)
-- [Forgather Training Guide](../trainers/overview.md)
+- [Forgather Model Conversion](../guides/model-conversion.md)
+- [Forgather Training Guide](../trainers/trainer_options.md)

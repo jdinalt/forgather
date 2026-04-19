@@ -10,8 +10,7 @@ For existing dataset projects to use as reference, see
 comprehensive, demonstrating packed and interleaved configurations.
 
 For detailed reference on individual features, see:
-- [`examples/datasets/README.md`](../../examples/datasets/README.md) -- dataset CLI
-  commands, target inspection, histogram generation, and testing workflows
+- [Dataset CLI Reference](../datasets/dataset-cli.md) -- dataset CLI commands, target inspection, histogram generation, and testing workflows
 - [Fast HF Loader](../datasets/fast-hf-loader.md) -- the optimized dataset loader
 - [Sequence Packing](../datasets/sequence-packing.md) -- packing strategies and parameters
 - [Dataset Projects](../datasets/dataset-projects.md) -- API reference

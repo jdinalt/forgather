@@ -460,7 +460,7 @@ forgather logs plot \
 ```
 
 Flags worth knowing (full reference in
-[`docs/logs-analysis.md`](../../../docs/logs-analysis.md)):
+[`docs/guides/logs-analysis.md`](../../../docs/guides/logs-analysis.md)):
 
 | Flag | Purpose |
 |------|---------|

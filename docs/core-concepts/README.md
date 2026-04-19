@@ -293,7 +293,6 @@ see the [Trainer Options Reference](../trainers/trainer_options.md).
 
 - [Getting Started](../getting-started/README.md) -- Install and train your first model
 - [Configuration Syntax](../configuration/syntax-reference.md) -- Complete tag and directive reference
-- [Template Inheritance](../configuration/inheritance.md) -- Detailed inheritance patterns
-- [Model Architecture](../model-architecture.md) -- Transformer component inventory
+- [Model Architecture](../guides/model-architecture.md) -- Transformer component inventory
 - [Trainer Options Reference](../trainers/trainer_options.md) -- All training arguments and trainer constructor parameters
 - [Checkpointing](../checkpointing/README.md) -- Distributed checkpoint system
