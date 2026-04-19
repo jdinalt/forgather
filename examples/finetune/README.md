@@ -1,50 +1,11 @@
 # Finetuning Examples
 
-The finetuning template adds a number of additional arguments to "forgather train":
+A collection of supervised fine-tuning (SFT) examples that demonstrate how to adapt pretrained language models to instruction-following and conversational tasks using Forgather's `finetune_v2` project template. The examples cover single-GPU and multi-GPU training (DDP, pipeline parallelism), packed-sequence datasets, WSD learning-rate schedules with automatic annealing, and the full model-conversion pipeline from HuggingFace checkpoints into Forgather format.
 
-```bash
-orgather train --help
-usage: forgather train [-h] [-d DEVICES] [--dry-run] [--max-steps MAX_STEPS] [--save-strategy {no,steps,epoch}] [--attn-implementation {eager,sdpa,flash_attention_2,flex_attention}] [--train-epochs TRAIN_EPOCHS] [--log-peak-memory] [--dataset-config DATASET_CONFIG] [--dataset-proj DATASET_PROJ] [--model-id-or-path MODEL_ID_OR_PATH] [--output-dir OUTPUT_DIR]
-                       [--gradient-checkpointing] [--resume-from-checkpoint RESUME_FROM_CHECKPOINT] [--save-on-each-node] [--chat-template CHAT_TEMPLATE]
-                       ...
+Each project extends `templatelib/examples/projects/finetune_v2.yaml` and accepts a target model path via the `-M` flag, so the same configuration files work against any compatible base model.
 
-Run configuration with train script
+## Projects
 
-positional arguments:
-  remainder             All arguments after -- will be forwarded as torchrun arguments.
-
-options:
-  -h, --help            show this help message and exit
-  -d DEVICES, --devices DEVICES
-                        CUDA Visible Devices e.g. "0,1"
-  --dry-run             Just show the generated commandline, without actually executing it.
-  --max-steps MAX_STEPS
-                        Set maximum training steps
-  --save-strategy {no,steps,epoch}, -S {no,steps,epoch}
-                        When to save checkpoints
-  --attn-implementation {eager,sdpa,flash_attention_2,flex_attention}
-                        Attention implementation
-  --train-epochs TRAIN_EPOCHS
-                        Set the number of epochs to train for
-  --log-peak-memory, -P
-                        Log peak GPU memory at each log step
-  --dataset-config DATASET_CONFIG
-                        The name of the dataset configuration to use
-  --dataset-proj DATASET_PROJ
-                        Path to dataset project to use
-  --model-id-or-path MODEL_ID_OR_PATH, -M MODEL_ID_OR_PATH
-                        HF model ID or local path to model
-  --output-dir OUTPUT_DIR
-                        Training output director. Defaults to model_id_or_path
-  --gradient-checkpointing, -G
-                        Enable gradient (activation) checkpoint, when supported
-  --resume-from-checkpoint RESUME_FROM_CHECKPOINT
-                        Explicit checkpoint path to load
-  --save-on-each-node   Save common checkpoint files on each node
-  --chat-template CHAT_TEMPLATE, -C CHAT_TEMPLATE
-                        Path to the chat template to use
-```
-
-## Usage
-
-See [Samantha](./samantha/README.md)
+- **[Samantha](./samantha/README.md)** - Full tutorial: fine-tune a 7B parameter model on the Samantha conversational dataset. Covers model conversion, pipeline parallelism, packed sequences, multi-node training over Gigabit Ethernet, checkpointing, and inference serving.
+- **[Open-Orca](./open-orca/README.md)** - Fine-tune on the Open-Orca reasoning dataset using best-fit sequence packing and an automatically triggered WSD annealing schedule. Natural complement to Samantha: teaches chain-of-thought reasoning rather than conversational persona.
+- **[OpenAssistant](./openassistant/README.md)** - Minimal fine-tuning example on the OpenAssistant dataset. Raw configs suitable as a starting point; refer to the Samantha tutorial for detailed setup instructions.

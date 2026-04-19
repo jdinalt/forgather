@@ -11,7 +11,6 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 **Configuration:**
 - **[Configuration Overview](configuration/README.md)** - Template system and YAML configuration
 - **[Syntax Reference](configuration/syntax-reference.md)** - Complete syntax reference for tags and directives
-- **[Template Inheritance](configuration/inheritance.md)** - Inheritance patterns and block overrides
 - **[Model Initialization](configuration/model-initialization.md)** - Regex-based parameter initialization
 - **[Debugging Guide](configuration/debugging.md)** - Tools and techniques for debugging configurations
 - **[Project Templates](project-templates/lm-training-projects.md)** - LM Training and Auto LR project templates
@@ -43,11 +42,11 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 - **[Log Analysis](logs-analysis.md)** - Training log summaries, plots, and heatmaps
 
 ## Tutorials
-- **[Tiny Llama](../examples/tutorials/tiny_llama/project_index.ipynb)** - Demonstration of basic usage
+- **[Tiny Llama](../examples/tutorials/tiny_llama/README.md)** - Demonstration of basic usage
 - **[Projects Overview](../examples/tutorials/projects_overview/project_index.ipynb)** - Learn about the Forgather Project abstraction
 - **[Project Composition](../examples/tutorials/project_composition/project_index.ipynb)** - How the template system works
 - **[Dynamic LM](../examples/tutorials/dynamic_lm/dynamic_lm.ipynb)** - Demonstrates how models are dynamically composed
-- **[Samantha](../examples/tutorials/samantha/README.md)** - Demonstrates how to use Forgather to finetune a 7B parameter model on the Samantha dataset
+- **[Samantha](../examples/finetune/samantha/README.md)** - Demonstrates how to use Forgather to finetune a 7B parameter model on the Samantha dataset
 - **[H.P. Lovecraft Project](../examples/tutorials/hp_lovecraft_project/README.md)** - Learn how to create workspaces and projects, while training a model to summon the Elder Gods
 
 ## Example Project Collections
@@ -78,6 +77,5 @@ docs/
 ├── guides/              # How-to guides (models, datasets, CLI, conversion)
 ├── development/         # Testing and development workflow
 ├── fused_loss/          # Fused linear cross-entropy loss
-├── known_issues/        # Known performance issues and workarounds
 └── examples/            # Pointers to working examples
 ```
