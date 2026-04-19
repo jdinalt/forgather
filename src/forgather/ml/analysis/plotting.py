@@ -277,7 +277,8 @@ def plot_training_metrics(
         ax.set_ylabel(_metric_display_label(metric, perplexity))
         ax.set_title(f"{_metric_display_label(metric, perplexity)} vs {x_label}")
         ax.grid(True, alpha=0.3)
-        ax.legend()
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend()
 
         if log_scale:
             ax.set_yscale("log")
@@ -466,11 +467,13 @@ def _plot_loss_curves_single(
     ax1.set_ylabel(_loss_axis_label(perplexity, "loss"), color="tab:blue")
     ax1.tick_params(axis="y", labelcolor="tab:blue")
     ax1.grid(True, alpha=0.3)
-    ax1.legend(loc="upper left")
+    if ax1.get_legend_handles_labels()[0]:
+        ax1.legend(loc="upper left")
 
     ax2.set_ylabel("Learning Rate", color="tab:orange")
     ax2.tick_params(axis="y", labelcolor="tab:orange")
-    ax2.legend(loc="upper right")
+    if ax2.get_legend_handles_labels()[0]:
+        ax2.legend(loc="upper right")
 
     if log_scale:
         ax1.set_yscale("log")
