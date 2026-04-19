@@ -14,8 +14,11 @@ pytest tests/integration/ -m "integration and not slow"
 # Full suite including inference + perplexity scoring (~2 min)
 pytest tests/integration/ -m integration
 
-# Collect without running (verify discovery)
-pytest tests/integration/ --collect-only
+# Run a single test by its test_id (e.g. tiny_experiment, tiny_llama)
+pytest tests/integration/ -k tiny_experiment -v
+
+# List available tests and their IDs (test_id appears in brackets: test_training_project[tiny_experiment])
+pytest tests/integration/ --collect-only -q
 ```
 
 All integration tests require at least one CUDA GPU. Tests that require more GPUs than available are skipped automatically.
