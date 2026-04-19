@@ -594,6 +594,13 @@ so they ship with generic defaults and rely on CLI overrides to adapt.
 Your own project doesn't have that constraint; prefer committed
 configs.)
 
+As an experiment, you can try training a 30M parameter Llama model to
+10x Chinchilla optimal with:
+
+```bash
+forgather -t v2.yaml train --model-config small.yaml --model-name small --total-tokens 600
+```
+
 ## Create Your Own Experiment
 
 Let's do a quick experiment: train a 4M model with half the base
