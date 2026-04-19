@@ -1303,9 +1303,7 @@ class TestSafetensorsTiedWeights(unittest.TestCase):
         # For our plain nn.Module test fixture, manually tie:
         model2.lm_head.weight = model2.embedding.weight
         self.assertIs(model2.lm_head.weight, model2.embedding.weight)
-        torch.testing.assert_close(
-            model2.embedding.weight, model.embedding.weight
-        )
+        torch.testing.assert_close(model2.embedding.weight, model.embedding.weight)
 
 
 if __name__ == "__main__":

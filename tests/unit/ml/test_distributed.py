@@ -31,7 +31,6 @@ from forgather.ml.distributed import (
     prefix_logger_rank,
 )
 
-
 # ---------------------------------------------------------------------------
 # Environment variable reading functions
 # ---------------------------------------------------------------------------
@@ -199,9 +198,7 @@ class TestPrefixLoggerRank(unittest.TestCase):
         with patch("forgather.ml.distributed.get_rank", return_value=0):
             prefix_logger_rank(logger)
             handler = logger.handlers[-1]
-            record = logging.LogRecord(
-                "test", logging.INFO, "", 0, "msg", (), None
-            )
+            record = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
             # The filter function is added via addFilter; check it passes
             self.assertTrue(handler.filter(record))
 
@@ -211,9 +208,7 @@ class TestPrefixLoggerRank(unittest.TestCase):
         with patch("forgather.ml.distributed.get_rank", return_value=3):
             prefix_logger_rank(logger)
             handler = logger.handlers[-1]
-            record = logging.LogRecord(
-                "test", logging.INFO, "", 0, "msg", (), None
-            )
+            record = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
             self.assertFalse(handler.filter(record))
 
     def test_custom_filter(self):
@@ -225,16 +220,12 @@ class TestPrefixLoggerRank(unittest.TestCase):
         with patch("forgather.ml.distributed.get_rank", return_value=2):
             prefix_logger_rank(logger, filter=custom_filter)
             handler = logger.handlers[-1]
-            record = logging.LogRecord(
-                "test", logging.INFO, "", 0, "msg", (), None
-            )
+            record = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
             self.assertTrue(handler.filter(record))
 
         with patch("forgather.ml.distributed.get_rank", return_value=0):
             # Re-create since the filter references get_rank at call time
-            record2 = logging.LogRecord(
-                "test", logging.INFO, "", 0, "msg", (), None
-            )
+            record2 = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
             self.assertFalse(handler.filter(record2))
 
     def test_custom_format(self):
@@ -265,9 +256,7 @@ class TestPrefixLoggerRank(unittest.TestCase):
         with patch("forgather.ml.distributed.get_rank", return_value=5):
             prefix_logger_rank(logger, filter=lambda rank: True)
             handler = logger.handlers[-1]
-            record = logging.LogRecord(
-                "test", logging.INFO, "", 0, "msg", (), None
-            )
+            record = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
             handler.filter(record)
             self.assertEqual(record.rank, 5)
 
@@ -283,16 +272,24 @@ class TestInitFromEnv(unittest.TestCase):
     def _clear_dist_env_vars(self):
         """Return a clean env dict with distributed vars removed."""
         keys = [
-            "LOCAL_RANK", "RANK", "WORLD_SIZE",
-            "LOCAL_WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT",
+            "LOCAL_RANK",
+            "RANK",
+            "WORLD_SIZE",
+            "LOCAL_WORLD_SIZE",
+            "MASTER_ADDR",
+            "MASTER_PORT",
         ]
         return {k: v for k, v in os.environ.items() if k not in keys}
 
     def test_exports_to_env_when_unset(self):
         """When env vars are not set, init_from_env exports from the dist object."""
         dist_obj = StaticDistributedEnvironment(
-            rank=2, local_rank=1, world_size=4,
-            local_world_size=2, master_addr="10.0.0.1", master_port=12345,
+            rank=2,
+            local_rank=1,
+            world_size=4,
+            local_world_size=2,
+            master_addr="10.0.0.1",
+            master_port=12345,
         )
         with patch.dict(os.environ, self._clear_dist_env_vars(), clear=True):
             init_from_env(dist_obj)
@@ -307,14 +304,16 @@ class TestInitFromEnv(unittest.TestCase):
         """When env vars are set, init_from_env updates the dist object."""
         dist_obj = StaticDistributedEnvironment()
         env = self._clear_dist_env_vars()
-        env.update({
-            "RANK": "7",
-            "LOCAL_RANK": "3",
-            "WORLD_SIZE": "16",
-            "LOCAL_WORLD_SIZE": "8",
-            "MASTER_ADDR": "192.168.1.10",
-            "MASTER_PORT": "54321",
-        })
+        env.update(
+            {
+                "RANK": "7",
+                "LOCAL_RANK": "3",
+                "WORLD_SIZE": "16",
+                "LOCAL_WORLD_SIZE": "8",
+                "MASTER_ADDR": "192.168.1.10",
+                "MASTER_PORT": "54321",
+            }
+        )
         with patch.dict(os.environ, env, clear=True):
             init_from_env(dist_obj)
             self.assertEqual(dist_obj.rank, 7)
@@ -327,14 +326,20 @@ class TestInitFromEnv(unittest.TestCase):
     def test_partial_env_set(self):
         """When only some env vars are set, imports those and exports the rest."""
         dist_obj = StaticDistributedEnvironment(
-            rank=0, local_rank=0, world_size=1,
-            local_world_size=1, master_addr="localhost", master_port=29501,
+            rank=0,
+            local_rank=0,
+            world_size=1,
+            local_world_size=1,
+            master_addr="localhost",
+            master_port=29501,
         )
         env = self._clear_dist_env_vars()
-        env.update({
-            "RANK": "5",
-            "WORLD_SIZE": "8",
-        })
+        env.update(
+            {
+                "RANK": "5",
+                "WORLD_SIZE": "8",
+            }
+        )
         with patch.dict(os.environ, env, clear=True):
             init_from_env(dist_obj)
             # Imported from env
@@ -350,14 +355,16 @@ class TestInitFromEnv(unittest.TestCase):
         """Integer-typed env vars are properly converted when importing."""
         dist_obj = StaticDistributedEnvironment()
         env = self._clear_dist_env_vars()
-        env.update({
-            "RANK": "3",
-            "LOCAL_RANK": "1",
-            "WORLD_SIZE": "4",
-            "LOCAL_WORLD_SIZE": "2",
-            "MASTER_PORT": "9999",
-            "MASTER_ADDR": "myhost",
-        })
+        env.update(
+            {
+                "RANK": "3",
+                "LOCAL_RANK": "1",
+                "WORLD_SIZE": "4",
+                "LOCAL_WORLD_SIZE": "2",
+                "MASTER_PORT": "9999",
+                "MASTER_ADDR": "myhost",
+            }
+        )
         with patch.dict(os.environ, env, clear=True):
             init_from_env(dist_obj)
             # Integer fields
@@ -402,9 +409,14 @@ class TestStaticDistributedEnvironment(unittest.TestCase):
     def test_custom_values(self):
         """Custom values are stored correctly."""
         env = StaticDistributedEnvironment(
-            rank=3, local_rank=1, world_size=8,
-            local_world_size=4, master_addr="10.0.0.5",
-            master_port=12345, device="cuda:1", device_type="cuda",
+            rank=3,
+            local_rank=1,
+            world_size=8,
+            local_world_size=4,
+            master_addr="10.0.0.5",
+            master_port=12345,
+            device="cuda:1",
+            device_type="cuda",
         )
         self.assertEqual(env.rank, 3)
         self.assertEqual(env.local_rank, 1)
@@ -433,6 +445,7 @@ class TestStaticDistributedEnvironment(unittest.TestCase):
     def test_is_dataclass(self):
         """StaticDistributedEnvironment is a dataclass."""
         import dataclasses
+
         self.assertTrue(dataclasses.is_dataclass(StaticDistributedEnvironment))
 
     def test_partial_override(self):
@@ -457,8 +470,12 @@ class TestFromEnv(unittest.TestCase):
     def _clear_dist_env_vars(self):
         """Return a clean env dict with distributed vars removed."""
         keys = [
-            "LOCAL_RANK", "RANK", "WORLD_SIZE",
-            "LOCAL_WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT",
+            "LOCAL_RANK",
+            "RANK",
+            "WORLD_SIZE",
+            "LOCAL_WORLD_SIZE",
+            "MASTER_ADDR",
+            "MASTER_PORT",
         ]
         return {k: v for k, v in os.environ.items() if k not in keys}
 
@@ -480,14 +497,16 @@ class TestFromEnv(unittest.TestCase):
     def test_env_vars_override_defaults(self):
         """Environment variables override the default field values."""
         env_dict = self._clear_dist_env_vars()
-        env_dict.update({
-            "RANK": "5",
-            "LOCAL_RANK": "1",
-            "WORLD_SIZE": "8",
-            "LOCAL_WORLD_SIZE": "4",
-            "MASTER_ADDR": "head-node",
-            "MASTER_PORT": "55555",
-        })
+        env_dict.update(
+            {
+                "RANK": "5",
+                "LOCAL_RANK": "1",
+                "WORLD_SIZE": "8",
+                "LOCAL_WORLD_SIZE": "4",
+                "MASTER_ADDR": "head-node",
+                "MASTER_PORT": "55555",
+            }
+        )
         with patch.dict(os.environ, env_dict, clear=True):
             env = from_env()
             self.assertEqual(env.rank, 5)
@@ -588,8 +607,12 @@ class TestDistributedIntegration(unittest.TestCase):
     def _clear_dist_env_vars(self):
         """Return a clean env dict with distributed vars removed."""
         keys = [
-            "LOCAL_RANK", "RANK", "WORLD_SIZE",
-            "LOCAL_WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT",
+            "LOCAL_RANK",
+            "RANK",
+            "WORLD_SIZE",
+            "LOCAL_WORLD_SIZE",
+            "MASTER_ADDR",
+            "MASTER_PORT",
         ]
         return {k: v for k, v in os.environ.items() if k not in keys}
 
@@ -606,8 +629,12 @@ class TestDistributedIntegration(unittest.TestCase):
         """Values survive a round trip: object -> env -> new object."""
         with patch.dict(os.environ, self._clear_dist_env_vars(), clear=True):
             original = StaticDistributedEnvironment(
-                rank=5, local_rank=2, world_size=8,
-                local_world_size=4, master_addr="10.0.0.1", master_port=30000,
+                rank=5,
+                local_rank=2,
+                world_size=8,
+                local_world_size=4,
+                master_addr="10.0.0.1",
+                master_port=30000,
             )
             init_from_env(original)
 

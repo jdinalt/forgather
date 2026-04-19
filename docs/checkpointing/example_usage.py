@@ -13,11 +13,12 @@ import torch.nn as nn
 from torch.distributed import ProcessGroup
 from torch.distributed.checkpoint.stateful import Stateful
 
-# Import new checkpoint types
-from forgather.ml.trainer.checkpoint_types import SharingPattern, StateComponent
+from forgather.ml.distributed import StaticDistributedEnvironment
 from forgather.ml.trainer.checkpoint_coordinator import CheckpointCoordinator
 from forgather.ml.trainer.checkpoint_manager import RNGState
-from forgather.ml.distributed import StaticDistributedEnvironment
+
+# Import new checkpoint types
+from forgather.ml.trainer.checkpoint_types import SharingPattern, StateComponent
 
 
 # Example 1: Simple single-GPU trainer
@@ -141,8 +142,12 @@ class DDPTrainer:
 class PipelineTrainer:
     """Pipeline parallel trainer - each rank has different stage."""
 
-    def __init__(self, pipeline_modules, optimizer, lr_scheduler, train_dataloader, dist):
-        self.pipeline_modules = pipeline_modules  # List of modules for this rank's stage
+    def __init__(
+        self, pipeline_modules, optimizer, lr_scheduler, train_dataloader, dist
+    ):
+        self.pipeline_modules = (
+            pipeline_modules  # List of modules for this rank's stage
+        )
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
         self.train_dataloader = train_dataloader

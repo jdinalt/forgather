@@ -21,7 +21,6 @@ from forgather.ml.memory_monitor import (
     get_memory_monitor,
 )
 
-
 # ---------------------------------------------------------------------------
 # TensorTracker
 # ---------------------------------------------------------------------------
@@ -326,7 +325,13 @@ class TestTensorTrackerGetStats(unittest.TestCase):
         """get_stats returns all expected top-level keys."""
         tracker = TensorTracker()
         stats = tracker.get_stats()
-        expected_keys = {"total_tensors", "by_device", "by_dtype", "by_shape", "tensors_per_step"}
+        expected_keys = {
+            "total_tensors",
+            "by_device",
+            "by_dtype",
+            "by_shape",
+            "tensors_per_step",
+        }
         self.assertEqual(set(stats.keys()), expected_keys)
 
     def test_stats_after_finalizer(self):
@@ -383,6 +388,7 @@ class TestComprehensiveMemoryMonitorStartMonitoring(unittest.TestCase):
     def tearDown(self):
         # Stop tracemalloc if it was started by the test
         import tracemalloc
+
         if tracemalloc.is_tracing():
             tracemalloc.stop()
 
@@ -402,6 +408,7 @@ class TestComprehensiveMemoryMonitorStartMonitoring(unittest.TestCase):
     def test_starts_tracemalloc(self):
         """start_monitoring activates tracemalloc."""
         import tracemalloc
+
         if tracemalloc.is_tracing():
             tracemalloc.stop()
         self.monitor.start_monitoring()
@@ -417,6 +424,7 @@ class TestComprehensiveMemoryMonitorLogStep(unittest.TestCase):
 
     def tearDown(self):
         import tracemalloc
+
         if tracemalloc.is_tracing():
             tracemalloc.stop()
 
@@ -424,7 +432,15 @@ class TestComprehensiveMemoryMonitorLogStep(unittest.TestCase):
         """log_step_memory returns a dict with expected keys."""
         snapshot = self.monitor.log_step_memory(step=1)
         self.assertIsInstance(snapshot, dict)
-        expected_keys = {"step", "memory", "growth", "gpu", "tensors", "gc", "additional_info"}
+        expected_keys = {
+            "step",
+            "memory",
+            "growth",
+            "gpu",
+            "tensors",
+            "gc",
+            "additional_info",
+        }
         self.assertEqual(set(snapshot.keys()), expected_keys)
 
     def test_snapshot_step_value(self):
@@ -484,6 +500,7 @@ class TestComprehensiveMemoryMonitorHistoryBound(unittest.TestCase):
 
     def tearDown(self):
         import tracemalloc
+
         if tracemalloc.is_tracing():
             tracemalloc.stop()
 
@@ -509,6 +526,7 @@ class TestComprehensiveMemoryMonitorHistoryBound(unittest.TestCase):
             monitor.log_step_memory(step=i)
         self.assertEqual(len(monitor.memory_history), 0)
         import tracemalloc
+
         if tracemalloc.is_tracing():
             tracemalloc.stop()
 
@@ -522,6 +540,7 @@ class TestComprehensiveMemoryMonitorAnalyze(unittest.TestCase):
 
     def tearDown(self):
         import tracemalloc
+
         if tracemalloc.is_tracing():
             tracemalloc.stop()
 

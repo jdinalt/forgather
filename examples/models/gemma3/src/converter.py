@@ -57,9 +57,9 @@ class Gemma3Converter(HFConverter):
     @override
     def validate_source_config(self, config: Any, direction: str) -> None:
         if direction == "to_forgather":
-            assert config.model_type == "gemma3_text", (
-                f"Expected model_type 'gemma3_text', got '{config.model_type}'"
-            )
+            assert (
+                config.model_type == "gemma3_text"
+            ), f"Expected model_type 'gemma3_text', got '{config.model_type}'"
             hidden_activation = getattr(config, "hidden_activation", None)
             assert hidden_activation == "gelu_pytorch_tanh", (
                 f"Expected hidden_activation 'gelu_pytorch_tanh', "

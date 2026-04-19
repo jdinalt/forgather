@@ -47,7 +47,9 @@ def _pos_ids_from_boundaries(x: Tensor, document_starts: Tensor) -> Tensor:
                 # Fill positions from start to end
                 doc_length = end - start_clamped
                 if doc_length > 0:
-                    pos_ids[batch_idx, start_clamped:end] = torch.arange(doc_length, device=device)
+                    pos_ids[batch_idx, start_clamped:end] = torch.arange(
+                        doc_length, device=device
+                    )
 
     return pos_ids
 
@@ -230,7 +232,9 @@ class DataCollatorForCausalLM:
             f"ignore_index={self.ignore_index}, pad_kwargs={self.pad_kwargs})"
         )
 
-    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any] | Tuple[Dict[str, Any], Tensor]:
+    def __call__(
+        self, features: List[Dict[str, Any]]
+    ) -> Dict[str, Any] | Tuple[Dict[str, Any], Tensor]:
         # print(f"{type(features)=}")
         # print(f"{len(features)=}")
         # print(f"{type(features[0])=}")

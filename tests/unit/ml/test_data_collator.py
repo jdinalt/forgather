@@ -12,22 +12,22 @@ covering:
 
 import copy
 import unittest
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import torch
 from torch import Tensor
 
 from forgather.ml.data_collator import (
+    DataCollatorForCausalLM,
     _pos_ids_from_boundaries,
     _pos_ids_from_tokens,
     get_pos_ids_for_packed_sequence,
-    DataCollatorForCausalLM,
 )
-
 
 # ---------------------------------------------------------------------------
 # Mock tokenizer for DataCollatorForCausalLM tests
 # ---------------------------------------------------------------------------
+
 
 class MockTokenizer:
     """
@@ -154,19 +154,25 @@ class TestPosIdsFromBoundaries(unittest.TestCase):
     def test_padded_doc_starts_with_neg1(self):
         """Document starts padded with -1 should be filtered out."""
         # Batch of 2: first has 3 docs, second has 1 doc, padded with -1
-        x = torch.tensor([
-            [10, 20, 30, 40, 50, 60],
-            [70, 80, 90, 10, 20, 30],
-        ])
-        doc_starts = torch.tensor([
-            [0, 2, 4],
-            [0, -1, -1],
-        ])
+        x = torch.tensor(
+            [
+                [10, 20, 30, 40, 50, 60],
+                [70, 80, 90, 10, 20, 30],
+            ]
+        )
+        doc_starts = torch.tensor(
+            [
+                [0, 2, 4],
+                [0, -1, -1],
+            ]
+        )
         pos_ids = _pos_ids_from_boundaries(x, doc_starts)
-        expected = torch.tensor([
-            [0, 1, 0, 1, 0, 1],
-            [0, 1, 2, 3, 4, 5],
-        ])
+        expected = torch.tensor(
+            [
+                [0, 1, 0, 1, 0, 1],
+                [0, 1, 2, 3, 4, 5],
+            ]
+        )
         self.assertTrue(torch.equal(pos_ids, expected))
 
     def test_all_neg1_boundaries(self):
@@ -188,22 +194,28 @@ class TestPosIdsFromBoundaries(unittest.TestCase):
 
     def test_batch_dimension(self):
         """Test with a batch of multiple sequences."""
-        x = torch.tensor([
-            [1, 2, 3, 4],
-            [5, 6, 7, 8],
-            [9, 10, 11, 12],
-        ])
-        doc_starts = torch.tensor([
-            [0, 2],
-            [0, -1],
-            [0, 1],
-        ])
+        x = torch.tensor(
+            [
+                [1, 2, 3, 4],
+                [5, 6, 7, 8],
+                [9, 10, 11, 12],
+            ]
+        )
+        doc_starts = torch.tensor(
+            [
+                [0, 2],
+                [0, -1],
+                [0, 1],
+            ]
+        )
         pos_ids = _pos_ids_from_boundaries(x, doc_starts)
-        expected = torch.tensor([
-            [0, 1, 0, 1],  # 2 docs of length 2
-            [0, 1, 2, 3],  # 1 doc
-            [0, 0, 1, 2],  # doc of length 1, then doc of length 3
-        ])
+        expected = torch.tensor(
+            [
+                [0, 1, 0, 1],  # 2 docs of length 2
+                [0, 1, 2, 3],  # 1 doc
+                [0, 0, 1, 2],  # doc of length 1, then doc of length 3
+            ]
+        )
         self.assertTrue(torch.equal(pos_ids, expected))
 
     def test_document_starting_not_at_zero(self):
@@ -281,10 +293,12 @@ class TestPosIdsFromTokens(unittest.TestCase):
         """Batch of two sequences, each with boundary tokens."""
         # Batch item 0: [1, 2, 3, 4]  -- EOS=2 at position 1
         # Batch item 1: [5, 6, 2, 8]  -- EOS=2 at position 2
-        x = torch.tensor([
-            [1, 2, 3, 4],
-            [5, 6, 2, 8],
-        ])
+        x = torch.tensor(
+            [
+                [1, 2, 3, 4],
+                [5, 6, 2, 8],
+            ]
+        )
         pos_ids = _pos_ids_from_tokens(x, token_id=2, eos=True)
         expected_0 = torch.tensor([0, 1, 0, 1])
         expected_1 = torch.tensor([0, 1, 2, 0])
@@ -482,7 +496,9 @@ class TestDataCollatorForCausalLMRepr(unittest.TestCase):
     def test_repr_contains_truncation_and_ignore_index(self):
         """__repr__ should include truncation and ignore_index values."""
         tokenizer = MockTokenizer()
-        collator = DataCollatorForCausalLM(tokenizer, truncation=True, ignore_index=-200)
+        collator = DataCollatorForCausalLM(
+            tokenizer, truncation=True, ignore_index=-200
+        )
         r = repr(collator)
         self.assertIn("truncation=True", r)
         self.assertIn("ignore_index=-200", r)
@@ -490,7 +506,9 @@ class TestDataCollatorForCausalLMRepr(unittest.TestCase):
     def test_repr_contains_pad_kwargs(self):
         """__repr__ should include pad_kwargs."""
         tokenizer = MockTokenizer()
-        collator = DataCollatorForCausalLM(tokenizer, padding="max_length", max_length=256)
+        collator = DataCollatorForCausalLM(
+            tokenizer, padding="max_length", max_length=256
+        )
         r = repr(collator)
         self.assertIn("pad_kwargs=", r)
 
@@ -520,10 +538,12 @@ class TestDataCollatorForCausalLMCall(unittest.TestCase):
     def test_basic_collation_labels_from_input_ids(self):
         """Labels should copy input_ids, with pad tokens replaced by ignore_index."""
         collator = self._make_collator()
-        features = self._make_features([
-            [1, 2, 3],
-            [4, 5, 0],  # 0 is pad_token_id
-        ])
+        features = self._make_features(
+            [
+                [1, 2, 3],
+                [4, 5, 0],  # 0 is pad_token_id
+            ]
+        )
         batch = collator(features)
         self.assertIn("input_ids", batch)
         self.assertIn("labels", batch)
@@ -542,10 +562,12 @@ class TestDataCollatorForCausalLMCall(unittest.TestCase):
     def test_basic_collation_with_unequal_lengths(self):
         """Sequences of different lengths should be padded to the longest."""
         collator = self._make_collator()
-        features = self._make_features([
-            [1, 2, 3, 4, 5],
-            [6, 7, 8],
-        ])
+        features = self._make_features(
+            [
+                [1, 2, 3, 4, 5],
+                [6, 7, 8],
+            ]
+        )
         batch = collator(features)
         self.assertEqual(batch["input_ids"].shape, (2, 5))
         # Second sequence should be padded with pad_token_id (0) at positions 3, 4
@@ -558,10 +580,12 @@ class TestDataCollatorForCausalLMCall(unittest.TestCase):
     def test_truncation_right(self):
         """With truncation=True, sequences should be truncated from the right."""
         collator = self._make_collator(truncation=True, max_length=3)
-        features = self._make_features([
-            [1, 2, 3, 4, 5],
-            [6, 7, 8, 9, 10],
-        ])
+        features = self._make_features(
+            [
+                [1, 2, 3, 4, 5],
+                [6, 7, 8, 9, 10],
+            ]
+        )
         batch = collator(features)
         self.assertEqual(batch["input_ids"].shape, (2, 3))
         self.assertTrue(torch.equal(batch["input_ids"][0], torch.tensor([1, 2, 3])))
@@ -570,18 +594,22 @@ class TestDataCollatorForCausalLMCall(unittest.TestCase):
     def test_truncation_with_short_sequences(self):
         """Truncation should not affect sequences shorter than max_length."""
         collator = self._make_collator(truncation=True, max_length=10)
-        features = self._make_features([
-            [1, 2, 3],
-        ])
+        features = self._make_features(
+            [
+                [1, 2, 3],
+            ]
+        )
         batch = collator(features)
         self.assertEqual(batch["input_ids"].shape, (1, 3))
 
     def test_labels_name_none_returns_tuple(self):
         """When labels_name=None, __call__ should return (dict, labels) tuple."""
         collator = self._make_collator(labels_name=None)
-        features = self._make_features([
-            [1, 2, 3],
-        ])
+        features = self._make_features(
+            [
+                [1, 2, 3],
+            ]
+        )
         result = collator(features)
         self.assertIsInstance(result, tuple)
         self.assertEqual(len(result), 2)
@@ -605,9 +633,11 @@ class TestDataCollatorForCausalLMCall(unittest.TestCase):
     def test_custom_input_name(self):
         """Custom input_name should be used as the key in the output dict."""
         collator = self._make_collator(input_name="tokens")
-        features = self._make_features([
-            [1, 2, 3],
-        ])
+        features = self._make_features(
+            [
+                [1, 2, 3],
+            ]
+        )
         batch = collator(features)
         self.assertIn("tokens", batch)
         self.assertNotIn("input_ids", batch)
@@ -615,10 +645,12 @@ class TestDataCollatorForCausalLMCall(unittest.TestCase):
     def test_custom_ignore_index(self):
         """Custom ignore_index should be used for pad token labels."""
         collator = self._make_collator(ignore_index=-200)
-        features = self._make_features([
-            [1, 2, 3],
-            [4, 0, 0],  # 0 is pad_token_id
-        ])
+        features = self._make_features(
+            [
+                [1, 2, 3],
+                [4, 0, 0],  # 0 is pad_token_id
+            ]
+        )
         batch = collator(features)
         # Pad positions in labels should use custom ignore_index
         self.assertEqual(batch["labels"][1, 1].item(), -200)
@@ -786,8 +818,10 @@ class TestDataCollatorPad(unittest.TestCase):
 
         # Make pad raise an exception
         original_pad = tokenizer.pad
+
         def bad_pad(*args, **kwargs):
             raise RuntimeError("pad failed")
+
         tokenizer.pad = bad_pad
 
         collator = DataCollatorForCausalLM(tokenizer)
@@ -830,7 +864,11 @@ class TestDataCollatorTruncate(unittest.TestCase):
         tokenizer = MockTokenizer()
         collator = DataCollatorForCausalLM(tokenizer, truncation=True, max_length=2)
         features = [
-            {"input_ids": [1, 2, 3], "labels": [10, 20, 30], "attention_mask": [1, 1, 1]},
+            {
+                "input_ids": [1, 2, 3],
+                "labels": [10, 20, 30],
+                "attention_mask": [1, 1, 1],
+            },
         ]
         truncated = collator._truncate(features)
         self.assertEqual(truncated[0]["input_ids"], [1, 2])
@@ -933,10 +971,12 @@ class TestDataCollatorIntegration(unittest.TestCase):
         self.assertIn("position_ids", batch)
         # Seq 0: docs at [0, 2] -> [0, 1, 0, 1]
         # Seq 1: doc at [0] -> [0, 1, 2, 3]
-        expected = torch.tensor([
-            [0, 1, 0, 1],
-            [0, 1, 2, 3],
-        ])
+        expected = torch.tensor(
+            [
+                [0, 1, 0, 1],
+                [0, 1, 2, 3],
+            ]
+        )
         self.assertTrue(
             torch.equal(batch["position_ids"], expected),
             f"Expected {expected}, got {batch['position_ids']}",

@@ -66,7 +66,9 @@ class FragmentManager:
         logger.info(
             f"FragmentManager: {len(param_names)} parameters split into "
             f"{num_fragments} fragments: "
-            + ", ".join(f"frag {i}: {len(f)} params" for i, f in enumerate(self.fragments))
+            + ", ".join(
+                f"frag {i}: {len(f)} params" for i, f in enumerate(self.fragments)
+            )
         )
 
     @staticmethod

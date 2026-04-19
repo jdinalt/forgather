@@ -16,8 +16,8 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
 import pytest
+from matplotlib.figure import Figure
 
 from forgather.ml.analysis.log_parser import TrainingLog, find_log_files
 from forgather.ml.analysis.metrics import (
@@ -31,7 +31,6 @@ from forgather.ml.analysis.plotting import (
     plot_training_metrics,
     smooth_values,
 )
-
 
 # ---------------------------------------------------------------------------
 # Shared test data
@@ -153,11 +152,32 @@ def empty_log(tmp_path):
 def multi_eval_log(tmp_path):
     """Create a log with multiple evaluation records."""
     records = [
-        {"timestamp": 1000, "global_step": 10, "epoch": 0.1, "loss": 3.5, "grad_norm": 1.0, "learning_rate": 0.0001},
+        {
+            "timestamp": 1000,
+            "global_step": 10,
+            "epoch": 0.1,
+            "loss": 3.5,
+            "grad_norm": 1.0,
+            "learning_rate": 0.0001,
+        },
         {"eval_loss": 3.2, "global_step": 10, "epoch": 0.1, "timestamp": 1050},
-        {"timestamp": 1100, "global_step": 20, "epoch": 0.2, "loss": 2.5, "grad_norm": 0.8, "learning_rate": 0.0002},
+        {
+            "timestamp": 1100,
+            "global_step": 20,
+            "epoch": 0.2,
+            "loss": 2.5,
+            "grad_norm": 0.8,
+            "learning_rate": 0.0002,
+        },
         {"eval_loss": 2.6, "global_step": 20, "epoch": 0.2, "timestamp": 1150},
-        {"timestamp": 1200, "global_step": 30, "epoch": 0.3, "loss": 2.0, "grad_norm": 0.7, "learning_rate": 0.0001},
+        {
+            "timestamp": 1200,
+            "global_step": 30,
+            "epoch": 0.3,
+            "loss": 2.0,
+            "grad_norm": 0.7,
+            "learning_rate": 0.0001,
+        },
         {"eval_loss": 2.1, "global_step": 30, "epoch": 0.3, "timestamp": 1250},
         {
             "train_runtime": 250.0,

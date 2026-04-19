@@ -76,7 +76,9 @@ def compare_multiple_runs(log_paths: list[str], output_dir: str):
 
     # Compare summary statistics
     print("\nComparison Summary:")
-    print(f"{'Run Name':<30} {'Best Loss':<12} {'Best Eval Loss':<15} {'Samples/sec':<12}")
+    print(
+        f"{'Run Name':<30} {'Best Loss':<12} {'Best Eval Loss':<15} {'Samples/sec':<12}"
+    )
     print("-" * 75)
 
     for log in logs:

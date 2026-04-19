@@ -16,11 +16,11 @@ def example_basic_divergence_detection():
 
     # Configure divergence detector
     divergence_detector = DualTimeScaleDivergenceDetector(
-        short_alpha=0.1,         # Fast EMA (~10 step effective window)
-        long_alpha=0.01,         # Slow EMA (~100 step effective window)
-        threshold=2.0,           # Stop if short - long >= 2.0
-        action="stop",           # Stop gracefully (saves checkpoint first)
-        use_eval_loss=True,      # Monitor eval_loss (more stable than train loss)
+        short_alpha=0.1,  # Fast EMA (~10 step effective window)
+        long_alpha=0.01,  # Slow EMA (~100 step effective window)
+        threshold=2.0,  # Stop if short - long >= 2.0
+        action="stop",  # Stop gracefully (saves checkpoint first)
+        use_eval_loss=True,  # Monitor eval_loss (more stable than train loss)
     )
 
     args = TrainingArguments(
@@ -56,9 +56,9 @@ def example_quick_spike_detection():
 
     # For case where loss spikes from 2.8 to 8.0 and stays high:
     divergence_detector = DualTimeScaleDivergenceDetector(
-        short_alpha=0.2,         # Faster response (~5 steps)
-        long_alpha=0.01,         # Stable baseline (~100 steps)
-        threshold=1.5,           # More sensitive (stop if short - long >= 1.5)
+        short_alpha=0.2,  # Faster response (~5 steps)
+        long_alpha=0.01,  # Stable baseline (~100 steps)
+        threshold=1.5,  # More sensitive (stop if short - long >= 1.5)
         action="stop",
         use_eval_loss=True,
     )
@@ -66,7 +66,7 @@ def example_quick_spike_detection():
     args = TrainingArguments(
         output_dir="output_models/my_model",
         save_steps=1000,
-        eval_steps=500,          # Eval every 500 steps
+        eval_steps=500,  # Eval every 500 steps
         eval_on_save=True,
         preserve_best_model=True,
     )
@@ -81,8 +81,8 @@ def example_window_based_detection():
 
     # More intuitive than EMA - specify exact window sizes
     divergence_detector = DualWindowDivergenceDetector(
-        short_window=10,         # Recent average (last 10 observations)
-        long_window=100,         # Long-term average (last 100 observations)
+        short_window=10,  # Recent average (last 10 observations)
+        long_window=100,  # Long-term average (last 100 observations)
         threshold=2.0,
         action="stop",
         use_eval_loss=True,
@@ -106,9 +106,9 @@ def example_custom_metric_monitoring():
     divergence_detector = DualTimeScaleDivergenceDetector(
         short_alpha=0.1,
         long_alpha=0.01,
-        threshold=5.0,           # Higher threshold for grad norm
+        threshold=5.0,  # Higher threshold for grad norm
         action="stop",
-        use_eval_loss=False,     # Don't use eval_loss
+        use_eval_loss=False,  # Don't use eval_loss
         metric_key="grad_norm",  # Monitor custom metric
     )
 
@@ -125,9 +125,11 @@ def example_custom_metric_monitoring():
 
 def example_custom_stateful_callback():
     """Implement custom divergence detector with Stateful protocol."""
-    from forgather.ml.trainer.trainer_types import TrainerCallback
-    from torch.distributed.checkpoint.stateful import Stateful
     import logging
+
+    from torch.distributed.checkpoint.stateful import Stateful
+
+    from forgather.ml.trainer.trainer_types import TrainerCallback
 
     logger = logging.getLogger(__name__)
 
@@ -140,10 +142,10 @@ def example_custom_stateful_callback():
             self.loss_history = []
 
         def on_log(self, args, state, control, logs=None, **kwargs):
-            if not logs or 'eval_loss' not in logs:
+            if not logs or "eval_loss" not in logs:
                 return control
 
-            loss = logs['eval_loss']
+            loss = logs["eval_loss"]
             self.loss_history.append(loss)
 
             if len(self.loss_history) > self.lookback_steps:
@@ -155,18 +157,20 @@ def example_custom_stateful_callback():
                 recent_avg = sum(self.loss_history[-20:]) / 20
 
                 if recent_avg > early_avg * (1 + self.degradation_threshold):
-                    logger.error(f"Gradual divergence: {early_avg:.3f} → {recent_avg:.3f}")
+                    logger.error(
+                        f"Gradual divergence: {early_avg:.3f} → {recent_avg:.3f}"
+                    )
                     control.should_training_stop = True
 
             return control
 
         def state_dict(self):
             """Save callback state to checkpoint."""
-            return {'loss_history': self.loss_history}
+            return {"loss_history": self.loss_history}
 
         def load_state_dict(self, state_dict):
             """Restore callback state from checkpoint."""
-            self.loss_history = state_dict['loss_history']
+            self.loss_history = state_dict["loss_history"]
 
     # Usage
     detector = GradualDivergenceDetector(lookback_steps=100, degradation_threshold=0.1)

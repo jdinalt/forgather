@@ -236,7 +236,9 @@ class TestNormalizeRangeUnsupportedTypes(unittest.TestCase):
         """A string element inside a sequence should raise ValueError from normalize_value."""
         with self.assertRaises(ValueError) as ctx:
             normalize_range(1000, [100, "half"])
-        self.assertIn("Unsupported data-type for dataset range value", str(ctx.exception))
+        self.assertIn(
+            "Unsupported data-type for dataset range value", str(ctx.exception)
+        )
 
 
 class TestNormalizeRangeEdgeCases(unittest.TestCase):

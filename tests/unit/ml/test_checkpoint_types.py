@@ -16,22 +16,22 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 from datetime import datetime
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import torch
 import torch.nn as nn
 from torch.distributed.checkpoint.stateful import Stateful
 
 from forgather.ml.distributed import StaticDistributedEnvironment
+from forgather.ml.trainer.checkpoint_coordinator import CheckpointCoordinator
 from forgather.ml.trainer.checkpoint_types import (
+    CheckpointManifest,
+    ComponentManifest,
     SharingPattern,
     StateComponent,
-    ComponentManifest,
-    CheckpointManifest,
-    compute_state_hash,
     _state_dict_to_serializable,
+    compute_state_hash,
 )
-from forgather.ml.trainer.checkpoint_coordinator import CheckpointCoordinator
 
 
 class MockStateful(Stateful):
@@ -444,9 +444,7 @@ class TestCheckpointCoordinator(unittest.TestCase):
 
         # Verify files were created
         self.assertTrue(os.path.exists(checkpoint_path))
-        self.assertTrue(
-            os.path.exists(os.path.join(checkpoint_path, "model_state.pt"))
-        )
+        self.assertTrue(os.path.exists(os.path.join(checkpoint_path, "model_state.pt")))
         self.assertTrue(
             os.path.exists(os.path.join(checkpoint_path, "checkpoint_manifest.json"))
         )

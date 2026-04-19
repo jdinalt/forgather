@@ -25,7 +25,6 @@ def example_multiple_safeguards():
             action="stop",
             use_eval_loss=True,
         ),
-
         # Gradual degradation detection (window-based)
         DualWindowDivergenceDetector(
             short_window=10,
@@ -34,7 +33,6 @@ def example_multiple_safeguards():
             action="stop",
             use_eval_loss=True,
         ),
-
         # Progress reporting
         ProgressCallback(),
     ]
@@ -42,10 +40,10 @@ def example_multiple_safeguards():
     args = TrainingArguments(
         output_dir="output_models/my_model",
         save_steps=1000,
-        save_total_limit=5,          # Keep 5 recent checkpoints
+        save_total_limit=5,  # Keep 5 recent checkpoints
         preserve_best_model=True,
-        preserve_n_best=3,           # Plus preserve 3 best (total: up to 8)
-        eval_steps=250,              # Frequent evaluation for divergence detection
+        preserve_n_best=3,  # Plus preserve 3 best (total: up to 8)
+        eval_steps=250,  # Frequent evaluation for divergence detection
         eval_on_save=True,
     )
 
@@ -76,7 +74,6 @@ def example_production_training():
         eval_on_save=True,
         eval_steps=500,
         save_steps=1000,
-
         # Additional production settings
         logging_steps=100,
         save_safetensors=True,
@@ -95,15 +92,14 @@ def example_experimentation():
     args = TrainingArguments(
         output_dir="output_models/my_model",
         preserve_best_model=True,
-        preserve_n_best=5,      # Keep top 5 for comparison
-        save_total_limit=10,    # Recent 10 checkpoints
+        preserve_n_best=5,  # Keep top 5 for comparison
+        save_total_limit=10,  # Recent 10 checkpoints
         eval_on_save=True,
-        eval_steps=100,         # Frequent eval for quick feedback
+        eval_steps=100,  # Frequent eval for quick feedback
         save_steps=500,
-
         # Fast iteration settings
         logging_steps=50,
-        max_eval_steps=100,     # Limit eval time
+        max_eval_steps=100,  # Limit eval time
     )
 
     print("✓ Experimentation configured")
@@ -144,13 +140,11 @@ def example_different_metrics_for_checkpointing():
     # Track best by loss, but save frequently based on accuracy
     args = TrainingArguments(
         output_dir="output_models/my_model",
-
         # Best model by loss
         preserve_best_model=True,
         best_model_metric="loss",
         best_model_greater_is_better=False,
         preserve_n_best=2,
-
         # Save every 1000 steps
         save_steps=1000,
         save_total_limit=5,
@@ -189,16 +183,20 @@ def example_custom_checkpoint_preservation_logic():
                 metric_value = logs.get(self.metric)
 
                 if metric_value is not None:
-                    checkpoint_path = f"{args.output_dir}/checkpoints/checkpoint-{state.global_step}"
+                    checkpoint_path = (
+                        f"{args.output_dir}/checkpoints/checkpoint-{state.global_step}"
+                    )
                     self.checkpoints.append((metric_value, checkpoint_path))
 
                     # Sort and keep top K
                     self.checkpoints.sort(reverse=True)  # Descending
-                    self.checkpoints = self.checkpoints[:self.k]
+                    self.checkpoints = self.checkpoints[: self.k]
 
                     # Mark best checkpoints for preservation
                     # (would need to integrate with CheckpointManager)
-                    print(f"Top {self.k} checkpoints: {[cp[1] for cp in self.checkpoints]}")
+                    print(
+                        f"Top {self.k} checkpoints: {[cp[1] for cp in self.checkpoints]}"
+                    )
 
             return control
 

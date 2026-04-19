@@ -11,7 +11,6 @@ import unittest
 from typing import Any, Dict, Iterator, List, Optional
 from unittest.mock import MagicMock, patch
 
-
 # ---------------------------------------------------------------------------
 # Mock / helper dataset classes
 # ---------------------------------------------------------------------------
@@ -189,9 +188,7 @@ class TestNormalizeRange(unittest.TestCase):
 
     def test_sequence_three_elements_with_step(self):
         """Sequence of three: (start, end, step)."""
-        self.assertEqual(
-            self.normalize_range(1000, (1, 1.0, 4)), range(1, 1000, 4)
-        )
+        self.assertEqual(self.normalize_range(1000, (1, 1.0, 4)), range(1, 1000, 4))
 
     def test_sequence_negative_start_relative(self):
         """Negative int in sequence uses Python-style indexing from end."""
@@ -463,15 +460,11 @@ class TestInterleavedDataset(unittest.TestCase):
     def test_invalid_stopping_strategy_raises(self):
         ds = self._make_simple_datasets(5)
         with self.assertRaises(ValueError):
-            self.InterleavedDataset(
-                datasets=ds, stopping_strategy="invalid"
-            )
+            self.InterleavedDataset(datasets=ds, stopping_strategy="invalid")
 
     def test_probabilities_normalized(self):
         ds = self._make_simple_datasets(5, 5)
-        interleaved = self.InterleavedDataset(
-            datasets=ds, probabilities=[2.0, 8.0]
-        )
+        interleaved = self.InterleavedDataset(datasets=ds, probabilities=[2.0, 8.0])
         assert interleaved.probabilities is not None
         assert isinstance(interleaved.probabilities, list)
         self.assertAlmostEqual(interleaved.probabilities[0], 0.2)

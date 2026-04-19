@@ -12,7 +12,7 @@ import torch
 from torch import nn
 
 import forgather.ml.no_init_weights as niw
-from forgather.ml.no_init_weights import no_init_weights, TORCH_INIT_FUNCTIONS
+from forgather.ml.no_init_weights import TORCH_INIT_FUNCTIONS, no_init_weights
 
 
 class TestNoInitWeightsInitFunctions(unittest.TestCase):

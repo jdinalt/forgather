@@ -82,16 +82,24 @@ class ProfilerCallback:
             if self._rank == 0:
                 logger.info(f"ProfilerCallback: trace saved to {trace_path}")
                 print("\n" + "=" * 80)
-                print(f"CPU time summary (steps {self.start_step}-{self.end_step - 1}):")
+                print(
+                    f"CPU time summary (steps {self.start_step}-{self.end_step - 1}):"
+                )
                 print("=" * 80)
-                print(prof.key_averages().table(
-                    sort_by="cpu_time_total",
-                    row_limit=30,
-                ))
+                print(
+                    prof.key_averages().table(
+                        sort_by="cpu_time_total",
+                        row_limit=30,
+                    )
+                )
                 print("\n" + "=" * 80)
-                print(f"CUDA time summary (steps {self.start_step}-{self.end_step - 1}):")
+                print(
+                    f"CUDA time summary (steps {self.start_step}-{self.end_step - 1}):"
+                )
                 print("=" * 80)
-                print(prof.key_averages().table(
-                    sort_by="cuda_time_total",
-                    row_limit=30,
-                ))
+                print(
+                    prof.key_averages().table(
+                        sort_by="cuda_time_total",
+                        row_limit=30,
+                    )
+                )

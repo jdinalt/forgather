@@ -231,7 +231,9 @@ def get_global_process_group() -> ProcessGroup | None:
     logger.debug(
         f"[Rank {get_rank()}] get_global_process_group: creating new gloo group"
     )
-    _global_process_group = cast(ProcessGroup, dist.new_group(backend="gloo", group_desc="global-gloo"))
+    _global_process_group = cast(
+        ProcessGroup, dist.new_group(backend="gloo", group_desc="global-gloo")
+    )
     logger.debug(
         f"[Rank {get_rank()}] get_global_process_group: group created successfully"
     )
@@ -632,7 +634,9 @@ class DistributedEnvironment(DistributedEnvInterface):
             else:
                 accelerator.set_device_index(self.local_rank)
             acc = accelerator.current_accelerator()
-            assert acc is not None, "accelerator.current_accelerator() returned None despite is_available() being True"
+            assert (
+                acc is not None
+            ), "accelerator.current_accelerator() returned None despite is_available() being True"
             if self.backend is None:
                 self.backend = dist.get_default_backend_for_device(acc)
             idx = accelerator.current_device_index()

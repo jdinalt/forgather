@@ -34,7 +34,11 @@ if _HAS_TRITON:
 
     @triton.jit
     def _silu_mul_fwd_kernel(
-        gate_ptr, up_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr,
+        gate_ptr,
+        up_ptr,
+        out_ptr,
+        n_elements,
+        BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(0)
         offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -47,8 +51,13 @@ if _HAS_TRITON:
 
     @triton.jit
     def _silu_mul_bwd_kernel(
-        gate_ptr, up_ptr, grad_out_ptr, grad_gate_ptr, grad_up_ptr,
-        n_elements, BLOCK_SIZE: tl.constexpr,
+        gate_ptr,
+        up_ptr,
+        grad_out_ptr,
+        grad_gate_ptr,
+        grad_up_ptr,
+        n_elements,
+        BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(0)
         offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)

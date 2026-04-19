@@ -16,7 +16,6 @@ from .interleaved import (
     balance_remaining_examples,
     interleave_datasets,
 )
-from .soft_sequential import soft_sequential
 from .iterable_with_length import (
     IterableDatasetWithLength,
     to_iterable_dataset_with_length,
@@ -25,6 +24,7 @@ from .preprocess import (
     default_tokenize_map_fn,
     preprocess_dataset,
 )
+from .soft_sequential import soft_sequential
 
 __all__ = [
     "IterableDatasetWithLength",

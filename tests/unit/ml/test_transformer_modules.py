@@ -719,16 +719,31 @@ class TestAlibiAttentionInterface(unittest.TestCase):
 
     def _make_qkv(self, dtype=torch.float32, device="cpu", requires_grad=False):
         q = torch.randn(
-            self.batch, self.num_heads, self.seq_len, self.head_dim,
-            dtype=dtype, device=device, requires_grad=requires_grad,
+            self.batch,
+            self.num_heads,
+            self.seq_len,
+            self.head_dim,
+            dtype=dtype,
+            device=device,
+            requires_grad=requires_grad,
         )
         k = torch.randn(
-            self.batch, self.num_heads, self.seq_len, self.head_dim,
-            dtype=dtype, device=device, requires_grad=requires_grad,
+            self.batch,
+            self.num_heads,
+            self.seq_len,
+            self.head_dim,
+            dtype=dtype,
+            device=device,
+            requires_grad=requires_grad,
         )
         v = torch.randn(
-            self.batch, self.num_heads, self.seq_len, self.head_dim,
-            dtype=dtype, device=device, requires_grad=requires_grad,
+            self.batch,
+            self.num_heads,
+            self.seq_len,
+            self.head_dim,
+            dtype=dtype,
+            device=device,
+            requires_grad=requires_grad,
         )
         return q, k, v
 
@@ -757,14 +772,18 @@ class TestAlibiAttentionInterface(unittest.TestCase):
 
         out_eager, _ = eager_attention_forward(
             module=nn.Module(),
-            query=q, key=k, value=v,
+            query=q,
+            key=k,
+            value=v,
             attention_mask=mask_4d,
             scaling=scaling,
             alibi_slopes=slopes,
         )
         out_sdpa, _ = sdpa_attention_forward(
             module=nn.Module(),
-            query=q, key=k, value=v,
+            query=q,
+            key=k,
+            value=v,
             attention_mask=mask_4d,
             scaling=scaling,
             alibi_slopes=slopes,
@@ -793,7 +812,9 @@ class TestAlibiAttentionInterface(unittest.TestCase):
 
         out, _ = eager_attention_forward(
             module=nn.Module(),
-            query=q, key=k, value=v,
+            query=q,
+            key=k,
+            value=v,
             attention_mask=mask_4d,
             scaling=1.0 / math.sqrt(self.head_dim),
             alibi_slopes=slopes,
@@ -832,14 +853,22 @@ class TestAlibiAttentionInterface(unittest.TestCase):
             return q >= kv
 
         block_mask = create_block_mask(
-            causal, B=None, H=None,
-            Q_LEN=self.seq_len, KV_LEN=self.seq_len, device=device,
+            causal,
+            B=None,
+            H=None,
+            Q_LEN=self.seq_len,
+            KV_LEN=self.seq_len,
+            device=device,
         )
 
         slopes_init = self._default_slopes(device=device, dtype=torch.float32)
         q = torch.randn(
-            self.batch, self.num_heads, self.seq_len, self.head_dim,
-            device=device, dtype=dtype,
+            self.batch,
+            self.num_heads,
+            self.seq_len,
+            self.head_dim,
+            device=device,
+            dtype=dtype,
         )
         k = torch.randn_like(q)
         v = torch.randn_like(q)
@@ -854,7 +883,11 @@ class TestAlibiAttentionInterface(unittest.TestCase):
             return score + slopes_a[h] * (kv_idx - q_idx)
 
         out_closure = flex_attention(
-            q1, k1, v1, score_mod=sm_closure, block_mask=block_mask,
+            q1,
+            k1,
+            v1,
+            score_mod=sm_closure,
+            block_mask=block_mask,
             scale=1.0 / math.sqrt(self.head_dim),
         )
         out_closure.pow(2).mean().backward()
@@ -872,7 +905,11 @@ class TestAlibiAttentionInterface(unittest.TestCase):
             return score + bias_kv[h, kv_idx] - bias_q[h, q_idx]
 
         out_split = flex_attention(
-            q2, k2, v2, score_mod=sm_split, block_mask=block_mask,
+            q2,
+            k2,
+            v2,
+            score_mod=sm_split,
+            block_mask=block_mask,
             scale=1.0 / math.sqrt(self.head_dim),
         )
         out_split.pow(2).mean().backward()
@@ -880,7 +917,8 @@ class TestAlibiAttentionInterface(unittest.TestCase):
         # Forward outputs should match to bf16 precision.
         diff_out = (out_closure.float() - out_split.float()).abs().max().item()
         self.assertLess(
-            diff_out, 1e-2,
+            diff_out,
+            1e-2,
             f"closure and split-bias ALiBi forward diverge: max diff {diff_out:.3e}",
         )
 
@@ -889,7 +927,8 @@ class TestAlibiAttentionInterface(unittest.TestCase):
         diff_sl = (slopes_a.grad - slopes_b.grad).abs().max().item()
         mag_sl = slopes_a.grad.abs().mean().item()
         self.assertLess(
-            diff_sl, 1e-3,
+            diff_sl,
+            1e-3,
             f"closure and split-bias slope gradients diverge: "
             f"max diff {diff_sl:.3e} (grad mag ~{mag_sl:.3e})",
         )
@@ -913,13 +952,22 @@ class TestAlibiAttentionInterface(unittest.TestCase):
             return q >= kv
 
         block_mask = create_block_mask(
-            causal, B=None, H=None,
-            Q_LEN=self.seq_len, KV_LEN=self.seq_len, device=device,
+            causal,
+            B=None,
+            H=None,
+            Q_LEN=self.seq_len,
+            KV_LEN=self.seq_len,
+            device=device,
         )
 
         q = torch.randn(
-            self.batch, self.num_heads, self.seq_len, self.head_dim,
-            device=device, dtype=dtype, requires_grad=True,
+            self.batch,
+            self.num_heads,
+            self.seq_len,
+            self.head_dim,
+            device=device,
+            dtype=dtype,
+            requires_grad=True,
         )
         k = torch.randn_like(q, requires_grad=True)
         v = torch.randn_like(q, requires_grad=True)
@@ -929,7 +977,9 @@ class TestAlibiAttentionInterface(unittest.TestCase):
         # (steady-state perf is verified by the benchmark, not this test).
         out, _ = flex_attention_forward(
             module=nn.Module(),
-            query=q, key=k, value=v,
+            query=q,
+            key=k,
+            value=v,
             attention_mask=block_mask,
             scaling=1.0 / math.sqrt(self.head_dim),
             alibi_slopes=slopes,

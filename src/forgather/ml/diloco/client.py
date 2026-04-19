@@ -106,7 +106,9 @@ class DiLoCoClient:
                     time.sleep(delay)
                     delay *= 2
                 else:
-                    raise ConnectionError(f"Failed to connect to DiLoCo server at {url}: {e}") from e
+                    raise ConnectionError(
+                        f"Failed to connect to DiLoCo server at {url}: {e}"
+                    ) from e
 
     def _request_tensor(
         self,
@@ -162,7 +164,9 @@ class DiLoCoClient:
                         f"Failed to connect to DiLoCo server at {url}: {e}"
                     ) from e
 
-    def register(self, worker_id: str, worker_info: Optional[dict] = None) -> Dict[str, torch.Tensor]:
+    def register(
+        self, worker_id: str, worker_info: Optional[dict] = None
+    ) -> Dict[str, torch.Tensor]:
         """
         Register with the server and receive global parameters.
 
@@ -197,7 +201,9 @@ class DiLoCoClient:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     data = resp.read()
                     params = self._deserialize_state_dict(data)
-                    logger.info(f"Registered with server as {worker_id}, received global params")
+                    logger.info(
+                        f"Registered with server as {worker_id}, received global params"
+                    )
                     return params
             except urllib.error.URLError as e:
                 if attempt < self.max_retries:
@@ -258,18 +264,18 @@ class DiLoCoClient:
         Returns:
             Updated global parameters for the fragment.
         """
-        header = json.dumps({
-            "worker_id": worker_id,
-            "fragment_id": fragment_id,
-        }).encode("utf-8")
+        header = json.dumps(
+            {
+                "worker_id": worker_id,
+                "fragment_id": fragment_id,
+            }
+        ).encode("utf-8")
         tensor_data = self._serialize_state_dict(pseudograds)
 
         body = struct.pack("!I", len(header)) + header + tensor_data
 
         t0 = time.time()
-        params = self._request_tensor(
-            "POST", "/submit_fragment_pseudograd", body=body
-        )
+        params = self._request_tensor("POST", "/submit_fragment_pseudograd", body=body)
         elapsed = time.time() - t0
 
         logger.debug(
@@ -295,15 +301,21 @@ class DiLoCoClient:
         Returns:
             Server status dict with sync_round, num_workers, etc.
         """
-        return self._request_json("POST", "/heartbeat", {
-            "worker_id": worker_id,
-            "steps_per_second": steps_per_second,
-        })
+        return self._request_json(
+            "POST",
+            "/heartbeat",
+            {
+                "worker_id": worker_id,
+                "steps_per_second": steps_per_second,
+            },
+        )
 
     def deregister(self, worker_id: str):
         """Deregister from the server."""
         try:
-            self._request_json("POST", "/deregister", {"worker_id": worker_id}, retries=1)
+            self._request_json(
+                "POST", "/deregister", {"worker_id": worker_id}, retries=1
+            )
             logger.info(f"Deregistered {worker_id} from server")
         except Exception as e:
             logger.warning(f"Failed to deregister {worker_id}: {e}")

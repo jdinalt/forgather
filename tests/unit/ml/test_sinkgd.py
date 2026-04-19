@@ -18,7 +18,6 @@ import torch.nn.functional as F
 
 from forgather.ml.optim.sinkgd import SinkGD, sr_sinkhorn
 
-
 # ===========================================================================
 # Tests for sr_sinkhorn
 # ===========================================================================
@@ -40,9 +39,9 @@ class TestSrSinkhorn:
         Y = sr_sinkhorn(X, num_iters=10)
         row_norms = Y.norm(dim=1)
         expected = math.sqrt(n)
-        assert torch.allclose(row_norms, torch.full_like(row_norms, expected), atol=1e-4), (
-            f"Row norms should converge to √n={expected:.4f}, got {row_norms}"
-        )
+        assert torch.allclose(
+            row_norms, torch.full_like(row_norms, expected), atol=1e-4
+        ), f"Row norms should converge to √n={expected:.4f}, got {row_norms}"
 
     def test_col_norms_converge_to_sqrt_m(self):
         """After enough iterations, each column l2-norm should equal √m."""
@@ -51,9 +50,9 @@ class TestSrSinkhorn:
         Y = sr_sinkhorn(X, num_iters=10)
         col_norms = Y.norm(dim=0)
         expected = math.sqrt(m)
-        assert torch.allclose(col_norms, torch.full_like(col_norms, expected), atol=1e-4), (
-            f"Col norms should converge to √m={expected:.4f}, got {col_norms}"
-        )
+        assert torch.allclose(
+            col_norms, torch.full_like(col_norms, expected), atol=1e-4
+        ), f"Col norms should converge to √m={expected:.4f}, got {col_norms}"
 
     def test_frobenius_norm_equals_sqrt_mn(self):
         """Frobenius norm should equal √(mn) after convergence."""
@@ -61,9 +60,9 @@ class TestSrSinkhorn:
         X = self._make_matrix(m, n)
         Y = sr_sinkhorn(X, num_iters=10)
         expected = math.sqrt(m * n)
-        assert abs(Y.norm().item() - expected) < 1e-3, (
-            f"Frobenius norm should be √(mn)={expected:.4f}, got {Y.norm().item():.4f}"
-        )
+        assert (
+            abs(Y.norm().item() - expected) < 1e-3
+        ), f"Frobenius norm should be √(mn)={expected:.4f}, got {Y.norm().item():.4f}"
 
     def test_square_matrix(self):
         """Square matrices should also converge to √n row/col norms."""
@@ -73,8 +72,12 @@ class TestSrSinkhorn:
         row_norms = Y.norm(dim=1)
         col_norms = Y.norm(dim=0)
         expected = math.sqrt(n)
-        assert torch.allclose(row_norms, torch.full_like(row_norms, expected), atol=1e-4)
-        assert torch.allclose(col_norms, torch.full_like(col_norms, expected), atol=1e-4)
+        assert torch.allclose(
+            row_norms, torch.full_like(row_norms, expected), atol=1e-4
+        )
+        assert torch.allclose(
+            col_norms, torch.full_like(col_norms, expected), atol=1e-4
+        )
 
     def test_tall_matrix(self):
         """m > n (tall matrix) should also converge."""
@@ -83,8 +86,12 @@ class TestSrSinkhorn:
         Y = sr_sinkhorn(X, num_iters=10)
         row_norms = Y.norm(dim=1)
         col_norms = Y.norm(dim=0)
-        assert torch.allclose(row_norms, torch.full_like(row_norms, math.sqrt(n)), atol=1e-4)
-        assert torch.allclose(col_norms, torch.full_like(col_norms, math.sqrt(m)), atol=1e-4)
+        assert torch.allclose(
+            row_norms, torch.full_like(row_norms, math.sqrt(n)), atol=1e-4
+        )
+        assert torch.allclose(
+            col_norms, torch.full_like(col_norms, math.sqrt(m)), atol=1e-4
+        )
 
     def test_single_row_matrix(self):
         """A 1×n matrix: row norm should equal √n, col norms should equal √1=1."""
@@ -116,9 +123,9 @@ class TestSrSinkhorn:
 
         dev1 = row_norm_deviation(1)
         dev5 = row_norm_deviation(5)
-        assert dev5 < dev1, (
-            f"More iterations should converge: dev1={dev1:.6f}, dev5={dev5:.6f}"
-        )
+        assert (
+            dev5 < dev1
+        ), f"More iterations should converge: dev1={dev1:.6f}, dev5={dev5:.6f}"
 
     # --- numerical stability ---
 
@@ -142,7 +149,10 @@ class TestSrSinkhorn:
         for m, n in [(4, 8), (16, 4), (10, 10)]:
             X = torch.randn(m, n)
             Y = sr_sinkhorn(X, num_iters=3)
-            assert Y.shape == (m, n), f"Shape mismatch: expected ({m},{n}), got {Y.shape}"
+            assert Y.shape == (
+                m,
+                n,
+            ), f"Shape mismatch: expected ({m},{n}), got {Y.shape}"
 
     def test_single_iteration_partial_convergence(self):
         """After 1 iteration the last operation is a column normalization,
@@ -152,9 +162,9 @@ class TestSrSinkhorn:
         Y = sr_sinkhorn(X, num_iters=1)
         col_norms = Y.norm(dim=0)
         expected = math.sqrt(m)
-        assert torch.allclose(col_norms, torch.full_like(col_norms, expected), atol=1e-5), (
-            f"After 1 iteration, column norms should be √m={expected:.4f}"
-        )
+        assert torch.allclose(
+            col_norms, torch.full_like(col_norms, expected), atol=1e-5
+        ), f"After 1 iteration, column norms should be √m={expected:.4f}"
 
 
 # ===========================================================================
@@ -187,9 +197,9 @@ class TestSinkGDBasic:
             optimizer.step()
 
         final_loss = F.mse_loss(model(x), y).item()
-        assert final_loss < initial_loss, (
-            f"Loss should decrease: initial={initial_loss:.4f}, final={final_loss:.4f}"
-        )
+        assert (
+            final_loss < initial_loss
+        ), f"Loss should decrease: initial={initial_loss:.4f}, final={final_loss:.4f}"
 
     def test_parameters_change_after_step(self):
         """A SinkGD step should modify the parameters."""
@@ -201,9 +211,9 @@ class TestSinkGDBasic:
         F.mse_loss(model(x), y).backward()
         optimizer.step()
 
-        assert not torch.equal(model.weight.data, w_before), (
-            "Weights should change after a SinkGD step"
-        )
+        assert not torch.equal(
+            model.weight.data, w_before
+        ), "Weights should change after a SinkGD step"
 
     def test_update_direction_opposes_gradient(self):
         """The parameter update should be in the direction of the negative processed gradient."""
@@ -225,9 +235,9 @@ class TestSinkGDBasic:
 
         # The dot product of update and grad should be negative (opposing gradient)
         dot = (update * grad).sum().item()
-        assert dot < 0, (
-            f"Update should oppose the gradient direction, but dot product = {dot:.6f}"
-        )
+        assert (
+            dot < 0
+        ), f"Update should oppose the gradient direction, but dot product = {dot:.6f}"
 
     def test_no_grad_parameters_skipped(self):
         """Parameters whose .grad is None should not be modified."""
@@ -245,9 +255,9 @@ class TestSinkGDBasic:
 
         optimizer.step()
 
-        assert torch.equal(layer0.weight.data, w0_before), (
-            "Parameter without gradient should not be modified"
-        )
+        assert torch.equal(
+            layer0.weight.data, w0_before
+        ), "Parameter without gradient should not be modified"
 
     def test_closure_returns_loss(self):
         """step() should call the closure and return its value."""
@@ -344,9 +354,9 @@ class TestSinkGDWeightDecay:
         w_before = model.weight.data.clone()
         optimizer.step()
 
-        assert torch.equal(model.weight.data, w_before), (
-            "With lr=0 and weight_decay=0, weights should be unchanged"
-        )
+        assert torch.equal(
+            model.weight.data, w_before
+        ), "With lr=0 and weight_decay=0, weights should be unchanged"
 
 
 # ===========================================================================
@@ -368,8 +378,12 @@ class TestSinkGDNormalizeOutput:
         x = torch.randn(4, n)
         y = torch.randn(4, m)
 
-        opt_norm = SinkGD(model_norm.parameters(), lr=1.0, num_iters=10, normalize_output=True)
-        opt_raw = SinkGD(model_raw.parameters(), lr=1.0, num_iters=10, normalize_output=False)
+        opt_norm = SinkGD(
+            model_norm.parameters(), lr=1.0, num_iters=10, normalize_output=True
+        )
+        opt_raw = SinkGD(
+            model_raw.parameters(), lr=1.0, num_iters=10, normalize_output=False
+        )
 
         # Force identical gradients
         loss_norm = F.mse_loss(model_norm(x), y)
@@ -392,9 +406,9 @@ class TestSinkGDNormalizeOutput:
         # normalize_output=False update should be ~√(mn) times larger
         ratio = update_raw / (update_norm + 1e-12)
         expected_ratio = math.sqrt(m * n)
-        assert abs(ratio - expected_ratio) / expected_ratio < 0.01, (
-            f"Update ratio should be √(mn)={expected_ratio:.2f}, got {ratio:.2f}"
-        )
+        assert (
+            abs(ratio - expected_ratio) / expected_ratio < 0.01
+        ), f"Update ratio should be √(mn)={expected_ratio:.2f}, got {ratio:.2f}"
 
     def test_normalize_output_false_larger_steps(self):
         """normalize_output=False should produce larger parameter steps than True."""
@@ -424,9 +438,9 @@ class TestSinkGDNormalizeOutput:
         update_on = (model_on.weight.data - w_on_before).norm().item()
         update_off = (model_off.weight.data - w_off_before).norm().item()
 
-        assert update_off > update_on, (
-            f"normalize_output=False should give larger steps: on={update_on}, off={update_off}"
-        )
+        assert (
+            update_off > update_on
+        ), f"normalize_output=False should give larger steps: on={update_on}, off={update_off}"
 
 
 # ===========================================================================
@@ -490,7 +504,7 @@ class TestSinkGDParameterShapes:
         """A model with 2D weights and 1D biases should update all parameters."""
         torch.manual_seed(0)
         model = nn.Sequential(
-            nn.Linear(8, 8),   # weight 2D, bias 1D
+            nn.Linear(8, 8),  # weight 2D, bias 1D
             nn.Linear(8, 4),
         )
         optimizer = SinkGD(model.parameters(), lr=1e-2)
@@ -575,10 +589,12 @@ class TestSinkGDBf16:
         w_before = model.weight.data.clone()
         optimizer.step()
 
-        assert model.weight.dtype == torch.bfloat16, "Parameter dtype should remain bfloat16"
-        assert not torch.equal(model.weight.data, w_before), (
-            "bf16 parameters should be updated"
-        )
+        assert (
+            model.weight.dtype == torch.bfloat16
+        ), "Parameter dtype should remain bfloat16"
+        assert not torch.equal(
+            model.weight.data, w_before
+        ), "bf16 parameters should be updated"
 
 
 # ===========================================================================
@@ -684,8 +700,12 @@ class TestSinkGDCUDA:
         # use atol=1e-2 here -- tight convergence is already verified in CPU tests.
         row_norms = Y.norm(dim=1)
         col_norms = Y.norm(dim=0)
-        assert torch.allclose(row_norms, torch.full_like(row_norms, math.sqrt(n)), atol=1e-2)
-        assert torch.allclose(col_norms, torch.full_like(col_norms, math.sqrt(m)), atol=1e-2)
+        assert torch.allclose(
+            row_norms, torch.full_like(row_norms, math.sqrt(n)), atol=1e-2
+        )
+        assert torch.allclose(
+            col_norms, torch.full_like(col_norms, math.sqrt(m)), atol=1e-2
+        )
 
 
 if __name__ == "__main__":

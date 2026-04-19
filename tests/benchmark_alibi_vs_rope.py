@@ -184,8 +184,10 @@ def bench_step(mod, hidden, mask, extra_kwargs, warmup=3, iters=10):
 
 
 def run_suite(seq, kernel_options, warmup, iters):
-    print(f"\n=== seq={seq} batch={BATCH} hidden={HIDDEN} heads={HEADS} "
-          f"dtype={DTYPE} kernel_options={'deepone' if kernel_options else 'default'} ===")
+    print(
+        f"\n=== seq={seq} batch={BATCH} hidden={HIDDEN} heads={HEADS} "
+        f"dtype={DTYPE} kernel_options={'deepone' if kernel_options else 'default'} ==="
+    )
 
     d_head = HIDDEN // HEADS
     hidden = make_inputs(seq)
@@ -195,11 +197,11 @@ def run_suite(seq, kernel_options, warmup, iters):
     rows = []
 
     for label, is_alibi, impl in [
-        ("ALiBi eager",          True,  "eager"),
-        ("ALiBi sdpa",           True,  "sdpa"),
-        ("ALiBi flex_attention", True,  "flex_attention"),
-        ("RoPE  eager",          False, "eager"),
-        ("RoPE  sdpa",           False, "sdpa"),
+        ("ALiBi eager", True, "eager"),
+        ("ALiBi sdpa", True, "sdpa"),
+        ("ALiBi flex_attention", True, "flex_attention"),
+        ("RoPE  eager", False, "eager"),
+        ("RoPE  sdpa", False, "sdpa"),
         ("RoPE  flex_attention", False, "flex_attention"),
     ]:
         dynamo.reset()
@@ -228,7 +230,9 @@ def run_suite(seq, kernel_options, warmup, iters):
         torch.cuda.empty_cache()
 
     # Print summary table
-    print(f"{'backend':<22}  {'first (ms)':>10}  {'steady (ms)':>12}  {'peak (MiB)':>10}")
+    print(
+        f"{'backend':<22}  {'first (ms)':>10}  {'steady (ms)':>12}  {'peak (MiB)':>10}"
+    )
     for label, first, steady, peak in rows:
         if math.isnan(steady):
             continue

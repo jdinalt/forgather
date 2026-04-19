@@ -50,12 +50,8 @@ class GemmaDualRotaryEmbedding(nn.Module):
         )
 
         rope_parameters = rope_parameters or {}
-        global_params = rope_parameters.get(
-            "full_attention", {"rope_theta": 1000000.0}
-        )
-        local_params = rope_parameters.get(
-            "sliding_attention", {"rope_theta": 10000.0}
-        )
+        global_params = rope_parameters.get("full_attention", {"rope_theta": 1000000.0})
+        local_params = rope_parameters.get("sliding_attention", {"rope_theta": 10000.0})
 
         self.rotary_full = RotaryEmbedding(
             hidden_size=effective_hidden,

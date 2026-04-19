@@ -11,21 +11,18 @@ def example_basic_preservation():
     """Basic checkpoint preservation - keep best checkpoint safe."""
     args = TrainingArguments(
         output_dir="output_models/my_model",
-
         # Checkpoint management
         save_strategy="steps",
         save_steps=1000,
-        save_total_limit=3,           # Keep only 3 recent checkpoints
-
+        save_total_limit=3,  # Keep only 3 recent checkpoints
         # Preserve best model (new!)
-        preserve_best_model=True,     # Don't delete best checkpoint
+        preserve_best_model=True,  # Don't delete best checkpoint
         best_model_metric="loss",
-        preserve_n_best=1,            # Keep top 1 checkpoint
-
+        preserve_n_best=1,  # Keep top 1 checkpoint
         # Evaluation
         eval_strategy="steps",
         eval_steps=500,
-        eval_on_save=True,            # Force eval at save steps (new!)
+        eval_on_save=True,  # Force eval at save steps (new!)
     )
 
     # trainer = Trainer(model=model, args=args, train_dataset=train_ds, eval_dataset=eval_ds)
@@ -43,15 +40,13 @@ def example_n_best_checkpoints():
         output_dir="output_models/my_model",
         save_strategy="steps",
         save_steps=1000,
-        save_total_limit=5,          # Keep 5 recent checkpoints
-
+        save_total_limit=5,  # Keep 5 recent checkpoints
         preserve_best_model=True,
-        preserve_n_best=3,           # Plus preserve 3 best (total: up to 8)
+        preserve_n_best=3,  # Plus preserve 3 best (total: up to 8)
         best_model_metric="eval_accuracy",
         best_model_greater_is_better=True,  # Higher accuracy is better
-
         eval_strategy="steps",
-        eval_steps=250,              # Frequent evaluation
+        eval_steps=250,  # Frequent evaluation
         eval_on_save=True,
     )
 
@@ -66,12 +61,10 @@ def example_decoupled_eval_save():
     """Different eval and save frequencies without alignment requirement."""
     args = TrainingArguments(
         output_dir="output_models/my_model",
-
         # Different frequencies (no longer requires save_steps % eval_steps == 0)
-        save_steps=1000,             # Save every 1000 steps
-        eval_steps=250,              # Eval every 250 steps
-        eval_on_save=True,           # Force eval when saving (new!)
-
+        save_steps=1000,  # Save every 1000 steps
+        eval_steps=250,  # Eval every 250 steps
+        eval_on_save=True,  # Force eval when saving (new!)
         preserve_best_model=True,
         best_model_metric="loss",
     )
@@ -86,11 +79,9 @@ def example_backward_compatibility():
     """Old load_best_model_at_end still works with deprecation warning."""
     args = TrainingArguments(
         output_dir="output_models/my_model",
-
         # Old API (deprecated but still works)
         load_best_model_at_end=True,
         metric_for_best_model="loss",
-
         save_steps=1000,
         eval_steps=1000,  # No longer requires strict alignment with eval_on_save
     )
