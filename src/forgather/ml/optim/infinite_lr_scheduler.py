@@ -36,7 +36,6 @@ class InfiniteLRScheduler(LRScheduler):
             "annealing_type",
             "annealing_steps",
             "min_lr",
-            "checkpoint_step",
         )
     )
 
@@ -234,11 +233,16 @@ class InfiniteLRScheduler(LRScheduler):
 
         super().load_state_dict(state_dict)
 
+        # Restore config-only keys
         for key, value in saved_config.items():
             setattr(self, key, value)
 
+        # Handle checkpoint_step based on start_annealing flag
         if self.start_annealing:
+            # If loaded checkpoint_step is negative, start annealing now
             if self.checkpoint_step < 0:
                 self.checkpoint_step = self.last_epoch
+            # else: keep the loaded checkpoint_step (resume existing annealing)
         else:
+            # Restore constructor's checkpoint_step value
             self.checkpoint_step = saved_checkpoint_step
