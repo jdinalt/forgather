@@ -69,9 +69,9 @@ class DefaultMetrics(TrainerCallback):
 
         # Wall-clock time at each log step, for tok/s end-to-end throughput.
         self._last_log_time: Optional[float] = None
-        # Forward+backward timing (on_forward_backward_begin/end), for FLOPs/MFU.
-        # Accumulated across gradient-accumulation micro-steps.
-        self._fb_start_time: Optional[float] = None
+        # Training step timing (on_step_begin/end), for FLOPs/MFU.
+        # Records the start time of each training step.
+        self._step_start_time: Optional[float] = None
         self._accumulated_train_time: float = 0.0
         self._last_total_flos: float = 0.0
 
@@ -81,19 +81,19 @@ class DefaultMetrics(TrainerCallback):
         self._last_log_time = None
         self._last_total_flos = state.total_flos
         self._accumulated_train_time = 0.0
-        self._fb_start_time = None
+        self._step_start_time = None
 
-    def on_forward_backward_begin(self, args, state, control, **kwargs):
+    def on_step_begin(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
             return
-        self._fb_start_time = time.monotonic()
+        self._step_start_time = time.monotonic()
 
-    def on_forward_backward_end(self, args, state, control, **kwargs):
+    def on_step_end(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
             return
-        if self._fb_start_time is not None:
-            self._accumulated_train_time += time.monotonic() - self._fb_start_time
-            self._fb_start_time = None
+        if self._step_start_time is not None:
+            self._accumulated_train_time += time.monotonic() - self._step_start_time
+            self._step_start_time = None
 
     def on_log_step(self, state, logs, **kwargs):
         if not state.is_world_process_zero:
