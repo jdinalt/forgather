@@ -47,19 +47,19 @@ Forgather is a configuration-driven ML framework built on template inheritance a
 - **[Log Analysis](guides/logs-analysis.md)** - Training log summaries, plots, and heatmaps
 
 ## Tutorials
-- **[Tiny Llama](../examples/tutorials/tiny_llama/README.md)** - Demonstration of basic usage
-- **[Projects Overview](../examples/tutorials/projects_overview/project_index.ipynb)** - Learn about the Forgather Project abstraction
-- **[Project Composition](../examples/tutorials/project_composition/project_index.ipynb)** - How the template system works
-- **[Dynamic LM](../examples/tutorials/dynamic_lm/dynamic_lm.ipynb)** - Demonstrates how models are dynamically composed
-- **[Samantha](../examples/finetune/samantha/README.md)** - Demonstrates how to use Forgather to finetune a 7B parameter model on the Samantha dataset
-- **[H.P. Lovecraft Project](../examples/tutorials/hp_lovecraft_project/README.md)** - Learn how to create workspaces and projects, while training a model to summon the Elder Gods
+- **[Tiny Llama](tutorials/tiny_llama/README.md)** - Demonstration of basic usage
+- **[Projects Overview](tutorials/projects_overview/project_index.ipynb)** - Learn about the Forgather Project abstraction
+- **[Project Composition](tutorials/project_composition/project_index.ipynb)** - How the template system works
+- **[Dynamic LM](tutorials/dynamic_lm/dynamic_lm.ipynb)** - Demonstrates how models are dynamically composed
+- **[Samantha](tutorials/samantha/README.md)** - Demonstrates how to use Forgather to finetune a 7B parameter model on the Samantha dataset
+- **[H.P. Lovecraft Project](tutorials/hp_lovecraft_project/README.md)** - Learn how to create workspaces and projects, while training a model to summon the Elder Gods
 
 ## Example Project Collections
-- **[Tiny Experiments](../examples/tiny_experiments/README.md)** - A collection of experiments and integration tests using (mostly) small models
-- **[Dataset Projects](../examples/datasets/README.md)** - A collection of demostration dataset configurations
-- **[Finetune](../examples/finetune/README.md)** - A collection of finetuning examples
-- **[Tokenizers](../examples/tokenizers/README.md)** - Tokenizer definition examples
-- **[Models](../examples/models/README.md)** - Example model definitions
+- **[Tiny Experiments](https://github.com/jdinalt/forgather/tree/main/examples/tiny_experiments)** - A collection of experiments and integration tests using (mostly) small models
+- **[Dataset Projects](https://github.com/jdinalt/forgather/tree/main/examples/datasets)** - A collection of demonstration dataset configurations
+- **[Finetune](https://github.com/jdinalt/forgather/tree/main/examples/finetune)** - A collection of finetuning examples
+- **[Tokenizers](https://github.com/jdinalt/forgather/tree/main/examples/tokenizers)** - Tokenizer definition examples
+- **[Models](https://github.com/jdinalt/forgather/tree/main/examples/models)** - Example model definitions
 
 ## Development
 

@@ -4,7 +4,7 @@ This guide walks you through installing Forgather and training your first model.
 
 ## Prerequisites
 
-- A Linux system (tested on Ubuntu)
+- A Linux system (tested on Ubuntu 24.04)
 - **Python 3.12 or newer.** Forgather uses Python 3.12 language features. Newer
   versions will likely work but are untested; older versions will not.
   Python 3.12 is the default on Ubuntu 24.04. On older Debian-based distributions

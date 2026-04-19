@@ -1,0 +1,131 @@
+site_name: Forgather
+site_description: Configuration-driven ML framework built on template inheritance and code generation.
+site_author: Jason dinAlt
+repo_url: https://github.com/jdinalt/forgather
+repo_name: jdinalt/forgather
+
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocs-jupyter:
+      execute: false
+      include: ["*.ipynb"]
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: numpy
+            show_source: true
+            show_root_heading: true
+            members_order: source
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - toc:
+      permalink: true
+
+nav:
+  - Home: README.md
+  - Getting Started: getting-started/README.md
+  - Core Concepts: core-concepts/README.md
+  - Configuration:
+    - Overview: configuration/README.md
+    - Syntax Reference: configuration/syntax-reference.md
+    - Model Initialization: configuration/model-initialization.md
+    - Debugging: configuration/debugging.md
+    - Low-level API: configuration/low-level-api.md
+    - Project Templates: project-templates/lm-training-projects.md
+  - Training:
+    - Trainer Options: trainers/trainer_options.md
+    - Pipeline Parallel: trainers/pipeline-parallel.md
+    - Trainer Control: trainers/trainer-control.md
+    - Performance Metrics: trainers/training-performance-metrics.md
+    - DiLoCo: trainers/diloco.md
+    - FP8 Training: trainers/fp8-training.md
+    - TorchTitan: trainers/torchtitan.md
+    - Adafactor Triton: trainers/adafactor-triton-performance.md
+  - Checkpointing:
+    - Overview: checkpointing/README.md
+    - User Guide: checkpointing/user_guide.md
+    - Distributed Abstraction: checkpointing/distributed_checkpoint_abstraction.md
+    - Migration Guide: checkpointing/migration_guide.md
+    - Sharded Checkpoint API: checkpointing/sharded_checkpoint_api.md
+    - Divergence Detection: checkpointing/divergence_detection.md
+  - Models & Inference:
+    - Model Architecture: guides/model-architecture.md
+    - Model Conversion: guides/model-conversion.md
+    - Vocabulary & Chat Template: guides/update-vocab.md
+    - Fixing EOS Token Issues: guides/fixing-eos-token-issues.md
+    - vLLM Integration: inference/vllm_integration.md
+  - Datasets:
+    - Sequence Packing: datasets/sequence-packing.md
+    - Quick Reference: datasets/sequence-packing-quick-reference.md
+    - Document Boundaries: datasets/document-boundaries.md
+    - Fast HF Loader: datasets/fast-hf-loader.md
+    - Fast HF Loader Checkpoints: datasets/fast-hf-loader-checkpoints.md
+    - Dataset Projects: datasets/dataset-projects.md
+    - Dataset CLI: datasets/dataset-cli.md
+  - Fused Loss:
+    - Cross-Entropy Comparison: fused_loss/fused_cross_entropy_comparison.md
+    - Trainer API: fused_loss/fused_loss_trainer_api.md
+    - Apple CCE Analysis: fused_loss/apple_cce_analysis.md
+    - Pipeline Integration: fused_loss/pipeline_fused_loss_integration.md
+  - Guides:
+    - Creating a Model Project: guides/creating-a-model-project.md
+    - Model CLI Reference: guides/model-cli.md
+    - Creating a Dataset Project: guides/creating-a-dataset-project.md
+    - Working with Tokenizer Projects: guides/working-with-tokenizer-projects.md
+    - Debugging: guides/debugging.md
+    - Interactive CLI: guides/interactive-cli.md
+    - Evaluating Models: guides/evaluating-models.md
+    - Log Analysis: guides/logs-analysis.md
+  - API Reference:
+    - Overview: api/index.md
+    - Project System: api/project.md
+    - Trainers: api/trainers.md
+    - Optimizers: api/optimizers.md
+    - Datasets: api/datasets.md
+    - Analysis: api/analysis.md
+  - Tutorials:
+    - Tiny Llama: tutorials/tiny_llama/README.md
+    - HP Lovecraft Project: tutorials/hp_lovecraft_project/README.md
+    - Samantha Finetune: tutorials/samantha/README.md
+    - Projects Overview: tutorials/projects_overview/project_index.ipynb
+    - Project Composition: tutorials/project_composition/project_index.ipynb
+    - Dynamic LM: tutorials/dynamic_lm/dynamic_lm.ipynb
+  - Development:
+    - Testing: development/testing.md
+    - Integration Testing: development/integration-testing.md
+    - Git Hooks: development/git-hooks.md
+    - Known Bugs: development/bugs.md
