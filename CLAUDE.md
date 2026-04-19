@@ -701,7 +701,7 @@ The framework emphasizes systematic experimentation through template-based confi
 
 **Key Example Projects**
 Refer to these when creating new projects.
-- A template project to copy for starting a new one : "examples/template_project/"
+- To start a new project, prefer `forgather project create` (inside an existing workspace) or `forgather ws create` over copying a template directory. For a bare harness that exercises the raw `projects/lm_training_project.yaml` base template, see "examples/base_lm_project/".
 - Projects overview : "examples/tutorials/projects_overview/"
 - Forgather project structure : "examples/tutorials/project_composition/"
 - Model training tutorial project : "examples/tutorials/tiny_llama/"

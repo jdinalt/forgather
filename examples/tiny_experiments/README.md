@@ -38,9 +38,10 @@ Compares the performance of various optimizers.
 
 Demonstrates how to use Forgather's Pipeline Parallel Trainer implementation.
 
-### template_project
+### tiny_experiment
 
-A starting point for other "Tiney Experiments" projects.
+A starting point for other "Tiny Experiments" projects -- the default
+scaffold you'd copy when adding a new ablation here.
 
 ### tiny_models
 

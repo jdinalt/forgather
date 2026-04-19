@@ -14,7 +14,14 @@ This guide walks you through installing Forgather and training your first model.
   sudo apt-get update
   sudo apt-get install python3.12 python3.12-venv python3.12-dev
   ```
-- An NVIDIA GPU with CUDA support (recommended; CPU-only training is possible but slow)
+- An NVIDIA GPU with CUDA support is strongly recommended but not
+  required. CPU-only training works -- the Tiny Llama tutorial below
+  has been run end-to-end on a Chromebook, taking most of a day for
+  the same workload that finishes in ~2 minutes on an RTX 4090.
+  Budget accordingly.  Non-CUDA accelerators (Intel, AMD, Apple
+  Silicon) *may* work -- Forgather deliberately avoids hard CUDA
+  dependencies where possible -- but have not been tested outside of
+  CUDA and CPU, so treat them as experimental.
 - A C compiler and Python development headers (required by Triton / flex-attention):
   ```bash
   sudo apt-get install build-essential python3-dev
@@ -117,6 +124,29 @@ Once training completes, the model and training artifacts are saved under
 forgather logs summary
 ```
 
+**Monitor in TensorBoard** (useful while training is still running):
+
+```bash
+forgather -t train_tiny_llama.yaml tb        # this config's runs
+forgather tb --all                           # every run under output_models/
+```
+
+TensorBoard binds to `localhost:6006` by default.  If your browser is
+on a different machine, either SSH-forward with
+`ssh -L 6006:localhost:6006 HOST` or pass `-- --bind_all` to open the
+port on all interfaces (use only on trusted networks).
+
+**Run a named evaluation:**
+
+```bash
+forgather -t train_tiny_llama.yaml eval test tinystories
+```
+
+`forgather eval list` shows every named eval config available
+(`tinystories`, `openorca`, `fineweb-edu-dedup`, `c4`, `openassistant`).
+Results are written to `output_models/tiny_llama/evals/` as markdown
+and JSON.
+
 **Test the model:**
 
 Before loading the model for inference, create symlinks to the latest checkpoint
@@ -151,12 +181,15 @@ model programmatically -- see the
 | `forgather index` | Show project overview as markdown |
 | `forgather -t CONFIG pp` | Preview the fully-expanded configuration |
 | `forgather -t CONFIG train` | Train with the given configuration |
+| `forgather -t CONFIG tb` / `forgather tb --all` | Launch TensorBoard on this config's runs / every run |
 | `forgather logs summary` | Print summary statistics for the latest training run |
 | `forgather logs plot` | Generate training metric plots |
-| `forgather inf server -m PATH` | Start the inference server |
+| `forgather -t CONFIG eval test NAME` | Run a named evaluation config on the trained model |
+| `forgather inf server -c -m PATH` | Start the inference server (`-c` = load latest checkpoint) |
 | `forgather inf client` | Start the interactive inference client |
 | `forgather control list` | List running training jobs |
 | `forgather control stop JOB_ID` | Gracefully stop a running job |
+| `forgather checkpoint link` | Symlink latest checkpoint for plain `from_pretrained` loading |
 | `forgather -i` | Start an interactive shell with tab completion |
 
 Run `forgather --help` or `forgather <command> --help` for full usage details.
