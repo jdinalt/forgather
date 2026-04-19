@@ -103,6 +103,8 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[API Reference](api/index.md)** - Auto-generated Python API documentation
 - **[Debugging Guide](configuration/debugging.md)** - Tools and techniques for debugging configurations
 - **[Known Bugs](development/bugs.md)** - Known bugs in top-level modules, with corresponding xfail tests
+- **[Testing Guide](development/testing.md)** How to create and run unit tests
+- **[Integration Testing](development/integration-testing.md)** How to create and run integration tests
 
 ## Getting Help
 
