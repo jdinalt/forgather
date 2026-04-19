@@ -1,8 +1,11 @@
-test_id: pp_2gpu
-project_dir: examples/tiny_experiments/pipeline_parallel
-config: tiny_gpipe_2gpu.yaml
+test_id: base_lm_ddp
+project_dir: examples/base_lm_project
+config: ddp.yaml
+dynamic_args:
+  max_steps: 150
+  save_strategy: "no"
 loss:
-  final_max: 5.0
+  final_max: 8.5
   no_nan: true
 stderr:
   forbidden_patterns:
@@ -13,7 +16,7 @@ stderr:
 expected_files:
   - trainer_logs.json
 min_steps_logged: 1
-timeout: 300
+timeout: 600
 gpu_requirement: 2
 markers:
   - integration

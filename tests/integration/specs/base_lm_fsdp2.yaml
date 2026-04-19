@@ -1,10 +1,11 @@
-test_id: ddp_2gpu
-project_dir: examples/tiny_experiments/ddp_trainer
-config: 2gpu.yaml
+test_id: base_lm_fsdp2
+project_dir: examples/base_lm_project
+config: fsdp2.yaml
 dynamic_args:
-  max_steps: 1000
+  max_steps: 150
+  save_strategy: "no"
 loss:
-  final_max: 2.0
+  final_max: 8.5
   no_nan: true
 stderr:
   forbidden_patterns:
@@ -15,8 +16,8 @@ stderr:
 expected_files:
   - trainer_logs.json
 min_steps_logged: 1
-timeout: 300
+timeout: 600
 gpu_requirement: 2
 markers:
   - integration
-  - smoke
+  - slow

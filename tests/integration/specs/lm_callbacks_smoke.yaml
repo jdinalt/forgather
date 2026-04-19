@@ -1,6 +1,6 @@
-test_id: lm_training_project_smoke
+test_id: lm_callbacks_smoke
 project_dir: examples/base_lm_project
-config: lm_training_project.yaml
+config: lm_callbacks.yaml
 dynamic_args:
   max_steps: 260
 loss:
