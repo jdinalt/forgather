@@ -195,9 +195,12 @@ def retie_parameters(module, sharing_metadata: List[List[str]]) -> None:
     This restores buffer sharing after loading from sharded checkpoints
     where sharing was broken during the load process.
 
-    Args:
-        modules: List of modules (e.g., pipeline stages) to re-tie buffers across
-        sharing_metadata: Buffer sharing metadata from checkpoint index
+    Parameters
+    ----------
+    module : nn.Module
+        Module containing parameters to re-tie.
+    sharing_metadata : list of list of str
+        Buffer sharing metadata from checkpoint index
     """
     # Flatten shared parameters list and convert to set
     all_shared = set([item for sublist in sharing_metadata for item in sublist])
@@ -384,12 +387,26 @@ def save_checkpoint(
     """
     Save a sharded checkpoint for the whole model or a raw state dict.
 
-    Args:
-        module: An nn.Module or a raw Dict[str, Tensor] state dictionary.
-        include_param_sharing: If True and module is an nn.Module, detect and
-            include buffer sharing metadata automatically.
-        param_sharing_metadata: Explicit sharing metadata. When provided, skips
-            auto-detection even if module is an nn.Module.
+    Parameters
+    ----------
+    output_dir : str
+        Directory to write the checkpoint files into.
+    module : nn.Module or Dict[str, Tensor]
+        An nn.Module or a raw state dictionary to checkpoint.
+    metadata : dict or None, optional
+        Additional metadata to embed in the shard index.
+    safetensors : bool, optional
+        Save in safetensors format when True, PyTorch otherwise.
+    max_shard_size : int, optional
+        Maximum bytes per shard file.
+    debug : bool, optional
+        Enable debug-level logging of individual weights.
+    include_param_sharing : bool, optional
+        If True and module is an nn.Module, detect and
+        include buffer sharing metadata automatically.
+    param_sharing_metadata : list of list of str or None, optional
+        Explicit sharing metadata. When provided, skips
+        auto-detection even if module is an nn.Module.
     """
     state_dict = _resolve_state_dict(module)
 
@@ -438,8 +455,19 @@ def save_sharded_checkpoint(
     model, and 'module' may only we a sub-set of those weights -- this is the use-case
     this was written for, but it can be used to save complete model as well.
 
-    Args:
-        module: An nn.Module or a raw Dict[str, Tensor] state dictionary.
+    Parameters
+    ----------
+    output_dir : str
+        Directory to write the checkpoint shard files into.
+    shard_index : ShardIndex
+        Shard index mapping weight names to shard file names.
+    module : nn.Module or Dict[str, Tensor]
+        An nn.Module or a raw state dictionary; only weights present
+        in both the shard index and this module are written.
+    safetensors : bool, optional
+        Save in safetensors format when True, PyTorch otherwise.
+    debug : bool, optional
+        Enable debug-level logging of individual weights.
 
     See "save_checkpoint" if you only wish to save the complete model.
     """
@@ -547,11 +575,22 @@ def load_checkpoint(
     This should work for both sharded and normal checkpoint with either PyTorch
     or safetensor formats.
 
-    Args:
-        module: An nn.Module to load weights into. If None, returns a raw
-            Dict[str, Tensor] instead of loading into a module.
-        keys: When module is None, optionally restrict which keys to load.
-            Ignored when module is provided.
+    Parameters
+    ----------
+    model_dir : str
+        Directory containing checkpoint files.
+    module : nn.Module or None, optional
+        An nn.Module to load weights into. If None, returns a raw
+        Dict[str, Tensor] instead of loading into a module.
+    device : str, optional
+        Device to map tensors to when loading.
+    strict : bool, optional
+        Whether to require all module keys to be present in the checkpoint.
+    assign : bool, optional
+        If True, assign loaded tensors rather than copying data.
+    keys : set of str or None, optional
+        When module is None, optionally restrict which keys to load.
+        Ignored when module is provided.
 
     See:
     https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.load_state_dict
@@ -640,14 +679,33 @@ def load_sharded_checkpoint(
     The weight_map may be a super-set of the weights in weight_map, which is useful for
     loading only the relevant weights for a sharded model.
 
-    Args:
-        module: An nn.Module to load weights into. If None, returns a raw
-            Dict[str, Tensor] instead of loading into a module.
-        keys: When module is None, optionally restrict which keys to load
-            from the weight map. Ignored when module is provided.
+    Parameters
+    ----------
+    model_dir : str
+        Directory containing checkpoint shard files.
+    shard_index : ShardIndex
+        Shard index mapping weight names to shard file names.
+    module : nn.Module or None, optional
+        An nn.Module to load weights into. If None, returns a raw
+        Dict[str, Tensor] instead of loading into a module.
+    device : str, optional
+        Device to map tensors to when loading.
+    safetensors : bool, optional
+        Load from safetensors format when True, PyTorch otherwise.
+    strict : bool, optional
+        Whether to require all module keys to be present in the checkpoint.
+    assign : bool, optional
+        If True, assign loaded tensors rather than copying data.
+    debug : bool, optional
+        Enable debug-level logging of individual weights.
+    keys : set of str or None, optional
+        When module is None, optionally restrict which keys to load
+        from the weight map. Ignored when module is provided.
 
-    Returns:
-        When module is provided: Set[str] of keys that were NOT loaded (unloaded keys).
+    Returns
+    -------
+    set of str or Dict[str, Tensor]
+        When module is provided: set of str of keys that were NOT loaded (unloaded keys).
         When module is None: Dict[str, Tensor] of loaded tensors.
     """
     weight_map = shard_index["weight_map"]
@@ -896,11 +954,16 @@ def maybe_delete_oldest_checkpoint(
     """
     Delete oldest checkpoints, preserving specified checkpoints.
 
-    Args:
-        model_dir: Model directory containing checkpoints subdirectory
-        max_checkpoints: Maximum number of checkpoints to keep
-        best_checkpoint: (Deprecated) Single best checkpoint to preserve
-        preserved_checkpoints: List of checkpoint paths to never delete
+    Parameters
+    ----------
+    model_dir : str
+        Model directory containing checkpoints subdirectory
+    max_checkpoints : int
+        Maximum number of checkpoints to keep
+    best_checkpoint : str or None, optional
+        (Deprecated) Single best checkpoint to preserve
+    preserved_checkpoints : list of str or None, optional
+        List of checkpoint paths to never delete
     """
     checkpoints_dir = os.path.join(model_dir, "checkpoints")
     if not os.path.isdir(checkpoints_dir):
@@ -945,18 +1008,27 @@ def create_pretrained_symlinks(
     This enables Hugging Face .from_pretrained() to work with checkpointed models
     by making the latest checkpoint weights accessible from the model root directory.
 
-    Args:
-        model_dir: Path to the model directory containing checkpoints subdirectory
-        force_overwrite: If True, overwrite existing real files. If False, only
-                        overwrite existing symlinks or create new symlinks.
-        dry_run: If True, only log what would be done without creating symlinks
+    Parameters
+    ----------
+    model_dir : str
+        Path to the model directory containing checkpoints subdirectory
+    force_overwrite : bool, optional
+        If True, overwrite existing real files. If False, only
+        overwrite existing symlinks or create new symlinks.
+    dry_run : bool, optional
+        If True, only log what would be done without creating symlinks
 
-    Returns:
+    Returns
+    -------
+    list of str
         List of symlink paths that were created (or would be created in dry_run mode)
 
-    Raises:
-        FileNotFoundError: If no valid checkpoints are found
-        FileExistsError: If target files exist and are not symlinks (when force_overwrite=False)
+    Raises
+    ------
+    FileNotFoundError
+        If no valid checkpoints are found
+    FileExistsError
+        If target files exist and are not symlinks (when force_overwrite=False)
     """
     # Find latest checkpoint
     latest_checkpoint_dir = find_latest_checkpoint(model_dir)

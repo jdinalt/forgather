@@ -186,8 +186,27 @@ class _FSDP2OptimStateful(Stateful):
 
 class FSDP2Trainer(Trainer[TFSDP2TrainingArguments], Generic[TFSDP2TrainingArguments]):
     """
-    Trainer that shards model, gradients and optimizer state via FSDP2
-    (torch.distributed.fsdp.fully_shard).
+    Trainer that shards model, gradients, and optimizer state via FSDP2.
+
+    Uses ``torch.distributed.fsdp.fully_shard`` (PyTorch's FSDP2 API) to distribute
+    parameters, gradients, and optimizer state across all ranks. Provides ZeRO-3-style
+    memory savings, making it suitable for models that don't fit in a single GPU's memory.
+
+    Launch with ``torchrun`` (or the ``forgather train -d ...`` shortcut)::
+
+        torchrun --nproc_per_node=4 train.py
+
+    Key differences from DDP:
+
+    - Each rank stores only a shard of parameters, gradients, and optimizer state
+    - Parameters are all-gathered before each forward/backward and re-sharded after
+      (controlled by ``fsdp2.reshard_after_forward``)
+    - Model checkpoints are saved as full HuggingFace safetensors gathered on rank 0,
+      making them loadable by ``from_pretrained`` without special tooling
+    - Optimizer state is saved per-rank (sharded) and tied to the world size
+
+    See ``FSDP2Arguments`` for sharding configuration options (mixed precision policy,
+    CPU offload, transformer-layer-wise sharding).
     """
 
     args: TFSDP2TrainingArguments
@@ -199,6 +218,20 @@ class FSDP2Trainer(Trainer[TFSDP2TrainingArguments], Generic[TFSDP2TrainingArgum
         fused_loss_factory: Optional[FusedLossFactoryT] = None,
         **kwargs,
     ):
+        """
+        Parameters
+        ----------
+        args : FSDP2TrainingArguments or dict
+            Training configuration including FSDP2-specific options under the ``fsdp2``
+            field (``reshard_after_forward``, ``param_dtype``, ``cpu_offload``, etc.).
+            Accepts a dict for programmatic construction.
+        fused_loss_factory : callable, optional
+            Factory for fused logits-loss computation. See ``Trainer`` for details.
+        **kwargs
+            Forwarded to ``Trainer.__init__``: ``distributed_env``, ``model``,
+            ``model_init``, ``train_dataset``, ``eval_dataset``, ``optimizer_factory``,
+            ``lr_scheduler_factory``, ``callbacks``, etc.
+        """
         if isinstance(args, dict):
             args = cast(
                 TFSDP2TrainingArguments, from_dict(FSDP2TrainingArguments, args)

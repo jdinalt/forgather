@@ -263,8 +263,10 @@ def main_process_first(group: Optional[ProcessGroup] = None):
     If torch.distributed is not available or not initialized, and the world-size is not
     zero, a warning will be emitted, as this can corrupt data.
 
-    Args:
-        group: The process-group to use. Default is get_local_process_group()
+    Parameters
+    ----------
+    group : ProcessGroup or None, optional
+        The process group to use. Default is ``get_local_process_group()``.
 
     ```
     @main_process_first()
@@ -354,12 +356,15 @@ def init_from_env(dist: DistributedEnvInterface):
     (by setting attributes on the dist object) or via environment variables (as set
     by torchrun or other launchers).
 
-    Args:
-        dist: A distributed environment object implementing DistributedEnvInterface
+    Parameters
+    ----------
+    dist : DistributedEnvInterface
+        A distributed environment object implementing DistributedEnvInterface.
 
-    Note:
-        See https://pytorch.org/docs/stable/elastic/run.html for the standard
-        environment variables set by torchrun.
+    Notes
+    -----
+    See https://pytorch.org/docs/stable/elastic/run.html for the standard
+    environment variables set by torchrun.
     """
     # Environment variable names and their types for proper conversion
     ENVIRON_VARS = (
@@ -413,18 +418,23 @@ def get_barrier_fn(group: Optional[ProcessGroup] = None) -> Callable[[], None | 
     This is the recommended way to perform barriers in forgather, as it works
     correctly with both CPU (gloo) and GPU (nccl) distributed training.
 
-    Args:
-        group: Process group for the barrier. If None, uses the default group
-               (all ranks). Pass a specific group to synchronize a subset of
-               ranks, such as the local node group from get_local_process_group().
+    Parameters
+    ----------
+    group : ProcessGroup or None, optional
+        Process group for the barrier. If None, uses the default group (all ranks).
+        Pass a specific group to synchronize a subset of ranks, such as the local
+        node group from get_local_process_group().
 
-    Returns:
-        A callable that performs a barrier when invoked. The callable accepts
-        no arguments and returns None or a Work object.
+    Returns
+    -------
+    callable
+        A callable that performs a barrier when invoked. Accepts no arguments
+        and returns None or a Work object.
 
-    Example:
-        >>> barrier = get_barrier_fn(get_local_process_group())
-        >>> barrier()  # Synchronize all ranks on this node
+    Examples
+    --------
+    >>> barrier = get_barrier_fn(get_local_process_group())
+    >>> barrier()  # Synchronize all ranks on this node
     """
     if dist.is_available() and dist.is_initialized() and get_world_size() != 1:
         if group is None:
@@ -493,15 +503,20 @@ def from_env(**kwargs):
     Any keyword arguments are passed to StaticDistributedEnvironment as initial
     values, which may be overridden by environment variables if they are set.
 
-    Args:
-        **kwargs: Initial values for StaticDistributedEnvironment attributes
+    Parameters
+    ----------
+    **kwargs
+        Initial values for StaticDistributedEnvironment attributes.
 
-    Returns:
-        StaticDistributedEnvironment with values from environment variables
+    Returns
+    -------
+    StaticDistributedEnvironment
+        With values synchronized from environment variables.
 
-    Example:
-        >>> env = from_env()
-        >>> print(f"Running as rank {env.rank} of {env.world_size}")
+    Examples
+    --------
+    >>> env = from_env()
+    >>> print(f"Running as rank {env.rank} of {env.world_size}")
     """
     dist = StaticDistributedEnvironment(**kwargs)
     init_from_env(dist)
@@ -573,22 +588,34 @@ class DistributedEnvironment(DistributedEnvInterface):
         """
         Initialize the distributed environment.
 
-        Args:
-            rank: Global rank (default 0, typically overridden by environment)
-            local_rank: Local rank within node (default 0)
-            world_size: Total processes (default 1)
-            local_world_size: Processes per node (default 1)
-            master_addr: Rendezvous address (default "localhost")
-            master_port: Rendezvous port (default 29501)
-            backend: Distributed backend. If None, auto-selected based on device
-                     (nccl for GPU, gloo for CPU)
-            log_level: Logging level for distributed module (default "INFO")
-            device_map: Optional dict mapping rank -> device index for custom
-                        device assignment. If None, uses local_rank.
-            always: If True, initialize distributed even for single process.
-                    Useful for consistent behavior across configurations.
-            no_accelerator: If True, force CPU execution even if GPU is available.
-                           Useful for testing distributed configurations.
+        Parameters
+        ----------
+        rank : int, optional
+            Global rank. Default 0, typically overridden by launcher environment.
+        local_rank : int, optional
+            Local rank within node. Default 0.
+        world_size : int, optional
+            Total number of processes. Default 1.
+        local_world_size : int, optional
+            Number of processes per node. Default 1.
+        master_addr : str, optional
+            Rendezvous address for rank 0. Default "localhost".
+        master_port : int, optional
+            Rendezvous port. Default 29501.
+        backend : str or None, optional
+            Distributed backend. If None, auto-selected based on device
+            (nccl for GPU, gloo for CPU).
+        log_level : str, optional
+            Logging level for the distributed module. Default "INFO".
+        device_map : dict or None, optional
+            Mapping from rank to device index for custom device assignment.
+            If None, uses local_rank.
+        always : bool, optional
+            If True, initialize distributed even for single process.
+            Useful for consistent behavior across configurations. Default True.
+        no_accelerator : bool, optional
+            If True, force CPU execution even if GPU is available.
+            Useful for testing distributed configurations without GPUs. Default False.
         """
         logger.setLevel(log_level)
         self.rank = rank

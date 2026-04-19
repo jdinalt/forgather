@@ -114,6 +114,8 @@ nav:
     - Overview: api/index.md
     - Project System: api/project.md
     - Trainers: api/trainers.md
+    - Callbacks: api/trainer_callbacks.md
+    - Checkpoints: api/checkpoints.md
     - Optimizers: api/optimizers.md
     - Datasets: api/datasets.md
     - Analysis: api/analysis.md

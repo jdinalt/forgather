@@ -372,13 +372,18 @@ def toyaml(obj, default_value=Undefined):
         {{ my_list | to_yaml }}
         {{ my_value | to_yaml }}
 
-    Args:
-        obj: Python object to convert to YAML string
-        default_value: An optional default, if the variable Jinja is undefined. This will raise if a default
-            is not provided and the variable is undefined.
+    Parameters
+    ----------
+    obj : any
+        Python object to convert to YAML string
+    default_value : any, optional
+        An optional default, if the variable Jinja is undefined. This will raise if a default
+        is not provided and the variable is undefined.
 
-    Returns:
-        str: YAML-compatible string representation
+    Returns
+    -------
+    str
+        YAML-compatible string representation
     """
     if isinstance(obj, Undefined):
         if default_value is Undefined:

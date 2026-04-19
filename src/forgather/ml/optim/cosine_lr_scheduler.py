@@ -7,15 +7,27 @@ from torch.optim.lr_scheduler import LRScheduler
 class CosineLRScheduler(LRScheduler):
     """Cosine decay learning rate scheduler with optional linear warmup.
 
-    Linearly warms up from 0 to base_lr over warmup_steps, then decays
-    following a cosine curve over the remaining steps.
+    Linearly warms the learning rate from 0 to ``base_lr`` over
+    ``warmup_steps``, then applies a half-cosine decay from ``base_lr`` to
+    ``min_lr`` over the remaining ``total_steps - warmup_steps`` steps.
 
-    Args:
-        optimizer: Wrapped optimizer.
-        total_steps: Total number of training steps (warmup + decay).
-        warmup_steps: Number of linear warmup steps. Default: 0.
-        min_lr: Minimum learning rate at the end of cosine decay. Default: 0.0.
-        last_epoch: The index of last epoch. Default: -1.
+    This is the standard schedule for fixed-budget training runs.  For
+    continual pre-training without a predetermined budget, prefer
+    `InfiniteLRScheduler` or `WSDScheduler`.
+
+    Parameters
+    ----------
+    optimizer : Optimizer
+        Wrapped optimizer whose ``param_groups`` LRs will be managed.
+    total_steps : int
+        Total number of training steps (warmup + decay combined).
+    warmup_steps : int, optional
+        Number of linear warmup steps before cosine decay begins.
+        Default is 0.
+    min_lr : float, optional
+        Minimum learning rate at the end of cosine decay.  Default is 0.0.
+    last_epoch : int, optional
+        Index of the last epoch, used when resuming.  Default is -1.
     """
 
     def __init__(

@@ -106,19 +106,30 @@ class CheckpointCoordinator:
     Handles complex parallelism scenarios by dispatching to pattern-specific
     handlers that know how to coordinate saves/loads for each sharing type.
 
-    Args:
-        state_components: List of components to checkpoint with their sharing patterns
-        process_groups: Named process groups for PER_GROUP patterns
-        dist: Distributed environment interface
-        output_dir: Base directory for checkpoints
-        save_safetensors: Use safetensors format for model weights
-        model: Reference to model for weight saving (optional if using custom save)
-        model_parts: List of model parts for sharded saving (e.g., pipeline stages)
-        shard_index: Pre-computed shard index (auto-generated if None)
+    Parameters
+    ----------
+    state_components : list of StateComponent
+        Components to checkpoint with their sharing patterns.
+    process_groups : dict of str to ProcessGroup
+        Named process groups for ``PER_GROUP`` patterns.
+    dist : DistributedEnvInterface
+        Distributed environment interface.
+    output_dir : str
+        Base directory for checkpoints.
+    save_safetensors : bool, optional
+        Use safetensors format for model weights.
+    model : torch.nn.Module, optional
+        Reference to model for weight saving (optional if using custom save).
+    model_parts : list of torch.nn.Module, optional
+        Model parts for sharded saving (e.g., pipeline stages).
+    shard_index : dict, optional
+        Pre-computed shard index (auto-generated if ``None``).
 
-    Note: For backward compatibility with existing code, model/model_parts/shard_index
-    are optional. If not provided, model weight saving is skipped (assumes custom
-    handling via StateComponent).
+    Notes
+    -----
+    For backward compatibility, ``model`` / ``model_parts`` / ``shard_index``
+    are optional. If not provided, model weight saving is skipped (assumes
+    custom handling via ``StateComponent``).
     """
 
     def __init__(
@@ -199,30 +210,39 @@ class CheckpointCoordinator:
         Coordinates save operations across all ranks based on sharing patterns,
         generates manifest, and optionally validates checkpoint integrity.
 
-        Args:
-            checkpoint_path: Explicit path for checkpoint, or None for auto-generated
-            checkpoint_id: Identifier for checkpoint (e.g., "step-1000"), used if path is None
-            validate: Whether to validate checkpoint after save (experimental)
+        Parameters
+        ----------
+        checkpoint_path : str, optional
+            Explicit path for checkpoint, or ``None`` for auto-generated.
+        checkpoint_id : str, optional
+            Identifier for checkpoint (e.g., ``"step-1000"``), used if
+            ``checkpoint_path`` is ``None``.
+        validate : bool, optional
+            Whether to validate checkpoint after save (experimental).
 
-        Returns:
-            Path to saved checkpoint directory
+        Returns
+        -------
+        str
+            Path to saved checkpoint directory.
 
+        Notes
+        -----
         Process:
-            1. Determine checkpoint path
-            2. Create directory (rank 0 or per-node)
-            3. Save each component based on sharing pattern:
-               - GLOBAL: Rank 0 only
-               - PER_RANK: Every rank
-               - REPLICATED: Rank 0 only (with optional validation)
-               - PER_GROUP: One rank per group
-               - PER_NODE: One rank per node
-            4. Generate and save manifest (rank 0)
-            5. Barrier to ensure all ranks complete
 
-        Note: Checkpoint cleanup is handled by CheckpointManager, not here.
+        1. Determine checkpoint path.
+        2. Create directory (rank 0 or per-node).
+        3. Save each component based on sharing pattern:
+           ``GLOBAL`` (rank 0 only), ``PER_RANK`` (every rank),
+           ``REPLICATED`` (rank 0 only, with optional validation),
+           ``PER_GROUP`` (one rank per group), ``PER_NODE`` (one per node).
+        4. Generate and save manifest (rank 0).
+        5. Barrier to ensure all ranks complete.
 
-        Example:
-            coordinator.save_checkpoint(checkpoint_id="step-1000")
+        Checkpoint cleanup is handled by ``CheckpointManager``, not here.
+
+        Examples
+        --------
+        >>> coordinator.save_checkpoint(checkpoint_id="step-1000")
         """
         # Determine checkpoint path
         if not checkpoint_path:
@@ -275,12 +295,18 @@ class CheckpointCoordinator:
         Dispatches to pattern-specific handlers. Returns ComponentManifest entry
         for inclusion in checkpoint manifest.
 
-        Args:
-            component: Component to save
-            checkpoint_path: Checkpoint directory
+        Parameters
+        ----------
+        component : StateComponent
+            Component to save.
+        checkpoint_path : str
+            Checkpoint directory.
 
-        Returns:
-            ComponentManifest entry, or None if this rank doesn't save this component
+        Returns
+        -------
+        ComponentManifest or None
+            Manifest entry, or ``None`` if this rank does not save this
+            component.
         """
         pattern = component.sharing_pattern
 
@@ -581,12 +607,17 @@ class CheckpointCoordinator:
 
         Uses enhanced validation with configurable thoroughness levels.
 
-        Args:
-            component: Component to validate
-            validation_level: How thorough to validate (QUICK, TENSOR, or FULL)
+        Parameters
+        ----------
+        component : StateComponent
+            Component to validate.
+        validation_level : ValidationLevel, optional
+            How thorough to validate (``QUICK``, ``TENSOR``, or ``FULL``).
 
-        Returns:
-            True if all ranks have identical state, False otherwise
+        Returns
+        -------
+        bool
+            ``True`` if all ranks have identical state, ``False`` otherwise.
         """
         if self.dist.world_size == 1:
             return True  # Single rank, nothing to validate
@@ -626,20 +657,27 @@ class CheckpointCoordinator:
         Loads checkpoint based on manifest (if present) or falls back to legacy
         loading for backward compatibility.
 
-        Args:
-            checkpoint_path: Path to checkpoint, or None to auto-find latest
-            strict: Whether to require all components to load successfully
+        Parameters
+        ----------
+        checkpoint_path : str, optional
+            Path to checkpoint, or ``None`` to auto-find latest.
+        strict : bool, optional
+            Whether to require all components to load successfully.
 
+        Notes
+        -----
         Process:
-            1. Resolve checkpoint path (find latest if None)
-            2. Load manifest (or detect legacy checkpoint)
-            3. Validate compatibility (world size, components)
-            4. Load each component based on sharing pattern
-            5. Barrier to ensure all ranks complete
 
-        Example:
-            coordinator.load_checkpoint()  # Load latest
-            coordinator.load_checkpoint("checkpoint-1000")  # Load specific
+        1. Resolve checkpoint path (find latest if ``None``).
+        2. Load manifest (or detect legacy checkpoint).
+        3. Validate compatibility (world size, components).
+        4. Load each component based on sharing pattern.
+        5. Barrier to ensure all ranks complete.
+
+        Examples
+        --------
+        >>> coordinator.load_checkpoint()          # load latest
+        >>> coordinator.load_checkpoint("checkpoint-1000")  # load specific
         """
         # Resolve checkpoint path
         if checkpoint_path is None:
@@ -732,8 +770,10 @@ class CheckpointCoordinator:
     ) -> bool:
         """Load a single component based on its sharing pattern.
 
-        Returns:
-            True if component was loaded successfully, False otherwise.
+        Returns
+        -------
+        bool
+            ``True`` if component was loaded successfully, ``False`` otherwise.
         """
         pattern = component.sharing_pattern
 
@@ -755,8 +795,10 @@ class CheckpointCoordinator:
     ) -> bool:
         """Load GLOBAL component (all ranks load same file).
 
-        Returns:
-            True if loaded successfully, False otherwise.
+        Returns
+        -------
+        bool
+            ``True`` if loaded successfully, ``False`` otherwise.
         """
         state_path = os.path.join(checkpoint_path, f"{component.key}_state.pt")
 
@@ -796,8 +838,10 @@ class CheckpointCoordinator:
     ) -> bool:
         """Load PER_RANK component (each rank loads its own file).
 
-        Returns:
-            True if loaded successfully, False otherwise.
+        Returns
+        -------
+        bool
+            ``True`` if loaded successfully, ``False`` otherwise.
         """
         state_path = os.path.join(
             checkpoint_path, f"{component.key}_state_rank_{self.dist.rank}.pt"
@@ -838,8 +882,10 @@ class CheckpointCoordinator:
     ) -> bool:
         """Load REPLICATED component (all ranks load same file).
 
-        Returns:
-            True if loaded successfully, False otherwise.
+        Returns
+        -------
+        bool
+            ``True`` if loaded successfully, ``False`` otherwise.
         """
         # REPLICATED is saved by rank 0, loaded by all ranks
         state_path = os.path.join(checkpoint_path, f"{component.key}_state.pt")
@@ -880,8 +926,10 @@ class CheckpointCoordinator:
     ) -> bool:
         """Load PER_GROUP component (ranks load based on group membership).
 
-        Returns:
-            True if loaded successfully, False otherwise.
+        Returns
+        -------
+        bool
+            ``True`` if loaded successfully, ``False`` otherwise.
         """
         group_name = component.process_group_name
         assert group_name is not None
@@ -927,8 +975,10 @@ class CheckpointCoordinator:
     ) -> bool:
         """Load PER_NODE component (ranks load based on node membership).
 
-        Returns:
-            True if loaded successfully, False otherwise.
+        Returns
+        -------
+        bool
+            ``True`` if loaded successfully, ``False`` otherwise.
         """
         # Find the checkpoint file for this rank's node
         state_path = find_node_checkpoint_file(checkpoint_path, component.key)
@@ -1032,8 +1082,10 @@ class CheckpointCoordinator:
         - Files readable
         - Manifest matches actual files
 
-        Returns:
-            True if checkpoint is valid
+        Returns
+        -------
+        bool
+            ``True`` if checkpoint is valid.
         """
         # Use existing validate_checkpoint for basic validation
         if not validate_checkpoint(checkpoint_path):
@@ -1056,7 +1108,9 @@ class CheckpointCoordinator:
         """
         Whether this rank should save unique files (manifest, shard index).
 
-        Returns:
-            True if this is rank 0 (global coordinator)
+        Returns
+        -------
+        bool
+            ``True`` if this is rank 0 (global coordinator).
         """
         return self.dist.rank == 0

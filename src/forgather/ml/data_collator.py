@@ -14,12 +14,17 @@ def _pos_ids_from_boundaries(x: Tensor, document_starts: Tensor) -> Tensor:
     """
     Generate position IDs from explicit document boundary positions.
 
-    Args:
-        x: Input tensor (B, T) containing token IDs
-        document_starts: Tensor (B, max_docs) of document start positions.
-                        Padded with -1 for sequences with fewer documents.
+    Parameters
+    ----------
+    x : Tensor
+        Input tensor (B, T) containing token IDs
+    document_starts : Tensor
+        Tensor (B, max_docs) of document start positions.
+        Padded with -1 for sequences with fewer documents.
 
-    Returns:
+    Returns
+    -------
+    Tensor
         Position IDs tensor (B, T) where position resets at each document boundary.
     """
     B, T = x.shape
@@ -58,12 +63,18 @@ def _pos_ids_from_tokens(x: Tensor, token_id: int, eos: bool = True) -> Tensor:
     """
     Generate position IDs by detecting boundary tokens (legacy method).
 
-    Args:
-        x: Input tensor (B, T) containing token IDs
-        token_id: The token ID to use as boundary marker
-        eos: If True, reset after token; if False, reset before token
+    Parameters
+    ----------
+    x : Tensor
+        Input tensor (B, T) containing token IDs
+    token_id : int
+        The token ID to use as boundary marker
+    eos : bool, optional
+        If True, reset after token; if False, reset before token
 
-    Returns:
+    Returns
+    -------
+    Tensor
         Position IDs tensor (B, T) where position resets at each boundary token.
 
     Based on: https://huggingface.co/blog/sirluk/llm-sequence-packing
@@ -98,17 +109,26 @@ def get_pos_ids_for_packed_sequence(
     1. Explicit boundaries (preferred): Uses document_starts to determine where to reset positions
     2. Token-based detection (legacy): Uses special tokens (e.g., EOS) to infer boundaries
 
-    Args:
-        x: Input tensor (B, T) containing token IDs
-        token_id: Token ID to use as boundary marker (for legacy token-based mode)
-        document_starts: Tensor of document start positions (for explicit boundary mode)
-        eos: If True, reset after token; if False, reset before token (token-based mode only)
+    Parameters
+    ----------
+    x : Tensor
+        Input tensor (B, T) containing token IDs
+    token_id : int or None, optional
+        Token ID to use as boundary marker (for legacy token-based mode)
+    document_starts : Tensor or None, optional
+        Tensor of document start positions (for explicit boundary mode)
+    eos : bool, optional
+        If True, reset after token; if False, reset before token (token-based mode only)
 
-    Returns:
+    Returns
+    -------
+    Tensor
         Position IDs tensor (B, T) where position resets at document boundaries.
 
-    Raises:
-        ValueError: If neither document_starts nor token_id is provided.
+    Raises
+    ------
+    ValueError
+        If neither document_starts nor token_id is provided.
     """
     if document_starts is not None:
         # Preferred: Use explicit boundary information
@@ -175,19 +195,29 @@ class DataCollatorForCausalLM:
     ) -> None:
         """
         Initializes the data collator with tokenizer and padding/truncation options.
-        Args:
-            tokenizer: The tokenizer instance used for encoding the data.
-            truncation (bool, optional): Whether to truncate sequences to the maximum length. Defaults to False.
-            ignore_index (int, optional): The index to ignore in labels during loss computation. Defaults to -100.
-            input_name_map (Dict[str, str], optional): Remap dictionary for batch labels
-            labels_name: The dictionary key for labels, if None, then returned as second element of tuple
-            packed_sequences (bool | None, optional): Enable position ID generation for packed sequences.
-                If None (default), automatically infers from presence of 'document_starts' field in features.
-                If True, always generates position IDs. If False, never generates position IDs.
-            **pad_kwargs: Additional keyword arguments for padding, such as 'max_length' and 'padding'.
-        Notes:
-            - If 'max_length' is provided in pad_kwargs and padding is not set to 'max_length', 'max_length' will be ignored.
-            - A warning is logged if the specified max_length exceeds the tokenizer's model_max_length.
+        Parameters
+        ----------
+        tokenizer : PreTrainedTokenizer
+            The tokenizer instance used for encoding the data.
+        truncation : bool, optional
+            Whether to truncate sequences to the maximum length. Defaults to False.
+        ignore_index : int, optional
+            The index to ignore in labels during loss computation. Defaults to -100.
+        input_name : str, optional
+            The dictionary key for input IDs in the output batch.
+        labels_name : str or None, optional
+            The dictionary key for labels; if None, returned as second element of tuple.
+        packed_sequences : bool or None, optional
+            Enable position ID generation for packed sequences.
+            If None (default), automatically infers from presence of 'document_starts' field in features.
+            If True, always generates position IDs. If False, never generates position IDs.
+        **pad_kwargs
+            Additional keyword arguments for padding, such as 'max_length' and 'padding'.
+
+        Notes
+        -----
+        - If 'max_length' is provided in pad_kwargs and padding is not set to 'max_length', 'max_length' will be ignored.
+        - A warning is logged if the specified max_length exceeds the tokenizer's model_max_length.
         """
         # We may need to modify the tokenizer...
         tokenizer = copy.deepcopy(tokenizer)
@@ -303,11 +333,15 @@ class DataCollatorForCausalLM:
         """
         Pad document_starts lists to uniform shape for batching.
 
-        Args:
-            document_starts_list: List of document start lists, one per sequence.
-                                 Each inner list contains positions where documents start.
+        Parameters
+        ----------
+        document_starts_list : list of list of int
+            List of document start lists, one per sequence.
+            Each inner list contains positions where documents start.
 
-        Returns:
+        Returns
+        -------
+        Tensor
             Tensor (B, max_docs) where each row contains document start positions,
             padded with -1 for sequences with fewer documents.
         """

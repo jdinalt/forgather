@@ -194,84 +194,120 @@ class TrainerControl:
 
 @dataclass(kw_only=True)
 class MinimalTrainingArguments:
-    """
-    Minimal training configuration compatible with HuggingFace Trainer.
+    """Minimal training configuration compatible with HuggingFace Trainer.
 
-    Provides a subset of transformers.TrainingArguments sufficient for basic training.
-    This is the base configuration class - extend it for additional features rather
-    than adding everything here.
+    Provides a subset of ``transformers.TrainingArguments`` sufficient for basic
+    training. This is the base configuration class; extend it for additional
+    features rather than adding fields here.
 
-    Args:
-        output_dir: Directory where model predictions and checkpoints are written.
-        logging_dir: TensorBoard log directory. Defaults to output_dir/runs/TIMESTAMP_HOSTNAME.
-        per_device_train_batch_size: Training batch size per device. Global batch size is
-            per_device_train_batch_size * num_devices * gradient_accumulation_steps.
-        per_device_eval_batch_size: Evaluation batch size per device.
-        num_train_epochs: Total training epochs. Can be fractional (e.g., 2.5 trains 2.5 epochs).
-        max_steps: If > 0, total training steps to perform (overrides num_train_epochs).
-        device: Device to use (cuda, cpu, etc.). Auto-detected if None.
-        seed: Random seed for reproducibility. Use with model_init for full reproducibility.
-        use_cpu: Force CPU usage even if CUDA available.
+    Direct subclasses: ``BaseTrainingArguments`` (checkpoint control, PyTorch
+    optimisations) and ``TrainingArguments`` (simple single-GPU memory options).
 
-        epoch_train_steps: Fallback epoch length when dataset doesn't support len() (Forgather extension).
-
-        dataloader_num_workers: Number of subprocesses for data loading. 0 = load in main process.
-        dataloader_pin_memory: Pin memory in DataLoader for faster GPU transfer.
-        dataloader_persistent_workers: Keep worker processes alive between epochs (speeds up training, uses more RAM).
-        dataloader_prefetch_factor: Batches prefetched per worker. Defaults to 2 if num_workers > 0.
-        dataloader_drop_last: Drop last incomplete batch if dataset size not divisible by batch size.
-
-        eval_strategy: When to run evaluation: "no", "steps" (every eval_steps), or "epoch".
-        eval_steps: Evaluation frequency in steps (if eval_strategy="steps").
-        eval_delay: Number of epochs/steps to wait before first evaluation.
-
-        logging_strategy: When to log metrics: "no", "steps" (every logging_steps), or "epoch".
-        logging_steps: Logging frequency in steps (if logging_strategy="steps").
-        logging_first_step: Whether to log the very first global_step.
-
-        torch_compile: Compile model using PyTorch 2.0 torch.compile() for speedup.
-        torch_compile_backend: Backend for torch.compile (e.g., "inductor", "aot_eager").
-        torch_compile_mode: Compilation mode: "default", "reduce-overhead", or "max-autotune".
-        torch_compile_dynamic: Allow dynamic shapes in compiled model.
-        torch_compile_full_graph: Force compilation of entire model as single graph.
-
-        max_grad_norm: Maximum gradient norm for gradient clipping (None = no clipping).
-        gradient_accumulation_steps: Accumulate gradients over N steps before optimizer update.
-            Effective batch size = per_device_batch * num_devices * gradient_accumulation_steps.
-
-        save_strategy: Checkpoint save strategy: "no", "steps" (every save_steps), or "epoch".
-        save_steps: Checkpoint save frequency in steps (if save_strategy="steps").
-        save_total_limit: Max checkpoints to keep. Deletes oldest, but keeps best if load_best_model_at_end=True.
-        save_safetensors: Use safetensors format instead of pickle (safer, compatible).
-        save_on_each_node: In multi-node training, save on each node (not just main). Don't use with shared storage.
-        overwrite_output_dir: Overwrite output_dir contents (use to continue from checkpoint in that dir).
-        resume_from_checkpoint: Auto-resume behavior (default True). When True, automatically
-            finds and loads the latest checkpoint. If no checkpoint exists, falls back to fresh
-            initialization. Set to a path string to resume from a specific checkpoint. Set to
-            False to force fresh initialization (ignoring existing checkpoints).
-
-        load_best_model_at_end: Load best checkpoint at end of training (requires save_strategy == eval_strategy).
-        metric_for_best_model: Metric to compare models when load_best_model_at_end=True. Defaults to "loss".
-        greater_is_better: True if higher metric is better. Auto-determined from metric name if None.
-
-        lr_scheduler_type: LR scheduler type: "linear", "cosine", "polynomial", etc.
-        lr_scheduler_kwargs: Additional kwargs passed to LR scheduler.
-        warmup_steps: Linear warmup steps from 0 to learning_rate.
-        learning_rate: Initial learning rate for AdamW optimizer.
-        weight_decay: Weight decay for AdamW (applied to all layers except bias and LayerNorm).
-        adam_beta1: Beta1 hyperparameter for AdamW.
-        adam_beta2: Beta2 hyperparameter for AdamW.
-        adam_epsilon: Epsilon hyperparameter for AdamW.
-
-        gradient_checkpointing: Enable activation checkpointing to trade compute for memory.
-            Note: Pass enable_activation_checkpoint_fn to Trainer constructor to customize behavior.
-
-    For detailed HF Trainer documentation, see:
-    ~/fg/lib/python3.12/site-packages/transformers/training_args.py:214
-
-    Subclasses:
-    - BaseTrainingArguments: Adds checkpoint control and PyTorch optimizations
-    - TrainingArguments: Adds memory optimizations specific to simple Trainer
+    Parameters
+    ----------
+    output_dir : str, optional
+        Directory where model predictions and checkpoints are written.
+    logging_dir : str or None, optional
+        TensorBoard log directory. Defaults to ``output_dir/runs/TIMESTAMP_HOSTNAME``.
+    per_device_train_batch_size : int, optional
+        Training batch size per device. Effective global batch size is
+        ``per_device_train_batch_size * num_devices * gradient_accumulation_steps``.
+    per_device_eval_batch_size : int, optional
+        Evaluation batch size per device.
+    num_train_epochs : int, optional
+        Total training epochs (may be fractional, e.g. ``2.5``).
+    max_steps : int, optional
+        If > 0, total optimiser steps to perform (overrides ``num_train_epochs``).
+    device : Any, optional
+        Device to use (``"cuda"``, ``"cpu"``, etc.). Auto-detected if ``None``.
+    seed : int, optional
+        Random seed for reproducibility. Default ``-1`` disables seeding.
+    use_cpu : bool, optional
+        Force CPU usage even when CUDA is available.
+    epoch_train_steps : int, optional
+        Fallback epoch length when the dataset does not support ``len()``.
+        Used only for progress bookkeeping. Forgather extension.
+    dataloader_num_workers : int, optional
+        Subprocesses for data loading. ``0`` loads in the main process.
+    dataloader_pin_memory : bool, optional
+        Pin memory in DataLoader for faster GPU transfer.
+    dataloader_persistent_workers : bool, optional
+        Keep worker processes alive between epochs (faster, uses more RAM).
+    dataloader_prefetch_factor : int or None, optional
+        Batches prefetched per worker. Defaults to ``2`` when ``num_workers > 0``.
+    dataloader_drop_last : bool, optional
+        Drop the last incomplete batch when the dataset is not evenly divisible.
+    eval_strategy : str, optional
+        When to run evaluation: ``"no"``, ``"steps"``, or ``"epoch"``.
+    eval_steps : int, optional
+        Evaluation frequency in steps (when ``eval_strategy="steps"``).
+    eval_delay : int, optional
+        Epochs or steps to wait before the first evaluation.
+    logging_strategy : str, optional
+        When to log metrics: ``"no"``, ``"steps"``, or ``"epoch"``.
+    logging_steps : int, optional
+        Logging frequency in steps (when ``logging_strategy="steps"``).
+    logging_first_step : bool, optional
+        Log metrics at the very first global step.
+    torch_compile : bool, optional
+        Compile the model with ``torch.compile()`` for speedup.
+    torch_compile_backend : str or None, optional
+        Backend for ``torch.compile`` (e.g. ``"inductor"``, ``"aot_eager"``).
+    torch_compile_mode : str or None, optional
+        Compilation mode: ``"default"``, ``"reduce-overhead"``, or ``"max-autotune"``.
+    torch_compile_dynamic : bool, optional
+        Allow dynamic shapes in the compiled model.
+    torch_compile_full_graph : bool, optional
+        Force compilation of the entire model as a single graph.
+    max_grad_norm : float or None, optional
+        Maximum gradient norm for clipping. ``None`` disables clipping.
+    gradient_accumulation_steps : int, optional
+        Accumulate gradients over this many steps before an optimiser update.
+    save_strategy : str, optional
+        Checkpoint save strategy: ``"no"``, ``"steps"``, or ``"epoch"``.
+    save_steps : int, optional
+        Checkpoint save frequency in steps (when ``save_strategy="steps"``).
+    save_total_limit : int, optional
+        Maximum number of checkpoints to keep; oldest are deleted first.
+    save_safetensors : bool, optional
+        Write weights as Safetensors (safer and HF-compatible) rather than pickle.
+    save_on_each_node : bool, optional
+        In multi-node training, save on every node rather than only rank 0.
+        Do not enable when using shared storage.
+    overwrite_output_dir : bool, optional
+        Overwrite ``output_dir`` contents on a fresh run.
+    resume_from_checkpoint : bool or str, optional
+        ``True`` (default) automatically finds and loads the latest checkpoint,
+        falling back to fresh initialisation if none exists. A path string loads
+        that specific checkpoint. ``False`` forces fresh initialisation.
+    load_best_model_at_end : bool, optional
+        Restore the best checkpoint at the end of training. Requires
+        ``save_strategy == eval_strategy``.
+    metric_for_best_model : str, optional
+        Metric used to compare checkpoints when ``load_best_model_at_end=True``.
+    greater_is_better : bool or None, optional
+        Whether a higher metric value is better. Auto-determined from the metric
+        name when ``None``.
+    lr_scheduler_type : str, optional
+        LR scheduler type for the built-in AdamW path (``"linear"``, ``"cosine"``, etc.).
+    lr_scheduler_kwargs : dict or None, optional
+        Additional keyword arguments forwarded to the LR scheduler constructor.
+    warmup_steps : int, optional
+        Linear warmup steps from 0 to ``learning_rate``.
+    learning_rate : float, optional
+        Initial learning rate for the built-in AdamW optimiser.
+    weight_decay : float, optional
+        Weight decay applied to all parameters except bias and LayerNorm weights.
+    adam_beta1 : float, optional
+        Beta1 for the built-in AdamW optimiser.
+    adam_beta2 : float, optional
+        Beta2 for the built-in AdamW optimiser.
+    adam_epsilon : float, optional
+        Epsilon for the built-in AdamW optimiser.
+    gradient_checkpointing : bool, optional
+        Enable activation checkpointing on models that support the HF API.
+        Pass ``enable_activation_checkpoint_fn`` to the Trainer constructor to
+        customise the checkpointing behaviour.
     """
 
     output_dir: str = OUTPUTDIR_NAME

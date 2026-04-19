@@ -12,21 +12,55 @@ from torch.utils.data import IterableDataset as TorchIterableDataset
 
 class InterleavedDataset(TorchIterableDataset):
     """
-    Interleaved dataset combining multiple datasets.
+    An iterable dataset that interleaves examples from multiple child datasets.
 
-    Works with any iterable dataset supporting the stateful protocol
-    (state_dict/load_state_dict). Enables efficient multi-dataset
-    pre-training with checkpoint support.
+    Works with any iterable dataset that supports the stateful checkpoint
+    protocol (``state_dict`` / ``load_state_dict``), including
+    `SimpleArrowIterableDataset`. Designed for multi-dataset pre-training where
+    examples from several corpora need to be mixed in a single training loop.
 
-    Args:
-        datasets: List of datasets to interleave
-        probabilities: Sampling probabilities for each dataset. Can be:
-            - None: Round-robin (equal probability)
-            - List[float]: Static probabilities (normalized automatically)
-            - Callable: Dynamic probabilities function called each iteration
-                        Signature: (step, datasets, examples_per_dataset, exhausted) -> List[float]
-        seed: Random seed for reproducible sampling
-        stopping_strategy: 'first_exhausted' or 'all_exhausted'
+    Parameters
+    ----------
+    datasets : list
+        Child datasets to interleave. Must be non-empty. Each element can be
+        any iterable; checkpointing is available for elements that implement
+        ``state_dict`` / ``load_state_dict``.
+    probabilities : list of float or callable, optional
+        Controls which child dataset is sampled at each step:
+
+        - ``None`` (default) — round-robin: datasets are visited in order,
+          cycling back to the first after the last.
+        - ``list of float`` — static per-dataset weights. Values are
+          normalised automatically; all must be non-negative and their sum
+          must be positive.
+        - ``callable`` — dynamic weight function called at each step with
+          signature ``(step, datasets, examples_per_dataset, exhausted)
+          -> list of float``. See `balance_remaining_examples` for an
+          example implementation.
+    seed : int, optional
+        Random seed for reproducible probabilistic sampling. Ignored when
+        ``probabilities`` is ``None`` (round-robin).
+    stopping_strategy : {"first_exhausted", "all_exhausted"}, optional
+        When to stop iteration:
+
+        - ``"first_exhausted"`` (default) — stop as soon as any child dataset
+          is exhausted.
+        - ``"all_exhausted"`` — continue until every child dataset is
+          exhausted, oversampling shorter datasets.
+
+    Raises
+    ------
+    ValueError
+        If ``datasets`` is empty, probabilities fail validation, or an
+        unsupported ``stopping_strategy`` is given.
+
+    Examples
+    --------
+    >>> ds1 = fast_load_iterable_dataset("corpus_a", split="train")
+    >>> ds2 = fast_load_iterable_dataset("corpus_b", split="train")
+    >>> combined = InterleavedDataset([ds1, ds2], probabilities=[0.7, 0.3], seed=42)
+    >>> for example in combined:
+    ...     pass
     """
 
     def __init__(
@@ -91,10 +125,18 @@ class InterleavedDataset(TorchIterableDataset):
 
     def __iter__(self):
         """
-        Interleave examples from child datasets.
+        Yield interleaved examples from all child datasets.
 
-        Uses probabilities for sampling if provided, otherwise round-robin.
-        Respects stopping_strategy for when to stop iteration.
+        Selects which child to draw from at each step using the configured
+        sampling strategy (round-robin or probabilistic). Stops according to
+        ``stopping_strategy``. If `load_state_dict` was called before
+        iteration, child iterators are fast-forwarded to their checkpointed
+        positions automatically.
+
+        Yields
+        ------
+        dict
+            One example per step from whichever child dataset was selected.
         """
         import random
 
@@ -207,10 +249,19 @@ class InterleavedDataset(TorchIterableDataset):
 
     def __len__(self) -> int:
         """
-        Compute total length based on stopping strategy.
+        Return an estimate of the total number of examples that will be yielded.
 
-        Returns:
-            Total number of examples that will be yielded
+        The estimate depends on the ``stopping_strategy``:
+
+        - ``"first_exhausted"`` with round-robin — ``min(child_lengths) * num_datasets``.
+        - ``"first_exhausted"`` with probabilities — ``sum(child_lengths)``
+          (approximation; exact calculation is complex).
+        - ``"all_exhausted"`` — ``sum(child_lengths)`` regardless of sampling mode.
+
+        Returns
+        -------
+        int
+            Estimated total example count.
         """
         dataset_lengths = [len(ds) for ds in self.datasets]
 
@@ -264,10 +315,33 @@ class InterleavedDataset(TorchIterableDataset):
 
     def state_dict(self) -> Dict[str, Any]:
         """
-        Get checkpoint state for all child datasets.
+        Serialize the interleaving position and all child dataset states.
 
-        Returns:
-            Dictionary with state for each child dataset plus interleaving state
+        Returns
+        -------
+        dict
+            Dictionary with the following keys:
+
+            ``current_dataset_index``
+                Index of the child dataset that was most recently sampled.
+            ``current_example_count``
+                Total examples yielded so far across all children.
+            ``datasets_exhausted``
+                Boolean list indicating which children are exhausted.
+            ``probabilities``
+                Normalised static probabilities (``None`` if round-robin or
+                dynamic).
+            ``seed``
+                Random seed.
+            ``stopping_strategy``
+                Configured stopping strategy string.
+            ``child_states``
+                List of per-child state dicts (``None`` for children that do
+                not implement ``state_dict``).
+            ``examples_per_dataset``
+                Per-child example counts at the time of the last yield
+                (present only when available; required for dynamic probability
+                functions).
         """
         state = {
             "current_dataset_index": self._current_dataset_index,
@@ -295,10 +369,16 @@ class InterleavedDataset(TorchIterableDataset):
 
     def load_state_dict(self, state_dict: Dict[str, Any]):
         """
-        Restore checkpoint state for all child datasets.
+        Restore the interleaving position and all child dataset states.
 
-        Args:
-            state_dict: Dictionary from previous state_dict() call
+        After calling this method, the next iteration resumes from the saved
+        position. Child datasets that implement ``load_state_dict`` are
+        restored individually; others are left at their natural start position.
+
+        Parameters
+        ----------
+        state_dict : dict
+            Dictionary previously returned by `state_dict`.
         """
         self._current_dataset_index = state_dict["current_dataset_index"]
         self._current_example_count = state_dict["current_example_count"]
@@ -326,28 +406,41 @@ def balance_remaining_examples(
     exhausted: List[bool],
 ) -> List[float]:
     """
-    Dynamic probability function that weights datasets by estimated remaining examples.
+    Dynamic probability function that targets proportional dataset exhaustion.
 
-    This encourages all datasets to finish at approximately the same time by
-    giving higher weight to datasets with more remaining examples. Useful for
-    balanced multi-dataset training where you want to consume all data sources
-    proportionally.
+    Assigns each non-exhausted child dataset a sampling weight proportional to
+    its estimated remaining example count. This causes all datasets to finish
+    at roughly the same time, regardless of their individual sizes.
 
-    Args:
-        step: Current iteration step (unused, but part of signature)
-        datasets: List of child datasets
-        examples_per_dataset: Number of examples already yielded from each dataset
-        exhausted: Boolean list indicating which datasets are exhausted
+    Intended to be passed as the ``probabilities`` argument of
+    `InterleavedDataset` or `interleave_datasets`.
 
-    Returns:
-        List of weights (one per dataset) for probabilistic sampling
+    Parameters
+    ----------
+    step : int
+        Current iteration step (provided by the interleaving loop; not used by
+        this function but required by the dynamic-probability protocol).
+    datasets : list
+        Child datasets (used only for ``len()`` queries).
+    examples_per_dataset : list of int
+        Number of examples already yielded from each child dataset.
+    exhausted : list of bool
+        Boolean flags indicating which child datasets are exhausted.
 
-    Example:
-        >>> interleaved = interleave_datasets(
-        ...     [ds1, ds2, ds3],
-        ...     probabilities=balance_remaining_examples,
-        ...     seed=42
-        ... )
+    Returns
+    -------
+    list of float
+        Per-dataset sampling weights. Exhausted datasets receive weight ``0.0``.
+        If all datasets are exhausted, all weights are set to ``1.0`` as a
+        fallback (the interleaving loop will stop immediately anyway).
+
+    Examples
+    --------
+    >>> combined = interleave_datasets(
+    ...     [ds1, ds2, ds3],
+    ...     probabilities=balance_remaining_examples,
+    ...     seed=42,
+    ... )
     """
     weights = []
     for i, (dataset, count, is_exhausted) in enumerate(
@@ -384,40 +477,51 @@ def interleave_datasets(
     stopping_strategy: str = "first_exhausted",
 ):
     """
-    Interleave multiple datasets into a single dataset.
+    Combine multiple iterable datasets into a single interleaved dataset.
 
-    Protocol-based implementation that works with any iterable dataset,
-    not just HuggingFace datasets. Preserves efficient checkpoint protocol.
+    Convenience constructor for `InterleavedDataset`. Works with any iterable
+    that optionally supports the ``state_dict`` / ``load_state_dict`` checkpoint
+    protocol (e.g. `SimpleArrowIterableDataset`).
 
-    Args:
-        datasets: List of datasets to interleave (any iterable with optional state_dict/load_state_dict)
-        probabilities: Sampling probabilities for each dataset. Can be:
-            - None: Round-robin (equal probability)
-            - List[float]: Static probabilities (normalized automatically)
-            - Callable: Dynamic probabilities function called each iteration
-                        Signature: (step, datasets, examples_per_dataset, exhausted) -> List[float]
-                        See balance_remaining_examples() for example implementation
-        seed: Random seed for reproducible sampling
-        stopping_strategy: 'first_exhausted' or 'all_exhausted'
+    Parameters
+    ----------
+    datasets : list
+        Child datasets to interleave. Must be non-empty.
+    probabilities : list of float or callable, optional
+        Sampling weights for each dataset:
 
-    Returns:
-        InterleavedDataset combining all input datasets
+        - ``None`` (default) — round-robin.
+        - ``list of float`` — static normalised weights.
+        - ``callable`` — dynamic weight function with signature
+          ``(step, datasets, examples_per_dataset, exhausted) -> list of float``.
+          See `balance_remaining_examples` for a reference implementation.
+    seed : int, optional
+        Random seed for probabilistic sampling.
+    stopping_strategy : {"first_exhausted", "all_exhausted"}, optional
+        ``"first_exhausted"`` (default) stops when any child is exhausted;
+        ``"all_exhausted"`` continues until all children are exhausted.
 
-    Examples:
-        # Round-robin interleaving
-        >>> ds1 = fast_load_iterable_dataset("dataset1", split="train")
-        >>> ds2 = fast_load_iterable_dataset("dataset2", split="train")
-        >>> combined = interleave_datasets([ds1, ds2])
+    Returns
+    -------
+    InterleavedDataset
+        Combined dataset that supports iteration and checkpointing.
 
-        # Probabilistic sampling (70% ds1, 30% ds2)
-        >>> combined = interleave_datasets([ds1, ds2], probabilities=[0.7, 0.3], seed=42)
+    Examples
+    --------
+    >>> ds1 = fast_load_iterable_dataset("dataset1", split="train")
+    >>> ds2 = fast_load_iterable_dataset("dataset2", split="train")
 
-        # All exhausted (oversample smaller dataset)
-        >>> combined = interleave_datasets([ds1, ds2], stopping_strategy="all_exhausted")
+    >>> # Round-robin
+    >>> combined = interleave_datasets([ds1, ds2])
 
-        # Works with StatefulDataLoader for checkpointing
-        >>> dataloader = StatefulDataLoader(combined, batch_size=32)
-        >>> # Training loop with checkpoint save/restore
+    >>> # Probabilistic (70 % / 30 %)
+    >>> combined = interleave_datasets([ds1, ds2], probabilities=[0.7, 0.3], seed=42)
+
+    >>> # Consume all data from both datasets
+    >>> combined = interleave_datasets([ds1, ds2], stopping_strategy="all_exhausted")
+
+    >>> # Use with StatefulDataLoader for checkpoint support
+    >>> dataloader = StatefulDataLoader(combined, batch_size=32)
     """
     return InterleavedDataset(
         datasets=datasets,

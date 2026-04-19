@@ -31,9 +31,11 @@ class ResumableSummaryWriter(TrainerCallback, Stateful):
     it proxies method calls to the underlying writer, constructing it
     lazily on first use.
 
-    Args:
-        log_dir: Logging directory path (typically ``ns.logging_dir``
-                 from the template system).
+    Parameters
+    ----------
+    log_dir : str
+        Logging directory path (typically ``ns.logging_dir``
+        from the template system).
     """
 
     def __init__(self, log_dir: str):

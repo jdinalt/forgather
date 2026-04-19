@@ -80,7 +80,24 @@ TDDPTrainingArguments = TypeVar("TDDPTrainingArguments", bound=DDPTrainingArgume
 
 class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments]):
     """
-    Modify the base Trainer to use the Accelerate library.
+    Multi-GPU trainer using DistributedDataParallel (DDP).
+
+    Wraps the base ``Trainer`` with DDP for data-parallel training across multiple GPUs
+    or nodes. Each rank receives a different batch; gradients are all-reduced automatically
+    after each backward pass. Optionally uses PostLocalSGD for bandwidth-limited environments.
+
+    Launch with ``torchrun`` (or the ``forgather train -d ...`` shortcut)::
+
+        torchrun --nproc_per_node=4 train.py
+
+    Key differences from single-GPU ``Trainer``:
+
+    - Model wrapped in ``torch.nn.parallel.DistributedDataParallel``
+    - Gradient accumulation uses DDP's ``no_sync()`` context to skip reductions on
+      intermediate steps
+    - Dataset loading via ``DataloaderDispatcher`` (``dispatch_batches=True``, default)
+      or ``SynchronizedDataLoader`` (``dispatch_batches=False``)
+    - Optional PostLocalSGD communication hook for reduced all-reduce frequency
     """
 
     args: TDDPTrainingArguments
@@ -93,6 +110,20 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
         fused_loss_factory: Optional[FusedLossFactoryT] = None,
         **kwargs,
     ):
+        """
+        Parameters
+        ----------
+        args : DDPTrainingArguments or dict
+            Training configuration including DDP-specific options (``ddp``,
+            ``post_local_sgd``, ``dispatch_batches``). Accepts a dict for
+            programmatic construction.
+        fused_loss_factory : callable, optional
+            Factory for fused logits-loss computation. See ``Trainer`` for details.
+        **kwargs
+            Forwarded to ``Trainer.__init__``: ``distributed_env``, ``model``,
+            ``model_init``, ``train_dataset``, ``eval_dataset``, ``optimizer_factory``,
+            ``lr_scheduler_factory``, ``callbacks``, etc.
+        """
         if isinstance(args, dict):
             args = cast(TDDPTrainingArguments, from_dict(DDPTrainingArguments, args))
 
@@ -349,11 +380,15 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
         In DDP, each rank processes different batches, so token counts must be
         summed across all ranks to get the total tokens processed per step.
 
-        Args:
-            tokens: Token count from current rank
+        Parameters
+        ----------
+        tokens : Tensor
+            Token count from the current rank.
 
-        Returns:
-            Total token count across all DDP ranks
+        Returns
+        -------
+        Tensor
+            Total token count summed across all DDP ranks.
         """
         if self.dist.world_size == 1:
             return super()._distributed_tokens(tokens)
@@ -414,8 +449,10 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
         - dispatch_batches=True: GLOBAL (rank 0 loads and dispatches)
         - dispatch_batches=False: PER_RANK (each rank has independent dataloader)
 
-        Returns:
-            List of StateComponent objects with REPLICATED patterns for DDP state
+        Returns
+        -------
+        list of StateComponent
+            State components with REPLICATED sharing patterns for DDP.
         """
         if self.dist.world_size == 1:
             return super().get_state_components()
@@ -507,8 +544,10 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
         - dispatch_batches=False: Each rank has independent dataloader iteration
           (PER_RANK pattern)
 
-        Returns:
-            SharingPattern for dataset state (GLOBAL or PER_RANK)
+        Returns
+        -------
+        SharingPattern
+            GLOBAL when ``dispatch_batches=True``, PER_RANK otherwise.
         """
         if self.dist.world_size == 1:
             return super()._get_dataset_sharing_pattern()
@@ -525,8 +564,10 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
         """
         Get named process groups for checkpoint coordination.
 
-        Returns:
-            Dictionary mapping group names to ProcessGroup objects.
+        Returns
+        -------
+        dict
+            Mapping of group names to ProcessGroup objects.
             For DDP, returns the data parallel group.
         """
         if self.dist.world_size == 1:

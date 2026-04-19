@@ -38,19 +38,26 @@ def create_manual_causal_lm_splitter(
     (input_encoder, layer_stack with layers, output_decoder). It splits the
     model by deleting layers that don't belong to each stage.
 
-    Args:
-        num_layers: Number of transformer layers. If None, auto-detected from
-                   model.config.num_hidden_layers at split time.
-        input_weight: Computational weight for input_encoder when distributing
-                     layers across stages. Higher weight means input_encoder
-                     is counted as equivalent to more layers.
-        output_weight: Computational weight for output modules (layer_norm +
-                      output_decoder) when distributing layers.
+    Parameters
+    ----------
+    num_layers : int, optional
+        Number of transformer layers. If ``None``, auto-detected from
+        ``model.config.num_hidden_layers`` at split time.
+    input_weight : int, optional
+        Computational weight for ``input_encoder`` when distributing
+        layers across stages. Higher weight means ``input_encoder``
+        is counted as equivalent to more layers.
+    output_weight : int, optional
+        Computational weight for output modules (``layer_norm`` +
+        ``output_decoder``) when distributing layers.
 
-    Returns:
-        A ModelSplitter function that performs manual splitting
+    Returns
+    -------
+    ModelSplitter
+        A ``ModelSplitter`` function that performs manual splitting.
 
-    Example:
+    Examples
+    --------
         >>> # Auto-detect layers, equal weights
         >>> splitter = create_manual_causal_lm_splitter()
         >>>
@@ -163,12 +170,17 @@ def _get_mask_creator(model: Module, rank: int) -> Optional[Callable]:
     masks to be computed independently on each pipeline stage rather than being
     forwarded through the pipeline (which causes gradient issues).
 
-    Args:
-        model: The model to extract the mask creator from
-        rank: Current rank (for logging)
+    Parameters
+    ----------
+    model : torch.nn.Module
+        The model to extract the mask creator from.
+    rank : int
+        Current rank (for logging).
 
-    Returns:
-        The create_attention_mask method if found, None otherwise
+    Returns
+    -------
+    callable or None
+        The ``create_attention_mask`` method if found, ``None`` otherwise.
     """
     # Try direct access
     if hasattr(model, "get_attn_mask_fn"):

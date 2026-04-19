@@ -52,17 +52,16 @@ class DefaultMetrics(TrainerCallback):
         peak_hardware_flops: Optional[float] = None,
     ):
         """
-        Args:
-            peak_hardware_flops: Aggregate peak BF16 FLOP/s across all GPUs used
-                in training, used to compute MFU.  Must be the total across all
-                ranks since total_flos accounts for tokens processed across all
-                ranks.  When ``None``, MFU is not computed.
-                Example values (dense BF16, FP32 accumulate):
-                  Single RTX 4090:  165.2e12
-                  Single RTX 3090:   71.2e12
-                  4x RTX 4090:      660.8e12
-                  A100 SXM:         312e12
-                  H100 SXM:         989e12
+        Parameters
+        ----------
+        peak_hardware_flops : float, optional
+            Aggregate peak BF16 FLOP/s across all GPUs used in training,
+            used to compute MFU. Must be the total across all ranks since
+            ``total_flos`` accounts for tokens processed across all ranks.
+            When ``None``, MFU is not computed.
+            Example values (dense BF16, FP32 accumulate):
+            Single RTX 4090: 165.2e12; Single RTX 3090: 71.2e12;
+            4x RTX 4090: 660.8e12; A100 SXM: 312e12; H100 SXM: 989e12.
         """
         super().__init__()
         self.peak_hardware_flops = peak_hardware_flops
@@ -187,25 +186,30 @@ class ProgressCallback(TrainerCallback):
         header_interval: int = 20,
     ):
         """
-        Args:
-            use_tqdm: If True, use TQDM; else if False, use logging; else auto select
-            output_stream: The output stream to use, if using logging
-            step_columns: A dict of column spec overrides, merged with
-                ``default_step_columns()``.  Each key maps a metric name
-                to a dict of ColumnSpec fields (label, width, fmt).
-                Set a key to ``None`` to erase that column from the
-                defaults.  Individual fields can be overridden without
-                re-specifying the entire spec.  When ``None``, uses
-                defaults unmodified.  Column order follows insertion
-                order of the merged result.  Only columns whose key
-                appears in the current log entry are shown.
-            final_metrics: A dict of final metric spec overrides, merged
-                with ``default_final_metrics()``.  Each key maps a metric
-                name to a dict of FinalMetricSpec fields (label, fmt,
-                suffix).  Set a key to ``None`` to erase that metric.
-                When ``None``, uses defaults unmodified.
-            header_interval: Print a column header row every this many log steps, and
-                also whenever the set of active columns changes. (default: 20)
+        Parameters
+        ----------
+        use_tqdm : bool, optional
+            If ``True``, use TQDM; if ``False``, use logging; if ``None``,
+            auto-select.
+        output_stream : OutputStream, optional
+            The output stream to use when not using TQDM.
+        step_columns : dict, optional
+            Column spec overrides merged with ``default_step_columns()``.
+            Each key maps a metric name to a dict of ``ColumnSpec`` fields
+            (``label``, ``width``, ``fmt``). Set a key to ``None`` to erase
+            that column from the defaults. When ``None``, uses defaults
+            unmodified. Column order follows insertion order of the merged
+            result. Only columns whose key appears in the current log entry
+            are shown.
+        final_metrics : dict, optional
+            Final metric spec overrides merged with
+            ``default_final_metrics()``. Each key maps a metric name to a
+            dict of ``FinalMetricSpec`` fields (``label``, ``fmt``,
+            ``suffix``). Set a key to ``None`` to erase that metric. When
+            ``None``, uses defaults unmodified.
+        header_interval : int, optional
+            Print a column header row every this many log steps, and also
+            whenever the set of active columns changes. Default is ``20``.
         """
         super().__init__()
         self.train_progress_bar = None

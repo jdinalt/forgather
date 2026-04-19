@@ -57,12 +57,16 @@ def _parse_split_notation(split: str) -> Tuple[str, Optional[int], Optional[int]
         "train[100:1000]" → ("train", 100, 1000)
         "train[10%:20%]" → ("train", "10%", "20%")
 
-    Args:
-        split: Split string potentially with slice notation
+    Parameters
+    ----------
+    split : str
+        Split string potentially with slice notation.
 
-    Returns:
+    Returns
+    -------
+    tuple
         Tuple of (base_split, start_idx, end_idx) where indices can be
-        int, str (for percentages like "10%"), or None
+        int, str (for percentages like "10%"), or None.
     """
     if not split:
         return split, None, None
@@ -101,15 +105,49 @@ def _parse_split_notation(split: str) -> Tuple[str, Optional[int], Optional[int]
 
 class SimpleArrowIterableDataset(TorchIterableDataset):
     """
-    Simple IterableDataset wrapper around Arrow files.
+    An iterable dataset that reads Arrow files sequentially with checkpoint support.
 
-    Implements:
-    - Sequential reading of Arrow files
-    - Shard-level shuffling (shuffles file order)
-    - Sharding for DDP
-    - Stateful checkpoint protocol (state_dict/load_state_dict)
-    - Compatible with torch.utils.data.DataLoader
-    - Compatible with torchdata.stateful_dataloader.StatefulDataLoader
+    This is the dataset type returned by `FastDatasetLoaderSimple.load_iterable` and
+    `fast_load_iterable_dataset`. It provides a HuggingFace-compatible iterable
+    dataset API built directly on top of Arrow files cached on disk, bypassing the
+    overhead of HuggingFace's internal interleaved-dataset machinery.
+
+    Key capabilities:
+
+    - Sequential Arrow file reading with file-level and example-level sharding
+    - Two-level shuffling: file order plus an in-memory reservoir shuffle buffer
+    - Lazy `.map()` applied during iteration (preserves the checkpoint protocol)
+    - Virtual splits via `.slice()` / `.select()` without copying data
+    - Stateful checkpoint protocol via `state_dict` / `load_state_dict`, compatible
+      with `torchdata.stateful_dataloader.StatefulDataLoader`
+    - Progressive length estimation for mapped datasets that change cardinality
+
+    Parameters
+    ----------
+    arrow_files : list of str
+        Ordered list of Arrow file paths that make up the dataset. Each file is
+        treated as one natural shard.
+    file_lengths : list of int, optional
+        Per-file example counts, parallel to ``arrow_files``. When provided,
+        length queries and virtual-split calculations are instant (no file I/O).
+        When ``None``, file lengths are looked up by opening each Arrow file on
+        demand.
+
+    Notes
+    -----
+    Do not construct this class directly in normal usage. Obtain instances through
+    `FastDatasetLoaderSimple.load_iterable` or the `fast_load_iterable_dataset`
+    convenience function, both of which populate ``file_lengths`` from a cached
+    index.
+
+    Examples
+    --------
+    >>> ds = fast_load_iterable_dataset("allenai/c4", name="en", split="train")
+    >>> ds = ds.shuffle(seed=42, buffer_size=10000)
+    >>> ds = ds.shard(num_shards=4, index=0)
+    >>> ds = ds.map(tokenize_fn, batched=True, batch_size=1000)
+    >>> for example in ds:
+    ...     pass
     """
 
     def __init__(
@@ -184,13 +222,19 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Shuffle Arrow files and their lengths together.
 
-        Args:
-            arrow_files: List of Arrow file paths
-            file_lengths: Optional list of example counts per file
-            seed: Random seed for shuffling
+        Parameters
+        ----------
+        arrow_files : list of str
+            List of Arrow file paths.
+        file_lengths : list of int or None
+            Optional list of example counts per file.
+        seed : int
+            Random seed for shuffling.
 
-        Returns:
-            Tuple of (shuffled_files, shuffled_lengths)
+        Returns
+        -------
+        tuple
+            Tuple of (shuffled_files, shuffled_lengths).
         """
         import random
 
@@ -211,16 +255,21 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Create a copy of this dataset with optional overrides.
 
-        Args:
-            **overrides: Keyword arguments to override specific instance variables.
-                        Use the attribute name without the leading underscore for
-                        private attributes (e.g., shuffle_seed not _shuffle_seed).
+        Parameters
+        ----------
+        **overrides
+            Keyword arguments to override specific instance variables.
+            Use the attribute name without the leading underscore for
+            private attributes (e.g., shuffle_seed not _shuffle_seed).
 
-        Returns:
-            New SimpleArrowIterableDataset with copied state
+        Returns
+        -------
+        SimpleArrowIterableDataset
+            New SimpleArrowIterableDataset with copied state.
 
-        Example:
-            >>> new_ds = ds._copy(shuffle_seed=42, epoch=1)
+        Examples
+        --------
+        >>> new_ds = ds._copy(shuffle_seed=42, epoch=1)
         """
         # Create new instance with same arrow files
         new_dataset = SimpleArrowIterableDataset(self.arrow_files, self.file_lengths)
@@ -317,25 +366,37 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
     def shuffle(self, seed: Optional[int] = None, buffer_size: int = 1000):
         """
-        Shuffle at both file and example level.
+        Return a shuffled view of this dataset.
 
         Implements two-level shuffling:
-        1. Shard-level: Shuffles Arrow file order
-        2. Example-level: Maintains a shuffle buffer during iteration
 
-        Args:
-            seed: Random seed for shuffling. If None, generates a random seed.
-                  Storing the seed allows checkpoint/restore to reproduce the shuffle.
-            buffer_size: Size of shuffle buffer for example-level shuffling.
-                        Larger buffers provide better randomization but use more memory.
-                        Set to 0 or None to disable example-level shuffling (shard-level only).
+        1. **Shard-level** — the Arrow file order is permuted using ``seed``.
+        2. **Example-level** — a reservoir-style shuffle buffer is applied during
+           iteration, providing within-shard randomisation.
 
-        Returns:
-            New dataset instance with shuffling configured
+        The original dataset object is not mutated; a new instance is returned.
 
-        Note:
-            With checkpoint resumption, the shuffle pattern after the checkpoint will
-            differ from a non-interrupted run, but randomness is still maintained.
+        Parameters
+        ----------
+        seed : int, optional
+            Random seed. If ``None``, a random seed is generated and stored so
+            that the shuffle can be reproduced from a checkpoint.
+        buffer_size : int, optional
+            Capacity of the in-memory example shuffle buffer. Larger values give
+            better randomisation at the cost of memory. Set to ``0`` or ``None``
+            to disable example-level shuffling (shard-level only). Default is
+            ``1000``.
+
+        Returns
+        -------
+        SimpleArrowIterableDataset
+            New dataset instance with shuffling configured.
+
+        Notes
+        -----
+        After restoring from a checkpoint, the exact post-checkpoint shuffle
+        sequence will differ from an uninterrupted run, but randomness is
+        preserved and the seed guarantees reproducibility of the overall shuffle.
         """
         import random
 
@@ -370,31 +431,34 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
     def set_epoch(self, epoch: int):
         """
-        Set the epoch for the dataset.
+        Set the current epoch, enabling per-epoch re-shuffling.
 
-        Enables different shuffling patterns for each epoch while maintaining
-        reproducibility. This should be called at the start of each training epoch:
+        Call this at the start of each training epoch so that each epoch uses a
+        different file order. Must be called **before** iteration starts for the
+        epoch.
 
-            for epoch in range(num_epochs):
-                train_dataset.set_epoch(epoch)
-                for batch in dataloader:
-                    # Training code
-                    pass
+        Parameters
+        ----------
+        epoch : int
+            Current epoch number (0-indexed).
 
-        Args:
-            epoch: The current epoch number (0-indexed)
+        Notes
+        -----
+        Seed derivation rules:
 
-        Behavior:
-            - If shuffle() was called: effective_seed = base_seed + epoch
-            - If shuffle() was not called but epoch > 0: effective_seed = epoch
-            - If shuffle() was not called and epoch == 0: no shuffle occurs
+        - If `shuffle` was called: ``effective_seed = base_seed + epoch``
+        - If `shuffle` was *not* called but ``epoch > 0``: ``effective_seed = epoch``
+        - If `shuffle` was not called and ``epoch == 0``: no shuffle occurs
 
-        This allows set_epoch() to work even without explicitly calling shuffle(),
-        enabling epoch-based shuffling with deterministic seeds derived from the
-        epoch number itself.
+        This means `set_epoch` can drive per-epoch shuffling even without an
+        explicit `shuffle` call, using the epoch number itself as the seed.
 
-        Note:
-            This method must be called BEFORE iteration starts for the epoch.
+        Examples
+        --------
+        >>> for epoch in range(num_epochs):
+        ...     train_dataset.set_epoch(epoch)
+        ...     for batch in dataloader:
+        ...         pass
         """
         self._epoch = epoch
 
@@ -405,8 +469,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         This updates _shuffled_files and _shuffled_lengths in-place.
         Used by set_epoch() to change shuffle pattern between epochs.
 
-        Args:
-            seed: Random seed for shuffling
+        Parameters
+        ----------
+        seed : int
+            Random seed for shuffling.
         """
         # Use static helper to shuffle
         self._shuffled_files, self._shuffled_lengths = self._shuffle_files_and_lengths(
@@ -424,12 +490,16 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         2. If shuffle() was not called but epoch > 0: effective_seed = epoch
         3. Otherwise: use fallback_seed (or None)
 
-        Args:
-            fallback_seed: Seed to use if no base_seed and epoch == 0.
-                          Defaults to None if not provided.
+        Parameters
+        ----------
+        fallback_seed : int or None, optional
+            Seed to use if no base_seed and epoch == 0.
+            Defaults to None if not provided.
 
-        Returns:
-            Effective seed to use for shuffling, or None for no shuffle
+        Returns
+        -------
+        int or None
+            Effective seed to use for shuffling, or None for no shuffle.
         """
         if self._base_shuffle_seed is not None:
             # shuffle() was called - use base_seed + epoch
@@ -444,29 +514,33 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
     def select(self, indices):
         """
-        Select examples by indices, similar to HuggingFace datasets API.
+        Select examples by index range, mirroring the HuggingFace datasets API.
 
-        This is an adapter that translates to the slice() method for contiguous ranges.
+        This is an adapter that translates a contiguous index sequence to an
+        efficient `slice` call. Non-contiguous or out-of-order index sequences
+        are not supported.
 
-        Args:
-            indices: Range, list, iterable, ndarray, or Series of integer indices.
-                     If the indices correspond to a contiguous range, the dataset
-                     is efficiently sliced. Non-contiguous indices are not yet supported.
+        Parameters
+        ----------
+        indices : range, list, numpy.ndarray, or pandas.Series
+            Integer indices to select. Must form a contiguous, ascending sequence.
 
-        Returns:
-            New dataset with selected examples
+        Returns
+        -------
+        SimpleArrowIterableDataset
+            New dataset containing only the selected examples.
 
-        Examples:
-            >>> # Select first 100 examples
-            >>> ds.select(range(100))
-            >>> ds.select(list(range(100)))
-            >>>
-            >>> # Select examples 100-200
-            >>> ds.select(range(100, 200))
+        Raises
+        ------
+        ValueError
+            If ``indices`` is empty.
+        NotImplementedError
+            If ``indices`` are non-contiguous or not in ascending order.
 
-        Raises:
-            ValueError: If indices are empty
-            NotImplementedError: If non-contiguous indices are provided
+        Examples
+        --------
+        >>> ds.select(range(100))          # first 100 examples
+        >>> ds.select(range(100, 200))     # examples 100-199
         """
         # Convert to list if needed (handles range, numpy arrays, pandas Series, etc.)
         if hasattr(indices, "tolist"):
@@ -505,37 +579,42 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
     def slice(self, start=None, end=None):
         """
-        Create a virtual split by selecting a slice of examples.
+        Create a virtual sub-split without copying data.
 
-        Useful for train/val/test splits without copying data.
+        Returns a new dataset view restricted to ``[start, end)``. No Arrow
+        files are copied or modified; the boundaries are applied virtually during
+        iteration.
 
-        Args:
-            start: Start index (inclusive). Can be:
-                - None: Start from beginning (index 0)
-                - int: Absolute example index
-                - float in (0,1): Percentage of dataset (e.g., 0.8 = 80%)
-                - str: Percentage string (e.g., "80%")
-            end: End index (exclusive). Can be:
-                - None: Go to end of dataset
-                - int: Absolute example index
-                - float in (0,1): Percentage of dataset
-                - str: Percentage string (e.g., "80%")
+        Parameters
+        ----------
+        start : int, float, str, or None, optional
+            Inclusive start of the slice. Accepted forms:
 
-        Returns:
-            New dataset with virtual split applied
+            - ``None`` — beginning of dataset (index 0).
+            - ``int`` — absolute example index.
+            - ``float`` in ``[0, 1]`` — fraction of the dataset (e.g. ``0.8``).
+            - ``str`` ending with ``"%"`` — percentage string (e.g. ``"80%"``).
+            - Negative ``int`` — counted from the end (Python-style).
+        end : int, float, str, or None, optional
+            Exclusive end of the slice. Same accepted forms as ``start``.
+            ``None`` means the end of the dataset.
 
-        Examples:
-            >>> # First 80% for training
-            >>> train_ds = ds.slice(None, 0.8)
-            >>> train_ds = ds.slice(None, "80%")
-            >>>
-            >>> # Last 20% for validation
-            >>> val_ds = ds.slice(0.8, None)
-            >>> val_ds = ds.slice("80%", None)
-            >>>
-            >>> # Specific range
-            >>> subset = ds.slice(100, 200)  # Examples 100-199
-            >>> subset = ds.slice(0.1, 0.2)  # 10%-20% of dataset
+        Returns
+        -------
+        SimpleArrowIterableDataset
+            New dataset instance representing the sliced view.
+
+        Raises
+        ------
+        ValueError
+            If the resulting range is empty or indices are out of bounds.
+
+        Examples
+        --------
+        >>> train_ds = ds.slice(None, 0.8)    # first 80 %
+        >>> val_ds   = ds.slice(0.8, None)    # last 20 %
+        >>> subset   = ds.slice(100, 200)     # examples 100-199
+        >>> subset   = ds.slice("10%", "20%") # 10 %-20 % of dataset
         """
 
         def parse_index(idx, total):
@@ -623,25 +702,42 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
     def shard(self, num_shards: int, index: int, mode: str = "auto"):
         """
-        Shard the dataset (for DDP).
+        Partition the dataset into disjoint shards for distributed training.
 
-        Args:
-            num_shards: Number of shards to split into
-            index: Index of this shard (0 to num_shards-1)
-            mode: Sharding mode:
-                - 'auto': Use file-level if possible, otherwise example-level
-                - 'file': File-level sharding (each shard gets subset of files)
-                - 'example': Example-level sharding (divide examples evenly)
+        Returns a new dataset view containing only the examples that belong to
+        shard ``index``. Typically used to give each DDP rank its own slice of
+        the data.
 
-        File-level sharding:
-            - More efficient (less overhead during iteration)
-            - Requires num_shards <= num_files
-            - Shard i gets files at indices i, i+num_shards, i+2*num_shards, ...
+        Parameters
+        ----------
+        num_shards : int
+            Total number of shards to split the dataset into.
+        index : int
+            Zero-based index of the shard to return (must be in
+            ``[0, num_shards)``).
+        mode : {"auto", "file", "example"}, optional
+            Sharding strategy:
 
-        Example-level sharding:
-            - Works with any num_shards (even > num_files)
-            - Divides total examples evenly across shards
-            - Slightly more overhead during iteration
+            - ``"file"`` — each shard receives a disjoint subset of Arrow files
+              (shard *i* gets files at positions ``i, i+num_shards, ...``).
+              More efficient but requires ``num_shards <= num_files``.
+            - ``"example"`` — examples are divided evenly across shards
+              regardless of file boundaries. Slightly more iteration overhead
+              but works for any ``num_shards``.
+            - ``"auto"`` — selects ``"file"`` when possible (no virtual split
+              active and ``num_shards <= num_files``), otherwise ``"example"``.
+              Default is ``"auto"``.
+
+        Returns
+        -------
+        SimpleArrowIterableDataset
+            New dataset instance for the requested shard.
+
+        Raises
+        ------
+        ValueError
+            If ``index`` is negative or >= ``num_shards``, or if an invalid
+            ``mode`` string is provided.
         """
         if index >= num_shards:
             raise ValueError(
@@ -731,23 +827,53 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         fn_kwargs=None,
     ):
         """
-        Apply a function to all examples (individually or in batches).
+        Apply a transformation function lazily during iteration.
 
-        The function is applied lazily during iteration, preserving our
-        efficient checkpoint protocol.
+        The function is stored and applied on-the-fly as examples are read,
+        so the checkpoint protocol (file + example index) is unaffected.
+        The original dataset is not mutated; a new instance is returned.
 
-        Args:
-            function: Function to apply. If None, identity function is used.
-            with_indices: Provide example indices to function
-            input_columns: Specific columns to pass to function
-            batched: Process examples in batches
-            batch_size: Number of examples per batch if batched=True
-            drop_last_batch: Drop incomplete final batch
-            remove_columns: Columns to remove after mapping
-            fn_kwargs: Keyword arguments for function
+        Consecutive calls to `map` are composed: the functions are chained so
+        that each example passes through the earlier map before the later one.
+        Both maps must use the same ``batched`` mode.
 
-        Returns:
-            New SimpleArrowIterableDataset with map applied
+        Parameters
+        ----------
+        function : callable, optional
+            Transformation to apply. Receives a single example dict (or a
+            batched dict when ``batched=True``) and must return a dict or
+            ``None`` (``None`` filters the example out). If ``None``, the
+            identity function is used.
+        with_indices : bool, optional
+            If ``True``, the function also receives the global example index
+            (or a list of indices in batched mode). Default is ``False``.
+        input_columns : str or list of str, optional
+            If set, only the listed columns are passed to ``function``; other
+            columns are still forwarded to the output unchanged.
+        batched : bool, optional
+            If ``True``, ``function`` receives a dict of lists (one entry per
+            example) and must return a dict of lists. Enables N-to-M mappings
+            such as tokenisation with packing. Default is ``False``.
+        batch_size : int, optional
+            Number of examples per batch when ``batched=True``. Default is
+            ``1000``.
+        drop_last_batch : bool, optional
+            If ``True``, the final partial batch is discarded. Default is
+            ``False``.
+        remove_columns : str or list of str, optional
+            Columns to remove from the output after applying ``function``.
+        fn_kwargs : dict, optional
+            Extra keyword arguments forwarded to ``function`` on every call.
+
+        Returns
+        -------
+        SimpleArrowIterableDataset
+            New dataset instance with the map configured.
+
+        Raises
+        ------
+        ValueError
+            If chaining two maps with different ``batched`` modes.
         """
         # Normalize arguments
         if isinstance(input_columns, str):
@@ -808,12 +934,17 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Apply map function to a single example.
 
-        Args:
-            example: Dictionary of column values
-            example_idx: Global example index (for with_indices)
+        Parameters
+        ----------
+        example : dict
+            Dictionary of column values.
+        example_idx : int
+            Global example index (for with_indices).
 
-        Returns:
-            Transformed example dictionary
+        Returns
+        -------
+        dict
+            Transformed example dictionary.
         """
         if self._map_function is None:
             return example
@@ -857,12 +988,17 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Apply map function to a batch of examples.
 
-        Args:
-            examples: List of example dictionaries
-            start_idx: Starting global index for this batch (for with_indices)
+        Parameters
+        ----------
+        examples : list of dict
+            List of example dictionaries.
+        start_idx : int
+            Starting global index for this batch (for with_indices).
 
-        Returns:
-            List of transformed example dictionaries (may be different length due to filtering)
+        Returns
+        -------
+        list of dict
+            List of transformed example dictionaries (may be different length due to filtering).
         """
         if self._map_function is None or not examples:
             return examples
@@ -1021,12 +1157,17 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         This helper is used to flush partial batches before early termination
         (e.g., when reaching split/shard boundaries).
 
-        Args:
-            batch_buffer: List of pending examples
-            batch_start_idx: Starting index for the batch
+        Parameters
+        ----------
+        batch_buffer : list of dict
+            List of pending examples.
+        batch_start_idx : int
+            Starting index for the batch.
 
-        Yields:
-            Processed examples from the batch
+        Yields
+        ------
+        dict
+            Processed examples from the batch.
         """
         if not batch_buffer or self._map_drop_last_batch:
             return
@@ -1055,13 +1196,19 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         3. Yield the replaced example
         4. At the end, shuffle and yield remaining buffer contents
 
-        Args:
-            iterator: Iterator yielding examples
-            buffer_size: Size of shuffle buffer
-            seed: Random seed for reproducibility
+        Parameters
+        ----------
+        iterator : iterator
+            Iterator yielding examples.
+        buffer_size : int
+            Size of shuffle buffer.
+        seed : int
+            Random seed for reproducibility.
 
-        Yields:
-            Shuffled examples
+        Yields
+        ------
+        dict
+            Shuffled examples.
         """
         import random
 
@@ -1104,8 +1251,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Prepare iteration state: handle epoch changes and reset counts.
 
-        Returns:
-            (start_input_count, start_output_count): Starting counts for tracking this iteration
+        Returns
+        -------
+        tuple
+            (start_input_count, start_output_count): Starting counts for tracking this iteration.
         """
         # Re-shuffle files if epoch changed
         if self._last_iter_epoch != self._epoch:
@@ -1135,8 +1284,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Initialize iteration state and determine if fresh vs checkpoint restoration.
 
-        Returns:
-            (worker_files, is_fresh_iteration, worker_id, num_workers)
+        Returns
+        -------
+        tuple
+            (worker_files, is_fresh_iteration, worker_id, num_workers).
         """
         worker_id, num_workers = self._get_worker_info()
         files = self._get_files_for_shard()
@@ -1171,12 +1322,17 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Compute iteration boundaries for splits, shards, and worker-level sharding.
 
-        Args:
-            num_workers: Total number of workers
-            worker_id: Current worker ID
+        Parameters
+        ----------
+        num_workers : int
+            Total number of workers.
+        worker_id : int
+            Current worker ID.
 
-        Returns:
-            (split_start, split_end, use_virtual_split, use_example_sharding, worker_sharding_enabled)
+        Returns
+        -------
+        tuple
+            (split_start, split_end, use_virtual_split, use_example_sharding, worker_sharding_enabled).
         """
         # Track global position for virtual splits and example-level sharding
         use_virtual_split = (
@@ -1237,15 +1393,20 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Get length of Arrow file, using cache if available.
 
-        Args:
-            file_idx: Iteration-local index into the shard-filtered files list
-                (``_get_files_for_shard``). Translated to the global index
-                used by the cached length arrays via
-                ``_local_to_global_file_idx``.
-            arrow_file: Path to Arrow file
+        Parameters
+        ----------
+        file_idx : int
+            Iteration-local index into the shard-filtered files list
+            (``_get_files_for_shard``). Translated to the global index
+            used by the cached length arrays via
+            ``_local_to_global_file_idx``.
+        arrow_file : str
+            Path to Arrow file.
 
-        Returns:
-            (file_len, file_len_cached): Length and whether it came from cache
+        Returns
+        -------
+        tuple
+            (file_len, file_len_cached): Length and whether it came from cache.
         """
         global_idx = self._local_to_global_file_idx(file_idx)
         if self._shuffled_lengths:
@@ -1267,14 +1428,21 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Check if file should be skipped and compute global index delta.
 
-        Args:
-            file_idx: Current file index
-            arrow_file: Path to Arrow file
-            use_virtual_split: Whether virtual split is enabled
-            use_example_sharding: Whether example sharding is enabled
+        Parameters
+        ----------
+        file_idx : int
+            Current file index.
+        arrow_file : str
+            Path to Arrow file.
+        use_virtual_split : bool
+            Whether virtual split is enabled.
+        use_example_sharding : bool
+            Whether example sharding is enabled.
 
-        Returns:
-            (should_skip, global_idx_delta): Whether to skip and how much to advance global index
+        Returns
+        -------
+        tuple
+            (should_skip, global_idx_delta): Whether to skip and how much to advance global index.
         """
         # Check checkpoint position dynamically (not captured as local var)
         # This allows load_state_dict() to work even if called after __iter__
@@ -1315,18 +1483,29 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         - Virtual split boundaries
         - Example-level sharding
 
-        Args:
-            file_idx: Current file index
-            file_len: Length of the file
-            file_global_start: Global position of the first example in this
-                file (the sum of lengths of all preceding worker files).
-                The caller advances this by ``file_len`` after each file,
-                so position tracking is correct regardless of how many
-                examples were actually yielded.
-            split_start, split_end: Split boundaries
-            use_virtual_split, use_example_sharding: Flags
+        Parameters
+        ----------
+        file_idx : int
+            Current file index.
+        file_len : int
+            Length of the file.
+        file_global_start : int
+            Global position of the first example in this file (the sum of
+            lengths of all preceding worker files). The caller advances this
+            by ``file_len`` after each file, so position tracking is correct
+            regardless of how many examples were actually yielded.
+        split_start : int
+            Start of the split boundary.
+        split_end : int
+            End of the split boundary.
+        use_virtual_split : bool
+            Whether virtual split is enabled.
+        use_example_sharding : bool
+            Whether example sharding is enabled.
 
-        Returns:
+        Returns
+        -------
+        tuple
             (file_start_idx, file_end_idx): local indices into the file
             for the subset that intersects the desired range. If the file
             is entirely outside the range the returned range is empty
@@ -1391,15 +1570,23 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         """
         Load Arrow file and select the specified range of examples.
 
-        Args:
-            arrow_file: Path to Arrow file
-            file_len: Length of the file
-            file_start_idx: Start index in file
-            file_end_idx: End index in file (exclusive)
-            file_len_cached: Whether file length was cached (file not yet loaded)
+        Parameters
+        ----------
+        arrow_file : str
+            Path to Arrow file.
+        file_len : int
+            Length of the file.
+        file_start_idx : int
+            Start index in file.
+        file_end_idx : int
+            End index in file (exclusive).
+        file_len_cached : bool
+            Whether file length was cached (file not yet loaded).
 
-        Returns:
-            Dataset containing selected examples
+        Returns
+        -------
+        Dataset
+            Dataset containing selected examples.
         """
         # Load the Arrow file if we haven't already (deferred until after range check)
         if file_len_cached:
@@ -1431,14 +1618,21 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         Flushes any pending batch, caches length if appropriate,
         marks iteration as complete.
 
-        Args:
-            reason: Reason for exit ("split_exhausted", "shard_exhausted")
-            batch_buffer: Pending batch buffer (if batched map)
-            batch_start_idx: Starting index of batch
-            worker_files: List of files being processed
+        Parameters
+        ----------
+        reason : str
+            Reason for exit ("split_exhausted", "shard_exhausted").
+        batch_buffer : list or None
+            Pending batch buffer (if batched map).
+        batch_start_idx : int or None
+            Starting index of batch.
+        worker_files : list of str
+            List of files being processed.
 
-        Yields:
-            Any remaining buffered examples
+        Yields
+        ------
+        dict
+            Any remaining buffered examples.
         """
         # Flush pending batch buffer if needed
         if self._map_batched and self._map_function is not None and batch_buffer:
@@ -1459,9 +1653,12 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
         Only updates if length_estimate_mode is "dynamic" or "exact".
 
-        Args:
-            input_delta: Number of input examples to add
-            output_delta: Number of output examples to add
+        Parameters
+        ----------
+        input_delta : int
+            Number of input examples to add.
+        output_delta : int
+            Number of output examples to add.
         """
         if self.length_estimate_mode in ("dynamic", "exact"):
             self._input_count += input_delta
@@ -1680,26 +1877,27 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
     def __iter__(self):
         """
-        Iterate through Arrow files sequentially with optional shuffle buffer.
+        Iterate over examples in the dataset.
 
-        Supports:
-        - File-level and example-level sharding
-        - Multi-worker DataLoader (each worker gets a subset of files)
-        - Checkpoint resumption (skips to saved position)
-        - Example-level shuffle buffer (if configured via .shuffle(buffer_size=N))
+        Reads Arrow files sequentially, applying sharding, virtual-split
+        boundaries, optional map transformations, and an optional reservoir
+        shuffle buffer. Checkpoint position is read dynamically so that a
+        `load_state_dict` call made after the iterator is created but before
+        the first ``next()`` still takes effect.
 
-        For StatefulDataLoader compatibility, each worker instance tracks
-        its own position independently.
+        Yields
+        ------
+        dict
+            One example per iteration step, represented as a dictionary mapping
+            column names to values. When a `.map` function is configured, the
+            yielded examples are the transformed outputs.
 
-        IMPORTANT: We check self._current_file_index and self._current_example_index
-        dynamically (not captured in local vars) so that if load_state_dict() is
-        called after __iter__ but before iteration starts, we use the restored values.
-
-        Note:
-            When shuffle buffer is enabled and checkpoint resumption occurs, the shuffle
-            pattern after resumption will differ from a non-interrupted run. However,
-            randomness is still maintained and the seed ensures reproducibility of the
-            overall shuffle behavior.
+        Notes
+        -----
+        When a shuffle buffer is active and iteration resumes from a checkpoint,
+        the post-checkpoint shuffle sequence will differ from an uninterrupted
+        run. Overall randomness is preserved and reproducibility is guaranteed
+        by the stored seed.
         """
         # Apply shuffle buffer if configured
         if self._shuffle_buffer_size is not None and self._shuffle_buffer_size > 0:
@@ -1720,12 +1918,20 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
     def __len__(self) -> int:
         """
-        Get total number of examples in the dataset.
+        Return the number of examples in the dataset.
 
-        For mapped datasets with N->M transformations, returns:
-        - Progressive estimate during first iteration (dynamic mode)
-        - Exact cached count after first complete iteration (dynamic mode)
-        - Original pre-map length (static mode)
+        The returned value depends on the ``length_estimate_mode`` setting:
+
+        - ``"static"`` — always returns the original (pre-map) example count,
+          which is known immediately from the Arrow file index.
+        - ``"dynamic"`` / ``"exact"`` — returns a progressive estimate during
+          the first iteration (based on the observed input/output ratio), then
+          locks to the exact count once the first full pass completes.
+
+        Returns
+        -------
+        int
+            Estimated or exact number of examples.
         """
         # Static mode: always return original length
         if self.length_estimate_mode == "static":
@@ -1821,8 +2027,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         This is a standard HuggingFace Datasets attribute commonly used
         for operations like map(remove_columns=dataset.column_names).
 
-        Returns:
-            List of column names (e.g., ['text', 'id', 'meta'])
+        Returns
+        -------
+        list of str
+            List of column names (e.g., ['text', 'id', 'meta']).
         """
         if self._column_names is None:
             if not self.arrow_files:
@@ -1843,8 +2051,10 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         detailed schema information including column types, nested structures,
         and encoding information.
 
-        Returns:
-            DatasetFeatures object describing the schema
+        Returns
+        -------
+        DatasetFeatures
+            Object describing the schema.
         """
         if self._features is None:
             if not self.arrow_files:
@@ -1864,40 +2074,67 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
         This reflects the actual number of Arrow files available,
         accounting for shuffling if applied.
 
-        Returns:
-            Number of shards (Arrow files)
+        Returns
+        -------
+        int
+            Number of shards (Arrow files).
         """
         files = self._shuffled_files if self._shuffled_files else self.arrow_files
         return len(files)
 
     def state_dict(self) -> Dict[str, Any]:
         """
-        Get checkpoint state.
+        Serialize the current dataset position and configuration for checkpointing.
 
-        For efficiency, this doesn't store the arrow_files list or file_lengths,
-        which can be thousands of entries. Instead, it stores a checksum to verify
-        dataset identity on restore. Similarly, shuffled arrays are reproduced
-        from the shuffle seed rather than stored.
+        The state captures everything needed to resume iteration from exactly the
+        current position: the file and example index, shuffle seed, sharding
+        configuration, virtual-split boundaries, and length-estimation counters.
 
-        Returns:
-            Dictionary containing:
-            - current_file_index: Which Arrow file we're currently in
-            - current_example_index: Which example within that file
-            - shuffle_seed: Random seed used for shuffling (if any)
-            - shard_config: Sharding configuration (if any)
-            - dataset_fingerprint: Hash of arrow_files for verification
-            - num_files: Number of arrow files (for validation)
-            - split_start_idx: Start index for virtual split (if any)
-            - split_end_idx: End index for virtual split (if any)
-            - shard_start_idx: Start index for example-level sharding (if any)
-            - shard_end_idx: End index for example-level sharding (if any)
-            - length_estimate_mode: Length estimation mode
-            - reset_length_on_iter: Whether to reset counts on iteration
-            - original_length: Cached original (pre-map) length
-            - input_count: Examples consumed so far
-            - output_count: Examples yielded so far
-            - cached_exact_length: Exact count after full iteration
-            - length_invalidated: Whether stats were invalidated
+        For compactness, the full list of Arrow file paths is *not* stored.
+        Instead a SHA-256 fingerprint of the path list is saved and verified on
+        restore to detect dataset identity mismatches. The shuffled file order is
+        reproduced from the stored seed rather than serialised directly.
+
+        Returns
+        -------
+        dict
+            A JSON-serialisable dictionary with the following keys:
+
+            ``current_file_index``
+                Index of the Arrow file currently being read.
+            ``current_example_index``
+                Index within that file of the next example to yield.
+            ``shuffle_seed``
+                Effective random seed used for the current epoch's shuffle
+                (``None`` if no shuffle was applied).
+            ``base_shuffle_seed``
+                Base seed passed to ``shuffle()``; epoch offset is added to
+                derive the per-epoch seed.
+            ``epoch``
+                Current epoch number.
+            ``shuffle_buffer_size``
+                Configured example-level shuffle buffer size (``None`` if
+                disabled).
+            ``shard_config``
+                Tuple ``(num_shards, shard_index, mode)`` or ``None``.
+            ``dataset_fingerprint``
+                SHA-256 hex digest of the sorted Arrow file path list.
+            ``num_files``
+                Number of Arrow files at checkpoint time (cross-checked on
+                restore).
+            ``split_start_idx``, ``split_end_idx``
+                Inclusive/exclusive global boundaries of the virtual split
+                (``None`` if no split is active).
+            ``shard_start_idx``, ``shard_end_idx``
+                Boundaries for example-level sharding (``None`` if file-level
+                or no sharding).
+            ``length_estimate_mode``
+                Current length estimation mode.
+            ``reset_length_on_iter``
+                Whether length counters are reset at the start of each pass.
+            ``original_length``, ``input_count``, ``output_count``,
+            ``cached_exact_length``, ``length_invalidated``
+                Internal length-estimation bookkeeping values.
         """
         import hashlib
 
@@ -1934,16 +2171,31 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
     def load_state_dict(self, state_dict: Dict[str, Any]):
         """
-        Restore from checkpoint state.
+        Restore dataset position and configuration from a checkpoint.
 
-        Args:
-            state_dict: Dictionary from a previous state_dict() call (per-worker)
+        After calling this method the next iteration will resume from the
+        exact file and example index recorded in ``state_dict``, skipping
+        already-processed examples without re-reading them.
 
-        This allows efficient resumption - the iterator will skip to the
-        saved position without having to iterate through all previous examples.
+        Parameters
+        ----------
+        state_dict : dict
+            Dictionary previously returned by `state_dict`. Must have been
+            produced by an instance backed by the same Arrow files (verified
+            via the stored SHA-256 fingerprint).
 
-        Note: With multi-worker DataLoader, this is called once per worker with
-        that worker's specific state.
+        Raises
+        ------
+        ValueError
+            If the Arrow file fingerprint or file count in ``state_dict`` does
+            not match the current dataset, indicating a dataset identity
+            mismatch.
+
+        Notes
+        -----
+        In a multi-worker `DataLoader` setup this method is called once per
+        worker with that worker's own state slice. The shuffle file order is
+        reconstructed from the stored seed rather than loaded directly.
         """
         import hashlib
         import random
@@ -2021,19 +2273,42 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
     def get_length_stats(self) -> Dict[str, Any]:
         """
-        Get current length estimation statistics.
+        Return a diagnostic snapshot of the length-estimation state.
 
-        Returns:
-            Dictionary with:
-            - mode: Current estimation mode
-            - original_length: Pre-map length (may be None if not computed)
-            - input_count: Examples consumed so far
-            - output_count: Examples yielded so far
-            - ratio: Current input/output ratio (if data available)
-            - cached_exact: Cached exact length (if available)
-            - current_estimate: What __len__() would return right now
-            - batch_buffer_size: Current pending batch buffer size
-            - checkpoint_position: Current file and example indices
+        Useful for debugging or logging how the dynamic length estimate is
+        progressing during the first epoch.
+
+        Returns
+        -------
+        dict
+            Dictionary with the following keys:
+
+            ``mode``
+                Current estimation mode (``"static"``, ``"dynamic"``, or
+                ``"exact"``).
+            ``original_length``
+                Pre-map example count (``None`` until first computed).
+            ``input_count``
+                Examples consumed from the Arrow files so far this pass.
+            ``output_count``
+                Examples yielded after the map function so far this pass.
+            ``ratio``
+                ``output_count / input_count`` if both are non-zero, else
+                ``None``.
+            ``cached_exact``
+                Exact example count cached after the first complete iteration
+                (``None`` until then).
+            ``invalidated``
+                Whether the length stats were invalidated by a ``shuffle`` or
+                ``map`` call.
+            ``batch_buffer_size``
+                Number of examples currently held in the batched-map buffer.
+            ``checkpoint_file_idx``, ``checkpoint_example_idx``
+                Current checkpoint position.
+            ``reset_on_iter``
+                Whether counts are reset at the start of each iteration.
+            ``current_estimate``
+                Value that `__len__` would return at this moment.
         """
         stats = {
             "mode": self.length_estimate_mode,
@@ -2059,17 +2334,47 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
     def set_length_estimate_mode(self, mode: str):
         """
-        Change length estimation mode.
+        Change the length estimation strategy.
 
-        Args:
-            mode: 'static', 'dynamic', or 'exact'
+        Parameters
+        ----------
+        mode : {"static", "dynamic", "exact"}
+            ``"static"`` — `__len__` always returns the original Arrow-file
+            count (unaffected by map cardinality changes).
+            ``"dynamic"`` — `__len__` provides a progressive ratio-based
+            estimate during the first pass and locks to the exact count
+            afterwards.
+            ``"exact"`` — alias for ``"dynamic"``.
+
+        Raises
+        ------
+        ValueError
+            If ``mode`` is not one of the accepted values.
         """
         if mode not in ("static", "dynamic", "exact"):
             raise ValueError(f"Invalid mode: {mode}")
         self.length_estimate_mode = mode
 
     def to_hf_iterable(self):
-        """Convert to HuggingFace IterableDataset for full compatibility."""
+        """
+        Convert to a HuggingFace ``IterableDataset`` for full API compatibility.
+
+        Wraps this dataset in an ``IterableDatasetWithLength`` backed by a
+        generator so that HuggingFace tools that require ``datasets.IterableDataset``
+        instances can consume it.
+
+        Returns
+        -------
+        IterableDatasetWithLength
+            HuggingFace-compatible iterable dataset that delegates iteration to
+            this object and reports ``len(self)`` as its length.
+
+        Notes
+        -----
+        The reported length may be an estimate for mapped datasets (see
+        `set_length_estimate_mode`). The checkpoint protocol is not available on
+        the returned object.
+        """
 
         def gen():
             for example in self:
@@ -2085,7 +2390,38 @@ class SimpleArrowIterableDataset(TorchIterableDataset):
 
 class FastDatasetLoaderSimple:
     """
-    Fast dataset loader using simple generator approach.
+    Fast HuggingFace dataset loader backed by an Arrow file index.
+
+    On the first call for a given dataset/split combination the loader
+    downloads (or locates) the dataset via the HuggingFace ``datasets``
+    library, records the paths and per-file example counts of the underlying
+    Arrow cache files in a compact JSON index, and returns a
+    `SimpleArrowIterableDataset`. All subsequent calls for the same
+    configuration load in milliseconds by reading the index directly —
+    bypassing the 10-20 minute startup time that HuggingFace's
+    ``to_iterable_dataset()`` imposes on large datasets such as C4.
+
+    Both HuggingFace Hub datasets and locally saved datasets (produced by
+    ``Dataset.save_to_disk()``) are supported.
+
+    Parameters
+    ----------
+    index_dir : str, optional
+        Directory in which the JSON index files are stored. Defaults to
+        ``~/.cache/fast_hf_indexes_simple``.
+
+    Examples
+    --------
+    >>> loader = FastDatasetLoaderSimple()
+    >>> ds = loader.load_iterable("allenai/c4", name="en", split="train")
+    >>> ds = ds.shuffle(seed=42).shard(num_shards=4, index=0)
+    >>> for example in ds:
+    ...     pass
+
+    Notes
+    -----
+    The index format includes a version number. When the format changes the
+    old index is automatically invalidated and rebuilt on the next call.
     """
 
     def __init__(self, index_dir: Optional[str] = None):
@@ -2134,12 +2470,17 @@ class FastDatasetLoaderSimple:
         This avoids opening each Arrow file individually to read metadata.
         For datasets with thousands of files, this is significantly faster.
 
-        Args:
-            arrow_files: List of Arrow file paths
-            split: Split name (e.g., 'train', 'validation')
+        Parameters
+        ----------
+        arrow_files : list of str
+            List of Arrow file paths.
+        split : str
+            Split name (e.g., 'train', 'validation').
 
-        Returns:
-            List of file lengths if found and validated, None otherwise
+        Returns
+        -------
+        list of int or None
+            List of file lengths if found and validated, None otherwise.
         """
         if not arrow_files:
             return None
@@ -2236,15 +2577,23 @@ class FastDatasetLoaderSimple:
         """
         Load a saved dataset directly from disk, bypassing load_from_disk().
 
-        Args:
-            path: Path to saved dataset directory
-            split: Split to load (e.g., 'train')
-            force_reindex: Force reindexing even if cached
-            length_estimate: Length estimation mode
-            reset_length_on_iter: Reset length counts on each iteration
+        Parameters
+        ----------
+        path : str
+            Path to saved dataset directory.
+        split : str
+            Split to load (e.g., 'train').
+        force_reindex : bool, optional
+            Force reindexing even if cached.
+        length_estimate : str, optional
+            Length estimation mode.
+        reset_length_on_iter : bool, optional
+            Reset length counts on each iteration.
 
-        Returns:
-            SimpleArrowIterableDataset if successful, None otherwise
+        Returns
+        -------
+        SimpleArrowIterableDataset or None
+            SimpleArrowIterableDataset if successful, None otherwise.
         """
         dataset_path = Path(path)
 
@@ -2407,22 +2756,58 @@ class FastDatasetLoaderSimple:
         **load_dataset_kwargs,
     ):
         """
-        Load dataset as IterableDataset with instant loading after first time.
+        Load a dataset as a `SimpleArrowIterableDataset`.
 
-        Supports both HuggingFace Hub datasets and local saved datasets (from save_to_disk()).
-        For Hub datasets, supports HuggingFace split notation like "train[10000:]" without
-        triggering reindexing.
+        The first call for a given ``(path, name, split)`` combination is slow
+        (it triggers HuggingFace's normal dataset download and indexing pipeline).
+        All subsequent calls are instant: the loader reads the pre-built Arrow
+        file index from disk.
 
-        Args:
-            path: Either a HuggingFace Hub dataset path (e.g., 'allenai/c4')
-                  or a local directory path to a saved dataset
-            split: Split to load (e.g., 'train', 'validation')
-            length_estimate: How to estimate length for mapped datasets
-                'static': Never change from original (safest)
-                'dynamic': Progressive estimate, lock after full iteration (default)
-                'exact': Alias for 'dynamic' (kept for clarity)
-            reset_length_on_iter: If True, reset counts on each new iteration.
-                                   If False (default), preserve estimates across iterations.
+        HuggingFace split-slice notation (e.g. ``"train[10000:]"``) is parsed
+        and applied virtually on top of the base split cache, so slicing never
+        triggers a re-index.
+
+        Parameters
+        ----------
+        path : str
+            HuggingFace Hub identifier (e.g. ``"allenai/c4"``) **or** a local
+            path to a dataset saved with ``Dataset.save_to_disk()``.
+        name : str, optional
+            Dataset configuration name (e.g. ``"en"`` for C4).
+        split : str, optional
+            Split to load. Supports HuggingFace slice notation such as
+            ``"train[10000:]"`` or ``"train[:1%]"``.
+        data_files : str or list of str, optional
+            Specific data files to load (passed through to ``load_dataset``).
+        revision : str, optional
+            Dataset version/commit to use (passed through to ``load_dataset``).
+        force_reindex : bool, optional
+            If ``True``, rebuild the Arrow file index even when a valid cached
+            index already exists. Default is ``False``.
+        num_proc : int, optional
+            Number of processes to use during initial indexing (passed through
+            to ``load_dataset``). Default is ``None`` (single process).
+        length_estimate : {"dynamic", "static", "exact"}, optional
+            Length estimation strategy for the returned dataset:
+
+            - ``"dynamic"`` (default) — provides a ratio-based progressive
+              estimate during the first pass, then locks to the exact count.
+            - ``"static"`` — always returns the original Arrow-file count,
+              ignoring any cardinality changes from ``.map()``.
+            - ``"exact"`` — alias for ``"dynamic"``.
+        reset_length_on_iter : bool, optional
+            If ``True``, length-estimation counters are reset at the start of
+            each new iteration. If ``False`` (default), estimates accumulate
+            across passes.
+        **load_dataset_kwargs
+            Additional keyword arguments forwarded to ``datasets.load_dataset``
+            during the initial (slow-path) load.
+
+        Returns
+        -------
+        SimpleArrowIterableDataset
+            An iterable dataset backed directly by the Arrow cache files,
+            ready for shuffling, sharding, mapping, and checkpointing.
         """
         # Check if path is a local saved dataset directory
         if self._is_saved_dataset_path(path):
@@ -2617,52 +3002,67 @@ def fast_load_iterable_dataset(
     **load_dataset_kwargs,
 ):
     """
-    Fast loading as IterableDataset with proper sharding support.
+    Load a HuggingFace dataset as a fast iterable with sharding and checkpoint support.
 
-    Supports both HuggingFace Hub datasets and local saved datasets (from save_to_disk()).
-    First call: Slow (indexes Arrow files), subsequent calls: Instant.
+    Convenience wrapper around `FastDatasetLoaderSimple.load_iterable` using a
+    process-global default loader instance. The first call for a given dataset is
+    slow (it builds an Arrow file index); all subsequent calls are instant.
 
-    Returns a SimpleArrowIterableDataset that:
-    - Loads instantly (just reads file paths from index)
-    - Supports .shuffle(seed) for shard-level shuffling
-    - Supports .shard(num_shards, index) for DDP
-    - Supports .map(fn) for lazy transformations
-    - Each Arrow file = 1 natural shard
+    Parameters
+    ----------
+    path : str
+        HuggingFace Hub identifier (e.g. ``"allenai/c4"``) **or** a local path
+        to a dataset saved with ``Dataset.save_to_disk()``.
+    name : str, optional
+        Dataset configuration name (e.g. ``"en"`` for C4 English,
+        ``"wikitext-2-raw-v1"`` for WikiText-2).
+    split : str, optional
+        Split to load. Supports HuggingFace slice notation such as
+        ``"train[10000:]"`` or ``"validation[:500]"``.
+    data_files : str or list of str, optional
+        Specific data files to load (forwarded to ``load_dataset``).
+    revision : str, optional
+        Dataset revision or commit hash (forwarded to ``load_dataset``).
+    force_reindex : bool, optional
+        If ``True``, rebuild the Arrow file index from scratch. Default is
+        ``False``.
+    num_proc : int, optional
+        Number of processes for the initial dataset download/indexing step.
+        Default is ``None`` (single process).
+    index_dir : str, optional
+        Directory where JSON index files are stored. If ``None`` (default), the
+        global default loader's directory (``~/.cache/fast_hf_indexes_simple``)
+        is used. Providing a custom path creates a new loader instance for that
+        directory.
+    length_estimate : {"dynamic", "static", "exact"}, optional
+        Length estimation strategy (see `FastDatasetLoaderSimple.load_iterable`
+        for details). Default is ``"dynamic"``.
+    reset_length_on_iter : bool, optional
+        Whether to reset length-estimation counters at the start of each new
+        iteration pass. Default is ``False``.
+    **load_dataset_kwargs
+        Extra keyword arguments forwarded to ``datasets.load_dataset`` on the
+        initial (slow-path) load.
 
-    Args:
-        path: Either a HuggingFace Hub dataset path (e.g., 'allenai/c4') or
-              a local directory path to a saved dataset (from save_to_disk())
-        name: Dataset configuration name (e.g., "wikitext-2-raw-v1")
-        split: Split to load (e.g., "train", "train[:1000]")
-        data_files: Specific data files to load
-        revision: Dataset revision/version
-        force_reindex: Force rebuilding the Arrow file index
-        num_proc: Number of processes for indexing
-        index_dir: Custom directory for storing index files
-        length_estimate: How to estimate length for mapped datasets
-            'static': Never change from original (safest)
-            'dynamic': Progressive estimate, lock after full iteration (default)
-            'exact': Alias for 'dynamic' (kept for clarity)
-        reset_length_on_iter: If True, reset counts on each new iteration.
-                               If False (default), preserve estimates across iterations.
-        **load_dataset_kwargs: Additional kwargs passed to load_dataset()
+    Returns
+    -------
+    SimpleArrowIterableDataset
+        Iterable dataset backed by Arrow cache files that supports:
 
-    Example:
-        # Load (instant after first time!)
-        ids = fast_load_iterable_dataset("dataset", "config", split="train")
+        - `.shuffle(seed)` for shard-level and example-level shuffling
+        - `.shard(num_shards, index)` for DDP data partitioning
+        - `.map(fn)` for lazy transformations
+        - `.slice()` / `.select()` for virtual splits
+        - `state_dict` / `load_state_dict` for stateful checkpointing
 
-        # Shard-level shuffling
-        ids = ids.shuffle(seed=42)
-
-        # For DDP
-        ids = ids.shard(num_shards=world_size, index=rank)
-
-        # Lazy map
-        ids = ids.map(tokenize)
-
-        # Iterate
-        for example in ids:
-            pass
+    Examples
+    --------
+    >>> ds = fast_load_iterable_dataset("allenai/c4", name="en", split="train")
+    >>> ds = ds.shuffle(seed=42)
+    >>> ds = ds.shard(num_shards=world_size, index=rank)
+    >>> ds = ds.map(tokenize)
+    >>> for example in ds:
+    ...     pass
     """
     if index_dir is not None:
         loader = FastDatasetLoaderSimple(index_dir=index_dir)

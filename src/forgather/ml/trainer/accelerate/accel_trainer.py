@@ -18,6 +18,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass(kw_only=True)
 class AccelTrainingArguments(TrainingArguments):
+    """Training arguments for Accelerate-based multi-GPU training.
+
+    Extends ``TrainingArguments`` with no additional fields. Mixed precision
+    and gradient accumulation are configured through the ``Accelerator``
+    object passed to ``AccelTrainer.__init__()``, not through these arguments.
+
+    .. note::
+        ``mixed_precision`` from the parent class is **ignored** by
+        ``AccelTrainer``; set it on the ``Accelerator`` instead.
+        ``fuse_optim_with_backward`` is not supported and will raise if set.
+    """
+
     pass
 
 
@@ -27,8 +39,40 @@ TAccelTrainingArguments = TypeVar(
 
 
 class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArguments]):
-    """
-    Modify the base Trainer to use the Accelerate library.
+    """Trainer that uses HuggingFace Accelerate for multi-GPU / distributed training.
+
+    Wraps ``Trainer`` with an ``Accelerator`` instance so that model, optimizer,
+    scheduler, and dataloaders are automatically prepared for the configured
+    distributed backend (DDP, FSDP, DeepSpeed, etc.).
+
+    Key behavioural differences from the base ``Trainer``:
+
+    * Model and optimizer weights are synchronised across ranks by DDP
+      (``REPLICATED`` checkpoint sharing pattern).
+    * Mixed precision is configured on the ``Accelerator``; ``args.mixed_precision``
+      is explicitly ignored and reset to ``None`` with a warning.
+    * Gradient accumulation step count is taken from the ``Accelerator`` when
+      it conflicts with ``args.gradient_accumulation_steps``.
+    * ``args.fuse_optim_with_backward`` is not supported and raises on init.
+    * Gradient clipping delegates to ``accelerator.clip_grad_norm_()``.
+
+    Parameters
+    ----------
+    args : AccelTrainingArguments or dict
+        Training configuration. Dicts are converted via ``dacite.from_dict``.
+    accelerator : accelerate.Accelerator
+        Pre-configured Accelerator instance. Controls device placement, mixed
+        precision, and gradient synchronisation.
+    **kwargs
+        Additional keyword arguments forwarded to the base ``Trainer``
+        (``model``, ``train_dataset``, ``eval_dataset``, ``callbacks``, etc.).
+
+    Raises
+    ------
+    AssertionError
+        If ``accelerator`` is not an ``Accelerator`` instance.
+    AssertionError
+        If ``args.fuse_optim_with_backward`` is ``True``.
     """
 
     args: TAccelTrainingArguments
@@ -119,8 +163,17 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
 
     @override
     def _distributed_loss(self, loss: Tensor) -> Tensor:
-        """
-        Reduces loss accross processes
+        """Reduce the per-rank loss to a mean across all processes.
+
+        Parameters
+        ----------
+        loss : Tensor
+            Local loss scalar on this rank.
+
+        Returns
+        -------
+        Tensor
+            Mean loss averaged across all participating ranks.
         """
         reduced_loss = self.accelerator.reduce(loss, "mean")
         assert isinstance(reduced_loss, Tensor)
@@ -128,8 +181,19 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
 
     @override
     def _distributed_peak_mem(self, local_peak: int) -> list[int]:
-        """
-        All-gather per-rank peak CUDA memory via Accelerate.
+        """All-gather per-rank peak CUDA memory usage via Accelerate.
+
+        Falls back to the single-rank implementation when ``world_size == 1``.
+
+        Parameters
+        ----------
+        local_peak : int
+            Peak CUDA memory allocated on this rank, in bytes.
+
+        Returns
+        -------
+        list of int
+            Peak memory in bytes for each rank, indexed by rank.
         """
         if self.dist.world_size == 1:
             return super()._distributed_peak_mem(local_peak)
@@ -151,8 +215,16 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
 
     @override
     def _init_state(self) -> TrainerState:
-        """
-        Modifies parent state by setting process rank info
+        """Initialise trainer state, adjusting batch size for Accelerate's split-batch mode.
+
+        When ``split_batches=True`` on the ``Accelerator``, the requested per-device
+        batch size is divided across GPUs rather than replicated, so
+        ``state.train_batch_size`` must reflect that.
+
+        Returns
+        -------
+        TrainerState
+            Initialised state with correct ``train_batch_size``.
         """
         state = super()._init_state()
         # Split-batches option divides the requested batch size by the number of GPUs
@@ -171,18 +243,28 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
 
     @override
     def get_state_components(self) -> List[StateComponent]:
-        """
-        Get state components for Accelerate-based distributed training.
+        """Return state components for Accelerate-based distributed training.
 
-        All training state is always saved to checkpoints. To skip loading a component,
-        delete its file from the checkpoint directory.
+        Accelerate uses DDP, which keeps model and optimizer state synchronised
+        across all ranks. This is reflected in the ``REPLICATED`` sharing pattern
+        for most components, enabling the checkpoint manager to save from rank 0
+        only and validate synchronisation.
 
-        Accelerate uses DDP for multi-GPU training, which synchronizes model
-        and optimizer state across all ranks. Therefore, we use REPLICATED
-        pattern for these components with validation enabled to catch sync bugs.
+        Returned components (in order):
 
-        Returns:
-            List of StateComponent objects with REPLICATED patterns for DDP state
+        * ``"model"`` — REPLICATED, required, replication validation enabled.
+        * ``"optimizer"`` — REPLICATED, optional; validation disabled due to
+          ``AcceleratedOptimizer`` wrapper holding rank-specific state.
+        * ``"scheduler"`` — REPLICATED, optional.
+        * ``"trainer"`` — REPLICATED, optional.
+        * ``"dataset"`` — sharing pattern from ``_get_dataset_sharing_pattern()``,
+          optional; only added when the dataloader exposes a ``state_dict``.
+        * ``"rng"`` — PER_RANK, optional.
+
+        Returns
+        -------
+        list of StateComponent
+            All checkpointable state components with their sharing patterns.
         """
         components = []
 
@@ -266,18 +348,23 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
 
     @override
     def _get_dataset_sharing_pattern(self) -> SharingPattern:
-        """
-        Determine dataset sharing pattern for Accelerate training.
+        """Return the dataset sharing pattern for Accelerate training.
 
-        Accelerate can handle data loading in different ways:
-        - split_batches=True: Batches split across GPUs (needs coordination)
-        - split_batches=False: Each GPU gets full batch (independent)
+        Accelerate supports two data-loading strategies:
 
-        For now, conservatively use PER_RANK for independent iteration.
-        In future, could detect DataloaderDispatcher and use GLOBAL.
+        * ``split_batches=True`` — a single batch is split across GPUs; a
+          ``DataloaderDispatcher`` would be used and ``GLOBAL`` would be ideal.
+        * ``split_batches=False`` — each GPU iterates its own shard
+          independently.
 
-        Returns:
-            SharingPattern for dataset state
+        Currently returns ``PER_RANK`` as a conservative default for both
+        strategies. Future work may detect ``DataloaderDispatcher`` and return
+        ``GLOBAL`` for the split-batches case.
+
+        Returns
+        -------
+        SharingPattern
+            ``SharingPattern.PER_RANK``.
         """
         # TODO: Could check for DataloaderDispatcher and return GLOBAL
         # For now, assume independent dataloaders per rank
@@ -314,8 +401,16 @@ class AccelTrainer(Trainer[TAccelTrainingArguments], Generic[TAccelTrainingArgum
 
     @override
     def _backward(self, loss: Tensor) -> None:
-        """
-        Use Accelerate's backward method which handles gradient scaling and accumulation.
+        """Run the backward pass using Accelerate, which handles gradient scaling.
+
+        Delegates to ``accelerator.backward(loss)`` so that mixed-precision loss
+        scaling and gradient-accumulation context management are handled by the
+        Accelerator rather than by the base trainer.
+
+        Parameters
+        ----------
+        loss : Tensor
+            Scalar loss tensor to differentiate.
         """
         # Note: This method is kept for compatibility with the base trainer's _train_step
         # The _train_step_with_accumulation method uses accelerator.backward directly

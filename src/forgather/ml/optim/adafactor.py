@@ -37,8 +37,40 @@ def _local_shard(t: Tensor) -> Tensor:
 
 
 class Adafactor(Optimizer):
-    """
-    Adafactor
+    """Memory-efficient adaptive optimizer with factored second-moment estimation.
+
+    Implements the Adafactor algorithm (Shazeer & Stern, arXiv:1804.04235).
+    For matrices, the second-moment accumulator is factored into outer-product
+    row and column vectors, reducing per-parameter memory from O(n*m) to
+    O(n+m).  For vectors and scalars the full accumulator is retained.
+
+    Like `AdamW`, this implementation supports *pure bf16 training* via
+    stochastic rounding on all write-backs, and handles FSDP2 DTensor
+    parameters transparently.  An optional Triton kernel path is available
+    for higher GPU throughput on CUDA devices.
+
+    Prefer Adafactor over AdamW when:
+
+    * Memory is the primary constraint (large models, small accelerators).
+    * Training transformers with large embedding or projection matrices where
+      the factored approximation is a good fit.
+
+    Notes
+    -----
+    ``decay_rate`` controls how the effective ``beta2`` grows with step count:
+    ``beta2t = clamp(1 - step^decay_rate, max=beta2)``.  The default of
+    ``-0.8`` replicates the schedule from the paper.
+
+    The Triton kernel path (``use_triton=True``) does not support
+    ``relative_step=True``.
+
+    References
+    ----------
+    Shazeer, N. & Stern, M. (2018). Adafactor: Adaptive Learning Rates with
+    Sublinear Memory Cost. arXiv:1804.04235.
+
+    Loshchilov, I. & Hutter, F. (2017). Decoupled Weight Decay Regularization.
+    arXiv:1711.05101.
     """
 
     def __init__(
@@ -55,6 +87,49 @@ class Adafactor(Optimizer):
         bf16_stochastic_round: bool = True,
         use_triton: bool = False,
     ):
+        """
+        Parameters
+        ----------
+        params : iterable of Parameter
+            Model parameters to optimize.
+        lr : float, optional
+            Learning rate (or relative step size when ``relative_step=True``).
+            Default is 1e-3.
+        decay_rate : float, optional
+            Exponent controlling how the effective ``beta2`` grows with step
+            count: ``beta2t = clamp(1 - step^decay_rate, max=beta2)``.
+            Negative values cause ``beta2t`` to grow toward ``beta2`` over
+            time. Default is -0.8.
+        clip_threshold : float, optional
+            Root-mean-square threshold for gradient clipping.  The update is
+            scaled down when its RMS exceeds this value.  Default is 1.0.
+        betas : tuple of (float, float), optional
+            Upper bounds for the first and second moment decay rates.
+            ``beta1`` is the EMA decay for the optional first moment;
+            ``beta2`` caps the adaptive ``beta2t``.  Default is (0.9, 0.999).
+        eps : tuple of (float, float), optional
+            ``(eps1, eps2)``.  ``eps1`` is added to the squared gradient
+            before factoring to improve numerical stability.  ``eps2`` is the
+            minimum absolute learning rate used with ``relative_step=True``.
+            Default is (1e-30, 1e-3).
+        weight_decay : float, optional
+            Decoupled weight-decay coefficient.  Default is 0.01.
+        relative_step : bool, optional
+            If ``True``, the effective learning rate is scaled by the RMS of
+            the parameter: ``lr = max(eps2, rms(p)) * lr``, following the
+            paper's relative-step-size formulation.  Default is ``False``.
+        torch_compile : bool, optional
+            If ``True``, the inner ``_adafactor`` kernel is compiled with
+            ``torch.compile``.  Mutually exclusive with ``use_triton``.
+            Default is ``True``.
+        bf16_stochastic_round : bool, optional
+            Enable stochastic rounding for bf16 write-backs.  Has no effect
+            when parameters are fp32.  Default is ``True``.
+        use_triton : bool, optional
+            If ``True``, use Triton-compiled CUDA kernels instead of the
+            PyTorch implementation.  Requires ``triton`` to be installed and
+            ``relative_step=False``.  Default is ``False``.
+        """
         self.compile = torch_compile
         self.use_triton = use_triton
 

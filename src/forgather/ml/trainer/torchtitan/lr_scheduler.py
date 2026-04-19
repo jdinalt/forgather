@@ -37,9 +37,12 @@ class LRSchedulersContainer(Stateful):
     resharding friendly. Therefore, the limitation is used to allow TorchTitan to support
     lr scheduler resharding.
 
-    Args:
-        optimizers (OptimizersContainer): The corresponding optimizers for the lr_schedulers.
-        lr_scheduler_factory: Partial function for constructing LR scheduler
+    Parameters
+    ----------
+    optimizers : OptimizersContainer
+        The corresponding optimizers for the lr_schedulers.
+    lr_scheduler_factory : callable
+        Partial function for constructing LR scheduler.
     """
 
     schedulers: list[LRScheduler]

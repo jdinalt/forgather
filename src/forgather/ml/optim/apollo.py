@@ -8,9 +8,38 @@ from torch.optim import Optimizer
 
 
 class Apollo(Optimizer):
-    """
-    APOLLO: SGD-like Memory, AdamW-level Performance
-    https://arxiv.org/pdf/2412.05270
+    """Low-rank gradient-projection optimizer with AdamW-level performance.
+
+    Implements the Apollo algorithm (Zhu et al., arXiv:2412.05270).  Rather
+    than maintaining full-size first and second moment buffers, Apollo projects
+    gradients into a low-rank subspace (controlled by ``rank``), runs the
+    Adam update there, and uses the resulting per-column scaling signal to
+    scale the full-rank gradient.  Moment buffer memory scales as
+    ``O(rank * max(n, m))`` instead of ``O(n * m)``.
+
+    Also applies the Norm-Growth Limiter from Fira (arXiv:2410.01623) to
+    prevent destructive gradient updates.
+
+    Prefer Apollo over AdamW when:
+
+    * Memory is constrained and Adafactor's factored approximation is too
+      aggressive (Apollo retains the full gradient for the parameter update).
+    * ``rank=1`` (Apollo-Mini) is desired for maximum memory savings while
+      still outperforming SGD.
+
+    Notes
+    -----
+    The ``projector_factory`` callable is not serialisable and is therefore
+    stripped from checkpoints.  It must be supplied again via the constructor
+    when resuming from a checkpoint.
+
+    References
+    ----------
+    Zhu, W. et al. (2024). APOLLO: SGD-like Memory, AdamW-level Performance.
+    arXiv:2412.05270.
+
+    Chen, Y. et al. (2024). Fira: Can We Achieve Full-Rank Training of LLMs
+    Under Low-Rank Constraint? arXiv:2410.01623.
     """
 
     def __init__(
@@ -27,6 +56,45 @@ class Apollo(Optimizer):
         mini: bool = False,
         projector_factory: Callable = None,
     ):
+        """
+        Parameters
+        ----------
+        params : iterable of Parameter
+            Model parameters to optimize.
+        lr : float, optional
+            Learning rate.  Default is 1e-3.
+        betas : tuple of (float, float), optional
+            Exponential decay rates for the low-rank first and second moment
+            estimates.  Default is (0.9, 0.999).
+        eps : float, optional
+            Term added to the denominator of the Adam update in the low-rank
+            subspace.  Default is 1e-6.
+        weight_decay : float, optional
+            Decoupled weight-decay coefficient.  Default is 0.0.
+        rank : int, optional
+            Rank of the gradient projection subspace.  Lower rank saves more
+            memory; ``rank=1`` corresponds to Apollo-Mini.  Default is 1.
+        scale : float, optional
+            Additional scaling factor applied to the update.  Applied before
+            the Norm-Growth Limiter when ``scale_front=True``, or after when
+            ``scale_front=False``.  Default is 1.0.
+        scale_front : bool, optional
+            If ``True``, ``scale`` is applied before the Norm-Growth Limiter
+            so that the limiter sees the already-scaled gradient norm.
+            Default is ``False``.
+        update_steps : int, optional
+            How often (in optimizer steps) the projection matrix is refreshed.
+            Passed through to the projector created by ``projector_factory``.
+            Default is 10.
+        mini : bool, optional
+            If ``True``, compute a single global scaling scalar instead of
+            per-column scalars.  Corresponds to the Apollo-Mini variant.
+            Default is ``False``.
+        projector_factory : callable, optional
+            Factory that constructs the gradient projector given keyword
+            arguments ``rank``, ``dim``, and ``proj_type``.  Must be provided;
+            the optimizer will raise at the first step if it is ``None``.
+        """
         defaults = dict(
             lr=lr,
             betas=betas,

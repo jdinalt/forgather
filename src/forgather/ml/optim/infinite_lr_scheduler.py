@@ -5,27 +5,46 @@ from torch.optim.lr_scheduler import LRScheduler
 
 
 class InfiniteLRScheduler(LRScheduler):
-    """Infinite Learning Rate Scheduler.
+    """Learning rate scheduler for continual pre-training without a fixed budget.
 
-    Implements the Infinite Cosine Schedule from:
-    "Beyond Cosine Decay: On the effectiveness of Infinite Learning Rate
-    Schedule for Continual Pre-training"
-    (https://arxiv.org/abs/2503.02844)
+    Implements the Infinite Cosine Schedule (arXiv:2503.02844).  The key idea
+    is a permanent *constant phase* that can run indefinitely, enabling
+    continual pre-training without committing to a total step count up front.
+    Annealing is triggered on demand — typically by resuming from a checkpoint
+    with ``start_annealing=True`` — so multiple annealed checkpoints can be
+    derived from a single long training run.
 
-    The schedule consists of four phases (Eq. 1 in the paper):
+    The schedule has four sequential phases:
 
-        1. Warmup: Linear increase from 0 to base_lr over warmup_steps.
-        2. Cooldown: Cosine decay from base_lr to constant_lr over
-           cooldown_steps.
-        3. Constant: Maintains constant_lr indefinitely (the "infinite"
-           phase). This phase can run for an arbitrary number of steps,
-           enabling continual pre-training without a predetermined budget.
-        4. Annealing: Decay from constant_lr toward min_lr, triggered at
-           checkpoint_step when a converged checkpoint is needed. Supports
-           two decay types:
-           - "exponential": Exponential decay (default, original paper).
-           - "rsqrt": Harmonic/rational decay from the WSD-S paper
-             (arXiv:2410.05192). Uses linear interpolation of inverse LR.
+    1. **Warmup** — linear ramp from 0 to ``base_lr`` over ``warmup_steps``.
+    2. **Cooldown** — cosine decay from ``base_lr`` to ``constant_lr`` over
+       ``cooldown_steps``.
+    3. **Constant** — holds ``constant_lr`` indefinitely (the "infinite"
+       phase).
+    4. **Annealing** — decays from ``constant_lr`` toward ``min_lr``,
+       triggered at ``checkpoint_step``.  Two decay curves are supported:
+
+       * ``"exponential"`` (default) — original paper formula; exponential
+         decay controlled by ``tau``.
+       * ``"rsqrt"`` — harmonic/rational decay from the WSD-S paper
+         (arXiv:2410.05192); drops quickly at first then slows.
+
+    Notes
+    -----
+    ``start_annealing``, ``annealing_type``, ``annealing_steps``, and
+    ``min_lr`` are *config-only* keys: they are taken from the constructor
+    arguments and are not saved to or loaded from checkpoints.  This ensures
+    backward compatibility and allows the annealing policy to be changed when
+    resuming.
+
+    References
+    ----------
+    Zhu, Y. et al. (2025). Beyond Cosine Decay: On the effectiveness of
+    Infinite Learning Rate Schedule for Continual Pre-training.
+    arXiv:2503.02844.
+
+    Hu, S. et al. (2024). Understanding Warmup-Stable-Decay Learning Rates:
+    A River Valley Loss Landscape Perspective. arXiv:2410.05192.
     """
 
     # Config-only keys: set from constructor config, not saved/loaded
@@ -54,43 +73,53 @@ class InfiniteLRScheduler(LRScheduler):
         last_epoch: int = -1,
     ):
         """
-        Args:
-            optimizer: Wrapped optimizer.
-            warmup_steps: Number of steps for linear warmup (phase 1).
-            cooldown_steps: Number of steps for cosine cooldown from
-                base_lr to constant_lr (phase 2).
-            constant_lr: Learning rate maintained during the constant
-                phase (phase 3) and the starting point for annealing
-                (phase 4). Corresponds to eta_const in the paper.
-            min_lr: Target minimum learning rate for the annealing phase.
-                Must be > 0. Corresponds to eta_min in the paper.
-            tau: Annealing step budget for exponential annealing. Controls
-                the decay rate in the annealing phase. Corresponds to t_a
-                in the paper. The LR reaches exactly min_lr after
-                (tau + checkpoint_step) steps past checkpoint_step.
-                Ignored when annealing_type="rsqrt".
-            checkpoint_step: Step at which to begin annealing (phase 4).
-                Set to -1 to disable annealing. Must be >=
-                warmup_steps + cooldown_steps when enabled. Corresponds
-                to N_d in the paper.
-            start_annealing: When True, annealing begins at the current
-                step upon loading a checkpoint (if checkpoint_step < 0).
-                This allows triggering annealing retroactively from any
-                saved checkpoint. When False after a previous annealing
-                run, training resumes at the constant LR phase.
-                Config-only: not saved in checkpoints.
-            annealing_type: Type of annealing decay. "exponential"
-                (default) uses the original paper's exponential decay.
-                "rsqrt" uses harmonic/rational decay from the WSD-S
-                paper, which drops quickly then slows.
-                Config-only: not saved in checkpoints.
-            annealing_steps: Total number of annealing steps for the
-                "rsqrt" annealing type. The LR reaches min_lr after
-                exactly this many steps past checkpoint_step. Required
-                to be > 0 when annealing_type="rsqrt". Ignored for
-                "exponential".
-                Config-only: not saved in checkpoints.
-            last_epoch: The index of the last epoch. Used for resuming.
+        Parameters
+        ----------
+        optimizer : Optimizer
+            Wrapped optimizer whose ``param_groups`` LRs will be managed.
+        warmup_steps : int, optional
+            Number of steps for linear warmup (phase 1).  Default is 0.
+        cooldown_steps : int, optional
+            Number of steps for cosine decay from ``base_lr`` to
+            ``constant_lr`` (phase 2).  Default is 0.
+        constant_lr : float, optional
+            Learning rate held during the constant phase (phase 3) and the
+            starting point for annealing (phase 4).  Corresponds to
+            ``eta_const`` in the paper.  Default is 3.75e-5.
+        min_lr : float, optional
+            Target minimum learning rate reached at the end of annealing.
+            Must be > 0.  Corresponds to ``eta_min`` in the paper.
+            Default is 1e-8.
+        tau : float, optional
+            Annealing step budget for exponential annealing.  The LR reaches
+            ``min_lr`` after ``tau + checkpoint_step`` steps past
+            ``checkpoint_step``.  Corresponds to ``t_a`` in the paper.
+            Ignored when ``annealing_type="rsqrt"``.  Default is 1e4.
+        checkpoint_step : int, optional
+            Step at which to begin annealing (phase 4).  Set to ``-1`` to
+            disable annealing.  When enabled, must be >=
+            ``warmup_steps + cooldown_steps``.  Corresponds to ``N_d`` in the
+            paper.  Default is -1.
+        start_annealing : bool, optional
+            When ``True``, annealing begins at the current step upon loading a
+            checkpoint (provided ``checkpoint_step`` is still ``-1``).  This
+            allows triggering annealing retroactively from any saved
+            checkpoint.  When ``False``, ``checkpoint_step`` is restored from
+            the constructor value.  Config-only: not saved in checkpoints.
+            Default is ``False``.
+        annealing_type : str, optional
+            Decay curve for the annealing phase.  ``"exponential"`` (default)
+            uses the original paper formula.  ``"rsqrt"`` uses
+            harmonic/rational decay (WSD-S paper), which drops quickly at
+            first then slows.  Config-only: not saved in checkpoints.
+        annealing_steps : int, optional
+            Total annealing steps for ``annealing_type="rsqrt"``.  The LR
+            reaches ``min_lr`` after exactly this many steps past
+            ``checkpoint_step``.  Must be > 0 for rsqrt annealing; ignored
+            for exponential.  Config-only: not saved in checkpoints.
+            Default is 0.
+        last_epoch : int, optional
+            Index of the last epoch, used when resuming.  Default is -1.
         """
         assert warmup_steps >= 0
         assert cooldown_steps >= 0

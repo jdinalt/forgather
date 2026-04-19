@@ -209,9 +209,11 @@ def maybe_cleanup_memory(alloc_threshold):
     memory, since reference-cycle collection is rarely needed in training
     loops and adds ~100-300 ms of overhead.
 
-    Args:
-        alloc_threshold: Ratio of allocated to total GPU memory (0.0 to 1.0).
-                        Cleanup is considered when usage exceeds this.
+    Parameters
+    ----------
+    alloc_threshold : float
+        Ratio of allocated to total GPU memory (0.0–1.0).
+        Cleanup is considered when usage exceeds this.
     """
     if not torch.cuda.is_available():
         return
@@ -248,11 +250,16 @@ def optimizer_hook(optimizer, total_grad_squared, name, parameter):
 
     Greatest memory savings when combined with gradient checkpointing.
 
-    Args:
-        optimizer: The optimizer instance to apply the gradient update
-        total_grad_squared: Accumulator for computing total gradient norm across all parameters
-        name: Parameter name (for debugging)
-        parameter: The parameter whose gradient was just computed
+    Parameters
+    ----------
+    optimizer : torch.optim.Optimizer
+        The optimizer instance to apply the gradient update.
+    total_grad_squared : Tensor
+        Accumulator for computing total gradient norm across all parameters.
+    name : str
+        Parameter name (for debugging).
+    parameter : torch.nn.Parameter
+        The parameter whose gradient was just computed.
     """
     if total_grad_squared is not None:
         total_grad_squared += parameter.grad.square().sum().to(dtype=torch.float32)
@@ -332,6 +339,45 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         optimizer_groups: Optional[OptimGroupMap] = None,
         **kwargs,
     ):
+        """
+        Parameters
+        ----------
+        args : TrainingArguments or dict
+            Training configuration. Accepts a ``TrainingArguments`` instance or a
+            plain dict (converted automatically). See ``TrainingArguments`` for all options.
+        distributed_env : DistributedEnvInterface
+            Distributed environment object providing rank/device information.
+            Use ``DistributedEnvironment`` for real training or ``StaticDistributedEnvironment``
+            for single-process runs. The trainer asserts ``world_size == 1`` for non-distributed
+            subclasses.
+        optimizer_factory : callable, optional
+            Callable that accepts ``model.named_parameters()`` and returns an optimizer.
+            If not provided and ``optimizer_cls_and_kwargs`` is also absent, defaults to
+            AdamW with parameters from ``args``.
+        optimizer_cls_and_kwargs : tuple, optional
+            HuggingFace Trainer-compatible alternative to ``optimizer_factory``.
+            A ``(optimizer_class, kwargs_dict)`` pair. Ignored when ``optimizer_factory``
+            is supplied.
+        lr_scheduler_factory : callable, optional
+            Callable that accepts the optimizer and returns an LR scheduler.
+            If not provided and ``args.lr_scheduler_type`` is set, falls back to
+            ``transformers.get_scheduler``.
+        enable_activation_checkpoint_fn : callable, optional
+            Called as ``fn(rank, model)`` to enable activation (gradient) checkpointing.
+            Defaults to ``enable_hf_activation_checkpointing``. Set to ``None`` to
+            disable activation checkpointing even when ``args.gradient_checkpointing=True``.
+        fused_loss_factory : callable, optional
+            If provided, enables fused logits-loss computation. Called with the model's
+            output embedding layer and returns a loss function. Requires the model to
+            support ``get_output_embeddings()`` and ``return_hidden_states``.
+        optimizer_groups : OptimGroupMap, optional
+            Parameter group configuration for the optimizer. Allows different
+            hyperparameters (lr, weight_decay) for different parameter subsets.
+        **kwargs
+            Passed to ``BaseTrainer``: ``model``, ``model_init``, ``train_dataset``,
+            ``eval_dataset``, ``loss_fn``, ``data_collator``, ``processing_class``,
+            ``callbacks``, ``optimizer``, ``lr_scheduler``.
+        """
         if isinstance(args, dict):
             args = cast(TTrainingArguments, from_dict(TrainingArguments, args))
         super().__init__(args=args, **kwargs)
@@ -413,12 +459,17 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         Returns a GPU tensor to avoid forcing a GPU-CPU synchronization via .item(),
         which would stall the CPU waiting for any pending compiled graph execution.
 
-        Args:
-            input_dict: Batch input dictionary (unused in base, available for overrides)
-            labels: Target labels with -100 (ignore_index) for positions to ignore
+        Parameters
+        ----------
+        input_dict : dict
+            Batch input dictionary (unused in base, available for overrides).
+        labels : Tensor
+            Target labels with -100 (ignore_index) marking padding/special positions.
 
-        Returns:
-            Tensor with count of non-ignored tokens in the batch
+        Returns
+        -------
+        Tensor
+            Count of non-ignored tokens in the batch.
         """
         # Labels have -100 for padding/special tokens; count only real target tokens
         return (labels != -100).sum()
@@ -430,11 +481,15 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         Base implementation for single-device training.
         Distributed trainers override to sum across ranks.
 
-        Args:
-            tokens: Token count tensor from current process
+        Parameters
+        ----------
+        tokens : Tensor
+            Token count tensor from the current process.
 
-        Returns:
-            Token count tensor (single-device) or aggregated across ranks (distributed)
+        Returns
+        -------
+        Tensor
+            Token count tensor (single-device) or aggregated across ranks (distributed).
         """
         return tokens
 
@@ -446,12 +501,15 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         Distributed trainers override to all_gather across ranks so logging
         reflects per-rank high-water marks.
 
-        Args:
-            local_peak: torch.cuda.max_memory_allocated for this rank, in bytes.
+        Parameters
+        ----------
+        local_peak : int
+            ``torch.cuda.max_memory_allocated`` for this rank, in bytes.
 
-        Returns:
-            List of peak bytes indexed by rank (length == world_size, or 1
-            for single-device training).
+        Returns
+        -------
+        list of int
+            Peak bytes indexed by rank (length ``world_size``, or 1 for single-device).
         """
         return [int(local_peak)]
 
@@ -680,9 +738,12 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         Creates StatefulDataLoader instances that support checkpointing dataset iteration state.
         Also computes training step counts for scheduling logging/evaluation/checkpointing.
 
-        Args:
-            train_dataset: Training dataset or None for eval-only
-            eval_dataset: Evaluation dataset or None for train-only
+        Parameters
+        ----------
+        train_dataset : dataset or None
+            Training dataset. Pass ``None`` for eval-only runs.
+        eval_dataset : dataset or None
+            Evaluation dataset. Pass ``None`` for train-only runs.
         """
         # _prepare() sub-step 1
         self.max_steps = 0
@@ -908,12 +969,17 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         If model supports fused-loss, and fused loss function is returned, sets:
             self.use_fused_loss = True
 
-        Args:
-            module: The prospective module to enable fused-loss on
-            default_loss_fn: The default loss function, if unsupported
+        Parameters
+        ----------
+        module : torch.nn.Module
+            The model to attempt enabling fused loss on.
+        default_loss_fn : callable or None
+            Fallback loss function if fused loss is not supported.
 
-        Returns:
-            The fused loss function or default_loss_fn, if unsupported
+        Returns
+        -------
+        callable or None
+            The fused loss function, or ``default_loss_fn`` if unsupported.
         """
         if self.fused_loss_factory:
             if not hasattr(module, "get_output_embeddings"):
@@ -1374,11 +1440,15 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         """
         Clip gradients by norm.
 
-        Returns:
-            The total norm of the parameters (as per PyTorch's API).
+        Returns
+        -------
+        Tensor or None
+            Total norm of the parameters.
 
-        Raises:
-            RuntimeError: If parameters are not of supported types for foreach=True.
+        Raises
+        ------
+        RuntimeError
+            If parameters are not of supported types for ``foreach=True``.
         """
         # In the case of fused backward / optimizer step, we accumulate squared norm
         # in the optimizer hook. Compute norm via sqrt() and reset accumulator
@@ -1413,13 +1483,17 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         """
         Perform a single training step, with optional gradient accumulation.
 
-        Args:
-            data_iterator: Iterator over training batches
+        Parameters
+        ----------
+        data_iterator : Iterator
+            Iterator over training batches.
 
-        Returns:
-            Tuple of (loss, grad_norm, tokens). Loss is unscaled for logging consistency.
-            grad_norm is None if not computed on this step.
-            tokens is the total non-padding tokens processed in this step.
+        Returns
+        -------
+        tuple of (Tensor, Tensor or None, Tensor)
+            ``(loss, grad_norm, tokens)``. Loss is unscaled for logging consistency.
+            ``grad_norm`` is None if not computed on this step.
+            ``tokens`` is the total non-padding tokens processed in this step.
         """
         accumulated_losses = []
         accumulated_tokens: Tensor | int = 0
@@ -1472,12 +1546,17 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         requests hidden states instead of logits to avoid materializing the large
         logits tensor.
 
-        Args:
-            input_dict: Model inputs (input_ids, attention_mask, etc.)
-            labels: Target labels for loss computation
+        Parameters
+        ----------
+        input_dict : dict
+            Model inputs (input_ids, attention_mask, etc.).
+        labels : Tensor
+            Target labels for loss computation.
 
-        Returns:
-            Detached loss tensor for logging
+        Returns
+        -------
+        Tensor
+            Detached loss tensor for logging.
         """
         assert self.model is not None
         assert self.loss_fn is not None
@@ -1499,8 +1578,10 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
 
         Subclasses may override to customize backward behavior (e.g., for pipeline parallelism).
 
-        Args:
-            loss: Loss tensor to backpropagate
+        Parameters
+        ----------
+        loss : Tensor
+            Loss tensor to backpropagate.
         """
         self.amp_context.scale_loss(loss).backward()
 
@@ -1514,8 +1595,10 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         If overridden, as is the case for the Accelerate trainer, an assert verifies that the logic
         agrees with when gradient synchronization is expected.
 
-        Returns:
-            True if gradients should be synchronized on the current forward-backward step
+        Returns
+        -------
+        bool
+            True if gradients should be synchronized on the current forward-backward step.
         """
         return self.gradient_accumulation_step == self.args.gradient_accumulation_steps
 
@@ -1716,12 +1799,17 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         Computes loss without gradient computation (wrapped in @torch.no_grad()).
         Uses unscaled loss (via loss_fn.no_rescale()) for accurate eval metrics.
 
-        Args:
-            input_dict: Model inputs (input_ids, attention_mask, etc.)
-            labels: Target labels for loss computation
+        Parameters
+        ----------
+        input_dict : dict
+            Model inputs (input_ids, attention_mask, etc.).
+        labels : Tensor
+            Target labels for loss computation.
 
-        Returns:
-            Dictionary with 'loss', 'logits', and 'labels' tensors
+        Returns
+        -------
+        dict
+            Dictionary with ``'loss'``, ``'logits'``, and ``'labels'`` tensors.
         """
         assert self.model is not None
         assert isinstance(self.loss_fn, RescaleLoss)
@@ -1835,11 +1923,15 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         """
         Move batch tensors to target device and extract labels.
 
-        Args:
-            batch: Dictionary of tensors from dataloader, must include 'labels' key
+        Parameters
+        ----------
+        batch : dict
+            Dictionary of tensors from the dataloader. Must include a ``'labels'`` key.
 
-        Returns:
-            Tuple of (input_dict, labels) where labels are separated for loss computation
+        Returns
+        -------
+        tuple of (dict, Tensor)
+            ``(input_dict, labels)`` with labels separated for loss computation.
         """
         batch = {k: v.to(self.args.device, non_blocking=True) for k, v in batch.items()}
         labels = batch.pop("labels")
@@ -1856,11 +1948,15 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
 
         See src/forgather/ml/trainer/accelerate/accel_trainer.py for distributed implementation.
 
-        Args:
-            loss: Loss tensor from current process
+        Parameters
+        ----------
+        loss : Tensor
+            Loss tensor from the current process.
 
-        Returns:
-            Loss tensor (single-device) or all-reduced loss (distributed)
+        Returns
+        -------
+        Tensor
+            Loss tensor (single-device) or all-reduced loss (distributed).
         """
         return loss
 

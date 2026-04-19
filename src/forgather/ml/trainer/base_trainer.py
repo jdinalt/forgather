@@ -55,18 +55,89 @@ ModelConstructor = Callable[[], torch.nn.Module]
 
 @dataclass(kw_only=True)
 class BaseTrainingArguments(MinimalTrainingArguments):
-    """
-    Extended training arguments with checkpoint management and PyTorch optimizations.
+    """Extended training arguments with checkpoint management and PyTorch optimizations.
 
-    Extends MinimalTrainingArguments with checkpoint preservation features and
-    PyTorch runtime optimizations.
+    Extends ``MinimalTrainingArguments`` with full checkpoint state preservation and a
+    range of PyTorch runtime optimizations (mixed precision, FP8, SDPA backend
+    selection, activation offloading, etc.).
 
-    All training state (model, optimizer, scheduler, dataset position, RNG state)
-    is automatically saved in checkpoints. To skip loading specific components,
-    manually delete their files from the checkpoint directory before resuming.
+    All training state (model, optimizer, scheduler, dataset position, RNG state) is
+    automatically saved in checkpoints. To skip loading a specific component when
+    resuming, manually delete its file from the checkpoint directory before calling
+    ``train()``.
 
-    NOTE: These checkpoint options are NOT compatible with HF Trainer.
-    Use HF-compatible MinimalTrainingArguments for basic HF compatibility.
+    .. note::
+        The checkpoint-related options in this class are **not** compatible with the
+        HuggingFace ``Trainer``. Use ``MinimalTrainingArguments`` when HF compatibility
+        is required.
+
+    Parameters
+    ----------
+    default_dtype : str or None, optional
+        Default ``torch.dtype`` for model construction (e.g. ``"float32"``,
+        ``"bfloat16"``, ``"float16"``). ``None`` leaves PyTorch's global default
+        unchanged. Default is ``None``.
+    max_eval_steps : int, optional
+        Maximum number of evaluation steps per evaluation call. ``-1`` runs the
+        full evaluation dataset. Default is ``-1``.
+    preserve_best_model : bool, optional
+        If ``True``, keep the checkpoint with the best value of
+        ``best_model_metric`` protected from cleanup rotation. Default is ``False``.
+    best_model_metric : str, optional
+        Name of the metric used to select the best checkpoint when
+        ``preserve_best_model=True``. Default is ``"loss"``.
+    best_model_greater_is_better : bool or None, optional
+        Whether higher values of ``best_model_metric`` are better. ``None``
+        auto-detects from the metric name (metrics containing ``"loss"`` or
+        ``"perplexity"`` default to lower-is-better). Default is ``None``.
+    preserve_n_best : int, optional
+        Number of best checkpoints to keep safe from ``save_total_limit``
+        cleanup. Default is ``1``.
+    eval_on_save : bool, optional
+        Force an evaluation pass before each checkpoint save. Useful for
+        decoupling the save and eval schedules. Default is ``False``.
+    enable_activation_offloading : bool, optional
+        Offload saved activation tensors to CPU during the backward pass to
+        reduce peak GPU memory. Best combined with activation checkpointing.
+        Trades GPU memory for CPU memory bandwidth. Default is ``False``.
+    detect_anomaly : bool, optional
+        Enable ``torch.autograd`` anomaly detection for debugging NaN/Inf
+        gradients. Adds significant overhead — use only for debugging.
+        Default is ``False``.
+    sdpa_backend : list of str, str, or None, optional
+        Scaled Dot-Product Attention backend(s). Valid string values are
+        ``"math"``, ``"flash"``, ``"efficient"``, and ``"cudnn"``. Pass a list
+        to specify multiple backends; if ``sdpa_set_priority=True``, the list is
+        treated as a priority order. ``None`` uses PyTorch's default selection.
+        Default is ``None``.
+    sdpa_set_priority : bool, optional
+        When ``sdpa_backend`` is a list, interpret it as a priority order rather
+        than requiring all backends to be available. Default is ``False``.
+    float32_matmul_precision : str or None, optional
+        Float32 matrix-multiplication precision on Ampere+ GPUs. One of
+        ``"highest"`` (full IEEE, slowest), ``"high"`` (TF32, ~10–20 % speedup),
+        or ``"medium"`` (more aggressive, may impact accuracy). ``None`` leaves
+        the PyTorch default unchanged. Default is ``None``.
+    dynamo_recompile_limit : int or None, optional
+        Override ``torch._dynamo.config.recompile_limit``. Increase when
+        ``torch.compile()`` produces frequent recompilation warnings. ``None``
+        leaves the default unchanged. Default is ``None``.
+    mixed_precision : str or None, optional
+        Automatic Mixed Precision mode. ``None`` or ``"no"`` disables AMP.
+        ``"bf16"`` enables bfloat16 autocast without loss scaling (recommended
+        for Ampere+ GPUs). ``"fp16"`` enables float16 autocast with
+        ``GradScaler`` loss scaling. Default is ``None``.
+    fp8_recipe : str or None, optional
+        FP8 training recipe via ``torchao``. Converts ``nn.Linear`` layers to
+        ``Float8Linear``. One of ``"tensorwise"`` (fastest), ``"rowwise"``
+        (more accurate), or ``"rowwise_with_gw_hp"`` (most accurate). ``None``
+        disables FP8. Orthogonal to ``mixed_precision``; combine both for FP8
+        matmuls with bfloat16 non-linear ops. Requires CUDA SM >= 8.9.
+        Default is ``None``.
+    fp8_dim_alignment : int, optional
+        Minimum alignment for FP8 ``Linear`` layer dimensions. Layers whose
+        ``in_features`` or ``out_features`` are not divisible by this value are
+        skipped. Hardware requires 16. Default is ``16``.
     """
 
     # Default torch dtype for model construction (e.g., "float32", "bfloat16", "float16")
@@ -174,28 +245,71 @@ TBaseTrainingArguments = TypeVar("TBaseTrainingArguments", bound=BaseTrainingArg
 class BaseTrainer(
     ExtensibleTrainer, Stateful, StatefulProvider, Generic[TBaseTrainingArguments]
 ):
-    """
-    Abstract base class implementing common trainer functionality.
+    """Abstract base class implementing common trainer infrastructure.
 
-    Provides shared implementation for trainer infrastructure while leaving
-    the core training and evaluation loops abstract for subclasses to implement.
+    Provides callback management, checkpoint coordination, training-state tracking,
+    and the ``PyTorch Stateful`` interface. The actual training and evaluation loops
+    are left abstract so that concrete subclasses (``Trainer``, ``AccelTrainer``,
+    ``PipelineTrainer``) can implement them with their own parallelism strategy.
 
-    Key responsibilities:
-    - Callback management and event dispatching
-    - Model and checkpoint save/load coordination
-    - Training state management (global_step, epoch, etc.)
-    - Stateful interface for checkpointing trainer components
-    - Common initialization and configuration handling
+    This class intentionally mirrors the public surface of ``transformers.Trainer``
+    to make porting existing training scripts straightforward.
 
-    Concrete implementations must define:
-    - _prepare(): Setup dataloaders, model, optimizer before training
-    - _train_loop(): The actual training iteration loop
-    - _eval_loop(): The evaluation loop
+    Parameters
+    ----------
+    args : TBaseTrainingArguments
+        Training configuration dataclass. Must be an instance of
+        ``BaseTrainingArguments`` or one of its subclasses.
+    model : torch.nn.Module or None, optional
+        Pre-constructed model. Either ``model`` or ``model_init`` must be
+        provided. Default is ``None``.
+    data_collator : DataCollatorT or None, optional
+        Callable that collates a list of dataset examples into a batch dict.
+        Default is ``None``.
+    train_dataset : IterableDatasetT or None, optional
+        Training dataset (``torch.utils.data.Dataset`` or any iterable).
+        Default is ``None``.
+    eval_dataset : IterableDatasetT or None, optional
+        Evaluation dataset. Default is ``None``.
+    processing_class : PreprocessingClassT or None, optional
+        Tokenizer or feature extractor saved alongside model weights.
+        Default is ``None``.
+    model_init : Callable[[], torch.nn.Module] or None, optional
+        Zero-argument factory that constructs the model. Required when ``model``
+        is ``None`` (e.g. for pipeline training where construction must happen
+        inside the trainer). Default is ``None``.
+    callbacks : list of TrainerCallback or None, optional
+        Callbacks to install. When ``None``, ``default_callbacks()`` is used.
+        Default is ``None``.
+    compute_loss_func : LossFunctionT or None, optional
+        Custom loss function. When ``None``, the trainer computes cross-entropy
+        from model logits. Default is ``None``.
 
-    HuggingFace API Compatibility:
-    This class maintains API compatibility with transformers.Trainer where possible,
-    making it easier to port existing training code. See MinimalTrainingArguments
-    and BaseTrainingArguments for supported configuration options.
+    Attributes
+    ----------
+    state : TrainerState
+        Mutable training progress state (global step, epoch, log history, etc.).
+    control : TrainerControl
+        Mutable flags set by callbacks to signal save/eval/stop actions.
+    checkpoint_manager : CheckpointInterface or None
+        Set by ``_prepare()`` before the training loop starts.
+
+    Raises
+    ------
+    AssertionError
+        If neither ``model`` nor ``model_init`` is provided.
+    AssertionError
+        If ``args.gradient_accumulation_steps`` is not greater than 0.
+
+    Notes
+    -----
+    Concrete subclasses must implement three abstract methods:
+
+    * ``_prepare(train_dataset, eval_dataset)`` — set up dataloaders, model,
+      optimizer, and checkpoint manager.
+    * ``_train_loop()`` — the main training iteration loop, returning
+      ``TrainOutput``.
+    * ``_eval_loop()`` — the evaluation loop, returning a metrics dict.
     """
 
     args: TBaseTrainingArguments
@@ -220,14 +334,16 @@ class BaseTrainer(
 
     @classmethod
     def default_callbacks(cls):
-        """
-        Return list of default callbacks for this trainer class.
+        """Return the default callbacks for this trainer class.
 
-        Subclasses override to provide default callbacks (progress bars, logging, etc.).
-        For example, Trainer adds ProgressCallback and InfoCallback by default.
+        Subclasses override this to provide callbacks that are always installed
+        (e.g. ``ProgressCallback``, ``InfoCallback``). The base implementation
+        returns an empty list.
 
-        Returns:
-            List of callback instances to install by default
+        Returns
+        -------
+        list of TrainerCallback
+            Default callback instances.
         """
         return []
 
@@ -336,8 +452,16 @@ class BaseTrainer(
     # AbstractBaseTrainer
     @override
     def train(self, **kwargs) -> TrainOutput:
-        """
-        The main entry point to start training the model.
+        """Run the full training loop.
+
+        Applies any configured PyTorch context managers (SDPA backend, activation
+        offloading), calls ``_prepare()`` to set up all components, then delegates
+        to ``_train_loop()``.
+
+        Returns
+        -------
+        TrainOutput
+            Named tuple with ``global_step``, ``training_loss``, and ``metrics``.
         """
         with ExitStack() as exit_stack:
             backends = self._get_sdpa_backends(self.args.sdpa_backend)
@@ -362,8 +486,21 @@ class BaseTrainer(
     def evaluate(
         self, eval_dataset: Optional[BaseDataset] = None, **kwargs
     ) -> dict[str, float]:
-        """
-        The main entry point to evaluate the model.
+        """Run evaluation on the given dataset.
+
+        Applies the configured SDPA backend context, calls ``_prepare()`` with
+        ``train_dataset=None``, then delegates to ``_eval_loop()``.
+
+        Parameters
+        ----------
+        eval_dataset : BaseDataset or None, optional
+            Dataset to evaluate on. Falls back to ``self.eval_dataset`` when
+            ``None``. Default is ``None``.
+
+        Returns
+        -------
+        dict of str to float
+            Evaluation metrics, e.g. ``{"eval_loss": 1.23}``.
         """
         if eval_dataset is None:
             eval_dataset = self.eval_dataset
@@ -404,17 +541,22 @@ class BaseTrainer(
         self.pop_callback(callback)
 
     def log(self, logs: Dict[str, float]):
-        """
-        Log metrics and dispatch to callbacks.
+        """Log metrics and dispatch the ``on_log`` event to all callbacks.
 
-        Appends metrics to state.log_history and dispatches on_log event to
-        all callbacks. Callbacks can use this to write to TensorBoard, wandb, etc.
+        Appends the metrics dict to ``state.log_history``, then fires the
+        ``on_log`` callback event. Callbacks use this to write to TensorBoard,
+        wandb, or other logging backends.
 
-        Args:
-            logs: Dictionary of metric name to value (e.g., {"loss": 0.5, "lr": 1e-4})
+        Parameters
+        ----------
+        logs : dict of str to float
+            Metrics to record, e.g. ``{"loss": 0.5, "lr": 1e-4}``.
 
-        Returns:
-            TrainerControl from callbacks (may set flags like should_save, should_evaluate)
+        Returns
+        -------
+        TrainerControl
+            Updated control object (callbacks may have set ``should_save``,
+            ``should_evaluate``, etc.).
         """
         self.state.log_history.append(logs)
 
@@ -427,20 +569,27 @@ class BaseTrainer(
     def _get_sdpa_backends(
         backend: List[str | SDPBackend] | str | SDPBackend | None,  # type: ignore[valid-type]
     ) -> List[SDPBackend] | SDPBackend | None:  # type: ignore[valid-type]
-        """
-        Normalize SDPA backend specifications to SDPBackend enum values.
+        """Normalize SDPA backend specifications to ``SDPBackend`` enum values.
 
-        Converts string backend names ("math", "flash", "efficient", "cudnn") to
-        PyTorch SDPBackend enum values. Handles both single backends and lists.
+        Converts string names (``"math"``, ``"flash"``, ``"efficient"``,
+        ``"cudnn"``) or already-resolved ``SDPBackend`` enums to the form
+        expected by ``torch.nn.attention.sdpa_kernel``.
 
-        Args:
-            backend: Backend specification as string(s) or SDPBackend enum(s), or None
+        Parameters
+        ----------
+        backend : list of str or SDPBackend, str, SDPBackend, or None
+            Backend specification. ``None`` is passed through unchanged.
 
-        Returns:
-            SDPBackend enum value(s) or None if backend is None
+        Returns
+        -------
+        list of SDPBackend, SDPBackend, or None
+            Resolved enum value(s), or ``None`` when input is ``None``.
 
-        Raises:
-            ValueError: If backend is not a valid type (str/list/SDPBackend/None)
+        Raises
+        ------
+        ValueError
+            If ``backend`` is not a ``str``, ``list``, ``SDPBackend``, or
+            ``None``.
         """
         if backend is None:
             return None
@@ -465,19 +614,25 @@ class BaseTrainer(
             raise ValueError("sdpa-backend must be a List[str] or str")
 
     def _dispatch_event(self, event: str, **kwargs):
-        """
-        Dispatch event to callbacks that define a handler for it.
+        """Dispatch a trainer event to all registered callbacks.
 
-        Uses a lazy index (built on first dispatch of each event) to skip
-        callbacks that don't implement the requested handler.  The index is
-        invalidated whenever callbacks are added or removed.
+        Uses a lazy per-event index (built on first dispatch, invalidated on
+        callback add/remove) to skip callbacks that do not implement the
+        requested handler method.
 
-        Args:
-            event: Name of callback method to invoke (e.g., "on_train_begin")
-            **kwargs: Additional arguments passed to callback (logs, metrics, etc.)
+        Parameters
+        ----------
+        event : str
+            Name of the callback method to invoke, e.g. ``"on_train_begin"``.
+        **kwargs
+            Extra arguments forwarded to each callback handler (``logs``,
+            ``metrics``, etc.).
 
-        Returns:
-            Updated TrainerControl (last non-None return from callbacks)
+        Returns
+        -------
+        TrainerControl
+            The ``self.control`` object after all callbacks have been invoked.
+            Callbacks may mutate it in place or return a new one.
         """
         handlers = self._event_index.get(event)
         if handlers is None:
@@ -554,19 +709,16 @@ class BaseTrainer(
         return self.control
 
     def unwrapped_model(self) -> torch.nn.Module:
-        """
-        Get the underlying model without any wrappers.
+        """Return the underlying model, free of any distributed wrappers.
 
-        Returns the base model, unwrapped from any distributed training wrappers
-        (DDP, FSDP, Accelerate, pipeline parallelism, etc.).
+        Subclasses that wrap ``self.model`` in DDP, FSDP, Accelerate, or
+        pipeline-parallel containers override this method to strip those wrappers
+        before the model is passed to callbacks.
 
-        Subclasses that wrap the model override this to return the unwrapped version.
-        For example:
-        - AccelTrainer: Returns accelerator.unwrap_model(self.model)
-        - PipelineTrainer: Returns the unwrapped pipeline stage models
-
-        Returns:
-            The unwrapped base model
+        Returns
+        -------
+        torch.nn.Module
+            The bare model without any framework wrapper.
         """
         assert self.model
         return self.model
@@ -574,17 +726,17 @@ class BaseTrainer(
     # AbstractBaseTrainer
     @override
     def save_model(self, output_dir: Optional[os.PathLike | str] = None) -> None:
-        """
-        Save just the model weights and preprocessing class (HF Trainer API compatibility).
+        """Save model weights and the preprocessing class (HF Trainer API compatibility).
 
-        Saves model to output_dir or args.output_dir. This saves ONLY the model weights,
-        not the full training state. For resumable training, use save_checkpoint() instead.
+        Writes only the model weights to ``output_dir`` (or ``args.output_dir``
+        when ``output_dir`` is ``None``). The full training state (optimizer,
+        scheduler, RNG, etc.) is **not** saved. For resumable training, prefer
+        ``save_checkpoint()``.
 
-        Note: This method exists primarily for HF Trainer API compatibility. In practice,
-        save_checkpoint() is more useful as it saves complete training state.
-
-        Args:
-            output_dir: Directory to save model, defaults to args.output_dir
+        Parameters
+        ----------
+        output_dir : path-like or str, optional
+            Destination directory. Defaults to ``args.output_dir``.
         """
         assert self.checkpoint_manager
         self.checkpoint_manager.save_model(
@@ -594,21 +746,24 @@ class BaseTrainer(
     # AbstractBaseTrainer
     @override
     def save_checkpoint(self, checkpoint_path=None) -> None:
-        """
-        Save complete training checkpoint.
+        """Save a complete training checkpoint.
 
-        Saves all training state to a timestamped checkpoint directory under args.output_dir:
-        - Model weights (always required)
-        - Optimizer state (momentum buffers, adaptive rates, etc.)
-        - LR scheduler state (current step, etc.)
-        - Training progress (global_step, epoch, etc.)
-        - Dataset position (if dataloader is stateful)
-        - Random number generator states (for reproducibility)
+        Writes all training state to a timestamped directory under
+        ``args.output_dir``. The following components are always saved:
 
-        This allows resuming training from the exact point where it left off.
+        * Model weights (required for resuming)
+        * Optimizer state (momentum buffers, adaptive learning rates, etc.)
+        * LR scheduler state (current step position)
+        * Training progress (``global_step``, epoch counter, etc.)
+        * Dataset position (when the dataloader is stateful)
+        * Random number generator states (for bit-exact reproducibility)
 
-        Args:
-            checkpoint_path: Optional specific checkpoint path, otherwise auto-generated
+        Parameters
+        ----------
+        checkpoint_path : path-like or str, optional
+            Explicit checkpoint directory path. When ``None``, a path is
+            auto-generated under ``args.output_dir`` based on the current
+            step count.
         """
         assert self.checkpoint_manager
         self.checkpoint_manager.save_checkpoint(checkpoint_path)
@@ -616,27 +771,30 @@ class BaseTrainer(
     # AbstractBaseTrainer
     @override
     def load_checkpoint(self, checkpoint_path=None) -> None:
-        """
-        Load complete training checkpoint to resume training.
+        """Load a training checkpoint to resume training.
 
-        Restores all training state from a saved checkpoint:
-        - Model weights (always loaded)
-        - Optimizer state (if file exists)
-        - LR scheduler state (if file exists)
-        - Training progress (if file exists)
-        - Dataset position (if file exists)
-        - Random number generator states (if file exists)
+        Restores all available training state from the specified checkpoint
+        directory. Each component is loaded only if its file exists:
 
-        If checkpoint_path is None, automatically finds the latest checkpoint in args.output_dir.
+        * Model weights (always required — raises if missing)
+        * Optimizer state
+        * LR scheduler state
+        * Training progress (``global_step``, epoch, etc.)
+        * Dataset position
+        * Random number generator states
 
-        To skip loading specific components, delete their files from the checkpoint directory
-        before calling this method. For example:
-            rm checkpoint-1000/optimizer_state.pt  # Use fresh optimizer
+        When ``checkpoint_path`` is ``None``, the latest checkpoint under
+        ``args.output_dir`` is located automatically.
 
-        The checkpoint system will log warnings for missing components but continue loading.
+        To intentionally skip reloading a component, delete its file from the
+        checkpoint directory before calling this method. The checkpoint system
+        logs a warning for each missing file but continues loading the rest.
 
-        Args:
-            checkpoint_path: Path to checkpoint directory, or None for latest checkpoint
+        Parameters
+        ----------
+        checkpoint_path : path-like or str, optional
+            Path to the checkpoint directory. ``None`` auto-selects the latest
+            checkpoint under ``args.output_dir``.
         """
         assert self.checkpoint_manager
         self.checkpoint_manager.load_checkpoint(checkpoint_path)
@@ -644,28 +802,28 @@ class BaseTrainer(
     # StatefulProvider
     @override
     def get_state_components(self) -> List[StateComponent]:
-        """
-        Get state components for distributed checkpointing.
+        """Return state components for checkpoint save/load.
 
-        All training state is always saved to checkpoints:
-        - Model weights (required - cannot be skipped)
-        - Optimizer state (momentum, adaptive rates, etc.)
-        - LR scheduler state (current step, etc.)
-        - Training progress (global_step, epoch, etc.)
-        - Dataset state (iteration position, if dataloader is stateful)
-        - RNG state (for reproducibility)
+        Describes every piece of training state that should be persisted. The
+        checkpoint manager calls this method to determine what to save and how
+        state is shared across distributed ranks.
 
-        To skip loading a component, delete its file from the checkpoint directory.
-        For example, to change datasets between runs:
-            rm checkpoint-1000/dataset_state.pt
-            rm checkpoint-1000/trainer_state.pt
+        For the single-GPU base trainer all components use ``GLOBAL`` sharing
+        except RNG which uses ``PER_RANK``.
 
-        The checkpoint system will log warnings for missing components but continue loading.
+        Returned components (in order):
 
-        For single-GPU trainers, all state is GLOBAL except RNG which is PER_RANK.
+        * ``"model"`` — model weights, **required**
+        * ``"optimizer"`` — optimizer state (optional)
+        * ``"scheduler"`` — LR scheduler state (optional)
+        * ``"trainer"`` — training progress counters (optional)
+        * ``"dataset"`` — dataloader position, only when stateful (optional)
+        * ``"rng"`` — per-rank RNG state (optional)
 
-        Returns:
-            List of StateComponent objects describing all checkpointable state
+        Returns
+        -------
+        list of StateComponent
+            All checkpointable state components with their sharing patterns.
         """
         components = []
         assert self.model is not None
@@ -740,45 +898,56 @@ class BaseTrainer(
         return components
 
     def _get_dataset_sharing_pattern(self) -> SharingPattern:
-        """
-        Determine dataset state sharing pattern based on dataloader type.
+        """Return the dataset state sharing pattern for this trainer.
 
-        The pattern depends on how data is loaded:
-        - DataloaderDispatcher: Centralized loading by rank 0 → GLOBAL
-        - Regular DataLoader: Independent loading per rank → PER_RANK
+        The pattern depends on the dataloader strategy:
 
-        For single-GPU trainers, dataset is always GLOBAL.
+        * ``GLOBAL`` — rank 0 loads and dispatches data (``DataloaderDispatcher``).
+        * ``PER_RANK`` — each rank loads its own shard independently.
 
-        Returns:
-            SharingPattern for dataset state
+        The base implementation always returns ``GLOBAL`` (single-GPU training).
+        Subclasses with distributed training should override this method.
+
+        Returns
+        -------
+        SharingPattern
+            ``SharingPattern.GLOBAL`` for the single-GPU base trainer.
         """
         # For single-GPU trainer, dataset is GLOBAL
         # Subclasses with distributed training should override this method
         return SharingPattern.GLOBAL
 
     def get_process_groups(self) -> Dict[str, Any]:
-        """
-        Get named process groups for PER_GROUP sharing pattern.
+        """Return named process groups for ``PER_GROUP`` sharing pattern.
 
-        Single-GPU trainers don't use process groups.
-        Subclasses with distributed training should override this method.
+        The checkpoint manager uses this to coordinate group-level saves (e.g.
+        tensor-parallel replicas). Single-GPU trainers have no process groups.
+        Subclasses implementing hybrid parallelism should override this method.
 
-        Returns:
-            Empty dictionary (no process groups in single-GPU training)
+        Returns
+        -------
+        dict of str to Any
+            Empty dict for the single-GPU base trainer.
         """
         return {}
 
     # Stateful
     @override
     def load_state_dict(self, state_dict):
-        """
-        Restore trainer training progress state from checkpoint.
+        """Restore trainer progress state from a checkpoint state dict.
 
-        Implements PyTorch Stateful interface. Restores training step counters
-        and progress tracking to resume training from the correct point.
+        Implements the ``torch.distributed.checkpoint.stateful.Stateful``
+        interface. Restores step counters and progress tracking so training
+        resumes at the exact point where it was saved. Also restores the
+        ``GradScaler`` state when fp16 AMP is active.
 
-        Args:
-            state_dict: Dictionary with training state (global_step, epoch, etc.)
+        Parameters
+        ----------
+        state_dict : dict
+            State dictionary previously returned by ``state_dict()``. Expected
+            keys: ``global_step``, ``epoch_start_step``, ``raw_epoch``,
+            ``num_input_tokens_seen``, ``total_flos``, and optionally
+            ``grad_scaler``.
         """
         self.state.global_step = state_dict["global_step"]
         self.state.epoch_start_step = state_dict["epoch_start_step"]
@@ -793,19 +962,23 @@ class BaseTrainer(
     # Stateful
     @override
     def state_dict(self):
-        """
-        Get trainer training progress state for checkpointing.
+        """Return trainer progress state for checkpointing.
 
-        Implements PyTorch Stateful interface. Returns training step counters
-        and progress tracking needed to resume training.
+        Implements the ``torch.distributed.checkpoint.stateful.Stateful``
+        interface. The returned dict is consumed by ``load_state_dict()`` to
+        restore training from the exact saved point.
 
-        Returns:
-            Dictionary with training state:
-            - global_step: Total optimizer updates since training start
-            - epoch_start_step: Global step when current epoch started
-            - raw_epoch: Integer epoch counter
-            - num_input_tokens_seen: Total tokens processed (for logging)
-            - total_flos: Total floating point operations (for efficiency metrics)
+        Returns
+        -------
+        dict
+            Training state with the following keys:
+
+            * ``global_step`` — total optimizer updates performed.
+            * ``epoch_start_step`` — global step at the start of the current epoch.
+            * ``raw_epoch`` — integer epoch counter.
+            * ``num_input_tokens_seen`` — total tokens processed (for throughput logging).
+            * ``total_flos`` — total floating-point operations (for efficiency metrics).
+            * ``grad_scaler`` — ``GradScaler`` state dict (only when fp16 AMP is active).
         """
         state = {
             "global_step": self.state.global_step,
@@ -829,85 +1002,85 @@ class BaseTrainer(
         train_dataset: Optional[BaseDataset],
         eval_dataset: Optional[BaseDataset],
     ) -> None:
-        """
-        Prepare all components for training and/or evaluation.
+        """Prepare all components for training and/or evaluation.
 
-        Called at the start of train() or evaluate() to set up everything needed
-        for the training/eval loop. Both datasets may be None (eval-only or train-only).
+        Called at the start of ``train()`` or ``evaluate()``. Either dataset
+        argument may be ``None`` (eval-only or train-only runs).
 
-        Typical preparation sequence:
-        1. Create dataloaders from datasets
-        2. Initialize/move model to device(s)
-        3. Set up optimizer and LR scheduler (if training)
-        4. Wrap components for distributed training (DDP, Accelerate, etc.)
-        5. Initialize trainer state
-        6. Create checkpoint manager
-        7. Load checkpoint if resuming
+        Subclasses implement a typical sequence of:
 
-        Subclasses must implement this to handle their specific setup requirements.
+        1. Create dataloaders from datasets.
+        2. Initialize and move the model to the target device(s).
+        3. Set up the optimizer and LR scheduler (training only).
+        4. Wrap components for distributed training (DDP, Accelerate, etc.).
+        5. Initialize the ``TrainerState``.
+        6. Create the ``CheckpointManager``.
+        7. Load from checkpoint when ``args.resume_from_checkpoint`` is set.
 
-        Args:
-            train_dataset: Training dataset or None for eval-only
-            eval_dataset: Evaluation dataset or None for train-only
+        Parameters
+        ----------
+        train_dataset : BaseDataset or None
+            Training dataset. ``None`` when only evaluation is requested.
+        eval_dataset : BaseDataset or None
+            Evaluation dataset. ``None`` when only training is requested.
         """
         pass
 
     @abstractmethod
     def _train_loop(self) -> TrainOutput:
-        """
-        Execute the main training loop.
+        """Execute the main training loop.
 
-        Implements the core training iteration logic:
-        - Iterate over epochs and batches
-        - Forward/backward passes
-        - Optimizer steps and gradient accumulation
-        - Periodic logging, evaluation, and checkpointing
-        - Callback event dispatching
-        - Early stopping and control flow
+        Concrete implementations iterate over epochs and batches, perform
+        forward/backward passes with gradient accumulation, step the optimizer
+        and LR scheduler, dispatch callback events, and handle periodic logging,
+        evaluation, and checkpointing.
 
-        Must be implemented by concrete trainer classes.
-
-        Returns:
-            TrainOutput with final global_step and training metrics
+        Returns
+        -------
+        TrainOutput
+            Named tuple with ``global_step``, ``training_loss``, and a metrics
+            dict aggregated over the full training run.
         """
         pass
 
     @abstractmethod
     def _eval_loop(self) -> dict[str, float]:
-        """
-        Execute the evaluation loop.
+        """Execute the evaluation loop.
 
-        Implements evaluation logic:
-        - Iterate over evaluation dataset
-        - Forward-only passes (no gradients)
-        - Compute and aggregate metrics
-        - Callback event dispatching
+        Concrete implementations iterate over the evaluation dataset, perform
+        forward-only passes (no gradient computation), aggregate metrics, and
+        dispatch callback events.
 
-        Must be implemented by concrete trainer classes.
-
-        Returns:
-            Dictionary of evaluation metrics (e.g., {"eval_loss": 0.5})
+        Returns
+        -------
+        dict of str to float
+            Computed evaluation metrics, e.g. ``{"eval_loss": 0.5}``.
         """
         pass
 
 
 def logits_from_outputs(outputs) -> Tensor:
-    """
-    Extract logits from model outputs (handles multiple output formats).
+    """Extract logits from model forward-pass outputs.
 
-    Models may return outputs in different formats:
-    - Tensor: Logits directly
-    - Object with .logits attribute: HF-style ModelOutput
-    - Tuple: (loss, logits) or similar
+    Handles the three output conventions used across Forgather models:
 
-    Args:
-        outputs: Model forward pass outputs
+    * ``Tensor`` — outputs **are** the logits.
+    * Object with a ``.logits`` attribute — HuggingFace ``ModelOutput`` style.
 
-    Returns:
-        Logits tensor
+    Parameters
+    ----------
+    outputs : Tensor or object with .logits
+        Return value of the model's ``forward()`` call.
 
-    Raises:
-        AssertionError: If outputs don't contain logits in expected format
+    Returns
+    -------
+    Tensor
+        Logits tensor.
+
+    Raises
+    ------
+    AssertionError
+        If ``outputs`` is not a ``Tensor`` and has no ``.logits`` attribute.
     """
     if not isinstance(outputs, Tensor):
         assert hasattr(outputs, "logits"), f"Type is {type(outputs)}"
@@ -916,21 +1089,28 @@ def logits_from_outputs(outputs) -> Tensor:
 
 
 def loss_from_outputs(outputs) -> Tensor:
-    """
-    Extract loss from model outputs (handles multiple output formats).
+    """Extract the loss scalar from model forward-pass outputs.
 
-    Models may return outputs in different formats:
-    - Tuple: (loss, ...) - loss is first element
-    - Object with .loss attribute: HF-style ModelOutput
+    Handles two output conventions:
 
-    Args:
-        outputs: Model forward pass outputs
+    * ``tuple`` — the loss is the first element, ``outputs[0]``.
+    * Object with a ``.loss`` attribute — HuggingFace ``ModelOutput`` style.
 
-    Returns:
-        Loss tensor
+    Parameters
+    ----------
+    outputs : tuple or object with .loss
+        Return value of the model's ``forward()`` call.
 
-    Raises:
-        AssertionError: If outputs don't contain loss in expected format
+    Returns
+    -------
+    Tensor
+        Loss scalar tensor.
+
+    Raises
+    ------
+    AssertionError
+        If ``outputs`` is a tuple whose first element is not a ``Tensor``, or
+        if it has no ``.loss`` attribute.
     """
     if isinstance(outputs, tuple):
         loss = outputs[0]
@@ -941,21 +1121,29 @@ def loss_from_outputs(outputs) -> Tensor:
 
 
 def loss_and_logits_from_outputs(outputs) -> Tuple[Tensor, Tensor]:
-    """
-    Extract both loss and logits from model outputs (handles multiple formats).
+    """Extract both loss and logits from model forward-pass outputs.
 
-    Models may return outputs in different formats:
-    - Tuple: (loss, logits)
-    - Object with .loss and .logits attributes: HF-style ModelOutput
+    Handles two output conventions:
 
-    Args:
-        outputs: Model forward pass outputs
+    * ``tuple`` — ``(loss, logits)`` in that order.
+    * Object with ``.loss`` and ``.logits`` attributes — HuggingFace
+      ``ModelOutput`` style.
 
-    Returns:
-        Tuple of (loss, logits) tensors
+    Parameters
+    ----------
+    outputs : tuple or object with .loss and .logits
+        Return value of the model's ``forward()`` call.
 
-    Raises:
-        AssertionError: If outputs don't contain loss and logits in expected format
+    Returns
+    -------
+    tuple of (Tensor, Tensor)
+        ``(loss, logits)`` where both are ``Tensor`` instances.
+
+    Raises
+    ------
+    AssertionError
+        If ``outputs`` is a tuple whose elements are not both ``Tensor``, or if
+        the object lacks ``.loss`` or ``.logits`` attributes.
     """
     if isinstance(outputs, tuple):
         loss, logits = outputs

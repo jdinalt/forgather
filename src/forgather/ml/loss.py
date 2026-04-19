@@ -48,13 +48,20 @@ def _chunked_causal_loss_fn(
     2. For each chunk: compute exp(logits - max) and accumulate
     3. Compute log(sum_exp) and final cross-entropy
 
-    Args:
-        logits: [batch, seq_len, vocab_size] unnormalized logits
-        labels: [batch, seq_len] target token indices
-        chunk_size: Number of vocabulary elements to process at once
-        ignore_index: Label value to ignore in loss computation
+    Parameters
+    ----------
+    logits : Tensor
+        [batch, seq_len, vocab_size] unnormalized logits
+    labels : Tensor
+        [batch, seq_len] target token indices
+    chunk_size : int, optional
+        Number of vocabulary elements to process at once
+    ignore_index : int, optional
+        Label value to ignore in loss computation
 
-    Returns:
+    Returns
+    -------
+    Tensor
         Scalar loss tensor
     """
     # Shift so that tokens < n predict n
@@ -152,12 +159,15 @@ class ChunkedCausalLoss:
     - Standard loss: ~5GB for logits alone (batch=8, seq=2048, bf16)
     - Chunked loss (chunk_size=4096): ~140MB peak per chunk
 
-    Args:
-        chunk_size: Number of vocabulary elements to process at once.
-                    Smaller values use less memory but increase computation time.
-                    Recommended: 4096-8192 for vocabularies over 100K.
-        compile: Whether to use torch.compile() for the loss function.
-                 Note: Compilation may reduce chunking benefits.
+    Parameters
+    ----------
+    chunk_size : int, optional
+        Number of vocabulary elements to process at once.
+        Smaller values use less memory but increase computation time.
+        Recommended: 4096-8192 for vocabularies over 100K.
+    compile : bool, optional
+        Whether to use torch.compile() for the loss function.
+        Note: Compilation may reduce chunking benefits.
     """
 
     def __init__(self, chunk_size: int = 4096, compile: bool = False):
@@ -205,14 +215,22 @@ class LinearCrossEntropyLoss:
     - Liger: ~5 GB (50% reduction, estimated)
     - PyTorch: 6.0 GB (43% reduction)
 
-    Args:
-        output_embeddings: The output layer from model.get_output_embeddings().
-                          Can be nn.Linear or any module with .weight and optional .bias
-        impl: Implementation to use ("cce", "liger", "pytorch", "auto")
-        chunk_size: For pytorch impl, chunk size for vocabulary processing
-        ignore_index: Label value to ignore in loss computation
-        **kwargs: Additional arguments passed to the underlying implementation
+    Parameters
+    ----------
+    output_embeddings : nn.Module
+        The output layer from model.get_output_embeddings().
+        Can be nn.Linear or any module with .weight and optional .bias
+    impl : str, optional
+        Implementation to use ("cce", "liger", "pytorch", "auto")
+    chunk_size : int, optional
+        For pytorch impl, chunk size for vocabulary processing
+    ignore_index : int, optional
+        Label value to ignore in loss computation
+    **kwargs
+        Additional arguments passed to the underlying implementation
 
+    Examples
+    --------
     Usage:
         # Extract output embeddings from model
         output_embeddings = model.get_output_embeddings()
@@ -291,7 +309,9 @@ class LinearCrossEntropyLoss:
         """
         Select and initialize the loss implementation.
 
-        Returns:
+        Returns
+        -------
+        tuple of (str, Callable)
             (actual_impl_name, compute_function)
         """
 
@@ -636,11 +656,16 @@ class LinearCrossEntropyLoss:
         """
         Compute fused loss from hidden states.
 
-        Args:
-            hidden_states: [batch, seq_len, hidden_dim]
-            labels: [batch, seq_len] target token indices
+        Parameters
+        ----------
+        hidden_states : Tensor
+            [batch, seq_len, hidden_dim]
+        labels : Tensor
+            [batch, seq_len] target token indices
 
-        Returns:
+        Returns
+        -------
+        Tensor
             Scalar loss tensor
         """
         return self._compute_fn(hidden_states, labels)
@@ -651,10 +676,14 @@ class LinearCrossEntropyLoss:
 
         This method is used by the trainer to detect fused loss capability.
 
-        Args:
-            hidden_states: [batch, seq_len, hidden_dim]
+        Parameters
+        ----------
+        hidden_states : Tensor
+            [batch, seq_len, hidden_dim]
 
-        Returns:
+        Returns
+        -------
+        Tensor
             logits: [batch, seq_len, vocab_size]
         """
         logits = F.linear(hidden_states, self.weight, self.bias)

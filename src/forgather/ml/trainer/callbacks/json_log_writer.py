@@ -27,9 +27,11 @@ class JsonLogWriter(Stateful):
 
     def __init__(self, filename: str):
         """
-        Args:
-            filename: Relative filename (e.g., "parameter_norms.json").
-                      Will be created inside the trainer's ``logging_dir``.
+        Parameters
+        ----------
+        filename : str
+            Relative filename (e.g., ``"parameter_norms.json"``). Will be
+            created inside the trainer's ``logging_dir``.
         """
         self.filename = filename
         self.log_file = None

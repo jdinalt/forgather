@@ -14,12 +14,18 @@ def sr_sinkhorn(X: Tensor, num_iters: int, eps: float = 1e-8) -> Tensor:
     all row l2-norms equal √n and all column l2-norms equal √m, giving a Frobenius
     norm of √(mn).
 
-    Args:
-        X: Input matrix of shape (m, n), float32.
-        num_iters: Number of alternating normalization iterations (L).
-        eps: Small constant clamped into denominators for numerical stability.
+    Parameters
+    ----------
+    X : Tensor
+        Input matrix of shape (m, n), float32.
+    num_iters : int
+        Number of alternating normalization iterations (L).
+    eps : float, optional
+        Small constant clamped into denominators for numerical stability.
 
-    Returns:
+    Returns
+    -------
+    Tensor
         Normalized matrix with Frobenius norm ≈ √(mn).
     """
     m, n = X.shape
@@ -59,15 +65,22 @@ class SinkGD(Optimizer):
     - Linear layers: SinkGD with lr = 0.05 * global_lr
     - Embeddings / norms / output projection: Adam with global_lr
 
-    Args:
-        params: Parameters or parameter groups.
-        lr: Learning rate. Roughly matches Adam when normalize_output=True.
-        num_iters: SR-Sinkhorn iterations L. Paper uses 5; 1 is cheaper with
-            minor loss in quality (see Table 4 in the paper).
-        weight_decay: Decoupled weight decay (AdamW-style, scales with lr).
-        eps: Denominator clamp for row/column norms.
-        normalize_output: Divide SR-Sinkhorn output by √(mn) so that lr is
-            comparable to Adam's lr. Default: True.
+    Parameters
+    ----------
+    params : iterable
+        Parameters or parameter groups.
+    lr : float, optional
+        Learning rate. Roughly matches Adam when normalize_output=True.
+    num_iters : int, optional
+        SR-Sinkhorn iterations L. Paper uses 5; 1 is cheaper with
+        minor loss in quality (see Table 4 in the paper).
+    weight_decay : float, optional
+        Decoupled weight decay (AdamW-style, scales with lr).
+    eps : float, optional
+        Denominator clamp for row/column norms.
+    normalize_output : bool, optional
+        Divide SR-Sinkhorn output by √(mn) so that lr is
+        comparable to Adam's lr. Default: True.
     """
 
     def __init__(

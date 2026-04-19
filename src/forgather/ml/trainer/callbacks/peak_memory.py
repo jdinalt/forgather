@@ -33,26 +33,39 @@ class PeakMemory(TrainerCallback):
     - Optionally logs detailed CUDA memory statistics for further analysis.
     - Can write memory usage metrics to a TensorBoard SummaryWriter for visualization.
     - Provides configurable logging frequency and verbosity.
-    Args:
-        summary_writer (SummaryWriter, optional): TensorBoard SummaryWriter instance for logging memory statistics.
-        show_details (bool, optional): If True, logs detailed CUDA memory statistics at each logging step and at the end of training.
-        do_log (bool, optional): If True, logs peak memory usage at each logging step (on_log callback).
-        enable_memory_history (bool, optional): If True, enables comprehensive CUDA memory history recording.
-                                               WARNING: This can consume 1GB+ memory and cause memory leaks.
-    Attributes:
-        rank (int): The process rank in distributed training.
-        world_size (int): The total number of processes in distributed training.
-        summary_writer (SummaryWriter or None): The TensorBoard SummaryWriter for logging.
-        enabled (bool): Whether CUDA is available and memory tracking is enabled.
-        show_details (bool): Whether to log detailed memory statistics.
-        do_log (bool): Whether to log memory usage on each log step.
-        enable_memory_history (bool): Whether to enable comprehensive memory history recording.
-        max_allocated (int): The maximum CUDA memory allocated during training (in bytes).
-    Methods:
-        on_train_begin: Initializes memory tracking at the start of training.
-        on_log: Logs peak memory usage (and optionally details) at each logging step.
-        on_train_end: Finalizes memory tracking and logs the maximum memory usage at the end of training.
-        _format_peak_memory: Formats memory usage in human-readable GB units.
+
+    Parameters
+    ----------
+    summary_writer : SummaryWriter, optional
+        TensorBoard ``SummaryWriter`` instance for logging memory statistics.
+    show_details : bool, optional
+        If ``True``, logs detailed CUDA memory statistics at each logging
+        step and at the end of training.
+    do_log : bool, optional
+        If ``True``, logs peak memory usage at each logging step
+        (``on_log`` callback).
+    enable_memory_history : bool, optional
+        If ``True``, enables comprehensive CUDA memory history recording.
+        WARNING: This can consume 1 GB+ memory and cause memory leaks.
+
+    Attributes
+    ----------
+    rank : int
+        The process rank in distributed training.
+    world_size : int
+        The total number of processes in distributed training.
+    summary_writer : SummaryWriter or None
+        The TensorBoard ``SummaryWriter`` for logging.
+    enabled : bool
+        Whether CUDA is available and memory tracking is enabled.
+    show_details : bool
+        Whether to log detailed memory statistics.
+    do_log : bool
+        Whether to log memory usage on each log step.
+    enable_memory_history : bool
+        Whether to enable comprehensive memory history recording.
+    max_allocated : int
+        The maximum CUDA memory allocated during training (in bytes).
     """
 
     def __init__(

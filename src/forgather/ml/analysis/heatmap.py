@@ -161,22 +161,36 @@ def plot_parameter_heatmap(
     steps on the x-axis, and cells color-coded by the metric value.
     Follows the visualization format from the appendix of arxiv 2510.04212.
 
-    Args:
-        log_path: Path to a parameter_norms.json or gradient_norms.json file.
-        metric: Which metric to plot ("norm", "spectral_norm", "grad_norm").
-                Auto-detected from file content if None.
-        step_stride: Plot every Nth step (default: 1, all eval steps).
-        filter_pattern: Regex pattern to filter parameter FQN names.
-                Only parameters whose names match are included.
-        log_scale: Use log scale for color mapping.
-        vmin: Manual minimum for color range.
-        vmax: Manual maximum for color range.
-        title: Custom plot title.
-        output_path: Path to save the figure. None to skip saving.
-        figsize: Figure size as (width, height). Auto-scaled if None.
-        show: Whether to display the plot interactively.
+    Parameters
+    ----------
+    log_path : str or Path
+        Path to a parameter_norms.json or gradient_norms.json file.
+    metric : str or None, optional
+        Which metric to plot ("norm", "spectral_norm", "grad_norm").
+        Auto-detected from file content if None.
+    step_stride : int, optional
+        Plot every Nth step (default: 1, all eval steps).
+    filter_pattern : str or None, optional
+        Regex pattern to filter parameter FQN names.
+        Only parameters whose names match are included.
+    log_scale : bool, optional
+        Use log scale for color mapping.
+    vmin : float or None, optional
+        Manual minimum for color range.
+    vmax : float or None, optional
+        Manual maximum for color range.
+    title : str or None, optional
+        Custom plot title.
+    output_path : str, Path, or None, optional
+        Path to save the figure. None to skip saving.
+    figsize : tuple of float or None, optional
+        Figure size as (width, height). Auto-scaled if None.
+    show : bool, optional
+        Whether to display the plot interactively.
 
-    Returns:
+    Returns
+    -------
+    matplotlib.figure.Figure
         Matplotlib figure object.
     """
     records = _load_diagnostic_log(log_path)

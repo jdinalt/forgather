@@ -21,33 +21,39 @@ Reduction = str | Callable[[list], Any] | None
 class ColumnSpec:
     """Specification for a single column in the step-log table.
 
-    Attributes:
-        key:    Metric key in the logs dict (e.g. ``"loss"``, ``"tok_per_sec"``).
-        label:  Column header text.  Defaults to *key* when empty.
-        width:  Fixed column width in characters.
-        fmt:    Formatting control -- one of:
+    Attributes
+    ----------
+    key : str
+        Metric key in the logs dict (e.g. ``"loss"``, ``"tok_per_sec"``).
+    label : str
+        Column header text.  Defaults to *key* when empty.
+    width : int
+        Fixed column width in characters.
+    fmt : str or callable
+        Formatting control -- one of:
 
-                * A Python format-spec string (``".5f"``, ``".2e"``, ``",d"``).
-                  Applied via ``format(value, spec)``.  Integer presentation
-                  types (``d``, ``o``, ``x``, ...) auto-convert the value to
-                  ``int`` first.
-                * A named formatter alias (``"si"``, ``"gib"``).
-                * A ``Callable[[Any], str]``.
-                * ``""`` for a type-based fallback (float -> ``.4g``,
-                  int -> comma-separated, else ``str``).
-        reduce: How to render list-valued metrics (e.g. a per-rank list of
-                peak memory values).  One of:
+        * A Python format-spec string (``".5f"``, ``".2e"``, ``",d"``).
+          Applied via ``format(value, spec)``.  Integer presentation
+          types (``d``, ``o``, ``x``, ...) auto-convert the value to
+          ``int`` first.
+        * A named formatter alias (``"si"``, ``"gib"``).
+        * A ``Callable[[Any], str]``.
+        * ``""`` for a type-based fallback (float -> ``.4g``,
+          int -> comma-separated, else ``str``).
+    reduce : str or callable or None
+        How to render list-valued metrics (e.g. a per-rank list of
+        peak memory values).  One of:
 
-                * ``None`` (default) -- scalar values pass through; list
-                  values fall back to an implicit ``max`` reduction.
-                * ``"max"``, ``"min"``, ``"mean"``, ``"sum"`` -- reduce a
-                  list to a scalar before formatting.
-                * ``"all"`` -- format each element individually and join
-                  with ``"/"`` (per-rank display; may overflow *width*).
-                * A ``Callable[[list], Any]`` -- custom reduction; the
-                  result is then formatted via *fmt*.
+        * ``None`` (default) -- scalar values pass through; list
+          values fall back to an implicit ``max`` reduction.
+        * ``"max"``, ``"min"``, ``"mean"``, ``"sum"`` -- reduce a
+          list to a scalar before formatting.
+        * ``"all"`` -- format each element individually and join
+          with ``"/"`` (per-rank display; may overflow *width*).
+        * A ``Callable[[list], Any]`` -- custom reduction; the
+          result is then formatted via *fmt*.
 
-                Ignored for scalar values unless the reduction is a callable.
+        Ignored for scalar values unless the reduction is a callable.
     """
 
     key: str
@@ -65,11 +71,16 @@ class ColumnSpec:
 class FinalMetricSpec:
     """Specification for a single row in the end-of-training summary.
 
-    Attributes:
-        key:    Metric key in the final metrics dict.
-        label:  Human-readable label.  Defaults to *key* when empty.
-        fmt:    Same semantics as :class:`ColumnSpec.fmt`.
-        suffix: String appended after the formatted value (e.g. ``" s"``).
+    Attributes
+    ----------
+    key : str
+        Metric key in the final metrics dict.
+    label : str
+        Human-readable label.  Defaults to *key* when empty.
+    fmt : str or callable
+        Same semantics as :class:`ColumnSpec.fmt`.
+    suffix : str
+        String appended after the formatted value (e.g. ``" s"``).
     """
 
     key: str

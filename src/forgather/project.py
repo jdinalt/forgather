@@ -10,24 +10,62 @@ from forgather.meta_config import MetaConfig, preprocessor_globals
 
 @dataclass()
 class Project:
-    """
-    A high-level, abstract project representation, which hides details of the underlying mechanics.
+    """Central user-facing abstraction for a Forgather ML experiment.
 
-    project_dir: The location of the project directory
-    config_name: The name of the configuration to loade; an empty string loads the default.
+    A ``Project`` loads a YAML configuration file through a Jinja2 template
+    inheritance chain, parses it into a node graph, and can materialise any
+    named target from that graph into live Python objects.  It is the primary
+    entry point for interactive experiment development and for training scripts.
 
-    dataclass attributes:
+    Parameters
+    ----------
+    config_name : str, optional
+        Name of the configuration template to load (e.g. ``"train_tiny_llama.yaml"``).
+        An empty string or ``None`` loads the project's default configuration as
+        declared in ``meta.yaml``.
+    project_dir : str or os.PathLike, optional
+        Path to the project directory.  Must contain a ``meta.yaml`` file and a
+        ``templates/`` sub-directory.  Defaults to the current working directory.
+    **kwargs
+        Additional keyword arguments forwarded to the Jinja2 preprocessor as
+        template variables.
 
-    config_name: The name of the selected configuration; automatically populated with
-        the default, if unspecified.
-    project_dir: The absolute path to the project directory.
-    meta: The project's meta-config
-    environment: The projects config envrionment
-    config: The constructed node-graph, representing the configuration.
-    pp_config: The pre-processed configuration.
+    Attributes
+    ----------
+    config_name : str
+        Name of the selected configuration; automatically set to the project
+        default when *config_name* is empty or ``None``.
+    project_dir : str
+        Absolute path to the project directory.
+    meta : MetaConfig
+        Parsed project metadata (search paths, default config, etc.).
+    environment : ConfigEnvironment
+        Jinja2 + YAML preprocessing environment used to load templates.
+    config : Any
+        The parsed node graph produced from the preprocessed YAML.  ``None``
+        when no configuration has been loaded yet.
+    pp_config : str
+        The fully preprocessed YAML text (after Jinja2 rendering), useful for
+        debugging template issues.
 
-    Hint: If you are debugging a configuration, it's usually easier to incrementally
-        construct the project for better diagnostics. See: 'project_config.ipynb'
+    Examples
+    --------
+    Load a project from the current directory using the default configuration:
+
+    >>> proj = Project()
+    >>> training_script = proj()
+
+    Load a specific configuration and materialise individual targets:
+
+    >>> proj = Project("train_tiny_llama.yaml", "examples/tutorials/tiny_llama")
+    >>> model = proj("model")
+    >>> model, tokenizer = proj("model", "tokenizer")
+
+    Notes
+    -----
+    When debugging a configuration it is usually easier to construct the project
+    incrementally for better diagnostic messages.  See ``project_config.ipynb``
+    for a step-by-step notebook example.
     """
 
     config_name: str
@@ -72,12 +110,20 @@ class Project:
             self.pp_config = None
 
     def load_config(self, config_name: str, **kwargs):
-        """
-        Loaded the specified configurtion
+        """Load and parse the named configuration template.
 
-        Args:
-            config_name: The name of the configuration to load.
-            kwargs: Passed as Jinja2 args
+        Preprocesses the template through the Jinja2 environment, then parses
+        the resulting YAML into a node graph.  The results are stored in
+        ``self.config`` and ``self.pp_config``.
+
+        Parameters
+        ----------
+        config_name : str
+            Name of the configuration template to load, relative to the
+            project's ``config_prefix`` directory (e.g. ``"train.yaml"``).
+        **kwargs
+            Additional keyword arguments forwarded to the Jinja2 preprocessor
+            as template variables.
         """
         # Load the pre-processed config and the config graph
         self.config, self.pp_config = self.environment.load(
@@ -85,38 +131,82 @@ class Project:
         ).get()
 
     def add_template(self, name, data):
-        """Add a template definition directly to the loader"""
+        """Add an in-memory template definition to the Jinja2 loader.
+
+        Parameters
+        ----------
+        name : str
+            Template name used to reference this template from other templates
+            (e.g. via ``-- extends`` or ``-- include``).
+        data : str
+            Raw template source text.
+        """
         loader = self.environment.get_loader()
         loader.add_template(name, data)
 
     def __call__(self, *args, asdict=False, **kwargs):
-        """
-        Construct and return an instance of the configuration
+        """Materialise one or more targets from the loaded configuration graph.
 
-        Args:
-            args: The output targets to make. By default, this is 'main'
-                If a string, returns the specified target. If an Iterable of str, returns
-                a dictionary of the specified targets. If Iterable, invalid targets will be removed
-                from the returned dictionary.
+        Each call traverses the node graph and constructs fresh Python objects
+        for the requested targets.  Calling this method multiple times will
+        produce independent object instances; share a single call when you need
+        objects that reference each other (e.g. model and optimizer sharing the
+        same parameter tensors).
 
-                Note: Each call will construct a new set of objects, thus you could end up with duplicates
-                if you call this seperately on different targets.
-            kwargs: Additional keyword-args to pass to the graph constructor.
+        Parameters
+        ----------
+        *args : str
+            Names of the output targets to build.  When called with no
+            arguments (or with a single empty string), the ``"main"`` target is
+            built.  When multiple names are given, a generator that yields the
+            corresponding objects in the same order is returned.
+        asdict : bool, optional
+            When ``True`` the return value is always a :class:`~forgather.dotdict.DotDict`
+            mapping target names to their materialised objects, regardless of
+            how many targets were requested.  Default is ``False``.
+        **kwargs
+            Additional context variables forwarded to the graph materialisation
+            engine.
 
-        ```python
-        # Construct and return main target
-        proj = Project()
-        main_target = proj()
+        Returns
+        -------
+        object
+            The materialised ``"main"`` target when called with no arguments.
+        object
+            The single materialised target when exactly one name is given and
+            *asdict* is ``False``.
+        generator
+            A generator yielding the materialised targets in order when multiple
+            names are given and *asdict* is ``False``.
+        DotDict
+            A dot-accessible dictionary mapping every requested target name to
+            its materialised object when *asdict* is ``True``.
 
-        # Construct only confg-meta
-        meta = proj("meta")
+        Raises
+        ------
+        RuntimeError
+            If no configuration has been loaded (i.e. ``self.config`` is ``None``).
 
-        # Construct the model and tokenizer
-        model, tokenizer = proj("model", "tokenizer")
+        Examples
+        --------
+        >>> proj = Project("train.yaml")
 
-        # Construct a dictionary of objects
-        outputs = proj("model", "tokenizer", asdict=True)
-        ```
+        Build the default ``main`` target:
+
+        >>> training_script = proj()
+
+        Build a single named target:
+
+        >>> model = proj("model")
+
+        Unpack multiple targets in one call (avoids duplicate construction):
+
+        >>> model, tokenizer = proj("model", "tokenizer")
+
+        Collect targets into a dot-accessible dict:
+
+        >>> outputs = proj("model", "tokenizer", asdict=True)
+        >>> outputs.model
         """
 
         if self.config is None:
@@ -152,8 +242,38 @@ def from_project(
     pp_kwargs: dict | None = None,
     **config_kwargs,
 ):
-    """
-    This is intended to allow a configuration to import artifacts from another configuration
+    """Load and materialise targets from a separate Forgather project.
+
+    Convenience helper that lets one configuration import live Python objects
+    produced by another project.  It is typically called from within a YAML
+    configuration via a ``!call`` or ``!singleton`` tag.
+
+    Parameters
+    ----------
+    project_dir : str
+        Path to the project directory to load.
+    config_template : str or None, optional
+        Name of the configuration template to use.  ``None`` loads the project
+        default.
+    targets : str or list of str, optional
+        Target name or list of target names to materialise.  An empty string
+        builds the ``"main"`` target.
+    pp_debug : bool, optional
+        When ``True``, print preprocessing diagnostics (template name, targets,
+        and the preprocessed config text) before materialising.  Default is
+        ``False``.
+    pp_kwargs : dict or None, optional
+        Keyword arguments forwarded to the Jinja2 preprocessor of the
+        sub-project.  Defaults to an empty dict.
+    **config_kwargs
+        Additional keyword arguments forwarded to the graph materialisation
+        engine of the sub-project.
+
+    Returns
+    -------
+    object
+        The materialised target(s) from the sub-project, identical in type to
+        what ``Project.__call__`` would return for the same *targets* argument.
     """
     if pp_kwargs is None:
         pp_kwargs = {}

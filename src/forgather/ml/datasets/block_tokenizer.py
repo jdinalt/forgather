@@ -107,9 +107,12 @@ class Bin:
         """
         Add a document (or part of it) to this bin.
 
-        Args:
-            doc: The document to add
-            tokens_to_add: Number of tokens to add (None = all remaining tokens)
+        Parameters
+        ----------
+        doc : Document
+            The document to add.
+        tokens_to_add : int or None, optional
+            Number of tokens to add (None = all remaining tokens).
         """
         if tokens_to_add is None:
             tokens_to_add = doc.length
@@ -127,7 +130,9 @@ class Bin:
         """
         Get starting positions of each document in this bin.
 
-        Returns:
+        Returns
+        -------
+        list of int
             List of positions where each document starts in the packed sequence.
         """
         if not self.documents:
@@ -150,14 +155,21 @@ def split_document_optimally(
     """
     Split a document that exceeds max_length into optimal chunks.
 
-    Args:
-        doc: Document to split
-        max_length: Maximum tokens per chunk
-        stride: Number of overlapping tokens between chunks
-        bos_token_id: Token to prepend to each chunk after the first
+    Parameters
+    ----------
+    doc : Document
+        Document to split.
+    max_length : int
+        Maximum tokens per chunk.
+    stride : int, optional
+        Number of overlapping tokens between chunks.
+    bos_token_id : int or None, optional
+        Token to prepend to each chunk after the first.
 
-    Returns:
-        List of document chunks
+    Returns
+    -------
+    list of Document
+        List of document chunks.
     """
     if doc.length <= max_length:
         return [doc]
@@ -220,21 +232,34 @@ def pack_sequences_optimized(
     """
     Pack documents into bins using optimized bin-packing algorithm.
 
-    Args:
-        documents: List of tokenized documents
-        max_length: Maximum tokens per output sequence
-        min_len: Minimum tokens for a valid output sequence
-        stride: Number of overlapping tokens when splitting documents
-        overflow: If True, split long documents; if False, truncate them
-        strategy: Packing strategy ("best_fit" or "first_fit")
-        bos_token_id: Token to prepend to document chunks
-        shuffle_output: If True, shuffle output sequences to randomize order
-        seed: Random seed for shuffling (None = use system entropy)
+    Parameters
+    ----------
+    documents : list of Document
+        List of tokenized documents.
+    max_length : int
+        Maximum tokens per output sequence.
+    min_len : int
+        Minimum tokens for a valid output sequence.
+    stride : int
+        Number of overlapping tokens when splitting documents.
+    overflow : bool
+        If True, split long documents; if False, truncate them.
+    strategy : str, optional
+        Packing strategy ("best_fit" or "first_fit").
+    bos_token_id : int or None, optional
+        Token to prepend to document chunks.
+    shuffle_output : bool, optional
+        If True, shuffle output sequences to randomize order.
+    seed : int or None, optional
+        Random seed for shuffling (None = use system entropy).
 
-    Returns:
-        Tuple of (sequences, document_starts) where:
-            - sequences: List of packed sequences (each sequence is a list of token IDs)
-            - document_starts: List of document boundary lists (one per sequence)
+    Returns
+    -------
+    tuple
+        A tuple of (sequences, document_starts) where:
+
+        - sequences: List of packed sequences (each sequence is a list of token IDs)
+        - document_starts: List of document boundary lists (one per sequence)
     """
     if not documents:
         return [], []
@@ -295,11 +320,16 @@ def _pack_single_document(
     """
     Pack a single document into bins using specified strategy.
 
-    Args:
-        doc: Document to pack
-        bins: List of existing bins
-        max_length: Maximum bin capacity
-        strategy: "best_fit" or "first_fit"
+    Parameters
+    ----------
+    doc : Document
+        Document to pack.
+    bins : list of Bin
+        List of existing bins.
+    max_length : int
+        Maximum bin capacity.
+    strategy : str
+        "best_fit" or "first_fit".
     """
     if strategy == "best_fit":
         # Find bin with least remaining space that still fits the document
@@ -448,34 +478,56 @@ def block_tokenize_fn(
         Note: Optimized strategies (best_fit, first_fit) only apply when packed=True. With packed=False,
         each document gets its own output sequence regardless of strategy.
 
-    Args:
-        features: The input batch to tokenize.
-        tokenizer: The tokenizer to use for tokenization.
-        feature: The feature in the batch to tokenize.
-        max_length: The maximum size of each output block.
-        overflow: If True, add overflowing tokens to next block, else drop them.
-        packed: If True, pack multiple examples into the same block
-        packing_strategy: Packing algorithm ("greedy", "best_fit", "first_fit").
-            See "Sequence Packing" section above for details.
-        shuffle_output: If True, shuffle output sequences to randomize their order. Only applies
-            to optimized strategies (best_fit, first_fit). Recommended for training to prevent
-            bias from length-sorted sequences. Has no effect on greedy strategy.
-        seed: Random seed for shuffling output (None = system entropy). Use fixed seed during
-            development for reproducibility.
-        stride: Number of tokens to overlap between blocks when documents are split.
-        min_len: Minimum length of the output blocks. Blocks shorter than this are discarded.
-        max_len: Maximum length of input documents (optional). Documents longer than this are skipped.
-        add_bos: If True, adds a beginning-of-sequence token to each document.
-        add_eos: If True, adds an end-of-sequence token to each document.
-        truncate_at: If provided, truncates input at the first match of this regex.
-    Returns:
+    Parameters
+    ----------
+    features : dict of str
+        The input batch to tokenize.
+    tokenizer : PreTrainedTokenizerFast
+        The tokenizer to use for tokenization.
+    feature : str
+        The feature in the batch to tokenize.
+    max_length : int, optional
+        The maximum size of each output block.
+    overflow : bool, optional
+        If True, add overflowing tokens to next block, else drop them.
+    packed : bool, optional
+        If True, pack multiple examples into the same block.
+    packing_strategy : str, optional
+        Packing algorithm ("greedy", "best_fit", "first_fit").
+        See "Sequence Packing" section above for details.
+    shuffle_output : bool, optional
+        If True, shuffle output sequences to randomize their order. Only applies
+        to optimized strategies (best_fit, first_fit). Recommended for training to prevent
+        bias from length-sorted sequences. Has no effect on greedy strategy.
+    seed : int or None, optional
+        Random seed for shuffling output (None = system entropy). Use fixed seed during
+        development for reproducibility.
+    stride : int, optional
+        Number of tokens to overlap between blocks when documents are split.
+    min_len : int, optional
+        Minimum length of the output blocks. Blocks shorter than this are discarded.
+    max_len : int or None, optional
+        Maximum length of input documents (optional). Documents longer than this are skipped.
+    add_bos : bool, optional
+        If True, adds a beginning-of-sequence token to each document.
+    add_eos : bool, optional
+        If True, adds an end-of-sequence token to each document.
+    truncate_at : str or None, optional
+        If provided, truncates input at the first match of this regex.
+
+    Returns
+    -------
+    dict
         A dictionary with a single key "input_ids" containing a list of tokenized blocks.
 
-    Example:
-        # Basic packing with greedy strategy (default)
+    Examples
+    --------
+    Basic packing with greedy strategy (default)::
+
         block_tokenize_fn(features, tokenizer, "text", max_length=512, packed=True)
 
-        # Optimized packing for truncate mode with shuffle
+    Optimized packing for truncate mode with shuffle::
+
         block_tokenize_fn(features, tokenizer, "text", max_length=4096,
                          overflow=False, packed=True, packing_strategy="best_fit",
                          shuffle_output=True, seed=42)

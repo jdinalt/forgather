@@ -92,15 +92,20 @@ def get_group_rank(process_group: Optional[ProcessGroup] = None) -> int:
     """
     Get the rank of the current process within a process group.
 
-    Args:
-        process_group: The process group to query. If None, uses default group.
+    Parameters
+    ----------
+    process_group : ProcessGroup, optional
+        The process group to query. If ``None``, uses default group.
 
-    Returns:
-        Rank within the process group (0 to group_size-1)
+    Returns
+    -------
+    int
+        Rank within the process group (0 to group_size-1).
 
-    Note:
-        PyTorch's dist.get_rank() returns global rank by default, but
-        can take a group parameter to get rank within that group.
+    Notes
+    -----
+    PyTorch's ``dist.get_rank()`` returns global rank by default, but
+    can take a group parameter to get rank within that group.
     """
     if process_group is None:
         return dist.get_rank()
@@ -118,11 +123,15 @@ def get_group_size(process_group: Optional[ProcessGroup] = None) -> int:
     """
     Get the size of a process group.
 
-    Args:
-        process_group: The process group to query. If None, uses default group.
+    Parameters
+    ----------
+    process_group : ProcessGroup, optional
+        The process group to query. If ``None``, uses default group.
 
-    Returns:
-        Number of ranks in the process group
+    Returns
+    -------
+    int
+        Number of ranks in the process group.
     """
     if process_group is None:
         return dist.get_world_size()
@@ -173,13 +182,19 @@ def is_group_leader(process_group: Optional[ProcessGroup] = None) -> bool:
     """
     Check if the current rank is the leader (rank 0) of a process group.
 
-    Args:
-        process_group: The process group to check. If None, checks global rank.
+    Parameters
+    ----------
+    process_group : ProcessGroup, optional
+        The process group to check. If ``None``, checks global rank.
 
-    Returns:
-        True if this is rank 0 in the group, False otherwise
+    Returns
+    -------
+    bool
+        ``True`` if this is rank 0 in the group, ``False`` otherwise.
 
-    This is used to determine which rank should save for PER_GROUP patterns.
+    Notes
+    -----
+    Used to determine which rank should save for ``PER_GROUP`` patterns.
     """
     return get_group_rank(process_group) == 0
 
@@ -191,11 +206,14 @@ def get_node_rank() -> int:
     Nodes are numbered 0 to num_nodes-1. All ranks on the same node
     have the same node rank.
 
-    Returns:
-        Node rank (0-indexed)
+    Returns
+    -------
+    int
+        Node rank (0-indexed).
 
-    Note:
-        Computed as global_rank // local_world_size
+    Notes
+    -----
+    Computed as ``global_rank // local_world_size``.
     """
     try:
         import os
@@ -217,11 +235,14 @@ def get_num_nodes() -> int:
     """
     Get the total number of nodes in the distributed job.
 
-    Returns:
-        Number of nodes
+    Returns
+    -------
+    int
+        Number of nodes.
 
-    Note:
-        Computed as world_size // local_world_size
+    Notes
+    -----
+    Computed as ``world_size // local_world_size``.
     """
     try:
         import os
@@ -249,10 +270,14 @@ def is_node_leader() -> bool:
     """
     Check if the current rank is the leader (local rank 0) on its node.
 
-    Returns:
-        True if this is local rank 0, False otherwise
+    Returns
+    -------
+    bool
+        ``True`` if this is local rank 0, ``False`` otherwise.
 
-    This is used to determine which rank should save for PER_NODE patterns.
+    Notes
+    -----
+    Used to determine which rank should save for ``PER_NODE`` patterns.
     """
     try:
         import os
@@ -267,14 +292,21 @@ def all_gather_scalar(value: int, group: Optional[ProcessGroup] = None) -> List[
     """
     All-gather a scalar integer value from all ranks.
 
-    Args:
-        value: The integer to gather from this rank
-        group: Process group to use. If None, uses default group.
+    Parameters
+    ----------
+    value : int
+        The integer to gather from this rank.
+    group : ProcessGroup, optional
+        Process group to use. If ``None``, uses default group.
 
-    Returns:
-        List of values from all ranks (length = group_size)
+    Returns
+    -------
+    list of int
+        Values from all ranks (length = group_size).
 
-    This is used to collect metadata like file sizes, ranks that saved, etc.
+    Notes
+    -----
+    Used to collect metadata like file sizes, ranks that saved, etc.
     """
     if not dist.is_initialized():
         return [value]
@@ -307,14 +339,21 @@ def all_gather_object_list(obj: Any, group: Optional[ProcessGroup] = None) -> Li
     """
     All-gather arbitrary Python objects from all ranks.
 
-    Args:
-        obj: The Python object to gather from this rank
-        group: Process group to use. If None, uses default group.
+    Parameters
+    ----------
+    obj : object
+        The Python object to gather from this rank.
+    group : ProcessGroup, optional
+        Process group to use. If ``None``, uses default group.
 
-    Returns:
-        List of objects from all ranks (length = group_size)
+    Returns
+    -------
+    list
+        Objects from all ranks (length = group_size).
 
-    This is used to collect complex metadata like component manifests.
+    Notes
+    -----
+    Used to collect complex metadata like component manifests.
     """
     if not dist.is_initialized():
         return [obj]
@@ -343,20 +382,26 @@ def collect_group_savers(
     """
     Collect which ranks are leaders for each process group.
 
-    Args:
-        process_groups: Dictionary mapping group names to ProcessGroup objects
+    Parameters
+    ----------
+    process_groups : dict of str to ProcessGroup
+        Dictionary mapping group names to ``ProcessGroup`` objects.
 
-    Returns:
-        Dictionary mapping group names to list of global ranks that are
-        leaders (rank 0) within that group
+    Returns
+    -------
+    dict of str to list of int
+        Maps group names to the global ranks that are leaders (rank 0)
+        within that group.
 
-    Example:
-        process_groups = {"dp_group": dp_pg, "pp_group": pp_pg}
-        savers = collect_group_savers(process_groups)
-        # savers = {"dp_group": [0, 4, 8, 12], "pp_group": [0, 1, 2, 3]}
+    Examples
+    --------
+    >>> savers = collect_group_savers({"dp_group": dp_pg, "pp_group": pp_pg})
+    >>> # savers = {"dp_group": [0, 4, 8, 12], "pp_group": [0, 1, 2, 3]}
 
-    This is used to populate manifest with accurate information about
-    which ranks saved for PER_GROUP components.
+    Notes
+    -----
+    Used to populate the manifest with accurate information about which
+    ranks saved for ``PER_GROUP`` components.
     """
     savers = {}
 
@@ -382,12 +427,16 @@ def collect_node_savers() -> List[int]:
     """
     Collect which ranks are node leaders (local rank 0).
 
-    Returns:
-        List of global ranks that are local rank 0 on their node,
-        sorted in ascending order
+    Returns
+    -------
+    list of int
+        Global ranks that are local rank 0 on their node, sorted in
+        ascending order.
 
-    This is used to populate manifest with accurate information about
-    which ranks saved for PER_NODE components.
+    Notes
+    -----
+    Used to populate the manifest with accurate information about which
+    ranks saved for ``PER_NODE`` components.
     """
     if not dist.is_initialized():
         return [0]
@@ -409,15 +458,22 @@ def get_group_file_suffix(group_name: str, process_group: ProcessGroup) -> str:
     """
     Get a unique file suffix for this rank's position in a group.
 
-    Args:
-        group_name: Name of the process group
-        process_group: The ProcessGroup object
+    Parameters
+    ----------
+    group_name : str
+        Name of the process group.
+    process_group : ProcessGroup
+        The ``ProcessGroup`` object.
 
-    Returns:
-        String suffix like "group_dp_group_grank_0_rank_3"
-        where grank is rank within group, rank is global rank
+    Returns
+    -------
+    str
+        String suffix like ``"group_dp_group_grank_0_rank_3"`` where
+        ``grank`` is rank within group and ``rank`` is global rank.
 
-    This creates unique, predictable filenames for PER_GROUP saves.
+    Notes
+    -----
+    Creates unique, predictable filenames for ``PER_GROUP`` saves.
     """
     group_rank = get_group_rank(process_group)
     global_rank = dist.get_rank() if dist.is_initialized() else 0
@@ -429,11 +485,15 @@ def get_node_file_suffix() -> str:
     """
     Get a unique file suffix for this rank's node.
 
-    Returns:
-        String suffix like "node_2_rank_8"
-        where node is node rank, rank is global rank
+    Returns
+    -------
+    str
+        String suffix like ``"node_2_rank_8"`` where ``node`` is node rank
+        and ``rank`` is global rank.
 
-    This creates unique, predictable filenames for PER_NODE saves.
+    Notes
+    -----
+    Creates unique, predictable filenames for ``PER_NODE`` saves.
     """
     node_rank = get_node_rank()
     global_rank = dist.get_rank() if dist.is_initialized() else 0
@@ -450,17 +510,26 @@ def find_group_checkpoint_file(
     """
     Find the checkpoint file for this rank's group.
 
-    Args:
-        checkpoint_path: Directory containing checkpoint files
-        component_key: Component key (e.g., "model", "optimizer")
-        group_name: Name of the process group
-        process_group: The ProcessGroup object
+    Parameters
+    ----------
+    checkpoint_path : str
+        Directory containing checkpoint files.
+    component_key : str
+        Component key (e.g., ``"model"``, ``"optimizer"``).
+    group_name : str
+        Name of the process group.
+    process_group : ProcessGroup
+        The ``ProcessGroup`` object.
 
-    Returns:
-        Path to checkpoint file, or None if not found
+    Returns
+    -------
+    str or None
+        Path to checkpoint file, or ``None`` if not found.
 
-    This handles loading PER_GROUP components by finding the file
-    saved by the group leader that matches this rank's group membership.
+    Notes
+    -----
+    Handles loading ``PER_GROUP`` components by finding the file saved by
+    the group leader that matches this rank's group membership.
     """
     import glob
     import os
@@ -502,15 +571,22 @@ def find_node_checkpoint_file(
     """
     Find the checkpoint file for this rank's node.
 
-    Args:
-        checkpoint_path: Directory containing checkpoint files
-        component_key: Component key (e.g., "cache", "node_data")
+    Parameters
+    ----------
+    checkpoint_path : str
+        Directory containing checkpoint files.
+    component_key : str
+        Component key (e.g., ``"cache"``, ``"node_data"``).
 
-    Returns:
-        Path to checkpoint file, or None if not found
+    Returns
+    -------
+    str or None
+        Path to checkpoint file, or ``None`` if not found.
 
-    This handles loading PER_NODE components by finding the file
-    saved by the node leader for this node.
+    Notes
+    -----
+    Handles loading ``PER_NODE`` components by finding the file saved by
+    the node leader for this node.
     """
     import glob
     import os
@@ -534,13 +610,20 @@ def compute_tensor_checksum(name: str, tensor: torch.Tensor) -> TensorChecksum:
     """
     Compute checksum for a single tensor.
 
-    Args:
-        name: Name of the tensor (key in state_dict)
-        tensor: The tensor to checksum
+    Parameters
+    ----------
+    name : str
+        Name of the tensor (key in ``state_dict``).
+    tensor : torch.Tensor
+        The tensor to checksum.
 
-    Returns:
-        TensorChecksum with metadata and checksum
+    Returns
+    -------
+    TensorChecksum
+        Checksum with metadata.
 
+    Notes
+    -----
     The checksum includes:
     - Shape, dtype, device metadata
     - Hash of tensor bytes
@@ -594,13 +677,20 @@ def compute_state_checksum(
     """
     Compute checksums for an entire state_dict.
 
-    Args:
-        state_dict: State dictionary to checksum
-        validation_level: Level of validation detail
+    Parameters
+    ----------
+    state_dict : dict
+        State dictionary to checksum.
+    validation_level : ValidationLevel, optional
+        Level of validation detail.
 
-    Returns:
-        StateChecksum with per-tensor and overall checksums
+    Returns
+    -------
+    StateChecksum
+        Per-tensor and overall checksums.
 
+    Notes
+    -----
     The level controls thoroughness:
     - QUICK: Only overall hash (fast)
     - TENSOR: Per-tensor checksums (moderate)
@@ -658,18 +748,28 @@ def validate_replication(
     """
     Validate that state is replicated (identical) across all ranks.
 
-    Args:
-        state_dict: State dictionary to validate
-        validation_level: Level of validation thoroughness
-        group: Process group to validate across (None = all ranks)
-        rtol: Relative tolerance for floating point comparison
-        atol: Absolute tolerance for floating point comparison
+    Parameters
+    ----------
+    state_dict : dict
+        State dictionary to validate.
+    validation_level : ValidationLevel, optional
+        Level of validation thoroughness.
+    group : ProcessGroup, optional
+        Process group to validate across (``None`` = all ranks).
+    rtol : float, optional
+        Relative tolerance for floating point comparison.
+    atol : float, optional
+        Absolute tolerance for floating point comparison.
 
-    Returns:
-        Tuple of (is_valid, error_messages)
-        - is_valid: True if all ranks have identical state
-        - error_messages: List of discrepancy descriptions (empty if valid)
+    Returns
+    -------
+    tuple of (bool, list of str)
+        ``(is_valid, error_messages)`` — ``is_valid`` is ``True`` if all
+        ranks have identical state; ``error_messages`` is a list of
+        discrepancy descriptions (empty if valid).
 
+    Notes
+    -----
     Validation levels:
     - NONE: No validation, always returns (True, [])
     - QUICK: Hash comparison (fast, detects any differences)

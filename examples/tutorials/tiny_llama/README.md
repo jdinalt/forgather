@@ -1,8 +1,8 @@
 # Tiny Llama
 
-This tutorial trains a ~5M-parameter Llama model from scratch on the
+This tutorial trains a ~4M-parameter Llama model from scratch on the
 [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories) dataset.
-On a single RTX 4090 it takes roughly 5-10 minutes. When it finishes, the
+On a single RTX 4090 it takes roughly 2-3 minutes. When it finishes, the
 model produces surprisingly coherent short stories.
 
 The tutorial is intended as a first introduction to Forgather. It doesn't
@@ -224,7 +224,7 @@ wall_time:        5.84 s
   right), perplexity equal to vocab size is random guessing.
   4.32 on a 2K-vocab tokenizer means our model has narrowed 2,000
   possibilities down to the equivalent of ~4 per step -- strong for a
-  5M-parameter model trained in a couple of minutes.
+  4M-parameter model trained in a couple of minutes.
 
 Perplexity is only directly comparable between models that use the
 **same tokenizer** (a smaller vocabulary makes perplexity artificially

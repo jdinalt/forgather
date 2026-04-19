@@ -16,14 +16,23 @@ def plot_token_length_histogram(
     Plot a histogram of token lengths in the dataset.
     If output_file is provided, save the histogram to that file.
     Otherwise, display the histogram.
-    Args:
-        dataset: The dataset to analyze.
-        tokenizer: The tokenizer to use for tokenization.
-        output_file: Optional; if provided, save the histogram to this file.
-        sample_size: Number of samples to use for the histogram.
-        feature: The feature in the dataset to analyze (default is 'text').
-        min: Minimum length for the histogram (optional).
-        max: Maximum length for the histogram (optional).
+
+    Parameters
+    ----------
+    dataset : dataset
+        The dataset to analyze.
+    tokenizer : tokenizer
+        The tokenizer to use for tokenization.
+    output_file : str or None, optional
+        If provided, save the histogram to this file.
+    sample_size : int, optional
+        Number of samples to use for the histogram.
+    feature : str, optional
+        The feature in the dataset to analyze (default is 'text').
+    min : int or None, optional
+        Minimum length for the histogram.
+    max : int or None, optional
+        Maximum length for the histogram.
     """
     from itertools import islice
 

@@ -15,14 +15,20 @@ logger = logging.getLogger(__name__)
 def _spectral_norm_power_iter(weight, n_iters, u=None):
     """Estimate the largest singular value via power iteration.
 
-    Args:
-        weight: Parameter tensor (2D+ supported; reshaped to 2D internally).
-        n_iters: Number of power iteration steps.
-        u: Optional warm-start left singular vector from a previous call.
+    Parameters
+    ----------
+    weight : torch.Tensor
+        Parameter tensor (2D+ supported; reshaped to 2D internally).
+    n_iters : int
+        Number of power iteration steps.
+    u : torch.Tensor, optional
+        Warm-start left singular vector from a previous call.
 
-    Returns:
-        (sigma, u) where sigma is the estimated spectral norm and u is the
-        left singular vector for warm-starting the next call.
+    Returns
+    -------
+    tuple of (float, torch.Tensor or None)
+        ``(sigma, u)`` where ``sigma`` is the estimated spectral norm and
+        ``u`` is the left singular vector for warm-starting the next call.
     """
     if weight.ndim < 2:
         # For 1D tensors (biases, layer norm weights), the spectral norm
@@ -77,12 +83,15 @@ class ParameterNormLogger(TrainerCallback, Stateful):
         power_iter_steps: int = 10,
     ):
         """
-        Args:
-            log_norms: Whether to log per-parameter L2 norms.
-            log_spectral_norms: Whether to log per-parameter spectral norms.
-            power_iter_steps: Number of power iteration steps for spectral
-                norm estimation. First evaluation uses 2x this value for
-                cold-start convergence.
+        Parameters
+        ----------
+        log_norms : bool, optional
+            Whether to log per-parameter L2 norms.
+        log_spectral_norms : bool, optional
+            Whether to log per-parameter spectral norms.
+        power_iter_steps : int, optional
+            Number of power iteration steps for spectral norm estimation.
+            First evaluation uses 2x this value for cold-start convergence.
         """
         super().__init__()
         self.log_norms = log_norms

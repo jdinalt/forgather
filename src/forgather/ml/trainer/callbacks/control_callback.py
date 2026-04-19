@@ -92,10 +92,15 @@ class TrainerControlCallback(TrainerCallback):
         """
         Initialize the control callback.
 
-        Args:
-            job_id: Unique identifier for this training job. Auto-generated if None.
-            port: HTTP server port. Auto-selected if None.
-            enable_http: Whether to enable HTTP server. Auto-detected based on aiohttp availability.
+        Parameters
+        ----------
+        job_id : str, optional
+            Unique identifier for this training job. Auto-generated if ``None``.
+        port : int, optional
+            HTTP server port. Auto-selected if ``None``.
+        enable_http : bool, optional
+            Whether to enable HTTP server. Auto-detected based on ``aiohttp``
+            availability.
         """
         super().__init__()
 

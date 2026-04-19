@@ -57,12 +57,18 @@ def save_fsdp2_model_as_hf(
     is a collective that gathers the sharded DTensors onto rank 0 (with CPU
     offload). Only rank 0 writes files; other ranks return after the gather.
 
-    Args:
-        model: FSDP2-wrapped model (after ``fully_shard`` has been applied).
-        output_dir: Target directory for shard files and index.
-        dist: Distributed environment (used for rank gating).
-        safetensors: Emit safetensors (default) vs pytorch_model.bin format.
-        max_shard_size: Maximum shard file size in bytes.
+    Parameters
+    ----------
+    model : torch.nn.Module
+        FSDP2-wrapped model (after ``fully_shard`` has been applied).
+    output_dir : str
+        Target directory for shard files and index.
+    dist : DistributedEnvInterface
+        Distributed environment (used for rank gating).
+    safetensors : bool, optional
+        Emit safetensors (default) vs pytorch_model.bin format.
+    max_shard_size : int, optional
+        Maximum shard file size in bytes.
     """
     # Collective: gather full state dict to rank 0. Non-zero ranks receive
     # an empty dict; CPU offload keeps GPU memory from spiking on rank 0.
@@ -116,13 +122,18 @@ def load_fsdp2_model_from_hf(
     Re-ties weights after load so that safetensors' deduplicated storage is
     re-tied on the live module.
 
-    Args:
-        model: FSDP2-wrapped model to load weights into.
-        checkpoint_path: Path to HF checkpoint directory.
-        dist: Distributed environment (used for rank gating).
-        strict: If True, raise if the checkpoint misses keys the model needs.
-            Default False so a plain HF checkpoint whose tensor names are a
-            superset / subset of the model's can still load.
+    Parameters
+    ----------
+    model : torch.nn.Module
+        FSDP2-wrapped model to load weights into.
+    checkpoint_path : str
+        Path to HF checkpoint directory.
+    dist : DistributedEnvInterface
+        Distributed environment (used for rank gating).
+    strict : bool, optional
+        If ``True``, raise if the checkpoint misses keys the model needs.
+        Default ``False`` so a plain HF checkpoint whose tensor names are a
+        superset / subset of the model's can still load.
     """
     full_state_dict: Optional[dict] = None
     if dist.rank == 0:

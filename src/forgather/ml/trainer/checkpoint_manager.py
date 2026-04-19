@@ -264,16 +264,23 @@ class CheckpointManager(CheckpointInterface):
         This should be called BEFORE save_checkpoint() so the preserved list
         is accurate when deletion happens.
 
-        Args:
-            checkpoint_path: Path to checkpoint being evaluated
-            metrics: Dictionary of evaluation metrics
-            metric_key: Name of metric to use for comparison
-            greater_is_better: Whether higher metric values are better
-            preserve_n_best: Number of best checkpoints to keep
-            is_world_process_zero: Whether this is rank 0 (for logging)
+        Parameters
+        ----------
+        checkpoint_path : str
+            Path to checkpoint being evaluated.
+        metrics : dict of str to float
+            Dictionary of evaluation metrics.
+        metric_key : str
+            Name of metric to use for comparison.
+        greater_is_better : bool or None
+            Whether higher metric values are better.
+        preserve_n_best : int
+            Number of best checkpoints to keep.
 
-        Returns:
-            True if this checkpoint qualifies as one of the best
+        Returns
+        -------
+        bool
+            ``True`` if this checkpoint qualifies as one of the best.
         """
         # Extract metric value
         metric_value = metrics.get(metric_key) or metrics.get(f"eval_{metric_key}")
@@ -450,9 +457,7 @@ class CheckpointManager(CheckpointInterface):
         output_dir: str | os.PathLike | None = None,
         overwrite_output_dir: bool = False,
     ) -> None:
-        """
-        Save model and tokenizer to output_dir
-        """
+        """Save model and tokenizer to ``output_dir``."""
         model = self.model
         if model is None:
             return

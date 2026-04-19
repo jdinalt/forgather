@@ -48,10 +48,14 @@ def file_lock_build(
     avoiding torch.distributed initialization requirements and handling non-shared
     filesystems across nodes.
 
-    Args:
-        target: Path to the target file/directory being built
-        timeout: Maximum time to wait for lock acquisition (seconds)
-        force_lock: If True, acquire lock even if target exists (for dependency checking)
+    Parameters
+    ----------
+    target : str or os.PathLike
+        Path to the target file/directory being built
+    timeout : float, optional
+        Maximum time to wait for lock acquisition (seconds)
+    force_lock : bool, optional
+        If True, acquire lock even if target exists (for dependency checking)
 
     The lock file is created alongside the target with .lock suffix.
     If the target already exists when entering the context and force_lock is False,
@@ -161,17 +165,26 @@ def build_sync(target: str | os.PathLike, local: bool = False, timeout: float = 
        The first process to acquire the lock builds, others wait for the lock
        to be released before proceeding.
 
-    Args:
-        target: Path to the target being built (used for file locking fallback)
-        local: If False (default), synchronize globally across all ranks.
-               If True, synchronize only within the local node.
-        timeout: Maximum time to wait for synchronization (seconds), used for
-                 file locking fallback.
+    Parameters
+    ----------
+    target : str or os.PathLike
+        Path to the target being built (used for file locking fallback)
+    local : bool, optional
+        If False (default), synchronize globally across all ranks.
+        If True, synchronize only within the local node.
+    timeout : float, optional
+        Maximum time to wait for synchronization (seconds), used for
+        file locking fallback.
 
-    Yields:
+    Yields
+    ------
+    bool
         True if this process should perform the build, False otherwise.
 
-    Example:
+    Examples
+    --------
+    ::
+
         with build_sync("output_models/my_model") as should_build:
             if should_build:
                 # Only one process executes this
@@ -388,17 +401,27 @@ def build_rule(
     barriers when available, or falls back to file locking when distributed
     isn't initialized (e.g., with third-party training frameworks like Torch Titan).
 
-    Args:
-        target: Path to the target file/directory to build
-        recipe: A callable or list of callables to execute to construct the target
-        loader: Callable that loads and returns the constructed target
-        prerequisites: List of dependency files; if any are newer than target,
-                       the target will be rebuilt
+    Parameters
+    ----------
+    target : str or os.PathLike
+        Path to the target file/directory to build
+    recipe : Callable or list of Callable
+        A callable or list of callables to execute to construct the target
+    loader : Callable
+        Callable that loads and returns the constructed target
+    prerequisites : list of str or os.PathLike, optional
+        List of dependency files; if any are newer than target,
+        the target will be rebuilt
 
-    Returns:
+    Returns
+    -------
+    Any
         The result of calling loader()
 
-    Example:
+    Examples
+    --------
+    ::
+
         model = build_rule(
             target="output_models/my_model",
             recipe=lambda: generate_model_code(),

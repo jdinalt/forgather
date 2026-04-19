@@ -51,20 +51,26 @@ def build_parameter_groups(
     (including the default, if every parameter matched a user group) are
     omitted from the returned list.
 
-    Args:
-        named_parameters: Iterable of (name, parameter) pairs, e.g. from
-            ``model.named_parameters()``.
-        optimizer_groups: Mapping of group name to a spec dict with keys:
-            ``regex`` (str) and ``config`` (dict of hyperparameter
-            overrides). The ``config`` dict is merged into the returned
-            param group and forwarded to the optimizer. ``config`` may be
-            omitted or ``None`` for groups that only carve parameters out
-            without changing hyperparameters. A spec value of ``None``
-            marks the group as removed - useful for clearing an inherited
-            group from a child template.
-        debug: When True, log each parameter -> group assignment at INFO.
+    Parameters
+    ----------
+    named_parameters : NamedParameters
+        Iterable of (name, parameter) pairs, e.g. from
+        ``model.named_parameters()``.
+    optimizer_groups : OptimGroupMap
+        Mapping of group name to a spec dict with keys:
+        ``regex`` (str) and ``config`` (dict of hyperparameter
+        overrides). The ``config`` dict is merged into the returned
+        param group and forwarded to the optimizer. ``config`` may be
+        omitted or ``None`` for groups that only carve parameters out
+        without changing hyperparameters. A spec value of ``None``
+        marks the group as removed - useful for clearing an inherited
+        group from a child template.
+    debug : bool, optional
+        When True, log each parameter -> group assignment at INFO.
 
-    Returns:
+    Returns
+    -------
+    ParamGroups
         A list of param group dicts ready to pass to a torch optimizer.
     """
     if _DEFAULT_GROUP in optimizer_groups:

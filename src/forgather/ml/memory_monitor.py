@@ -26,9 +26,11 @@ class TensorTracker:
         """
         Initialize tensor tracker with bounded step history to prevent memory leaks.
 
-        Args:
-            max_step_history: Maximum number of steps to track tensor creation info.
-                             Older step data is automatically discarded. Set to 0 to disable step tracking.
+        Parameters
+        ----------
+        max_step_history : int, optional
+            Maximum number of steps to track tensor creation info.
+            Older step data is automatically discarded. Set to 0 to disable step tracking.
         """
         self.tensors: Set[int] = set()  # Track tensor IDs
         self.tensor_info: Dict[int, tuple] = (
@@ -141,11 +143,14 @@ class ComprehensiveMemoryMonitor:
         """
         Initialize memory monitor with bounded history to prevent memory leaks.
 
-        Args:
-            rank: Process rank for distributed training
-            max_history_size: Maximum number of memory snapshots to keep in history.
-                             Older snapshots are automatically discarded. Set to 0 to disable history.
-                             Default is 100 to prevent unbounded growth that causes memory leaks.
+        Parameters
+        ----------
+        rank : int, optional
+            Process rank for distributed training
+        max_history_size : int, optional
+            Maximum number of memory snapshots to keep in history.
+            Older snapshots are automatically discarded. Set to 0 to disable history.
+            Default is 100 to prevent unbounded growth that causes memory leaks.
         """
         self.rank = rank
         self.process = psutil.Process(os.getpid())

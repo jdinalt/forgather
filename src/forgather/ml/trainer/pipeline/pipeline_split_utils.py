@@ -22,21 +22,27 @@ def generate_llm_fqn_per_model_part(
     treating the input encoder and output decoder with configurable weights
     to account for their computational cost relative to transformer layers.
 
-    Args:
-        num_stages: Number of pipeline stages
-        num_layers: Total number of transformer layers in the model
-        input_weight: Weight for input modules (input_encoder) in layer calculation
-        output_weight: Weight for output modules (layer_norm + output_decoder) in layer calculation
+    Parameters
+    ----------
+    num_stages : int
+        Number of pipeline stages.
+    num_layers : int
+        Total number of transformer layers in the model.
+    input_weight : int, optional
+        Weight for input modules (``input_encoder``) in layer calculation.
+    output_weight : int, optional
+        Weight for output modules (``layer_norm`` + ``output_decoder``) in
+        layer calculation.
 
-    Returns:
-        List of lists containing module names for each model part.
-        Module names use the attribute names from CasualLM:
-        - "input_encoder" for token embeddings + positional encoding
-        - "layer_stack.layers.0", "layer_stack.layers.1", ... for transformer layers
-        - "layer_stack.layer_norm" for final normalization
-        - "output_decoder" for the output projection layer
+    Returns
+    -------
+    list of list of str
+        Module names for each model part. Names use the attribute names from
+        ``CasualLM``: ``"input_encoder"``, ``"layer_stack.layers.0"``, …,
+        ``"layer_stack.layer_norm"``, ``"output_decoder"``.
 
-    Example:
+    Examples
+    --------
         generate_llm_fqn_per_model_part(2, 4, input_weight=1, output_weight=1)
         might return:
         [
@@ -139,15 +145,21 @@ def split_model(model: nn.Module, module_names: List[str]) -> None:
     - model.causal_lm.layer_stack (contains layers ModuleDict and layer_norm)
     - model.causal_lm.output_decoder
 
-    Args:
-        model: The model to split (typically DynamicCasualLM wrapping CasualLM)
-        module_names: List of module names to keep in this stage.
-                     Examples: "input_encoder", "layer_stack.layers.0", "output_decoder"
+    Parameters
+    ----------
+    model : torch.nn.Module
+        The model to split (typically ``DynamicCasualLM`` wrapping ``CasualLM``).
+    module_names : list of str
+        Module names to keep in this stage (e.g. ``"input_encoder"``,
+        ``"layer_stack.layers.0"``, ``"output_decoder"``).
 
-    Returns:
-        None (modifies model in-place)
+    Returns
+    -------
+    None
+        Modifies model in-place.
 
-    Example:
+    Examples
+    --------
         # Keep only layers 0-1 and input encoder
         split_model(model, ["input_encoder", "layer_stack.layers.0", "layer_stack.layers.1"])
     """

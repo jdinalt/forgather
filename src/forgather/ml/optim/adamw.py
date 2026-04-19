@@ -25,8 +25,39 @@ def _local_shard(t: Tensor) -> Tensor:
 
 
 class AdamW(Optimizer):
-    """
-    Adam
+    """AdamW optimizer with optional stochastic rounding for pure-bf16 training.
+
+    Implements decoupled weight-decay regularization (Loshchilov & Hutter,
+    arXiv:1711.05101) on top of the Adam update rule (Kingma & Ba,
+    arXiv:1412.6980).  The distinguishing feature of this implementation is
+    first-class support for *pure bf16 training* — parameters, gradients, and
+    optimizer states all stay in bf16, with stochastic rounding (SR) used for
+    every write-back to avoid systematic truncation bias.  This eliminates the
+    need for fp32 master-weight copies while retaining most of the numerical
+    quality of mixed-precision training.
+
+    Prefer this optimizer over standard ``torch.optim.AdamW`` when:
+
+    * Training on hardware with fast bf16 throughput and limited memory.
+    * Running pure-bf16 experiments where fp32 master weights are undesirable.
+    * Using FSDP2 (DTensor-backed parameters are handled transparently).
+
+    Notes
+    -----
+    Stochastic rounding is seeded from a dedicated ``torch.Generator``
+    initialised with a fixed seed (5489) so that all DDP ranks make identical
+    rounding decisions and parameters stay in sync without extra communication.
+
+    The inner ``_adam`` kernel is optionally compiled with
+    ``torch.compile(..., fullgraph=True)`` for improved throughput.
+
+    References
+    ----------
+    Kingma, D. & Ba, J. (2014). Adam: A Method for Stochastic Optimization.
+    arXiv:1412.6980.
+
+    Loshchilov, I. & Hutter, F. (2017). Decoupled Weight Decay Regularization.
+    arXiv:1711.05101.
     """
 
     def __init__(
@@ -39,6 +70,31 @@ class AdamW(Optimizer):
         torch_compile: bool = True,
         bf16_stochastic_round: bool = True,
     ):
+        """
+        Parameters
+        ----------
+        params : iterable of Parameter
+            Model parameters to optimize.
+        lr : float, optional
+            Learning rate. Default is 1e-3.
+        betas : tuple of (float, float), optional
+            Exponential decay rates for the first and second moment estimates.
+            Default is (0.9, 0.999).
+        eps : float, optional
+            Term added to the denominator to improve numerical stability.
+            Default is 1e-6.
+        weight_decay : float, optional
+            Decoupled weight-decay coefficient. Default is 0.01.
+        torch_compile : bool, optional
+            If ``True``, the inner ``_adam`` kernel is compiled with
+            ``torch.compile`` for improved throughput. Default is ``True``.
+        bf16_stochastic_round : bool, optional
+            If ``True``, write-backs of moment buffers and parameter updates
+            to bf16 storage use stochastic rounding rather than round-to-
+            nearest.  Eliminates systematic truncation bias in pure-bf16
+            training.  Has no effect when parameters are fp32.
+            Default is ``True``.
+        """
         self.compile = torch_compile
         defaults = dict(
             lr=lr,

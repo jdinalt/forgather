@@ -29,19 +29,25 @@ def fp32_to_bf16_stochastic_round(
     [a15, ..., a0] / 2^16, where the bit pattern [a15, ..., a0] is interpreted
     as uint16.
 
-    Args:
-        x_f32: Input tensor in FP32 precision
-        generator: Optional torch.Generator for deterministic rounding.
-            Must be on the same device as x_f32. When None, uses the
-            default generator (WARNING: diverges across DDP ranks).
-            Not compatible with torch.compile -- use rand_bits instead.
-        rand_bits: Optional pre-generated int32 tensor of random values in
-            [0, 2^16). When provided, ``generator`` is ignored. This is the
-            torch.compile-safe path: generate the noise outside the compiled
-            region and pass it in.
+    Parameters
+    ----------
+    x_f32 : Tensor
+        Input tensor in FP32 precision.
+    generator : torch.Generator, optional
+        Optional torch.Generator for deterministic rounding.
+        Must be on the same device as x_f32. When None, uses the
+        default generator (WARNING: diverges across DDP ranks).
+        Not compatible with torch.compile -- use rand_bits instead.
+    rand_bits : Tensor or None, optional
+        Optional pre-generated int32 tensor of random values in
+        [0, 2^16). When provided, ``generator`` is ignored. This is the
+        torch.compile-safe path: generate the noise outside the compiled
+        region and pass it in.
 
-    Returns:
-        Tensor converted to BF16 with stochastic rounding
+    Returns
+    -------
+    Tensor
+        Tensor converted to BF16 with stochastic rounding.
     """
     if rand_bits is not None:
         rand_16bit = rand_bits

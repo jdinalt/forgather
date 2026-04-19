@@ -22,11 +22,15 @@ __all__ = ["get_perplexity", "TBLogger", "TBScalarSpec", "default_tb_scalars"]
 class TBScalarSpec:
     """Specification for a single TensorBoard scalar to log.
 
-    Attributes:
-        tag:       TensorBoard scalar tag (from dict key).
-        source:    Metric key to read from logs.  Defaults to *tag* with
-                   hyphens replaced by underscores.
-        transform: Optional ``callable(value, metrics) -> new_value``.
+    Attributes
+    ----------
+    tag : str
+        TensorBoard scalar tag (from dict key).
+    source : str
+        Metric key to read from logs.  Defaults to *tag* with
+        hyphens replaced by underscores.
+    transform : callable or None
+        Optional ``callable(value, metrics) -> new_value``.
     """
 
     tag: str

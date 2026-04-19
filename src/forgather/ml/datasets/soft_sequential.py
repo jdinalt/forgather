@@ -36,16 +36,24 @@ def soft_sequential(
         - B consumed 2/10 (8 remaining): B gets 30% * 80% = 24% probability
         - C gets remaining: 30% * 20% = 6% probability
 
-    Args:
-        step: Current iteration step (unused, but part of signature)
-        datasets: List of child datasets (in order)
-        examples_per_dataset: Number of examples already yielded from each dataset
-        exhausted: Boolean list indicating which datasets are exhausted
+    Parameters
+    ----------
+    step : int
+        Current iteration step (unused, but part of signature).
+    datasets : list
+        List of child datasets (in order).
+    examples_per_dataset : list of int
+        Number of examples already yielded from each dataset.
+    exhausted : list of bool
+        Boolean list indicating which datasets are exhausted.
 
-    Returns:
-        List of weights (one per dataset) for probabilistic sampling
+    Returns
+    -------
+    list of float
+        List of weights (one per dataset) for probabilistic sampling.
 
-    Example:
+    Examples
+    --------
         >>> from forgather.ml.datasets import interleave_datasets
         >>> from forgather.ml.datasets.soft_sequential import soft_sequential
         >>> interleaved = interleave_datasets(

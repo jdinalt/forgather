@@ -36,23 +36,25 @@ class DivergenceDetector(TrainerCallback, Stateful):
     3 log entries (~96 training steps at 32-step log intervals) of the spike,
     with zero false positives on healthy runs.
 
-    Example:
-        >>> detector = DivergenceDetector(
-        ...     smoothing=0.3,        # EMA alpha (higher = more responsive)
-        ...     threshold=1.0,        # Absolute: stop if smoothed - best >= 1.0
-        ...     patience=3,           # Require 3 consecutive observations
-        ...     action="abort",
-        ... )
-        >>> trainer = Trainer(..., callbacks=[detector])
-        >>> trainer.train()
+    Examples
+    --------
+    >>> detector = DivergenceDetector(
+    ...     smoothing=0.3,        # EMA alpha (higher = more responsive)
+    ...     threshold=1.0,        # Absolute: stop if smoothed - best >= 1.0
+    ...     patience=3,           # Require 3 consecutive observations
+    ...     action="abort",
+    ... )
+    >>> trainer = Trainer(..., callbacks=[detector])
+    >>> trainer.train()
 
     Using relative threshold (e.g., 50% increase from best):
-        >>> detector = DivergenceDetector(
-        ...     smoothing=0.3,
-        ...     relative_threshold=1.5,  # Stop if smoothed >= 1.5 * best
-        ...     patience=3,
-        ...     action="stop",
-        ... )
+
+    >>> detector = DivergenceDetector(
+    ...     smoothing=0.3,
+    ...     relative_threshold=1.5,  # Stop if smoothed >= 1.5 * best
+    ...     patience=3,
+    ...     action="stop",
+    ... )
     """
 
     def __init__(
@@ -69,29 +71,37 @@ class DivergenceDetector(TrainerCallback, Stateful):
         """
         Initialize divergence detector.
 
-        Args:
-            smoothing: EMA alpha for smoothing raw loss (0-1). Higher = more responsive
-                      to recent values. Effective window ~ 1/alpha observations.
-            threshold: Absolute divergence threshold. Triggers when
-                      (smoothed_loss - best_smoothed_loss) >= threshold.
-                      Set to None to disable absolute threshold.
-            relative_threshold: Relative divergence threshold. Triggers when
-                               smoothed_loss >= best_smoothed_loss * relative_threshold.
-                               For example, 1.5 means "50% increase from best".
-                               Set to None to disable relative threshold.
-            patience: Number of consecutive observations above threshold required
-                     before triggering. Higher values reduce false positives from
-                     transient spikes. Set to 1 for immediate triggering.
-            warmup: Number of initial observations to skip before checking divergence.
-                   Avoids false positives from the high-loss early training phase.
-            action: What to do when divergence detected:
-                   - "stop": Gracefully stop training (saves checkpoint first)
-                   - "abort": Abort immediately without saving
-            use_eval_loss: If True, monitor eval_loss. If False, monitor train loss.
-                          Defaults to False because train loss is logged much more
-                          frequently, enabling faster detection. Set to True if you
-                          have frequent evaluation and want less noisy signals.
-            metric_key: Optional custom metric key to monitor (overrides use_eval_loss).
+        Parameters
+        ----------
+        smoothing : float, optional
+            EMA alpha for smoothing raw loss (0–1). Higher = more responsive
+            to recent values. Effective window ~ 1/alpha observations.
+        threshold : float or None, optional
+            Absolute divergence threshold. Triggers when
+            ``(smoothed_loss - best_smoothed_loss) >= threshold``.
+            Set to ``None`` to disable absolute threshold.
+        relative_threshold : float or None, optional
+            Relative divergence threshold. Triggers when
+            ``smoothed_loss >= best_smoothed_loss * relative_threshold``.
+            For example, ``1.5`` means "50% increase from best".
+            Set to ``None`` to disable relative threshold.
+        patience : int, optional
+            Number of consecutive observations above threshold required
+            before triggering. Higher values reduce false positives from
+            transient spikes. Set to ``1`` for immediate triggering.
+        warmup : int, optional
+            Number of initial observations to skip before checking divergence.
+            Avoids false positives from the high-loss early training phase.
+        action : {"stop", "abort"}, optional
+            What to do when divergence is detected. ``"stop"`` gracefully
+            stops training (saves checkpoint first); ``"abort"`` stops
+            immediately without saving.
+        use_eval_loss : bool, optional
+            If ``True``, monitor ``eval_loss``; if ``False``, monitor train
+            loss. Defaults to ``False`` because train loss is logged much more
+            frequently, enabling faster detection.
+        metric_key : str, optional
+            Custom metric key to monitor (overrides ``use_eval_loss``).
         """
         super().__init__()
 

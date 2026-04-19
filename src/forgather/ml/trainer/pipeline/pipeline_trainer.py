@@ -90,42 +90,55 @@ PipelineSchedulerFactorT: TypeAlias = Callable[
 
 @dataclass(kw_only=True)
 class PipelineTrainingArguments(TrainingArguments):
-    """
-    Training arguments for pipeline parallel training.
+    """Training arguments for pipeline parallel training.
 
-    Pipeline parallelism splits a model across multiple GPUs, with each GPU handling
-    one or more stages. Batches are divided into microbatches that flow through the
-    pipeline, enabling overlapped computation across stages to improve GPU utilization.
+    Pipeline parallelism partitions a model across multiple GPUs, each handling
+    one or more sequential stages. Input batches are split into microbatches that
+    flow through the stages, allowing overlapped computation to keep all GPUs busy.
 
-    See PyTorch pipeline parallelism docs:
+    See the PyTorch pipeline parallelism documentation for background:
     https://docs.pytorch.org/docs/stable/distributed.pipelining.html
 
-    Args:
-        n_microbatches: Number of microbatches to split each batch into. More microbatches
-            improve pipeline efficiency by keeping all stages busy, but increase memory usage.
-            Batch size must be evenly divisible by n_microbatches.
-            Typical values: 4-16 depending on pipeline depth and memory constraints.
+    Parameters
+    ----------
+    n_microbatches : int, optional
+        Number of microbatches to split each batch into. More microbatches
+        improve pipeline efficiency (fewer bubbles) but increase memory usage.
+        The batch size must be evenly divisible by ``n_microbatches``. Typical
+        values are 4–16 depending on pipeline depth and memory constraints.
+        Default is ``4``.
+    stages_per_rank : int, optional
+        Number of pipeline stages hosted on each GPU. Most schedulers use
+        ``1``. Multi-stage schedulers (e.g. ``ScheduleZBVZeroBubble``) assign
+        multiple stages per rank to reduce pipeline bubbles. Only set ``> 1``
+        together with ``is_multistage=True``. Default is ``1``.
+    pp_stage_type : str, optional
+        Stage-to-rank assignment pattern. ``"loop"`` uses round-robin (e.g. 4
+        stages on 2 ranks: rank0=[0,2], rank1=[1,3]). ``"v"`` uses the
+        V-pattern required by ZeroBubble schedulers (see
+        https://arxiv.org/pdf/2401.10241). Default is ``"loop"``.
+    is_multistage : bool, optional
+        Set ``True`` when the scheduler inherits from
+        ``PipelineScheduleMulti`` (e.g. ``ScheduleZBVZeroBubble``). Leave
+        ``False`` for single-stage schedulers such as ``ScheduleGPipe``.
+        Default is ``False``.
+    debug_pipeline : bool, optional
+        Enable debug-level logging for the pipeline scheduler. Internal
+        development flag. Default is ``False``.
+    debug_split_model : bool, optional
+        Log pipeline module details after splitting. Internal development
+        flag. Default is ``False``.
+    debug_model_params : bool, optional
+        Log all parameter and buffer devices/dtypes after model construction.
+        Internal development flag. Default is ``False``.
+    debug_model_init : bool, optional
+        Log every send/recv during parameter distribution from rank 0.
+        Internal development flag. Default is ``False``.
 
-        stages_per_rank: Number of pipeline stages per GPU. Most schedulers use 1 stage per rank.
-            Multi-stage schedulers (like ZeroBubble) can use multiple stages per rank to reduce
-            pipeline bubbles. Only set > 1 when using is_multistage schedulers.
-
-        pp_stage_type: Stage assignment pattern across ranks:
-            - "loop": Round-robin assignment (e.g., 4 stages, 2 ranks: rank0=[0,2], rank1=[1,3])
-            - "v": V-pattern for ZeroBubble scheduler (see https://arxiv.org/pdf/2401.10241)
-            Default "loop" works for most cases.
-
-        is_multistage: Whether using multi-stage scheduler API (multiple stages per rank).
-            Set to True when using schedulers like ScheduleZBVZeroBubble that inherit from
-            PipelineScheduleMulti. Leave False for single-stage schedulers (ScheduleGPipe, etc.).
-
-        debug_pipeline: Internal development flag (not part of stable API).
-        debug_split_model: Internal development flag (not part of stable API).
-        debug_model_params: Internal development flag (not part of stable API).
-        debug_model_init: Internal development flag (not part of stable API).
-
-    Note: model_splitter is passed to PipelineTrainer.__init__(), not here, since
-    it's a callable rather than a primitive type.
+    Notes
+    -----
+    ``model_splitter`` is passed to ``PipelineTrainer.__init__()`` rather than
+    stored here because it is a callable, not a primitive serialisable type.
     """
 
     debug_pipeline: bool = False
@@ -146,46 +159,90 @@ TPipelineTrainingArguments = TypeVar(
 class PipelineTrainer(
     Trainer[TPipelineTrainingArguments], Generic[TPipelineTrainingArguments]
 ):
-    """
-    Trainer for pipeline parallel training using PyTorch distributed pipelining.
+    """Trainer for pipeline parallel training using PyTorch distributed pipelining.
 
-    Pipeline parallelism splits a model across multiple GPUs where each GPU handles
-    one or more stages (layers) of the model. Input batches are divided into microbatches
-    that flow through the pipeline stages sequentially, with multiple microbatches
-    in flight simultaneously to keep all GPUs busy and maximize utilization.
+    Partitions a model across multiple GPUs — each GPU hosts one or more
+    sequential pipeline stages. Input batches are split into microbatches that
+    flow through the stages with multiple microbatches in flight simultaneously,
+    keeping all GPUs busy.
 
-    Key differences from single-device Trainer:
-    - Model construction on meta device, then materialized per-stage
-    - Rank 0 initializes full model and distributes parameters to avoid redundant init
-    - Rank 0 broadcasts batches to all ranks (only first/last stages need data)
-    - Custom gradient computation and loss reduction across pipeline stages
-    - Effective batch size doesn't scale with num_processes (same batch flows through pipeline)
+    This trainer is designed for environments where inter-GPU bandwidth is limited
+    (consumer GPUs over PCIe, multi-node over Ethernet) where all-reduce–based DDP
+    or FSDP would be communication-bound.
 
-    Pipeline stages must be defined by providing a ModelSplitter function that splits
-    the model into stages and creates PipelineStage objects.
+    Key differences from the single-device ``Trainer``:
 
-    Example usage:
-        from torch.distributed.pipelining import ScheduleGPipe
+    * Model is constructed on the meta device, then each stage is materialised
+      on its assigned GPU — no full model ever lives on one GPU.
+    * Rank 0 constructs a fully-initialised CPU model and distributes parameters
+      to other ranks via point-to-point sends, avoiding N redundant initialisations.
+    * All ranks receive the same batch (pure model parallelism); rank 0 loads data
+      via ``DataloaderDispatcher`` and broadcasts it.
+    * Gradient norm is all-reduced across ranks because each rank holds only a
+      subset of the model's parameters.
+    * Effective batch size does **not** scale with ``num_processes`` (the same
+      batch flows through all stages; unlike DDP, there is no data replication).
 
-        args = PipelineTrainingArguments(
-            n_microbatches=8,
-            per_device_train_batch_size=64,  # Must be divisible by n_microbatches
-            stages_per_rank=1,
-        )
+    Parameters
+    ----------
+    args : PipelineTrainingArguments or dict
+        Pipeline training configuration. Dicts are converted via
+        ``dacite.from_dict``.
+    model_splitter : ModelSplitter
+        Callable that splits the model into pipeline stages and returns
+        ``PipelineStage`` objects. See
+        ``src/forgather/ml/trainer/pipeline/model_splitter.py`` for the
+        expected signature.
+    pipe_schedule_factory : callable, optional
+        Factory for the pipeline scheduler (e.g. ``ScheduleGPipe``,
+        ``ScheduleZBVZeroBubble``). Default is ``ScheduleGPipe``.
+    **kwargs
+        Additional arguments forwarded to the base ``Trainer``
+        (``model_init``, ``train_dataset``, ``optimizer_factory``, etc.).
 
-        trainer = PipelineTrainer(
-            args=args,
-            model_init=model_factory,
-            model_splitter=my_splitter_function,
-            pipe_schedule_factory=ScheduleGPipe,
-            train_dataset=train_dataset,
-            optimizer_factory=optimizer_factory,
-        )
-        trainer.train()
+    Raises
+    ------
+    AssertionError
+        If ``model`` is provided (pipeline training requires ``model_init``).
+    AssertionError
+        If ``model_init`` is not provided.
+    AssertionError
+        If batch size is not divisible by ``n_microbatches``.
+    AssertionError
+        If ``stages_per_rank > 1`` but ``is_multistage=False``.
+    AssertionError
+        If ``mixed_precision="fp16"`` (incompatible with pipeline schedulers).
+    AssertionError
+        If a zero-bubble schedule is used with ``torch_compile=True``.
+    AssertionError
+        If ``world_size == 1`` (pipeline parallelism requires multiple ranks).
 
-    See:
-    - PyTorch pipeline docs: https://docs.pytorch.org/docs/stable/distributed.pipelining.html
-    - ModelSplitter signature: src/forgather/ml/trainer/pipeline/model_splitter.py
+    Examples
+    --------
+    >>> from torch.distributed.pipelining import ScheduleGPipe
+    >>> args = PipelineTrainingArguments(
+    ...     n_microbatches=8,
+    ...     per_device_train_batch_size=64,
+    ...     stages_per_rank=1,
+    ... )
+    >>> trainer = PipelineTrainer(
+    ...     args=args,
+    ...     model_init=model_factory,
+    ...     model_splitter=my_splitter_fn,
+    ...     pipe_schedule_factory=ScheduleGPipe,
+    ...     train_dataset=train_dataset,
+    ...     optimizer_factory=optimizer_factory,
+    ... )
+    >>> trainer.train()
+
+    See Also
+    --------
+    ModelSplitter : Protocol for the model-splitting callable.
+
+    References
+    ----------
+    PyTorch pipeline parallelism:
+    https://docs.pytorch.org/docs/stable/distributed.pipelining.html
     """
 
     args: TPipelineTrainingArguments
@@ -210,17 +267,26 @@ class PipelineTrainer(
         pipe_schedule_factory: PipelineSchedulerFactorT = ScheduleGPipe,  # type: ignore[assignment]
         **kwargs,
     ):
-        """
-        Initialize pipeline parallel trainer.
+        """Initialise the pipeline parallel trainer.
 
-        Args:
-            args: Pipeline training configuration
-            model_splitter: Function to split model into pipeline stages. Must match ModelSplitter
-                signature (see src/forgather/ml/trainer/pipeline/model_splitter.py).
-                Takes model on meta device and returns stage modules and PipelineStage objects.
-            pipe_schedule_factory: Pipeline scheduler factory (e.g., ScheduleGPipe, ScheduleZBVZeroBubble).
-                Default ScheduleGPipe uses simple GPipe scheduling with gradient accumulation.
-            **kwargs: Additional arguments passed to base Trainer (train_dataset, optimizer_factory, etc.)
+        Parameters
+        ----------
+        args : PipelineTrainingArguments or dict
+            Pipeline training configuration. Dicts are converted via
+            ``dacite.from_dict(PipelineTrainingArguments, args)``.
+        model_splitter : ModelSplitter
+            Callable that accepts the model on the meta device and returns
+            all pipeline stage modules, the rank-local stage modules, and
+            ``PipelineStage`` objects. See
+            ``src/forgather/ml/trainer/pipeline/model_splitter.py`` for the
+            full signature.
+        pipe_schedule_factory : callable, optional
+            Pipeline scheduler factory. ``ScheduleGPipe`` (default) uses simple
+            GPipe scheduling. Pass ``ScheduleZBVZeroBubble`` or similar for
+            zero-bubble schedules.
+        **kwargs
+            Forwarded to the base ``Trainer`` constructor (``model_init``,
+            ``train_dataset``, ``optimizer_factory``, ``callbacks``, etc.).
         """
         if isinstance(args, dict):
             args = cast(
@@ -290,15 +356,17 @@ class PipelineTrainer(
 
     @override
     def _is_pipeline_parallel(self) -> bool:
-        """
-        Indicate this trainer uses pipeline parallelism.
+        """Indicate that this trainer uses pipeline parallelism.
 
-        Pipeline parallelism doesn't increase effective batch size (unlike DDP) because
-        the same batch flows through all stages sequentially - different microbatches are
-        in different stages at any given time, but they all belong to the same original batch.
+        Pipeline parallelism does **not** increase the effective batch size
+        (unlike DDP): all microbatches belong to the same original batch and
+        flow through the stages sequentially. The base trainer uses this flag
+        to skip the DDP-style effective-batch-size scaling.
 
-        Returns:
-            True to indicate pipeline parallel training
+        Returns
+        -------
+        bool
+            Always ``True``.
         """
         return True
 
@@ -349,16 +417,15 @@ class PipelineTrainer(
 
     @override
     def _wrap(self) -> None:
-        """
-        Wrap dataloaders for pipeline parallel batch distribution.
+        """Wrap dataloaders with ``DataloaderDispatcher`` for pipeline batch distribution.
 
-        Pipeline parallelism requires all ranks to receive the same batch (pure MP mode),
-        since different stages process different parts of the same batch. Rank 0 loads
-        data and broadcasts to all other ranks.
+        Pipeline parallelism requires all ranks to process the same batch (pure
+        model-parallel mode). Rank 0 loads data from the underlying
+        ``DataLoader`` and broadcasts it to all other ranks.
 
-        Uses DataloaderDispatcher with dp_mesh_dim=None for pure model-parallel mode,
-        which is equivalent to the previous broadcast-based _dataloader_iter approach
-        but with a more unified API consistent with other trainers.
+        ``DataloaderDispatcher`` is created with ``dp_mesh_dim=None`` to
+        signal pure model-parallelism — no data-parallel dimension exists, so
+        rank 0 broadcasts the full batch to every participant.
         """
         if self.train_dataloader:
             self.train_dataloader = DataloaderDispatcher(
@@ -378,21 +445,25 @@ class PipelineTrainer(
 
     @override
     def _prepare_model(self):
-        """
-        Prepare model for pipeline parallel training.
+        """Construct and distribute the model across pipeline stages.
 
-        This is the main setup method that:
-        1. Constructs full model on meta device (no memory allocation)
-        2. Captures parameter sharing metadata (for tied weights)
-        3. Splits model into pipeline stages using model_splitter
-        4. Materializes each stage's parameters on its assigned device
-        5. Initializes parameters (rank 0 broadcasts to other ranks)
-        6. Creates pipeline scheduler with configured microbatches
-        7. Sets up loss function (only on last stage)
-        8. Enables gradient checkpointing if requested
+        This is the central setup method for pipeline parallel training. It
+        performs the following steps in order:
 
-        The model remains on meta device for reference; actual computation happens
-        through pipeline_modules (the materialized stages).
+        1. Construct the full model on the meta device (no memory allocation).
+        2. Capture parameter-sharing metadata (tied weights, etc.).
+        3. Split the model into pipeline stages via ``model_splitter``.
+        4. Materialise each stage's parameters on its assigned device.
+        5. Initialise parameters: rank 0 builds a full CPU model and sends
+           each rank's stage parameters via point-to-point sends.
+        6. Build the shard index for distributed checkpoint save/load.
+        7. Construct the pipeline scheduler with the configured microbatch count.
+        8. Set up the loss function (only the last stage computes loss).
+        9. Enable gradient checkpointing on each stage when requested.
+
+        After this method returns, ``self.pipeline_modules`` contains the
+        materialised stage modules for this rank, and ``self.model`` holds the
+        original meta-device model for shape/config queries.
         """
         # Reset -- this trainer always resets everything.
         self.scheduler = None
@@ -606,12 +677,11 @@ class PipelineTrainer(
 
     @override
     def _compile_model(self):
-        """
-        Compile all pipeline stage modules assigned to this rank.
+        """Compile each pipeline stage module assigned to this rank with ``torch.compile``.
 
-        Each pipeline stage is compiled independently with torch.compile().
-        This is different from single-device training where the entire model
-        is compiled as one unit.
+        Unlike single-device training (where the entire model is compiled as one
+        unit), each pipeline stage is compiled independently, which is necessary
+        because each stage lives on a different GPU.
         """
         assert self.pipeline_modules
         for mod in self.pipeline_modules:
@@ -623,20 +693,28 @@ class PipelineTrainer(
             )
 
     def _get_example(self, example_dataloader):
-        """
-        Get example microbatch for model tracing during pipeline stage creation.
+        """Build an example microbatch for pipeline stage tracing.
 
-        Pipeline parallel requires all batches to have identical shapes. This creates
-        a meta-device tensor matching the shape of actual batches, then splits it into
-        microbatches for tracing the model splitter.
+        Pipeline parallel requires all batches to have identical shapes. This
+        method draws one real batch from the dataloader, creates a meta-device
+        tensor with the same shape as ``"input_ids"``, splits it into
+        ``n_microbatches`` chunks, and returns the first chunk for use during
+        model splitting (tracing).
 
-        Note: Currently hardcoded to use "input_ids" as the main input tensor.
+        Parameters
+        ----------
+        example_dataloader : iterable
+            Dataloader from which to extract the batch shape.
 
-        Args:
-            example_dataloader: Dataloader to extract shape information from
+        Returns
+        -------
+        tuple of (tuple, dict)
+            ``(example_args, example_kwargs)`` representing a single microbatch
+            on the meta device, suitable for passing to ``model_splitter``.
 
-        Returns:
-            Tuple of (example_args, example_kwargs) for a single microbatch on meta device
+        Notes
+        -----
+        Currently hardcoded to use ``"input_ids"`` as the primary input tensor.
         """
         # Note that pipeline parallel requires all batches to have the same shape!
         # TODO: We have hard-coded "input_ids" This should be more flexible, as this is not always the case.
@@ -702,31 +780,40 @@ class PipelineTrainer(
     def _initialize_params(
         self, all_pipeline_modules, pipeline_modules, stage_indices, missing_buf_only
     ):
-        """
-        Distribute initialized parameters from rank 0 to all other ranks.
+        """Distribute initialised parameters from rank 0 to all other ranks.
 
-        This is more efficient than each rank initializing the full model independently:
-        - Memory: Avoids N copies of full model in CPU memory (one per rank)
-        - Compute: Avoids redundant initialization computation on each rank
-        - Simplicity: Each rank only needs to receive its stage's parameters
+        Initialising each rank independently would require building N full models
+        in CPU memory (one per rank). Instead, rank 0 constructs a single
+        fully-initialised CPU model, copies its own stage parameters locally,
+        and sends each other rank's parameters via NCCL point-to-point.
 
-        Process:
-        1. Rank 0: Constructs full initialized model on CPU
-        2. Rank 0: Copies parameters for its own stages to device
-        3. Rank 0: Sends each other rank's stage parameters directly to their device
-        4. Other ranks: Receive and load their stage parameters
+        Process
+        -------
+        1. Rank 0 constructs the full initialised model on CPU.
+        2. Rank 0 copies parameters for its own stages directly to its GPU.
+        3. Rank 0 streams each other rank's stage parameters to that rank's GPU
+           via ``dist.send`` / ``dist.recv``.
+        4. Non-rank-0 ranks call ``dist.recv`` to receive their stage parameters.
 
-        Note: Uses point-to-point send/recv via NCCL. Each parameter is temporarily
-        moved to GPU for transmission since NCCL requires device tensors.
+        Parameters
+        ----------
+        all_pipeline_modules : list of torch.nn.Module
+            All pipeline stage modules across all ranks (on meta device).
+        pipeline_modules : list of torch.nn.Module
+            Stage modules assigned to the current rank (on this rank's device
+            after ``to_empty``).
+        stage_indices : list of tuple of int
+            Stage index assignments per rank; ``stage_indices[r]`` is the tuple
+            of global stage indices assigned to rank ``r``.
+        missing_buf_only : bool
+            When ``True``, transfer only non-persistent buffers (used when
+            resuming from a checkpoint that omitted those buffers). When
+            ``False``, transfer all parameters and buffers.
 
-        Args:
-            all_pipeline_modules: All pipeline stage modules across all ranks
-            pipeline_modules: Stage modules assigned to current rank
-            stage_indices: Stage index assignments for all ranks
-            missing_buf_only: If True, only initialize/transfer non-persistent buffers
-                (optimization when loading from checkpoint that lacks some buffers)
-
-        TODO: Optimize missing_buf_only case to only transfer missing buffers, not all params.
+        Notes
+        -----
+        Each parameter is temporarily moved to the sender's GPU before calling
+        ``dist.send``, because NCCL requires device tensors for transfers.
         """
 
         def make_state_dict(mod, missing_buf_only):
@@ -804,26 +891,36 @@ class PipelineTrainer(
     def _forward_backward_step(
         self, input_dict: dict[str, Tensor], labels: Tensor
     ) -> Tensor:
-        """
-        Execute forward and backward passes through the pipeline scheduler.
+        """Execute a combined forward and backward pass via the pipeline scheduler.
 
-        The pipeline scheduler handles forwarding activations between stages and
-        backpropagating gradients. Different ranks participate differently:
-        - First stage: Receives input_ids, passes activations downstream
-        - Middle stages: Receive activations, compute, pass downstream
-        - Last stage: Receives activations, computes loss, backpropagates gradients
+        The scheduler handles activation forwarding between stages and gradient
+        backpropagation. Each rank's role depends on which stage(s) it hosts:
 
-        Attention masks and position_ids are created externally (not passed through pipeline)
-        because PyTorch pipeline can only transport tensors that require gradients. Non-gradient
-        tensors and Python objects (like FlexAttention masks) would cause errors.
-        See: https://github.com/pytorch/torchtitan/blob/main/torchtitan/train.py#L377
+        * **First stage** — consumes ``input_ids`` and sends activations downstream.
+        * **Middle stages** — receive activations, compute, and send downstream.
+        * **Last stage** — receives activations, computes the loss, and initiates
+          the backward pass.
 
-        Args:
-            input_dict: Batch inputs with 'input_ids' and optionally 'position_ids'
-            labels: Target labels for loss computation (only used by last stage)
+        Attention masks and ``position_ids`` are constructed outside the pipeline
+        and passed as kwargs rather than through the inter-stage activation stream.
+        This is necessary because PyTorch's pipeline transport only handles tensors
+        that require gradients; Python objects and non-differentiable tensors would
+        raise errors if piped between stages.
 
-        Returns:
-            Mean loss summed over microbatches (0.0 on non-last stages, broadcast later)
+        Parameters
+        ----------
+        input_dict : dict of str to Tensor
+            Batch inputs. Must contain ``"input_ids"``; may contain
+            ``"position_ids"`` when the splitter supports explicit positions.
+        labels : Tensor
+            Target token ids for loss computation (only consumed by the last stage).
+
+        Returns
+        -------
+        Tensor
+            Sum of per-microbatch losses on the last stage; ``0.0`` on all other
+            stages. The caller broadcasts this to all ranks via
+            ``_distributed_loss()``.
         """
         inputs = (input_dict["input_ids"],)
 
@@ -865,23 +962,35 @@ class PipelineTrainer(
         input_ids: Tensor,
         attention_mask: Optional[Tensor],
     ) -> Optional[Tensor]:
-        """
-        Single forward pass through all pipeline stages for autoregressive generation.
-        All ranks must call simultaneously.
+        """Execute one forward pass through all pipeline stages for text generation.
 
-        Works for any stages_per_rank and "loop"/"v" stage assignment styles.
+        All ranks must call this method simultaneously. Works for any value of
+        ``stages_per_rank`` and both ``"loop"`` and ``"v"`` stage assignment styles.
 
-        Cross-rank activation transfer uses dist.batch_isend_irecv() with dist.P2POp,
-        the same primitive PyTorch's pipeline scheduler uses internally. Going through
-        the batched API (rather than blocking dist.send/dist.recv) avoids the lazy
-        creation of new 2-rank NCCL sub-communicators on every call and matches the
-        op-issuing pattern the scheduler already uses on this process group, so the
-        two code paths share NCCL state cleanly.
+        Cross-rank activation transfers use ``dist.batch_isend_irecv`` with
+        ``dist.P2POp``, the same primitive the pipeline scheduler uses internally.
+        Using the batched async API avoids lazy creation of new per-pair NCCL
+        sub-communicators on every call and ensures the two code paths share NCCL
+        state cleanly.
 
-        Assumption: inter-stage activations have shape [batch, seq, model.config.hidden_size].
+        Parameters
+        ----------
+        input_ids : Tensor
+            Token ids of shape ``[batch, seq]``, identical on all ranks.
+        attention_mask : Tensor or None
+            Optional attention mask created externally (bypasses pipeline transport
+            limitations). ``None`` when the splitter does not support external masks.
 
-        Returns:
-            Logits tensor [batch, seq, vocab] on the last-stage rank; None on all other ranks.
+        Returns
+        -------
+        Tensor or None
+            Logits of shape ``[batch, seq, vocab]`` on the last-stage rank;
+            ``None`` on all other ranks.
+
+        Notes
+        -----
+        Inter-stage activations are assumed to have shape
+        ``[batch, seq, model.config.hidden_size]``.
         """
         assert self.pipeline_modules
 
@@ -952,28 +1061,48 @@ class PipelineTrainer(
         top_k: int = 0,
         repetition_penalty: float = 1.0,
     ) -> Tensor:
-        """
-        Autoregressive text generation through pipeline stages.
+        """Generate text autoregressively through all pipeline stages.
 
-        Bypasses the pipeline scheduler so input shapes are not constrained.
-        All ranks must call simultaneously; returns the full generated sequence
-        (prompt + new tokens) as a [batch, total_len] LongTensor on every rank.
+        Bypasses the pipeline scheduler so input shapes are not constrained to
+        the fixed training batch dimensions. All ranks must call this method
+        simultaneously. The full generated sequence (prompt + new tokens) is
+        returned on every rank.
 
-        No KV caching: each step recomputes the full sequence. This is acceptable
-        for the callback use case (infrequent, qualitative quality check).
+        No KV caching is used; each decoding step reprocesses the entire
+        sequence. This is acceptable for infrequent, qualitative generation
+        checks (e.g. during a callback).
 
-        Args:
-            input_ids: Prompt token ids [batch, prompt_len], same on all ranks.
-            max_new_tokens: Maximum number of tokens to generate.
-            eos_token_id: Token id that signals end of sequence.
-            pad_token_id: Token id used to pad completed sequences.
-            do_sample: If True, sample from the distribution; else greedy.
-            temperature: Softmax temperature (applied before top_k).
-            top_k: If > 0, only sample from the top-k logits.
-            repetition_penalty: Penalty factor for tokens already in the sequence.
+        Parameters
+        ----------
+        input_ids : Tensor
+            Prompt token ids of shape ``[batch, prompt_len]``, same on all
+            ranks.
+        max_new_tokens : int
+            Maximum number of new tokens to generate.
+        eos_token_id : int
+            Token id that signals end of sequence. Once all sequences in the
+            batch have emitted this token, generation stops early.
+        pad_token_id : int
+            Token id used to pad sequences that have already finished.
+        do_sample : bool, optional
+            If ``True``, sample from the probability distribution; if
+            ``False``, use greedy (argmax) decoding. Default is ``True``.
+        temperature : float, optional
+            Softmax temperature applied before top-k filtering. Values ``< 1``
+            sharpen the distribution; values ``> 1`` flatten it.
+            Default is ``1.0``.
+        top_k : int, optional
+            When ``> 0``, restrict sampling to the top-k logits. ``0`` uses
+            the full vocabulary. Default is ``0``.
+        repetition_penalty : float, optional
+            Multiplicative penalty applied to logits of tokens already present
+            in the sequence. ``1.0`` disables the penalty. Default is ``1.0``.
 
-        Returns:
-            Generated token ids [batch, prompt_len + n_new_tokens] on all ranks.
+        Returns
+        -------
+        Tensor
+            Generated token ids of shape ``[batch, prompt_len + n_new_tokens]``
+            as a ``LongTensor`` on the current device, identical on all ranks.
         """
         # Ensure all ranks reach this point before issuing any generation collectives.
         # This forces a clean synchronization fence after the trainer's eval phase, so
@@ -1082,12 +1211,13 @@ class PipelineTrainer(
 
     @override
     def _init_optimizer(self):
-        """
-        Initialize optimizer over parameters from all pipeline stages on this rank.
+        """Initialise the optimizer over all pipeline stage parameters on this rank.
 
-        Collects parameters from all pipeline_modules (stages) assigned to this rank
-        and creates a single optimizer instance. Also sets up fused optimizer hooks
-        if fuse_optim_with_backward is enabled.
+        Collects parameters from every module in ``self.pipeline_modules`` (i.e.
+        all stages assigned to this rank) and passes them to
+        ``self.optimizer_factory`` to create a single optimizer instance. Also
+        registers post-accumulate gradient hooks when
+        ``args.fuse_optim_with_backward`` is enabled.
         """
         if self.optimizer is None:
             # Build a named-parameter generator for all of our modules
@@ -1188,12 +1318,18 @@ class PipelineTrainer(
         Similar to _forward_backward_step but without gradients. Creates attention masks
         externally for same reasons (PyTorch pipeline transport limitations).
 
-        Args:
-            input_dict: Batch inputs with 'input_ids'
-            labels: Target labels for loss computation (only used by last stage)
+        Parameters
+        ----------
+        input_dict : dict of str to Tensor
+            Batch inputs with ``"input_ids"``.
+        labels : Tensor
+            Target labels for loss computation (only used by last stage).
 
-        Returns:
-            Dictionary with 'loss' (mean over microbatches), 'logits' (None), 'labels' (None)
+        Returns
+        -------
+        dict
+            Dictionary with ``"loss"`` (mean over microbatches), ``"logits"``
+            (``None``), and ``"labels"`` (``None``).
         """
         inputs = (input_dict["input_ids"],)
 
@@ -1255,8 +1391,10 @@ class PipelineTrainer(
         Sets save_on_all_ranks=True so all ranks participate in checkpointing,
         each saving their own pipeline stages.
 
-        Returns:
-            CheckpointManager configured for distributed pipeline model saving
+        Returns
+        -------
+        CheckpointManager
+            Configured for distributed pipeline model saving.
         """
         cp_config = CheckpointConfig(
             output_dir=self.args.output_dir,
@@ -1281,22 +1419,28 @@ class PipelineTrainer(
 
     @staticmethod
     def _all_reduce_norm(total_norm, norm_type):
-        """
-        Compute global gradient norm across all pipeline stages using all-reduce.
+        """All-reduce local gradient norms to compute the global norm.
 
-        Each rank computes local norm over its stage parameters, then reduces across
-        all ranks to get the true global norm for gradient clipping.
+        Each rank has computed a local norm over its pipeline stage parameters.
+        This method combines those local norms into the true global gradient norm
+        using the appropriate reduction for the requested norm type:
 
-        For L2 norm (norm_type=2): Sum squared norms across ranks, then sqrt.
-        For Lp norm: Sum p-norms across ranks, then take 1/p power.
-        For Linf norm: Max across ranks.
+        * **L2** (``norm_type=2``) — sum squared local norms, then take sqrt.
+        * **Lp** — sum ``p``-th powers, then take the ``1/p`` root.
+        * **L-inf** — max across ranks.
 
-        Args:
-            total_norm: Local norm computed on this rank
-            norm_type: Type of norm (2.0 for L2, inf for Linf, etc.)
+        Parameters
+        ----------
+        total_norm : Tensor
+            Local norm tensor on this rank (scalar).
+        norm_type : float
+            Exponent of the norm. Use ``2.0`` for L2, ``float("inf")`` for
+            L-inf.
 
-        Returns:
-            Global gradient norm across all pipeline stages
+        Returns
+        -------
+        Tensor
+            Global gradient norm after all-reduce, same value on all ranks.
         """
         if math.isinf(norm_type):
             dist.all_reduce(total_norm, op=dist.ReduceOp.MAX)
@@ -1308,19 +1452,24 @@ class PipelineTrainer(
 
     @override
     def _clip_grad_norm(self, max_grad_norm, norm_type=2.0) -> Tensor:
-        """
-        Compute and optionally clip gradient norm across all pipeline stages.
+        """Compute and optionally clip the gradient norm across all pipeline stages.
 
-        Unlike single-device trainer, must all-reduce gradient norms across all ranks
-        since each rank only has gradients for its pipeline stages. Global norm is needed
-        for consistent gradient clipping.
+        Unlike the single-device trainer, each rank holds gradients only for its
+        own pipeline stages, so the local norms must be all-reduced to obtain the
+        true global norm before clipping.
 
-        Args:
-            max_grad_norm: Maximum norm for clipping (None = no clipping, just compute norm)
-            norm_type: Type of norm (2.0 for L2 norm)
+        Parameters
+        ----------
+        max_grad_norm : float or None
+            Maximum allowed gradient norm. When ``None`` or ``0``, the norm is
+            computed but no clipping is applied.
+        norm_type : float, optional
+            Type of norm. Default is ``2.0`` (L2 norm).
 
-        Returns:
-            Global gradient norm across all pipeline stages
+        Returns
+        -------
+        Tensor
+            Global gradient norm (after all-reduce across pipeline ranks).
         """
         # If fused optimizer, we can't clip, but we can compute the value,
         # which we do from the tensor callacks
@@ -1375,18 +1524,24 @@ class PipelineTrainer(
     def _count_batch_tokens(
         self, input_dict: dict[str, Tensor], labels: Tensor
     ) -> Tensor:
-        """
-        Count tokens in pipeline parallel training.
+        """Count the number of tokens in the current batch for the first pipeline stage.
 
-        Only first stage has input_ids and labels, so only it counts tokens.
-        Other stages return 0. _distributed_tokens() sums across ranks.
+        Only the first stage receives ``input_ids`` and meaningful labels; all
+        other stages return a zero tensor. ``_distributed_tokens()`` then sums
+        across ranks to obtain the true batch token count.
 
-        Args:
-            input_dict: Batch dictionary (only first stage has 'input_ids')
-            labels: Target labels (only first stage has meaningful labels for counting)
+        Parameters
+        ----------
+        input_dict : dict of str to Tensor
+            Batch dictionary; ``"input_ids"`` is only populated on the first
+            stage.
+        labels : Tensor
+            Target labels (meaningful only on the first stage).
 
-        Returns:
-            Tensor with token count if first stage, zero tensor otherwise
+        Returns
+        -------
+        Tensor
+            Scalar token count on the first stage; zero tensor on other stages.
         """
         if not self.pp_has_first_stage:
             return torch.tensor(0, device=self.args.device, dtype=torch.int64)
@@ -1394,46 +1549,64 @@ class PipelineTrainer(
 
     @override
     def _distributed_tokens(self, tokens: Tensor) -> Tensor:
-        """
-        Sum token counts across pipeline stages.
+        """All-reduce token counts across pipeline stages.
 
-        First stage contributes actual count, others contribute 0.
-        Sum gives total tokens in batch.
+        The first stage contributes the real count; all other stages contribute
+        zero. Summing across ranks yields the total token count for the batch.
 
-        Args:
-            tokens: Token count from current stage (non-zero only on first stage)
+        Parameters
+        ----------
+        tokens : Tensor
+            Local token count (non-zero only on the first stage).
 
-        Returns:
-            Total token count (sum across all pipeline stages)
+        Returns
+        -------
+        Tensor
+            Total token count summed across all pipeline ranks.
         """
         dist.all_reduce(tokens, op=dist.ReduceOp.SUM)
         return tokens
 
     @override
     def _distributed_loss(self, loss: Tensor):
-        """
-        Broadcast loss from last pipeline stage to all other ranks for logging.
+        """Broadcast the loss from the last pipeline stage to all ranks.
 
-        Only the last stage computes the actual loss (has the labels). Other stages
-        return 0.0. This broadcasts the real loss from last stage so all ranks can
-        log the same loss value.
+        Only the last stage computes a meaningful loss (it alone has the labels).
+        All other stages hold ``0.0``. Broadcasting from the last-stage rank
+        ensures every rank can log the same loss value.
 
-        Args:
-            loss: Loss tensor (meaningful only on last stage, 0.0 on others)
+        Parameters
+        ----------
+        loss : Tensor
+            Scalar loss tensor — meaningful only on the last stage, ``0.0``
+            on all other stages.
 
-        Returns:
-            Broadcasted loss from last stage, same value on all ranks
+        Returns
+        -------
+        Tensor
+            Loss value from the last stage, same on all ranks after broadcast.
         """
         distributed.broadcast(loss, src=self.pp_last_stage_rank)
         return loss
 
     @override
     def _distributed_peak_mem(self, local_peak: int) -> list[int]:
-        """
-        All-gather per-rank peak CUDA memory across pipeline ranks.
+        """All-gather per-rank peak CUDA memory across all pipeline ranks.
 
-        Each pipeline stage hosts different layers with distinct memory footprints,
-        so per-rank peaks are genuinely informative.
+        Because each pipeline stage hosts a different subset of the model's
+        layers, the memory footprint per rank can differ significantly. The
+        per-rank peaks are therefore genuinely informative for capacity
+        planning and imbalance detection.
+
+        Parameters
+        ----------
+        local_peak : int
+            Peak CUDA memory allocated on this rank, in bytes.
+
+        Returns
+        -------
+        list of int
+            Peak memory in bytes for each rank, indexed by rank.
         """
         value = torch.tensor(
             [int(local_peak)], dtype=torch.long, device=self.args.device
@@ -1444,20 +1617,23 @@ class PipelineTrainer(
 
     @override
     def get_state_components(self) -> List[StateComponent]:
-        """
-        Get state components for pipeline parallel training.
+        """Return state components for pipeline parallel training.
 
-        All training state is always saved to checkpoints. To skip loading a component,
-        delete its file from the checkpoint directory.
+        Because the model is split across ranks, each rank saves only its own
+        stage parameters. The sharing patterns reflect this:
 
-        Pipeline parallelism splits the model across ranks, so model and optimizer
-        are PER_RANK (different pipeline stages on each rank). Scheduler and trainer
-        state are REPLICATED (same across all ranks). Dataset uses GLOBAL pattern
-        because DataloaderDispatcher in pure MP mode (dp_mesh_dim=None) loads on
-        rank 0 and broadcasts to all other ranks.
+        * ``"model"`` — PER_RANK (each rank holds different stages), required.
+        * ``"optimizer"`` — PER_RANK (optimises different parameters), optional.
+        * ``"scheduler"`` — REPLICATED (same LR schedule on all ranks), optional.
+        * ``"trainer"`` — REPLICATED (same global step on all ranks), optional.
+        * ``"dataset"`` — GLOBAL (``DataloaderDispatcher`` with
+          ``dp_mesh_dim=None``; rank 0 loads and broadcasts), optional.
+        * ``"rng"`` — PER_RANK (each stage may have different dropout), optional.
 
-        Returns:
-            List of StateComponent objects with appropriate sharing patterns
+        Returns
+        -------
+        list of StateComponent
+            All checkpointable state components with their sharing patterns.
         """
         components = []
 
@@ -1535,15 +1711,17 @@ class PipelineTrainer(
 
     @override
     def _get_dataset_sharing_pattern(self) -> SharingPattern:
-        """
-        Determine dataset sharing pattern for pipeline parallel training.
+        """Return the dataset sharing pattern for pipeline parallel training.
 
-        PipelineTrainer uses DataloaderDispatcher with dp_mesh_dim=None (pure MP mode).
-        In this configuration, rank 0 loads data and broadcasts to all other ranks,
-        so only one dataloader state exists globally.
+        ``PipelineTrainer`` uses ``DataloaderDispatcher`` with
+        ``dp_mesh_dim=None`` (pure model-parallel mode). Rank 0 loads the data
+        and broadcasts it to all other ranks, so only one dataloader state
+        exists globally.
 
-        Returns:
-            SharingPattern.GLOBAL - Only rank 0 loads/saves dataset state
+        Returns
+        -------
+        SharingPattern
+            ``SharingPattern.GLOBAL``.
         """
         # Pure model parallelism: all ranks get same batch from rank 0
         # See _wrap() method where DataloaderDispatcher is created with dp_mesh_dim=None
@@ -1551,12 +1729,15 @@ class PipelineTrainer(
 
     @override
     def get_process_groups(self) -> Dict[str, Any]:
-        """
-        Get named process groups for checkpoint coordination.
+        """Return named process groups for checkpoint coordination.
 
-        Returns:
-            Dictionary mapping group names to ProcessGroup objects.
-            For pure pipeline parallelism, returns the pp_group.
+        The checkpoint manager uses this mapping to implement ``PER_GROUP``
+        sharing patterns (e.g. saving one copy per pipeline-parallel group).
+
+        Returns
+        -------
+        dict of str to ProcessGroup
+            ``{"pp_group": self.pp_group}`` for pure pipeline parallelism.
         """
         return {
             "pp_group": self.pp_group,

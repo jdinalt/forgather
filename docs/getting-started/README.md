@@ -82,6 +82,10 @@ current directory. You should see output listing the bundled example projects.
 The `tiny_llama` tutorial trains a ~4M parameter Llama model on a subset of the
 TinyStories dataset. On a single RTX 4090, this takes about three minutes.
 
+For a complete walkthrough — including TensorBoard monitoring, loss plots, text
+generation, and programmatic model loading — see the
+[Tiny Llama tutorial](../tutorials/tiny_llama/README.md).
+
 ```bash
 cd examples/tutorials/tiny_llama
 ```
@@ -92,85 +96,29 @@ cd examples/tutorials/tiny_llama
 forgather ls
 ```
 
-This shows the project name, description, and available configuration templates.
-
-**Preview the configuration** (optional but useful for understanding what will happen):
-
-```bash
-forgather -t train_tiny_llama.yaml pp | less
-```
-
-The `pp` command preprocesses the configuration templates (expanding Jinja2,
-resolving inheritance) and prints the final YAML. This is the single most useful
-debugging tool when working with Forgather configurations.
-
 **Train:**
 
 ```bash
-forgather -t train_tiny_llama.yaml train
+forgather -t v2.yaml train
 ```
 
-Training will download the TinyStories dataset on first run, then begin training.
-You will see loss, learning rate, and other metrics printed at each logging step.
-
-## Exploring the results
-
-Once training completes, the model and training artifacts are saved under
+Training downloads the TinyStories dataset on first run, then prints loss,
+learning rate, and other metrics at each logging step. Artifacts are saved under
 `output_models/tiny_llama/`.
 
-**View a training summary:**
+**Summarize the results:**
 
 ```bash
 forgather logs summary
 ```
 
-**Monitor in TensorBoard** (useful while training is still running):
+**Run an evaluation:**
 
 ```bash
-forgather -t train_tiny_llama.yaml tb        # this config's runs
-forgather tb --all                           # every run under output_models/
+forgather -t v2.yaml eval test tinystories
 ```
 
-TensorBoard binds to `localhost:6006` by default.  If your browser is
-on a different machine, either SSH-forward with
-`ssh -L 6006:localhost:6006 HOST` or pass `-- --bind_all` to open the
-port on all interfaces (use only on trusted networks).
-
-**Run a named evaluation:**
-
-```bash
-forgather -t train_tiny_llama.yaml eval test tinystories
-```
-
-`forgather eval list` shows every named eval config available
-(`tinystories`, `openorca`, `fineweb-edu-dedup`, `c4`, `openassistant`).
-Results are written to `output_models/tiny_llama/evals/` as markdown
-and JSON.
-
-**Test the model:**
-
-Before loading the model for inference, create symlinks to the latest checkpoint
-in the model output directory:
-
-```bash
-forgather checkpoint link
-```
-
-Then start the inference server and test it:
-
-```bash
-# Start the server (loads the model onto GPU)
-forgather inf server -c -m output_models/tiny_llama
-
-# In another terminal, generate text
-forgather inf client --completion "Once upon a time"
-```
-
-The model is small and undertrained, but you should see reasonably coherent short
-stories. For a more detailed walkthrough -- including TensorBoard monitoring,
-loss plots, text generation with custom sampling parameters, and loading the
-model programmatically -- see the
-[project notebook](../../examples/tutorials/tiny_llama/project_index.ipynb).
+Results are written to `output_models/tiny_llama/evals/` as Markdown and JSON.
 
 ## Key CLI commands
 
@@ -229,20 +177,20 @@ With your first model trained, here are recommended paths for learning more:
 
 **Tutorials:**
 
-- [H.P. Lovecraft Project](../../examples/tutorials/hp_lovecraft_project/README.md) --
+- [Tiny Llama](../tutorials/tiny_llama/README.md) --
+  Full walkthrough of the getting-started project: TensorBoard, loss plots, text
+  generation, and programmatic use.
+- [H.P. Lovecraft Project](../tutorials/hp_lovecraft_project/README.md) --
   Learn how to create workspaces and projects from scratch, while finetuning a 7B
   parameter model on a single 24 GB GPU.
-- [Samantha](../../examples/finetune/samantha/README.md) --
+- [Samantha](../tutorials/samantha/README.md) --
   A practical finetuning example using the Samantha dataset with Mistral-7B.
-- [Pre-training](../../examples/pretrain/small-llm/README.md) --
-  A more involved pretraining project with Chinchilla-optimal scaling, multiple
-  optimizer configurations, and pipeline parallelism.
 
 **Understanding the system:**
 
-- [Projects Overview](../../examples/tutorials/projects_overview/project_index.ipynb) --
+- [Projects Overview](../tutorials/projects_overview/project_index.ipynb) --
   Interactive notebook exploring the Project abstraction.
-- [Project Composition](../../examples/tutorials/project_composition/project_index.ipynb) --
+- [Project Composition](../tutorials/project_composition/project_index.ipynb) --
   How template inheritance works.
 - [Configuration Syntax](../configuration/syntax-reference.md) --
   Complete reference for the YAML + Jinja2 configuration language.

@@ -54,11 +54,16 @@ class SynchronizedDataLoader:
             # All ranks guaranteed to process same number of batches
             ...
 
-    Args:
-        dataloader: The underlying dataloader to wrap
-        device: Device for synchronization tensors
-        process_group: DDP process group (None = default group)
-        enabled: If False, pass through without synchronization
+    Parameters
+    ----------
+    dataloader : object
+        The underlying dataloader to wrap.
+    device : torch.device
+        Device for synchronization tensors.
+    process_group : object, optional
+        DDP process group (``None`` = default group).
+    enabled : bool, optional
+        If ``False``, pass through without synchronization.
     """
 
     def __init__(

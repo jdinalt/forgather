@@ -48,32 +48,33 @@ class SharingPattern(Enum):
         PER_NODE: State local to each node (e.g., node-specific caches)
                   One rank per node saves, ranks load based on node membership.
 
-    Examples:
-        # Simple Trainer (no parallelism)
-        - model: GLOBAL
-        - optimizer: GLOBAL
-        - dataset: GLOBAL (or PER_RANK if each rank has independent iterator)
-        - rng: PER_RANK
+    Examples
+    --------
+    # Simple Trainer (no parallelism)
+    - model: GLOBAL
+    - optimizer: GLOBAL
+    - dataset: GLOBAL (or PER_RANK if each rank has independent iterator)
+    - rng: PER_RANK
 
-        # DDP Trainer (data parallel)
-        - model: REPLICATED (DDP synchronizes weights)
-        - optimizer: REPLICATED (DDP synchronizes optimizer state)
-        - dataset: GLOBAL (if using DataloaderDispatcher) or PER_RANK
-        - rng: PER_RANK
+    # DDP Trainer (data parallel)
+    - model: REPLICATED (DDP synchronizes weights)
+    - optimizer: REPLICATED (DDP synchronizes optimizer state)
+    - dataset: GLOBAL (if using DataloaderDispatcher) or PER_RANK
+    - rng: PER_RANK
 
-        # Pipeline Parallel Trainer
-        - model: PER_RANK (different pipeline stage per rank)
-        - optimizer: PER_RANK (optimizes different parameters)
-        - scheduler: REPLICATED (shared LR schedule)
-        - dataset: GLOBAL (rank 0 loads and broadcasts)
-        - rng: PER_RANK
+    # Pipeline Parallel Trainer
+    - model: PER_RANK (different pipeline stage per rank)
+    - optimizer: PER_RANK (optimizes different parameters)
+    - scheduler: REPLICATED (shared LR schedule)
+    - dataset: GLOBAL (rank 0 loads and broadcasts)
+    - rng: PER_RANK
 
-        # Hybrid DDP x Pipeline
-        - model: PER_GROUP (shared within PP group, different across DP)
-        - optimizer: PER_GROUP (per PP group)
-        - scheduler: REPLICATED
-        - dataset: PER_GROUP (one per DP group)
-        - rng: PER_RANK
+    # Hybrid DDP x Pipeline
+    - model: PER_GROUP (shared within PP group, different across DP)
+    - optimizer: PER_GROUP (per PP group)
+    - scheduler: REPLICATED
+    - dataset: PER_GROUP (one per DP group)
+    - rng: PER_RANK
     """
 
     GLOBAL = "global"
@@ -92,24 +93,34 @@ class StateComponent:
     is distributed across ranks, enabling the checkpoint system to automatically coordinate
     distributed save/load operations.
 
-    Args:
-        key: Unique identifier for this component (e.g., "model", "optimizer", "dataset")
-        stateful: Object implementing state_dict/load_state_dict protocol
-        sharing_pattern: How this state is distributed across ranks
-        process_group_name: Named process group for PER_GROUP pattern (e.g., "dp_group", "pp_group")
-        required: Whether this component is required for training to continue.
-                  If False, missing components during load are skipped with a warning.
-        validate_replication: For REPLICATED pattern, verify all ranks have identical state.
-                             Catches DDP synchronization bugs.
-        validation_level: How thorough to validate replication ("none", "quick", "tensor", "full").
-                         - "none": No validation (fastest)
-                         - "quick": Hash-based validation (fast, catches most issues)
-                         - "tensor": Per-tensor checksums (moderate, more accurate)
-                         - "full": Full tensor comparison (slow, catches all differences)
-                         Only used when validate_replication=True.
-        metadata: Optional metadata for debugging and validation (e.g., config hash, version)
+    Parameters
+    ----------
+    key : str
+        Unique identifier for this component (e.g., ``"model"``, ``"optimizer"``,
+        ``"dataset"``).
+    stateful : Stateful
+        Object implementing the ``state_dict`` / ``load_state_dict`` protocol.
+    sharing_pattern : SharingPattern
+        How this state is distributed across ranks.
+    process_group_name : str, optional
+        Named process group for ``PER_GROUP`` pattern (e.g., ``"dp_group"``,
+        ``"pp_group"``).
+    required : bool, optional
+        Whether this component is required for training to continue. If
+        ``False``, missing components during load are skipped with a warning.
+    validate_replication : bool, optional
+        For ``REPLICATED`` pattern, verify all ranks have identical state.
+        Catches DDP synchronization bugs.
+    validation_level : str, optional
+        How thorough to validate replication: ``"none"`` (fastest),
+        ``"quick"`` (hash-based, fast), ``"tensor"`` (per-tensor checksums,
+        moderate), or ``"full"`` (slow, catches all differences). Only used
+        when ``validate_replication=True``.
+    metadata : dict, optional
+        Optional metadata for debugging and validation (e.g., config hash,
+        version).
 
-    Examples:
+    Examples
         # Simple global optimizer
         StateComponent(
             key="optimizer",
@@ -186,15 +197,24 @@ class ComponentManifest:
     Records metadata about what was saved, enabling validation during load
     and debugging of checkpoint structure.
 
-    Args:
-        key: Component identifier (matches StateComponent.key)
-        sharing_pattern: How this component is distributed
-        ranks: List of ranks that saved this component
-        replicated_across: For REPLICATED/PER_GROUP, which ranks share this state
-        group_name: Process group name for PER_GROUP components
-        size_bytes: Total size of saved state in bytes (sum across all files)
-        checksum: Optional hash of state for validation
-        metadata: Additional metadata (e.g., component version, config hash)
+    Parameters
+    ----------
+    key : str
+        Component identifier (matches ``StateComponent.key``).
+    sharing_pattern : str
+        How this component is distributed (``SharingPattern.value``).
+    ranks : list of int
+        List of ranks that saved this component.
+    replicated_across : list of int, optional
+        For ``REPLICATED`` / ``PER_GROUP``, which ranks share this state.
+    group_name : str, optional
+        Process group name for ``PER_GROUP`` components.
+    size_bytes : int, optional
+        Total size of saved state in bytes (sum across all files).
+    checksum : str, optional
+        Optional hash of state for validation.
+    metadata : dict, optional
+        Additional metadata (e.g., component version, config hash).
 
     The manifest enables:
     - Validation: Verify checkpoint structure matches expected configuration
@@ -239,15 +259,24 @@ class CheckpointManifest:
     Records comprehensive metadata about checkpoint structure, enabling validation,
     debugging, and backward compatibility.
 
-    Args:
-        checkpoint_path: Path to checkpoint directory
-        world_size: Number of ranks that participated in checkpoint save
-        timestamp: When checkpoint was created
-        components: Manifest entries for each saved component
-        training_args_hash: Optional hash of training config for validation
-        forgather_version: Version of Forgather that created checkpoint
-        pytorch_version: Version of PyTorch used
-        metadata: Additional checkpoint-level metadata
+    Parameters
+    ----------
+    checkpoint_path : str
+        Path to checkpoint directory.
+    world_size : int
+        Number of ranks that participated in checkpoint save.
+    timestamp : datetime
+        When checkpoint was created.
+    components : dict of str to ComponentManifest
+        Manifest entries for each saved component.
+    training_args_hash : str, optional
+        Optional hash of training config for validation.
+    forgather_version : str, optional
+        Version of Forgather that created checkpoint.
+    pytorch_version : str, optional
+        Version of PyTorch used.
+    metadata : dict, optional
+        Additional checkpoint-level metadata.
 
     The manifest is saved as checkpoint_manifest.json in the checkpoint directory.
     During load, it's used to:
@@ -332,11 +361,15 @@ def compute_state_hash(state_dict: Dict[str, Any]) -> str:
     """
     Compute deterministic hash of state_dict for replication validation.
 
-    Args:
-        state_dict: State dictionary to hash
+    Parameters
+    ----------
+    state_dict : dict
+        State dictionary to hash.
 
-    Returns:
-        Hex-encoded SHA256 hash of state_dict
+    Returns
+    -------
+    str
+        Hex-encoded SHA256 hash of ``state_dict``.
 
     This is used to verify REPLICATED state is actually identical across ranks.
     The hash is computed over the serialized state_dict representation.

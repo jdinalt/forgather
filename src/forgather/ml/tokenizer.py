@@ -16,15 +16,22 @@ def normalize_range(
 ) -> range:
     """
     Convert various input types to a range
-    Args:
-        length: The length of the dataset.
-        select_range: The range to normalize. Can be:
-            - None: No range, use the full dataset.
-            - int: Use the first 'n' records.
-            - float: Use the first 'n' percent of records.
-            - Sequence: A sequence of two values, interpreted as (start, end).
-            - range: A range object to use directly.
-    Returns:
+    Parameters
+    ----------
+    length : int
+        The length of the dataset.
+    select_range : range, int, float, Sequence, or None
+        The range to normalize. Can be:
+
+        - None: No range, use the full dataset.
+        - int: Use the first 'n' records.
+        - float: Use the first 'n' percent of records.
+        - Sequence: A sequence of two values, interpreted as (start, end).
+        - range: A range object to use directly.
+
+    Returns
+    -------
+    range
         A range object representing the normalized range.
 
     Examples:

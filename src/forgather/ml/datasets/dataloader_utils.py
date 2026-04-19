@@ -27,18 +27,22 @@ def sync_dataset_state_from_dataloader(
     This is particularly useful for length estimation with N->M mapped datasets,
     where workers track input/output counts that need to be aggregated.
 
-    Args:
-        dataloader: StatefulDataLoader instance (must have been iterated)
-        debug: If True, print debug information about state structure
+    Parameters
+    ----------
+    dataloader : StatefulDataLoader
+        StatefulDataLoader instance (must have been iterated).
+    debug : bool, optional
+        If True, print debug information about state structure.
 
-    Example:
-        >>> dataloader = StatefulDataLoader(dataset, num_workers=4)
-        >>> for batch in dataloader:
-        ...     train_step(batch)
-        >>>
-        >>> # Sync state to get updated length
-        >>> sync_dataset_state_from_dataloader(dataloader)
-        >>> print(f"Updated length: {len(dataset)}")
+    Examples
+    --------
+    >>> dataloader = StatefulDataLoader(dataset, num_workers=4)
+    >>> for batch in dataloader:
+    ...     train_step(batch)
+    >>>
+    >>> # Sync state to get updated length
+    >>> sync_dataset_state_from_dataloader(dataloader)
+    >>> print(f"Updated length: {len(dataset)}")
     """
     # Get DataLoader state which includes worker states
     dataset = dataloader.dataset
@@ -265,27 +269,34 @@ def create_length_sync_callback(
     DataLoader workers, ensuring that len(dataset) returns up-to-date values
     even with multi-worker DataLoader.
 
-    Args:
-        dataloader: StatefulDataLoader for training
-        dataset: The dataset to sync
-        sync_every_n_steps: How often to sync (default: every 100 steps)
+    Parameters
+    ----------
+    dataloader : StatefulDataLoader
+        StatefulDataLoader for training.
+    dataset : Any
+        The dataset to sync.
+    sync_every_n_steps : int, optional
+        How often to sync (default: every 100 steps).
 
-    Returns:
-        Callback instance that can be added to trainer.callbacks
+    Returns
+    -------
+    LengthSyncCallback
+        Callback instance that can be added to trainer.callbacks.
 
-    Example:
-        >>> train_dataloader = StatefulDataLoader(train_dataset, num_workers=4)
-        >>> sync_callback = create_length_sync_callback(
-        ...     train_dataloader,
-        ...     train_dataset,
-        ...     sync_every_n_steps=50
-        ... )
-        >>> trainer = Trainer(
-        ...     model=model,
-        ...     args=args,
-        ...     train_dataset=train_dataset,
-        ...     callbacks=[sync_callback, ...],
-        ... )
+    Examples
+    --------
+    >>> train_dataloader = StatefulDataLoader(train_dataset, num_workers=4)
+    >>> sync_callback = create_length_sync_callback(
+    ...     train_dataloader,
+    ...     train_dataset,
+    ...     sync_every_n_steps=50
+    ... )
+    >>> trainer = Trainer(
+    ...     model=model,
+    ...     args=args,
+    ...     train_dataset=train_dataset,
+    ...     callbacks=[sync_callback, ...],
+    ... )
     """
     return LengthSyncCallback(
         dataloader=dataloader,

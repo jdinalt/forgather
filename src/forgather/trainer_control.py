@@ -109,8 +109,10 @@ class HTTPTrainerControlClient(TrainerControlClient):
         """
         Initialize HTTP client.
 
-        Args:
-            timeout: HTTP request timeout in seconds.
+        Parameters
+        ----------
+        timeout : float, optional
+            HTTP request timeout in seconds.
         """
         if not REQUESTS_AVAILABLE:
             raise ImportError("requests library required for HTTPTrainerControlClient")

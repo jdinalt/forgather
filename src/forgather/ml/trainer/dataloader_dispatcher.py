@@ -21,17 +21,24 @@ class DataloaderDispatcher:
     - Global coordinator (rank 0) loads and dispatches to DP leaders
     - DP leaders broadcast to their MP group followers
 
-    Args:
-        dataloader: Source dataloader (only coordinator loads from this)
-        mesh: Device mesh (1D or 2D)
-        device: Target device for tensors
-        dp_mesh_dim: Which mesh dimension is data-parallel.
-            - 0: dimension 0 is DP (default)
-            - 1: dimension 1 is DP (for 2D mesh only)
-            - None: pure MP mode, all ranks get same batch
+    Parameters
+    ----------
+    dataloader : DataLoader
+        Source dataloader (only coordinator loads from this).
+    mesh : DeviceMesh
+        Device mesh (1D or 2D).
+    device : torch.device
+        Target device for tensors.
+    dp_mesh_dim : int or None, optional
+        Which mesh dimension is data-parallel.
 
-            For 1D mesh: dp_mesh_dim=0 means pure DP, dp_mesh_dim=None means pure MP
-            For 2D mesh: dp_mesh_dim specifies DP dimension, other is MP
+        - ``0``: dimension 0 is DP (default).
+        - ``1``: dimension 1 is DP (for 2D mesh only).
+        - ``None``: pure MP mode, all ranks get same batch.
+
+        For 1D mesh: ``dp_mesh_dim=0`` means pure DP, ``dp_mesh_dim=None``
+        means pure MP. For 2D mesh: ``dp_mesh_dim`` specifies DP dimension;
+        the other is MP.
     """
 
     def __init__(

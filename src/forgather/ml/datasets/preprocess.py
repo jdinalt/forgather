@@ -27,16 +27,23 @@ def normalize_range(
 ) -> range:
     """
     Convert various input types to a range
-    Args:
-        length: The length of the dataset.
-        select_range: The range to normalize. Can be:
-            - None: No range, use the full dataset.
-            - int: Use the first 'n' records.
-            - float: Use the first 'n' percent of records.
-            - str: Slice notation (e.g., "100:", ":1000", "100:1000", "10%:", ":80%", "10%:80%")
-            - Sequence: A sequence of two values, interpreted as (start, end).
-            - range: A range object to use directly.
-    Returns:
+    Parameters
+    ----------
+    length : int
+        The length of the dataset.
+    select_range : range, int, float, str, Sequence, or None
+        The range to normalize. Can be:
+
+        - None: No range, use the full dataset.
+        - int: Use the first 'n' records.
+        - float: Use the first 'n' percent of records.
+        - str: Slice notation (e.g., "100:", ":1000", "100:1000", "10%:", ":80%", "10%:80%")
+        - Sequence: A sequence of two values, interpreted as (start, end).
+        - range: A range object to use directly.
+
+    Returns
+    -------
+    range
         A range object representing the normalized range.
 
     Examples:
@@ -129,12 +136,22 @@ def default_tokenize_map_fn(
 ) -> dict[str, Any]:
     """
     Default map function for tokenizing a dataset element.
-    Args:
-        element: The dataset element to tokenize.
-        tokenizer: The tokenizer to use for tokenization.
-        feature: The feature in the element to tokenize.
-        **kwargs: Additional keyword arguments for the tokenizer.
-    Returns:
+    Parameters
+    ----------
+    batch : dict of str
+        The dataset batch to tokenize.
+    tokenizer : PreTrainedTokenizerBase
+        The tokenizer to use for tokenization.
+    feature : str
+        The feature in the batch to tokenize.
+    add_eos : bool, optional
+        Whether to append the EOS token to each example.
+    **kwargs
+        Additional keyword arguments for the tokenizer.
+
+    Returns
+    -------
+    dict
         A dictionary with a single key "input_ids" containing the tokenized input.
     """
     if add_eos:
@@ -173,30 +190,46 @@ def preprocess_dataset(
     This is a fairly generic and flexible dataset preprocessor to quickly get a dataset
     up and running for evaluation. For production use, write a custom preprocessor!
 
-    Args:
-        dataset: The dataset to preprocess.
-        tokenizer: The tokenizer to use for tokenization.
-        select_range: Range of records to select from the dataset.
-            Can be int, float, str (slice notation like "10%:80%"), sequence, or range.
-        to_iterable: If True, convert the dataset to an iterable dataset.
-        feature: The feature in the dataset to tokenize (default is 'text').
-        shuffle: If True, shuffle the dataset before processing.
-        num_shards: Number of shards, when converting map -> iterable dataset.
-        desc: Description for the progress bar.
-        seed: Random seed for shuffling.
-        shuffle_buffer_size: Buffer size for shuffling in iterable datasets.
-        map_fn: Function to apply for tokenization.
-        map_kwargs: Additional keyword arguments for the map function.
-        fn_kwargs: Additional keyword arguments for the map function.
-        parallel_tokenizer: If True, enable parallel tokenization.
-        dataset_type: Explicitly specify dataset type
-        dataset_length: Set dataset length, when no __len__ is available.
-        shard_dataset: Shard the dataset for distributed training.
-            num_shards: The number of shards to split the dataset into
-            index: The shard index to use
+    Parameters
+    ----------
+    dataset : HFDataset, HFIterableDataset, or IterableDatasetWithLength
+        The dataset to preprocess.
+    tokenizer : PreTrainedTokenizerBase
+        The tokenizer to use for tokenization.
+    select_range : range, int, float, str, Sequence, or None, optional
+        Range of records to select from the dataset.
+        Can be int, float, str (slice notation like "10%:80%"), sequence, or range.
+    to_iterable : bool, optional
+        If True, convert the dataset to an iterable dataset.
+    feature : str, optional
+        The feature in the dataset to tokenize (default is 'text').
+    shuffle : bool, optional
+        If True, shuffle the dataset before processing.
+    num_shards : int, optional
+        Number of shards, when converting map -> iterable dataset.
+    desc : str, optional
+        Description for the progress bar.
+    seed : int, optional
+        Random seed for shuffling.
+    shuffle_buffer_size : int, optional
+        Buffer size for shuffling in iterable datasets.
+    map_fn : callable, optional
+        Function to apply for tokenization.
+    map_kwargs : dict or None, optional
+        Additional keyword arguments for the map function.
+    fn_kwargs : dict or None, optional
+        Additional keyword arguments for the map function.
+    dataset_type : "map", "iterable", or None, optional
+        Explicitly specify dataset type.
+    dataset_length : int or None, optional
+        Set dataset length, when no __len__ is available.
+    shard_dataset : bool or dict or None, optional
+        Shard the dataset for distributed training.
+        If bool and True, num_shards defaults to WORLD_SIZE and index to RANK.
 
-            If bool and True, num_shards defaults to WORLD_SIZE and index to RANK
-    Returns:
+    Returns
+    -------
+    dataset
         The tokenized dataset.
     """
 

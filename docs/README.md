@@ -4,12 +4,6 @@ Forgather is a configuration-driven ML framework that uses template inheritance 
 
 Most research ML codebases accrete: one training script becomes ten, each a near-copy with subtle differences. Every variation is expensive to try. Small bugs — a loss function wired wrong, a scheduler silently reset on resume, a CLI flag that never reached the tokenizer — hide across forks.
 
-Forgather addresses this with three layers:
-
-- **Template inheritance.** A project config extends a parent; both are plain YAML with Jinja2 preprocessing. Overrides are explicit (`-- set ns.seq_len = 16384`), and every knob is documented on the parent.
-- **Portable model source.** Model construction emits standalone Python source into the training run's output directory. You can load the model on another machine with just `transformers` installed — no Forgather dependency at inference time.
-- **Live job control.** Running training jobs expose a control endpoint. From another shell you can save a checkpoint on demand, gracefully stop a run, or abort a failed experiment — works uniformly across DDP, FSDP2, and pipeline-parallel jobs.
-
 Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdinalt/forgather)
 
 ## Quick Navigation

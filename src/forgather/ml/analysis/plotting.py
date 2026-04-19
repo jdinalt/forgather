@@ -57,7 +57,23 @@ def _get_x_values(log, records, x_axis):
 
 
 def smooth_values(values: List[float], window_size: int = 10) -> List[float]:
-    """Apply moving average smoothing to values."""
+    """Apply a centred moving-average to a sequence of values.
+
+    When *values* has fewer elements than *window_size*, or *window_size* is
+    1 or less, the original list is returned unchanged.
+
+    Parameters
+    ----------
+    values : list of float
+        Raw metric values to smooth.
+    window_size : int, optional
+        Number of points to average over.  Default is 10.
+
+    Returns
+    -------
+    list of float
+        Smoothed values of the same length as *values*.
+    """
     if window_size <= 1 or len(values) < window_size:
         return values
 
@@ -213,7 +229,74 @@ def plot_training_metrics(
     y_min: Optional[float] = None,
     y_max: Optional[float] = None,
 ) -> Figure:
-    """Plot training metrics from one or more logs."""
+    """Plot one or more training metrics from one or more training logs.
+
+    Creates a grid of subplots (up to two columns) with one panel per metric.
+    When multiple logs are supplied each run is drawn in a distinct colour with
+    a legend entry.  For loss-like metrics (``loss``, ``eval_loss``,
+    ``grad_norm``) the y-axis is automatically clipped to the 5th–95th
+    percentile window to suppress early-training outliers; pass
+    ``ignore_outliers=False`` to disable this.
+
+    Parameters
+    ----------
+    logs : list of TrainingLog
+        One or more parsed training logs to plot.
+    metrics : list of str, optional
+        Metric keys to plot.  Each element must be a key present in at least
+        some log records (e.g. ``'loss'``, ``'eval_loss'``,
+        ``'learning_rate'``, ``'grad_norm'``).  Default is
+        ``['loss', 'eval_loss', 'learning_rate']``.
+    x_axis : {'step', 'epoch', 'time'}, optional
+        X-axis variable.  ``'step'`` uses ``global_step``, ``'epoch'`` uses
+        ``epoch``, and ``'time'`` converts timestamps to elapsed minutes.
+        Default is ``'step'``.
+    smooth_window : int, optional
+        When greater than 1, draws the raw series at low opacity and overlays
+        a centred moving-average with the given window size.  Default is
+        ``None`` (no smoothing).
+    log_scale : bool, optional
+        Use a logarithmic y-axis.  Outlier-aware auto-scaling is suppressed
+        on log axes.  Default is ``False``.
+    output_path : str or Path, optional
+        If provided, the figure is saved to this path at 300 dpi.  Parent
+        directories are created automatically.
+    figsize : tuple of int, optional
+        ``(width, height)`` in inches passed to ``plt.subplots``.  Default is
+        ``(12, 8)``.
+    show : bool, optional
+        Call ``plt.show()`` after rendering.  Default is ``False``.
+    title : str, optional
+        Figure-level suptitle.  When ``None`` no title is added.
+    ignore_outliers : bool, optional
+        Apply percentile-based y-axis clipping for loss-like metrics.
+        Default is ``True``.
+    perplexity : bool, optional
+        Convert loss values to perplexity (``exp(loss)``) for ``loss``,
+        ``train_loss``, and ``eval_loss`` metrics.  Default is ``False``.
+    x_min : float, optional
+        Clip data and set the left x-axis limit to this value.
+    x_max : float, optional
+        Clip data and set the right x-axis limit to this value.
+    y_min : float, optional
+        Override the bottom y-axis limit.  Takes priority over auto-scaling.
+    y_max : float, optional
+        Override the top y-axis limit.  Takes priority over auto-scaling.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The rendered figure.  The caller is responsible for closing it when
+        no longer needed (``plt.close(fig)``).
+
+    Examples
+    --------
+    >>> from forgather.ml.analysis import TrainingLog
+    >>> from forgather.ml.analysis.plotting import plot_training_metrics
+    >>> log = TrainingLog.from_file("output_models/my_model/runs/run_001/trainer_logs.json")
+    >>> fig = plot_training_metrics([log], metrics=["loss", "eval_loss"], smooth_window=20)
+    >>> fig.savefig("training.png", dpi=150)
+    """
     if metrics is None:
         metrics = ["loss", "eval_loss", "learning_rate"]
 
@@ -330,7 +413,50 @@ def plot_loss_curves(
     y_min: Optional[float] = None,
     y_max: Optional[float] = None,
 ) -> Figure:
-    """Plot loss curves with learning rate on secondary axis."""
+    """Plot training and evaluation loss curves, with learning rate overlay.
+
+    For a single log the figure contains one panel with train loss and eval
+    loss on the primary y-axis and learning rate on a secondary y-axis.  When
+    multiple logs are supplied the figure splits into two side-by-side panels
+    (train loss and eval loss), one line per run, for easy comparison.
+
+    Parameters
+    ----------
+    logs : list of TrainingLog
+        One or more parsed training logs to plot.
+    x_axis : {'step', 'epoch', 'time'}, optional
+        X-axis variable.  Default is ``'step'``.
+    smooth_window : int, optional
+        Moving-average window size.  When greater than 1, raw values are shown
+        at low opacity and a smoothed overlay is drawn.  Default is ``None``.
+    output_path : str or Path, optional
+        If provided, the figure is saved to this path at 300 dpi.
+    show : bool, optional
+        Call ``plt.show()`` after rendering.  Default is ``False``.
+    title : str, optional
+        Figure title.  When ``None`` a default title is used.
+    log_scale : bool, optional
+        Use a logarithmic y-axis for loss.  Default is ``False``.
+    ignore_outliers : bool, optional
+        Apply percentile-based y-axis clipping to loss series.
+        Default is ``True``.
+    perplexity : bool, optional
+        Convert loss values to ``exp(loss)`` before plotting.
+        Default is ``False``.
+    x_min : float, optional
+        Clip data and set the left x-axis limit to this value.
+    x_max : float, optional
+        Clip data and set the right x-axis limit to this value.
+    y_min : float, optional
+        Override the bottom y-axis limit for loss axes.
+    y_max : float, optional
+        Override the top y-axis limit for loss axes.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The rendered figure.
+    """
     multi_run = len(logs) > 1
 
     kwargs = dict(
@@ -635,7 +761,44 @@ def plot_grad_norm(
     y_min: Optional[float] = None,
     y_max: Optional[float] = None,
 ) -> Figure:
-    """Plot the grad_norm metric across one or more runs."""
+    """Plot gradient norm over training for one or more runs.
+
+    Produces a single-panel figure of the ``grad_norm`` metric.  Only
+    training steps that recorded ``grad_norm`` are included (some trainers
+    log it at a lower frequency than loss).
+
+    Parameters
+    ----------
+    logs : list of TrainingLog
+        One or more parsed training logs to plot.
+    x_axis : {'step', 'epoch', 'time'}, optional
+        X-axis variable.  Default is ``'step'``.
+    smooth_window : int, optional
+        Moving-average window size.  Default is ``None`` (no smoothing).
+    log_scale : bool, optional
+        Use a logarithmic y-axis.  Default is ``False``.
+    output_path : str or Path, optional
+        If provided, the figure is saved to this path at 300 dpi.
+    show : bool, optional
+        Call ``plt.show()`` after rendering.  Default is ``False``.
+    title : str, optional
+        Plot title.  Defaults to ``'Gradient Norm'``.
+    ignore_outliers : bool, optional
+        Apply percentile-based y-axis clipping.  Default is ``True``.
+    x_min : float, optional
+        Clip data and set the left x-axis limit to this value.
+    x_max : float, optional
+        Clip data and set the right x-axis limit to this value.
+    y_min : float, optional
+        Override the bottom y-axis limit.
+    y_max : float, optional
+        Override the top y-axis limit.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+        The rendered figure.
+    """
     fig, ax = plt.subplots(figsize=(12, 6))
 
     x_label = "Global Step"

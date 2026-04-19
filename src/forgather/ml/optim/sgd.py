@@ -8,8 +8,22 @@ from torch.optim import Optimizer
 
 
 class SGD(Optimizer):
-    """
-    Template Optimizer: Minimal SGD Implementation
+    """Minimal vanilla SGD optimizer.
+
+    Applies the plain stochastic gradient descent update rule:
+
+        ``p = p - lr * grad``
+
+    No momentum, weight decay, or gradient clipping.  Intended as a minimal
+    reference implementation and starting point for custom optimizers.  For
+    production training, prefer `AdamW` or `Adafactor`.
+
+    Parameters
+    ----------
+    params : iterable of Parameter
+        Model parameters to optimize.
+    lr : float, optional
+        Learning rate.  Default is 1e-3.
     """
 
     def __init__(

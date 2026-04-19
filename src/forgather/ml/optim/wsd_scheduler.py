@@ -5,22 +5,32 @@ from torch.optim.lr_scheduler import LRScheduler
 class WSDScheduler(LRScheduler):
     """Warmup-Stable-Decay learning rate scheduler.
 
-    Implements the WSD-S protocol from:
-    "Understanding Warmup-Stable-Decay Learning Rates: A River Valley
-    Loss Landscape Perspective"
-    (https://arxiv.org/abs/2410.05192)
+    Implements the WSD-S protocol (Hu et al., arXiv:2410.05192).  The stable
+    phase holds ``base_lr`` indefinitely, enabling training without a fixed
+    step budget.  Decay is triggered on demand — by setting
+    ``decay_start_step`` ahead of time or retroactively via ``start_decay=True``
+    when resuming from a checkpoint — so multiple decayed checkpoints can be
+    produced from a single stable-phase run.
 
-    The schedule consists of three phases:
+    The schedule has three sequential phases:
 
-        1. Warmup: Linear increase from 0 to base_lr over warmup_steps.
-        2. Stable: Maintains base_lr indefinitely until decay is triggered.
-        3. Decay: Harmonic/rational decay from base_lr to min_lr over
-           decay_steps. Uses linear interpolation of inverse LR, which
-           drops quickly at first then slows (convex decay curve).
+    1. **Warmup** — linear ramp from 0 to ``base_lr`` over ``warmup_steps``.
+    2. **Stable** — holds ``base_lr`` indefinitely until decay is triggered.
+    3. **Decay** — harmonic/rational decay from ``base_lr`` to ``min_lr``
+       over ``decay_steps`` using linear interpolation of inverse LR.  The
+       curve drops quickly at first then slows (convex shape).
 
-    The decay phase can be triggered either by setting decay_start_step
-    to a specific step, or retroactively via start_decay=True when
-    resuming from a checkpoint.
+    Notes
+    -----
+    ``start_decay``, ``min_lr``, and ``decay_steps`` are *config-only* keys:
+    they are taken from the constructor arguments and are not saved to or
+    loaded from checkpoints.  This ensures backward compatibility and allows
+    the decay policy to be changed when resuming.
+
+    References
+    ----------
+    Hu, S. et al. (2024). Understanding Warmup-Stable-Decay Learning Rates:
+    A River Valley Loss Landscape Perspective. arXiv:2410.05192.
     """
 
     # Config-only keys: set from constructor config, not saved/loaded
@@ -38,25 +48,32 @@ class WSDScheduler(LRScheduler):
         last_epoch: int = -1,
     ):
         """
-        Args:
-            optimizer: Wrapped optimizer.
-            warmup_steps: Number of steps for linear warmup (phase 1).
-            min_lr: Target minimum learning rate for the decay phase.
-                Must be > 0. Config-only: not saved in checkpoints.
-            decay_steps: Total number of steps for the decay phase.
-                The LR reaches min_lr after exactly this many steps
-                past decay_start_step. Must be > 0.
-                Config-only: not saved in checkpoints.
-            decay_start_step: Step at which to begin decay (phase 3).
-                Set to -1 to disable decay. Must be >= warmup_steps
-                when enabled.
-            start_decay: When True, decay begins at the current step
-                upon loading a checkpoint (if decay_start_step < 0).
-                This allows triggering decay retroactively from any
-                saved checkpoint. When False after a previous decay
-                run, training resumes at the stable LR phase.
-                Config-only: not saved in checkpoints.
-            last_epoch: The index of the last epoch. Used for resuming.
+        Parameters
+        ----------
+        optimizer : Optimizer
+            Wrapped optimizer whose ``param_groups`` LRs will be managed.
+        warmup_steps : int, optional
+            Number of steps for linear warmup (phase 1).  Default is 0.
+        min_lr : float, optional
+            Target minimum learning rate reached at the end of decay.  Must
+            be > 0.  Config-only: not saved in checkpoints.  Default is 1e-8.
+        decay_steps : int, optional
+            Total number of steps in the decay phase.  The LR reaches
+            ``min_lr`` after exactly this many steps past
+            ``decay_start_step``.  Must be > 0.  Config-only: not saved in
+            checkpoints.  Default is 1.
+        decay_start_step : int, optional
+            Step at which to begin decay (phase 3).  Set to ``-1`` to disable
+            decay.  When enabled, must be >= ``warmup_steps``.  Default is -1.
+        start_decay : bool, optional
+            When ``True``, decay begins at the current step upon loading a
+            checkpoint (provided ``decay_start_step`` is still ``-1``).  This
+            allows triggering decay retroactively from any saved checkpoint.
+            When ``False``, ``decay_start_step`` is restored from the
+            constructor value.  Config-only: not saved in checkpoints.
+            Default is ``False``.
+        last_epoch : int, optional
+            Index of the last epoch, used when resuming.  Default is -1.
         """
         assert warmup_steps >= 0
         assert min_lr > 0.0

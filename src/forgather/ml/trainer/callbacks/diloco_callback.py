@@ -69,23 +69,33 @@ class DiLoCoCallback(TrainerCallback):
     no-ops. This allows a single training configuration to work both with and
     without a DiLoCo server.
 
-    Args:
-        server_addr: DiLoCo server address ("host:port"). Falls back to
-            DILOCO_SERVER env var.
-        sync_every: Local optimizer steps between syncs. Falls back to
-            DILOCO_SYNC_EVERY env var. Default 500.
-        worker_id: Unique worker ID. Falls back to DILOCO_WORKER_ID env var.
-            Auto-generated if unset.
-        bf16_comm: Cast pseudo-gradients to bfloat16. Falls back to
-            DILOCO_BF16_COMM env var. Default True.
-        dylu: Enable Dynamic Local Updates. Falls back to DILOCO_DYLU env var.
-            Default False.
-        heartbeat_interval: Seconds between heartbeats. Falls back to
-            DILOCO_HEARTBEAT_INTERVAL env var. Default 30.0.
-        num_fragments: Number of streaming fragments. Falls back to
-            DILOCO_NUM_FRAGMENTS env var. Default 1 (no streaming).
-        timeout: Client timeout in seconds. Default 600.
-        max_sync_retries: Max retries for sync failures. Default 3.
+    Parameters
+    ----------
+    server_addr : str, optional
+        DiLoCo server address (``"host:port"``). Falls back to
+        ``DILOCO_SERVER`` env var.
+    sync_every : int, optional
+        Local optimizer steps between syncs. Falls back to
+        ``DILOCO_SYNC_EVERY`` env var. Default ``500``.
+    worker_id : str, optional
+        Unique worker ID. Falls back to ``DILOCO_WORKER_ID`` env var.
+        Auto-generated if unset.
+    bf16_comm : bool, optional
+        Cast pseudo-gradients to bfloat16. Falls back to
+        ``DILOCO_BF16_COMM`` env var. Default ``True``.
+    dylu : bool, optional
+        Enable Dynamic Local Updates. Falls back to ``DILOCO_DYLU`` env var.
+        Default ``False``.
+    heartbeat_interval : float, optional
+        Seconds between heartbeats. Falls back to
+        ``DILOCO_HEARTBEAT_INTERVAL`` env var. Default ``30.0``.
+    num_fragments : int, optional
+        Number of streaming fragments. Falls back to
+        ``DILOCO_NUM_FRAGMENTS`` env var. Default ``1`` (no streaming).
+    timeout : float, optional
+        Client timeout in seconds. Default ``600``.
+    max_sync_retries : int, optional
+        Max retries for sync failures. Default ``3``.
     """
 
     def __init__(

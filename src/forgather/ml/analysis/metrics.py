@@ -7,9 +7,23 @@ from .log_parser import TrainingLog
 
 
 def get_perplexity(value, metrics=None):
-    """Compute perplexity = exp(value), returning inf on overflow.
+    """Compute perplexity as ``exp(value)``.
 
-    The metrics argument is accepted for compatibility with TBLogger transform signatures.
+    Returns ``float('inf')`` on overflow rather than raising an exception.
+    The *metrics* parameter is accepted for compatibility with TBLogger
+    transform callback signatures but is not used.
+
+    Parameters
+    ----------
+    value : float
+        A loss value (nats) to convert to perplexity.
+    metrics : any, optional
+        Ignored.  Present only for API compatibility.
+
+    Returns
+    -------
+    float
+        ``math.exp(value)``, or ``float('inf')`` if *value* is too large.
     """
     try:
         return math.exp(value)
@@ -20,11 +34,75 @@ def get_perplexity(value, metrics=None):
 def compute_summary_statistics(log: TrainingLog) -> Dict[str, Any]:
     """Compute summary statistics from a training log.
 
-    Args:
-        log: TrainingLog object
+    Aggregates training-step records, evaluation records, and the final
+    summary record into a flat dictionary of key metrics.  Keys are only
+    present when the underlying data exists; callers should use
+    ``summary.get(key)`` rather than direct indexing.
 
-    Returns:
-        Dictionary containing summary statistics
+    Parameters
+    ----------
+    log : TrainingLog
+        Parsed training log to summarise.
+
+    Returns
+    -------
+    dict
+        Dictionary with a subset of the following keys, depending on what
+        data is available in *log*:
+
+        ``run_name`` : str or None
+            Name of the training run.
+        ``log_path`` : str
+            String representation of the log file path.
+        ``total_steps`` : int
+            Global step number of the last training record.
+        ``final_epoch`` : float
+            Epoch number at the last training step.
+        ``final_loss`` : float
+            Training loss at the last recorded step.
+        ``avg_loss`` : float
+            Mean training loss over all recorded steps.
+        ``min_loss`` : float
+            Minimum training loss observed during the run.
+        ``best_loss`` : float
+            Training loss at the step where it was lowest (same as
+            ``min_loss`` but paired with ``best_loss_step``).
+        ``best_loss_step`` : int
+            Global step at which ``best_loss`` was achieved.
+        ``avg_grad_norm`` : float
+            Mean gradient norm over all training steps that recorded it.
+        ``max_grad_norm_value`` : float
+            Peak gradient norm observed during training.
+        ``max_grad_norm_step`` : int
+            Global step at which ``max_grad_norm_value`` was observed.
+        ``initial_lr`` : float
+            Learning rate at the first training step.
+        ``final_lr`` : float
+            Learning rate at the last training step.
+        ``final_eval_loss`` : float
+            Evaluation loss from the most recent evaluation checkpoint.
+        ``best_eval_loss`` : float
+            Lowest evaluation loss observed.
+        ``best_eval_loss_step`` : int
+            Global step at which ``best_eval_loss`` was achieved.
+        ``train_runtime`` : float
+            Total training wall-clock time in seconds.
+        ``train_samples`` : int
+            Total number of training samples processed.
+        ``train_samples_per_second`` : float
+            Average throughput in samples per second.
+        ``train_steps_per_second`` : float
+            Average throughput in optimizer steps per second.
+        ``effective_batch_size`` : int
+            Effective batch size (local batch x gradient accumulation x
+            world size).
+
+    Examples
+    --------
+    >>> from forgather.ml.analysis import TrainingLog, compute_summary_statistics
+    >>> log = TrainingLog.from_file("output_models/my_model/runs/run_001/trainer_logs.json")
+    >>> summary = compute_summary_statistics(log)
+    >>> print(f"Best loss: {summary['best_loss']:.4f} at step {summary['best_loss_step']}")
     """
     train_records = log.get_training_records()
     eval_records = log.get_eval_records()
@@ -88,13 +166,18 @@ def compute_summary_statistics(log: TrainingLog) -> Dict[str, Any]:
 
 
 def format_summary_text(summary: Dict[str, Any]) -> str:
-    """Format summary statistics as human-readable text.
+    """Format summary statistics as a human-readable plain-text block.
 
-    Args:
-        summary: Summary statistics dictionary
+    Parameters
+    ----------
+    summary : dict
+        Dictionary returned by :func:`compute_summary_statistics`.
 
-    Returns:
-        Formatted text string
+    Returns
+    -------
+    str
+        Multi-line plain-text string with sections for training progress,
+        metrics, training speed, gradient statistics, and learning rate.
     """
     lines = []
     lines.append("Training Run Summary")
@@ -184,13 +267,19 @@ def format_summary_text(summary: Dict[str, Any]) -> str:
 
 
 def format_summary_markdown(summary: Dict[str, Any]) -> str:
-    """Format summary statistics as markdown.
+    """Format summary statistics as a Markdown document.
 
-    Args:
-        summary: Summary statistics dictionary
+    Parameters
+    ----------
+    summary : dict
+        Dictionary returned by :func:`compute_summary_statistics`.
 
-    Returns:
-        Markdown formatted string
+    Returns
+    -------
+    str
+        Markdown-formatted string with a header, metrics table, and
+        training-speed section suitable for rendering in notebooks or
+        documentation.
     """
     lines = []
     lines.append("# Training Run Summary")
@@ -264,13 +353,22 @@ def format_summary_markdown(summary: Dict[str, Any]) -> str:
 
 
 def format_summary_oneline(summary: Dict[str, Any]) -> str:
-    """Format summary statistics as a single line.
+    """Format summary statistics as a compact single-line string.
 
-    Args:
-        summary: Summary statistics dictionary
+    Useful for tabular displays when comparing many runs side-by-side (e.g.
+    ``forgather logs summary --all --format one-line``).
 
-    Returns:
-        Single line formatted string with key metrics
+    Parameters
+    ----------
+    summary : dict
+        Dictionary returned by :func:`compute_summary_statistics`.
+
+    Returns
+    -------
+    str
+        Pipe-delimited one-liner containing run name, step count, wall-clock
+        duration, final training loss, best eval loss, and throughput (where
+        available).
     """
     # Extract key metrics
     run_name = summary.get("run_name", "Unknown")[:30]

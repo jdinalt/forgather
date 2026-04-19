@@ -40,26 +40,56 @@ from .yaml_utils import (
 
 
 class ConfigText(str):
-    """
-    A simple str sub-class, which can fromat the string with line-numbers
+    """Preprocessed configuration text with optional line-number formatting.
+
+    A thin ``str`` subclass returned by :meth:`ConfigEnvironment.preprocess`.
+    Identical to a plain string in every other respect.
     """
 
     def with_line_numbers(self, show_line_numbers=True):
+        """Return the text with prepended line numbers.
+
+        Parameters
+        ----------
+        show_line_numbers : bool, optional
+            When ``True`` (default) each line is prefixed with its 1-based line
+            number.  When ``False`` the string is returned unchanged.
+
+        Returns
+        -------
+        str
+            The (optionally numbered) configuration text.
+        """
         return format_line_numbers(self) if show_line_numbers else self
 
 
 class Config:
-    """Congiguration Container w/ orginal pre-processed data"""
+    """Container pairing a parsed node graph with its preprocessed YAML source.
+
+    Returned by :meth:`ConfigEnvironment.load` and related methods.  Keeping
+    the preprocessed text alongside the parsed graph makes it easy to display
+    debugging information when materialisation fails.
+
+    Attributes
+    ----------
+    config : Any
+        The parsed node graph (typically a :class:`ConfigDict` or a single
+        :class:`~forgather.latent.Node`).
+    pp_config : str
+        The fully preprocessed YAML text produced by Jinja2 rendering.
+    """
 
     def __init__(self, config, pp_config):
         self.config = config
         self.pp_config = pp_config
 
     def get(self):
-        """
-        Returns the config as a tuple
+        """Return ``(config, pp_config)`` as a two-element tuple.
 
-        (self.config, self.pp_config)
+        Returns
+        -------
+        tuple
+            ``(self.config, self.pp_config)``
         """
         return self.config, self.pp_config
 
@@ -70,10 +100,33 @@ class Config:
 
 
 def fconfig(obj, sort_items=True, indent_level=2, visited=None):
-    """
-    Recursively pretty-format a configuration
+    """Recursively pretty-format a configuration object as a human-readable string.
 
-    TODO: Rewrite using reprlib
+    Handles the full range of types that can appear in a Forgather configuration:
+    plain Python scalars, mappings, sequences, :class:`Node` instances, and
+    :class:`Config` / :class:`ConfigText` containers.
+
+    Parameters
+    ----------
+    obj : Any
+        The configuration object to format.
+    sort_items : bool, optional
+        When ``True`` (default), mapping keys and string sequences are sorted
+        alphabetically.
+    indent_level : int, optional
+        Number of spaces used for each level of indentation.  Default is ``2``.
+    visited : set or None, optional
+        Set of already-visited node identities used to prevent infinite recursion
+        on cyclic graphs.  Pass ``None`` (default) to start a fresh set.
+
+    Returns
+    -------
+    str
+        Human-readable representation of the configuration.
+
+    Notes
+    -----
+    TODO: Rewrite using reprlib.
     """
     if visited is None:
         visited = set()
@@ -157,8 +210,18 @@ def fconfig(obj, sort_items=True, indent_level=2, visited=None):
 
 
 def pconfig(obj, /, *args, **kwargs):
-    """
-    Print a config
+    """Print a configuration object to stdout.
+
+    Convenience wrapper around :func:`fconfig`.
+
+    Parameters
+    ----------
+    obj : Any
+        The configuration object to print.
+    *args
+        Positional arguments forwarded to :func:`fconfig`.
+    **kwargs
+        Keyword arguments forwarded to :func:`fconfig`.
     """
     print(fconfig(obj, *args, **kwargs))
 
@@ -187,11 +250,20 @@ ConfigLoader.add_multi_constructor("!dict", dict_constructor)
 
 
 class ConfigDict(dict):
-    """
-    A simple dictionary wrapper for a configuration
+    """Dictionary wrapper for a parsed configuration that supports attribute access.
 
-    This filters out ".key" dictionary keys and exposes the keys
-    as properties to make it cleaner to access the keys.
+    Keys whose names start with ``"."`` are filtered out on construction (they
+    are used internally as YAML section markers and are not part of the public
+    configuration).  All remaining keys are accessible as attributes in addition
+    to standard item access.
+
+    Examples
+    --------
+    >>> cfg = ConfigDict({"model": "llama", ".internal": "ignored"})
+    >>> cfg.model
+    'llama'
+    >>> ".internal" in cfg
+    False
     """
 
     def __getattr__(self, name):
@@ -207,8 +279,34 @@ class ConfigDict(dict):
 
 
 class ConfigEnvironment:
-    """
-    Contains the configuration envrionment
+    """Jinja2 preprocessing and YAML parsing environment for Forgather configurations.
+
+    ``ConfigEnvironment`` wraps a :class:`~forgather.preprocess.PPEnvironment`
+    (a customised Jinja2 environment) and a suite of custom YAML constructors
+    that translate ``!call``, ``!singleton``, ``!factory``, ``!partial``, and
+    ``!var`` tags into :class:`~forgather.latent.Node` objects.  The result of
+    :meth:`load` is a :class:`Config` containing both the parsed node graph and
+    the preprocessed YAML text.
+
+    Parameters
+    ----------
+    searchpath : str, os.PathLike, or iterable of str/PathLike, optional
+        Directories searched for templates, in priority order.  Non-existent
+        directories are silently ignored.  Defaults to ``(".",)``.
+    pp_environment : jinja2.Environment or None, optional
+        A pre-configured Jinja2 environment to use instead of the default
+        :class:`~forgather.preprocess.PPEnvironment`.  When ``None`` (default)
+        a fresh ``PPEnvironment`` is created from *searchpath*.
+    global_vars : dict or None, optional
+        Variables injected into the Jinja2 global namespace and available in
+        every template.  Merged with any variables already present in
+        *pp_environment*.  Defaults to ``{}``.
+
+    Examples
+    --------
+    >>> env = ConfigEnvironment(searchpath=["/path/to/templates"])
+    >>> config = env.load("configs/train.yaml")
+    >>> node_graph, pp_text = config.get()
     """
 
     def __init__(
@@ -244,10 +342,25 @@ class ConfigEnvironment:
         /,
         **kwargs,
     ) -> ConfigText:
-        """
-        Preprocess a configuration file and return it
+        """Render a configuration template through Jinja2 and return the result.
 
-        returns: ConfigText, a 'str' sub-type with a 'with_line_numbers()' method.
+        Locates *config_path* in the search path, renders it with the
+        configured global variables plus any extra *kwargs*, and returns the
+        resulting YAML text.
+
+        Parameters
+        ----------
+        config_path : str or os.PathLike
+            Template path relative to the search path (e.g. ``"configs/train.yaml"``).
+        **kwargs
+            Additional keyword arguments passed as Jinja2 template variables,
+            overriding globals for this render.
+
+        Returns
+        -------
+        ConfigText
+            The rendered YAML text.  :class:`ConfigText` is a ``str`` subclass
+            that additionally exposes :meth:`~ConfigText.with_line_numbers`.
         """
         template = self.pp_environment.get_template(str(config_path))
         return ConfigText(template.render(**kwargs))
@@ -258,8 +371,19 @@ class ConfigEnvironment:
         /,
         **kwargs,
     ) -> ConfigText:
-        """
-        Preprocess a configuration in a string and return it.
+        """Render a configuration template supplied as a string through Jinja2.
+
+        Parameters
+        ----------
+        config : str
+            Raw template source text (may contain Jinja2 directives).
+        **kwargs
+            Additional keyword arguments passed as Jinja2 template variables.
+
+        Returns
+        -------
+        ConfigText
+            The rendered YAML text.
         """
         template = self.pp_environment.from_string(config)
         return ConfigText(template.render(**kwargs))
@@ -270,8 +394,29 @@ class ConfigEnvironment:
         /,
         **kwargs,
     ) -> Config:
-        """
-        Preprocess and parse a configuration file
+        """Preprocess and parse a configuration file into a node graph.
+
+        Combines :meth:`preprocess` and :meth:`load_from_ppstring` into a
+        single call.
+
+        Parameters
+        ----------
+        config_path : str or os.PathLike
+            Template path relative to the search path.
+        **kwargs
+            Additional Jinja2 template variables forwarded to :meth:`preprocess`.
+
+        Returns
+        -------
+        Config
+            Container holding the parsed node graph and the preprocessed YAML
+            text.
+
+        Raises
+        ------
+        Exception
+            Any YAML or node-graph parse error, annotated with the numbered
+            preprocessed source for easier debugging.
         """
         pp_config = self.preprocess(config_path, **kwargs)
         return self.load_from_ppstring(pp_config)
@@ -282,15 +427,47 @@ class ConfigEnvironment:
         /,
         **kwargs,
     ) -> Config:
-        """
-        Preprocess and load a configuration from a string
+        """Preprocess and parse a configuration supplied as a string.
+
+        Parameters
+        ----------
+        config : str
+            Raw template source text.
+        **kwargs
+            Additional Jinja2 template variables forwarded to
+            :meth:`preprocess_from_string`.
+
+        Returns
+        -------
+        Config
+            Container holding the parsed node graph and the preprocessed YAML
+            text.
         """
         pp_config = self.preprocess_from_string(config, **kwargs)
         return self.load_from_ppstring(pp_config)
 
     def load_from_ppstring(self, pp_config: str) -> Config:
-        """
-        Load a configuration from a preprocessed string.
+        """Parse an already-preprocessed YAML string into a node graph.
+
+        Parses *pp_config* with the custom YAML constructors (``!call``,
+        ``!singleton``, ``!factory``, ``!partial``, ``!var``, etc.) and
+        validates the resulting graph with :meth:`~forgather.latent.Latent.check`.
+
+        Parameters
+        ----------
+        pp_config : str
+            Fully rendered YAML text (output of Jinja2 preprocessing).
+
+        Returns
+        -------
+        Config
+            Container holding the parsed node graph and *pp_config*.
+
+        Raises
+        ------
+        Exception
+            Any YAML parse error or node-graph validation error, annotated with
+            line-numbered source text.
         """
         try:
             loaded_config = load_depth_first(pp_config, Loader=ConfigLoader)
@@ -305,11 +482,26 @@ class ConfigEnvironment:
         self,
         template_name: os.PathLike | str,
     ) -> Iterator[Tuple[int, str, str]]:
-        """
-        Iterate over the template hierarchy, including dynamic references
+        """Iterate over the full template inheritance hierarchy for a given template.
 
-        This enhanced version traces actual template loading during rendering
-        to capture dynamic template references that cannot be resolved statically.
+        Traces actual template loading at render time so that dynamic
+        ``extends`` / ``include`` references (those whose targets are computed
+        by Jinja2 expressions) are captured in addition to statically declared
+        ones.
+
+        Parameters
+        ----------
+        template_name : str or os.PathLike
+            Name of the root template to analyse (relative to the search path).
+
+        Yields
+        ------
+        level : int
+            Depth of this template in the hierarchy (0 = root).
+        name : str
+            Template name as it appears in the loader.
+        filename : str
+            Filesystem path to the template file.
         """
         # Use render-time tracing to get complete template hierarchy
         load_sequence, dependencies = self._trace_template_rendering(template_name)
@@ -326,10 +518,21 @@ class ConfigEnvironment:
             yield (level, template_name, filename)
 
     def get_template_dependencies(self, template_name: os.PathLike | str):
-        """
-        Get the raw dependency relationships for graph generation
+        """Return raw dependency relationships for a template, suitable for graph generation.
 
-        Returns: (load_sequence, dependencies_dict)
+        Parameters
+        ----------
+        template_name : str or os.PathLike
+            Name of the root template to analyse.
+
+        Returns
+        -------
+        load_sequence : list of tuple[str, str]
+            Ordered list of ``(template_name, filename)`` pairs in the order
+            templates were loaded during rendering.
+        dependencies_dict : dict[str, set[str]]
+            Mapping from each template name to the set of template names it
+            directly references (via ``extends`` or ``include``).
         """
         return self._trace_template_rendering(template_name)
 
