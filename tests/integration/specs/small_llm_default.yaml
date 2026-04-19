@@ -2,7 +2,7 @@ test_id: small_llm_default
 project_dir: examples/pretrain/small-llm
 config: default.yaml
 dynamic_args:
-  max_steps: 80
+  max_steps: 200
   save_strategy: "no"
   nproc_per_node: 2
 loss:
