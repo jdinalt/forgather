@@ -236,14 +236,16 @@ class TrainerControlCallback(TrainerCallback):
             logger.error(f"HTTP server error: {e}")
             raise
 
+    async def _start_http_server(self):
+        """Schedule the HTTP server as a cancellable background task."""
+        self.server_task = asyncio.create_task(self._run_http_server())
+
     def _run_server_thread(self):
         """Run HTTP server in separate thread."""
         asyncio.set_event_loop(self.event_loop)
         assert self.event_loop is not None
         try:
-            self.event_loop.run_until_complete(self._run_http_server())
-        except asyncio.CancelledError:
-            pass
+            self.event_loop.run_forever()
         except Exception as e:
             logger.error(f"Server thread error: {e}")
 
@@ -540,8 +542,11 @@ class TrainerControlCallback(TrainerCallback):
                 )
                 self.server_thread.start()
 
-                # Give server time to start
+                # Give the thread time to start the loop, then schedule the server task
                 time.sleep(0.1)
+                asyncio.run_coroutine_threadsafe(
+                    self._start_http_server(), self.event_loop
+                ).result(timeout=5)
 
                 logger.info(f"Trainer control system initialized for job {self.job_id}")
 
@@ -578,20 +583,27 @@ class TrainerControlCallback(TrainerCallback):
         """Clean up when training ends."""
         if state.is_world_process_zero and self.enable_http:
             try:
-                # Cancel server task
-                if self.server_task and not self.server_task.done():
-                    self.server_task.cancel()
-
-                # Shutdown server
                 event_loop = self.event_loop
-                if self.server_runner and event_loop is not None:
+                if event_loop is None or event_loop.is_closed():
+                    return
+
+                # Shut down aiohttp runner while the loop is still running
+                if self.server_runner is not None:
                     asyncio.run_coroutine_threadsafe(
                         self.server_runner.cleanup(), event_loop
                     ).result(timeout=5)
 
-                # Stop event loop
-                if self.event_loop and not self.event_loop.is_closed():
-                    self.event_loop.call_soon_threadsafe(self.event_loop.stop)
+                # Cancel the server task then stop the loop atomically
+                def _shutdown():
+                    if self.server_task and not self.server_task.done():
+                        self.server_task.cancel()
+                    event_loop.stop()
+
+                event_loop.call_soon_threadsafe(_shutdown)
+
+                # Wait for the server thread to exit cleanly
+                if self.server_thread:
+                    self.server_thread.join(timeout=10)
 
                 # Clean up endpoint file
                 endpoint_file = self.control_dir / "endpoint.json"
