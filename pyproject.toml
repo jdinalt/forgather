@@ -46,7 +46,7 @@ dependencies = [
     "triton",
     "dacite",
 ]
-version = "2024.0.0a1"
+version = "1.0.0"
 authors = [
     {name = "Jason dinAlt", email = "joedkloss@gmail.com"},
 ]
