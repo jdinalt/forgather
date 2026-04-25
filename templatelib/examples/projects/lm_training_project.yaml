@@ -515,7 +515,7 @@ optimizer: &optimizer !partial:torch:optim.AdamW
 [optimizer_groups]
 optimizer_groups: &optimizer_groups
     no_decay:
-        regex: 'norm|bias|embed|lm_head'
+        regex: 'norm|bias|embed|lm_head|alibi_slopes'
         config:
             weight_decay: 0.0
 
