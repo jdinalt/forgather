@@ -1,0 +1,30 @@
+# ChatML setup for a Forgather model pre-trained from scratch.
+#
+# Designed for use with `forgather finalize --add-tokens` to prepare a base
+# model for chat fine-tuning. Pair with `chat_templates/chatml.jinja`.
+#
+# What this does:
+#   1. Adds <|im_start|> as a special token.
+#   2. Promotes <|im_end|> to the tokenizer's eos_token. The original EOS is
+#      automatically merged into generation_config.eos_token_id by finalize's
+#      auto-stop-token detection, so generation halts on either token.
+#   3. Ensures a pad token exists; only added if the source has none, so
+#      models that already define one are left alone.
+#
+# See docs/guides/add-tokens-config.md for the full format reference.
+
+# Promote the ChatML end-of-turn marker to the tokenizer's EOS. The original
+# EOS id is preserved in generation_config.json by finalize's auto-stop
+# detection.
+eos_token: "<|im_end|>"
+
+# Register <|im_start|> as a special token (turn-marker).
+special_tokens:
+  - "<|im_start|>"
+
+# Add a pad token only when the source model does not already have one.
+# Zero-init keeps the pad embedding from contributing to attention/loss.
+pad_token:
+  token: "<|pad|>"
+  init: "zero"
+  if_missing: true

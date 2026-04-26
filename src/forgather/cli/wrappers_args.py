@@ -59,28 +59,26 @@ def create_convert_parser(global_args):
     return parser
 
 
-def create_update_vocab_parser(global_args):
-    """Create parser for update-vocab command."""
-    # Note: We use add_help=False because we want --help to be forwarded to the script
+def create_finalize_parser(global_args):
+    """Create parser for finalize command."""
+    # add_help=False so --help is forwarded to the script for its own help.
     parser = argparse.ArgumentParser(
-        prog="forgather update-vocab",
-        description="Update vocabulary of HuggingFace or Forgather models\n\n"
-        "All arguments are forwarded to tools/update_vocab/update_vocab.py",
+        prog="forgather finalize",
+        description="Finalize a trained Forgather model into a clean directory\n\n"
+        "All arguments are forwarded to tools/finalize_model/finalize_model.py",
         formatter_class=RawTextHelpFormatter,
         add_help=False,
     )
-    # Add a dummy positional to enable REMAINDER to work
     parser.add_argument(
         "dummy",
         nargs="?",
         default="",
-        help=argparse.SUPPRESS,  # Hide from help
+        help=argparse.SUPPRESS,
     )
-    # Use REMAINDER to capture all following args (including flags)
     parser.add_argument(
         "remainder",
         nargs=argparse.REMAINDER,
-        help="Arguments to forward to update_vocab.py",
+        help="Arguments to forward to finalize_model.py",
     )
 
     return parser

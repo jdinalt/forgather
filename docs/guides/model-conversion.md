@@ -205,8 +205,9 @@ The parameter mapping patterns are recursive regex substitution lists. See
 
 ## See also
 
-- **[Vocabulary and Chat Template](update-vocab.md)** -- add tokens or set chat
-  templates on an existing model without converting between formats
-- **[Fixing End-of-Sequence Token Issues](fixing-eos-token-issues.md)** --
-  diagnose and fix runaway generation when an older conversion left
-  `generation_config.json` out of sync with the updated tokenizer EOS
+- **[Finalize Model](finalize-model.md)** -- build a clean handoff directory
+  after pre-training, with options to add tokens, set a chat template, and
+  synthesize a `generation_config.json`
+- **[EOS Tokens and `generate()` Stopping Criteria](eos-and-generate-stopping.md)** --
+  theory of operation: how HF's `generate()` resolves stopping across
+  `tokenizer_config.json`, `config.json`, and `generation_config.json`

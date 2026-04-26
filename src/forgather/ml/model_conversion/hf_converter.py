@@ -358,19 +358,33 @@ class HFConverter(ModelConverter):
                     model_config, tokenizer, update_vocab_size=False
                 )
 
-        # Merge eos token set
+        # Merge eos token ids across all known sources, preserving the
+        # source's primary EOS as the first entry. Sources, in priority
+        # order:
+        #   1. src_model_config.eos_token_id  -- the source's canonical EOS
+        #      (often a list for Llama 3 / Qwen 3 instruct: their config.json
+        #      already lists multiple stop tokens).
+        #   2. The destination's existing generation_config.json eos_token_id
+        #      (copied verbatim from src by _copy_generation_config above).
+        #      For some models config.json carries a scalar EOS while
+        #      generation_config.json carries the wider list -- merging from
+        #      both prevents silently losing those extras.
+        #   3. model_config.eos_token_id  -- after add_tokens may have been
+        #      reassigned via update_config_from_tokenizer (e.g. when
+        #      `eos_token: "<|im_end|>"` is in the YAML).
         if hasattr(src_model_config, "eos_token_id") and hasattr(
             model_config, "eos_token_id"
         ):
-            eos_set = set()
-            eos_set.add(model_config.eos_token_id)
-            if isinstance(src_model_config.eos_token_id, list):
-                for id in src_model_config.eos_token_id:
-                    eos_set.add(id)
-            else:
-                eos_set.add(src_model_config.eos_token_id)
-            if len(eos_set) > 1:
-                model_config.eos_token_id = [id for id in eos_set]
+            existing_gen_eos = self._read_generation_config_eos(dst_model_path)
+            merged = self._merge_eos_token_ids(
+                src_model_config.eos_token_id,
+                existing_gen_eos,
+                model_config.eos_token_id,
+            )
+            if len(merged) > 1:
+                model_config.eos_token_id = merged
+            elif len(merged) == 1:
+                model_config.eos_token_id = merged[0]
 
         # Compare logits
         prompt = kwargs.get("prompt", "The old bookstore at the corner of")
@@ -571,8 +585,14 @@ class HFConverter(ModelConverter):
 
         logger.debug(f"HF Model: {hf_model}")
 
-        # Copy generation config
-        self._copy_generation_config(src_model_path, dst_model_path)
+        # Assign the source's generation config to the destination model.
+        # save_pretrained() below would otherwise synthesize
+        # generation_config.json from hf_model.config alone, which carries
+        # token IDs but not sampling fields (do_sample, temperature,
+        # top_p, repetition_penalty, ...). Round-tripping a model would
+        # silently lose those fields. Assigning to hf_model.generation_config
+        # ensures save_pretrained writes a faithful copy.
+        self._assign_generation_config(hf_model, src_model_path)
 
         # Validate that unused parameters are only RoPE cached buffers
         if result.unexpected_keys:
@@ -628,17 +648,100 @@ class HFConverter(ModelConverter):
             shutil.copyfile(src_config_path, dst_config_path)
 
     @staticmethod
-    def _sync_generation_config_eos(dst_model_path: str, eos_token_id):
-        """Overwrite generation_config.json's eos_token_id with a new value.
+    def _assign_generation_config(model, src_model_path: str) -> None:
+        """Load source's generation_config.json and assign it to ``model``.
 
-        Called after the eos_set merge in convert_to_forgather() so the
-        destination generation_config.json's eos_token_id matches the
-        (possibly list-valued) eos_token_id on model_config. HF
-        model.generate() reads the stopping criterion from
-        generation_config.json, not from tokenizer_config.json or the
-        model's own config.json, so if we don't update this file the
-        added ChatML <|im_end|> stop token won't actually terminate
-        generation -- the model keeps emitting until max_tokens.
+        Used by the FG→HF path so that ``hf_model.save_pretrained()``
+        writes a faithful copy of the source's generation config rather
+        than synthesizing one from ``model.config`` alone (which would
+        drop sampling fields like ``do_sample`` / ``temperature`` /
+        ``top_p`` / ``repetition_penalty``).
+
+        No-op when the source has no generation_config.json. On a load
+        error, logs a warning and leaves ``model.generation_config``
+        unchanged -- save_pretrained will then write the model's
+        defaults rather than crashing.
+        """
+        from transformers import GenerationConfig
+
+        src_path = os.path.join(src_model_path, "generation_config.json")
+        if not os.path.isfile(src_path):
+            return
+        try:
+            gc = GenerationConfig.from_pretrained(src_model_path)
+        except Exception as e:
+            logger.warning(
+                f"Failed to load generation config from {src_path}: {e}; "
+                f"destination will use the HF model's default generation config"
+            )
+            return
+        model.generation_config = gc
+        logger.info(f"Assigned generation_config from {src_path} to destination model")
+
+    @staticmethod
+    def _merge_eos_token_ids(*sources):
+        """Merge eos_token_id values from multiple sources.
+
+        Returns a deduplicated list of ints in the order in which IDs
+        were first seen across the sources. Each source can be a scalar
+        int, a list of ints, ``None``, or any other value (which is
+        skipped). The first source's primary EOS therefore lands at
+        index 0, which preserves the convention that ``eos_token_id[0]``
+        is the model's canonical end-of-sequence marker.
+        """
+        out = []
+        for src in sources:
+            if src is None:
+                continue
+            ids = src if isinstance(src, list) else [src]
+            for tok_id in ids:
+                if tok_id is None:
+                    continue
+                try:
+                    val = int(tok_id)
+                except (TypeError, ValueError):
+                    continue
+                if val not in out:
+                    out.append(val)
+        return out
+
+    @staticmethod
+    def _read_generation_config_eos(model_path: str):
+        """Return the existing ``eos_token_id`` from ``generation_config.json``,
+        or ``None`` when the file is absent or unreadable. Used by the merge
+        path so wider lists in the source's gen_config (e.g. Llama 3
+        ``[128001, 128008, 128009]``) survive a conversion where
+        ``config.json`` only carried the scalar canonical EOS.
+        """
+        gen_config_path = os.path.join(model_path, "generation_config.json")
+        if not os.path.isfile(gen_config_path):
+            return None
+        try:
+            with open(gen_config_path, "r") as f:
+                gen_config = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return gen_config.get("eos_token_id")
+
+    @staticmethod
+    def _sync_generation_config_eos(dst_model_path: str, eos_token_id):
+        """Overwrite ``generation_config.json``'s ``eos_token_id``.
+
+        This is a primitive ``set`` operation -- it does *not* merge with
+        the existing value. Callers that need union semantics (e.g.
+        ``convert_to_forgather``) must pre-merge using
+        ``_merge_eos_token_ids`` and feed the union here, so that
+        anything the source generation_config already listed is
+        preserved.
+
+        Called after the eos merge in ``convert_to_forgather()`` so the
+        destination ``generation_config.json``'s ``eos_token_id``
+        reflects every stop token the model should recognise. HF
+        ``model.generate()`` reads the stopping criterion from
+        ``generation_config.json``, not from ``tokenizer_config.json`` or
+        the model's own ``config.json``, so without this sync added
+        ChatML ``<|im_end|>`` stop tokens won't terminate generation --
+        the model keeps emitting until ``max_tokens``.
 
         Args:
             dst_model_path: Destination Forgather-format model directory
@@ -650,8 +753,8 @@ class HFConverter(ModelConverter):
         gen_config_path = os.path.join(dst_model_path, "generation_config.json")
         if not os.path.isfile(gen_config_path):
             # No generation_config.json to update (source didn't have one).
-            # That's fine; HF's generate() will fall back to the tokenizer
-            # eos_token_id in that case, which should already be correct.
+            # HF's generate() will fall back to the tokenizer eos_token_id
+            # in that case, which should already be correct.
             return
         with open(gen_config_path, "r") as f:
             gen_config = json.load(f)
