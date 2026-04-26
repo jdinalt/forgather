@@ -92,8 +92,8 @@ def get_subcommand_registry():
     from .workspace_args import create_ws_parser
     from .wrappers_args import (
         create_convert_parser,
+        create_finalize_parser,
         create_inf_parser,
-        create_update_vocab_parser,
     )
 
     return {
@@ -116,7 +116,7 @@ def get_subcommand_registry():
         "project": create_project_parser,
         "inf": create_inf_parser,
         "convert": create_convert_parser,
-        "update-vocab": create_update_vocab_parser,
+        "finalize": create_finalize_parser,
         "checkpoint": create_checkpoint_parser,
         "logs": create_logs_parser,
         "plot": create_plot_parser,
@@ -168,8 +168,8 @@ def parse_args(args=None):
     inf_interactive_workaround = False
     convert_t_workaround = False
     convert_original_args = None  # Save original args for convert command
-    update_vocab_t_workaround = False
-    update_vocab_original_args = None  # Save original args for update-vocab command
+    finalize_t_workaround = False
+    finalize_original_args = None  # Save original args for finalize command
     removed_flags = []
 
     # Handle 'inf' command with --interactive/-i
@@ -216,16 +216,17 @@ def parse_args(args=None):
                 args_for_global.pop(t_idx_in_full)
             args_list = args_for_global
 
-    # Handle 'update-vocab' command with -t (same conflict as convert)
-    if "update-vocab" in args_list:
-        uv_idx = args_list.index("update-vocab")
-        remaining_after_uv = args_list[uv_idx + 1 :]
-        update_vocab_original_args = remaining_after_uv.copy()
-        if "-t" in remaining_after_uv:
-            update_vocab_t_workaround = True
+    # Handle 'finalize' command with -t (same conflict as convert; -t is the
+    # finalize chat-template-path flag)
+    if "finalize" in args_list:
+        fin_idx = args_list.index("finalize")
+        remaining_after_fin = args_list[fin_idx + 1 :]
+        finalize_original_args = remaining_after_fin.copy()
+        if "-t" in remaining_after_fin:
+            finalize_t_workaround = True
             args_for_global = args_list.copy()
-            t_idx_in_remaining = remaining_after_uv.index("-t")
-            t_idx_in_full = uv_idx + 1 + t_idx_in_remaining
+            t_idx_in_remaining = remaining_after_fin.index("-t")
+            t_idx_in_full = fin_idx + 1 + t_idx_in_remaining
             args_for_global.pop(t_idx_in_full)  # Remove -t
             if t_idx_in_full < len(args_for_global) and not args_for_global[
                 t_idx_in_full
@@ -287,8 +288,8 @@ def parse_args(args=None):
     subcommand_parser = registry[subcommand](global_args)
 
     try:
-        # For convert and update-vocab commands, just pass all args as remainder without parsing
-        if subcommand in ["convert", "update-vocab"]:
+        # For convert and finalize commands, just pass all args as remainder without parsing
+        if subcommand in ["convert", "finalize"]:
             # Create a minimal namespace with remainder containing all original args
             sub_args = argparse.Namespace()
             # Use saved original args if available (when -t was present), otherwise use subcommand_args
@@ -298,10 +299,10 @@ def parse_args(args=None):
                     if convert_original_args is not None
                     else subcommand_args
                 )
-            elif subcommand == "update-vocab":
+            elif subcommand == "finalize":
                 sub_args.remainder = (
-                    update_vocab_original_args
-                    if update_vocab_original_args is not None
+                    finalize_original_args
+                    if finalize_original_args is not None
                     else subcommand_args
                 )
             else:
@@ -412,10 +413,10 @@ def main():
                 from .convert import convert_cmd
 
                 convert_cmd(args)
-            case "update-vocab":
-                from .update_vocab import update_vocab_cmd
+            case "finalize":
+                from .finalize import finalize_cmd
 
-                update_vocab_cmd(args)
+                finalize_cmd(args)
             case "logs":
                 from .logs import logs_cmd
 

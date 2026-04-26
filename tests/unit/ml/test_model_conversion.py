@@ -1640,5 +1640,94 @@ class TestSyncGenerationConfigEos(unittest.TestCase):
         self.assertEqual(self._read_gen_config()["eos_token_id"], 42)
 
 
+class TestMergeEosTokenIds(unittest.TestCase):
+    """Tests for HFConverter._merge_eos_token_ids.
+
+    The merge is the upstream policy that protects ``convert_to_forgather``
+    from silently dropping stop tokens. It must:
+
+    - Preserve "first source first" order (so the model's canonical EOS
+      stays at index 0).
+    - Accept scalar ints, lists of ints, and ``None`` as sources.
+    - Deduplicate.
+    - Coerce values to int (HF configs sometimes carry ``np.int64`` etc.).
+    """
+
+    def _merge(self, *sources):
+        from forgather.ml.model_conversion.hf_converter import HFConverter
+
+        return HFConverter._merge_eos_token_ids(*sources)
+
+    def test_scalar_only(self):
+        self.assertEqual(self._merge(2), [2])
+
+    def test_dedup_scalar_pair(self):
+        self.assertEqual(self._merge(2, 2), [2])
+
+    def test_scalar_then_list(self):
+        # Common shape: source config eos = scalar, add_tokens introduces
+        # a new ChatML <|im_end|>; merge order: src first, then new.
+        self.assertEqual(self._merge(2, 32000), [2, 32000])
+
+    def test_list_then_scalar(self):
+        # Llama 3 instruct-style source: config.json eos = list; nothing
+        # added on top -> the list is preserved verbatim.
+        self.assertEqual(
+            self._merge([128001, 128008, 128009], 128001),
+            [128001, 128008, 128009],
+        )
+
+    def test_widens_with_extras_from_gen_config(self):
+        # Defence-in-depth case: src config.json carries scalar EOS, src
+        # generation_config.json carries the wider list. Merging from
+        # both keeps everything.
+        self.assertEqual(
+            self._merge(128001, [128001, 128008, 128009], 128001),
+            [128001, 128008, 128009],
+        )
+
+    def test_none_sources_skipped(self):
+        self.assertEqual(self._merge(None, 5, None, [5, 7]), [5, 7])
+
+    def test_all_none_returns_empty(self):
+        self.assertEqual(self._merge(None, None), [])
+
+    def test_no_sources_returns_empty(self):
+        self.assertEqual(self._merge(), [])
+
+    def test_eos_token_reassignment(self):
+        # User runs `convert --add-tokens` with `eos_token: "<|im_end|>"`.
+        # tokenizer.eos_token reassigns from id 2 to id 32000;
+        # update_config_from_tokenizer makes model_config.eos_token_id =
+        # 32000 (scalar). The merge feeds:
+        #   src_model_config.eos_token_id = 2          (original)
+        #   existing_gen_eos              = 2          (copied from src)
+        #   model_config.eos_token_id     = 32000      (new)
+        # Expected: [2, 32000] -- original preserved at index 0.
+        self.assertEqual(self._merge(2, 2, 32000), [2, 32000])
+
+    def test_skips_unhashable_values(self):
+        # Defensive: anything we can't coerce to int is dropped, not
+        # propagated as a crash. (Earlier set-based code crashed on
+        # nested lists with TypeError: unhashable type.)
+        self.assertEqual(self._merge(2, "not-an-int", [3, 4]), [2, 3, 4])
+
+    def test_gen_config_extras_survive_with_token_reassignment(self):
+        # Regression: scenario the merge was specifically added for in
+        # convert_to_forgather. Source config.json carries scalar EOS,
+        # source generation_config.json carries a wider list (Llama 3
+        # instruct shape), AND --add-tokens reassigns eos_token (so
+        # update_config_from_tokenizer leaves model_config.eos_token_id
+        # at the new scalar). The merge must keep BOTH the wider gen_config
+        # list AND the new reassigned token, with the original primary
+        # EOS still at index 0.
+        merged = self._merge(
+            128001,  # src config.json eos
+            [128001, 128008, 128009],  # src generation_config.json eos
+            128256,  # post-add-tokens model_config eos
+        )
+        self.assertEqual(merged, [128001, 128008, 128009, 128256])
+
+
 if __name__ == "__main__":
     unittest.main()

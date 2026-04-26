@@ -85,8 +85,9 @@ nav:
   - Models & Inference:
     - Model Architecture: guides/model-architecture.md
     - Model Conversion: guides/model-conversion.md
-    - Vocabulary & Chat Template: guides/update-vocab.md
-    - Fixing EOS Token Issues: guides/fixing-eos-token-issues.md
+    - Finalize Model: guides/finalize-model.md
+    - Add-Tokens Config: guides/add-tokens-config.md
+    - EOS and generate() Stopping: guides/eos-and-generate-stopping.md
     - vLLM Integration: inference/vllm_integration.md
   - Datasets:
     - Sequence Packing: datasets/sequence-packing.md

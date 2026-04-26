@@ -38,8 +38,9 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 
 - **[Model Architecture](guides/model-architecture.md)** - Transformer module inventory, composition patterns, and optimization flags
 - **[Model Conversion](guides/model-conversion.md)** - Bidirectional HuggingFace / Forgather model conversion
-- **[Vocabulary and Chat Template](guides/update-vocab.md)** - Add tokens or set chat templates on existing models without conversion
-- **[Fixing EOS Token Issues](guides/fixing-eos-token-issues.md)** - Diagnose and fix runaway generation after adding ChatML-style stop tokens
+- **[Finalize Model](guides/finalize-model.md)** - Build a clean handoff directory after pre-training: source + tokenizer + chat template + generation_config + a single preserved checkpoint
+- **[Add-Tokens Config](guides/add-tokens-config.md)** - YAML format for `--add-tokens` (ChatML / new EOS / pad)
+- **[EOS Tokens and `generate()` Stopping Criteria](guides/eos-and-generate-stopping.md)** - Theory of operation: how HF's `generate()` resolves stopping across multiple EOS-bearing files
 - **[vLLM Integration](inference/vllm_integration.md)** - Distributed inference with vLLM (currently blocked on Transformers v5)
 
 **Guides:**

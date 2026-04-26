@@ -54,57 +54,190 @@ hf download --exclude "original*" --local-dir Llama-3.2-1B-Instruct meta-llama/L
 
 ### Convert the Model
 
-While Forgather's basic Trainer class works with HF models, like the one downloaded above, these models don't work with the Pipeline Parallel Trainer nor do they support fused-cross-entropy, which can significantly reduce peak-memory utilization. In the case of our example model, they also lack a chat-template and adding additional token-definitions. Go ahead and convert the model to Forgather's format.
+Forgather's basic Trainer class works with HF models directly, but conversion to
+Forgather's format is required for the Pipeline Parallel Trainer and unlocks
+fused-cross-entropy, which significantly reduces peak memory. For base models
+(those lacking a chat template), conversion also grafts on ChatML and ensures
+the destination's `generation_config.eos_token_id` lists *both* the original
+EOS and the new ChatML end-of-turn marker, so `model.generate()` halts cleanly
+on either token during inference.
 
-If you chose to use a native HF model, use either "llama2_7b/1gpu_default.yaml" or "llama3_1b/1gpu_default.yaml," as these don't require any Forgather specific extensions. Just be sure to use a model with an existing chat-template. 
-
-```bash
-# **From Samantha directory**
-# Set name for converted model
-FG_MODEL="${MODELS_DIR}/fg_mistral_7b"
-
-# Convert model to Forgather Llama/Mistral implementation
-# This model 
-forgather convert --dtype bfloat16 -t "../../../chat_templates/chatml.jinja" "${SRC_MODEL}" "${FG_MODEL}" \
---add-tokens "../../../tools/convert_model/example_additional_tokens.yaml"
-
-# For models which already have a chat template, you can skip specifying a chat template and 
-# setting custom tokens. For "meta-llama/Llama-3.2-1B-Instruct" ...
-forgather convert --dtype bfloat16 Llama-3.2-1B-Instruct/ fg_Llama-3.2-1B-Instruct/
-```
-
-To convert the model back to HF format...
+Set the output base directory once:
 
 ```bash
-forgather convert "${FG_MODEL}" OUTPUT_MODEL_PATH
+MODELS_DIR="${HOME}/models"   # change to wherever you keep model checkouts
 ```
+
+#### Base models -- graft on ChatML
+
+Base models lack a chat template and use a single scalar EOS (`</s>` for Llama 2,
+`<|end_of_text|>` for Llama 3). Apply the bundled ChatML add-tokens config and
+chat template during conversion. From the **repo root**:
+
+```bash
+# Llama 2 7B (~13 GB on disk after conversion)
+forgather convert --dtype bfloat16 \
+    --add-tokens add_tokens_config/chatml.yaml \
+    -t chat_templates/chatml.jinja \
+    "${MODELS_DIR}/meta-llama--Llama-2-7b-hf" \
+    "${MODELS_DIR}/fg_Llama-2-7b"
+
+# Llama 3.2 1B base (~2.6 GB on disk after conversion)
+forgather convert --dtype bfloat16 \
+    --add-tokens add_tokens_config/chatml.yaml \
+    -t chat_templates/chatml.jinja \
+    "${MODELS_DIR}/Llama-3.2-1B" \
+    "${MODELS_DIR}/fg_Llama-3.2-1B"
+```
+
+What `add_tokens_config/chatml.yaml` does:
+
+- Promotes `<|im_end|>` to the tokenizer's `eos_token`. If `<|im_end|>` was
+  not already in the source vocab, a new row is added and copy-initialized
+  from the original EOS row's weights so the new token starts off behaving
+  like the old one.
+- Registers `<|im_start|>` as an additional special token.
+- Adds `<|pad|>` only if the source tokenizer defines no pad token
+  (`if_missing: true`).
+
+Verify the EOS provisioning landed correctly:
+
+```bash
+$ cat "${MODELS_DIR}/fg_Llama-2-7b/generation_config.json"
+{
+  ...
+  "eos_token_id": [2, 32000],     # </s>=2 (original) + <|im_end|>=32000 (new)
+  ...
+}
+
+$ cat "${MODELS_DIR}/fg_Llama-3.2-1B/generation_config.json"
+{
+  ...
+  "eos_token_id": [128001, 128256],   # <|end_of_text|>=128001 + <|im_end|>=128256
+  ...
+}
+```
+
+The converted tokenizer's chat-template renders one `<|im_end|>` per assistant
+turn -- there is no need to inject a chat template at training time anymore.
+
+#### Instruction-tuned models -- convert as-is
+
+Models that ship chat-tuned (e.g. Llama-3.2-1B-Instruct) already have a chat
+template installed and a list-valued `eos_token_id` -- Llama 3 Instruct uses
+`[128001, 128008, 128009]` (`<|end_of_text|>`, `<|eom_id|>`, `<|eot_id|>`).
+**Do not add ChatML on top:** that would clobber the existing template and
+replace the EOS the model was trained with. Just convert:
+
+```bash
+forgather convert --dtype bfloat16 \
+    "${MODELS_DIR}/Llama-3.2-1B-Instruct" \
+    "${MODELS_DIR}/fg_Llama-3.2-1B-Instruct"
+```
+
+Convert preserves the source's chat template and the full `eos_token_id` list:
+
+```bash
+$ cat "${MODELS_DIR}/fg_Llama-3.2-1B-Instruct/generation_config.json"
+{
+  ...
+  "eos_token_id": [128001, 128008, 128009],   # all three preserved
+  ...
+}
+```
+
+By default convert adds a `[PAD]` token when the source defines none (Llama 3
+Instruct does not define a pad), which grows the vocabulary by 1. Pass
+`--skip-default-tokens` to leave the tokenizer untouched if you'd rather
+manage padding yourself.
+
+#### Choose which model the rest of this tutorial points at
+
+Pick one of the converted models and set `FG_MODEL` so the training commands
+below resolve to it:
+
+```bash
+# 7B examples in the rest of this README assume:
+FG_MODEL="${MODELS_DIR}/fg_Llama-2-7b"
+
+# 1B examples assume:
+FG_MODEL_1B="${MODELS_DIR}/fg_Llama-3.2-1B"        # or fg_Llama-3.2-1B-Instruct
+```
+
+#### Reverse: Forgather → HuggingFace
+
+```bash
+forgather convert --dtype bfloat16 "${FG_MODEL}" "${MODELS_DIR}/Llama-2-7b-roundtrip"
+```
+
+### Preparing a From-Scratch Forgather Model
+
+If your starting point is a model you pretrained with Forgather (rather than
+an HF model you ran through `forgather convert`), the parallel tool is
+`forgather finalize`. It grafts on a chat template and any additional tokens,
+synthesizes a `generation_config.json` whose `eos_token_id` lists every stop
+token (original + ChatML), and writes a clean handoff directory ready for
+fine-tuning.
+
+```bash
+forgather finalize \
+    /path/to/my_pretrain/output_models/checkpoint_dir \
+    "${MODELS_DIR}/fg_my_pretrain_chat" \
+    --add-tokens add_tokens_config/chatml.yaml \
+    -t chat_templates/chatml.jinja
+```
+
+This is the same `add_tokens_config/chatml.yaml` and
+`chat_templates/chatml.jinja` used by the convert flow above; the resulting
+model has identical EOS / chat-template wiring. After finalize, point training
+at the new directory:
+
+```bash
+forgather -t "llama3_1b/1gpu_default.yaml" train -M "${MODELS_DIR}/fg_my_pretrain_chat"
+```
+
+Pass `--keep-optimizer` to also carry optimizer state from the source's
+latest checkpoint into the destination, which can help avoid a rocky restart.
+See [docs/guides/finalize-model.md](../../../docs/guides/finalize-model.md)
+and [docs/guides/add-tokens-config.md](../../../docs/guides/add-tokens-config.md)
+for the full reference.
 
 ### Directory Structure Overview
 
 This tutorial uses the following directory structure:
 
 ```
-~/forgather/                          # Forgather installation
-├── examples/finetune/samantha/       # Tutorial project (working directory)
-├── tools/convert_model/example_additional_tokens.yaml    # Additional tokens config
-└── chat_templates/chatml.jinja       # Chat template
+~/forgather/                              # Forgather installation
+├── examples/finetune/samantha/           # Tutorial project (working directory)
+├── add_tokens_config/chatml.yaml         # Bundled --add-tokens config for ChatML
+└── chat_templates/chatml.jinja           # Bundled ChatML chat template
 
-~/models/                             # Models (you create this)
-├── mistral_7b/                       # Downloaded HuggingFace model
-└── fg_mistral_7b/                    # Converted Forgather model
-    ├── pytorch_model-*.bin           # Model weights
-    ├── checkpoints/                  # Training checkpoints
+~/models/                                 # Model store (you maintain this)
+├── meta-llama--Llama-2-7b-hf/            # Downloaded HuggingFace model
+└── fg_Llama-2-7b/                        # Converted Forgather model
+    ├── pytorch_model-*.bin               # Model weights
+    ├── config.json                       # Model architecture config
+    ├── tokenizer*.json                   # Tokenizer (with chat template baked in)
+    ├── generation_config.json            # eos_token_id lists ALL stop tokens
+    ├── *.py                              # Generated model source
+    ├── checkpoints/                      # Training checkpoints (created during training)
     │   ├── checkpoint-100/
     │   ├── checkpoint-200/
     │   └── ...
-    └── runs/                         # Training logs
-        └── run_2025-10-19.../
+    └── runs/                             # Training logs
+        └── run_2026-04-26.../
 ```
 
-**Important paths**:
-- Work from: `examples/finetune/samantha/`
-- Chat template: `../../../chat_templates/chatml.jinja` (relative from tutorial dir)
-- Token definitions: `../../../tools/convert_model/example_additional_tokens.yaml` (relative from tutorial dir)
+**Important paths** (referenced from the tutorial directory
+`examples/finetune/samantha/`):
+
+- Chat template: `../../../chat_templates/chatml.jinja`
+- Add-tokens config: `../../../add_tokens_config/chatml.yaml`
+
+The `forgather convert` and `forgather finalize` commands above are run from
+the **repo root**, where the `add_tokens_config/` and `chat_templates/`
+directories sit one level down. From inside `examples/finetune/samantha/` use
+the `../../../` prefixes shown here.
 
 ## Configuration Tour (Optional)
 
@@ -140,7 +273,7 @@ While not exhaustive, this is a sampling of the configurations used by this proj
 - [src/samantha.py](../../datasets/QuixiAI/src/samantha.py) -- Dataset preprocessing implementation
 
 **Chat Template**
-- [chat_templates/chatml_eos.jinja](../../../chat_templates/chatml_eos.jinja) -- [ChatML](https://github.com/openai/openai-python/blob/release-v0.28.0/chatml.md) chat template definition
+- [chat_templates/chatml.jinja](../../../chat_templates/chatml.jinja) -- [ChatML](https://github.com/openai/openai-python/blob/release-v0.28.0/chatml.md) chat template definition
 
 ### Interactive Forgather CLI
 If you have not already installed the syntax-highlighting plugins for vim / VS Code, follow the instructions in "syntax_highlighting/" This will make the config files much more readable.
@@ -328,11 +461,7 @@ Once you have verified that a given config will run, you can train on the full d
 forgather -t "llama2_7b/1gpu_default.yaml" train -M "${FG_MODEL}"
 
 # Train the Llama-3.2-1B model (seq_len = 4096)
-forgather -t "llama3_1b/1gpu_default.yaml" train -M "${FG_MODEL}"
-
-# To train a native HF model (i.e. one not converted via 'forgather convert'),
-# pass a chat template explicitly:
-forgather -t "llama2_7b/1gpu_default.yaml" train -M "${SRC_MODEL}" --chat-template "../../../chat_templates/chatml_eos.jinja"
+forgather -t "llama3_1b/1gpu_default.yaml" train -M "${FG_MODEL_1B}"
 ```
 
 #### Single GPU, 16 GB
@@ -962,6 +1091,106 @@ You may see warnings about deprecated `huggingface-cli download` syntax. These c
 
 ## Finalizing the Model
 
-When you are done training and wish to consolidate everything to use with external tools (or share), you will want to copy the latest checkpoint weights into the root of the model directory -- most tools don't know how to find the latest checkpoint and may load the initial weights instead.
+When training completes, the output directory contains the latest weights plus
+an accumulation of training-only state: multiple checkpoints, an optimizer
+state file per checkpoint, scheduler / dataset / RNG / trainer state files,
+training logs, and eval results. Most external tools and chat clients expect
+a flat HuggingFace-shaped directory with weights at the root. Use
+`forgather finalize` to consolidate to a clean handoff directory while
+leaving the original training output untouched (so reproducing the run is
+still possible):
 
-You can then discard the additional checkpoints and logging data, if you don't need them for anything else.
+```bash
+# Default: trim to the latest checkpoint, drop scheduler / dataset / RNG /
+# trainer state, and create root-level symlinks pointing into the kept
+# checkpoint dir so HuggingFace AutoModel.from_pretrained(dest) works.
+forgather finalize \
+    "${FG_MODEL}" \
+    "${MODELS_DIR}/fg_samantha_final"
+
+# Pick a specific (non-latest) checkpoint:
+forgather finalize \
+    "${FG_MODEL}" \
+    "${MODELS_DIR}/fg_samantha_step5000" \
+    -c "${FG_MODEL}/checkpoints/checkpoint-5000"
+
+# Carry optimizer state too (warm-start a follow-on fine-tune):
+forgather finalize \
+    "${FG_MODEL}" \
+    "${MODELS_DIR}/fg_samantha_warm" \
+    --keep-optimizer
+
+# Single-copy layout: weights at the root, no checkpoints/ subdirectory.
+forgather finalize \
+    "${FG_MODEL}" \
+    "${MODELS_DIR}/fg_samantha_flat" \
+    --root-copy
+```
+
+The destination is HuggingFace-loadable directly (the Forgather modelling
+code is shipped alongside the weights, hence `trust_remote_code=True`):
+
+```bash
+python -c "from transformers import AutoModelForCausalLM; \
+    m = AutoModelForCausalLM.from_pretrained('${MODELS_DIR}/fg_samantha_final', \
+                                             trust_remote_code=True)"
+```
+
+See [docs/guides/finalize-model.md](../../../docs/guides/finalize-model.md)
+for the full reference, including how `--add-tokens` and `--chat-template-path`
+can be combined with finalize to update the chat template or graft on
+additional tokens at the same time.
+
+### Exporting back to native HuggingFace format
+
+`forgather finalize` produces a directory that's HF-loadable but still
+ships Forgather's custom modelling code (the `*.py` files alongside the
+weights, accessed via `trust_remote_code=True`). For tools that won't
+load remote code -- or for sharing with a wider audience that expects a
+stock `LlamaForCausalLM` -- run `forgather convert` on the finalized
+output to round-trip back into native HuggingFace Llama format:
+
+```bash
+# Auto-detects direction from the source's hf_model_type metadata
+# (set during the original HF -> Forgather conversion).
+forgather convert --dtype bfloat16 \
+    "${MODELS_DIR}/fg_samantha_final" \
+    "${MODELS_DIR}/Llama-2-7b-samantha"
+```
+
+The export preserves:
+
+- The full `eos_token_id` list in `generation_config.json` -- including
+  any ChatML stop tokens grafted on during the original conversion or
+  finalize step. Verify with:
+
+  ```bash
+  $ cat "${MODELS_DIR}/Llama-2-7b-samantha/generation_config.json"
+  {
+    ...
+    "eos_token_id": [2, 32000],   # original </s> + ChatML <|im_end|>
+    ...
+  }
+  ```
+
+- All other generation parameters from the source's
+  `generation_config.json` (`do_sample`, `temperature`, `top_p`,
+  `repetition_penalty`, etc.). The exporter assigns the source's
+  `GenerationConfig` to the rebuilt HF model before saving, so
+  `save_pretrained` writes a faithful copy rather than synthesizing
+  one from `model.config` alone.
+
+- The chat template, tokenizer (including any added tokens / pad), and
+  the model's full vocabulary.
+
+The exported directory is loadable with vanilla HuggingFace -- no
+`trust_remote_code` argument needed:
+
+```bash
+python -c "from transformers import AutoModelForCausalLM; \
+    m = AutoModelForCausalLM.from_pretrained('${MODELS_DIR}/Llama-2-7b-samantha')"
+```
+
+For background on why the multi-token EOS list matters and how
+`generate()` actually uses it, see
+[docs/guides/eos-and-generate-stopping.md](../../../docs/guides/eos-and-generate-stopping.md).

@@ -46,9 +46,13 @@ forgather -t pp.yaml train --pipeline-schedule ScheduleZBVZeroBubble
 # Test the finetune template with model from pretrain/small-llm project using DDP
 # The default dataset is Samantha, so this will produce a micro-Samantha.
 
-# First assign the model a chat-template
-forgather update-vocab --skip-default-tokens -t ../../chat_templates/chatml_eos.jinja ../pretrain/small-llm/output_models/sllm
+# First produce a clean fine-tuning handoff directory: graft on the ChatML
+# tokens, install the chat template, and synthesize a generation_config.json
+# whose eos_token_id list contains both the original EOS and <|im_end|>.
+forgather finalize ../pretrain/small-llm/output_models/sllm ../pretrain/small-llm/output_models/sllm_chat \
+    --add-tokens ../../add_tokens_config/chatml.yaml \
+    -t ../../chat_templates/chatml.jinja
 
 # Then train the model for 3 epochs on Samantha
-forgather -t finetune_v2.yaml --model-id-or-path ../pretrain/small-llm/output_models/sllm --epochs 3 --trainer-type ddp
+forgather -t finetune_v2.yaml --model-id-or-path ../pretrain/small-llm/output_models/sllm_chat --epochs 3 --trainer-type ddp
 ```
