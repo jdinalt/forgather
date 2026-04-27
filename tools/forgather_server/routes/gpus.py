@@ -81,15 +81,32 @@ def list_gpus():
 
 @router.websocket("/gpus/stream")
 async def stream_gpus(ws: WebSocket):
-    """Push GPU snapshots on a ~2 s cadence until the client disconnects."""
+    """Push GPU snapshots on a ~2 s cadence until the client disconnects.
+
+    ``gpu_monitor.snapshot()`` is a synchronous NVML call. Running it
+    directly in the asyncio event loop blocks every other request for
+    the duration of the call; almost always microseconds, but pynvml
+    can occasionally hang briefly under driver contention. Hop to a
+    thread so that a slow snapshot never stalls the rest of the
+    server.
+
+    Any exception other than the normal ``WebSocketDisconnect`` is
+    logged with a traceback before the connection drops — without
+    this, prior intermittent disconnects left no forensic trail. The
+    client reconnects with exponential backoff, so a one-shot
+    failure heals on its own.
+    """
     await ws.accept()
     try:
         while True:
-            payload = [_to_model(g).model_dump() for g in gpu_monitor.snapshot()]
+            snap = await asyncio.to_thread(gpu_monitor.snapshot)
+            payload = [_to_model(g).model_dump() for g in snap]
             await ws.send_json(payload)
             await asyncio.sleep(STREAM_INTERVAL_SECONDS)
     except WebSocketDisconnect:
         pass
+    except Exception:
+        log.exception("gpus/stream loop crashed; client will reconnect")
 
 
 class GpuKillRequest(BaseModel):

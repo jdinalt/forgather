@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, GpuInfo, GpuPolicy, Job } from "../api";
 import { ContextMenu } from "./ContextMenu";
 
@@ -12,6 +12,13 @@ interface GpuMenuTarget {
 /** Subscribe to the /api/gpus/stream WebSocket. Falls back to a single REST
  *  fetch on connect failure so the panel still shows something useful.
  *
+ *  Auto-reconnects with exponential backoff (500ms → 10s cap, reset to 500ms
+ *  on a healthy message) so transient drops — laptop sleep, SSH tunnel reset,
+ *  brief NVML hangs — heal on their own without needing a manual reload. The
+ *  ``stale`` flag goes true the moment the socket closes and clears on the
+ *  next successful message, so the user sees an honest live/stale indicator
+ *  during the gap.
+ *
  *  In Vite dev mode the WebSocket target is the dev server (5173); the proxy
  *  config in vite.config.ts forwards it to the backend on 8765. In production
  *  (backend serves the SPA directly) the origin already matches. */
@@ -23,37 +30,50 @@ function useGpuStream(): {
   const [data, setData] = useState<GpuInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    let closed = false;
+    let cancelled = false;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let backoffMs = 500;
+    const BACKOFF_CAP = 10_000;
+
     // Prime with a REST call so the first paint has data before the WS opens.
     api.listGpus().then(
-      (d) => !closed && setData(d),
-      (e) => !closed && setError(String(e)),
+      (d) => !cancelled && setData(d),
+      (e) => !cancelled && setError(String(e)),
     );
 
-    const ws = new WebSocket(api.gpuStreamUrl());
-    wsRef.current = ws;
-    ws.onmessage = (ev) => {
-      try {
-        const parsed: GpuInfo[] = JSON.parse(ev.data);
-        setData(parsed);
-        setError(null);
-        setStale(false);
-      } catch (e) {
-        setError(String(e));
-      }
+    const connect = () => {
+      if (cancelled) return;
+      ws = new WebSocket(api.gpuStreamUrl());
+      ws.onmessage = (ev) => {
+        try {
+          const parsed: GpuInfo[] = JSON.parse(ev.data);
+          setData(parsed);
+          setError(null);
+          setStale(false);
+          backoffMs = 500;
+        } catch (e) {
+          setError(String(e));
+        }
+      };
+      ws.onerror = () => {
+        setStale(true);
+      };
+      ws.onclose = () => {
+        if (cancelled) return;
+        setStale(true);
+        reconnectTimer = setTimeout(connect, backoffMs);
+        backoffMs = Math.min(backoffMs * 2, BACKOFF_CAP);
+      };
     };
-    ws.onerror = () => {
-      setStale(true);
-    };
-    ws.onclose = () => {
-      if (!closed) setStale(true);
-    };
+    connect();
+
     return () => {
-      closed = true;
-      ws.close();
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      ws?.close();
     };
   }, []);
 
