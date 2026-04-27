@@ -93,6 +93,7 @@ class GpuInfo:
     mem_util_pct: Optional[int] = None
     power_w: Optional[float] = None
     temp_c: Optional[int] = None
+    fan_pct: Optional[int] = None
     processes: List[GpuProcess] = field(default_factory=list)
     source: str = "nvml"  # "nvml" or "torch" — lets the UI hint on missing fields
     # Hostname of the node these stats came from. Defaults to the local
@@ -191,6 +192,13 @@ def _snapshot_nvml() -> Optional[List[GpuInfo]]:
                 info.temp_c = int(
                     pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU)
                 )
+            except Exception:
+                pass
+            try:
+                # Cards without a fan (datacenter passive coolers, mobile parts
+                # on shared chassis fans) raise NotSupported here — keep None
+                # in that case so the UI can hide the field.
+                info.fan_pct = int(pynvml.nvmlDeviceGetFanSpeed(h))
             except Exception:
                 pass
             try:

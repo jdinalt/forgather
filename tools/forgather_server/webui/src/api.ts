@@ -116,6 +116,7 @@ export interface GpuInfo {
   mem_util_pct: number | null;
   power_w: number | null;
   temp_c: number | null;
+  fan_pct: number | null;
   processes: GpuProcess[];
   source: string;
   node: string;

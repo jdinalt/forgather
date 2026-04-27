@@ -34,6 +34,7 @@ class GpuInfoModel(BaseModel):
     mem_util_pct: Optional[int] = None
     power_w: Optional[float] = None
     temp_c: Optional[int] = None
+    fan_pct: Optional[int] = None
     processes: List[GpuProcessModel] = []
     source: str = "nvml"
     node: str = ""
@@ -62,6 +63,7 @@ def _to_model(g: gpu_monitor.GpuInfo) -> GpuInfoModel:
         mem_util_pct=g.mem_util_pct,
         power_w=g.power_w,
         temp_c=g.temp_c,
+        fan_pct=g.fan_pct,
         processes=[
             GpuProcessModel(pid=p.pid, used_mem_bytes=p.used_mem_bytes)
             for p in g.processes

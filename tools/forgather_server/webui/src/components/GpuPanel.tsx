@@ -362,8 +362,9 @@ function GpuCard({
       )}
 
       <div className="gpu-row">
-        {g.temp_c !== null && <span>{g.temp_c}°C</span>}
-        {g.power_w !== null && <span>{Math.round(g.power_w)}W</span>}
+        {g.temp_c !== null && <span title="Temperature">🌡️ {g.temp_c}°C</span>}
+        {g.power_w !== null && <span title="Power draw">⚡ {Math.round(g.power_w)}W</span>}
+        {g.fan_pct !== null && <span title="Fan speed">🌀 {g.fan_pct}%</span>}
         <span className={"gpu-status " + (idle ? "idle" : "busy")}>
           {idle ? "idle" : "busy"}
         </span>
