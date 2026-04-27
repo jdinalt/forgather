@@ -17,12 +17,22 @@ untrusted network.
 
 The `forgather` CLI can talk to a running server directly — no browser needed. All commands accept `--server URL` or the `FORGATHER_SERVER_URL` environment variable; both default to `http://127.0.0.1:8765`.
 
-**Submit a training job from the terminal:**
+For a workflow-oriented walkthrough with recipes, see
+[guides/server-cli.md](guides/server-cli.md). The reference below is a
+quick cheat-sheet.
+
+**Submit jobs from the terminal:**
 
 ```bash
 # Inside a project directory
 forgather -t train.yaml train --enqueue
 forgather -t train.yaml train --enqueue --priority 5 --requested-gpus 2
+forgather eval test c4 -M output_models/my_model --enqueue
+forgather tb --enqueue --port 6006
+forgather inf server --enqueue -m output_models/my_model
+forgather convert --enqueue --src output_models/my_model --dst /tmp/hf_export
+forgather finalize --enqueue --source output_models/my_model --dest /tmp/final
+forgather mkdocs -f docs/mkdocs.yml --enqueue
 ```
 
 **Queue and scheduler:**

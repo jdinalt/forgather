@@ -175,11 +175,62 @@ def tb_cmd(args):
     else:
         output_dir = os.path.abspath(config_meta["output_dir"])
 
+    if getattr(args, "enqueue", False):
+        job_params = {
+            "logdir": output_dir,
+            "port": args.port,
+            "bind_all": bool(args.bind_all),
+            "reload_multifile": bool(args.reload_multifile),
+        }
+        if args.host and not args.bind_all:
+            job_params["host"] = args.host
+        if args.window_title:
+            job_params["window_title"] = args.window_title
+        if args.reload_interval is not None:
+            job_params["reload_interval"] = args.reload_interval
+        if args.samples_per_plugin:
+            job_params["samples_per_plugin"] = args.samples_per_plugin
+        from .server_client import ServerClient, ServerUnreachable
+
+        client = ServerClient.from_args(args)
+        try:
+            item = client.enqueue_job(
+                project_dir=os.path.abspath(args.project_dir),
+                config=f"tensorboard:{args.port}",
+                job_type="tensorboard",
+                job_params=job_params,
+                requested_gpus=0,
+                priority=args.priority,
+            )
+        except ServerUnreachable as e:
+            import sys
+
+            print(str(e), file=sys.stderr)
+            raise SystemExit(1)
+        print(
+            f"queued: {item['queue_id']} (tensorboard:{args.port}, priority={item['priority']})"
+        )
+        return
+
     cmd_args = [
         "tensorboard",
         "--logdir",
         output_dir,
+        "--port",
+        str(args.port),
     ]
+    if args.bind_all:
+        cmd_args.append("--bind_all")
+    elif args.host:
+        cmd_args.extend(["--host", args.host])
+    if args.window_title:
+        cmd_args.extend(["--window_title", args.window_title])
+    if args.reload_interval is not None:
+        cmd_args.extend(["--reload_interval", str(args.reload_interval)])
+    if args.reload_multifile:
+        cmd_args.append("--reload_multifile=true")
+    if args.samples_per_plugin:
+        cmd_args.extend(["--samples_per_plugin", args.samples_per_plugin])
 
     if len(args.remainder) > 1 and args.remainder[0] == "--":
         cmd_args.extend(args.remainder[1:])

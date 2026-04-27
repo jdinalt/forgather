@@ -34,10 +34,6 @@ def create_job_parser(global_args):
             name, help=help_text, formatter_class=RawTextHelpFormatter
         )
         p.add_argument("job_id", help="Job ID (queue_id or job_id)")
-        if name == "force-kill":
-            p.add_argument(
-                "--yes", action="store_true", help="Required: confirm SIGKILL"
-            )
 
     fk = subparsers.add_parser(
         "force-kill",

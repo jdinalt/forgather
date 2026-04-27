@@ -96,6 +96,17 @@ def show_cmd(args):
 
 
 def test_cmd(args):
+    if getattr(args, "enqueue", False):
+        if args.devices:
+            print(
+                "error: --enqueue and --devices are mutually exclusive (server picks GPUs)",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        if args.dry_run:
+            print("error: --dry-run is not meaningful with --enqueue", file=sys.stderr)
+            raise SystemExit(1)
+
     forgather_dir = _forgather_dir()
     paths = eval_search_paths(forgather_dir)
     try:
@@ -103,6 +114,45 @@ def test_cmd(args):
     except LookupError as e:
         raise SystemExit(f"Error: {e}")
     model_path = _resolve_model_path(args)
+
+    if getattr(args, "enqueue", False):
+        job_params = {
+            "eval_project": project_dir,
+            "eval_template": template,
+            "model_path": model_path,
+            "trainer": args.trainer,
+            "max_steps": args.max_steps,
+            "dtype": args.dtype,
+            "attn_implementation": args.attn_implementation,
+            "compile": bool(args.compile),
+        }
+        if args.batch_size is not None:
+            job_params["batch_size"] = args.batch_size
+        if args.max_length is not None:
+            job_params["max_length"] = args.max_length
+        if args.checkpoint:
+            job_params["checkpoint_path"] = args.checkpoint
+        if args.no_checkpoint:
+            job_params["no_checkpoint"] = True
+        if args.output_dir:
+            job_params["output_dir"] = args.output_dir
+        from .server_client import ServerClient, ServerUnreachable
+
+        client = ServerClient.from_args(args)
+        try:
+            item = client.enqueue_job(
+                project_dir=project_dir,
+                config=template,
+                job_type="eval",
+                job_params=job_params,
+                requested_gpus=1,
+                priority=args.priority,
+            )
+        except ServerUnreachable as e:
+            print(str(e), file=sys.stderr)
+            raise SystemExit(1)
+        print(f"queued: {item['queue_id']} ({args.name}, priority={item['priority']})")
+        return
 
     eval_script = os.path.join(forgather_dir, "scripts", "eval_script.py")
 

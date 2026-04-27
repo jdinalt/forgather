@@ -88,6 +88,28 @@ class ServerClient:
 
     # Queue
 
+    def enqueue_job(
+        self,
+        *,
+        project_dir,
+        config,
+        job_type,
+        job_params,
+        requested_gpus=0,
+        priority=0,
+        dynamic_args=None,
+    ):
+        body = {
+            "project_dir": project_dir,
+            "config": config,
+            "dynamic_args": dynamic_args or {},
+            "requested_gpus": requested_gpus,
+            "priority": priority,
+            "job_type": job_type,
+            "job_params": job_params,
+        }
+        return self._post("/queue", body).json()
+
     def enqueue_training(
         self, project_dir, config, *, dynamic_args, priority, requested_gpus
     ):
@@ -147,29 +169,38 @@ class ServerClient:
 
     async def stream_tty(self, job_id, follow=True):
         import websockets
+        import websockets.exceptions
 
         ws_url = (
             self._ws_url(f"/jobs/{job_id}/tty")
             + f"?follow={'true' if follow else 'false'}"
         )
         try:
-            async with websockets.connect(ws_url) as ws:
-                async for message in ws:
-                    if isinstance(message, bytes):
-                        yield ("bytes", message)
-                    else:
-                        try:
-                            frame = json.loads(message)
-                            if isinstance(frame, dict) and frame.get("type") == "error":
-                                yield ("error", frame.get("detail", message))
-                            else:
-                                yield ("bytes", message.encode())
-                        except Exception:
-                            yield ("bytes", message.encode())
+            ws = await websockets.connect(ws_url)
         except OSError:
             raise ServerUnreachable(
                 f"could not reach forgather-server at {self.base}; is it running? (start with: forgather server)"
             )
+        try:
+            async for message in ws:
+                if isinstance(message, bytes):
+                    yield ("bytes", message)
+                else:
+                    try:
+                        frame = json.loads(message)
+                        if isinstance(frame, dict) and frame.get("type") == "error":
+                            yield ("error", frame.get("detail", message))
+                        else:
+                            yield ("bytes", message.encode())
+                    except Exception:
+                        yield ("bytes", message.encode())
+        except websockets.exceptions.ConnectionClosed:
+            return
+        finally:
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     # GPUs
 

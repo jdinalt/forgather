@@ -170,11 +170,19 @@ The forgather server exposes a queue, scheduler, and GPU policy manager reachabl
 
 ```bash
 forgather -t config.yaml train --enqueue [--priority N] [--requested-gpus N]
+forgather eval test <name> -M <model> --enqueue [--priority N]
+forgather tb --enqueue [--port 6006] [--priority N]
+forgather inf server --enqueue -m <model> [--port 8137] [--priority N]
+forgather convert --enqueue --src <src> --dst <dst> [--priority N]
+forgather finalize --enqueue --source <src> --dest <dst> [--priority N]
+forgather mkdocs -f mkdocs.yml [--enqueue] [--priority N]
 forgather sched status | list | pause | resume | cancel <id> | cleanup [<id>]
 forgather job status | save | stop | save-stop | abort | kill | force-kill | tail | dump <id>
 forgather gpu status | disable | enable | priority | kill <idx>
 # All accept --server URL or $FORGATHER_SERVER_URL (default: http://127.0.0.1:8765)
 ```
+
+All `--enqueue`-capable commands accept `--priority N` and `--server URL`; non-training enqueues (eval/tb/inf/convert/finalize/mkdocs) build `job_params` matching their webui submit modals.
 
 ### Inference
 

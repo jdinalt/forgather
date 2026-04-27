@@ -32,6 +32,11 @@ def server_cmd(args):
     Args:
         args: Parsed arguments with remainder containing forwarded args
     """
+    if args.remainder and any(
+        t == "--enqueue" or t.startswith("--enqueue=") for t in args.remainder
+    ):
+        return _enqueue_inference(args)
+
     # Get path to server.py script
     script_path = _get_script_path("server.py")
 
@@ -107,3 +112,69 @@ def _get_script_path(script_name):
         )
 
     return script_path
+
+
+def _enqueue_inference(args):
+    import argparse
+
+    p = argparse.ArgumentParser(prog="forgather inf server --enqueue", add_help=True)
+    p.add_argument("--enqueue", action="store_true", required=True)
+    p.add_argument("-m", "--model", required=True)
+    p.add_argument("-p", "--port", type=int, default=8137)
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--dtype", default="bfloat16")
+    p.add_argument(
+        "--from-checkpoint",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    p.add_argument("--compile", action="store_true")
+    p.add_argument("--disable-kv-cache", action="store_true")
+    p.add_argument("--attn-implementation", default=None)
+    p.add_argument("--cache-implementation", default=None)
+    p.add_argument("--checkpoint-path", default=None)
+    p.add_argument("--chat-template", default=None)
+    p.add_argument("--compile-args", default=None)
+    p.add_argument("--priority", type=int, default=0)
+    p.add_argument("--server", default=None)
+    sub = p.parse_args(args.remainder)
+
+    job_params = {
+        "model_path": os.path.abspath(sub.model),
+        "port": sub.port,
+        "host": sub.host,
+        "dtype": sub.dtype,
+        "from_checkpoint": bool(sub.from_checkpoint),
+        "compile": bool(sub.compile),
+        "disable_kv_cache": bool(sub.disable_kv_cache),
+    }
+    if sub.attn_implementation:
+        job_params["attn_implementation"] = sub.attn_implementation
+    if sub.cache_implementation:
+        job_params["cache_implementation"] = sub.cache_implementation
+    if sub.checkpoint_path:
+        job_params["checkpoint_path"] = sub.checkpoint_path
+    if sub.chat_template:
+        job_params["chat_template"] = sub.chat_template
+    if sub.compile_args:
+        job_params["compile_args"] = sub.compile_args
+
+    from .server_client import ServerClient, ServerUnreachable
+
+    client = ServerClient(sub.server)
+    try:
+        item = client.enqueue_job(
+            project_dir=os.path.abspath(args.project_dir),
+            config=f"inference:{sub.port}",
+            job_type="inference",
+            job_params=job_params,
+            requested_gpus=1,
+            priority=sub.priority,
+        )
+    except ServerUnreachable as e:
+        print(str(e), file=sys.stderr)
+        raise SystemExit(1)
+    print(
+        f"queued: {item['queue_id']} (inference:{sub.port}, priority={item['priority']})"
+    )
+    return 0

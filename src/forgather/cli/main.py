@@ -86,6 +86,7 @@ def get_subcommand_registry():
     from .gpu_args import create_gpu_parser
     from .job_args import create_job_parser
     from .logs_args import create_logs_parser
+    from .mkdocs_args import create_mkdocs_parser
     from .model_args import create_model_parser
     from .plot_args import create_plot_parser
     from .project_args import create_project_parser
@@ -130,6 +131,7 @@ def get_subcommand_registry():
         "sched": create_sched_parser,
         "job": create_job_parser,
         "gpu": create_gpu_parser,
+        "mkdocs": create_mkdocs_parser,
     }
 
 
@@ -475,6 +477,10 @@ def main():
                 from .gpu import gpu_cmd
 
                 gpu_cmd(args)
+            case "mkdocs":
+                from .mkdocs import mkdocs_cmd
+
+                mkdocs_cmd(args)
             case _:
                 index_cmd(args)
     except SystemExit:

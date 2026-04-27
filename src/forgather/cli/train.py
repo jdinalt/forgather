@@ -12,6 +12,13 @@ from .utils import BaseCommand, assert_project_class
 
 def train_cmd(args):
     """Run configuration with train script."""
+    if args.enqueue and args.devices:
+        print(
+            "error: --enqueue and --devices are mutually exclusive (server picks GPUs)",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
     assert_project_class(args, "type.training_script")
 
     cmd = BaseCommand(args)
@@ -25,12 +32,6 @@ def train_cmd(args):
     nproc_per_node = config_meta["nproc_per_node"]
 
     if args.enqueue:
-        if args.devices:
-            print(
-                "error: --enqueue and --devices are mutually exclusive (server picks GPUs)",
-                file=sys.stderr,
-            )
-            sys.exit(1)
         from .server_client import ServerClient, ServerUnreachable
 
         client = ServerClient.from_args(args)

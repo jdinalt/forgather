@@ -3,6 +3,7 @@
 Practical guides for common tasks and tools.
 
 - **[Interactive CLI](interactive-cli.md)** - Interactive shell with tab completion, editor integration, and multi-file editing
+- **[Forgather Server from the CLI](server-cli.md)** - Talk to a running forgather-server from the terminal: `--enqueue` for training/eval/tb/inference/convert/finalize/mkdocs, plus `forgather sched` / `job` / `gpu` for queue, log, and GPU control
 - **[Model Conversion](model-conversion.md)** - Bidirectional HuggingFace / Forgather model conversion
 - **[Creating a Model Project](creating-a-model-project.md)** - Define a custom model architecture from scratch
 - **[Creating a Dataset Project](creating-a-dataset-project.md)** - Load, pack, and interleave HuggingFace datasets

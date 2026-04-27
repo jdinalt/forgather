@@ -1,0 +1,45 @@
+"""Argument parser for the `mkdocs` subcommand."""
+
+import argparse
+from argparse import RawTextHelpFormatter
+
+
+def create_mkdocs_parser(_global_args):
+    parser = argparse.ArgumentParser(
+        prog="forgather mkdocs",
+        description="Run mkdocs serve (locally or via the forgather-server queue)",
+        formatter_class=RawTextHelpFormatter,
+    )
+    parser.add_argument("-f", "--config-file", required=True, help="Path to mkdocs.yml")
+    parser.add_argument("-p", "--port", type=int, default=8000)
+    parser.add_argument("-H", "--host", default="127.0.0.1")
+    parser.add_argument("--strict", action="store_true")
+    parser.add_argument(
+        "--livereload",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable live-reload (default: on)",
+    )
+    parser.add_argument(
+        "--dirty", action="store_true", help="Only rebuild changed files"
+    )
+    parser.add_argument(
+        "-w",
+        "--watch",
+        action="append",
+        default=[],
+        help="Extra path to watch (repeatable)",
+    )
+    parser.add_argument(
+        "--enqueue", action="store_true", help="Submit to the forgather-server queue"
+    )
+    parser.add_argument("--priority", type=int, default=0)
+    parser.add_argument(
+        "--server", default=None, help="forgather-server URL (or $FORGATHER_SERVER_URL)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the local command without executing",
+    )
+    return parser
