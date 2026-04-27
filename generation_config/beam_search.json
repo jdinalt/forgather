@@ -1,0 +1,8 @@
+{
+  "max_tokens": 256,
+  "num_beams": 4,
+  "do_sample": false,
+  "early_stopping": true,
+  "length_penalty": 1.0,
+  "no_repeat_ngram_size": 3
+}

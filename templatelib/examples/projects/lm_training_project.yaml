@@ -572,7 +572,6 @@ optimizer_groups: &optimizer_groups
     step_cadence:
         names: "--step-cadence"
         type: float
-        default: 1.0
         help: "Scale log/eval/save intervals by this factor"
     peak_hardware_flops:
         names: "--peak-hardware-flops"

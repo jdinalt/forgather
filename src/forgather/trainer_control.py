@@ -33,6 +33,11 @@ class JobInfo:
     port: int
     pid: int
     started_at: float
+    # Optional fields published by newer TrainerControlCallback versions.
+    # Older ``endpoint.json`` files won't have them; ``from_dict`` tolerates
+    # that.
+    output_dir: Optional[str] = None
+    logging_dir: Optional[str] = None
 
     @property
     def endpoint_url(self) -> str:
@@ -48,6 +53,8 @@ class JobInfo:
             port=data["port"],
             pid=data["pid"],
             started_at=data["started_at"],
+            output_dir=data.get("output_dir"),
+            logging_dir=data.get("logging_dir"),
         )
 
 

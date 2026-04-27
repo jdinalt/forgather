@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from forgather.eval_config import TestConfig
+from forgather.eval_config import find_eval_config, iter_eval_configs
 from forgather.latent import Latent
 from forgather.meta_config import MetaConfig
 from forgather.project import Project
@@ -22,60 +22,6 @@ def _forgather_dir() -> str:
             return str(parent)
     # Fall back: three levels up (src/forgather/cli -> repo root)
     return str(here.parents[3])
-
-
-def _discover_eval_projects(search_paths):
-    """Yield (project_dir, MetaConfig) for each project under search_paths."""
-    for root in search_paths:
-        if not os.path.isdir(root):
-            continue
-        for dirpath, dirnames, filenames in os.walk(root):
-            # Skip hidden dirs
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-            if "meta.yaml" not in filenames:
-                continue
-            try:
-                meta = MetaConfig(dirpath)
-            except Exception:
-                continue
-            yield dirpath, meta
-
-
-def _iter_eval_configs(search_paths):
-    """Yield (name, project_dir, config_template, TestConfig) for every config
-    tagged with a ``type.evaluation`` config_class.
-
-    The config's ``main`` dict is loaded into a ``TestConfig`` dataclass so
-    optional fields (``default_batch_size`` / ``default_max_length`` /
-    ``default_stride``) pick up their library-level defaults when the YAML
-    does not set them.
-    """
-    for project_dir, meta in _discover_eval_projects(search_paths):
-        for template_name, _template_path in meta.find_templates(meta.config_prefix):
-            try:
-                proj = Project(template_name, project_dir)
-                cfg_class = Latent.materialize(proj.config.meta).get("config_class", "")
-            except Exception:
-                continue
-            if not cfg_class.startswith("type.evaluation"):
-                continue
-            try:
-                data = TestConfig(**proj())
-            except Exception:
-                continue
-            # Use eval_name if present, otherwise strip extension from template.
-            name = (
-                data.eval_name or os.path.splitext(os.path.basename(template_name))[0]
-            )
-            yield name, project_dir, template_name, data
-
-
-def _find_eval_config(name, search_paths):
-    for entry in _iter_eval_configs(search_paths):
-        cfg_name, project_dir, template, data = entry
-        if cfg_name == name:
-            return project_dir, template, data
-    raise SystemExit(f"Error: no eval config named '{name}' found in search paths")
 
 
 def _resolve_model_path(args):
@@ -116,7 +62,7 @@ def list_cmd(args):
     paths = eval_search_paths(forgather_dir)
     any_found = False
     print(f"{'NAME':<24} {'DESCRIPTION':<60} PATH")
-    for name, project_dir, template, data in _iter_eval_configs(paths):
+    for name, project_dir, template, data in iter_eval_configs(paths):
         any_found = True
         loc = f"{project_dir}:{template}"
         print(f"{name:<24} {data.description:<60} {loc}")
@@ -128,7 +74,10 @@ def list_cmd(args):
 def show_cmd(args):
     forgather_dir = _forgather_dir()
     paths = eval_search_paths(forgather_dir)
-    project_dir, template, data = _find_eval_config(args.name, paths)
+    try:
+        project_dir, template, data = find_eval_config(args.name, paths)
+    except LookupError as e:
+        raise SystemExit(f"Error: {e}")
     if args.pp:
         proj = Project(template, project_dir)
         print(proj.pp_config)
@@ -149,7 +98,10 @@ def show_cmd(args):
 def test_cmd(args):
     forgather_dir = _forgather_dir()
     paths = eval_search_paths(forgather_dir)
-    project_dir, template, _data = _find_eval_config(args.name, paths)
+    try:
+        project_dir, template, _data = find_eval_config(args.name, paths)
+    except LookupError as e:
+        raise SystemExit(f"Error: {e}")
     model_path = _resolve_model_path(args)
 
     eval_script = os.path.join(forgather_dir, "scripts", "eval_script.py")

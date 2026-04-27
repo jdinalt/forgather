@@ -9,7 +9,7 @@ dtype: "bfloat16"
 
 # Server configuration
 host: "127.0.0.1"
-port: 8000
+port: 8137
 log-level: "INFO"
 
 # Chat template - ChatML format for Samantha training

@@ -3,5 +3,5 @@
 -- block configs
 name: "Tiny Llama"
 description: "Learn how to train a LLM from scratch with Forgather"
-default_config: "train_tiny_llama.yaml"
+default_config: "v2.yaml"
 << endblock configs

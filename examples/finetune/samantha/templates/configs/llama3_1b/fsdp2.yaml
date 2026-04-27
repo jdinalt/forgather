@@ -11,7 +11,11 @@
     -- set ns.per_device_train_batch_size = batch_size | default(1)
 
     ## Trainer selection
-    -- set ns.trainer_type = trainer_type | default("fsdp2")
+    -- set ns.trainer_type = "fsdp2"
 
     ## Compile settings
     -- set ns.torch_compile = compile | default(False)
+
+[dynamic_args]
+    == super()
+    trainer_type: ~

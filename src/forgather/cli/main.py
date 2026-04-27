@@ -94,6 +94,7 @@ def get_subcommand_registry():
         create_convert_parser,
         create_finalize_parser,
         create_inf_parser,
+        create_server_parser,
     )
 
     return {
@@ -115,6 +116,7 @@ def get_subcommand_registry():
         "model": create_model_parser,
         "project": create_project_parser,
         "inf": create_inf_parser,
+        "server": create_server_parser,
         "convert": create_convert_parser,
         "finalize": create_finalize_parser,
         "checkpoint": create_checkpoint_parser,
@@ -170,6 +172,7 @@ def parse_args(args=None):
     convert_original_args = None  # Save original args for convert command
     finalize_t_workaround = False
     finalize_original_args = None  # Save original args for finalize command
+    server_original_args = None  # Save original args for server command
     removed_flags = []
 
     # Handle 'inf' command with --interactive/-i
@@ -215,6 +218,17 @@ def parse_args(args=None):
             ].startswith("-"):
                 args_for_global.pop(t_idx_in_full)
             args_list = args_for_global
+
+    # Handle 'server' command — forwards everything; `-p` means --port to the
+    # server, not the global --project-dir. Strip anything after `server` from
+    # what the global parser sees and preserve the original tokens verbatim.
+    # Only match the top-level `server` subcommand, not the `server` token
+    # inside `inf server ...`.
+    if "server" in args_list:
+        srv_idx = args_list.index("server")
+        if srv_idx == 0 or args_list[srv_idx - 1] != "inf":
+            server_original_args = args_list[srv_idx + 1 :]
+            args_list = args_list[: srv_idx + 1]
 
     # Handle 'finalize' command with -t (same conflict as convert; -t is the
     # finalize chat-template-path flag)
@@ -288,11 +302,11 @@ def parse_args(args=None):
     subcommand_parser = registry[subcommand](global_args)
 
     try:
-        # For convert and finalize commands, just pass all args as remainder without parsing
-        if subcommand in ["convert", "finalize"]:
-            # Create a minimal namespace with remainder containing all original args
+        # For convert, finalize, and server commands, pass all args as remainder
+        # without parsing. Their flags conflict with global flags (e.g. server's
+        # -p/--port vs global -p/--project-dir).
+        if subcommand in ["convert", "finalize", "server"]:
             sub_args = argparse.Namespace()
-            # Use saved original args if available (when -t was present), otherwise use subcommand_args
             if subcommand == "convert":
                 sub_args.remainder = (
                     convert_original_args
@@ -303,6 +317,12 @@ def parse_args(args=None):
                 sub_args.remainder = (
                     finalize_original_args
                     if finalize_original_args is not None
+                    else subcommand_args
+                )
+            elif subcommand == "server":
+                sub_args.remainder = (
+                    server_original_args
+                    if server_original_args is not None
                     else subcommand_args
                 )
             else:
@@ -409,6 +429,10 @@ def main():
                 from .inference import inf_cmd
 
                 inf_cmd(args)
+            case "server":
+                from .server import server_cmd
+
+                server_cmd(args)
             case "convert":
                 from .convert import convert_cmd
 

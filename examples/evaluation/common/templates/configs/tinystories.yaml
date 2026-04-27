@@ -9,7 +9,7 @@
 [main_body]
     == super()
     dataset_proj: "{{ abspath(joinpath(ns.forgather_dir, "examples", "datasets", "roneneldan")) }}"
-    dataset_config: "tinystories-packed.yaml"
+    dataset_config: "fast-iter-packed.yaml"
     default_max_length: 2048
     default_batch_size: 16
 

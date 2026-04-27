@@ -12,7 +12,7 @@
     -- set ns.per_device_train_batch_size = batch_size | default(2)
 
     ## Trainer selection
-    -- set ns.trainer_type = trainer_type | default("pipeline")
+    -- set ns.trainer_type = "pipeline"
 
     ## Pipeline Parallel inputs (only used when trainer_type == "pipeline")
     -- set ns.pipe_schedule_factory = pipeline_schedule | default("ScheduleZBVZeroBubble")
@@ -20,3 +20,7 @@
     ## Compile settings
     -- set ns.torch_compile = compile | default(False)
     -- set ns.torch_compile_mode = torch_compile_mode | default("max-autotune-no-cudagraphs")
+
+[dynamic_args]
+    == super()
+    trainer_type: ~

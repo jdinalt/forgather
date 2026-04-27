@@ -4,13 +4,10 @@ This document covers how to run and work with the Forgather test suite. It is in
 
 ## Prerequisites
 
-Install test dependencies:
-
-```bash
-pip install -e ".[test]"
-```
-
-This pulls in `pytest`, `pytest-cov`, and `pytest-mock`. You also need a working PyTorch installation. Some tests additionally require:
+`pytest`, `pytest-cov`, and `pytest-mock` are bundled with the base
+``pip install -e .`` from the [Getting Started](../getting-started/README.md)
+guide — no separate test extra to install. You also need a working
+PyTorch installation. Some tests additionally require:
 
 - **CUDA** -- a GPU with CUDA support (tests that need it are skipped automatically when unavailable)
 - **torchrun** -- PyTorch's distributed launcher, included with PyTorch

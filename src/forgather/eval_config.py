@@ -21,8 +21,9 @@ Adding a new identity field to ``TestConfig`` only requires mirroring it on
 ``EvalResult`` (with a pass-through in ``from_config``) — no template edits.
 """
 
+import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterable, Iterator, List, Optional, Tuple
 
 
 @dataclass
@@ -105,3 +106,87 @@ class EvalResult:
             trainer=trainer,
             world_size=world_size,
         )
+
+
+def iter_eval_configs(
+    search_paths: Iterable[str],
+) -> Iterator[Tuple[str, str, str, TestConfig]]:
+    """Walk ``search_paths`` and yield every ``type.evaluation`` config found.
+
+    Each yielded tuple is ``(name, project_dir, template, test_config)``:
+
+    - ``name`` prefers the config's ``eval_name`` field, falling back to the
+      template file's basename without extension.
+    - ``project_dir`` is the directory containing the project's ``meta.yaml``.
+    - ``template`` is the template name relative to the project's
+      ``config_prefix`` (ready to pass to :class:`~forgather.project.Project`).
+    - ``test_config`` is the materialized :class:`TestConfig` dataclass so
+      optional fields fall back to library-level defaults.
+
+    Configs whose ``main`` target raises during materialization, or whose
+    ``meta.config_class`` is missing / not under ``type.evaluation``, are
+    silently skipped so one bad config doesn't break the listing. Callers
+    that need a hard error should use :func:`find_eval_config` instead.
+    """
+    # Local imports: the library's core dataclasses (TestConfig/EvalResult)
+    # are used by the eval script on every rank, but the discovery helpers
+    # are only used by CLI / server dispatch. Importing Project/MetaConfig
+    # at module-load would pull Jinja2 into hot startup paths.
+    from .latent import Latent
+    from .meta_config import MetaConfig
+    from .project import Project
+
+    for root in search_paths:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            if "meta.yaml" not in filenames:
+                continue
+            try:
+                meta = MetaConfig(dirpath)
+            except Exception:
+                continue
+            for template_name, _template_path in meta.find_templates(
+                meta.config_prefix
+            ):
+                try:
+                    proj = Project(template_name, dirpath)
+                    cfg_class = Latent.materialize(proj.config.meta).get(
+                        "config_class", ""
+                    )
+                except Exception:
+                    continue
+                if not cfg_class.startswith("type.evaluation"):
+                    continue
+                try:
+                    data = TestConfig(**proj())
+                except Exception:
+                    continue
+                name = (
+                    data.eval_name
+                    or os.path.splitext(os.path.basename(template_name))[0]
+                )
+                yield name, dirpath, template_name, data
+
+
+def find_eval_config(
+    name: str,
+    search_paths: Iterable[str],
+) -> Tuple[str, str, TestConfig]:
+    """Resolve ``name`` to a specific eval config under ``search_paths``.
+
+    Returns ``(project_dir, template, test_config)``. Raises :class:`LookupError`
+    when no config with that name exists. Callers in the CLI typically
+    re-raise as :class:`SystemExit`; server callers translate to HTTP 404.
+    """
+    # list() is fine — the number of eval configs in a repo is small and
+    # we'd walk them all anyway before deciding no match exists.
+    paths_list: List[str] = list(search_paths)
+    for entry in iter_eval_configs(paths_list):
+        cfg_name, project_dir, template, data = entry
+        if cfg_name == name:
+            return project_dir, template, data
+    raise LookupError(
+        f"no eval config named {name!r} found in search paths: {paths_list}"
+    )

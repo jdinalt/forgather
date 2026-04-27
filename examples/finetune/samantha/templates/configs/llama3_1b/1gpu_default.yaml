@@ -12,3 +12,7 @@
 
     ## Compile settings
     -- set ns.torch_compile = compile | default(False)
+
+[dynamic_args]
+    == super()
+    trainer_type: ~

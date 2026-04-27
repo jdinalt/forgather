@@ -1,8 +1,0 @@
--- extends "meta_defaults.yaml"
-
--- block configs
-name: "Example"
-description: "Example Project"
-config_prefix: "configs"
-default_config: "default.yaml"
-<< endblock configs

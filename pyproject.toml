@@ -35,16 +35,31 @@ dependencies = [
     "torchao ~= 0.16.0",
     "torchdata ~= 0.11",
     "uvicorn",
+    "websockets",
     "fastapi",
+    "httpx",
+    "psutil",
+    "pynvml",
     "openai",
     "huggingface_hub[cli]",
-    "pytest",
+    "pytest >= 7.0.0",
+    "pytest-cov >= 4.0.0",
+    "pytest-mock >= 3.10.0",
     "black",
     "isort",
     "cut-cross-entropy >= 25.1",
     "liger-kernel",
     "triton",
     "dacite",
+    # Documentation toolchain. Bundled into the base install (rather
+    # than gated behind a [docs] extra) because the dep-tree footprint
+    # is rounding-error compared to PyTorch, and shipping them by
+    # default makes the Forgather server's 📖 MkDocs… tool work
+    # out-of-the-box without RTFM steps.
+    "mkdocs >= 1.6",
+    "mkdocs-material >= 9.5",
+    "mkdocstrings[python] >= 0.25",
+    "mkdocs-jupyter >= 0.24",
 ]
 version = "1.0.1"
 authors = [
@@ -60,12 +75,12 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
 ]
 
-[project.optional-dependencies]
-test = [
-    "pytest >= 7.0.0",
-    "pytest-cov >= 4.0.0",
-    "pytest-mock >= 3.10.0",
-]
+# Note: no [project.optional-dependencies] block — the [docs] /
+# [test] extras have been folded into the main ``dependencies``
+# above. Their footprint is negligible next to PyTorch, and
+# bundling them removes a class of "I installed forgather but
+# feature X doesn't work" support questions. Add an optional
+# group here only when the extra cost is genuinely substantial.
 
 [project.scripts]
 forgather = "forgather.cli:main"

@@ -45,10 +45,16 @@ def trefs_cmd(args):
             raise Exception(f"Unrecognized format {args.format}")
 
 
-def render_template_hierarchy_tree(environment, template_path):
-    """Render template hierarchy as a clean tree structure"""
+def render_template_hierarchy_tree(environment, template_path, **kwargs):
+    """Render template hierarchy as a clean tree structure.
 
-    template_data = list(environment.find_referenced_templates(template_path))
+    Extra ``**kwargs`` are forwarded to ``find_referenced_templates`` so the
+    trace reflects which templates actually get included given Jinja2
+    variables — useful when dynamic args drive conditional ``include`` /
+    ``extends`` (e.g. ``trainer_type`` selecting a trainer template).
+    """
+
+    template_data = list(environment.find_referenced_templates(template_path, **kwargs))
 
     output = []
     output.append(f"Template Hierarchy for {template_path}")
@@ -145,11 +151,17 @@ def _render_hierarchy_tree(hierarchy_data):
     return output
 
 
-def render_template_hierarchy_dot(environment, template_path):
-    """Render template hierarchy as Graphviz DOT format"""
+def render_template_hierarchy_dot(environment, template_path, **kwargs):
+    """Render template hierarchy as Graphviz DOT format.
+
+    Extra ``**kwargs`` are forwarded to ``get_template_dependencies`` so
+    conditional includes resolve to the right templates.
+    """
 
     # Get the raw dependency relationships instead of using hierarchy levels
-    load_sequence, dependencies = environment.get_template_dependencies(template_path)
+    load_sequence, dependencies = environment.get_template_dependencies(
+        template_path, **kwargs
+    )
 
     output = []
     output.append("digraph TemplateHierarchy {")
@@ -209,8 +221,12 @@ def render_template_hierarchy_dot(environment, template_path):
     return "\n".join(output)
 
 
-def render_template_hierarchy_svg(environment, template_path):
-    """Render template hierarchy as SVG using Graphviz"""
+def render_template_hierarchy_svg(environment, template_path, **kwargs):
+    """Render template hierarchy as SVG using Graphviz.
+
+    Extra ``**kwargs`` are forwarded so conditional includes are resolved
+    against the same Jinja variables.
+    """
     import shutil
     import subprocess
     import tempfile
@@ -221,7 +237,7 @@ def render_template_hierarchy_svg(environment, template_path):
             "Graphviz 'dot' command not found. Please install Graphviz to use SVG output."
         )
 
-    dot_content = render_template_hierarchy_dot(environment, template_path)
+    dot_content = render_template_hierarchy_dot(environment, template_path, **kwargs)
 
     try:
         # Use dot command to generate SVG

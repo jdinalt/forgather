@@ -32,6 +32,31 @@ def create_inf_parser(global_args):
     return parser
 
 
+def create_server_parser(global_args):
+    """Create parser for server command."""
+    parser = argparse.ArgumentParser(
+        prog="forgather server",
+        description="Run the Forgather web server (prototype)\n\n"
+        "Common options (forwarded to the server script):\n"
+        "  -H, --host HOST     Bind host (default: 127.0.0.1)\n"
+        "  -p, --port PORT     Bind port (default: 8765)\n",
+        formatter_class=RawTextHelpFormatter,
+        add_help=False,
+    )
+    parser.add_argument(
+        "dummy",
+        nargs="?",
+        default="",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "remainder",
+        nargs=argparse.REMAINDER,
+        help="Arguments to forward to the server script",
+    )
+    return parser
+
+
 def create_convert_parser(global_args):
     """Create parser for convert command."""
     # Note: We use add_help=False because we want --help to be forwarded to the script

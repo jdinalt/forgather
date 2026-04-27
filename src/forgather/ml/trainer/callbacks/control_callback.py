@@ -163,16 +163,34 @@ class TrainerControlCallback(TrainerCallback):
         self.control_dir.mkdir(parents=True, exist_ok=True)
         endpoint_file = self.control_dir / "endpoint.json"
 
+        # Also publish the run's output_dir and logging_dir so external
+        # tooling (e.g. the Forgather server) can locate checkpoints, log
+        # files, and stdout/stderr without having to re-materialize the
+        # config. Both come from the trainer's already-resolved args.
+        output_dir = None
+        logging_dir = None
+        if self.trainer_args is not None:
+            raw_output = getattr(self.trainer_args, "output_dir", None)
+            raw_logging = getattr(self.trainer_args, "logging_dir", None)
+            output_dir = os.path.abspath(raw_output) if raw_output else None
+            logging_dir = os.path.abspath(raw_logging) if raw_logging else None
+
         endpoint_info = {
             "job_id": self.job_id,
             "host": platform.node(),
             "port": port,
             "pid": os.getpid(),
             "started_at": time.time(),
+            "output_dir": output_dir,
+            "logging_dir": logging_dir,
         }
 
-        with open(endpoint_file, "w") as f:
+        tmp = endpoint_file.with_suffix(endpoint_file.suffix + ".tmp")
+        with open(tmp, "w") as f:
             json.dump(endpoint_info, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, endpoint_file)
 
         logger.info(
             f"Trainer control endpoint: http://{endpoint_info['host']}:{port}/jobs/{self.job_id}"
@@ -218,7 +236,10 @@ class TrainerControlCallback(TrainerCallback):
             )
             app.router.add_get("/jobs", self._handle_list_jobs)
 
-            self.server_runner = aiohttp.web.AppRunner(app)
+            # access_log=None suppresses the per-request INFO line that the
+            # Forgather server polls every few seconds for /status; it clutters
+            # training output with no useful signal.
+            self.server_runner = aiohttp.web.AppRunner(app, access_log=None)
             await self.server_runner.setup()
 
             if self.port is None:

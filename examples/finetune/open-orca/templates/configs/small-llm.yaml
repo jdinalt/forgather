@@ -1,0 +1,34 @@
+-- extends 'open_orca.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Small LLM"
+    -- set ns.config_description = "Finetune a model from examples/pretrain/small-llm project on Open-Orca"
+
+    # Train with DDP
+    -- set ns.trainer_type = trainer_type | default("ddp")
+
+    ## Training budget (millions of tokens)
+    -- set ns.total_tokens = total_tokens | default(2000)
+    -- set ns.warmup_tokens = warmup_tokens | default(20)
+    -- set ns.annealing_tokens = annealing_tokens | default(200)
+
+    ## Batching
+    -- set ns.seq_len = seq_len | default(4096)
+    -- set ns.per_device_train_batch_size = batch_size | default(4)
+
+    ## Step cadence
+    -- set ns.step_cadence = step_cadence | default(1.0)
+
+[optimizer]
+optimizer: &optimizer !partial:torch:optim.AdamW
+    lr: {{ ns.global_lr | toyaml }}
+
+[trainer_args]
+    == super()
+    # **Small LLM**
+    
+    # Switch to mixed-precision
+    default_dtype: {{ default_dtype | toyaml("float32") }}
+    mixed_precision: {{ mixed_precision | toyaml("bf16") }}
+    max_grad_norm: 1.0

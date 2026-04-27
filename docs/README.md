@@ -11,6 +11,7 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 **Start here:**
 
 - **[Getting Started](getting-started/README.md)** - Installation, first training run, key CLI commands
+- **[Forgather Server Walkthrough](guides/forgather-server-walkthrough.md)** - End-to-end tour of the web UI from a fresh install to chatting with a freshly-trained model
 - **[Core Concepts](core-concepts/README.md)** - Configuration pipeline, projects, templates, trainers
 
 **Configuration:**
@@ -45,6 +46,8 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 
 **Guides:**
 
+- **[Forgather Server Walkthrough](guides/forgather-server-walkthrough.md)** - End-to-end tour of the web UI: install through training a small model and chatting with it
+- **[Forgather Server Reference](forgather-server.md)** - Full feature + API reference for the server's panels, modals, and endpoints
 - **[Creating a Model Project](guides/creating-a-model-project.md)** - Define a custom model architecture from scratch
 - **[Model CLI Reference](guides/model-cli.md)** - `forgather model` command: construct, test, checkpoint, and use models
 - **[Creating a Dataset Project](guides/creating-a-dataset-project.md)** - Load, pack, and interleave HuggingFace datasets

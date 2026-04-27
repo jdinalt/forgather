@@ -1,0 +1,925 @@
+export interface SearchRoot {
+  path: string;
+  exists: boolean;
+}
+
+export interface ConfigInfo {
+  name: string;
+  path: string;
+  is_default: boolean;
+}
+
+export interface ProjectInfo {
+  project_dir: string;
+  name: string | null;
+  description: string | null;
+  default_config: string | null;
+  workspace_root: string | null;
+  configs: ConfigInfo[];
+  parse_error: string | null;
+}
+
+export interface WorkspaceCluster {
+  workspace_root: string;
+  name: string | null;
+  description: string | null;
+  parent_workspace_root: string | null;
+  projects: ProjectInfo[];
+}
+
+export interface ConfigMeta {
+  name: string | null;
+  description: string | null;
+  /** e.g. "type.training_script", "type.training_script.causal_lm",
+   *  "type.model", "type.dataset". Lets the UI show only relevant
+   *  actions per config type. */
+  config_class: string | null;
+  parse_error: string | null;
+}
+
+export interface OutputDirInfo {
+  output_dir: string;
+  models_dir: string;
+  output_dir_exists: boolean;
+  models_dir_exists: boolean;
+  output_dir_size_bytes: number;
+  output_dir_entry_count: number;
+  models_dir_size_bytes: number;
+  models_dir_entry_count: number;
+  /** Raw nproc_per_node from the config's meta block: either a positive
+   *  integer (fixed worker count) or a torchrun keyword like "gpu" / "cpu"
+   *  / "auto". */
+  nproc_per_node: number | string | null;
+}
+
+export interface DeleteDirResponse {
+  deleted: string;
+  removed_bytes: number;
+}
+
+export interface TrefsNode {
+  name: string;
+  path: string;
+}
+
+export interface TrefsEdge {
+  source: string;
+  target: string;
+}
+
+export interface TrefsGraph {
+  root: string;
+  nodes: TrefsNode[];
+  edges: TrefsEdge[];
+}
+
+export interface TemplateEntry {
+  name: string;
+  path: string;
+  rel_path: string;
+}
+
+export interface TemplateGroup {
+  category: string;
+  search_path: string;
+  templates: TemplateEntry[];
+}
+
+export interface FsEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+}
+
+export interface FsListing {
+  path: string;
+  parent: string | null;
+  entries: FsEntry[];
+}
+
+export interface QuickPath {
+  label: string;
+  path: string;
+}
+
+export interface GpuProcess {
+  pid: number;
+  used_mem_bytes: number;
+}
+
+export interface GpuInfo {
+  index: number;
+  name: string;
+  total_mem_bytes: number;
+  used_mem_bytes: number;
+  util_pct: number | null;
+  mem_util_pct: number | null;
+  power_w: number | null;
+  temp_c: number | null;
+  processes: GpuProcess[];
+  source: string;
+  node: string;
+  /** True when the operator excluded this GPU via CUDA_VISIBLE_DEVICES at
+   *  server start. Excluded GPUs still report telemetry but the scheduler
+   *  refuses to assign them. */
+  excluded: boolean;
+  /** True when the user has runtime-disabled this GPU via the web UI.
+   *  Distinct from excluded: this is reversible and persists via gpu_policy.json. */
+  disabled: boolean;
+  /** Minimum queue priority required to schedule on this GPU (inclusive).
+   *  0 means no restriction. */
+  min_priority: number;
+}
+
+export interface GpuPolicy {
+  disabled: boolean;
+  min_priority: number;
+}
+
+/** Unified job model returned by /api/jobs.
+ *
+ *  ``id`` is the stable identifier the UI keys on. For server-launched jobs
+ *  it equals the queue_id; for externally-discovered endpoints it equals
+ *  the trainer's job_id. ``source`` distinguishes them so the UI can
+ *  expose extra controls (e.g. View TTY) only where they make sense. */
+export interface Job {
+  id: string;
+  queue_id: string | null;
+  job_id: string | null;
+  project_dir: string | null;
+  config: string | null;
+  dynamic_args: Record<string, unknown> | null;
+  requested_gpus: number | null;
+  priority: number | null;
+  submitted_at: number | null;
+  node: string | null;
+  gpu_indices: number[] | null;
+  job_type: "training"
+    | "eval"
+    | "inference"
+    | "tensorboard"
+    | "mkdocs"
+    | "convert"
+    | "finalize";
+  job_params: Record<string, unknown> | null;
+  status: string;
+  started_at: number | null;
+  finished_at: number | null;
+  exit_code: number | null;
+  error: string | null;
+  pid: number | null;
+  host: string | null;
+  port: number | null;
+  alive: boolean;
+  tty_log_path: string | null;
+  logs_dir: string | null;
+  output_dir: string | null;
+  source: "record" | "endpoint" | "merged";
+}
+
+export interface ControlResponse {
+  success: boolean;
+  message: string;
+  data: Record<string, unknown> | null;
+}
+
+/** Trainer control commands proxied through /api/jobs/{id}/control/{action}.
+ *  - save / stop / save-stop / abort go through the trainer's HTTP endpoint.
+ *  - kill = local SIGTERM on the process group (works pre-correlation).
+ *  - force-kill = local SIGKILL — last resort for hung torchrun groups
+ *    that aren't responding to SIGTERM. Both server-only. */
+export type ControlAction =
+  | "save"
+  | "stop"
+  | "save-stop"
+  | "abort"
+  | "kill"
+  | "force-kill";
+
+export interface DynamicArg {
+  dest: string;
+  cli_name: string;
+  type: string; // "int" | "str" | "float" | "bool" | "path"
+  help: string | null;
+  default: unknown;
+  choices: unknown[] | null;
+}
+
+export interface OverridesData {
+  values: Record<string, unknown>;
+  updated_at: number | null;
+}
+
+/** Items still waiting for GPUs. Once dispatched they leave the queue and
+ *  appear under /api/jobs as a Job with source="record" or "merged". */
+export interface QueueItem {
+  queue_id: string;
+  project_dir: string;
+  config: string;
+  dynamic_args: Record<string, unknown>;
+  requested_gpus: number;
+  priority: number;
+  submitted_at: number;
+}
+
+export interface SchedulerStatus {
+  enabled: boolean;
+  tick_count: number;
+  last_tick_at: number | null;
+  running_count: number;
+}
+
+export interface EnqueueRequest {
+  project_dir: string;
+  config: string;
+  dynamic_args: Record<string, unknown>;
+  requested_gpus: number;
+  priority: number;
+  /** Defaults to "training" server-side when omitted. */
+  job_type?: "training"
+    | "eval"
+    | "inference"
+    | "tensorboard"
+    | "mkdocs"
+    | "convert"
+    | "finalize";
+  /** Type-specific payload; empty for training. */
+  job_params?: Record<string, unknown>;
+}
+
+/** One row for the "pick an eval config" picker in EvalModal. */
+export interface EvalConfigEntry {
+  name: string;
+  project_dir: string;
+  template: string;
+  description: string;
+  default_batch_size: number;
+  default_max_length: number;
+  default_stride: number;
+}
+
+export interface ModelEntry {
+  output_dir: string;
+  model_name: string;
+  configs: string[];
+  exists: boolean;
+  run_count: number;
+  checkpoint_count: number;
+  eval_count: number;
+  total_size_bytes: number;
+  parse_errors: Record<string, string>;
+}
+
+/** Mirrors forgather.eval_config.EvalResult. */
+export interface EvalResultData {
+  eval_name: string;
+  config_name: string;
+  description: string;
+  dataset_proj: string;
+  dataset_config: string;
+  dataset_target: string;
+  model_path: string;
+  checkpoint_path: string | null;
+  batch_size: number;
+  max_length: number;
+  stride: number;
+  dtype: string;
+  attn_implementation: string;
+  trainer: string;
+  world_size: number;
+  eval_loss: number | null;
+  perplexity: number | null;
+  wall_time_s: number | null;
+  timestamp: string | null;
+}
+
+export interface EvalEntry {
+  eval_dir: string;
+  eval_id: string;
+  result: EvalResultData | null;
+  parse_error: string | null;
+}
+
+export interface RunEntry {
+  run_dir: string;
+  run_id: string;
+  /** Seconds since epoch (float). */
+  started_at: number;
+  has_logs: boolean;
+  hostname: string | null;
+  /** Absolute path to tty.log (or its symlink) if the run captured one. */
+  tty_log_path: string | null;
+}
+
+export interface CheckpointEntry {
+  checkpoint_dir: string;
+  step: number;
+  size_bytes: number;
+  world_size: number | null;
+  timestamp: string | null;
+  manifest_present: boolean;
+}
+
+export interface RunSummary {
+  summary: Record<string, unknown>;
+  log_path: string | null;
+  config_path: string | null;
+  pp_path: string | null;
+}
+
+/** Thrown by ``putTemplateSource`` when the on-disk mtime is newer
+ *  than the ``expected_mtime`` the client sent — i.e. someone else
+ *  (or another tool) modified the file since the editor opened it.
+ *  ``saveFile`` catches this and stashes it on the buffer's
+ *  ``conflict`` field so the editor can prompt the user. */
+export class SaveConflictError extends Error {
+  currentMtime: number = 0;
+  expectedMtime: number = 0;
+  constructor(message: string) {
+    super(message);
+    this.name = "SaveConflictError";
+  }
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const r = await fetch(url);
+  if (!r.ok) {
+    const detail = await r.text();
+    throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+  }
+  return r.json() as Promise<T>;
+}
+
+async function fetchText(url: string): Promise<string> {
+  const r = await fetch(url);
+  if (!r.ok) {
+    const detail = await r.text();
+    throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+  }
+  return r.text();
+}
+
+export const api = {
+  listSearchRoots: () => fetchJson<SearchRoot[]>("/api/search-roots"),
+  addSearchRoot: async (path: string, create = false) => {
+    const r = await fetch("/api/search-roots", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, create }),
+    });
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        detail = JSON.parse(detail).detail ?? detail;
+      } catch {
+        // not JSON
+      }
+      throw new Error(detail);
+    }
+    return r.json() as Promise<SearchRoot>;
+  },
+  removeSearchRoot: async (path: string) => {
+    const r = await fetch(
+      `/api/search-roots?path=${encodeURIComponent(path)}`,
+      { method: "DELETE" },
+    );
+    if (!r.ok) throw new Error(await r.text());
+  },
+  listProjects: () => fetchJson<WorkspaceCluster[]>("/api/projects"),
+  configRaw: (path: string) =>
+    fetchText(`/api/config/raw?path=${encodeURIComponent(path)}`),
+  configPp: (project_dir: string, config: string) =>
+    fetchText(
+      `/api/config/pp?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}`,
+    ),
+  configTrefsJson: (project_dir: string, config: string) =>
+    fetchJson<TrefsGraph>(
+      `/api/config/trefs?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}&format=json`,
+    ),
+  configTrefsDot: (project_dir: string, config: string) =>
+    fetchText(
+      `/api/config/trefs?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}&format=dot`,
+    ),
+  templateSource: (path: string) =>
+    fetchText(`/api/template/source?path=${encodeURIComponent(path)}`),
+  templateSourceWithMeta: async (
+    path: string,
+  ): Promise<{ content: string; mtime: number }> => {
+    const r = await fetch(
+      `/api/template/source?path=${encodeURIComponent(path)}`,
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    const mtime = parseFloat(r.headers.get("X-Mtime") ?? "0") || 0;
+    const content = await r.text();
+    return { content, mtime };
+  },
+  listProjectTemplates: (project_dir: string) =>
+    fetchJson<TemplateGroup[]>(
+      `/api/project/templates?project_dir=${encodeURIComponent(project_dir)}`,
+    ),
+  projectTemplatePaths: (project_dir: string) =>
+    fetchJson<{
+      templates_dir: string;
+      configs_dir: string;
+      config_prefix: string;
+    }>(
+      `/api/project/template-paths?project_dir=${encodeURIComponent(project_dir)}`,
+    ),
+  initWorkspaceHere: async (req: {
+    workspace_dir: string;
+    name: string;
+    description: string;
+    forgather_dir: string;
+    libs?: string[];
+    search_paths?: string[];
+  }): Promise<{ workspace_dir: string }> => {
+    const r = await fetch("/api/workspace/init-here", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        detail = JSON.parse(detail).detail ?? detail;
+      } catch {
+        // not JSON
+      }
+      throw new Error(detail);
+    }
+    return r.json();
+  },
+  newWorkspace: async (req: {
+    parent_dir: string;
+    name: string;
+    description: string;
+    workspace_dir_name?: string | null;
+    forgather_dir: string;
+    libs?: string[];
+    search_paths?: string[];
+  }): Promise<{ workspace_dir: string }> => {
+    const r = await fetch("/api/workspace/new", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        detail = JSON.parse(detail).detail ?? detail;
+      } catch {
+        // not JSON
+      }
+      throw new Error(detail);
+    }
+    return r.json();
+  },
+  newProject: async (req: {
+    workspace_dir: string;
+    name: string;
+    description: string;
+    config_prefix?: string;
+    default_config?: string;
+    project_dir_name?: string | null;
+    copy_from?: string | null;
+  }): Promise<{ project_dir: string }> => {
+    const r = await fetch("/api/workspace/new-project", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        detail = JSON.parse(detail).detail ?? detail;
+      } catch {
+        // not JSON
+      }
+      throw new Error(detail);
+    }
+    return r.json();
+  },
+  newProjectTemplate: async (
+    project_dir: string,
+    kind: "config" | "template",
+    name: string,
+  ): Promise<{ path: string }> => {
+    const r = await fetch("/api/project/new-template", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_dir, kind, name }),
+    });
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        detail = JSON.parse(detail).detail ?? detail;
+      } catch {
+        // not JSON
+      }
+      throw new Error(detail);
+    }
+    return r.json();
+  },
+  putTemplateSource: async (
+    path: string,
+    content: string,
+    expected_mtime?: number,
+  ): Promise<{ path: string; bytes_written: number; mtime: number }> => {
+    const r = await fetch("/api/template/source", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path,
+        content,
+        expected_mtime: expected_mtime ?? null,
+      }),
+    });
+    if (r.status === 409) {
+      // Optimistic-concurrency conflict. The body's `detail` is a JSON
+      // object: ``{message, current_mtime, expected_mtime}``. Hoist
+      // those onto a typed error so saveFile can branch on it.
+      let detail: any = null;
+      try {
+        const body = await r.json();
+        detail = body?.detail ?? body;
+      } catch {
+        // body wasn't JSON
+      }
+      const err = new SaveConflictError(
+        detail?.message ?? "file changed on disk since you opened it",
+      );
+      err.currentMtime = detail?.current_mtime ?? 0;
+      err.expectedMtime = detail?.expected_mtime ?? 0;
+      throw err;
+    }
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json();
+  },
+  configMeta: (project_dir: string, config: string) =>
+    fetchJson<ConfigMeta>(
+      `/api/config/meta?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}`,
+    ),
+  fsBrowse: (path: string, show_hidden = false, files_too = false) =>
+    fetchJson<FsListing>(
+      `/api/fs/browse?path=${encodeURIComponent(path)}&show_hidden=${show_hidden}&files_too=${files_too}`,
+    ),
+  fsQuickPaths: () => fetchJson<QuickPath[]>("/api/fs/quick-paths"),
+  fsPathExists: (path: string) =>
+    fetchJson<{ exists: boolean; is_file: boolean; is_dir: boolean }>(
+      `/api/fs/path-exists?path=${encodeURIComponent(path)}`,
+    ),
+  fsMkdir: async (parent: string, name: string): Promise<{ path: string }> => {
+    const r = await fetch("/api/fs/mkdir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ parent, name }),
+    });
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        detail = JSON.parse(detail).detail ?? detail;
+      } catch {
+        // not JSON
+      }
+      throw new Error(detail);
+    }
+    return r.json();
+  },
+  fsNewFile: async (
+    parent: string,
+    name: string,
+  ): Promise<{ path: string }> => {
+    const r = await fetch("/api/fs/new-file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ parent, name }),
+    });
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        detail = JSON.parse(detail).detail ?? detail;
+      } catch {
+        // not JSON
+      }
+      throw new Error(detail);
+    }
+    return r.json();
+  },
+  fsRename: async (
+    path: string,
+    new_name: string,
+  ): Promise<{ path: string }> => {
+    const r = await fetch("/api/fs/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, new_name }),
+    });
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        detail = JSON.parse(detail).detail ?? detail;
+      } catch {
+        // not JSON
+      }
+      throw new Error(detail);
+    }
+    return r.json();
+  },
+  fsCopy: async (
+    src: string,
+    dest_dir: string,
+  ): Promise<{ path: string }> => {
+    const r = await fetch("/api/fs/copy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ src, dest_dir }),
+    });
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        detail = JSON.parse(detail).detail ?? detail;
+      } catch {
+        // not JSON
+      }
+      throw new Error(detail);
+    }
+    return r.json();
+  },
+  fsMove: async (
+    src: string,
+    dest_dir: string,
+  ): Promise<{ path: string }> => {
+    const r = await fetch("/api/fs/move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ src, dest_dir }),
+    });
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        detail = JSON.parse(detail).detail ?? detail;
+      } catch {
+        // not JSON
+      }
+      throw new Error(detail);
+    }
+    return r.json();
+  },
+  listGpus: () => fetchJson<GpuInfo[]>("/api/gpus"),
+  gpuStreamUrl: (): string => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/api/gpus/stream`;
+  },
+  listJobs: (includeDead = false) =>
+    fetchJson<Job[]>(`/api/jobs?include_dead_endpoints=${includeDead}`),
+  jobStatus: (jobId: string) =>
+    fetchJson<Record<string, unknown>>(
+      `/api/jobs/${encodeURIComponent(jobId)}/status`,
+    ),
+  jobControl: async (jobId: string, action: ControlAction) => {
+    const r = await fetch(
+      `/api/jobs/${encodeURIComponent(jobId)}/control/${action}`,
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json() as Promise<ControlResponse>;
+  },
+  removeJob: async (jobId: string) => {
+    const r = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, {
+      method: "DELETE",
+    });
+    if (!r.ok) throw new Error(await r.text());
+  },
+  cleanupJobs: async (): Promise<{ removed: string[]; count: number }> => {
+    const r = await fetch("/api/jobs/cleanup", { method: "POST" });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  ttyStreamUrl: (job_id: string, follow = true): string => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}/api/jobs/${encodeURIComponent(job_id)}/tty?follow=${follow}`;
+  },
+  ttyDump: (job_id: string) =>
+    fetchText(`/api/jobs/${encodeURIComponent(job_id)}/tty`),
+  listQueue: () => fetchJson<QueueItem[]>("/api/queue"),
+  enqueue: async (req: EnqueueRequest) => {
+    const r = await fetch("/api/queue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json() as Promise<QueueItem>;
+  },
+  abortQueueItem: async (queue_id: string) => {
+    const r = await fetch(`/api/queue/${encodeURIComponent(queue_id)}`, {
+      method: "DELETE",
+    });
+    if (!r.ok) throw new Error(await r.text());
+  },
+  setGpuPolicy: async (
+    gpu_index: number,
+    policy: { disabled?: boolean; min_priority?: number },
+  ): Promise<GpuPolicy> => {
+    const r = await fetch(`/api/gpus/${gpu_index}/policy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(policy),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<GpuPolicy>;
+  },
+  getGpuPolicy: () =>
+    fetchJson<Record<string, GpuPolicy>>("/api/gpus/policy"),
+  killGpuProcesses: async (gpu_index: number) => {
+    const r = await fetch(`/api/gpus/${gpu_index}/kill`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed: true }),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<{
+      gpu_index: number;
+      pids: number[];
+      killed: number[];
+      failed: number[];
+    }>;
+  },
+  schedulerStatus: () => fetchJson<SchedulerStatus>("/api/queue/scheduler"),
+  schedulerToggle: async (enabled: boolean) => {
+    const r = await fetch("/api/queue/scheduler", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json() as Promise<SchedulerStatus>;
+  },
+  dynamicArgs: (project_dir: string, config: string) =>
+    fetchJson<DynamicArg[]>(
+      `/api/config/dynamic-args?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}`,
+    ),
+  configOutputDir: (project_dir: string, config: string) =>
+    fetchJson<OutputDirInfo>(
+      `/api/config/output-dir?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}`,
+    ),
+  getOverrides: (project_dir: string, config: string) =>
+    fetchJson<OverridesData>(
+      `/api/config/overrides?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}`,
+    ),
+  setOverrides: async (
+    project_dir: string,
+    config: string,
+    values: Record<string, unknown>,
+  ): Promise<OverridesData> => {
+    const r = await fetch("/api/config/overrides", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_dir, config, values }),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json() as Promise<OverridesData>;
+  },
+  clearOverrides: async (
+    project_dir: string,
+    config: string,
+  ): Promise<{ cleared: boolean }> => {
+    const r = await fetch(
+      `/api/config/overrides?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}`,
+      { method: "DELETE" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    }
+    return r.json() as Promise<{ cleared: boolean }>;
+  },
+  projectReadme: (project_dir: string) =>
+    fetchText(
+      `/api/project/readme?project_dir=${encodeURIComponent(project_dir)}`,
+    ),
+  projectAssetUrl: (project_dir: string, asset: string): string =>
+    `/api/project/asset?project_dir=${encodeURIComponent(project_dir)}&asset=${encodeURIComponent(asset)}`,
+  listProjectModels: (project_dir: string) =>
+    fetchJson<ModelEntry[]>(
+      `/api/project/models?project_dir=${encodeURIComponent(project_dir)}`,
+    ),
+  listModelRuns: (output_dir: string) =>
+    fetchJson<RunEntry[]>(
+      `/api/model/runs?output_dir=${encodeURIComponent(output_dir)}`,
+    ),
+  runSummary: (run_dir: string) =>
+    fetchJson<RunSummary>(
+      `/api/run/summary?run_dir=${encodeURIComponent(run_dir)}`,
+    ),
+  listModelCheckpoints: (output_dir: string) =>
+    fetchJson<CheckpointEntry[]>(
+      `/api/model/checkpoints?output_dir=${encodeURIComponent(output_dir)}`,
+    ),
+  listModelEvaluations: (output_dir: string) =>
+    fetchJson<EvalEntry[]>(
+      `/api/model/evaluations?output_dir=${encodeURIComponent(output_dir)}`,
+    ),
+  listEvalConfigs: () => fetchJson<EvalConfigEntry[]>("/api/eval-configs"),
+  runTty: (run_dir: string) =>
+    fetchText(`/api/run/tty?run_dir=${encodeURIComponent(run_dir)}`),
+  deleteFile: async (path: string): Promise<DeleteDirResponse> => {
+    const r = await fetch("/api/fs/delete-file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, confirmed: true }),
+    });
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        detail = JSON.parse(detail).detail ?? detail;
+      } catch {
+        // not JSON
+      }
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json();
+  },
+  deleteDir: async (path: string) => {
+    const r = await fetch("/api/fs/delete-dir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, confirmed: true }),
+    });
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        detail = JSON.parse(detail).detail ?? detail;
+      } catch {
+        // not JSON
+      }
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<DeleteDirResponse>;
+  },
+  listGenerationConfigs: () =>
+    fetchJson<{ presets: { name: string; builtin: boolean }[] }>(
+      "/api/generation-configs",
+    ),
+  getGenerationConfig: (name: string) =>
+    fetchJson<{
+      name: string;
+      builtin: boolean;
+      params: Record<string, unknown>;
+    }>(`/api/generation-configs/${encodeURIComponent(name)}`),
+  putGenerationConfig: async (
+    name: string,
+    params: Record<string, unknown>,
+  ) => {
+    const r = await fetch(
+      `/api/generation-configs/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+    );
+    if (!r.ok) throw new Error(await r.text());
+    return r.json() as Promise<{
+      name: string;
+      builtin: boolean;
+      params: Record<string, unknown>;
+    }>;
+  },
+  deleteGenerationConfig: async (name: string) => {
+    const r = await fetch(
+      `/api/generation-configs/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    );
+    if (!r.ok) {
+      let detail = await r.text();
+      try {
+        detail = JSON.parse(detail).detail ?? detail;
+      } catch {
+        // not JSON
+      }
+      throw new Error(detail);
+    }
+  },
+};

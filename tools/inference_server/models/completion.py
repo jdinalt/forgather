@@ -34,6 +34,7 @@ class CompletionRequest(BaseModel):
     encoder_no_repeat_ngram_size: Optional[int] = None
     bad_words_ids: Optional[List[List[int]]] = None
     min_length: Optional[int] = None
+    min_new_tokens: Optional[int] = None
     max_new_tokens: Optional[int] = None
     early_stopping: Optional[bool] = None
     num_beams: Optional[int] = None
@@ -42,9 +43,12 @@ class CompletionRequest(BaseModel):
     temperature_last_layer: Optional[bool] = None
     top_k: Optional[int] = None
     typical_p: Optional[float] = None
+    min_p: Optional[float] = None
     epsilon_cutoff: Optional[float] = None
     eta_cutoff: Optional[float] = None
     guidance_scale: Optional[float] = None
+    penalty_alpha: Optional[float] = None
+    do_sample: Optional[bool] = None
     seed: Optional[int] = None
     ignore_eos: Optional[bool] = None
 

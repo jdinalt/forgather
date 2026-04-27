@@ -98,7 +98,7 @@ Options:
 - `config`: YAML configuration file (optional positional argument)
 - `--model`: HuggingFace model path or name (required, can be in config file)
 - `--host`: Host to bind to (default: 127.0.0.1)
-- `--port`: Port to bind to (default: 8000)
+- `--port`: Port to bind to (default: 8137)
 - `--device`: Device to use - cuda, cpu, or auto (default: cuda:0)
 - `--chat-template`: Path to custom Jinja2 chat template file (optional)
 - `--dtype`: Model data type (optional, see Data Types section)
@@ -283,7 +283,7 @@ forgather inf client --completion "Once upon a time" --max-tokens 512 --ignore-e
 # Or with Python OpenAI client
 python -c "
 from openai import OpenAI
-client = OpenAI(base_url='http://localhost:8000/v1', api_key='dummy')
+client = OpenAI(base_url='http://localhost:8137/v1', api_key='dummy')
 response = client.completions.create(
     model='test',
     prompt='Once upon a time',
@@ -475,7 +475,7 @@ When in interactive mode, use these commands:
 - `config` - YAML configuration file (optional positional argument)
 
 **Basic Options:**
-- `--url` - Server base URL (default: http://localhost:8000/v1)
+- `--url` - Server base URL (default: http://localhost:8137/v1)
 - `--model` - Model name (default: inference-server)
 - `--max-tokens` - Maximum tokens to generate (default: 512)
 - `--temperature` - Sampling temperature (default: 0.7)
@@ -509,7 +509,7 @@ When in interactive mode, use these commands:
 
 #### Chat Completions
 ```bash
-curl -X POST http://localhost:8000/v1/chat/completions \
+curl -X POST http://localhost:8137/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "microsoft/DialoGPT-medium",
@@ -522,7 +522,7 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 
 #### Text Completions
 ```bash
-curl -X POST http://localhost:8000/v1/completions \
+curl -X POST http://localhost:8137/v1/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "test-model",
@@ -534,7 +534,7 @@ curl -X POST http://localhost:8000/v1/completions \
 
 #### With HuggingFace Parameters
 ```bash
-curl -X POST http://localhost:8000/v1/completions \
+curl -X POST http://localhost:8137/v1/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "test-model",
@@ -554,7 +554,7 @@ curl -X POST http://localhost:8000/v1/completions \
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8000/v1",
+    base_url="http://localhost:8137/v1",
     api_key="dummy"  # Not used but required
 )
 

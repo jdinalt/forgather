@@ -11,4 +11,9 @@ mkdocs:
 
 python:
   install:
-    - requirements: docs/requirements.txt
+    # The mkdocs toolchain ships in the base ``dependencies`` block
+    # of pyproject.toml, so no extra_requirements are needed. The
+    # project install is what mkdocstrings needs to import the
+    # forgather package and extract docstrings.
+    - method: pip
+      path: .

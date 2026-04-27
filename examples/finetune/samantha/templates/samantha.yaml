@@ -11,3 +11,7 @@
 
     ## Step cadence
     -- set ns.step_cadence = step_cadence | default(0.02)
+
+[dynamic_args]
+    == super()
+    dataset_proj: ~

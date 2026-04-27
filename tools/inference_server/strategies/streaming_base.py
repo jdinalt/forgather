@@ -73,6 +73,13 @@ class StreamingStrategy(GenerationStrategy):
                 "return_dict_in_generate": True,
                 "output_scores": False,
             }
+            # Transformers v5 moved contrastive search into a community
+            # repo loaded via trust_remote_code. generate() raises if the
+            # flag isn't set when penalty_alpha is configured — the
+            # effect only kicks in for that path, so we opt-in narrowly
+            # rather than always setting it.
+            if getattr(generation_config, "penalty_alpha", None):
+                generation_kwargs["trust_remote_code"] = True
 
             # Track CUDA memory usage, if CUDA device.
             if device.type == "cuda":

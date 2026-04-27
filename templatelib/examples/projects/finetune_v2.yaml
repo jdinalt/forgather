@@ -121,3 +121,9 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_schedule
         names: "--epochs"
         type: "int"
         help: "Set the number of epochs to train for"
+    # Delete menu items which we don't use
+    output_dir: ~
+    model_name: ~
+    model_dir: ~
+    model_project: ~
+    model_config: ~

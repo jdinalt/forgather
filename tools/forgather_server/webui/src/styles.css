@@ -1,0 +1,2811 @@
+:root {
+  color-scheme: dark;
+  --bg: #1e1e1e;
+  --bg-alt: #252526;
+  --bg-pane: #1e1e1e;
+  --border: #3c3c3c;
+  --fg: #d4d4d4;
+  --fg-muted: #858585;
+  --accent: #0e639c;
+  --accent-hover: #1177bb;
+  --err: #f48771;
+  --err-bg: #3a1f1f;
+  --selected: #094771;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 13px;
+}
+
+code,
+pre {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 2px;
+  font-size: 12px;
+}
+button:hover {
+  background: var(--accent-hover);
+}
+button.tiny {
+  padding: 0 6px;
+  font-size: 11px;
+  background: transparent;
+  color: var(--fg-muted);
+}
+button.tiny:hover {
+  color: var(--err);
+}
+button.link {
+  background: transparent;
+  color: var(--fg);
+  padding: 2px 6px;
+  text-align: left;
+  width: 100%;
+}
+button.link:hover {
+  background: var(--bg-alt);
+}
+
+input {
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 2px;
+  font-size: 12px;
+}
+
+.muted {
+  color: var(--fg-muted);
+}
+.err {
+  color: var(--err);
+}
+.err-badge {
+  display: inline-block;
+  background: var(--err-bg);
+  color: var(--err);
+  padding: 0 4px;
+  margin-left: 6px;
+  font-size: 10px;
+  border-radius: 2px;
+}
+
+.app {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+}
+
+.app-sidebar {
+  width: 384px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  background: var(--bg-alt);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.app-sidebar.collapsed {
+  width: 44px;
+}
+
+/* Both content regions stay mounted so ProjectTree expansion state
+   survives a collapse/expand cycle — only their visibility toggles. */
+.sidebar-collapsed-content {
+  display: none;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 6px 0 0;
+}
+.sidebar-expanded-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  /* Own the overflow so the sidebar gets its own scrollbar when its
+     content (expanded sections, file tree, etc.) outgrows the
+     viewport. Without this, the document body ends up as the scroll
+     container — which scrolls the main panel along with the sidebar
+     and produces nonsense like a Jobs split-pane scrolling into empty
+     space below the TTY. */
+  overflow-y: auto;
+}
+.app-sidebar.collapsed .sidebar-collapsed-content {
+  display: flex;
+}
+.app-sidebar.collapsed .sidebar-expanded-content {
+  display: none;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+  /* Stay pinned to the top of the scrolling sidebar so Refresh /
+     scheduler / collapse-toggle remain reachable when the sections
+     below scroll. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.sidebar-header h1 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.sidebar-header-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.refresh-btn {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 3px 10px;
+  font-size: 12px;
+}
+.refresh-btn:hover {
+  background: var(--bg);
+  border-color: var(--fg-muted);
+}
+
+.sidebar-toggle {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  padding: 3px 6px;
+  font-size: 11px;
+  line-height: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.sidebar-toggle:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+  background: var(--bg);
+}
+.sidebar-icon {
+  display: block;
+}
+.sidebar-collapsed-content > .sidebar-toggle {
+  align-self: center;
+  margin-bottom: 8px;
+}
+
+.sched-btn {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  font-size: 12px;
+  line-height: 1;
+  min-width: 28px;
+}
+.sched-btn.running {
+  color: #3fb950;
+  border-color: #3fb95066;
+}
+.sched-btn.paused {
+  color: var(--fg-muted);
+}
+.sched-btn:hover:not(:disabled) {
+  background: var(--bg);
+  border-color: var(--fg-muted);
+}
+
+.sidebar-views {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 8px 6px 8px;
+  gap: 2px;
+}
+.sidebar-views button {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid transparent;
+  padding: 5px 10px;
+  text-align: left;
+  border-radius: 2px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sidebar-views button:hover {
+  background: var(--bg);
+  color: var(--fg);
+}
+.sidebar-views button.active {
+  background: var(--bg);
+  color: var(--fg);
+  border-color: var(--border);
+}
+.sidebar-views .view-icon {
+  flex: 0 0 18px;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1;
+}
+.sidebar-views .view-label {
+  flex: 1;
+}
+
+.sidebar-views.icon-only {
+  padding: 4px;
+  border-bottom: none;
+}
+.sidebar-views.icon-only button {
+  justify-content: center;
+  padding: 8px 4px;
+}
+.sidebar-views.icon-only .view-icon {
+  flex: 0 0 auto;
+  font-size: 18px;
+}
+
+.sidebar-tools-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 8px 6px 8px;
+}
+.sidebar-tool-btn {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+  font-size: 12px;
+  text-align: left;
+  border-radius: 2px;
+}
+.sidebar-tool-btn:hover {
+  background: var(--bg);
+  border-color: var(--fg-muted);
+}
+
+.sidebar-projects {
+  /* The sidebar itself scrolls now (see .sidebar-expanded-content),
+     so this section grows to its natural height and rides the
+     parent's scrollbar — no nested scroller. */
+  padding: 8px;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.app-main .view-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- GPU panel ---------- */
+.gpu-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+.gpu-panel-header {
+  margin-bottom: 8px;
+}
+.gpu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+.gpu-card {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.gpu-card.busy {
+  border-color: var(--accent);
+}
+.gpu-card.idle {
+  opacity: 0.8;
+}
+/* Operator excluded this GPU via CUDA_VISIBLE_DEVICES at server start.
+   Telemetry still flows so the card stays useful for monitoring (e.g. a
+   thermally-suspect card whose temperature you want to keep an eye on)
+   but the dim treatment makes it unmistakably non-pickable. */
+.gpu-card.excluded {
+  opacity: 0.55;
+  border-color: var(--err);
+  border-style: dashed;
+}
+.excluded-badge {
+  background: var(--err-bg);
+  color: var(--err);
+  border-color: var(--err);
+}
+/* Runtime-disabled GPU: user toggled off via the web UI.
+   Amber/yellow treatment signals "user choice, reversible" vs the red
+   "operator env-var exclusion" of .excluded. */
+.gpu-card.disabled {
+  opacity: 0.7;
+  border-color: #b8860b;
+  border-style: dashed;
+}
+.disabled-badge {
+  background: #3a2e00;
+  color: #e0a800;
+  border-color: #b8860b;
+}
+/* Small blue pill showing the minimum-priority gate. */
+.priority-badge {
+  background: #0a2a4a;
+  color: #6ab3f3;
+  border-color: #1c5a96;
+  font-size: 10px;
+  padding: 0 5px;
+}
+.gpu-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.gpu-idx {
+  font-weight: 700;
+  color: var(--fg);
+}
+.gpu-name {
+  color: var(--fg-muted);
+  font-size: 12px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 56px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.bar-label {
+  color: var(--fg-muted);
+  text-align: right;
+}
+.bar-track {
+  height: 8px;
+  background: var(--bg);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease-out;
+}
+.bar-right {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--fg);
+  min-width: 90px;
+  text-align: right;
+}
+
+.gpu-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 11px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+.gpu-status {
+  margin-left: auto;
+  text-transform: uppercase;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  letter-spacing: 0.5px;
+  font-family: inherit;
+}
+.gpu-status.idle {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+}
+.gpu-status.busy {
+  background: var(--accent);
+  color: white;
+}
+
+.gpu-procs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+  margin-top: 2px;
+}
+.proc-chip {
+  background: var(--bg);
+  color: var(--fg);
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  border: 1px solid var(--border);
+}
+.proc-chip.job {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+/* ---------- Jobs panel ---------- */
+.jobs-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+.jobs-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.jobs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.job-card {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.job-card.alive {
+  border-color: var(--accent);
+}
+.job-card.dead {
+  opacity: 0.55;
+}
+.job-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.job-status {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.5px;
+}
+.job-status.alive {
+  background: var(--accent);
+  color: white;
+}
+.job-status.dead {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+}
+.job-id {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--fg);
+}
+.job-meta {
+  font-size: 11px;
+}
+.job-row-meta {
+  font-size: 11px;
+}
+.job-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+button.destructive {
+  background: transparent;
+  color: var(--err);
+  border: 1px solid var(--err);
+  padding: 4px 10px;
+  font-size: 12px;
+}
+button.destructive:hover {
+  background: var(--err-bg);
+}
+button.destructive:disabled,
+button.secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.job-status-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+/* Progress bar: only renders when global_step / max_steps are both
+   reported and max > 0. Track + fill are deliberately tall enough to
+   read at a glance from the jobs list when several cards are visible. */
+.job-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.job-progress-track {
+  flex: 1;
+  height: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.job-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease-out;
+}
+.job-progress-label {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--fg);
+  min-width: 130px;
+  text-align: right;
+}
+.job-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.stat-pill {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: 2px;
+  font-size: 11px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+.job-status-raw summary {
+  cursor: pointer;
+  font-size: 11px;
+}
+.job-status-raw pre {
+  font-size: 11px;
+  background: var(--bg);
+  padding: 6px;
+  border-radius: 2px;
+  overflow-x: auto;
+  margin-top: 4px;
+}
+
+/* ---------- Queue panel ---------- */
+.queue-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+.queue-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.sched-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sched-light {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.sched-light.on {
+  background: #3fb950;
+  box-shadow: 0 0 6px #3fb95080;
+}
+.sched-light.off {
+  background: var(--fg-muted);
+}
+.sched-state {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.sched-state.on {
+  color: #3fb950;
+  border-color: #3fb95066;
+}
+.sched-state.off {
+  color: var(--fg-muted);
+}
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.queue-card {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.queue-card.status-running,
+.queue-card.status-starting {
+  border-color: var(--accent);
+}
+.queue-card.status-queued {
+  border-color: var(--fg-muted);
+}
+.queue-card.status-done,
+.queue-card.status-failed,
+.queue-card.status-aborted,
+.queue-card.status-cancelled {
+  opacity: 0.7;
+}
+.queue-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.queue-status {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.5px;
+}
+.queue-status.status-running,
+.queue-status.status-starting {
+  background: var(--accent);
+  color: white;
+}
+.queue-status.status-queued {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+}
+.queue-status.status-done {
+  background: #3fb95022;
+  color: #3fb950;
+  border: 1px solid #3fb95066;
+}
+.queue-status.status-failed {
+  background: var(--err-bg);
+  color: var(--err);
+}
+.queue-status.status-aborted,
+.queue-status.status-cancelled {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--fg-muted);
+}
+.queue-config {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.queue-meta {
+  font-size: 11px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+.queue-row-meta {
+  font-size: 11px;
+}
+.queue-dyn {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.queue-error {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  border-left: 2px solid var(--err);
+  padding-left: 6px;
+}
+
+.queue-dirs {
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.queue-dirs code {
+  font-size: 11px;
+}
+.queue-dirs span {
+  display: inline-block;
+  width: 80px;
+}
+
+/* ---------- TTY viewer ---------- */
+.tty-modal {
+  width: 90vw;
+  max-width: 1200px;
+  height: 80vh;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+.tty-meta {
+  margin-left: auto;
+  margin-right: 12px;
+  font-size: 11px;
+}
+.tty-dirs {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tty-dirs code {
+  font-size: 11px;
+}
+.tty-dirs span {
+  display: inline-block;
+  width: 80px;
+}
+.tty-pre {
+  flex: 1;
+  margin: 0;
+  padding: 10px 14px;
+  background: #000;
+  color: #d4d4d4;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Selection needs to stay sticky while new bytes stream in. We append
+     text imperatively (see TtyViewer.tsx) so prior text nodes are never
+     replaced; this rule just makes sure nothing else gets in the way. */
+  user-select: text;
+}
+/* When imperative append hasn't produced any text yet, show a hint via
+   the data-placeholder attribute so the pane isn't blank. */
+.tty-pre:empty::before {
+  content: attr(data-placeholder);
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+/* ---------- Jobs panel split-pane layout ---------- */
+
+/* When split is active, the panel becomes a flex column with separate panes */
+.jobs-panel.split {
+  overflow-y: hidden; /* outer panel must not scroll — inner panes do */
+  display: flex;
+  flex-direction: column;
+  padding: 0; /* header and list pane each handle their own padding */
+}
+
+.jobs-panel.split .jobs-panel-header {
+  padding: 12px 16px 0;
+  margin-bottom: 8px;
+}
+
+/* Top pane: scrollable jobs list. Flex-basis is set inline from JobsPanel
+   state so the user can drag the handle below. */
+.jobs-panel.split .jobs-list-pane {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 16px 12px;
+}
+
+/* Draggable split handle. A 6-px visible bar with a slightly wider hit
+   region via vertical padding on the :before. Double-click resets to the
+   default split. */
+.jobs-split-handle {
+  flex: 0 0 6px;
+  background: var(--border);
+  cursor: row-resize;
+  position: relative;
+  touch-action: none;
+  /* expose a transparent 10-px hit zone above/below the visible bar */
+}
+.jobs-split-handle:before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -4px;
+  bottom: -4px;
+}
+.jobs-split-handle:hover {
+  background: var(--accent);
+}
+.jobs-split-handle:active {
+  background: var(--accent-hover);
+}
+
+/* In non-split mode, the list pane flows normally — outer panel has padding */
+.jobs-panel:not(.split) .jobs-list-pane {
+  padding: 0;
+}
+
+/* Bottom pane: TTY viewer wrapper, takes remaining space */
+.jobs-tty-pane-wrapper {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The TTY pane itself (inline, not modal) */
+.jobs-tty-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Compact metadata strip at the top of the inline TTY pane */
+.tty-pane-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.tty-pane-id {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+
+.tty-pane-paths {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.tty-pane-paths code {
+  font-size: 10px;
+}
+
+.tty-path-label {
+  color: var(--fg-muted);
+  margin-right: 3px;
+}
+
+.tty-pane-error {
+  padding: 4px 14px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+/* Muted placeholder when no stream */
+.tty-pre-placeholder {
+  color: var(--fg-muted) !important;
+}
+
+/* Selected job card: accent left border + subtle tint */
+.job-card.selected {
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-alt));
+}
+
+/* Make job cards feel clickable */
+.job-card {
+  cursor: pointer;
+}
+.job-card:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Header controls group (TTY toggle + dead-endpoint toggle) */
+.jobs-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* TTY toggle button: no fill by default, filled when active */
+button.jobs-tty-toggle {
+  font-size: 12px;
+  padding: 3px 10px;
+}
+button.jobs-tty-toggle.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+/* ---------- Run button + Submit modal ---------- */
+.run-btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 4px 14px;
+  border-radius: 3px;
+  margin-left: 12px;
+}
+.run-btn:hover {
+  background: var(--accent-hover);
+}
+.clean-btn {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 3px;
+  margin-left: 6px;
+  margin-right: 12px;
+  font-size: 12px;
+}
+.clean-btn:hover {
+  color: var(--err);
+  border-color: var(--err);
+}
+
+.clean-output-modal {
+  width: 640px;
+  max-width: 92vw;
+}
+.clean-presets {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.clean-path-row {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.clean-path-row input {
+  flex: 1;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+.clean-stats {
+  font-size: 12px;
+  padding: 4px 0;
+  color: var(--fg);
+}
+.warning-box {
+  background: var(--err-bg);
+  border: 1px solid var(--err);
+  color: var(--err);
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.submit-modal {
+  width: 640px;
+  max-width: 92vw;
+}
+
+.overrides-modal {
+  width: 640px;
+  max-width: 92vw;
+}
+.overrides-notice {
+  margin-bottom: 10px;
+  font-size: 11px;
+}
+.submit-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.submit-summary div {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.submit-summary code {
+  font-size: 12px;
+}
+.submit-row {
+  display: flex;
+  gap: 18px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.submit-row label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.submit-row input {
+  width: 70px;
+}
+/* Text fields (dtype, attn impl, optional batch/max-length overrides) need
+   to fit placeholders like "default 2048" — the 70 px default above is
+   fine for bare numeric inputs but truncates readable defaults. */
+.submit-row input[type="text"] {
+  width: 170px;
+}
+.submit-row select {
+  min-width: 140px;
+}
+/* Labels + inputs marked .wide stretch across the whole row — for long
+   free-form fields like "Output dir" whose placeholder/value wouldn't
+   fit in the default 170 px text-input width. */
+.submit-row label.wide {
+  flex: 1 1 100%;
+}
+.submit-row input[type="text"].wide {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.notice {
+  background: #4b3a0f;
+  border: 1px solid #a06e0c;
+  color: #e5c07b;
+  padding: 6px 10px;
+  border-radius: 3px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.notice-warn {
+  background: var(--err-bg);
+  border-color: var(--err);
+  color: var(--err);
+}
+.submit-help {
+  font-size: 11px;
+  line-height: 1.4;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg);
+}
+.submit-help code {
+  font-size: 11px;
+}
+.dyn-heading {
+  margin: 8px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.dyn-args {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dyn-field label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dyn-name {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+}
+.dyn-type {
+  font-size: 10px;
+}
+.dyn-field input,
+.dyn-field select {
+  width: 100%;
+}
+.dyn-field .path-field {
+  display: flex;
+  gap: 4px;
+}
+.dyn-field .path-field input {
+  flex: 1;
+}
+.dyn-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  cursor: pointer;
+  /* The parent .dyn-field label is flex-column so children stretch full
+     width by default. Constrain to content so the checkbox + label hug
+     the left edge instead of being a wide hit-zone. */
+  align-self: flex-start;
+}
+.dyn-checkbox input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+}
+.dyn-checkbox-note {
+  font-size: 10px;
+}
+.dyn-help {
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.sidebar-section {
+  margin-bottom: 16px;
+}
+.sidebar-section h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  margin: 4px 0 6px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.roots-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 8px;
+}
+.roots-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px;
+  word-break: break-all;
+}
+.roots-list li.missing code {
+  color: var(--err);
+  text-decoration: line-through;
+}
+
+.add-root-btn {
+  width: 100%;
+  padding: 6px;
+}
+.search-roots-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ---------- Right-click context menu ---------- */
+.context-menu {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+  padding: 4px 0;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+}
+.context-menu button {
+  background: transparent;
+  color: var(--fg);
+  border: none;
+  text-align: left;
+  padding: 5px 12px;
+  font-size: 12px;
+  border-radius: 0;
+  cursor: pointer;
+}
+.context-menu button:hover {
+  background: var(--accent);
+  color: white;
+}
+.context-menu-header {
+  padding: 4px 12px 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 4px;
+}
+.context-menu-class {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+/* Standard (non-destructive) context menu item — uses the base button
+   style from .context-menu button, no extra overrides needed. */
+.context-menu button.context-menu-item {
+  /* inherits all from .context-menu button */
+}
+/* Destructive item: SIGKILL the process group / GPU. Visually distinct
+   from the regular menu items so the operator can't miss what they're
+   clicking on. */
+.context-menu button.context-menu-destructive {
+  color: var(--err);
+}
+.context-menu button.context-menu-destructive:hover {
+  background: var(--err);
+  color: white;
+}
+.context-menu-empty {
+  padding: 6px 12px;
+  font-size: 11px;
+  font-style: italic;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  width: 560px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+.modal-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.modal-body {
+  padding: 8px 12px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+.current-path {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+.btn-row {
+  display: flex;
+  gap: 8px;
+}
+button.secondary {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+button.secondary:hover {
+  background: var(--bg-alt);
+}
+
+.quick-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.chip {
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: 999px;
+}
+.chip:hover {
+  background: var(--border);
+}
+.hidden-toggle {
+  margin-left: auto;
+  color: var(--fg-muted);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.path-row {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.path-row input {
+  flex: 1;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+
+.dir-listing {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.dir-listing li {
+  border-bottom: 1px solid var(--border);
+}
+.dir-listing li:last-child {
+  border-bottom: none;
+}
+.dir-item {
+  background: transparent;
+  color: var(--fg);
+  width: 100%;
+  text-align: left;
+  padding: 4px 8px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  border-radius: 0;
+}
+.dir-item:hover {
+  background: var(--bg-alt);
+}
+.dir-item .glyph {
+  color: var(--fg-muted);
+  font-size: 10px;
+}
+.pad {
+  padding: 8px;
+}
+
+details.workspace {
+  margin-bottom: 4px;
+}
+details.workspace > summary {
+  cursor: pointer;
+  padding: 2px 4px;
+  font-weight: 600;
+}
+.ws-label {
+  font-weight: 600;
+}
+.ws-path {
+  font-size: 10px;
+  margin-left: 6px;
+}
+
+details.workspace ul,
+li.project ul {
+  list-style: none;
+  padding-left: 12px;
+  margin: 2px 0;
+}
+
+li.project > details > summary {
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+li.config {
+  padding: 0;
+}
+li.config.selected {
+  background: var(--selected);
+}
+/* The button.link:hover rule above paints background: var(--bg-alt) on
+   hover, which would otherwise overlay the selected-row background and
+   make the highlight vanish whenever the cursor sits on a selected item
+   (visible right after clicking, since the cursor is still over it).
+   Reinforce the selection on hover instead — same hue, slightly brighter
+   accent so the row still gives visual feedback that it's hover-targetable. */
+li.config.selected button.link:hover {
+  background: var(--accent);
+}
+
+.config-name {
+  font-weight: 500;
+}
+.default-marker {
+  color: var(--fg-muted);
+  font-size: 10px;
+}
+.config-filename {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 10px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+.config-desc {
+  display: block;
+  font-size: 11px;
+  margin-top: 2px;
+  line-height: 1.3;
+  white-space: normal;
+}
+
+.badge {
+  display: inline-block;
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-size: 10px;
+  padding: 0 6px;
+  margin-left: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.summary-desc {
+  font-size: 11px;
+  margin-top: 2px;
+  line-height: 1.3;
+  white-space: normal;
+  font-weight: normal;
+}
+
+.ws-label {
+  font-weight: 600;
+}
+.proj-name {
+  font-weight: 500;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.viewer {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.viewer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+.viewer-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.viewer-yaml-name {
+  font-size: 11px;
+}
+.viewer-class {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 1px 6px;
+  background: var(--bg);
+  white-space: nowrap;
+}
+.viewer-project {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+}
+.tabs button {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid transparent;
+  padding: 2px 10px;
+}
+.tabs button.active {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--bg);
+}
+
+.pane-state {
+  padding: 24px;
+  color: var(--fg-muted);
+}
+
+.templates-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.trefs-left {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border-right: 1px solid var(--border);
+}
+.trefs-left .trefs-graph {
+  border-right: none;
+  flex: 1;
+  min-height: 0;
+}
+.templates-mode-bar {
+  display: flex;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.templates-mode-bar button {
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid transparent;
+  padding: 2px 12px;
+}
+.templates-mode-bar button.active {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--bg);
+}
+
+.trefs-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---------- tlist (all project templates, grouped) ---------- */
+.tlist {
+  height: 100%;
+  overflow-y: auto;
+  padding: 8px 6px;
+  background: #111;
+}
+.tlist-group {
+  margin-bottom: 12px;
+}
+.tlist-group-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.tlist-group-name {
+  font-weight: 600;
+  color: var(--fg);
+}
+.tlist-group-count {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+.tlist-group-path {
+  font-size: 10px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  margin-left: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60%;
+}
+.tlist-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tlist-item {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  padding: 2px 8px 2px 16px;
+  cursor: pointer;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: none;
+}
+.tlist-item:hover {
+  background: var(--bg-alt);
+}
+.tlist-item.active {
+  background: var(--selected);
+  color: var(--fg);
+}
+.trefs-graph {
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  padding: 8px;
+  background: #111;
+}
+.svg-host svg {
+  max-width: 100%;
+  height: auto;
+}
+.trefs-source {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.template-label {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  word-break: break-all;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.template-label code {
+  flex: 1;
+  min-width: 0;
+}
+.template-edit-btn {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  font-size: 11px;
+  flex: none;
+}
+.template-edit-btn:hover {
+  background: var(--accent);
+  color: white;
+}
+.template-editor {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---------- New Workspace modal ---------- */
+.new-workspace-modal {
+  min-width: 560px;
+  max-width: 720px;
+}
+.new-workspace-modal select,
+.new-workspace-modal textarea {
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 2px;
+  font-size: 12px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  width: 100%;
+}
+.new-workspace-modal textarea {
+  resize: vertical;
+  min-height: 60px;
+}
+.new-project-grid label.full-row {
+  grid-column: 1 / -1;
+}
+.muted-hint {
+  font-size: 11px;
+}
+.new-root-inline {
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: var(--bg);
+  display: grid;
+  gap: 8px;
+}
+.new-root-inline label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* ---------- Save-conflict modal ---------- */
+.conflict-modal {
+  min-width: 480px;
+  max-width: 640px;
+}
+.conflict-modal ul {
+  margin: 6px 0 0 0;
+  padding-left: 20px;
+}
+.conflict-modal li {
+  margin-bottom: 3px;
+}
+
+/* ---------- New Project modal ---------- */
+.new-project-modal {
+  min-width: 480px;
+}
+.new-project-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+.new-project-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.new-project-grid label input {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+.new-project-grid label > .path-field {
+  width: 100%;
+}
+.new-project-grid label:has(.path-field) {
+  grid-column: 1 / -1;
+}
+
+/* ---------- New Template / New Config modal ---------- */
+.new-template-modal .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.new-template-input-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.new-template-input-row input {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+.new-template-hint {
+  font-size: 11px;
+}
+.new-template-hint code {
+  background: var(--bg);
+  padding: 0 4px;
+  border-radius: 2px;
+}
+.new-template-preview {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.new-template-preview code {
+  word-break: break-all;
+}
+
+/* ---------- Sidebar Files tree ---------- */
+.sidebar-projects-details,
+.sidebar-files-details {
+  flex: none;
+}
+.sidebar-views-details > summary,
+.sidebar-tools > summary,
+.sidebar-search-roots-details > summary,
+.sidebar-projects-details > summary,
+.sidebar-files-details > summary {
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  list-style: none;
+  user-select: none;
+}
+.sidebar-views-details > summary::-webkit-details-marker,
+.sidebar-tools > summary::-webkit-details-marker,
+.sidebar-search-roots-details > summary::-webkit-details-marker,
+.sidebar-projects-details > summary::-webkit-details-marker,
+.sidebar-files-details > summary::-webkit-details-marker {
+  display: none;
+}
+.sidebar-views-details > summary::before,
+.sidebar-tools > summary::before,
+.sidebar-search-roots-details > summary::before,
+.sidebar-projects-details > summary::before,
+.sidebar-files-details > summary::before {
+  content: "▸ ";
+  font-size: 10px;
+}
+.sidebar-views-details[open] > summary::before,
+.sidebar-tools[open] > summary::before,
+.sidebar-search-roots-details[open] > summary::before,
+.sidebar-projects-details[open] > summary::before,
+.sidebar-files-details[open] > summary::before {
+  content: "▾ ";
+}
+.sidebar-views-details > summary:hover,
+.sidebar-tools > summary:hover,
+.sidebar-search-roots-details > summary:hover,
+.sidebar-projects-details > summary:hover,
+.sidebar-files-details > summary:hover {
+  color: var(--fg);
+}
+.sidebar-files {
+  /* See .sidebar-projects: the parent scrolls, so let this grow. */
+  padding: 4px 8px 8px 8px;
+}
+.files-tree {
+  font-size: 12px;
+}
+.files-tree-show-hidden {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 6px 4px;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+.files-tree-root > summary {
+  cursor: pointer;
+  padding: 2px 4px;
+  list-style: none;
+  user-select: none;
+}
+.files-tree-root > summary::-webkit-details-marker {
+  display: none;
+}
+.files-tree-root > summary::before {
+  content: "▸ ";
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+.files-tree-root[open] > summary::before {
+  content: "▾ ";
+}
+.files-tree-root > summary.missing {
+  text-decoration: line-through;
+  color: var(--fg-muted);
+}
+.files-tree-root-label {
+  font-weight: 600;
+}
+.files-tree-root-path {
+  font-size: 10px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.files-tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.files-tree-dir > details > summary {
+  cursor: pointer;
+  padding: 1px 0;
+}
+.files-tree-name {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+.files-tree-file-btn {
+  background: transparent;
+  color: var(--fg);
+  padding: 1px 4px;
+  text-align: left;
+  width: 100%;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 12px;
+}
+.files-tree-file-btn:hover {
+  background: var(--bg-alt);
+}
+.files-tree-status {
+  padding: 2px 4px 2px 16px;
+  font-size: 11px;
+}
+
+/* ---------- Files panel (template editor) ---------- */
+.files-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.files-panel.files-empty {
+  align-items: center;
+  justify-content: center;
+}
+.files-splits {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+}
+.files-split {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+}
+.files-split:last-child {
+  border-right: none;
+}
+.files-split.active .files-tabbar {
+  border-bottom-color: var(--accent);
+}
+.files-tabbar {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+  min-height: 30px;
+  overflow-x: auto;
+}
+.files-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 10px;
+  border-right: 1px solid var(--border);
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+  max-width: 220px;
+  position: relative;
+}
+.files-tab:hover {
+  background: var(--bg);
+  color: var(--fg);
+}
+.files-tab.active {
+  background: var(--bg);
+  color: var(--fg);
+  border-bottom: 2px solid var(--accent);
+  margin-bottom: -1px;
+}
+.files-tab.drop-before::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+}
+.files-tab-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+.files-tab-dirty-dot {
+  color: var(--accent);
+  margin-right: 4px;
+}
+.files-tab-close {
+  background: transparent;
+  color: var(--fg-muted);
+  padding: 0 4px;
+  font-size: 11px;
+  border-radius: 2px;
+}
+.files-tab-close:hover {
+  background: var(--err-bg);
+  color: var(--err);
+}
+.files-tabbar-spacer {
+  flex: 1;
+  min-width: 16px;
+}
+.files-tabbar-spacer.drop-target {
+  border-bottom: 2px solid var(--accent);
+}
+.files-split-btn {
+  background: transparent;
+  color: var(--fg-muted);
+  border: none;
+  padding: 0 8px;
+  font-size: 14px;
+  align-self: stretch;
+}
+.files-split-btn:hover {
+  color: var(--fg);
+  background: var(--bg);
+}
+.files-editor-host {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/* ---------- Info pane (README viewer) ---------- */
+/* The pane itself is the scroll container. Padding stays here so the
+   scrollbar doesn't sit flush against the markdown content. */
+.info-pane {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--bg-pane);
+  padding: 24px 16px;
+}
+
+/* Single inner wrapper that owns the column width. Everything inside
+   flows at this wrapper's full width, so headers, paragraphs, hr, lists,
+   tables, and images all share the same left/right edges. */
+.info-pane-content {
+  max-width: 80ch;
+  margin: 0 auto;
+}
+
+.info-pane h1,
+.info-pane h2,
+.info-pane h3,
+.info-pane h4,
+.info-pane h5,
+.info-pane h6 {
+  color: var(--fg);
+  margin-top: 1.4em;
+  margin-bottom: 0.5em;
+  line-height: 1.3;
+}
+
+.info-pane h1 { font-size: 1.6em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
+.info-pane h2 { font-size: 1.3em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
+.info-pane h3 { font-size: 1.1em; }
+
+.info-pane p {
+  margin: 0.6em 0;
+  line-height: 1.6;
+}
+
+.info-pane ul,
+.info-pane ol {
+  padding-left: 1.6em;
+  margin: 0.5em 0;
+  line-height: 1.6;
+}
+
+.info-pane li {
+  margin: 0.2em 0;
+}
+
+.info-pane code {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: var(--bg-alt);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+.info-pane pre {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 0.8em 0;
+}
+
+.info-pane pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+}
+
+.info-pane blockquote {
+  border-left: 3px solid var(--border);
+  margin: 0.8em 0;
+  padding: 0.2em 1em;
+  color: var(--fg-muted);
+}
+
+.info-pane table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  width: 100%;
+  font-size: 12px;
+}
+
+.info-pane th,
+.info-pane td {
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+  text-align: left;
+}
+
+.info-pane th {
+  background: var(--bg-alt);
+  font-weight: 600;
+}
+
+.info-pane tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--bg-alt) 40%, var(--bg));
+}
+
+.info-pane img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 3px;
+  margin: 0.4em 0;
+}
+
+.info-pane a {
+  color: #4daafc;
+  text-decoration: none;
+}
+
+.info-pane a:hover {
+  text-decoration: underline;
+}
+
+.info-pane hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.2em 0;
+}
+
+/* ----- Config tree artifact sub-groups ----- */
+
+/* Row wrapper that holds the expand triangle + the config button side by side. */
+.config-row {
+  display: flex;
+  align-items: flex-start;
+}
+
+/* The ▸/▾ triangle button before configs that have artifacts. */
+.config-expand-tri {
+  background: transparent;
+  color: var(--fg-muted);
+  border: none;
+  padding: 0;
+  width: 16px;
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  align-self: flex-start;
+  margin-top: 3px;
+}
+.config-expand-tri:hover {
+  color: var(--fg);
+  background: transparent;
+}
+
+/* Placeholder keeps alignment for configs with no artifacts. */
+.config-expand-placeholder {
+  display: inline-block;
+  width: 16px;
+  flex-shrink: 0;
+}
+
+/* Sub-group list (Logs / Checkpoints / Evaluations). */
+.artifact-groups {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.artifact-group {
+  /* no extra padding — items below carry their own indent */
+}
+
+/* The "▸ Logs (N)" header button. Inherits .link styles then adds indent. */
+.artifact-group-header {
+  padding-left: 20px !important;
+  width: 100%;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+}
+.artifact-group-header .tri {
+  width: 14px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+/* Individual leaf rows (run / checkpoint / eval). */
+.artifact-leaves {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.artifact-leaf {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 10px 2px 36px;
+  cursor: pointer;
+  font-size: 12px;
+  border-left: 2px solid transparent;
+}
+.artifact-leaf:hover {
+  background: var(--bg-alt);
+}
+.artifact-leaf.selected {
+  background: var(--selected);
+  border-left-color: var(--accent);
+}
+.artifact-leaf-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.artifact-leaf-meta {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* ----- Detail panel header (LogDetailPanel / CheckpointDetailPanel / EvalDetailPanel) ----- */
+
+.detail-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.detail-run-id {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.detail-path {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+
+/* ----- Run summary / checkpoint / eval detail panes ----- */
+
+.run-summary,
+.checkpoint-list {
+  padding: 12px 16px;
+  overflow: auto;
+}
+.summary-head h3 {
+  margin: 0 0 8px 0;
+}
+.summary-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  margin-bottom: 12px;
+}
+.summary-paths span {
+  display: inline-block;
+  width: 50px;
+}
+.summary-paths code,
+.path-code {
+  color: var(--fg);
+  background: var(--bg-alt);
+  padding: 1px 4px;
+  border-radius: 2px;
+  word-break: break-all;
+}
+
+.summary-table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 680px;
+}
+.summary-table th,
+.summary-table td {
+  text-align: left;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  font-weight: normal;
+  font-family: inherit;
+}
+.summary-table thead th {
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.summary-table tbody th {
+  color: var(--fg-muted);
+  width: 220px;
+}
+
+/* .tty-static: static TTY dump filling the viewer panel height. */
+.viewer .tty-pre.tty-static {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Job-type chip shown in the JobsPanel next to the status pill. */
+.job-type-chip {
+  display: inline-block;
+  padding: 0 6px;
+  margin-left: 6px;
+  font-size: 10px;
+  border-radius: 2px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.job-type-chip.type-train {
+  background: #1e3a5f;
+  color: #8ab4d8;
+}
+.job-type-chip.type-eval {
+  background: #2d4a2e;
+  color: #9dcf9f;
+}
+.job-type-chip.type-inference {
+  background: #4a2d46;
+  color: #d89dcc;
+}
+.job-type-chip.type-tensorboard {
+  background: #4a3a1f;
+  color: #e5c07b;
+}
+.job-type-chip.type-mkdocs {
+  background: #2f3a4a;
+  color: #aac4e6;
+}
+.job-type-chip.type-convert {
+  background: #3a2e4a;
+  color: #c4a8e6;
+}
+.job-type-chip.type-finalize {
+  background: #2e4a4a;
+  color: #9fcfcf;
+}
+
+/* ----- Inference panel ----- */
+
+.inference-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.inference-panel .viewer-header {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 12px;
+}
+.inference-model-panel {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 920px;
+}
+.inference-model-panel h4 {
+  margin: 0 0 6px 0;
+}
+.inference-model-panel section {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+.inference-model-panel section:last-child {
+  border-bottom: none;
+}
+
+.inference-health-status {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.health-label.health-ok {
+  color: #9dcf9f;
+}
+.health-label.health-down {
+  color: var(--err);
+  word-break: break-word;
+}
+
+.inference-server-list,
+.inference-model-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-alt);
+}
+.inference-server-row,
+.inference-model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+}
+.inference-server-row:hover,
+.inference-model-row:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.inference-server-row.selected,
+.inference-model-row.selected {
+  background: var(--selected);
+  border-left-color: var(--accent);
+}
+.inf-server-model,
+.inf-model-id {
+  flex: 0 0 auto;
+  font-weight: 500;
+}
+.inf-server-id {
+  margin-left: auto;
+  font-size: 10px;
+}
+
+/* Completion sub-panel */
+.inference-completion {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.inference-completion-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.inference-completion-bar label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.inference-status {
+  margin-left: auto;
+  font-size: 11px;
+}
+.inference-textarea {
+  flex: 1;
+  min-height: 0;
+  border: none;
+  background: var(--bg-alt);
+  color: var(--fg);
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 12px 16px;
+  resize: none;
+  outline: none;
+}
+.inference-textarea:focus {
+  background: var(--bg);
+}
+
+/* ─── Chat sub-tab ─── Sibling layout to .inference-completion: a top
+   action bar, an optional collapsible system-message panel, a scrolling
+   transcript, and a sticky compose row at the bottom. */
+.inference-chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.inference-chat-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.inference-chat-system-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+}
+/* Small dot beside the System toggle when a non-empty system message is
+   set, so the user can see at a glance that one is active without
+   expanding the panel. */
+.inference-chat-system-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 4px;
+}
+.inference-chat-system {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  background: var(--bg-alt);
+}
+.inference-chat-system textarea {
+  width: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+.inference-chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.inference-chat-empty {
+  font-size: 12px;
+  text-align: center;
+  padding: 24px;
+}
+.inference-chat-msg {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: var(--bg-alt);
+  font-size: 13px;
+}
+.inference-chat-msg-user {
+  /* User and assistant get slightly different backgrounds so the
+     transcript is easy to skim. Keep both subtle — high-contrast bubble
+     UIs don't fit the rest of this admin tool. */
+  background: var(--bg);
+}
+.inference-chat-msg.editing {
+  border-color: var(--accent);
+}
+.inference-chat-msg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.inference-chat-msg-role {
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.inference-chat-msg-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+.inference-chat-msg:hover .inference-chat-msg-actions {
+  opacity: 1;
+}
+.inference-chat-msg-actions button.tiny {
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.inference-chat-msg-body {
+  line-height: 1.5;
+}
+.inference-chat-msg-body p {
+  margin: 0 0 6px;
+}
+.inference-chat-msg-body p:last-child {
+  margin-bottom: 0;
+}
+.inference-chat-msg-body pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  border-radius: 3px;
+  overflow-x: auto;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  margin: 6px 0;
+}
+.inference-chat-msg-body code {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+.inference-chat-msg-body pre code {
+  background: none;
+  padding: 0;
+}
+/* User text uses a <pre> so newlines and whitespace survive verbatim
+   — but it should wrap rather than scroll horizontally. */
+.inference-chat-msg-user-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 13px;
+  background: none;
+  border: none;
+  padding: 0;
+}
+.inference-chat-input {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  background: var(--bg);
+}
+.inference-chat-input textarea {
+  flex: 1;
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 8px 10px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  min-height: 60px;
+}
+.inference-chat-input textarea:focus {
+  border-color: var(--accent);
+}
+.inference-chat-input-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Collapsible "Advanced options" heading inside the TensorBoard modal
+   (and reusable for future sections). Matches .configs-header's look. */
+.collapsible-heading {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.collapsible-heading .tri {
+  width: 14px;
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* TTY badge in the run row — differentiates "has only tty, no structured
+   logs" from the cleaner "no logs at all" case. */
+.tty-badge {
+  display: inline-block;
+  background: #2d3842;
+  color: #8ab4d8;
+  padding: 0 4px;
+  margin-left: 6px;
+  font-size: 10px;
+  border-radius: 2px;
+}
+
+/* ----- Evaluations list ----- */
+.evaluations-list {
+  padding: 12px 16px;
+  overflow: auto;
+}
+.eval-card {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  margin-bottom: 8px;
+  background: var(--bg-alt);
+}
+.eval-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.eval-card-head:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.eval-card-head .tri {
+  width: 14px;
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1;
+}
+.eval-title {
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.eval-metric {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.eval-metric .muted {
+  margin-right: 4px;
+}
+.eval-result-table {
+  margin: 0;
+  border-top: 1px solid var(--border);
+}
+.eval-result-table tbody th {
+  width: 180px;
+}

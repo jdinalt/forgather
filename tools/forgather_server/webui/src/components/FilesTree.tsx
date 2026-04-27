@@ -1,0 +1,698 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+
+import { api, FsEntry, FsListing, SearchRoot, WorkspaceCluster } from "../api";
+import { ContextMenu } from "./ContextMenu";
+import { InitWorkspaceModal } from "./InitWorkspaceModal";
+import { NewProjectModal } from "./NewProjectModal";
+
+interface Props {
+  /** Open the file in the App-level editor view (which switches the
+   *  main pane to "edit"). */
+  onOpenFile: (path: string) => void;
+  /** Drop ``path`` from the editor (every split, no dirty prompt) —
+   *  invoked after a rename / move / delete makes the path stale. */
+  onDropPath: (path: string) => void;
+}
+
+interface MenuTarget {
+  x: number;
+  y: number;
+  path: string;
+  parent: string; // dest_dir candidate for Paste-into-this-dir
+  isDir: boolean;
+  /** True only for the synthetic top-level row that *is* a search
+   *  root. Used to tweak the menu (e.g. forbid Rename / Cut on roots). */
+  isRoot: boolean;
+}
+
+interface Clipboard {
+  path: string;
+  isDir: boolean;
+  mode: "cut" | "copy";
+}
+
+const basename = (p: string) => {
+  const norm = p.replace(/\/+$/, "");
+  const slash = norm.lastIndexOf("/");
+  return slash >= 0 ? norm.slice(slash + 1) : norm;
+};
+
+/** Find the deepest ancestor of ``path`` (or ``path`` itself) that is a
+ *  configured search root. Used by the New Workspace flow so a click on
+ *  a subdirectory still resolves to the matching root for the
+ *  ``parent_dir`` constraint. */
+function enclosingSearchRoot(
+  path: string,
+  roots: SearchRoot[] | undefined,
+): SearchRoot | null {
+  if (!roots) return null;
+  const norm = path.replace(/\/+$/, "");
+  const matches = roots.filter((r) => {
+    if (!r.exists) return false;
+    const rp = r.path.replace(/\/+$/, "");
+    return norm === rp || norm.startsWith(rp + "/");
+  });
+  matches.sort((a, b) => b.path.length - a.path.length);
+  return matches[0] ?? null;
+}
+
+function enclosingWorkspace(
+  path: string,
+  clusters: WorkspaceCluster[] | undefined,
+): WorkspaceCluster | null {
+  if (!clusters) return null;
+  const norm = path.replace(/\/+$/, "");
+  const matches = clusters.filter((c) => {
+    if (!c.workspace_root) return false;
+    const wp = c.workspace_root.replace(/\/+$/, "");
+    return norm === wp || norm.startsWith(wp + "/");
+  });
+  matches.sort((a, b) => b.workspace_root.length - a.workspace_root.length);
+  return matches[0] ?? null;
+}
+
+/** Compute relative path from ``base`` to ``path`` (assumes path is at
+ *  or under base). Returns empty string when they're equal. */
+function relPath(base: string, path: string): string {
+  const b = base.replace(/\/+$/, "");
+  const p = path.replace(/\/+$/, "");
+  if (p === b) return "";
+  return p.slice(b.length + 1);
+}
+
+export function FilesTree({ onOpenFile, onDropPath }: Props) {
+  const [showHidden, setShowHidden] = useState(false);
+  const [menu, setMenu] = useState<MenuTarget | null>(null);
+  const [clipboard, setClipboard] = useState<Clipboard | null>(null);
+  // Modal state for New Workspace / New Project pop-ups initiated from
+  // the directory context menu.
+  // The clicked directory becomes the workspace dir directly; there's
+  // no parent / dir-name to pre-fill, so the state is just the path.
+  const [initWorkspaceFor, setInitWorkspaceFor] = useState<string | null>(
+    null,
+  );
+  const [newProjectFor, setNewProjectFor] = useState<{
+    workspace: WorkspaceCluster;
+    initialDirName: string;
+  } | null>(null);
+
+  const rootsQ = useQuery({
+    queryKey: ["search-roots"],
+    queryFn: api.listSearchRoots,
+  });
+  // Workspaces drive New-Project enablement: we need the enclosing
+  // workspace for the clicked directory to call POST /workspace/new-project.
+  const projectsQ = useQuery({
+    queryKey: ["projects"],
+    queryFn: api.listProjects,
+  });
+
+  if (rootsQ.isLoading) {
+    return <div className="muted pad">Loading…</div>;
+  }
+  if (rootsQ.error) {
+    return (
+      <div className="err pad">
+        <pre>{String(rootsQ.error)}</pre>
+      </div>
+    );
+  }
+  const roots = rootsQ.data ?? [];
+
+  return (
+    <div className="files-tree">
+      <label className="files-tree-show-hidden">
+        <input
+          type="checkbox"
+          checked={showHidden}
+          onChange={(e) => setShowHidden(e.target.checked)}
+        />
+        Show hidden
+      </label>
+      {roots.length === 0 && (
+        <div className="muted pad">
+          No search roots. Add one in the Projects → Search Roots section.
+        </div>
+      )}
+      {roots.map((r) => (
+        <RootNode
+          key={r.path}
+          path={r.path}
+          exists={r.exists}
+          showHidden={showHidden}
+          clipboard={clipboard}
+          setClipboard={setClipboard}
+          openMenu={(t) => setMenu(t)}
+          onOpenFile={onOpenFile}
+        />
+      ))}
+      {menu && (
+        <FilesContextMenu
+          target={menu}
+          clipboard={clipboard}
+          enclosingRoot={enclosingSearchRoot(menu.path, rootsQ.data)}
+          enclosingWs={enclosingWorkspace(menu.path, projectsQ.data)}
+          onClose={() => setMenu(null)}
+          onOpenFile={onOpenFile}
+          onDropPath={onDropPath}
+          setClipboard={setClipboard}
+          openInitWorkspace={(path) => setInitWorkspaceFor(path)}
+          openNewProject={(p) => setNewProjectFor(p)}
+        />
+      )}
+      {initWorkspaceFor && (
+        <InitWorkspaceModal
+          workspaceDir={initWorkspaceFor}
+          onCreated={() => {
+            // ["projects"] is invalidated by the modal's mutation; the
+            // tree refetches and shows the new forgather_workspace/
+            // entry inside the directory.
+          }}
+          onClose={() => setInitWorkspaceFor(null)}
+        />
+      )}
+      {newProjectFor && (
+        <NewProjectModal
+          workspace={newProjectFor.workspace}
+          initialProjectDirName={newProjectFor.initialDirName}
+          onCreated={() => {
+            // Same — modal invalidates ["projects"].
+          }}
+          onClose={() => setNewProjectFor(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+interface RootNodeProps {
+  path: string;
+  exists: boolean;
+  showHidden: boolean;
+  clipboard: Clipboard | null;
+  setClipboard: (c: Clipboard | null) => void;
+  openMenu: (t: MenuTarget) => void;
+  onOpenFile: (path: string) => void;
+}
+
+function RootNode({
+  path,
+  exists,
+  showHidden,
+  clipboard,
+  setClipboard,
+  openMenu,
+  onOpenFile,
+}: RootNodeProps) {
+  const label = basename(path) || path;
+  // Default-closed so we don't fetch every search root's top-level
+  // listing before the user actually expands one. The DirChildren
+  // mount is also gated below so the listing fetch only fires when
+  // the node is actually visible.
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      className="files-tree-root"
+      open={open}
+      onToggle={(e) => {
+        if (e.target !== e.currentTarget) return;
+        setOpen((e.currentTarget as HTMLDetailsElement).open);
+      }}
+    >
+      <summary
+        className={exists ? "" : "missing"}
+        title={path}
+        onContextMenu={(e) => {
+          if (!exists) return;
+          e.preventDefault();
+          e.stopPropagation();
+          openMenu({
+            x: e.clientX,
+            y: e.clientY,
+            path,
+            parent: path, // root: paste-here means paste into the root itself
+            isDir: true,
+            isRoot: true,
+          });
+        }}
+      >
+        <span className="files-tree-root-label">{label}</span>
+        {!exists && <span className="err-badge">missing</span>}
+      </summary>
+      {exists && open && (
+        <DirChildren
+          path={path}
+          showHidden={showHidden}
+          clipboard={clipboard}
+          setClipboard={setClipboard}
+          openMenu={openMenu}
+          onOpenFile={onOpenFile}
+          depth={0}
+        />
+      )}
+    </details>
+  );
+}
+
+interface DirChildrenProps {
+  path: string;
+  showHidden: boolean;
+  clipboard: Clipboard | null;
+  setClipboard: (c: Clipboard | null) => void;
+  openMenu: (t: MenuTarget) => void;
+  onOpenFile: (path: string) => void;
+  depth: number;
+}
+
+function DirChildren({
+  path,
+  showHidden,
+  clipboard,
+  setClipboard,
+  openMenu,
+  onOpenFile,
+  depth,
+}: DirChildrenProps) {
+  const listingQ = useQuery({
+    queryKey: ["fs-browse", path, showHidden, true],
+    queryFn: () => api.fsBrowse(path, showHidden, true),
+    // Modest stale time so refresh after rename/copy/move (which
+    // invalidates) still feels snappy.
+    staleTime: 30_000,
+  });
+  if (listingQ.isLoading) {
+    return <div className="muted files-tree-status">Loading…</div>;
+  }
+  if (listingQ.error) {
+    return (
+      <div className="err files-tree-status">
+        <pre>{String(listingQ.error)}</pre>
+      </div>
+    );
+  }
+  const data: FsListing | undefined = listingQ.data;
+  if (!data || data.entries.length === 0) {
+    return <div className="muted files-tree-status">(empty)</div>;
+  }
+  return (
+    <ul className="files-tree-list">
+      {data.entries.map((e) => (
+        <FsNode
+          key={e.path}
+          entry={e}
+          parent={path}
+          showHidden={showHidden}
+          clipboard={clipboard}
+          setClipboard={setClipboard}
+          openMenu={openMenu}
+          onOpenFile={onOpenFile}
+          depth={depth + 1}
+        />
+      ))}
+    </ul>
+  );
+}
+
+interface FsNodeProps {
+  entry: FsEntry;
+  parent: string;
+  showHidden: boolean;
+  clipboard: Clipboard | null;
+  setClipboard: (c: Clipboard | null) => void;
+  openMenu: (t: MenuTarget) => void;
+  onOpenFile: (path: string) => void;
+  depth: number;
+}
+
+function FsNode({
+  entry,
+  parent,
+  showHidden,
+  clipboard,
+  setClipboard,
+  openMenu,
+  onOpenFile,
+  depth,
+}: FsNodeProps) {
+  const indent = { paddingLeft: `${Math.min(depth, 8) * 8 + 4}px` };
+  if (entry.is_dir) {
+    return (
+      <DirNode
+        entry={entry}
+        parent={parent}
+        showHidden={showHidden}
+        clipboard={clipboard}
+        setClipboard={setClipboard}
+        openMenu={openMenu}
+        onOpenFile={onOpenFile}
+        depth={depth}
+        indent={indent}
+      />
+    );
+  }
+  // Every file is click-to-open; the backend's text/binary check
+  // refuses truly binary files with 415 and the editor surfaces the
+  // error in-tab. Known extensions get language-specific highlighting
+  // via languageFor; unknown ones fall back to plaintext.
+  return (
+    <li className="files-tree-file">
+      <button
+        type="button"
+        className="files-tree-file-btn"
+        style={indent}
+        onClick={() => onOpenFile(entry.path)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openMenu({
+            x: e.clientX,
+            y: e.clientY,
+            path: entry.path,
+            parent,
+            isDir: false,
+            isRoot: false,
+          });
+        }}
+        title={entry.path}
+      >
+        <span className="files-tree-name">{entry.name}</span>
+      </button>
+    </li>
+  );
+}
+
+/** Directory variant of FsNode, broken out so we can give it React state
+ *  for its own expanded/collapsed flag. The DirChildren mount is gated
+ *  on this state — without that gate, the whole tree's listings would
+ *  fetch eagerly because `<details>` keeps its content in the DOM
+ *  regardless of open state. */
+function DirNode({
+  entry,
+  parent,
+  showHidden,
+  clipboard,
+  setClipboard,
+  openMenu,
+  onOpenFile,
+  depth,
+  indent,
+}: FsNodeProps & { indent: React.CSSProperties }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <li className="files-tree-dir">
+      <details
+        open={open}
+        onToggle={(e) => {
+          if (e.target !== e.currentTarget) return;
+          setOpen((e.currentTarget as HTMLDetailsElement).open);
+        }}
+      >
+        <summary
+          style={indent}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openMenu({
+              x: e.clientX,
+              y: e.clientY,
+              path: entry.path,
+              parent,
+              isDir: true,
+              isRoot: false,
+            });
+          }}
+        >
+          <span className="files-tree-name">{entry.name}/</span>
+        </summary>
+        {open && (
+          <DirChildren
+            path={entry.path}
+            showHidden={showHidden}
+            clipboard={clipboard}
+            setClipboard={setClipboard}
+            openMenu={openMenu}
+            onOpenFile={onOpenFile}
+            depth={depth}
+          />
+        )}
+      </details>
+    </li>
+  );
+}
+
+interface MenuProps {
+  target: MenuTarget;
+  clipboard: Clipboard | null;
+  /** Search root that contains ``target.path`` (or ``target.path``
+   *  itself if it IS a root). When non-null, the menu offers
+   *  "New Workspace…" and pre-fills the modal accordingly. */
+  enclosingRoot: SearchRoot | null;
+  /** Workspace cluster that contains ``target.path`` (or matches it).
+   *  When non-null, the menu offers "New Project…". */
+  enclosingWs: WorkspaceCluster | null;
+  onClose: () => void;
+  onOpenFile: (path: string) => void;
+  onDropPath: (path: string) => void;
+  setClipboard: (c: Clipboard | null) => void;
+  /** Open the InitWorkspaceModal for the clicked directory — the path
+   *  IS the workspace dir, no need to ask the user where it goes. */
+  openInitWorkspace: (workspaceDir: string) => void;
+  openNewProject: (p: {
+    workspace: WorkspaceCluster;
+    initialDirName: string;
+  }) => void;
+}
+
+function FilesContextMenu({
+  target,
+  clipboard,
+  enclosingRoot,
+  enclosingWs,
+  onClose,
+  onOpenFile,
+  onDropPath,
+  setClipboard,
+  openInitWorkspace,
+  openNewProject,
+}: MenuProps) {
+  const qc = useQueryClient();
+
+  const invalidateAfter = (...affected: string[]) => {
+    // Invalidate browse cache for every directory the operation
+    // touched so both source and destination panes refresh.
+    for (const p of affected) {
+      qc.invalidateQueries({
+        queryKey: ["fs-browse", p],
+        // partial match on the path component — staleTime 30s would
+        // otherwise hold the old listing.
+        exact: false,
+      });
+    }
+  };
+
+  const doRename = async () => {
+    onClose();
+    const cur = basename(target.path);
+    const next = window.prompt(`Rename:\n${target.path}\n\nNew name:`, cur);
+    if (next == null) return;
+    const trimmed = next.trim();
+    if (!trimmed || trimmed === cur) return;
+    try {
+      await api.fsRename(target.path, trimmed);
+      // Stale path: drop any open tab pointing at it.
+      onDropPath(target.path);
+      invalidateAfter(target.parent);
+    } catch (e) {
+      alert(`Rename failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const doDelete = async () => {
+    onClose();
+    const kind = target.isDir ? "directory (recursive)" : "file";
+    if (
+      !confirm(
+        `Delete this ${kind} permanently?\n\n${target.path}\n\nThis cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      if (target.isDir) {
+        await api.deleteDir(target.path);
+      } else {
+        await api.deleteFile(target.path);
+      }
+      onDropPath(target.path);
+      invalidateAfter(target.parent);
+    } catch (e) {
+      alert(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const doCut = () => {
+    onClose();
+    setClipboard({ path: target.path, isDir: target.isDir, mode: "cut" });
+  };
+
+  const doCopy = () => {
+    onClose();
+    setClipboard({ path: target.path, isDir: target.isDir, mode: "copy" });
+  };
+
+  const doNewFile = async () => {
+    onClose();
+    const name = window.prompt(
+      `New file under:\n${target.path}\n\nName (e.g. notes.md):`,
+      "",
+    );
+    if (name == null) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    try {
+      const r = await api.fsNewFile(target.path, trimmed);
+      invalidateAfter(target.path);
+      onOpenFile(r.path);
+    } catch (e) {
+      alert(`Create failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const doNewFolder = async () => {
+    onClose();
+    const name = window.prompt(
+      `New folder under:\n${target.path}\n\nName:`,
+      "",
+    );
+    if (name == null) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    try {
+      await api.fsMkdir(target.path, trimmed);
+      invalidateAfter(target.path);
+    } catch (e) {
+      alert(`Create failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const doPaste = async () => {
+    onClose();
+    if (!clipboard) return;
+    try {
+      if (clipboard.mode === "cut") {
+        await api.fsMove(clipboard.path, target.path);
+        // The moved path no longer exists at its old location.
+        onDropPath(clipboard.path);
+        setClipboard(null);
+        const srcParent =
+          clipboard.path.replace(/\/+$/, "").split("/").slice(0, -1).join("/") ||
+          "/";
+        invalidateAfter(srcParent, target.path);
+      } else {
+        await api.fsCopy(clipboard.path, target.path);
+        invalidateAfter(target.path);
+      }
+    } catch (e) {
+      alert(`Paste failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const doInitWorkspace = () => {
+    onClose();
+    // The clicked directory IS the workspace dir. The modal collects
+    // metadata only (name / description / forgather dir / libs); the
+    // backend writes forgather_workspace/ inside this dir.
+    openInitWorkspace(target.path);
+  };
+
+  const doNewProject = () => {
+    onClose();
+    if (!enclosingWs) return;
+    // Project lives at <click-dir>/<new-name>; modal expects
+    // workspace = the cluster and project_dir_name = rel path from
+    // workspace_root + leaf.
+    const rel = relPath(enclosingWs.workspace_root, target.path);
+    openNewProject({
+      workspace: enclosingWs,
+      initialDirName: rel ? `${rel}/` : "",
+    });
+  };
+
+  const canPaste = target.isDir && clipboard != null;
+
+  return (
+    <ContextMenu x={target.x} y={target.y} onClose={onClose}>
+      <div className="context-menu-header muted">{basename(target.path)}</div>
+      {!target.isDir && (
+        <button
+          className="context-menu-item"
+          onClick={() => {
+            onOpenFile(target.path);
+            onClose();
+          }}
+        >
+          ✎ Open
+        </button>
+      )}
+      {target.isDir && (
+        <button className="context-menu-item" onClick={doNewFile}>
+          ➕ New File…
+        </button>
+      )}
+      {target.isDir && (
+        <button className="context-menu-item" onClick={doNewFolder}>
+          ➕ New Folder…
+        </button>
+      )}
+      {target.isDir && enclosingRoot && (
+        <button
+          className="context-menu-item"
+          onClick={doInitWorkspace}
+          title={`Initialize workspace at ${target.path}`}
+        >
+          📁 New Workspace…
+        </button>
+      )}
+      {target.isDir && enclosingWs && (
+        <button
+          className="context-menu-item"
+          onClick={doNewProject}
+          title={`Project will land under workspace ${enclosingWs.workspace_root}`}
+        >
+          📁 New Project…
+        </button>
+      )}
+      {!target.isRoot && (
+        <button className="context-menu-item" onClick={doRename}>
+          ✎ Rename…
+        </button>
+      )}
+      {!target.isRoot && (
+        <button className="context-menu-item" onClick={doCut}>
+          ✂ Cut
+        </button>
+      )}
+      <button className="context-menu-item" onClick={doCopy}>
+        ❏ Copy
+      </button>
+      {canPaste && (
+        <button
+          className="context-menu-item"
+          onClick={doPaste}
+          title={`${clipboard!.mode === "cut" ? "Move" : "Copy"} ${clipboard!.path}`}
+        >
+          ⎘ Paste {clipboard!.mode === "cut" ? "(move)" : "(copy)"}
+        </button>
+      )}
+      {!target.isRoot && (
+        <button
+          className="context-menu-item context-menu-destructive"
+          onClick={doDelete}
+        >
+          🗑 Delete Permanently…
+        </button>
+      )}
+    </ContextMenu>
+  );
+}

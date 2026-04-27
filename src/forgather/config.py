@@ -481,6 +481,8 @@ class ConfigEnvironment:
     def find_referenced_templates(
         self,
         template_name: os.PathLike | str,
+        /,
+        **kwargs,
     ) -> Iterator[Tuple[int, str, str]]:
         """Iterate over the full template inheritance hierarchy for a given template.
 
@@ -493,6 +495,11 @@ class ConfigEnvironment:
         ----------
         template_name : str or os.PathLike
             Name of the root template to analyse (relative to the search path).
+        **kwargs
+            Forwarded to the inner :meth:`load` call so dynamic-args
+            conditional includes (e.g. ``include "trainers/" + trainer_type +
+            ".yaml"``) resolve to the right files. Omit for the static-default
+            view.
 
         Yields
         ------
@@ -504,7 +511,9 @@ class ConfigEnvironment:
             Filesystem path to the template file.
         """
         # Use render-time tracing to get complete template hierarchy
-        load_sequence, dependencies = self._trace_template_rendering(template_name)
+        load_sequence, dependencies = self._trace_template_rendering(
+            template_name, **kwargs
+        )
 
         # Convert to the expected format with hierarchy levels
         template_levels = self._build_hierarchy_levels(load_sequence, dependencies)
@@ -517,13 +526,16 @@ class ConfigEnvironment:
             )
             yield (level, template_name, filename)
 
-    def get_template_dependencies(self, template_name: os.PathLike | str):
+    def get_template_dependencies(self, template_name: os.PathLike | str, /, **kwargs):
         """Return raw dependency relationships for a template, suitable for graph generation.
 
         Parameters
         ----------
         template_name : str or os.PathLike
             Name of the root template to analyse.
+        **kwargs
+            Forwarded to the inner :meth:`load` so the trace reflects which
+            templates are actually included given those Jinja variables.
 
         Returns
         -------
@@ -534,10 +546,10 @@ class ConfigEnvironment:
             Mapping from each template name to the set of template names it
             directly references (via ``extends`` or ``include``).
         """
-        return self._trace_template_rendering(template_name)
+        return self._trace_template_rendering(template_name, **kwargs)
 
     def _trace_template_rendering(
-        self, template_name: os.PathLike | str
+        self, template_name: os.PathLike | str, /, **kwargs
     ) -> Tuple[List[Tuple[str, str]], Dict[str, Set[str]]]:
         """
         Trace all templates loaded during rendering using a tracing loader
@@ -613,8 +625,10 @@ class ConfigEnvironment:
             self.pp_environment.loader = tracing_loader
             tracing_loader.is_tracing = True
 
-            # Render the template to trace all dependencies
-            self.load(template_name)
+            # Render the template to trace all dependencies. Forwarding
+            # **kwargs is what lets dynamic-args-driven includes resolve
+            # to the right templates (e.g. trainer_type → trainers/X.yaml).
+            self.load(template_name, **kwargs)
 
             # Use static dependencies, but also try to infer dynamic relationships
             static_deps = tracing_loader.static_dependencies.copy()

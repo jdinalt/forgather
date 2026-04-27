@@ -417,21 +417,33 @@ class InferenceService:
             "encoder_no_repeat_ngram_size",
             "bad_words_ids",
             "min_length",
+            "min_new_tokens",
             "num_beams",
             "num_beam_groups",
             "diversity_penalty",
             "temperature_last_layer",
             "top_k",
             "typical_p",
+            "min_p",
             "epsilon_cutoff",
             "eta_cutoff",
             "guidance_scale",
+            "penalty_alpha",
+            "presence_penalty",
+            "frequency_penalty",
         ]
 
         for param in hf_params:
             value = getattr(request, param, None)
             if value is not None:
                 setattr(generation_config, param, value)
+
+        # Explicit do_sample override wins over the temperature-derived
+        # default set above. Lets the user force greedy decoding even when
+        # temperature is set, or force sampling when temperature is 0.
+        do_sample_override = getattr(request, "do_sample", None)
+        if do_sample_override is not None:
+            generation_config.do_sample = do_sample_override
 
         # Handle special cases
         if hasattr(request, "seed") and request.seed is not None:

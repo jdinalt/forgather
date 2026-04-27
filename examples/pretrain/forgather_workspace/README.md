@@ -1,3 +1,3 @@
-# Pretrain
+# Pretraining
 
-Pretrain examples
+Example projects for pretraining language models from scratch.

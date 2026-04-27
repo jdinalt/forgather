@@ -765,7 +765,7 @@ forgather inf client --completion "Once upon a time" \
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="dummy")
+client = OpenAI(base_url="http://localhost:8137/v1", api_key="dummy")
 
 # Chat completion
 response = client.chat.completions.create(

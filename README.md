@@ -10,6 +10,18 @@ only what changes.
 > complete documentation index. New users should head straight to
 > **[Getting Started](./docs/getting-started/README.md)**.
 
+> 🖥️ **New: web UI.** Forgather now ships with a single-user web
+> frontend over the same APIs the CLI uses — project browsing,
+> a GPU-aware job queue, live training monitoring with TTY + loss
+> pills + per-GPU process attribution, an in-browser editor with
+> Forgather-aware syntax highlighting, and a chat client wired to
+> served models. The
+> **[Forgather server walkthrough](./docs/guides/forgather-server-walkthrough.md)**
+> tours the whole thing end-to-end, from a fresh install through
+> training a small model and chatting with it.
+>
+> ![Forgather server: template-dependency graph for a tiny_llama config](./docs/guides/screenshots/05-trefs-graph.png)
+
 ## Why Forgather?
 
 Most research ML codebases accrete: one training script becomes ten
@@ -48,11 +60,13 @@ Forgather addresses this with three layers:
 - **Fast dataset loading** -- large HF datasets (e.g. C4) normally take 10-20 minutes to open. Forgather indexes the Arrow files on first use and is ready in a few seconds after that, with stateful resume from any position.
 - **Packed sequences + Flex Attention** -- pack multiple documents into every batch with explicit document-boundary tracking; flex-attention masks enforce no cross-document attention, so packing doesn't cost attention quality. Combined with the fused-loss kernel, this is a large throughput win on small-document corpora.
 - **Live job control** -- save, stop, save-stop, or abort running training jobs from another shell. Coordinates automatically across DDP / FSDP-2 / pipeline-parallel workers.
+- **Web UI with GPU-aware job queue** -- single-user browser frontend over the same APIs as the CLI. Project / file browsing, ▶ Run buttons that drop training jobs into a priority + GPU-policy aware queue, live job cards with TTY + loss / lr / grad_norm / tok-per-sec pills, GPU panel with per-card process attribution, in-browser editor with Forgather YAML+Jinja2 syntax highlighting, and a chat client wired to served inference jobs. End-to-end tour: [Forgather server walkthrough](./docs/guides/forgather-server-walkthrough.md).
 - **Extensive examples and documentation** -- tutorials covering every step from scratch, pretraining recipes from 4M to ~1B params, finetune recipes for Llama-2/3, Mistral, Qwen3, Gemma-3, and a growing set of ablation-focused experiments. Every major subsystem has its own docs page.
 - **Speed-optimised** -- meaningful effort has gone into wall-clock performance (Triton kernels, packed iterators, SDPA-backend selection, `torch.compile` everywhere it helps). A formal head-to-head benchmark against alternative frameworks is still to be done.
 
 ## News
 
+- **Apr 2026** -- **Forgather server**: new web frontend over the CLI's APIs. Project browsing, a GPU-aware job queue, live job cards with TTY + training pills, an in-browser editor for templates and arbitrary text files (Forgather YAML+Jinja2 syntax highlighting), and a chat client against served inference jobs. End-to-end tour: [walkthrough](./docs/guides/forgather-server-walkthrough.md). Reference: [README](./tools/forgather_server/README.md).
 - **Apr 2026** -- New recommended base template **[`projects/lm_training_project.yaml`](templatelib/examples/projects/lm_training_project.yaml)** (pretraining and finetuning) and **[`projects/finetune_v2.yaml`](templatelib/examples/projects/finetune_v2.yaml)** (finetune-specific layer). Token-budget-driven step computation, automatic batch-size-aware LR scaling, WSD scheduler, fully-documented parameter surface. Replaces several drifting older base templates.
 - **Apr 2026** -- **[Tiny Llama](./examples/tutorials/tiny_llama/README.md)** and **[H.P. Lovecraft](./examples/tutorials/hp_lovecraft_project/README.md)** tutorials rewritten around the v2 templates as README-first (no Jupyter required). Tiny Llama covers the full train → monitor → control → eval → inference → export flow.
 - **Mar 2026** -- **YaRN** and **Llama-3 style RoPE scaling** in the rotary-embeddings module. Configure via `rope_parameters` with `rope_type: yarn` or `rope_type: llama3`.
@@ -117,6 +131,12 @@ See [`examples/tutorials/tiny_llama/README.md`](./examples/tutorials/tiny_llama/
 for the full "train → monitor → control → eval → inference → export"
 walkthrough, or [`docs/getting-started/README.md`](./docs/getting-started/README.md)
 for the install details.
+
+**Or skip the CLI** -- if you'd rather start in a browser, the
+[Forgather server walkthrough](./docs/guides/forgather-server-walkthrough.md)
+covers the same Tiny Llama flow end-to-end through the web UI: install,
+build the SPA, queue the training job, watch it run, then chat with the
+trained model from the in-browser inference panel.
 
 ## Key Features
 

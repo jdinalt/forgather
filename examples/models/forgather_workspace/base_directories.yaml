@@ -1,0 +1,5 @@
+## The root directories from which to compute the locations of other directories.
+## This file is common to both config and meta-config templates.
+
+## Where is Forgather located?
+-- set ns.forgather_dir = joinpath(workspace_root, "..", "..")

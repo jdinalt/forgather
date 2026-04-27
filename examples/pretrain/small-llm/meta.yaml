@@ -1,7 +1,7 @@
 -- extends "meta_defaults.yaml"
 
 -- block configs
-name: "fineweb-dedup"
+name: "Small LLM"
 description: "Train a model from scratch on smollm-corpus/fineweb-edu-dedup"
 config_prefix: "configs"
 default_config: "default.yaml"

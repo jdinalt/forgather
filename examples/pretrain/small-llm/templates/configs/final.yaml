@@ -1,0 +1,24 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Final"
+    -- set ns.config_description = "Combine the results from the experiments into a final training config."
+
+    -- set ns.dataset_proj = abspath(joinpath(project_dir, 'tiny-stories_small-lm'))
+    -- set ns.dataset_config = "default.yaml"
+    -- set ns.model_name = model_name | default("final")
+
+    ## Increase the learning-rate to the limit
+    -- set ns.base_lr = lr | default(3.0e-4)
+
+    ## Extend to 10x Chinchilla
+    -- set ns.total_tokens = total_tokens | default(24970)
+    -- set ns.annealing_tokens = annealing_tokens | default(2497)
+
+[lr_scheduler]
+lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_scheduler
+    warmup_steps: {{ ns.warmup_steps }}
+    min_lr: {{ ns.min_lr | toyaml }}
+    decay_steps: {{ ns.annealing_steps }}
+    decay_start_step: {{ ns.decay_start_step }}

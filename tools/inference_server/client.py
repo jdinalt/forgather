@@ -6,7 +6,6 @@ CLI client for interacting with the HuggingFace OpenAI API-compatible inference 
 import argparse
 import os
 import sys
-from argparse import RawTextHelpFormatter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -360,9 +359,23 @@ else:
     from .config import load_config_from_yaml, merge_config_with_args
 
 
+class _HelpFormatter(
+    argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter
+):
+    """Combine raw-text wrapping (for the multiline ``epilog``) with
+    auto-appended ``(default: …)`` suffixes. Boolean flags are skipped —
+    ``store_true`` carries its semantics in the name and "(default: False)"
+    only adds noise."""
+
+    def _get_help_string(self, action):
+        if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+            return action.help or ""
+        return super()._get_help_string(action)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        formatter_class=RawTextHelpFormatter,
+        formatter_class=_HelpFormatter,
         description="CLI client for HuggingFace OpenAI API-compatible inference server",
         epilog=(
             "Examples:\n"
@@ -384,30 +397,33 @@ def main():
     # Connection options
     parser.add_argument(
         "--url",
-        default="http://localhost:8000/v1",
-        help="Base URL of the inference server (default: http://localhost:8000/v1)",
+        default="http://localhost:8137/v1",
+        help="Base URL of the inference server",
     )
 
     # Generation options
     parser.add_argument(
         "--model",
         default="inference-server",
-        help="Model name to use (default: inference-server)",
+        help="Model name to use",
     )
     parser.add_argument(
         "--max-tokens",
         type=int,
         default=512,
-        help="Maximum tokens to generate (default: 512)",
+        help="Maximum tokens to generate",
     )
     parser.add_argument(
         "--temperature",
         type=float,
         default=None,
-        help="Sampling temperature (default: None)",
+        help="Sampling temperature (None: use server-side default)",
     )
     parser.add_argument(
-        "--top-p", type=float, default=None, help="Top-p sampling (default: None)"
+        "--top-p",
+        type=float,
+        default=None,
+        help="Top-p sampling (None: use server-side default)",
     )
 
     # Mode options

@@ -31,13 +31,27 @@ def ws_create_cmd(args):
     if not os.path.exists(forgather_dir):
         print(f"Error: Directory '{forgather_dir}' does not exist")
 
-    # Create workspace directory
-    if os.path.exists(workspace_dir):
-        print(f"Error: Directory '{workspace_dir}' already exists")
-        return 1
+    # ``init_existing`` (server-side flag, not exposed via CLI args): when
+    # true, treat ``workspace_dir`` as an *already-existing* directory the
+    # caller wants to populate with workspace metadata, instead of a
+    # not-yet-created directory we should mkdir. Used by the Forgather
+    # server's "init workspace here" right-click flow on the Files tree —
+    # the user has already created the directory and right-clicked it; we
+    # just write ``forgather_workspace/`` into it.
+    init_existing = getattr(args, "init_existing", False)
 
-    # Create workspace directory
-    os.makedirs(workspace_dir)
+    if init_existing:
+        if not os.path.isdir(workspace_dir):
+            print(f"Error: Directory '{workspace_dir}' does not exist")
+            return 1
+        if os.path.exists(os.path.join(workspace_dir, "forgather_workspace")):
+            print(f"Error: 'forgather_workspace' already exists in '{workspace_dir}'")
+            return 1
+    else:
+        if os.path.exists(workspace_dir):
+            print(f"Error: Directory '{workspace_dir}' already exists")
+            return 1
+        os.makedirs(workspace_dir)
 
     # Determine target directory - create forgather_workspace subdirectory
     target_dir = os.path.join(workspace_dir, "forgather_workspace")
@@ -65,6 +79,12 @@ def ws_create_cmd(args):
     readme_template = """# {{ workspace_name }}
 
 {{ worspace_description }}
+"""
+
+    # Structured workspace metadata consumed by tooling (e.g. the Forgather
+    # server). Plain YAML, so human editors and parsers both read it easily.
+    workspace_yaml_template = """name: "{{ workspace_name | replace('"', '\\\\"') }}"
+description: "{{ worspace_description | replace('"', '\\\\"') }}"
 """
 
     base_directories_template = """
@@ -113,6 +133,7 @@ searchdir:
         "README.md": readme_template,
         "base_directories.yaml": base_directories_template,
         "meta_defaults.yaml": meta_defaults_template,
+        "workspace.yaml": workspace_yaml_template,
     }
 
     for filename, template_content in files_to_create.items():

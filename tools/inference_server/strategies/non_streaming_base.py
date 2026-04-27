@@ -80,6 +80,13 @@ class NonStreamingStrategy(GenerationStrategy):
         }
         if stop_strings:
             generation_kwargs["stop_strings"] = stop_strings
+        # Transformers v5 moved contrastive search into a community
+        # repo loaded via trust_remote_code. generate() raises if the
+        # flag isn't set when penalty_alpha is configured — the
+        # effect only kicks in for that path, so we opt-in narrowly
+        # rather than always setting it.
+        if getattr(generation_config, "penalty_alpha", None):
+            generation_kwargs["trust_remote_code"] = True
 
         with torch.inference_mode():
             outputs = self.service.model.generate(**generation_kwargs)

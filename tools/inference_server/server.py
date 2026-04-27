@@ -7,7 +7,6 @@ import argparse
 import logging
 import os
 import sys
-from argparse import RawTextHelpFormatter
 from pathlib import Path
 
 import yaml
@@ -40,9 +39,23 @@ def json_type(data):
         raise argparse.ArgumentTypeError(f"Invalid YAML: {e}")
 
 
+class _HelpFormatter(
+    argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter
+):
+    """Combine raw-text wrapping (so multiline ``epilog`` survives) with
+    auto-appended ``(default: …)`` suffixes. Boolean flags are skipped —
+    ``store_true`` / ``store_false`` carry their semantics in the name,
+    and "(default: False)" only adds noise."""
+
+    def _get_help_string(self, action):
+        if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+            return action.help or ""
+        return super()._get_help_string(action)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        formatter_class=RawTextHelpFormatter,
+        formatter_class=_HelpFormatter,
         description="OpenAI API-compatible inference server",
         epilog=(
             "Examples:\n"
@@ -69,7 +82,7 @@ def main():
         choices=["eager", "sdpa", "flash_attention_2", "flex_attention"],
     )
     parser.add_argument("-H", "--host", default="127.0.0.1", help="Host to bind to")
-    parser.add_argument("-p", "--port", type=int, default=8000, help="Port to bind to")
+    parser.add_argument("-p", "--port", type=int, default=8137, help="Port to bind to")
     parser.add_argument(
         "-d", "--device", default="cuda:0", help="Device to use (cuda, cpu, auto)"
     )
