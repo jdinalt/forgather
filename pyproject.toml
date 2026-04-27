@@ -41,7 +41,7 @@ dependencies = [
     "psutil",
     "pynvml",
     "openai",
-    "huggingface_hub[cli]",
+    "huggingface_hub",
     "pytest >= 7.0.0",
     "pytest-cov >= 4.0.0",
     "pytest-mock >= 3.10.0",
