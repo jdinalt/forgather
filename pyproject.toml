@@ -39,7 +39,7 @@ dependencies = [
     "fastapi",
     "httpx",
     "psutil",
-    "pynvml",
+    "nvidia-ml-py",
     "openai",
     "huggingface_hub[cli]",
     "pytest >= 7.0.0",
