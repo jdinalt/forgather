@@ -164,6 +164,18 @@ print(f"Best loss: {summary['best_loss']} at step {summary['best_loss_step']}")
 
 For complete documentation, see `docs/guides/logs-analysis.md` and `examples/log_analysis_example.py`.
 
+### Forgather Server CLI
+
+The forgather server exposes a queue, scheduler, and GPU policy manager reachable from the CLI — no browser needed. Full documentation lives in `tools/forgather_server/README.md` under "CLI access". Quick reference:
+
+```bash
+forgather -t config.yaml train --enqueue [--priority N] [--requested-gpus N]
+forgather sched status | list | pause | resume | cancel <id> | cleanup [<id>]
+forgather job status | save | stop | save-stop | abort | kill | force-kill | tail | dump <id>
+forgather gpu status | disable | enable | priority | kill <idx>
+# All accept --server URL or $FORGATHER_SERVER_URL (default: http://127.0.0.1:8765)
+```
+
 ### Inference
 
 Forgather includes a basic OpenAPI compatible inference server and client.

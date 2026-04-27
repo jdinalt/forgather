@@ -13,6 +13,57 @@ untrusted network.
 
 ---
 
+## CLI access
+
+The `forgather` CLI can talk to a running server directly — no browser needed. All commands accept `--server URL` or the `FORGATHER_SERVER_URL` environment variable; both default to `http://127.0.0.1:8765`.
+
+**Submit a training job from the terminal:**
+
+```bash
+# Inside a project directory
+forgather -t train.yaml train --enqueue
+forgather -t train.yaml train --enqueue --priority 5 --requested-gpus 2
+```
+
+**Queue and scheduler:**
+
+```bash
+forgather sched status                   # enabled, queued/running counts, last tick
+forgather sched list                     # table of all queued + active + recent jobs
+forgather sched pause                    # stop dispatching new jobs
+forgather sched resume
+forgather sched cancel <queue_id>        # remove a queued or running job
+forgather sched cleanup                  # bulk-remove terminal job records
+forgather sched cleanup <job_id>         # remove one specific terminal record
+```
+
+**Per-job control and logs:**
+
+```bash
+forgather job status <id>               # trainer status dict (409 = still starting)
+forgather job save <id>                 # trigger checkpoint
+forgather job stop <id>                 # graceful stop (saves final checkpoint)
+forgather job save-stop <id>
+forgather job abort <id>                # immediate stop, no checkpoint
+forgather job kill <id>                 # SIGTERM
+forgather job force-kill --yes <id>     # SIGKILL
+forgather job tail <id>                 # stream live TTY; Ctrl-C exits cleanly
+forgather job dump <id>                 # write full captured log to stdout
+forgather job dump <id> > log.txt
+```
+
+**GPU policy:**
+
+```bash
+forgather gpu status                    # table: util, mem, temp, power, disabled, min_priority, pids
+forgather gpu disable <idx>             # mark GPU unavailable for scheduling
+forgather gpu enable <idx>
+forgather gpu priority <idx> <N>        # only dispatch jobs with priority >= N to this GPU
+forgather gpu kill --yes <idx>          # SIGKILL all compute processes on the card
+```
+
+---
+
 ## Installation
 
 ### Python side
