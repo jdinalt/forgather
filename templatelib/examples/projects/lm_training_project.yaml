@@ -512,12 +512,19 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:CosineLRScheduler@lr_sch
 optimizer: &optimizer !partial:torch:optim.AdamW
     lr: {{ ns.global_lr | toyaml }}
 
+[optimizer_factories]
+    ## Block for extending
+    [optimizer_factories_]
+    [no_decay_optim]
+.define: &no_decay_optim ~
+
 [optimizer_groups]
 optimizer_groups: &optimizer_groups
     no_decay:
         regex: 'norm|bias|embed|lm_head|alibi_slopes'
         config:
             weight_decay: 0.0
+        factory: *no_decay_optim
 
 ## ===== CLI arguments ========================================================
 ##

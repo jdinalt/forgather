@@ -125,6 +125,12 @@ optimizer: &optimizer ~
 
 
     -- filter trim()
+    -- block optimizer_factories
+    << endblock optimizer_factories
+    -- endfilter
+
+
+    -- filter trim()
     -- block optimizer_groups
 optimizer_groups: &optimizer_groups ~
     << endblock optimizer_groups

@@ -39,7 +39,8 @@ from forgather.ml.utils import default_dtype
 from ..distributed import DistributedEnvInterface, prefix_logger_rank
 from ..loss import RescaleLoss
 from ..no_init_weights import no_init_weights
-from ..optim.opt_utils import OptimGroupMap, build_parameter_groups
+from ..optim.multiopt import Multiopt
+from ..optim.opt_utils import OptimGroupMap, build_optimizer_buckets
 from ..sharded_checkpoint import (
     create_sharing_metadata,
     find_latest_checkpoint,
@@ -1009,15 +1010,30 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         assert self.model is not None
         if self.optimizer is None:
             assert self.optimizer_factory is not None
-            if self.optimizer_groups is not None:
-                param_groups = build_parameter_groups(
+            if self.optimizer_groups:
+                buckets = build_optimizer_buckets(
                     self.model.named_parameters(),
                     self.optimizer_groups,
-                    self.args.debug_optimizer_groups,
+                    default_factory=self.optimizer_factory,
+                    debug=self.args.debug_optimizer_groups,
                 )
+                if len(buckets) == 1:
+                    factory, param_groups = buckets[0]
+                    self.optimizer = factory(param_groups)
+                else:
+                    if self.args.fuse_optim_with_backward:
+                        raise ValueError(
+                            "fuse_optim_with_backward is incompatible with "
+                            "multiple per-group optimizer factories: the "
+                            "per-parameter post-accumulate hook can only "
+                            "drive a single optimizer instance."
+                        )
+                    self.optimizer = cast(
+                        Any,
+                        Multiopt([factory(pg) for factory, pg in buckets]),
+                    )
             else:
-                param_groups = self.model.named_parameters()
-            self.optimizer = self.optimizer_factory(param_groups)
+                self.optimizer = self.optimizer_factory(self.model.named_parameters())
 
             # Combine backward with optimizer step?
             if self.args.fuse_optim_with_backward:

@@ -5,22 +5,13 @@
     -- set ns.config_name = "Muon"
     -- set ns.config_description = "Train with the Muon optimizer"
     -- set ns.model_name = model_name | default("muon")
-    -- set ns.base_lr = lr | default(4.0e-4)
+    -- set ns.base_lr = lr | default(8.0e-4)
 
 [optimizer]
-    [muon]
-.define: &muon !partial:torch.optim:Muon
+optimizer: &optimizer !partial:torch.optim:Muon
     lr: {{ ns.global_lr | toyaml }}
     adjust_lr_fn: "match_rms_adamw"
 
-    [optimizer_]
-optimizer: &optimizer !partial:forgather.ml.optim.multiopt:make_re_multiopt
-    optimizer_map:
-        - [ "embed|lm_head|norm|bias", "adam" ]
-        - [ ".*", "muon" ]
-    factories:
-        muon: *muon
-        adam: !partial:torch:optim.AdamW
-            lr: !!float 0.02
-            weight_decay: !!float 0.0
-    debug: True
+[no_decay_optim]
+.define: &no_decay_optim !partial:torch:optim.AdamW
+    lr: !!float 0.02
