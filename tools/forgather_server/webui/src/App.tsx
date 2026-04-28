@@ -21,7 +21,7 @@ import { SearchRootsPanel } from "./components/SearchRootsPanel";
 import { useFilesState } from "./files-state";
 
 type View = "projects" | "edit" | "gpus" | "jobs" | "queue" | "inference";
-export type ConfigTab = "info" | "pp" | "templates" | "debug";
+export type ConfigTab = "info" | "pp" | "code" | "templates" | "debug";
 
 const VIEWS: { id: View; label: string; icon: string }[] = [
   { id: "projects", label: "Projects", icon: "📁" },
@@ -163,7 +163,13 @@ export default function App() {
 
   // Coerce stale tab values from prior sessions that had "raw"/"models"/"trefs".
   const safeTab = (t: string): ConfigTab => {
-    if (t === "info" || t === "pp" || t === "templates" || t === "debug")
+    if (
+      t === "info" ||
+      t === "pp" ||
+      t === "code" ||
+      t === "templates" ||
+      t === "debug"
+    )
       return t;
     return "info";
   };

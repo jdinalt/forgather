@@ -1795,7 +1795,61 @@ li.config.selected button.link:hover {
   border-right: none;
 }
 
-/* ---------- Structured PreprocessError block ---------- */
+/* ---------- Code panel (target list + Python source) ---------- */
+.code-view {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 4fr;
+  min-height: 0;
+}
+.code-targets {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: #111;
+  min-height: 0;
+}
+.code-targets-header {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.code-target-items {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  min-height: 0;
+}
+.code-target-item {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 3px 12px;
+  cursor: pointer;
+  color: var(--fg);
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-left: 2px solid transparent;
+}
+.code-target-item:hover {
+  background: var(--bg-alt);
+}
+.code-target-item.active {
+  background: var(--selected);
+  border-left-color: var(--accent);
+}
+.code-source {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ---------- Structured ConfigError block ---------- */
 .pane-state.err pre {
   white-space: pre-wrap;
   word-break: break-word;

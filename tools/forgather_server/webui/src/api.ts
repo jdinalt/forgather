@@ -85,11 +85,16 @@ export interface DebugTraceItem {
   preprocessed: string;
 }
 
-/** Structured 400 detail returned by /api/config/pp and /api/config/debug
- *  when Jinja2 preprocessing fails. The frontend renders a compiler-style
- *  block from these fields instead of a single long error line. */
-export interface PreprocessErrorDetail {
-  kind: "preprocess_error";
+/** Structured 400 detail returned by config endpoints (pp, code, debug)
+ *  when any pipeline stage fails. The frontend renders a compiler-style
+ *  block keyed off `kind`. */
+export type ConfigErrorKind =
+  | "preprocess_error"
+  | "yaml_error"
+  | "code_error";
+
+export interface ConfigErrorDetail {
+  kind: ConfigErrorKind;
   template: string | null;
   lineno: number | null;
   message: string;
@@ -98,7 +103,7 @@ export interface PreprocessErrorDetail {
 
 /** Error subclass thrown by api.* helpers when an HTTP request fails.
  *  `detail` carries the JSON body as-is when the response was JSON
- *  (e.g. PreprocessErrorDetail), or the raw text body otherwise. */
+ *  (e.g. ConfigErrorDetail), or the raw text body otherwise. */
 export class ApiError extends Error {
   status: number;
   statusText: string;
@@ -117,16 +122,18 @@ export class ApiError extends Error {
   }
 }
 
-function isPreprocessErrorDetail(d: unknown): d is PreprocessErrorDetail {
+function isConfigErrorDetail(d: unknown): d is ConfigErrorDetail {
+  if (typeof d !== "object" || d === null) return false;
+  const kind = (d as { kind?: string }).kind;
   return (
-    typeof d === "object" &&
-    d !== null &&
-    (d as { kind?: string }).kind === "preprocess_error"
+    kind === "preprocess_error" ||
+    kind === "yaml_error" ||
+    kind === "code_error"
   );
 }
 
-export function asPreprocessError(err: unknown): PreprocessErrorDetail | null {
-  if (err instanceof ApiError && isPreprocessErrorDetail(err.detail)) {
+export function asConfigError(err: unknown): ConfigErrorDetail | null {
+  if (err instanceof ApiError && isConfigErrorDetail(err.detail)) {
     return err.detail;
   }
   return null;
@@ -474,6 +481,17 @@ export const api = {
   configDebug: (project_dir: string, config: string) =>
     fetchJson<DebugTraceItem[]>(
       `/api/config/debug?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}`,
+    ),
+  configCodeTargets: (project_dir: string, config: string) =>
+    fetchJson<string[]>(
+      `/api/config/code-targets?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}`,
+    ),
+  /** Render *target* (or the entire config when `target` is the empty string)
+   *  as Python source. Backend default matches the CLI's ``forgather code``
+   *  default of ``main``. */
+  configCode: (project_dir: string, config: string, target: string = "main") =>
+    fetchText(
+      `/api/config/code?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}&target=${encodeURIComponent(target)}`,
     ),
   configTrefsJson: (project_dir: string, config: string) =>
     fetchJson<TrefsGraph>(

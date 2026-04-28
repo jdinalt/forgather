@@ -12,9 +12,10 @@ import { SubmitModal } from "./SubmitModal";
 import { ConfigTensorBoardModal } from "./TensorBoardModal";
 import { TemplatesView } from "./TemplatesView";
 import { DebugPanel } from "./DebugPanel";
-import { PreprocessErrorView } from "./PreprocessErrorView";
+import { CodePanel } from "./CodePanel";
+import { ConfigErrorView } from "./ConfigErrorView";
 import { ConfigTab } from "../App";
-import { asPreprocessError } from "../api";
+import { asConfigError } from "../api";
 
 interface Props {
   project: ProjectInfo;
@@ -153,6 +154,13 @@ export function ConfigViewer({
             pp
           </button>
           <button
+            className={tab === "code" ? "active" : ""}
+            onClick={() => setTab("code")}
+            title="Render the config (or a single target) as Python source"
+          >
+            code
+          </button>
+          <button
             className={tab === "templates" ? "active" : ""}
             onClick={() => setTab("templates")}
           >
@@ -176,6 +184,9 @@ export function ConfigViewer({
           error={ppQ.error}
           onMount={onMount}
         />
+      )}
+      {tab === "code" && (
+        <CodePanel project={project} config={config} onMount={onMount} />
       )}
       {tab === "templates" && (
         <TemplatesView
@@ -248,11 +259,11 @@ function EditorPane({
 }) {
   if (loading) return <div className="pane-state">Loading...</div>;
   if (error) {
-    const ppErr = asPreprocessError(error);
-    if (ppErr) {
+    const cfgErr = asConfigError(error);
+    if (cfgErr) {
       return (
         <div className="pane-state err">
-          <PreprocessErrorView err={ppErr} />
+          <ConfigErrorView err={cfgErr} />
         </div>
       );
     }

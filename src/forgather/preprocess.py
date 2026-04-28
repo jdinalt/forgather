@@ -387,28 +387,33 @@ def capture_pp():
         LineStatementProcessor.preserve_line_numbers = prev_preserve
 
 
-class PreprocessError(Exception):
-    """
-    Structured wrapper around a Jinja2 ``TemplateError`` raised during config
-    preprocessing. Carries enough fields to render a readable error in the
-    webui (and for the CLI `add_note` path).
+class ConfigDiagnostic(Exception):
+    """Base class for structured config-pipeline errors.
+
+    Subclasses share the same field shape so the webui can render them
+    uniformly: a header (``template`` + ``lineno``), a message body, and an
+    optional line-numbered source excerpt around the offending line.
 
     Attributes
     ----------
+    kind : str
+        Discriminator the frontend uses to label / style the error
+        (``preprocess_error``, ``yaml_error``, ``code_error``). Defined
+        per-subclass as a ``ClassVar``.
     template_name : str | None
-        The template Jinja2 was processing when the error was raised
-        (or the config path when no inner template name is available).
+        The template / config path where the error originated.
     lineno : int | None
-        1-based line number inside ``template_name`` where the error occurred,
-        when known (set for ``TemplateSyntaxError``).
+        1-based line number when known.
     message : str
-        The bare Jinja2 error message (no traceback).
+        Short error message (no traceback).
     source_context : str | None
-        A line-numbered excerpt of the offending template around ``lineno``,
-        suitable for direct display in a ``<pre>`` block.
+        Line-numbered excerpt of the source around ``lineno``, ready to drop
+        into a ``<pre>`` block.
     original : BaseException
-        The underlying Jinja2 exception, kept as ``__cause__`` as well.
+        The underlying exception, also kept as ``__cause__``.
     """
+
+    kind: str = "config_error"
 
     def __init__(
         self,
@@ -433,6 +438,12 @@ class PreprocessError(Exception):
         if self.source_context:
             return f"{loc}: {self.message}\n{self.source_context}"
         return f"{loc}: {self.message}"
+
+
+class PreprocessError(ConfigDiagnostic):
+    """Jinja2 ``TemplateError`` raised during config preprocessing."""
+
+    kind = "preprocess_error"
 
 
 def toyaml(obj, default_value=Undefined):

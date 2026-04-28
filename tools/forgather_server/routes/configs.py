@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from forgather.preprocess import PreprocessError
+from forgather.preprocess import ConfigDiagnostic
 
 from .. import _atomic, config_ops, overrides_store
 
@@ -52,22 +52,26 @@ class DebugTraceItemModel(BaseModel):
     preprocessed: str
 
 
-class PreprocessErrorDetail(BaseModel):
-    """Structured 400 body returned when Jinja2 preprocessing fails.
+class ConfigErrorDetail(BaseModel):
+    """Structured 400 body for any :class:`ConfigDiagnostic` failure.
 
-    Frontend renders ``template`` + ``lineno`` as a compiler-style header
-    over a ``<pre>`` block containing ``message`` and ``source_context``.
+    ``kind`` discriminates between Jinja2 preprocess errors, YAML parse
+    errors, and codegen errors so the frontend can label them appropriately.
+    The remaining fields share the same shape — frontend renders
+    ``template`` + ``lineno`` as a compiler-style header over a ``<pre>``
+    block containing ``message`` and ``source_context``.
     """
 
-    kind: Literal["preprocess_error"] = "preprocess_error"
+    kind: Literal["preprocess_error", "yaml_error", "code_error"]
     template: Optional[str] = None
     lineno: Optional[int] = None
     message: str
     source_context: Optional[str] = None
 
 
-def _preprocess_error_detail(exc: PreprocessError) -> Dict[str, Any]:
-    return PreprocessErrorDetail(
+def _config_error_detail(exc: ConfigDiagnostic) -> Dict[str, Any]:
+    return ConfigErrorDetail(
+        kind=exc.kind,  # type: ignore[arg-type]
         template=exc.template_name,
         lineno=exc.lineno,
         message=exc.message,
@@ -111,8 +115,50 @@ def get_config_pp(
     """
     try:
         return config_ops.render_pp(project_dir, config)
-    except PreprocessError as e:
-        raise HTTPException(status_code=400, detail=_preprocess_error_detail(e))
+    except ConfigDiagnostic as e:
+        raise HTTPException(status_code=400, detail=_config_error_detail(e))
+    except Exception as e:
+        detail = f"{e}\n\n{traceback.format_exc()}"
+        raise HTTPException(status_code=400, detail=detail)
+
+
+@router.get("/config/code", response_class=PlainTextResponse)
+def get_config_code(
+    project_dir: str,
+    config: str,
+    target: Optional[str] = Query(default="main"),
+):
+    """Render *target* (or the entire config when ``target`` is empty) as
+    Python source via ``forgather.codegen.generate_code``.
+
+    Same default as the ``forgather code`` CLI: ``target="main"``. Pass an
+    empty ``target`` (``?target=``) to render every materialisable target
+    in one document. YAML and codegen failures surface as the same
+    ``ConfigErrorDetail`` shape used by ``/api/config/pp``.
+    """
+    # Treat empty / missing target as "render the whole config" (None) so the
+    # frontend can model "All targets" as just a target=<empty> request.
+    target_arg: Optional[str] = target if target else None
+    try:
+        return config_ops.render_code(project_dir, config, target=target_arg)
+    except ConfigDiagnostic as e:
+        raise HTTPException(status_code=400, detail=_config_error_detail(e))
+    except Exception as e:
+        detail = f"{e}\n\n{traceback.format_exc()}"
+        raise HTTPException(status_code=400, detail=detail)
+
+
+@router.get("/config/code-targets", response_model=List[str])
+def get_config_code_targets(project_dir: str, config: str):
+    """List the materialisable top-level targets in *config*.
+
+    Used by the **code** webui panel to populate the target list. Same set
+    of names ``forgather targets`` prints on the CLI.
+    """
+    try:
+        return config_ops.list_code_targets(project_dir, config)
+    except ConfigDiagnostic as e:
+        raise HTTPException(status_code=400, detail=_config_error_detail(e))
     except Exception as e:
         detail = f"{e}\n\n{traceback.format_exc()}"
         raise HTTPException(status_code=400, detail=detail)
@@ -130,8 +176,8 @@ def get_config_debug(project_dir: str, config: str):
     """
     try:
         items = config_ops.render_pp_trace(project_dir, config)
-    except PreprocessError as e:
-        raise HTTPException(status_code=400, detail=_preprocess_error_detail(e))
+    except ConfigDiagnostic as e:
+        raise HTTPException(status_code=400, detail=_config_error_detail(e))
     except Exception as e:
         detail = f"{e}\n\n{traceback.format_exc()}"
         raise HTTPException(status_code=400, detail=detail)

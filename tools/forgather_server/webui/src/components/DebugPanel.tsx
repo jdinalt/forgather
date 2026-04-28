@@ -2,9 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import Editor, { OnMount } from "@monaco-editor/react";
 
-import { api, ConfigInfo, ProjectInfo, asPreprocessError } from "../api";
+import { api, ConfigInfo, ProjectInfo, asConfigError } from "../api";
 import { FORGATHER_LANGUAGE_ID } from "../forgather-syntax";
-import { PreprocessErrorView } from "./PreprocessErrorView";
+import { ConfigErrorView } from "./ConfigErrorView";
 
 interface Props {
   project: ProjectInfo;
@@ -56,11 +56,11 @@ export function DebugPanel({
     return <div className="pane-state">Loading…</div>;
   }
   if (debugQ.error) {
-    const ppErr = asPreprocessError(debugQ.error);
-    if (ppErr) {
+    const cfgErr = asConfigError(debugQ.error);
+    if (cfgErr) {
       return (
         <div className="pane-state err">
-          <PreprocessErrorView err={ppErr} />
+          <ConfigErrorView err={cfgErr} />
         </div>
       );
     }

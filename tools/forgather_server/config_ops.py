@@ -148,6 +148,42 @@ class DebugTraceItem:
     preprocessed: str
 
 
+def render_code(
+    project_dir: str,
+    config_name: str,
+    target: Optional[str] = "main",
+    **kwargs,
+) -> str:
+    """Generate Python source for *target* (or the entire config when ``None``).
+
+    Mirrors what ``forgather code`` does on the CLI. ``target`` defaults to
+    ``"main"`` to match the CLI; pass ``None`` to render every materialisable
+    target in one document. Raises the same structured :class:`ConfigDiagnostic`
+    subclasses as :meth:`ConfigEnvironment.render_code`, so the route can
+    return the same JSON detail shape used by ``/api/config/pp``.
+    """
+    loaded = load_env(project_dir, config_name)
+    merged = _merged_kwargs(project_dir, config_name, kwargs)
+    return loaded.env.render_code(loaded.config_path, target=target, **merged)
+
+
+def list_code_targets(project_dir: str, config_name: str) -> List[str]:
+    """Return the top-level keys (materialisable targets) of the parsed config.
+
+    Used by the **code** webui panel to populate the target list. The list
+    matches what ``forgather targets`` prints. Raises the structured config
+    diagnostics on failure, same as :func:`render_code`.
+    """
+    from collections.abc import Mapping as _Mapping
+
+    loaded = load_env(project_dir, config_name)
+    merged = _merged_kwargs(project_dir, config_name, {})
+    config = loaded.env.load(loaded.config_path, **merged).config
+    if not isinstance(config, _Mapping):
+        return []
+    return list(config.keys())
+
+
 def render_pp_trace(
     project_dir: str, config_name: str, **kwargs
 ) -> List[DebugTraceItem]:
