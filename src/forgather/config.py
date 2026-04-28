@@ -6,7 +6,9 @@ from pathlib import Path
 from pprint import pformat
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
-from jinja2 import Environment, meta
+from jinja2 import Environment
+from jinja2 import exceptions as jinja2_exceptions
+from jinja2 import meta
 from platformdirs import user_config_dir
 from yaml import SafeLoader
 
@@ -20,7 +22,7 @@ from .latent import (
     SingletonNode,
     VarNode,
 )
-from .preprocess import PPEnvironment
+from .preprocess import PPEnvironment, PreprocessError, capture_pp
 from .utils import (
     AutoName,
     add_exception_notes,
@@ -37,6 +39,29 @@ from .yaml_utils import (
     tuple_constructor,
     var_constructor,
 )
+
+
+def _format_source_excerpt(source: str, lineno: int | None, *, context: int = 5) -> str:
+    """Return a line-numbered excerpt of *source* around *lineno*.
+
+    The line at ``lineno`` (1-based) is marked with ``>`` so the offending
+    line is visually obvious in a ``<pre>`` block. ``context`` lines on
+    each side are included. If ``lineno`` is None or out of range, the full
+    source is returned with line numbers via :func:`format_line_numbers`.
+    """
+    if not source:
+        return ""
+    lines = source.splitlines()
+    if lineno is None or lineno < 1 or lineno > len(lines):
+        return format_line_numbers(source).rstrip("\n")
+    start = max(1, lineno - context)
+    end = min(len(lines), lineno + context)
+    out = []
+    width = len(str(end))
+    for i in range(start, end + 1):
+        marker = ">" if i == lineno else " "
+        out.append(f"{marker} {i:>{width}}: {lines[i - 1]}")
+    return "\n".join(out)
 
 
 class ConfigText(str):
@@ -362,8 +387,63 @@ class ConfigEnvironment:
             The rendered YAML text.  :class:`ConfigText` is a ``str`` subclass
             that additionally exposes :meth:`~ConfigText.with_line_numbers`.
         """
-        template = self.pp_environment.get_template(str(config_path))
-        return ConfigText(template.render(**kwargs))
+        try:
+            template = self.pp_environment.get_template(str(config_path))
+            return ConfigText(template.render(**kwargs))
+        except jinja2_exceptions.TemplateError as exc:
+            raise self._wrap_template_error(exc, str(config_path)) from exc
+
+    def preprocess_with_trace(
+        self,
+        config_path: os.PathLike | str,
+        /,
+        **kwargs,
+    ) -> Tuple["ConfigText", List[Tuple[str, str]]]:
+        """Preprocess *config_path* and also return the per-template trace.
+
+        Runs :meth:`preprocess` inside :func:`capture_pp` so the second element
+        of the returned tuple is the ordered list of
+        ``(template_name, preprocessed_source)`` pairs that participated in the
+        render — the same data that ``pp_verbose`` prints to stdout, but
+        returned programmatically.
+
+        Returns
+        -------
+        (ConfigText, list[tuple[str, str]])
+            The fully rendered text plus the per-template trace (load order).
+        """
+        with capture_pp() as trace:
+            text = self.preprocess(config_path, **kwargs)
+        return text, list(trace)
+
+    @staticmethod
+    def _wrap_template_error(
+        exc: jinja2_exceptions.TemplateError, config_path: str
+    ) -> PreprocessError:
+        """Convert a Jinja2 ``TemplateError`` into a structured ``PreprocessError``."""
+        template_name: Optional[str] = None
+        lineno: Optional[int] = None
+        source_context: Optional[str] = None
+        message = str(exc)
+
+        if isinstance(exc, jinja2_exceptions.TemplateSyntaxError):
+            template_name = exc.name or exc.filename or config_path
+            lineno = exc.lineno
+            message = exc.message or message
+            if exc.source:
+                source_context = _format_source_excerpt(exc.source, lineno)
+        else:
+            # UndefinedError, TemplateNotFound, etc. — fall back to whatever
+            # contextual info is available; line info usually missing.
+            template_name = getattr(exc, "name", None) or config_path
+
+        return PreprocessError(
+            message,
+            template_name=template_name,
+            lineno=lineno,
+            source_context=source_context,
+            original=exc,
+        )
 
     def preprocess_from_string(
         self,

@@ -73,6 +73,65 @@ export interface TrefsGraph {
   edges: TrefsEdge[];
 }
 
+export interface DebugTraceItem {
+  /** Template name as Jinja2 sees it (relative to the search path). */
+  name: string;
+  /** Absolute filesystem path of the source file (or "" for synthetic
+   *  fragments split out of a parent template). */
+  path: string;
+  /** Pre-preprocess source as the loader returned it. */
+  raw: string;
+  /** Source after the LineStatementProcessor rewrite (plain Jinja2). */
+  preprocessed: string;
+}
+
+/** Structured 400 detail returned by /api/config/pp and /api/config/debug
+ *  when Jinja2 preprocessing fails. The frontend renders a compiler-style
+ *  block from these fields instead of a single long error line. */
+export interface PreprocessErrorDetail {
+  kind: "preprocess_error";
+  template: string | null;
+  lineno: number | null;
+  message: string;
+  source_context: string | null;
+}
+
+/** Error subclass thrown by api.* helpers when an HTTP request fails.
+ *  `detail` carries the JSON body as-is when the response was JSON
+ *  (e.g. PreprocessErrorDetail), or the raw text body otherwise. */
+export class ApiError extends Error {
+  status: number;
+  statusText: string;
+  detail: unknown;
+
+  constructor(status: number, statusText: string, detail: unknown) {
+    const summary =
+      typeof detail === "string"
+        ? detail
+        : (detail as { message?: string })?.message || JSON.stringify(detail);
+    super(`${status} ${statusText}: ${summary}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.statusText = statusText;
+    this.detail = detail;
+  }
+}
+
+function isPreprocessErrorDetail(d: unknown): d is PreprocessErrorDetail {
+  return (
+    typeof d === "object" &&
+    d !== null &&
+    (d as { kind?: string }).kind === "preprocess_error"
+  );
+}
+
+export function asPreprocessError(err: unknown): PreprocessErrorDetail | null {
+  if (err instanceof ApiError && isPreprocessErrorDetail(err.detail)) {
+    return err.detail;
+  }
+  return null;
+}
+
 export interface TemplateEntry {
   name: string;
   path: string;
@@ -342,11 +401,31 @@ export class SaveConflictError extends Error {
   }
 }
 
+async function readErrorDetail(r: Response): Promise<unknown> {
+  const text = await r.text();
+  // FastAPI wraps everything in {"detail": ...}. When ``detail`` is a dict
+  // (e.g. PreprocessErrorDetail) we want to surface the dict directly so the
+  // UI can render a structured error; when it's a plain string we keep the
+  // string. Fall back to the raw text on any parse failure.
+  try {
+    const parsed = JSON.parse(text);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "detail" in parsed
+    ) {
+      return (parsed as { detail: unknown }).detail;
+    }
+    return parsed;
+  } catch {
+    return text;
+  }
+}
+
 async function fetchJson<T>(url: string): Promise<T> {
   const r = await fetch(url);
   if (!r.ok) {
-    const detail = await r.text();
-    throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
   }
   return r.json() as Promise<T>;
 }
@@ -354,8 +433,7 @@ async function fetchJson<T>(url: string): Promise<T> {
 async function fetchText(url: string): Promise<string> {
   const r = await fetch(url);
   if (!r.ok) {
-    const detail = await r.text();
-    throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
   }
   return r.text();
 }
@@ -392,6 +470,10 @@ export const api = {
   configPp: (project_dir: string, config: string) =>
     fetchText(
       `/api/config/pp?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}`,
+    ),
+  configDebug: (project_dir: string, config: string) =>
+    fetchJson<DebugTraceItem[]>(
+      `/api/config/debug?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}`,
     ),
   configTrefsJson: (project_dir: string, config: string) =>
     fetchJson<TrefsGraph>(

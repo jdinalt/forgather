@@ -11,7 +11,10 @@ import { OverridesModal } from "./OverridesModal";
 import { SubmitModal } from "./SubmitModal";
 import { ConfigTensorBoardModal } from "./TensorBoardModal";
 import { TemplatesView } from "./TemplatesView";
+import { DebugPanel } from "./DebugPanel";
+import { PreprocessErrorView } from "./PreprocessErrorView";
 import { ConfigTab } from "../App";
+import { asPreprocessError } from "../api";
 
 interface Props {
   project: ProjectInfo;
@@ -155,6 +158,13 @@ export function ConfigViewer({
           >
             templates
           </button>
+          <button
+            className={tab === "debug" ? "active" : ""}
+            onClick={() => setTab("debug")}
+            title="Per-template preprocess trace"
+          >
+            debug
+          </button>
         </nav>
       </header>
 
@@ -174,6 +184,14 @@ export function ConfigViewer({
           onMount={onMount}
           onEditTemplate={onEditTemplate}
           onSelectConfig={onSelectConfig}
+        />
+      )}
+      {tab === "debug" && (
+        <DebugPanel
+          project={project}
+          config={config}
+          onMount={onMount}
+          onEditTemplate={onEditTemplate}
         />
       )}
       {submitting && (
@@ -229,12 +247,21 @@ function EditorPane({
   onMount: OnMount;
 }) {
   if (loading) return <div className="pane-state">Loading...</div>;
-  if (error)
+  if (error) {
+    const ppErr = asPreprocessError(error);
+    if (ppErr) {
+      return (
+        <div className="pane-state err">
+          <PreprocessErrorView err={ppErr} />
+        </div>
+      );
+    }
     return (
       <div className="pane-state err">
         <pre>{String(error)}</pre>
       </div>
     );
+  }
   return (
     <Editor
       height="100%"

@@ -130,6 +130,62 @@ def render_pp(project_dir: str, config_name: str, **kwargs) -> str:
     return str(loaded.env.preprocess(loaded.config_path, **merged))
 
 
+@dataclass
+class DebugTraceItem:
+    """One template participating in a config's preprocess pass.
+
+    ``name`` is the template name as Jinja2 sees it (relative to the search
+    path). ``path`` is the absolute filesystem path of the source file (or
+    ``""`` for synthetic / split-template fragments). ``raw`` is the
+    pre-preprocess source as Jinja2's loader returned it; ``preprocessed`` is
+    the same source after the LineStatementProcessor has rewritten the
+    Forgather sugar (``--``, ``<<``, ``>>``, ``==``, ``=>``) into plain Jinja2.
+    """
+
+    name: str
+    path: str
+    raw: str
+    preprocessed: str
+
+
+def render_pp_trace(
+    project_dir: str, config_name: str, **kwargs
+) -> List[DebugTraceItem]:
+    """Return one DebugTraceItem per template that participated in the render.
+
+    Drives :meth:`ConfigEnvironment.preprocess_with_trace` (which sets
+    ``LineStatementProcessor.pp_capture`` for the duration of the call), then
+    fetches the raw source + filesystem path of each template through Jinja2's
+    standard loader API. Order matches load order.
+    """
+    loaded = load_env(project_dir, config_name)
+    merged = _merged_kwargs(project_dir, config_name, kwargs)
+    _, trace = loaded.env.preprocess_with_trace(loaded.config_path, **merged)
+
+    pp_env = loaded.env.get_pp_environment()
+    loader = pp_env.loader
+    out: List[DebugTraceItem] = []
+    seen: Set[str] = set()
+    for name, preprocessed in trace:
+        if name in seen:
+            continue
+        seen.add(name)
+        raw = ""
+        path = ""
+        if loader is not None:
+            try:
+                raw, filename, _ = loader.get_source(pp_env, name)
+                if filename:
+                    path = os.path.abspath(filename)
+            except Exception:
+                # Inline / synthetic fragments may not resolve via the loader.
+                pass
+        out.append(
+            DebugTraceItem(name=name, path=path, raw=raw, preprocessed=preprocessed)
+        )
+    return out
+
+
 def render_trefs_dot(project_dir: str, config_name: str) -> str:
     loaded = load_env(project_dir, config_name)
     merged = _merged_kwargs(project_dir, config_name, {})

@@ -9,6 +9,8 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
+from forgather.preprocess import PreprocessError
+
 from .. import _atomic, config_ops, overrides_store
 
 router = APIRouter(tags=["configs"])
@@ -41,6 +43,36 @@ class ConfigMetaModel(BaseModel):
     description: Optional[str] = None
     config_class: Optional[str] = None
     parse_error: Optional[str] = None
+
+
+class DebugTraceItemModel(BaseModel):
+    name: str
+    path: str
+    raw: str
+    preprocessed: str
+
+
+class PreprocessErrorDetail(BaseModel):
+    """Structured 400 body returned when Jinja2 preprocessing fails.
+
+    Frontend renders ``template`` + ``lineno`` as a compiler-style header
+    over a ``<pre>`` block containing ``message`` and ``source_context``.
+    """
+
+    kind: Literal["preprocess_error"] = "preprocess_error"
+    template: Optional[str] = None
+    lineno: Optional[int] = None
+    message: str
+    source_context: Optional[str] = None
+
+
+def _preprocess_error_detail(exc: PreprocessError) -> Dict[str, Any]:
+    return PreprocessErrorDetail(
+        template=exc.template_name,
+        lineno=exc.lineno,
+        message=exc.message,
+        source_context=exc.source_context,
+    ).model_dump()
 
 
 class OutputDirInfoModel(BaseModel):
@@ -79,9 +111,39 @@ def get_config_pp(
     """
     try:
         return config_ops.render_pp(project_dir, config)
+    except PreprocessError as e:
+        raise HTTPException(status_code=400, detail=_preprocess_error_detail(e))
     except Exception as e:
         detail = f"{e}\n\n{traceback.format_exc()}"
         raise HTTPException(status_code=400, detail=detail)
+
+
+@router.get("/config/debug", response_model=List[DebugTraceItemModel])
+def get_config_debug(project_dir: str, config: str):
+    """Per-template preprocess trace for the **debug** webui panel.
+
+    Returns one entry per template that participated in rendering ``config``,
+    in load order, with both the raw template source (as seen by Jinja2) and
+    the preprocessed source (after the LineStatementProcessor rewrite). The
+    frontend uses this to render a three-column view (template list + raw +
+    preprocessed) so users can step through the render pipeline.
+    """
+    try:
+        items = config_ops.render_pp_trace(project_dir, config)
+    except PreprocessError as e:
+        raise HTTPException(status_code=400, detail=_preprocess_error_detail(e))
+    except Exception as e:
+        detail = f"{e}\n\n{traceback.format_exc()}"
+        raise HTTPException(status_code=400, detail=detail)
+    return [
+        DebugTraceItemModel(
+            name=item.name,
+            path=item.path,
+            raw=item.raw,
+            preprocessed=item.preprocessed,
+        )
+        for item in items
+    ]
 
 
 @router.get("/config/trefs")

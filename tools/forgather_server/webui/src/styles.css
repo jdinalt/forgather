@@ -1729,6 +1729,129 @@ li.config.selected button.link:hover {
   min-height: 0;
 }
 
+/* ---------- Debug panel (per-template preprocess trace) ---------- */
+.debug-view {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 2fr 2fr;
+  min-height: 0;
+}
+.debug-list {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: #111;
+  min-height: 0;
+}
+.debug-list-header {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.debug-items {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  min-height: 0;
+}
+.debug-item {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  color: var(--fg);
+  user-select: none;
+  border-left: 2px solid transparent;
+}
+.debug-item:hover {
+  background: var(--bg-alt);
+}
+.debug-item.active {
+  background: var(--selected);
+  border-left-color: var(--accent);
+}
+.debug-item-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.debug-item-path {
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.debug-source {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+}
+.debug-source:last-child {
+  border-right: none;
+}
+
+/* ---------- Structured PreprocessError block ---------- */
+.pane-state.err pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.pp-error {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+}
+.pp-error-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.pp-error-kind {
+  font-weight: 600;
+  color: #e57373;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.pp-error-loc {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--fg);
+}
+.pp-error-message {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--fg);
+}
+.pp-error-context {
+  margin: 0;
+  padding: 8px 10px;
+  background: #111;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: pre;
+  overflow-x: auto;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--fg);
+}
+
 /* ---------- New Workspace modal ---------- */
 .new-workspace-modal {
   min-width: 560px;
