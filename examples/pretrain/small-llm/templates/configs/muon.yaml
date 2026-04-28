@@ -5,7 +5,7 @@
     -- set ns.config_name = "Muon"
     -- set ns.config_description = "Train with the Muon optimizer"
     -- set ns.model_name = model_name | default("muon")
-    -- set ns.base_lr = lr | default(8.0e-4)
+    -- set ns.base_lr = lr | default(6.0e-4)
 
 [optimizer]
 optimizer: &optimizer !partial:torch.optim:Muon
