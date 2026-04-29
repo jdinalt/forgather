@@ -34,6 +34,7 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[Checkpointing](checkpointing/README.md)** - Distributed checkpoint system for multi-GPU and multi-node training
 - **[Torch Titan Integration](trainers/torchtitan.md)** - Forgather integration with PyTorch's Torch Titan training framework
 - **[Adafactor Triton Performance](trainers/adafactor-triton-performance.md)** - Performance analysis for the Triton-optimized Adafactor kernel
+- **[Distributed Eval: Zero Batches](trainers/distributed-eval-zero-batches.md)** - Diagnose and fix the "produced zero batches" / "did not yield any examples" eval errors in DDP/distributed training
 
 **Models and inference:**
 

@@ -71,6 +71,16 @@ class DDPTrainingArguments(TrainingArguments):
     # When set to False, care must be taken to ensure that each rank receives different examples.
     dispatch_batches: bool = True
 
+    # Optional eval-only override for `dispatch_batches`. ``None`` (default) means
+    # eval follows whatever `dispatch_batches` is set to. Set to ``True`` to make
+    # eval centralise on rank 0 even when training shards across ranks; this is
+    # useful when the eval split is small enough that per-rank shards may not
+    # contain enough examples to fill a single batch (especially with
+    # ``dataloader_drop_last=True``). See
+    # ``docs/trainers/distributed-eval-zero-batches.md`` for the failure mode
+    # this guards against.
+    dispatch_eval_batches: Optional[bool] = None
+
     ddp: DDPArguments = field(default_factory=DDPArguments)
     post_local_sgd: PostLocalSGDArguments = field(default_factory=PostLocalSGDArguments)
 
@@ -178,32 +188,33 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
             skip_all_reduce_unused_params=self.args.ddp.skip_all_reduce_unused_params,
         )
 
-        if self.args.dispatch_batches:
-            # Use DataloaderDispatcher for centralized batch loading
-            if self.train_dataloader:
+        dispatch_eval = self._dispatch_eval_batches()
+
+        if self.train_dataloader:
+            if self.args.dispatch_batches:
+                # Use DataloaderDispatcher for centralized batch loading
                 self.train_dataloader = DataloaderDispatcher(
                     cast(DataLoader, self.train_dataloader),
                     self.mesh,
                     self.args.device,
                 )
-
-            if self.eval_dataloader:
-                self.eval_dataloader = DataloaderDispatcher(
-                    cast(DataLoader, self.eval_dataloader),
-                    self.mesh,
-                    self.args.device,
-                )
-        else:
-            # Use SynchronizedDataLoader for sharded datasets
-            # Ensures all ranks agree on when to stop iterating
-            if self.train_dataloader:
+            else:
+                # Use SynchronizedDataLoader for sharded datasets
+                # Ensures all ranks agree on when to stop iterating
                 self.train_dataloader = SynchronizedDataLoader(
                     self.train_dataloader,
                     device=self.args.device,
                     process_group=self.ddp_group,
                 )
 
-            if self.eval_dataloader:
+        if self.eval_dataloader:
+            if dispatch_eval:
+                self.eval_dataloader = DataloaderDispatcher(
+                    cast(DataLoader, self.eval_dataloader),
+                    self.mesh,
+                    self.args.device,
+                )
+            else:
                 self.eval_dataloader = SynchronizedDataLoader(
                     self.eval_dataloader,
                     device=self.args.device,
@@ -245,21 +256,33 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
         assert self.model
         return cast(Module, self.model.module)
 
+    def _dispatch_eval_batches(self) -> bool:
+        """Resolve the effective eval-time dispatch_batches setting.
+
+        ``dispatch_eval_batches`` overrides ``dispatch_batches`` for eval only.
+        ``None`` (the default) means "follow ``dispatch_batches``".
+        """
+        if self.args.dispatch_eval_batches is not None:
+            return self.args.dispatch_eval_batches
+        return self.args.dispatch_batches
+
     @override
     @torch.no_grad()
     def _eval_loop(self) -> Dict[str, float]:
         """
         Evaluation loop for DDP training.
 
-        For dispatch_batches=True or single-GPU, delegates to the base Trainer._eval_loop().
+        For dispatch_eval_batches=True or single-GPU, delegates to the base
+        Trainer._eval_loop().
 
-        For dispatch_batches=False, bypasses SynchronizedDataLoader's MIN-based
-        synchronization to let each rank process ALL its local validation data
-        independently. This prevents data loss when token packing creates highly
-        uneven shard lengths across ranks (e.g., shard lengths [85, 167, 239, 247]
-        would otherwise be truncated to the shortest rank's count).
+        For dispatch_eval_batches=False, bypasses SynchronizedDataLoader's
+        MIN-based synchronization to let each rank process ALL its local
+        validation data independently. This prevents data loss when token
+        packing creates highly uneven shard lengths across ranks (e.g., shard
+        lengths [85, 167, 239, 247] would otherwise be truncated to the
+        shortest rank's count).
         """
-        if self.dist.world_size == 1 or self.args.dispatch_batches:
+        if self.dist.world_size == 1 or self._dispatch_eval_batches():
             return super()._eval_loop()
         return self._eval_loop_all_shards()
 
@@ -350,7 +373,8 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
             dist.all_reduce(step_count, op=dist.ReduceOp.SUM)
 
             total_steps = step_count.item()
-            assert total_steps > 0, "No eval examples were processed across any rank"
+            if total_steps == 0:
+                raise RuntimeError(self._zero_eval_batches_message())
             eval_loss = (total_loss / total_steps).item()
 
             # Sync dataset state on the underlying StatefulDataLoader
@@ -360,6 +384,54 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
             metrics = {"eval_loss": eval_loss}
             self._dispatch_event("on_evaluate", metrics=metrics)
             return metrics
+
+    @override
+    def _zero_eval_batches_message(self) -> str:
+        """Build a diagnostic for the zero-eval-batches failure mode.
+
+        Fires from ``_eval_loop_all_shards`` when every rank's eval shard
+        produced zero batches, and from the inherited base ``_eval_loop``
+        when ``dispatch_eval_batches`` is effectively True and the rank-0
+        dispatcher terminated before yielding a batch (e.g. it could not
+        assemble one full batch per rank from the available eval data).
+        """
+        effective_dispatch_eval = self._dispatch_eval_batches()
+        if effective_dispatch_eval:
+            explanation = (
+                "With dispatch_eval_batches=True (effective) rank 0 loads\n"
+                "the eval dataloader and broadcasts batches to the other\n"
+                "ranks. The dispatcher needs to assemble at least one batch\n"
+                "per rank before any rank can step; if rank 0 exhausts the\n"
+                "dataloader before that point (small eval split, or\n"
+                "dataloader_drop_last=True dropping the only partial batch),\n"
+                "every rank reports zero steps."
+            )
+        else:
+            explanation = (
+                "With dispatch_eval_batches=False (effective) each rank\n"
+                "evaluates its own shard of the eval dataset; if a shard\n"
+                "contains fewer than per_device_eval_batch_size examples\n"
+                "and dataloader_drop_last is True, the whole shard is\n"
+                "dropped and total_steps collapses to zero."
+            )
+        return self._format_zero_eval_batches_diagnostic(
+            header=(
+                f"Distributed evaluation produced zero batches across all "
+                f"{self.dist.world_size} ranks."
+            ),
+            settings=[
+                ("dispatch_batches", self.args.dispatch_batches),
+                (
+                    "dispatch_eval_batches",
+                    f"{self.args.dispatch_eval_batches}"
+                    f" (effective: {effective_dispatch_eval})",
+                ),
+                ("dataloader_drop_last", self.args.dataloader_drop_last),
+                ("per_device_eval_batch_size", self.args.per_device_eval_batch_size),
+                ("max_eval_steps", self.args.max_eval_steps),
+            ],
+            explanation=explanation,
+        )
 
     @override
     def _distributed_loss(self, loss: Tensor) -> Tensor:
