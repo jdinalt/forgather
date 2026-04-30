@@ -162,40 +162,9 @@ export function InferenceModelPanel({ state, setState }: Props) {
 
   return (
     <div className="inference-model-panel">
-      {/* URL */}
-      <section>
-        <h4 className="dyn-heading">Server URL</h4>
-        <div className="submit-row">
-          <label className="wide">
-            Base URL
-            <div className="path-field">
-              <input
-                type="text"
-                className="wide"
-                value={state.baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder="http://localhost:8137/v1"
-              />
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => healthM.mutate()}
-                disabled={healthM.isPending}
-              >
-                {healthM.isPending ? "Testing…" : "Test"}
-              </button>
-            </div>
-          </label>
-        </div>
-        <div className="inference-health-status">
-          <HealthStatus health={health} pending={healthM.isPending} />
-        </div>
-        {health.kind === "down" && (
-          <FetchDebug url={healthEndpoint(state.baseUrl)} />
-        )}
-      </section>
-
-      {/* Running inference servers */}
+      {/* Running inference servers — top of the list because the typical
+          flow is: pick the server you just started, then pick a model on
+          it, then tweak the URL only if you need a non-discovered host. */}
       <section>
         <h4 className="dyn-heading">
           Running inference servers
@@ -242,7 +211,7 @@ export function InferenceModelPanel({ state, setState }: Props) {
         </ul>
       </section>
 
-      {/* Models */}
+      {/* Models on the selected server */}
       <section>
         <h4 className="dyn-heading">
           Models
@@ -283,6 +252,40 @@ export function InferenceModelPanel({ state, setState }: Props) {
             );
           })}
         </ul>
+      </section>
+
+      {/* URL — escape hatch for pointing at a server we didn't launch
+          (remote, vLLM, etc.). Picking a server above auto-fills this. */}
+      <section>
+        <h4 className="dyn-heading">Server URL</h4>
+        <div className="submit-row">
+          <label className="wide">
+            Base URL
+            <div className="path-field">
+              <input
+                type="text"
+                className="wide"
+                value={state.baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder="http://localhost:8137/v1"
+              />
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => healthM.mutate()}
+                disabled={healthM.isPending}
+              >
+                {healthM.isPending ? "Testing…" : "Test"}
+              </button>
+            </div>
+          </label>
+        </div>
+        <div className="inference-health-status">
+          <HealthStatus health={health} pending={healthM.isPending} />
+        </div>
+        {health.kind === "down" && (
+          <FetchDebug url={healthEndpoint(state.baseUrl)} />
+        )}
       </section>
 
       {/* Generation parameters */}

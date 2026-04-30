@@ -14,45 +14,65 @@
     output_dir:
         names: "--output-dir"
         type: "path"
+        group: "Output"
         help: "Model output directory"
     model_name:
         names: "--model-name"
         type: "str"
+        group: "Output"
         help: "Model name"
-    tie_word_embeddings: 
+    tie_word_embeddings:
         names: "--tie-word-embeddings"
         action: "store_true"
+        group: "Architecture"
         help: "Tie input and output word embeddings"
     attention_dropout:
         names: "--attention-dropout"
         type: float
+        group: "Architecture"
+        min: 0
+        max: 1
         help: "Attention dropout probability"
     hidden_size:
         names: "--hidden-size"
         type: "int"
+        group: "Architecture"
+        min: 1
         help: "Model hidden dimension size (d_model)"
     num_attention_heads:
         names: --num-attention-heads"
         type: "int"
+        group: "Architecture"
+        min: 1
         help: "Number of query heads (and KV heads, if otherwise unspecified)"
     num_key_value_heads:
         names: "--num-key-value-heads"
         type: "int"
+        group: "Architecture"
+        min: 1
         help: "Number of Key/Value heads"
     num_hidden_layers:
         names: "--num-hidden-layers"
         type: "int"
+        group: "Architecture"
+        min: 1
         help: "Number of hidden layers"
     intermediate_size:
         names: "--intermediate-size"
         type: "int"
+        group: "Architecture"
+        min: 1
         help: "Feedforward dimension"
     rms_norm_eps:
         names: "--rms-norm-eps"
         type: "float"
+        group: "Architecture"
+        min: 0
         help: "RMS Norm eps"
     sliding_window:
         names: "--sliding-window"
         type: "int"
+        group: "Architecture"
+        min: 1
         help: "Sliding window size. 'null' for disabled"
 

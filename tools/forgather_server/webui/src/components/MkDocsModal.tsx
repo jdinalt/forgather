@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
+import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
 
 /** Settings persisted across sidebar-Tools "MkDocs…" invocations. The
@@ -272,6 +273,7 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
             {enqueue.error ? String(enqueue.error) : ""}
           </div>
           <div className="btn-row">
+            <AutoWatchTtyToggle />
             <button
               className="secondary"
               onClick={resetDefaults}

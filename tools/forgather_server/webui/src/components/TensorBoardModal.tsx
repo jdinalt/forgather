@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { api, ConfigInfo, ProjectInfo } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
+import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
 
 /** Settings persisted across sidebar-Tools "TensorBoard…" invocations.
@@ -314,6 +315,7 @@ export function TensorBoardModal({
             {enqueue.error ? String(enqueue.error) : ""}
           </div>
           <div className="btn-row">
+            <AutoWatchTtyToggle />
             {global && (
               <button
                 className="secondary"

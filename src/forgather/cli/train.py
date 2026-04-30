@@ -6,7 +6,11 @@ import sys
 
 from forgather.latent import Latent
 
-from .dynamic_args import get_dynamic_args
+from .dynamic_args import (
+    get_dynamic_args,
+    required_dynamic_arg_dests,
+    validate_dynamic_arg_bounds,
+)
 from .utils import BaseCommand, assert_project_class
 
 
@@ -27,6 +31,28 @@ def train_cmd(args):
     # we materialize meta — otherwise we read template defaults and pass
     # the wrong --nproc-per-node to torchrun.
     dynamic_args = get_dynamic_args(args)
+    # ``required: true`` in the schema is enforced here rather than via
+    # argparse so non-action paths (pp, ls, code) don't trip on placeholder
+    # defaults. ``train`` is the canonical action that actually consumes
+    # the value.
+    required = required_dynamic_arg_dests(args.project_dir, args.config_template)
+    missing = [d for d in required if d not in dynamic_args]
+    if missing:
+        flags = ", ".join(f"--{d.replace('_', '-')}" for d in missing)
+        print(
+            f"error: required dynamic arg(s) missing: {flags}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    bound_errors = validate_dynamic_arg_bounds(
+        args.project_dir, args.config_template, dynamic_args
+    )
+    if bound_errors:
+        print(
+            "error: dynamic arg constraint violated: " + "; ".join(bound_errors),
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     config, _ = cmd.get_config(**dynamic_args)
     config_meta = Latent.materialize(config.meta)
     nproc_per_node = config_meta["nproc_per_node"]

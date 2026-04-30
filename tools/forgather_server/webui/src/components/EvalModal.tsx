@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
 import { api, EvalConfigEntry } from "../api";
+import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
 
 interface Props {
@@ -296,6 +297,7 @@ export function EvalModal({
             {enqueue.error ? String(enqueue.error) : ""}
           </div>
           <div className="btn-row">
+            <AutoWatchTtyToggle />
             <button className="secondary" onClick={onClose}>
               Cancel
             </button>

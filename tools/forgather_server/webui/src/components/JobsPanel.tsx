@@ -4,7 +4,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ControlAction, Job } from "../api";
 import { persistGet, persistSet } from "../persist";
 import { ContextMenu } from "./ContextMenu";
@@ -30,11 +30,21 @@ function loadStoredSplit(): number {
   return DEFAULT_SPLIT_PCT;
 }
 
+interface Props {
+  /** When set, the panel auto-selects the matching job and opens the TTY
+   *  pane the moment that job shows up alive in the polled list. Set by
+   *  App after a submit modal closes with the "Watch TTY on start"
+   *  toggle on. The panel calls ``onAutoWatchConsumed`` once it has
+   *  fired so the trigger is one-shot. */
+  autoWatchJobId?: string | null;
+  onAutoWatchConsumed?: () => void;
+}
+
 /** Unified jobs view: JobRecords we launched + TrainerControlClient endpoints
  *  discovered elsewhere. Everything converges here once it's out of the
  *  queue (source="record" or "merged") or was started outside the server
  *  entirely (source="endpoint"). */
-export function JobsPanel() {
+export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
   const [includeDead, setIncludeDead] = useState(false);
   const [showTty, setShowTty] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -110,6 +120,19 @@ export function JobsPanel() {
 
   const jobs = jobsQ.data ?? [];
   const alive = jobs.filter((j) => j.alive);
+
+  // Auto-watch handoff from App: once the just-submitted job shows up alive
+  // in the polled list, select it and reveal the TTY pane. One-shot — we
+  // notify App to clear the trigger as soon as we've consumed it so a later
+  // refresh of the same id won't re-open the TTY against the user's intent.
+  useEffect(() => {
+    if (!autoWatchJobId) return;
+    const target = jobs.find((j) => j.id === autoWatchJobId);
+    if (!target || !target.alive) return;
+    setSelectedId(autoWatchJobId);
+    setShowTty(true);
+    onAutoWatchConsumed?.();
+  }, [autoWatchJobId, jobs, onAutoWatchConsumed]);
 
   const statusQs = useQueries({
     queries: alive.map((j) => ({

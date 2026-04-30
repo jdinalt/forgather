@@ -270,6 +270,17 @@ export interface DynamicArg {
   help: string | null;
   default: unknown;
   choices: unknown[] | null;
+  /** Colon-separated organizational path (e.g. "Trainer:LR-scaling").
+   *  When any arg in the schema has a group, ungrouped args fall under
+   *  an "Other" bucket so the form stays consistent. */
+  group: string | null;
+  /** Enforced at action time. The webui blocks Submit when a required
+   *  arg is missing; ``pp`` still materializes (placeholder defaults). */
+  required: boolean;
+  /** Inclusive numeric bound. Only meaningful when type is "int" or
+   *  "float". Either may be set independently. */
+  min: number | null;
+  max: number | null;
 }
 
 export interface OverridesData {

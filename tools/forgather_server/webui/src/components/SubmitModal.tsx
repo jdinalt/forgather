@@ -1,7 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api, ConfigInfo, ProjectInfo } from "../api";
-import { coerceArgs, DynamicArgsForm } from "./DynamicArgsForm";
+import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
+import {
+  coerceArgs,
+  DynamicArgsForm,
+  listMissingRequired,
+  listOutOfBounds,
+} from "./DynamicArgsForm";
 
 interface Props {
   project: ProjectInfo;
@@ -110,6 +116,56 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       onClose();
     },
   });
+
+  // Required-arg enforcement: block Submit until every ``required: true``
+  // field has a value. Recomputed every render so the button state tracks
+  // the form live. The server enforces the same invariant — this is just
+  // a usability layer.
+  const missingRequired = useMemo(
+    () => (argsQ.data ? listMissingRequired(argsQ.data, values) : []),
+    [argsQ.data, values],
+  );
+  // Numeric bounds: same submit-gating idea as required.
+  const outOfBounds = useMemo(
+    () => (argsQ.data ? listOutOfBounds(argsQ.data, values) : []),
+    [argsQ.data, values],
+  );
+  const submitBlockedReason: string | undefined =
+    missingRequired.length > 0
+      ? `Required arg(s) missing: ${missingRequired.map((a) => a.cli_name).join(", ")}`
+      : outOfBounds.length > 0
+        ? `Out-of-range value(s): ${outOfBounds.map((a) => a.cli_name).join(", ")}`
+        : undefined;
+
+  // Mirrors the OverridesModal Reset button: drop server-side cached
+  // overrides for this config and zero out the in-form values so the
+  // next submit goes out with template defaults. Stays open so the user
+  // can review and submit (or tweak) without re-opening the modal.
+  const clearOverridesMut = useMutation({
+    mutationFn: () => api.clearOverrides(project.project_dir, config.name),
+    onSuccess: () => {
+      setValues({});
+      setPriority(0);
+      setGpusTouched(false);
+      setRequestedGpus(fixedWorkerCount !== null ? Math.max(1, Math.min(maxGpus, fixedWorkerCount)) : 1);
+      qc.invalidateQueries({
+        queryKey: ["overrides", project.project_dir, config.name],
+      });
+      qc.invalidateQueries({
+        queryKey: ["pp", project.project_dir, config.name],
+      });
+      qc.invalidateQueries({
+        queryKey: ["output-dir", project.project_dir, config.name],
+      });
+    },
+  });
+
+  const handleReset = () => {
+    if (!confirm("Clear all overrides for this config and reset the form?")) {
+      return;
+    }
+    clearOverridesMut.mutate();
+  };
 
   const submit = () => {
     const schema = argsQ.data ?? [];
@@ -264,6 +320,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               onChange={(dest, v) =>
                 setValues((prev) => ({ ...prev, [dest]: v }))
               }
+              enforceRequired
             />
           )}
         </div>
@@ -273,12 +330,27 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
             {enqueue.error ? String(enqueue.error) : ""}
           </div>
           <div className="btn-row">
+            <AutoWatchTtyToggle />
+            <button
+              className="secondary"
+              onClick={handleReset}
+              disabled={clearOverridesMut.isPending || enqueue.isPending}
+              title="Drop saved overrides for this config and reset the form"
+            >
+              {clearOverridesMut.isPending ? "Resetting…" : "Reset to defaults"}
+            </button>
             <button className="secondary" onClick={onClose}>
               Cancel
             </button>
             <button
               onClick={submit}
-              disabled={enqueue.isPending || argsQ.isLoading}
+              disabled={
+                enqueue.isPending ||
+                argsQ.isLoading ||
+                missingRequired.length > 0 ||
+                outOfBounds.length > 0
+              }
+              title={submitBlockedReason}
             >
               {enqueue.isPending ? "Submitting…" : "Submit"}
             </button>

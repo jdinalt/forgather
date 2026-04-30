@@ -96,6 +96,14 @@ class DynamicArg:
     becomes ``model_project``). ``cli_name`` is what the CLI would accept.
     ``choices`` is the optional argparse ``choices=`` list; when populated,
     the UI renders a dropdown instead of a free-text input.
+
+    ``group`` is an optional colon-separated organizational path
+    (e.g. ``"Trainer:LR-scaling"``) used by the webui to render a
+    collapsible tree. Args without a group fall under an "Other" bucket
+    if any sibling has a group, else the form stays flat. ``required``
+    is enforced at action time (e.g. ``forgather train``, server enqueue
+    of training jobs) — unset for ``pp`` so placeholder defaults still
+    materialize.
     """
 
     dest: str
@@ -104,6 +112,12 @@ class DynamicArg:
     help: Optional[str] = None
     default: Any = None
     choices: Optional[List[Any]] = None
+    group: Optional[str] = None
+    required: bool = False
+    # Inclusive numeric bounds. Only honoured for int / float types; the
+    # webui ignores them on other types. Either may be unset independently.
+    min: Optional[float] = None
+    max: Optional[float] = None
 
 
 def _merged_kwargs(project_dir: str, config_name: str, explicit: dict) -> dict:
@@ -419,6 +433,26 @@ def load_dynamic_args(project_dir: str, config_name: str) -> List[DynamicArg]:
         if choices is not None and not isinstance(choices, list):
             choices = None
 
+        group = entry.get("group")
+        if group is not None and not isinstance(group, str):
+            group = None
+        required = bool(entry.get("required", False))
+
+        # Numeric bounds only apply to numeric types; silently drop them
+        # otherwise so a stray ``min`` on a string arg can't surface as
+        # a confusing UI constraint.
+        def _coerce_bound(v):
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return float(v)
+            return None
+
+        min_val = (
+            _coerce_bound(entry.get("min")) if type_str in ("int", "float") else None
+        )
+        max_val = (
+            _coerce_bound(entry.get("max")) if type_str in ("int", "float") else None
+        )
+
         out.append(
             DynamicArg(
                 dest=dest,
@@ -427,6 +461,10 @@ def load_dynamic_args(project_dir: str, config_name: str) -> List[DynamicArg]:
                 help=entry.get("help"),
                 default=default_value,
                 choices=choices,
+                group=group,
+                required=required,
+                min=min_val,
+                max=max_val,
             )
         )
     return out

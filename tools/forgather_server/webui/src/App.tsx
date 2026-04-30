@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, CheckpointEntry, ConfigInfo, EvalEntry, ProjectInfo } from "./api";
+import { getAutoWatchTty } from "./autoWatch";
 import { ProjectTree } from "./components/ProjectTree";
 import { ConfigViewer } from "./components/ConfigViewer";
 import { GpuPanel } from "./components/GpuPanel";
@@ -95,8 +96,21 @@ export default function App() {
   const [mkdocsOpen, setMkdocsOpen] = useState(false);
   const [convertOpen, setConvertOpen] = useState(false);
   const [finalizeOpen, setFinalizeOpen] = useState(false);
+  // Set when a submit modal closes with the "Watch TTY on start" toggle on.
+  // The Jobs view consumes this once the job appears in the polled list and
+  // clears it back to null via onAutoWatchConsumed.
+  const [autoWatchJobId, setAutoWatchJobId] = useState<string | null>(null);
   const filesApi = useFilesState();
   const qc = useQueryClient();
+
+  // Wired into every submit modal's onSubmitted prop. Reads the sticky
+  // localStorage preference at submit time so a stale toggle from an earlier
+  // modal can't trigger an unintended view switch.
+  const onJobSubmitted = useCallback((queueId: string) => {
+    if (!getAutoWatchTty()) return;
+    setAutoWatchJobId(queueId);
+    setView("jobs");
+  }, []);
 
   // Switch to the Files panel and open the given template path. Used by the
   // Edit button surfaced in the templates view.
@@ -351,6 +365,7 @@ export default function App() {
                 selection={selected}
                 setSelection={setSelectionAndGoToProjects}
                 onEditTemplate={openFileForEdit}
+                onJobSubmitted={onJobSubmitted}
               />
             </div>
           </details>
@@ -397,6 +412,7 @@ export default function App() {
                 onTabChange={(t) => setTab(t)}
                 onEditTemplate={openFileForEdit}
                 onSelectConfig={onConfigSelect}
+                onJobSubmitted={onJobSubmitted}
               />
             )}
             {selected?.kind === "log" && (
@@ -444,7 +460,10 @@ export default function App() {
           className="view-panel"
           style={view === "jobs" ? undefined : { display: "none" }}
         >
-          <JobsPanel />
+          <JobsPanel
+            autoWatchJobId={autoWatchJobId}
+            onAutoWatchConsumed={() => setAutoWatchJobId(null)}
+          />
         </div>
         <div
           className="view-panel"
@@ -464,6 +483,7 @@ export default function App() {
         <InferenceModal
           checkpointPath={null}
           onClose={() => setStartServerOpen(false)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {tensorboardOpen && (
@@ -472,14 +492,26 @@ export default function App() {
           initialLogdir=""
           initialWindowTitle=""
           onClose={() => setTensorboardOpen(false)}
+          onSubmitted={onJobSubmitted}
         />
       )}
-      {mkdocsOpen && <MkDocsModal onClose={() => setMkdocsOpen(false)} />}
+      {mkdocsOpen && (
+        <MkDocsModal
+          onClose={() => setMkdocsOpen(false)}
+          onSubmitted={onJobSubmitted}
+        />
+      )}
       {convertOpen && (
-        <ConvertModal onClose={() => setConvertOpen(false)} />
+        <ConvertModal
+          onClose={() => setConvertOpen(false)}
+          onSubmitted={onJobSubmitted}
+        />
       )}
       {finalizeOpen && (
-        <FinalizeModal onClose={() => setFinalizeOpen(false)} />
+        <FinalizeModal
+          onClose={() => setFinalizeOpen(false)}
+          onSubmitted={onJobSubmitted}
+        />
       )}
     </div>
   );

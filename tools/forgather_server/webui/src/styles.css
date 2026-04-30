@@ -1134,22 +1134,37 @@ button.jobs-tty-toggle.active {
   gap: 8px;
 }
 .dyn-field label {
+  /* Side-by-side layout when there's room, falls back to stacked on narrow
+     viewports via flex-wrap. The widgets each declare ``flex: 1 1 200px``
+     so they grow to fill remaining horizontal space but wrap to their own
+     row before becoming unusably small. */
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  row-gap: 4px;
 }
 .dyn-name {
   display: flex;
   gap: 8px;
   align-items: baseline;
   font-size: 12px;
+  flex: 0 0 auto;
 }
 .dyn-type {
   font-size: 10px;
 }
-.dyn-field input,
-.dyn-field select {
-  width: 100%;
+.dyn-field > label > input,
+.dyn-field > label > select,
+.dyn-field > label > .path-field,
+.dyn-field > label > .dyn-checkbox {
+  flex: 1 1 200px;
+  width: auto;
+  /* The bool-with-default widget is itself a <label class=dyn-checkbox>
+     with align-self: flex-start (sized for the old column layout). Reset
+     it so the checkbox aligns horizontally with the cli_name. */
+  align-self: center;
 }
 .dyn-field .path-field {
   display: flex;
@@ -1157,6 +1172,7 @@ button.jobs-tty-toggle.active {
 }
 .dyn-field .path-field input {
   flex: 1;
+  min-width: 0;
 }
 .dyn-checkbox {
   display: flex;
@@ -1180,6 +1196,51 @@ button.jobs-tty-toggle.active {
 .dyn-help {
   font-size: 11px;
   margin-top: 2px;
+}
+
+/* Grouped dynamic-args tree. Each non-leaf is a <details> with its
+   summary as the group label. Indentation comes from a 12px left
+   padding on the body; depth nests naturally because the body
+   contains further <details>. */
+.dyn-args-grouped {
+  gap: 6px;
+}
+.dyn-group {
+  border-left: 2px solid var(--border);
+  padding-left: 6px;
+}
+.dyn-group-summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 0;
+  user-select: none;
+}
+.dyn-group-summary:hover {
+  color: var(--fg);
+}
+.dyn-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0 4px 12px;
+}
+/* Red highlight for any node containing a required arg whose value is
+   still missing — propagates up the path so the user can see at a
+   glance which branches need attention. */
+.dyn-group-missing {
+  color: var(--err, #ff6b6b);
+}
+.dyn-required-tag {
+  color: var(--err, #ff6b6b);
+  font-weight: 700;
+}
+.dyn-field-missing .dyn-name code {
+  color: var(--err, #ff6b6b);
+}
+.dyn-field-missing input,
+.dyn-field-missing select {
+  border-color: var(--err, #ff6b6b);
 }
 
 .sidebar-section {

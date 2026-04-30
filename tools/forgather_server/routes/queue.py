@@ -31,6 +31,16 @@ class DynamicArgModel(BaseModel):
     help: Optional[str] = None
     default: Any = None
     choices: Optional[List[Any]] = None
+    # Colon-separated organizational path; webui groups + collapses by it.
+    group: Optional[str] = None
+    # Enforced server-side for training enqueues; the CLI also blocks the
+    # train action when missing. Skipped for ``pp`` so placeholder defaults
+    # still materialize.
+    required: bool = False
+    # Inclusive numeric bounds for int / float args. Webui flags violations
+    # in red and blocks Submit; server enqueue rejects with HTTP 400.
+    min: Optional[float] = None
+    max: Optional[float] = None
 
 
 class QueueItemModel(BaseModel):
@@ -130,6 +140,51 @@ def enqueue(req: EnqueueRequest):
                 f"requested_gpus must be >= {min_gpus} for " f"{req.job_type} jobs"
             ),
         )
+    # Required dynamic-args are enforced here rather than at form-render
+    # time so any client (CLI, scripted enqueues) gets the same guarantee.
+    # Only training jobs consume dynamic_args today, so other types skip
+    # this check.
+    if req.job_type == "training":
+        try:
+            schema = config_ops.load_dynamic_args(req.project_dir, req.config)
+        except Exception:
+            schema = []
+        missing = [
+            a.cli_name
+            for a in schema
+            if a.required and req.dynamic_args.get(a.dest) in (None, "")
+        ]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"required dynamic arg(s) missing: {missing}",
+            )
+        # Numeric bounds: only checked when the user has actually supplied a
+        # value (template defaults may legitimately sit outside any
+        # newly-tightened bound). Same closed-interval semantics as the
+        # webui — both endpoints inclusive.
+        bound_violations: list[str] = []
+        for a in schema:
+            if a.type not in ("int", "float"):
+                continue
+            if a.min is None and a.max is None:
+                continue
+            v = req.dynamic_args.get(a.dest)
+            if v is None or isinstance(v, bool):
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if a.min is not None and fv < a.min:
+                bound_violations.append(f"{a.cli_name} >= {a.min}")
+            if a.max is not None and fv > a.max:
+                bound_violations.append(f"{a.cli_name} <= {a.max}")
+        if bound_violations:
+            raise HTTPException(
+                status_code=400,
+                detail=f"dynamic arg constraint violated: {bound_violations}",
+            )
     if req.job_type == "eval":
         missing = _REQUIRED_EVAL_PARAMS - set(req.job_params.keys())
         if missing:
@@ -227,6 +282,10 @@ def dynamic_args(project_dir: str, config: str):
             help=a.help,
             default=a.default,
             choices=a.choices,
+            group=a.group,
+            required=a.required,
+            min=a.min,
+            max=a.max,
         )
         for a in args
     ]

@@ -91,6 +91,9 @@ interface Props {
   setSelection: (sel: Selection) => void;
   /** Hand a path to the Files panel (App-level) and switch view. */
   onEditTemplate: (path: string) => void;
+  /** Bubble the submitted job's queue id to App so it can decide whether
+   *  to switch to the Jobs view + auto-open the TTY. */
+  onJobSubmitted?: (queueId: string) => void;
 }
 
 export function ProjectTree({
@@ -99,6 +102,7 @@ export function ProjectTree({
   selection,
   setSelection,
   onEditTemplate,
+  onJobSubmitted,
 }: Props) {
   const qc = useQueryClient();
   const projectsQ = useQuery({
@@ -633,6 +637,7 @@ export function ProjectTree({
           project={activeModal.project}
           config={activeModal.config}
           onClose={() => setActiveModal(null)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {activeModal?.action === "overrides" && (
@@ -654,6 +659,7 @@ export function ProjectTree({
           project={activeModal.project}
           config={activeModal.config}
           onClose={() => setActiveModal(null)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {serveEvalModal?.action === "serve" && (
@@ -663,6 +669,7 @@ export function ProjectTree({
           checkpointPath={serveEvalModal.checkpointPath}
           projectDir={serveEvalModal.project.project_dir}
           onClose={() => setServeEvalModal(null)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {serveEvalModal?.action === "eval" && (
@@ -672,18 +679,21 @@ export function ProjectTree({
           checkpointPath={serveEvalModal.checkpointPath}
           projectDir={serveEvalModal.project.project_dir}
           onClose={() => setServeEvalModal(null)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {serveEvalModal?.action === "convert" && (
         <ConvertModal
           initialSrcPath={serveEvalModal.output_dir}
           onClose={() => setServeEvalModal(null)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {serveEvalModal?.action === "finalize" && (
         <FinalizeModal
           initialSource={serveEvalModal.output_dir}
           onClose={() => setServeEvalModal(null)}
+          onSubmitted={onJobSubmitted}
         />
       )}
     </div>

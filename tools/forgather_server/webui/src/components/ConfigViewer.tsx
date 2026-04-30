@@ -24,6 +24,9 @@ interface Props {
   onTabChange: (tab: ConfigTab) => void;
   onEditTemplate: (path: string) => void;
   onSelectConfig: (project: ProjectInfo, config: ConfigInfo) => void;
+  /** Bubble the submitted job's queue id to App so it can decide whether
+   *  to switch to the Jobs view + auto-open the TTY. */
+  onJobSubmitted?: (queueId: string) => void;
 }
 
 export function ConfigViewer({
@@ -33,6 +36,7 @@ export function ConfigViewer({
   onTabChange,
   onEditTemplate,
   onSelectConfig,
+  onJobSubmitted,
 }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [cleaning, setCleaning] = useState(false);
@@ -210,6 +214,7 @@ export function ConfigViewer({
           project={project}
           config={config}
           onClose={() => setSubmitting(false)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {cleaning && (
@@ -231,6 +236,7 @@ export function ConfigViewer({
           project={project}
           config={config}
           onClose={() => setTensorboarding(false)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {evaluating && (
@@ -240,6 +246,7 @@ export function ConfigViewer({
           checkpointPath={null}
           projectDir={project.project_dir}
           onClose={() => setEvaluating(false)}
+          onSubmitted={onJobSubmitted}
         />
       )}
     </div>
