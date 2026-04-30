@@ -419,6 +419,104 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
                 watch=watch,
                 tty_log_path=tty_path,
             )
+        elif item.job_type == "model":
+            params = item.job_params
+            cd = params.get("compile_dynamic")
+            result = launcher.spawn_model_process(
+                project_dir=item.project_dir,
+                config_name=item.config,
+                subcommand=params.get("subcommand", "construct"),
+                dynamic_args=item.dynamic_args,
+                device=params.get("device"),
+                dtype=params.get("dtype"),
+                no_init_weights=bool(params.get("no_init_weights", False)),
+                load_from_checkpoint=params.get("load_from_checkpoint"),
+                gradient_checkpointing=bool(
+                    params.get("gradient_checkpointing", False)
+                ),
+                fuse_optim_with_backward=bool(
+                    params.get("fuse_optim_with_backward", False)
+                ),
+                refresh_model=bool(params.get("refresh_model", False)),
+                save_checkpoint=bool(params.get("save_checkpoint", False)),
+                safetensors=bool(params.get("safetensors", False)),
+                batch_size=(
+                    int(params["batch_size"])
+                    if params.get("batch_size") is not None
+                    else None
+                ),
+                sequence_length=(
+                    int(params["sequence_length"])
+                    if params.get("sequence_length") is not None
+                    else None
+                ),
+                steps=(
+                    int(params["steps"]) if params.get("steps") is not None else None
+                ),
+                lr=(float(params["lr"]) if params.get("lr") is not None else None),
+                dataset_project=params.get("dataset_project"),
+                dataset_config=params.get("dataset_config"),
+                packed=bool(params.get("packed", False)),
+                compile=bool(params.get("compile", False)),
+                compile_backend=params.get("compile_backend"),
+                compile_mode=params.get("compile_mode"),
+                compile_dynamic=(None if cd is None else bool(cd)),
+                compile_fullgraph=bool(params.get("compile_fullgraph", False)),
+                amp=params.get("amp"),
+                gpu_indices=gpu_indices,
+                tty_log_path=tty_path,
+            )
+        elif item.job_type == "dataset":
+            params = item.job_params
+            features = params.get("features")
+            if isinstance(features, str):
+                features = [features]
+            elif not isinstance(features, list):
+                features = None
+            result = launcher.spawn_dataset_process(
+                project_dir=item.project_dir,
+                config_name=item.config,
+                dynamic_args=item.dynamic_args,
+                tokenizer_path=params.get("tokenizer_path"),
+                pp=bool(params.get("pp", False)),
+                histogram=bool(params.get("histogram", False)),
+                target=params.get("target"),
+                histogram_samples=(
+                    int(params["histogram_samples"])
+                    if params.get("histogram_samples") is not None
+                    else None
+                ),
+                examples=(
+                    int(params["examples"])
+                    if params.get("examples") is not None
+                    else None
+                ),
+                features=features,
+                tokenized=bool(params.get("tokenized", False)),
+                num_shards=(
+                    int(params["num_shards"])
+                    if params.get("num_shards") is not None
+                    else None
+                ),
+                shard_index=(
+                    int(params["shard_index"])
+                    if params.get("shard_index") is not None
+                    else None
+                ),
+                select_range=params.get("select_range"),
+                seed=(int(params["seed"]) if params.get("seed") is not None else None),
+                example_stride=(
+                    int(params["example_stride"])
+                    if params.get("example_stride") is not None
+                    else None
+                ),
+                truncate=(
+                    int(params["truncate"])
+                    if params.get("truncate") is not None
+                    else None
+                ),
+                tty_log_path=tty_path,
+            )
         else:
             result = launcher.spawn_training_process(
                 project_dir=item.project_dir,

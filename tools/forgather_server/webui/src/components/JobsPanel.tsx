@@ -16,6 +16,22 @@ interface JobMenuTarget {
   y: number;
 }
 
+/** Per-job-type styling for the row chip. ``label`` is the short
+ *  user-facing tag; ``className`` picks one of the ``.type-*`` styles
+ *  in ``styles.css``. ``training`` is also the fallback for unknown
+ *  values arriving from older server versions. */
+const JOB_TYPE_CHIPS: Record<Job["job_type"], { label: string; className: string }> = {
+  training: { label: "train", className: "type-train" },
+  eval: { label: "eval", className: "type-eval" },
+  inference: { label: "serve", className: "type-inference" },
+  tensorboard: { label: "tb", className: "type-tensorboard" },
+  mkdocs: { label: "docs", className: "type-mkdocs" },
+  convert: { label: "convert", className: "type-convert" },
+  finalize: { label: "finalize", className: "type-finalize" },
+  model: { label: "model", className: "type-model" },
+  dataset: { label: "dataset", className: "type-dataset" },
+};
+
 // Split-pane bounds: keep both panes big enough to be useful.
 const MIN_SPLIT_PCT = 15;
 const MAX_SPLIT_PCT = 85;
@@ -410,13 +426,11 @@ function JobCard({
   const isMkDocs = job.job_type === "mkdocs";
   const isConvert = job.job_type === "convert";
   const isFinalize = job.job_type === "finalize";
-  const isTraining =
-    !isEval &&
-    !isInference &&
-    !isTensorBoard &&
-    !isMkDocs &&
-    !isConvert &&
-    !isFinalize;
+  const chip = JOB_TYPE_CHIPS[job.job_type] ?? JOB_TYPE_CHIPS.training;
+  // Only actual training jobs get the trainer-progress UI / control
+  // protocol affordances. Everything else (model, dataset, eval, …) is
+  // fire-and-forget.
+  const isTraining = job.job_type === "training";
   // Trainer-protocol controls require a correlated job_id and the job
   // alive. Eval / inference never correlate (no endpoint.json), so
   // these stay hidden and only kill / force-kill apply.
@@ -495,38 +509,7 @@ function JobCard({
         <span className={"queue-status " + statusClass}>
           {job.status.toUpperCase()}
         </span>
-        <span
-          className={
-            "job-type-chip " +
-            (isEval
-              ? "type-eval"
-              : isInference
-                ? "type-inference"
-                : isTensorBoard
-                  ? "type-tensorboard"
-                  : isMkDocs
-                    ? "type-mkdocs"
-                    : isConvert
-                      ? "type-convert"
-                      : isFinalize
-                        ? "type-finalize"
-                        : "type-train")
-          }
-        >
-          {isEval
-            ? "eval"
-            : isInference
-              ? "serve"
-              : isTensorBoard
-                ? "tb"
-                : isMkDocs
-                  ? "docs"
-                  : isConvert
-                    ? "convert"
-                    : isFinalize
-                      ? "finalize"
-                      : "train"}
-        </span>
+        <span className={"job-type-chip " + chip.className}>{chip.label}</span>
         <span className="queue-config">{headerTitle}</span>
         <span className="muted queue-meta">
           {job.gpu_indices && job.gpu_indices.length > 0 && (

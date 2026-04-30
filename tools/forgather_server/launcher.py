@@ -26,10 +26,12 @@ from forgather.meta_config import MetaConfig
 
 from . import (
     convert_ops,
+    dataset_ops,
     eval_ops,
     finalize_ops,
     inference_ops,
     mkdocs_ops,
+    model_ops,
     tensorboard_ops,
 )
 
@@ -393,6 +395,123 @@ def spawn_finalize_process(
         log_level=log_level,
     )
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
+
+
+def spawn_model_process(
+    *,
+    project_dir: str,
+    config_name: str,
+    subcommand: str,
+    dynamic_args: Dict[str, Any],
+    gpu_indices: List[int],
+    tty_log_path: Path,
+    device: Optional[str] = None,
+    dtype: Optional[str] = None,
+    no_init_weights: bool = False,
+    load_from_checkpoint: Optional[str] = None,
+    gradient_checkpointing: bool = False,
+    fuse_optim_with_backward: bool = False,
+    refresh_model: bool = False,
+    save_checkpoint: bool = False,
+    safetensors: bool = False,
+    batch_size: Optional[int] = None,
+    sequence_length: Optional[int] = None,
+    steps: Optional[int] = None,
+    lr: Optional[float] = None,
+    dataset_project: Optional[str] = None,
+    dataset_config: Optional[str] = None,
+    packed: bool = False,
+    compile: bool = False,
+    compile_backend: Optional[str] = None,
+    compile_mode: Optional[str] = None,
+    compile_dynamic: Optional[bool] = None,
+    compile_fullgraph: bool = False,
+    amp: Optional[str] = None,
+    extra_env: Optional[Dict[str, str]] = None,
+) -> LaunchResult:
+    """Spawn a ``forgather model construct/test`` run.
+
+    Fire-and-forget like eval / convert; no trainer-control protocol.
+    May or may not need a GPU depending on ``device`` — callers that
+    don't want a GPU pass ``gpu_indices=[]``.
+    """
+    cmd = model_ops.build_model_command(
+        project_dir=project_dir,
+        config_name=config_name,
+        subcommand=subcommand,
+        dynamic_args=dynamic_args,
+        device=device,
+        dtype=dtype,
+        no_init_weights=no_init_weights,
+        load_from_checkpoint=load_from_checkpoint,
+        gradient_checkpointing=gradient_checkpointing,
+        fuse_optim_with_backward=fuse_optim_with_backward,
+        refresh_model=refresh_model,
+        save_checkpoint=save_checkpoint,
+        safetensors=safetensors,
+        batch_size=batch_size,
+        sequence_length=sequence_length,
+        steps=steps,
+        lr=lr,
+        dataset_project=dataset_project,
+        dataset_config=dataset_config,
+        packed=packed,
+        compile=compile,
+        compile_backend=compile_backend,
+        compile_mode=compile_mode,
+        compile_dynamic=compile_dynamic,
+        compile_fullgraph=compile_fullgraph,
+        amp=amp,
+    )
+    return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
+
+
+def spawn_dataset_process(
+    *,
+    project_dir: str,
+    config_name: str,
+    dynamic_args: Dict[str, Any],
+    tty_log_path: Path,
+    tokenizer_path: Optional[str] = None,
+    pp: bool = False,
+    histogram: bool = False,
+    target: Optional[str] = None,
+    histogram_samples: Optional[int] = None,
+    examples: Optional[int] = None,
+    features: Optional[List[str]] = None,
+    tokenized: bool = False,
+    num_shards: Optional[int] = None,
+    shard_index: Optional[int] = None,
+    select_range: Optional[str] = None,
+    seed: Optional[int] = None,
+    example_stride: Optional[int] = None,
+    truncate: Optional[int] = None,
+    extra_env: Optional[Dict[str, str]] = None,
+) -> LaunchResult:
+    """Spawn a ``forgather dataset`` run.
+
+    CPU-only; the caller allocates zero GPUs. Fire-and-forget.
+    """
+    cmd = dataset_ops.build_dataset_command(
+        project_dir=project_dir,
+        config_name=config_name,
+        dynamic_args=dynamic_args,
+        tokenizer_path=tokenizer_path,
+        pp=pp,
+        histogram=histogram,
+        target=target,
+        histogram_samples=histogram_samples,
+        examples=examples,
+        features=features,
+        tokenized=tokenized,
+        num_shards=num_shards,
+        shard_index=shard_index,
+        select_range=select_range,
+        seed=seed,
+        example_stride=example_stride,
+        truncate=truncate,
+    )
+    return _spawn_subprocess(cmd, [], tty_log_path, extra_env)
 
 
 def kill_process_group(pid: int, sig: int = signal.SIGTERM) -> bool:

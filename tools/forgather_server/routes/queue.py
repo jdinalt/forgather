@@ -100,6 +100,8 @@ _SUPPORTED_JOB_TYPES = {
     "mkdocs",
     "convert",
     "finalize",
+    "model",
+    "dataset",
 }
 # Required keys per job type. ``job_params`` for training is always empty
 # (the real parameters live in ``project_dir``/``config``/``dynamic_args``).
@@ -109,11 +111,23 @@ _REQUIRED_TENSORBOARD_PARAMS = {"logdir", "port"}
 _REQUIRED_MKDOCS_PARAMS = {"config_file", "port"}
 _REQUIRED_CONVERT_PARAMS = {"src_model_path", "dst_model_path"}
 _REQUIRED_FINALIZE_PARAMS = {"source", "dest"}
+# Model and dataset jobs have no required job_params keys — every flag is
+# optional; defaults match the CLI parsers.
+_VALID_MODEL_SUBCOMMANDS = {"construct", "test"}
 # Types that accept ``requested_gpus == 0``. Everything else still needs
 # at least one GPU (training / eval / inference all spawn CUDA workloads).
 # Convert / finalize default to CPU (they're pure I/O + tensor reshape
 # work) but the user can opt into a GPU via the modal's device field.
-_ZERO_GPU_JOB_TYPES = {"tensorboard", "mkdocs", "convert", "finalize"}
+# ``model`` defaults to CPU/meta too — the user opts into a GPU via the
+# device field; ``dataset`` is always CPU-only.
+_ZERO_GPU_JOB_TYPES = {
+    "tensorboard",
+    "mkdocs",
+    "convert",
+    "finalize",
+    "model",
+    "dataset",
+}
 
 
 @router.get("/queue", response_model=List[QueueItemModel])
@@ -142,9 +156,9 @@ def enqueue(req: EnqueueRequest):
         )
     # Required dynamic-args are enforced here rather than at form-render
     # time so any client (CLI, scripted enqueues) gets the same guarantee.
-    # Only training jobs consume dynamic_args today, so other types skip
-    # this check.
-    if req.job_type == "training":
+    # Training, model, and dataset jobs all materialize the same dynamic
+    # args; other types don't consume them.
+    if req.job_type in ("training", "model", "dataset"):
         try:
             schema = config_ops.load_dynamic_args(req.project_dir, req.config)
         except Exception:
@@ -226,6 +240,16 @@ def enqueue(req: EnqueueRequest):
             raise HTTPException(
                 status_code=400,
                 detail=f"finalize job_params missing: {sorted(missing)}",
+            )
+    elif req.job_type == "model":
+        sub = req.job_params.get("subcommand", "construct")
+        if sub not in _VALID_MODEL_SUBCOMMANDS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"model subcommand must be one of "
+                    f"{sorted(_VALID_MODEL_SUBCOMMANDS)}; got {sub!r}"
+                ),
             )
     item = queue_store.QueueItem.new(
         project_dir=req.project_dir,

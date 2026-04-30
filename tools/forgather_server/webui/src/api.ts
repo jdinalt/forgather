@@ -227,7 +227,9 @@ export interface Job {
     | "tensorboard"
     | "mkdocs"
     | "convert"
-    | "finalize";
+    | "finalize"
+    | "model"
+    | "dataset";
   job_params: Record<string, unknown> | null;
   status: string;
   started_at: number | null;
@@ -320,7 +322,9 @@ export interface EnqueueRequest {
     | "tensorboard"
     | "mkdocs"
     | "convert"
-    | "finalize";
+    | "finalize"
+    | "model"
+    | "dataset";
   /** Type-specific payload; empty for training. */
   job_params?: Record<string, unknown>;
 }

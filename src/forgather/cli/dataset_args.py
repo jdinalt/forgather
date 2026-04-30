@@ -62,7 +62,12 @@ def create_dataset_parser(global_args):
         "-s",
         "--tokenized",
         action="store_true",
-        help="The split is already tokenized",
+        help=(
+            "[DEPRECATED] Force-treat the split as already tokenized. "
+            "The tokenized/raw format is now auto-detected by peeking "
+            "at the first example; this flag is only honored as an "
+            "override and may be removed in a future release."
+        ),
     )
     parser.add_argument(
         "--num-shards",

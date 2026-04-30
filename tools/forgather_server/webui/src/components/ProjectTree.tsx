@@ -10,6 +10,8 @@ import { InferenceModal } from "./InferenceModal";
 import { NewProjectModal } from "./NewProjectModal";
 import { NewTemplateModal } from "./NewTemplateModal";
 import { OverridesModal } from "./OverridesModal";
+import { DatasetSubmitModal } from "./DatasetSubmitModal";
+import { ModelSubmitModal } from "./ModelSubmitModal";
 import { SubmitModal } from "./SubmitModal";
 import { ConfigTensorBoardModal } from "./TensorBoardModal";
 import { Selection } from "../App";
@@ -633,7 +635,7 @@ export function ProjectTree({
       )}
 
       {activeModal?.action === "submit" && (
-        <SubmitModal
+        <SubmitModalRouter
           project={activeModal.project}
           config={activeModal.config}
           onClose={() => setActiveModal(null)}
@@ -700,6 +702,57 @@ export function ProjectTree({
   );
 }
 
+/** Picks the correct submit modal based on the config's class. Falls
+ *  back to the training-style ``SubmitModal`` while the meta query is
+ *  in flight or for any unrecognised class — that path is also what
+ *  pure ``type.training_script*`` configs go through. */
+function SubmitModalRouter({
+  project,
+  config,
+  onClose,
+  onSubmitted,
+}: {
+  project: ProjectInfo;
+  config: ConfigInfo;
+  onClose: () => void;
+  onSubmitted?: (queueId: string) => void;
+}) {
+  const metaQ = useQuery({
+    queryKey: ["config-meta", project.project_dir, config.name],
+    queryFn: () => api.configMeta(project.project_dir, config.name),
+    staleTime: 5 * 60 * 1000,
+  });
+  const cls = metaQ.data?.config_class ?? null;
+  if (cls?.startsWith("type.model")) {
+    return (
+      <ModelSubmitModal
+        project={project}
+        config={config}
+        onClose={onClose}
+        onSubmitted={onSubmitted}
+      />
+    );
+  }
+  if (cls?.startsWith("type.dataset")) {
+    return (
+      <DatasetSubmitModal
+        project={project}
+        config={config}
+        onClose={onClose}
+        onSubmitted={onSubmitted}
+      />
+    );
+  }
+  return (
+    <SubmitModal
+      project={project}
+      config={config}
+      onClose={onClose}
+      onSubmitted={onSubmitted}
+    />
+  );
+}
+
 /** Renders the right-click menu items for a config, filtered by class. */
 function ConfigContextMenuItems({
   project,
@@ -733,7 +786,10 @@ function ConfigContextMenuItems({
 
   const cls = metaQ.data?.config_class ?? null;
   const isTraining = cls?.startsWith("type.training_script") ?? false;
+  const isModel = cls?.startsWith("type.model") ?? false;
+  const isDataset = cls?.startsWith("type.dataset") ?? false;
   const showRunCleanup = isTraining || cls === null;
+  const showRun = showRunCleanup || isModel || isDataset;
 
   const modelEntry = modelsQ.data?.find((m: ModelEntry) => m.configs.includes(config.name));
   const hasCheckpoints = (modelEntry?.checkpoint_count ?? 0) > 0;
@@ -745,7 +801,7 @@ function ConfigContextMenuItems({
         {config.name}
         {cls && <span className="context-menu-class">{cls}</span>}
       </div>
-      {showRunCleanup && (
+      {showRun && (
         <button onClick={() => onChoose("submit")}>▶ Run…</button>
       )}
       <button onClick={() => onChoose("overrides")}>🔧 Overrides…</button>

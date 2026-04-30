@@ -5,8 +5,10 @@ import Editor, { OnMount } from "@monaco-editor/react";
 import { api, ConfigInfo, ModelEntry, ProjectInfo } from "../api";
 import { FORGATHER_LANGUAGE_ID, registerForgatherLanguage } from "../forgather-syntax";
 import { CleanOutputModal } from "./CleanOutputModal";
+import { DatasetSubmitModal } from "./DatasetSubmitModal";
 import { EvalModal } from "./EvalModal";
 import { InfoPane } from "./InfoPane";
+import { ModelSubmitModal } from "./ModelSubmitModal";
 import { OverridesModal } from "./OverridesModal";
 import { SubmitModal } from "./SubmitModal";
 import { ConfigTensorBoardModal } from "./TensorBoardModal";
@@ -59,7 +61,10 @@ export function ConfigViewer({
   });
   const cls = metaQ.data?.config_class ?? null;
   const isTraining = cls?.startsWith("type.training_script") ?? false;
+  const isModel = cls?.startsWith("type.model") ?? false;
+  const isDataset = cls?.startsWith("type.dataset") ?? false;
   const showRunCleanup = metaQ.data ? isTraining : true;
+  const showRun = metaQ.data ? isTraining || isModel || isDataset : true;
 
   // Read project models from cache to decide whether to show Serve/Eval buttons.
   const modelsQ = useQuery({
@@ -102,7 +107,7 @@ export function ConfigViewer({
             — {project.name || project.project_dir}
           </span>
         </div>
-        {showRunCleanup && (
+        {showRun && (
           <button
             className="run-btn"
             onClick={() => setSubmitting(true)}
@@ -220,7 +225,23 @@ export function ConfigViewer({
           onEditTemplate={onEditTemplate}
         />
       )}
-      {submitting && (
+      {submitting && isModel && (
+        <ModelSubmitModal
+          project={project}
+          config={config}
+          onClose={() => setSubmitting(false)}
+          onSubmitted={onJobSubmitted}
+        />
+      )}
+      {submitting && isDataset && (
+        <DatasetSubmitModal
+          project={project}
+          config={config}
+          onClose={() => setSubmitting(false)}
+          onSubmitted={onJobSubmitted}
+        />
+      )}
+      {submitting && !isModel && !isDataset && (
         <SubmitModal
           project={project}
           config={config}
