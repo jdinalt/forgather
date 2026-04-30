@@ -179,7 +179,9 @@ def put_preset(
 def delete_preset(name: str) -> Dict[str, bool]:
     up = _user_path(name)
     if up.exists():
-        up.unlink()
+        # Tolerate concurrent unlink — the user effectively got what they
+        # asked for either way.
+        up.unlink(missing_ok=True)
         return {"ok": True}
     # No user copy — either the preset doesn't exist, or it's a
     # read-only bundled example. 403 differentiates the two so the UI

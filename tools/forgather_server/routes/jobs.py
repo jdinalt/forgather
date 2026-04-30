@@ -377,6 +377,7 @@ async def tty_stream(ws: WebSocket, job_id: str, follow: bool = True):
     exited_at: Optional[float] = None
     try:
         while True:
+            sent_any = False
             try:
                 # Read in bounded chunks so a multi-GB backlog doesn't
                 # materialize the whole file in memory before sending.
@@ -384,7 +385,6 @@ async def tty_stream(ws: WebSocket, job_id: str, follow: bool = True):
                 # we read it.
                 with open(path, "rb") as f:
                     f.seek(offset)
-                    sent_any = False
                     while True:
                         chunk = f.read(TTY_BACKLOG_CHUNK_BYTES)
                         if not chunk:

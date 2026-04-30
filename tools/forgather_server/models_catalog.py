@@ -416,7 +416,7 @@ def list_model_evaluations(output_dir: str) -> List[EvalEntry]:
     # and produce a TypeError when compared with a string-keyed entry.
     def _sort_key(ev: EvalEntry) -> str:
         ts = ev.result.timestamp if ev.result else None
-        return ts or ev.eval_id
+        return ts or ev.eval_id or ""
 
     out.sort(key=_sort_key, reverse=True)
     return out

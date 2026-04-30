@@ -662,12 +662,17 @@ def _kill_record(queue_id: str, sig: int) -> bool:
         return False
     if record.status in TERMINAL_STATUSES:
         return False
-    job_records.update_record(queue_id, status="aborted", finished_at=time.time())
+    # Use the CAS variant so a reap that lands between our status check
+    # above and this write can't be clobbered. The kill path losing the
+    # race is benign: both ends are terminal and the process is gone.
+    updated = job_records.update_if_not_terminal(
+        queue_id, status="aborted", finished_at=time.time()
+    )
     if record.pid:
         launcher.kill_process_group(record.pid, sig)
     with _state._lock:
         _state.running.pop(queue_id, None)
-    return True
+    return updated is not None
 
 
 def abort_or_cancel(queue_id: str) -> bool:
