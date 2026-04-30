@@ -104,16 +104,18 @@ _SUPPORTED_JOB_TYPES = {
     "model",
     "dataset",
 }
-# Required keys per job type. ``job_params`` for training is always empty
-# (the real parameters live in ``project_dir``/``config``/``dynamic_args``).
-_REQUIRED_EVAL_PARAMS = {"eval_project", "eval_template", "model_path"}
-_REQUIRED_INFERENCE_PARAMS = {"model_path", "port"}
-_REQUIRED_TENSORBOARD_PARAMS = {"logdir", "port"}
-_REQUIRED_MKDOCS_PARAMS = {"config_file", "port"}
-_REQUIRED_CONVERT_PARAMS = {"src_model_path", "dst_model_path"}
-_REQUIRED_FINALIZE_PARAMS = {"source", "dest"}
-# Model and dataset jobs have no required job_params keys — every flag is
-# optional; defaults match the CLI parsers.
+# Required job_params keys per job type. Training jobs are absent because
+# their real parameters live in project_dir/config/dynamic_args; model and
+# dataset jobs are absent because every flag is optional (defaults match
+# the CLI parsers).
+_REQUIRED_PARAMS_BY_TYPE = {
+    "eval": {"eval_project", "eval_template", "model_path"},
+    "inference": {"model_path", "port"},
+    "tensorboard": {"logdir", "port"},
+    "mkdocs": {"config_file", "port"},
+    "convert": {"src_model_path", "dst_model_path"},
+    "finalize": {"source", "dest"},
+}
 _VALID_MODEL_SUBCOMMANDS = {"construct", "test"}
 # Types that accept ``requested_gpus == 0``. Everything else still needs
 # at least one GPU (training / eval / inference all spawn CUDA workloads).
@@ -215,49 +217,15 @@ def enqueue(req: EnqueueRequest):
                 status_code=400,
                 detail=f"dynamic arg constraint violated: {bound_violations}",
             )
-    if req.job_type == "eval":
-        missing = _REQUIRED_EVAL_PARAMS - set(req.job_params.keys())
+    required = _REQUIRED_PARAMS_BY_TYPE.get(req.job_type)
+    if required is not None:
+        missing = required - set(req.job_params.keys())
         if missing:
             raise HTTPException(
                 status_code=400,
-                detail=f"eval job_params missing: {sorted(missing)}",
+                detail=f"{req.job_type} job_params missing: {sorted(missing)}",
             )
-    elif req.job_type == "inference":
-        missing = _REQUIRED_INFERENCE_PARAMS - set(req.job_params.keys())
-        if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"inference job_params missing: {sorted(missing)}",
-            )
-    elif req.job_type == "tensorboard":
-        missing = _REQUIRED_TENSORBOARD_PARAMS - set(req.job_params.keys())
-        if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"tensorboard job_params missing: {sorted(missing)}",
-            )
-    elif req.job_type == "mkdocs":
-        missing = _REQUIRED_MKDOCS_PARAMS - set(req.job_params.keys())
-        if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"mkdocs job_params missing: {sorted(missing)}",
-            )
-    elif req.job_type == "convert":
-        missing = _REQUIRED_CONVERT_PARAMS - set(req.job_params.keys())
-        if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"convert job_params missing: {sorted(missing)}",
-            )
-    elif req.job_type == "finalize":
-        missing = _REQUIRED_FINALIZE_PARAMS - set(req.job_params.keys())
-        if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"finalize job_params missing: {sorted(missing)}",
-            )
-    elif req.job_type == "model":
+    if req.job_type == "model":
         sub = req.job_params.get("subcommand", "construct")
         if sub not in _VALID_MODEL_SUBCOMMANDS:
             raise HTTPException(

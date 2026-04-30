@@ -265,13 +265,251 @@ def _try_dispatch() -> None:
         _launch(it, assigned)
 
 
+def _build_eval(item, gpu_indices, tty_path):
+    p = item.job_params
+    return launcher.spawn_eval_process(
+        eval_project=p["eval_project"],
+        eval_template=p["eval_template"],
+        model_path=p["model_path"],
+        checkpoint_path=p.get("checkpoint_path"),
+        no_checkpoint=bool(p.get("no_checkpoint", False)),
+        trainer=p.get("trainer", "ddp"),
+        batch_size=p.get("batch_size"),
+        max_length=p.get("max_length"),
+        max_steps=int(p.get("max_steps", -1)),
+        dtype=p.get("dtype", "bfloat16"),
+        attn_implementation=p.get("attn_implementation", "sdpa"),
+        compile=bool(p.get("compile", False)),
+        output_dir=p.get("output_dir"),
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_inference(item, gpu_indices, tty_path):
+    p = item.job_params
+    return launcher.spawn_inference_process(
+        model_path=p["model_path"],
+        port=int(p["port"]),
+        host=p.get("host", "127.0.0.1"),
+        dtype=p.get("dtype"),
+        attn_implementation=p.get("attn_implementation"),
+        checkpoint_path=p.get("checkpoint_path"),
+        from_checkpoint=bool(p.get("from_checkpoint", False)),
+        compile=bool(p.get("compile", False)),
+        disable_kv_cache=bool(p.get("disable_kv_cache", False)),
+        ignore_eos=bool(p.get("ignore_eos", False)),
+        chat_template=p.get("chat_template"),
+        cache_implementation=p.get("cache_implementation"),
+        compile_args=p.get("compile_args"),
+        log_level=p.get("log_level", "INFO"),
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_tensorboard(item, gpu_indices, tty_path):
+    p = item.job_params
+    ri = p.get("reload_interval")
+    return launcher.spawn_tensorboard_process(
+        logdir=p["logdir"],
+        port=int(p["port"]),
+        host=p.get("host"),
+        bind_all=bool(p.get("bind_all", False)),
+        window_title=p.get("window_title"),
+        reload_interval=int(ri) if ri is not None else None,
+        reload_multifile=bool(p.get("reload_multifile", False)),
+        samples_per_plugin=p.get("samples_per_plugin"),
+        tty_log_path=tty_path,
+    )
+
+
+def _build_convert(item, gpu_indices, tty_path):
+    p = item.job_params
+    cps = p.get("converter_paths")
+    if isinstance(cps, str):
+        cps = [cps]
+    elif not isinstance(cps, list):
+        cps = None
+    ml = p.get("max_length")
+    return launcher.spawn_convert_process(
+        src_model_path=p["src_model_path"],
+        dst_model_path=p["dst_model_path"],
+        reverse=bool(p.get("reverse", False)),
+        model_type=p.get("model_type"),
+        dtype=p.get("dtype"),
+        max_length=int(ml) if ml is not None else None,
+        checkpoint_path=p.get("checkpoint_path"),
+        device=p.get("device"),
+        generation_test=bool(p.get("generation_test", False)),
+        dry_run=bool(p.get("dry_run", False)),
+        prompt=p.get("prompt"),
+        compare_text_file=p.get("compare_text_file"),
+        debug_params=bool(p.get("debug_params", False)),
+        chat_template_path=p.get("chat_template_path"),
+        add_tokens=p.get("add_tokens"),
+        skip_default_tokens=bool(p.get("skip_default_tokens", False)),
+        converter_paths=cps,
+        log_level=p.get("log_level", "INFO"),
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_finalize(item, gpu_indices, tty_path):
+    p = item.job_params
+    return launcher.spawn_finalize_process(
+        source=p["source"],
+        dest=p["dest"],
+        checkpoint=p.get("checkpoint"),
+        add_tokens=p.get("add_tokens"),
+        skip_default_tokens=bool(p.get("skip_default_tokens", False)),
+        chat_template_path=p.get("chat_template_path"),
+        no_auto_stop_tokens=bool(p.get("no_auto_stop_tokens", False)),
+        stop_tokens=p.get("stop_tokens"),
+        generation_config=p.get("generation_config"),
+        keep_optimizer=bool(p.get("keep_optimizer", False)),
+        root_copy=bool(p.get("root_copy", False)),
+        safetensors=bool(p.get("safetensors", False)),
+        dtype=p.get("dtype"),
+        device=p.get("device"),
+        dry_run=bool(p.get("dry_run", False)),
+        log_level=p.get("log_level", "INFO"),
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_mkdocs(item, gpu_indices, tty_path):
+    p = item.job_params
+    watch = p.get("watch")
+    if isinstance(watch, str):
+        watch = [watch]
+    elif not isinstance(watch, list):
+        watch = None
+    return launcher.spawn_mkdocs_process(
+        config_file=p["config_file"],
+        port=int(p["port"]),
+        host=p.get("host", "127.0.0.1"),
+        strict=bool(p.get("strict", False)),
+        livereload=bool(p.get("livereload", True)),
+        dirty=bool(p.get("dirty", False)),
+        watch=watch,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_model(item, gpu_indices, tty_path):
+    p = item.job_params
+    cd = p.get("compile_dynamic")
+    return launcher.spawn_model_process(
+        project_dir=item.project_dir,
+        config_name=item.config,
+        subcommand=p.get("subcommand", "construct"),
+        dynamic_args=item.dynamic_args,
+        device=p.get("device"),
+        dtype=p.get("dtype"),
+        no_init_weights=bool(p.get("no_init_weights", False)),
+        load_from_checkpoint=p.get("load_from_checkpoint"),
+        gradient_checkpointing=bool(p.get("gradient_checkpointing", False)),
+        fuse_optim_with_backward=bool(p.get("fuse_optim_with_backward", False)),
+        refresh_model=bool(p.get("refresh_model", False)),
+        save_checkpoint=bool(p.get("save_checkpoint", False)),
+        safetensors=bool(p.get("safetensors", False)),
+        batch_size=int(p["batch_size"]) if p.get("batch_size") is not None else None,
+        sequence_length=(
+            int(p["sequence_length"]) if p.get("sequence_length") is not None else None
+        ),
+        steps=int(p["steps"]) if p.get("steps") is not None else None,
+        lr=float(p["lr"]) if p.get("lr") is not None else None,
+        dataset_project=p.get("dataset_project"),
+        dataset_config=p.get("dataset_config"),
+        packed=bool(p.get("packed", False)),
+        compile=bool(p.get("compile", False)),
+        compile_backend=p.get("compile_backend"),
+        compile_mode=p.get("compile_mode"),
+        compile_dynamic=None if cd is None else bool(cd),
+        compile_fullgraph=bool(p.get("compile_fullgraph", False)),
+        amp=p.get("amp"),
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_dataset(item, gpu_indices, tty_path):
+    p = item.job_params
+    features = p.get("features")
+    if isinstance(features, str):
+        features = [features]
+    elif not isinstance(features, list):
+        features = None
+    return launcher.spawn_dataset_process(
+        project_dir=item.project_dir,
+        config_name=item.config,
+        dynamic_args=item.dynamic_args,
+        tokenizer_path=p.get("tokenizer_path"),
+        pp=bool(p.get("pp", False)),
+        histogram=bool(p.get("histogram", False)),
+        target=p.get("target"),
+        histogram_samples=(
+            int(p["histogram_samples"])
+            if p.get("histogram_samples") is not None
+            else None
+        ),
+        examples=int(p["examples"]) if p.get("examples") is not None else None,
+        features=features,
+        tokenized=bool(p.get("tokenized", False)),
+        num_shards=int(p["num_shards"]) if p.get("num_shards") is not None else None,
+        shard_index=(
+            int(p["shard_index"]) if p.get("shard_index") is not None else None
+        ),
+        select_range=p.get("select_range"),
+        seed=int(p["seed"]) if p.get("seed") is not None else None,
+        example_stride=(
+            int(p["example_stride"]) if p.get("example_stride") is not None else None
+        ),
+        truncate=int(p["truncate"]) if p.get("truncate") is not None else None,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_training(item, gpu_indices, tty_path):
+    return launcher.spawn_training_process(
+        project_dir=item.project_dir,
+        config_name=item.config,
+        dynamic_args=item.dynamic_args,
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+    )
+
+
+# Registry mapping job_type → builder(item, gpu_indices, tty_path) -> LaunchResult.
+# Unknown types fall through to _build_training (default Forgather training job).
+_LAUNCHERS = {
+    "eval": _build_eval,
+    "inference": _build_inference,
+    "tensorboard": _build_tensorboard,
+    "convert": _build_convert,
+    "finalize": _build_finalize,
+    "mkdocs": _build_mkdocs,
+    "model": _build_model,
+    "dataset": _build_dataset,
+}
+
+
 def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     """Move a queue item to a JobRecord and spawn the appropriate subprocess.
 
-    Training jobs spawn ``scripts/train_script.py`` and correlate with
-    TrainerControlClient; eval jobs spawn ``scripts/eval_script.py`` and
-    are fire-and-forget. The shared generic lifecycle (TTY capture,
-    PID-based reaping, GPU pinning) lives in :func:`_spawn_subprocess`.
+    add_record + remove_item happen before the try block so the queue item
+    is always promoted to a record (even if spawn fails). On spawn failure
+    the record transitions to "failed"; on success the ordering is:
+
+      1. spawn (result = builder(...))
+      2. _state.running[queue_id] = proc   — in-memory handle registered first
+      3. update_record(status="running")   — durable state written after
+
+    Registering the handle before the disk write means the reap loop can
+    collect the process even if the server crashes between steps 2 and 3.
     """
     tty_path = jobs_tty_dir() / f"{item.queue_id}.tty"
     record = JobRecord(
@@ -300,235 +538,9 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
         item.config,
     )
 
+    build = _LAUNCHERS.get(item.job_type, _build_training)
     try:
-        if item.job_type == "eval":
-            params = item.job_params
-            result = launcher.spawn_eval_process(
-                eval_project=params["eval_project"],
-                eval_template=params["eval_template"],
-                model_path=params["model_path"],
-                checkpoint_path=params.get("checkpoint_path"),
-                no_checkpoint=bool(params.get("no_checkpoint", False)),
-                trainer=params.get("trainer", "ddp"),
-                batch_size=params.get("batch_size"),
-                max_length=params.get("max_length"),
-                max_steps=int(params.get("max_steps", -1)),
-                dtype=params.get("dtype", "bfloat16"),
-                attn_implementation=params.get("attn_implementation", "sdpa"),
-                compile=bool(params.get("compile", False)),
-                output_dir=params.get("output_dir"),
-                gpu_indices=gpu_indices,
-                tty_log_path=tty_path,
-            )
-        elif item.job_type == "inference":
-            params = item.job_params
-            result = launcher.spawn_inference_process(
-                model_path=params["model_path"],
-                port=int(params["port"]),
-                host=params.get("host", "127.0.0.1"),
-                dtype=params.get("dtype"),
-                attn_implementation=params.get("attn_implementation"),
-                checkpoint_path=params.get("checkpoint_path"),
-                from_checkpoint=bool(params.get("from_checkpoint", False)),
-                compile=bool(params.get("compile", False)),
-                disable_kv_cache=bool(params.get("disable_kv_cache", False)),
-                ignore_eos=bool(params.get("ignore_eos", False)),
-                chat_template=params.get("chat_template"),
-                cache_implementation=params.get("cache_implementation"),
-                compile_args=params.get("compile_args"),
-                log_level=params.get("log_level", "INFO"),
-                gpu_indices=gpu_indices,
-                tty_log_path=tty_path,
-            )
-        elif item.job_type == "tensorboard":
-            params = item.job_params
-            ri = params.get("reload_interval")
-            result = launcher.spawn_tensorboard_process(
-                logdir=params["logdir"],
-                port=int(params["port"]),
-                host=params.get("host"),
-                bind_all=bool(params.get("bind_all", False)),
-                window_title=params.get("window_title"),
-                reload_interval=int(ri) if ri is not None else None,
-                reload_multifile=bool(params.get("reload_multifile", False)),
-                samples_per_plugin=params.get("samples_per_plugin"),
-                tty_log_path=tty_path,
-            )
-        elif item.job_type == "convert":
-            params = item.job_params
-            cps = params.get("converter_paths")
-            if isinstance(cps, str):
-                cps = [cps]
-            elif not isinstance(cps, list):
-                cps = None
-            ml = params.get("max_length")
-            result = launcher.spawn_convert_process(
-                src_model_path=params["src_model_path"],
-                dst_model_path=params["dst_model_path"],
-                reverse=bool(params.get("reverse", False)),
-                model_type=params.get("model_type"),
-                dtype=params.get("dtype"),
-                max_length=int(ml) if ml is not None else None,
-                checkpoint_path=params.get("checkpoint_path"),
-                device=params.get("device"),
-                generation_test=bool(params.get("generation_test", False)),
-                dry_run=bool(params.get("dry_run", False)),
-                prompt=params.get("prompt"),
-                compare_text_file=params.get("compare_text_file"),
-                debug_params=bool(params.get("debug_params", False)),
-                chat_template_path=params.get("chat_template_path"),
-                add_tokens=params.get("add_tokens"),
-                skip_default_tokens=bool(params.get("skip_default_tokens", False)),
-                converter_paths=cps,
-                log_level=params.get("log_level", "INFO"),
-                gpu_indices=gpu_indices,
-                tty_log_path=tty_path,
-            )
-        elif item.job_type == "finalize":
-            params = item.job_params
-            result = launcher.spawn_finalize_process(
-                source=params["source"],
-                dest=params["dest"],
-                checkpoint=params.get("checkpoint"),
-                add_tokens=params.get("add_tokens"),
-                skip_default_tokens=bool(params.get("skip_default_tokens", False)),
-                chat_template_path=params.get("chat_template_path"),
-                no_auto_stop_tokens=bool(params.get("no_auto_stop_tokens", False)),
-                stop_tokens=params.get("stop_tokens"),
-                generation_config=params.get("generation_config"),
-                keep_optimizer=bool(params.get("keep_optimizer", False)),
-                root_copy=bool(params.get("root_copy", False)),
-                safetensors=bool(params.get("safetensors", False)),
-                dtype=params.get("dtype"),
-                device=params.get("device"),
-                dry_run=bool(params.get("dry_run", False)),
-                log_level=params.get("log_level", "INFO"),
-                gpu_indices=gpu_indices,
-                tty_log_path=tty_path,
-            )
-        elif item.job_type == "mkdocs":
-            params = item.job_params
-            watch = params.get("watch")
-            if isinstance(watch, str):
-                watch = [watch]
-            elif not isinstance(watch, list):
-                watch = None
-            result = launcher.spawn_mkdocs_process(
-                config_file=params["config_file"],
-                port=int(params["port"]),
-                host=params.get("host", "127.0.0.1"),
-                strict=bool(params.get("strict", False)),
-                livereload=bool(params.get("livereload", True)),
-                dirty=bool(params.get("dirty", False)),
-                watch=watch,
-                tty_log_path=tty_path,
-            )
-        elif item.job_type == "model":
-            params = item.job_params
-            cd = params.get("compile_dynamic")
-            result = launcher.spawn_model_process(
-                project_dir=item.project_dir,
-                config_name=item.config,
-                subcommand=params.get("subcommand", "construct"),
-                dynamic_args=item.dynamic_args,
-                device=params.get("device"),
-                dtype=params.get("dtype"),
-                no_init_weights=bool(params.get("no_init_weights", False)),
-                load_from_checkpoint=params.get("load_from_checkpoint"),
-                gradient_checkpointing=bool(
-                    params.get("gradient_checkpointing", False)
-                ),
-                fuse_optim_with_backward=bool(
-                    params.get("fuse_optim_with_backward", False)
-                ),
-                refresh_model=bool(params.get("refresh_model", False)),
-                save_checkpoint=bool(params.get("save_checkpoint", False)),
-                safetensors=bool(params.get("safetensors", False)),
-                batch_size=(
-                    int(params["batch_size"])
-                    if params.get("batch_size") is not None
-                    else None
-                ),
-                sequence_length=(
-                    int(params["sequence_length"])
-                    if params.get("sequence_length") is not None
-                    else None
-                ),
-                steps=(
-                    int(params["steps"]) if params.get("steps") is not None else None
-                ),
-                lr=(float(params["lr"]) if params.get("lr") is not None else None),
-                dataset_project=params.get("dataset_project"),
-                dataset_config=params.get("dataset_config"),
-                packed=bool(params.get("packed", False)),
-                compile=bool(params.get("compile", False)),
-                compile_backend=params.get("compile_backend"),
-                compile_mode=params.get("compile_mode"),
-                compile_dynamic=(None if cd is None else bool(cd)),
-                compile_fullgraph=bool(params.get("compile_fullgraph", False)),
-                amp=params.get("amp"),
-                gpu_indices=gpu_indices,
-                tty_log_path=tty_path,
-            )
-        elif item.job_type == "dataset":
-            params = item.job_params
-            features = params.get("features")
-            if isinstance(features, str):
-                features = [features]
-            elif not isinstance(features, list):
-                features = None
-            result = launcher.spawn_dataset_process(
-                project_dir=item.project_dir,
-                config_name=item.config,
-                dynamic_args=item.dynamic_args,
-                tokenizer_path=params.get("tokenizer_path"),
-                pp=bool(params.get("pp", False)),
-                histogram=bool(params.get("histogram", False)),
-                target=params.get("target"),
-                histogram_samples=(
-                    int(params["histogram_samples"])
-                    if params.get("histogram_samples") is not None
-                    else None
-                ),
-                examples=(
-                    int(params["examples"])
-                    if params.get("examples") is not None
-                    else None
-                ),
-                features=features,
-                tokenized=bool(params.get("tokenized", False)),
-                num_shards=(
-                    int(params["num_shards"])
-                    if params.get("num_shards") is not None
-                    else None
-                ),
-                shard_index=(
-                    int(params["shard_index"])
-                    if params.get("shard_index") is not None
-                    else None
-                ),
-                select_range=params.get("select_range"),
-                seed=(int(params["seed"]) if params.get("seed") is not None else None),
-                example_stride=(
-                    int(params["example_stride"])
-                    if params.get("example_stride") is not None
-                    else None
-                ),
-                truncate=(
-                    int(params["truncate"])
-                    if params.get("truncate") is not None
-                    else None
-                ),
-                tty_log_path=tty_path,
-            )
-        else:
-            result = launcher.spawn_training_process(
-                project_dir=item.project_dir,
-                config_name=item.config,
-                dynamic_args=item.dynamic_args,
-                gpu_indices=gpu_indices,
-                tty_log_path=tty_path,
-            )
+        result = build(item, gpu_indices, tty_path)
     except Exception as e:
         log.exception("launch failed for %s", item.queue_id)
         job_records.update_record(
@@ -539,9 +551,9 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
         )
         return
 
-    job_records.update_record(item.queue_id, status="running", pid=result.pid)
     with _state._lock:
         _state.running[item.queue_id] = result.proc
+    job_records.update_record(item.queue_id, status="running", pid=result.pid)
 
 
 def _pid_ancestors(pid: int) -> List[int]:
