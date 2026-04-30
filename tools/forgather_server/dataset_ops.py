@@ -65,6 +65,15 @@ def build_dataset_command(
     if examples is not None:
         cmd.extend(["--examples", str(examples)])
     if features:
+        # `--features` is nargs='*'; argparse stops consuming when it hits
+        # a flag-shaped token. Refuse feature names beginning with `-` so a
+        # caller can't inject argparse flags through this channel.
+        for f in features:
+            if not isinstance(f, str) or not f or f.startswith("-"):
+                raise ValueError(
+                    f"invalid feature name {f!r}: must be a non-empty string "
+                    "that does not start with '-'"
+                )
         cmd.append("--features")
         cmd.extend(features)
     if tokenized:

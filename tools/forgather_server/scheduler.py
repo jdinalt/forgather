@@ -165,7 +165,11 @@ def _reap_finished() -> None:
         else:
             new_status = "failed"
 
-        job_records.update_record(
+        # Re-read the record under the lock right before writing so a
+        # concurrent abort (which transitions status="aborted") doesn't
+        # get clobbered by our reap path racing on the same record.
+        # update_only_if_running narrows the write to non-terminal states.
+        job_records.update_if_not_terminal(
             qid,
             status=new_status,
             exit_code=rc,

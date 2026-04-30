@@ -139,13 +139,21 @@ async def _proxy_streaming_post(
     except httpx.RequestError as e:
         await client.aclose()
         raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+    except Exception:
+        # Anything else (bad URL parsing, runtime errors, etc.) still has
+        # to release the client's connection pool — without this the
+        # AsyncClient lingers until GC, leaking sockets per request.
+        await client.aclose()
+        raise
 
     if response.status_code >= 400:
         # Surface the upstream error body in one shot — no streaming
         # needed for error responses.
-        text = await response.aread()
-        await response.aclose()
-        await client.aclose()
+        try:
+            text = await response.aread()
+        finally:
+            await response.aclose()
+            await client.aclose()
         return StreamingResponse(
             iter([text]),
             status_code=response.status_code,

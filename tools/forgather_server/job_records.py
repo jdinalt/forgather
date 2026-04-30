@@ -140,6 +140,29 @@ def update_record(queue_id: str, **changes: Any) -> Optional[JobRecord]:
     return None
 
 
+def update_if_not_terminal(queue_id: str, **changes: Any) -> Optional[JobRecord]:
+    """Atomic compare-and-swap: apply *changes* only if the record's
+    on-disk status is not already terminal.
+
+    Used by the scheduler reap path to avoid clobbering a concurrent
+    abort. Returns the updated record, or ``None`` if the record was
+    not found or was already in a terminal state (in which case the
+    caller's update was a no-op).
+    """
+    with _lock:
+        records = _read_raw()
+        for i, r in enumerate(records):
+            if r.queue_id == queue_id:
+                if r.status in TERMINAL_STATUSES:
+                    return None
+                for k, v in changes.items():
+                    setattr(r, k, v)
+                records[i] = r
+                _write_raw(records)
+                return r
+    return None
+
+
 def remove_record(queue_id: str) -> bool:
     with _lock:
         records = _read_raw()

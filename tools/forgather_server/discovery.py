@@ -28,6 +28,18 @@ WORKSPACE_METADATA_FILENAME = "workspace.yaml"
 # unrelated workspaces don't all show up as "Workspace Configuration".
 _GENERIC_WS_TITLES = {"Workspace Configuration"}
 
+# Names that the discovery walks should never descend into. These are
+# either generated outputs (large, full of checkpoint dirs) or vendored
+# trees that can't contain a workspace/project. Pruning them keeps the
+# walk fast and avoids accidentally classifying a stray meta.yaml under
+# an output tree as a real project.
+_PRUNED_DIR_NAMES = {
+    "output_models",
+    "node_modules",
+    "__pycache__",
+    ".git",
+}
+
 
 @dataclass
 class ConfigInfo:
@@ -151,16 +163,22 @@ def _workspace_display(ws_root: str) -> Tuple[Optional[str], Optional[str]]:
     return name, description
 
 
+def _should_descend(dirname: str) -> bool:
+    """Filter applied to ``dirnames[:]`` in os.walk callbacks."""
+    return (
+        not dirname.startswith(".")
+        and dirname != WORKSPACE_CONFIG_DIR_NAME
+        and dirname not in _PRUNED_DIR_NAMES
+    )
+
+
 def _iter_project_dirs(root: str):
     """Yield absolute directory paths that contain a meta.yaml, skipping hidden dirs
     and the workspace config directory itself."""
     for dirpath, dirnames, filenames in os.walk(root):
-        # Skip hidden / workspace-config dirs in place so os.walk doesn't descend.
-        dirnames[:] = [
-            d
-            for d in dirnames
-            if not d.startswith(".") and d != WORKSPACE_CONFIG_DIR_NAME
-        ]
+        # Skip hidden / workspace-config / output dirs in place so
+        # os.walk doesn't descend into large generated trees.
+        dirnames[:] = [d for d in dirnames if _should_descend(d)]
         if PROJECT_META_NAME in filenames:
             yield os.path.abspath(dirpath)
 
@@ -171,9 +189,12 @@ def _iter_workspace_dirs(root: str):
     workspace root itself (the parent of ``forgather_workspace/``),
     matching ``MetaConfig.workspace_root``."""
     for dirpath, dirnames, _ in os.walk(root):
-        # Stay out of hidden dirs but DO recurse into project dirs —
-        # workspaces can be nested arbitrarily under search roots.
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        # Stay out of hidden / output / vendored dirs but DO recurse into
+        # project dirs — workspaces can be nested arbitrarily under
+        # search roots.
+        dirnames[:] = [
+            d for d in dirnames if not d.startswith(".") and d not in _PRUNED_DIR_NAMES
+        ]
         if WORKSPACE_CONFIG_DIR_NAME in dirnames:
             yield os.path.abspath(dirpath)
 

@@ -144,18 +144,14 @@ def get_project_asset(project_dir: str, asset: str):
             detail="asset path resolves outside the project directory",
         )
 
-    # Target must be a regular file (not a symlink to outside, not a dir)
+    # Target must be a regular file (not a dir). Note: ``target`` was
+    # already ``.resolve()``-d above, so any symlink in the chain has
+    # been followed and ``target.is_symlink()`` is now always False.
+    # Symlinks pointing outside the project are caught by the
+    # ``parents`` containment check above, since ``resolve()`` lands
+    # them at their final destination.
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"Asset not found: {asset}")
-    if target.is_symlink():
-        # Symlink target was already resolved above; double-check containment
-        # was verified, but refuse symlinks as an extra precaution.
-        real = target.resolve()
-        if proj_path not in real.parents and real != proj_path:
-            raise HTTPException(
-                status_code=403,
-                detail="symlink resolves outside the project directory",
-            )
     if not target.is_file():
         raise HTTPException(
             status_code=400,

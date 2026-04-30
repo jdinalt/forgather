@@ -26,7 +26,12 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel
 
+from .._atomic import atomic_write_text
 from ..search_roots import forgather_repo_root
+
+# Cap on JSON body size for preset writes — these are tiny config blobs;
+# anything past a few KB is almost certainly noise (or abuse).
+_MAX_PRESET_BYTES = 64 * 1024
 
 log = logging.getLogger("forgather_server.generation_configs")
 router = APIRouter(tags=["generation-configs"])
@@ -49,7 +54,7 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9 _\-.\(\)]+$")
 
 
 def _validate_name(name: str) -> None:
-    if not name or name.startswith(".") or not _NAME_RE.match(name):
+    if not name or name.startswith(".") or ".." in name or not _NAME_RE.match(name):
         raise HTTPException(status_code=400, detail=f"invalid preset name: {name!r}")
 
 
@@ -155,9 +160,18 @@ def put_preset(
     # builtin, this file effectively shadows it — load now returns the
     # user copy; deleting it restores the bundled version.
     path = _user_path(name)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(params, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    serialized = json.dumps(params, indent=2) + "\n"
+    if len(serialized) > _MAX_PRESET_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"preset payload is {len(serialized)} bytes; "
+                f"max is {_MAX_PRESET_BYTES}"
+            ),
+        )
+    # Use the project's crash-atomic helper (write + fsync + os.replace)
+    # so a crash mid-write never leaves the file truncated.
+    atomic_write_text(path, serialized)
     return GenerationConfigEntry(name=name, builtin=False, params=params)
 
 

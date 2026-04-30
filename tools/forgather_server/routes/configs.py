@@ -405,9 +405,10 @@ def put_template_source(req: PutTemplateSourceRequest):
             current_mtime = os.path.getmtime(req.path)
         except OSError as e:
             raise HTTPException(status_code=500, detail=str(e))
-        # Tiny tolerance covers float roundtripping; in practice we
-        # only flag genuine disk updates, not equality jitter.
-        if current_mtime > req.expected_mtime + 1e-3:
+        # Tiny tolerance covers float roundtripping; ext4/xfs/btrfs
+        # store mtimes with ns precision so 1µs is plenty of slack for
+        # equality without swallowing genuine concurrent edits.
+        if current_mtime > req.expected_mtime + 1e-6:
             raise HTTPException(
                 status_code=409,
                 detail={

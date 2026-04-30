@@ -14,6 +14,7 @@ streaming + control therefore live with the Jobs API.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -159,10 +160,19 @@ def enqueue(req: EnqueueRequest):
     # Training, model, and dataset jobs all materialize the same dynamic
     # args; other types don't consume them.
     if req.job_type in ("training", "model", "dataset"):
+        # If the schema can't load (template parse error, missing config,
+        # etc.) we surface the failure as 400 rather than silently treating
+        # it as an empty schema — otherwise required-field enforcement is
+        # bypassed exactly when the config is broken.
         try:
             schema = config_ops.load_dynamic_args(req.project_dir, req.config)
-        except Exception:
-            schema = []
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"could not load dynamic-args schema for " f"{req.config!r}: {e}"
+                ),
+            )
         missing = [
             a.cli_name
             for a in schema
@@ -189,6 +199,12 @@ def enqueue(req: EnqueueRequest):
             try:
                 fv = float(v)
             except (TypeError, ValueError):
+                continue
+            # Reject NaN / Inf — neither passes ordinary `<` / `>` checks
+            # against a finite bound, so they would silently sneak past
+            # without this guard.
+            if math.isnan(fv) or math.isinf(fv):
+                bound_violations.append(f"{a.cli_name}: not a finite number")
                 continue
             if a.min is not None and fv < a.min:
                 bound_violations.append(f"{a.cli_name} >= {a.min}")

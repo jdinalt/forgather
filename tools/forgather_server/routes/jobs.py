@@ -35,6 +35,11 @@ router = APIRouter(tags=["jobs"])
 
 TTY_POLL_INTERVAL_SECONDS = 0.5
 TTY_TAIL_AFTER_EXIT_SECONDS = 3.0
+# Caps to bound memory on TTY reads. A long-running training job's tty.log
+# can grow to multiple GB; without bounds, both the dump endpoint and the
+# initial WebSocket backlog OOM the server.
+TTY_DUMP_MAX_BYTES = 32 * 1024 * 1024  # 32 MiB tail by default
+TTY_BACKLOG_CHUNK_BYTES = 1 * 1024 * 1024  # 1 MiB per WS send during backlog
 
 
 class JobModel(BaseModel):
@@ -293,7 +298,12 @@ def job_control(job_id: str, action: str):
             detail="no trainer endpoint yet; use action=kill for a hard abort",
         )
     fn = _ACTION_DISPATCH[action]
-    resp = fn(target_jobid)
+    try:
+        resp = fn(target_jobid)
+    except Exception as e:
+        # Mirror job_status — surface trainer connectivity issues as 502
+        # rather than letting them bubble up as a generic 500 stack.
+        raise HTTPException(status_code=502, detail=str(e))
     return ControlResponseModel(
         success=resp.success, message=resp.message, data=resp.data
     )
@@ -324,12 +334,28 @@ def _is_terminal(job_id: str) -> bool:
 
 @router.get("/jobs/{job_id}/tty", response_class=PlainTextResponse)
 def tty_dump(job_id: str):
-    """Full captured stdout/stderr (no follow)."""
+    """Captured stdout/stderr (tail; no follow).
+
+    Returns at most :data:`TTY_DUMP_MAX_BYTES` from the end of the log.
+    Long-running training jobs accumulate hundreds of MB of TTY output;
+    a bare ``f.read()`` would OOM the server on each click.
+    """
     path = _tty_path_for(job_id)
     try:
+        import os as _os
+
         with open(path, "rb") as f:
+            try:
+                size = _os.fstat(f.fileno()).st_size
+            except OSError:
+                size = 0
+            if size > TTY_DUMP_MAX_BYTES:
+                f.seek(size - TTY_DUMP_MAX_BYTES)
+                # Drop the leading partial line for cleanliness.
+                f.readline()
+            data = f.read()
             return PlainTextResponse(
-                f.read().decode("utf-8", errors="replace"),
+                data.decode("utf-8", errors="replace"),
                 media_type="text/plain; charset=utf-8",
             )
     except FileNotFoundError:
@@ -352,15 +378,24 @@ async def tty_stream(ws: WebSocket, job_id: str, follow: bool = True):
     try:
         while True:
             try:
+                # Read in bounded chunks so a multi-GB backlog doesn't
+                # materialize the whole file in memory before sending.
+                # Loop until the file's current EOF, sending each chunk as
+                # we read it.
                 with open(path, "rb") as f:
                     f.seek(offset)
-                    chunk = f.read()
+                    sent_any = False
+                    while True:
+                        chunk = f.read(TTY_BACKLOG_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        offset += len(chunk)
+                        await ws.send_bytes(chunk)
+                        sent_any = True
             except FileNotFoundError:
                 await ws.send_json({"type": "error", "detail": "tty file missing"})
                 break
-            if chunk:
-                offset += len(chunk)
-                await ws.send_bytes(chunk)
+            if sent_any:
                 exited_at = None
             if not follow:
                 break

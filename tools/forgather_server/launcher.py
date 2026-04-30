@@ -111,20 +111,31 @@ def _spawn_subprocess(
         proc_env.update(extra_env)
 
     tty_log_path.parent.mkdir(parents=True, exist_ok=True)
-    tty_file = open(tty_log_path, "wb", buffering=0)
     log.info("spawning: %s", " ".join(cmd))
-    proc = subprocess.Popen(
-        cmd,
-        env=proc_env,
-        stdout=tty_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    # Use a `with` block so the parent's fd is closed once Popen has
+    # dup'd it into the child. Without close-after-spawn, every launched
+    # job leaks one fd in the server process.
+    with open(tty_log_path, "wb", buffering=0) as tty_file:
+        proc = subprocess.Popen(
+            cmd,
+            env=proc_env,
+            stdout=tty_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+    # The child is in its own session (start_new_session=True) so pgid==pid.
+    # Reading os.getpgid(pid) can race with an immediate-exit child; fall back
+    # to pid (== pgid by construction) if the leader is already gone.
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        pgid = proc.pid
 
     return LaunchResult(
         proc=proc,
         pid=proc.pid,
-        pgid=os.getpgid(proc.pid),
+        pgid=pgid,
         cmd=cmd,
         tty_log_path=tty_log_path,
     )
@@ -517,12 +528,17 @@ def spawn_dataset_process(
 def kill_process_group(pid: int, sig: int = signal.SIGTERM) -> bool:
     """Kill the whole process group led by ``pid``.
 
-    Returns ``False`` if the group is already gone (nothing to kill).
+    Returns ``False`` only when no signal could be delivered. If the
+    leader pid is gone, we still try ``killpg(pid, sig)`` since
+    ``start_new_session=True`` guarantees ``pgid == pid`` for our
+    spawns — worker children may still be alive in the same group
+    after the leader exits (e.g. torchrun ranks outliving torchrun).
     """
     try:
         pgid = os.getpgid(pid)
     except ProcessLookupError:
-        return False
+        # Leader exited, but pgid == pid by construction — try anyway.
+        pgid = pid
     try:
         os.killpg(pgid, sig)
         return True
