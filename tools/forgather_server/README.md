@@ -258,7 +258,9 @@ persists for next time.
   marker dirs (so empty workspaces seed empty clusters that still show
   in the tree), then for ``meta.yaml`` (projects, attached to whichever
   workspace_root MetaConfig resolves them to). Hierarchical workspaces
-  nest under their enclosing parent.
+  nest under their enclosing parent. Both passes prune hidden directories,
+  ``forgather_workspace/``, ``output_models/``, ``node_modules/``,
+  ``__pycache__``, and ``.git`` to avoid slow or redundant subtree walks.
 - Workspaces resolve display name + description from
   `forgather_workspace/workspace.yaml` → README title + first paragraph
   → directory basename. `forgather ws create` writes `workspace.yaml`
@@ -451,7 +453,7 @@ as an `X-Mtime` response header. The editor stamps the buffer's
 ``baselineMtime`` from this header on load and after every
 successful save. Save sends ``expected_mtime`` along with the
 content; if the file's current on-disk mtime is newer (with a
-1 ms tolerance for filesystem jitter), the server responds
+1 µs tolerance for filesystem jitter), the server responds
 **409** with `detail: {message, current_mtime, expected_mtime}`.
 The client throws a typed `SaveConflictError`, the buffer keeps
 its local content (no clobber), and `FilesPanel` opens a
@@ -636,10 +638,10 @@ sets/clears them.
   `forgather train` does, minus the extra subprocess layer — lets the
   scheduler own the process group for clean abort).
 
-**Seven job types** share the queue, scheduler, GPU accounting, and TTY
+**Nine job types** share the queue, scheduler, GPU accounting, and TTY
 capture machinery. The non-CUDA-by-default types (`tensorboard`,
-`mkdocs`, `convert`, `finalize`) accept `requested_gpus == 0`; the
-others still need at least one GPU. Convert / finalize will happily
+`mkdocs`, `convert`, `finalize`, `dataset`) accept `requested_gpus == 0`; the
+others default to at least one GPU. Convert / finalize will happily
 take a GPU if the user sets `--device cuda…` and bumps the reservation.
 
 | Type         | Spawned by                                                                             | Lifecycle                              |
@@ -651,9 +653,12 @@ take a GPU if the user sets `--device cuda…` and bumps the reservation.
 | `mkdocs`     | 📖 MkDocs… (MkDocsModal, sidebar Tools — picks an `mkdocs.yml` + host:port)            | Long-lived; kill to stop.              |
 | `convert`    | 🔁 Convert Model… (ConvertModal, sidebar Tools)                                        | Terminal when `convert` exits.         |
 | `finalize`   | 📦 Finalize Model… (FinalizeModal, sidebar Tools)                                      | Terminal when `finalize` exits.        |
+| `model`      | Run on a model config (config_class `type.model`)                                      | Terminal when `forgather model` exits. |
+| `dataset`    | Run on a dataset config (config_class `type.dataset`)                                  | Terminal when `forgather dataset` exits.|
 
 Helpers live in `inference_ops.py`, `eval_ops.py`, `tensorboard_ops.py`,
-`mkdocs_ops.py`, `convert_ops.py`, `finalize_ops.py` (build argv) and
+`mkdocs_ops.py`, `convert_ops.py`, `finalize_ops.py`, `model_ops.py`,
+`dataset_ops.py` (build argv) and
 `launcher.spawn_*_process` (same sandbox as training but with the right
 argv). The scheduler's
 dispatcher branches on `item.job_type` to pick the spawn function;
@@ -757,11 +762,14 @@ What the algorithm intentionally does **not** do:
   a job to route its TTY output to the bottom pane. Draggable handle
   resizes (persisted to `localStorage`); double-click to reset to 45%.
 - TTY stream subscribes to `WS /api/jobs/{id}/tty` — backlog then poll-
-  follow. Imperative `appendChild(textNode)` so browser text selection
-  survives new chunks streaming in (lets you copy log lines from a
-  running job). Once the trainer registers `logs_dir`, the captured TTY
-  is symlinked into `<logs_dir>/tty.log` for durability alongside the
-  trainer's other artifacts.
+  follow. The backlog is read in 1 MiB chunks so a large log doesn't
+  OOM the server; the one-shot REST dump (`GET /api/jobs/{id}/tty`) caps
+  at the trailing 32 MiB of the captured file. Imperative
+  `appendChild(textNode)` so browser text selection survives new chunks
+  streaming in (lets you copy log lines from a running job). Once the
+  trainer registers `logs_dir`, the captured TTY is symlinked into
+  `<logs_dir>/tty.log` for durability alongside the trainer's other
+  artifacts.
 - Per-card hide/restart aware: server restart marks orphaned-but-still-
   alive processes as re-attached and continues monitoring them.
 
@@ -1039,14 +1047,17 @@ tools/forgather_server/
 ├── queue_store.py             # Persistent FIFO queue (waiting items only)
 ├── job_records.py             # Persistent records of dispatched jobs
 ├── launcher.py                # Spawn training / eval / inference /
-│                              #   tensorboard / mkdocs processes; own
-│                              #   process group
+│                              #   tensorboard / mkdocs / convert /
+│                              #   finalize / model / dataset processes;
+│                              #   own process group
 ├── inference_ops.py           # Build inference-server argv
 ├── eval_ops.py                # Build `forgather eval` argv
 ├── tensorboard_ops.py         # Build tensorboard argv
 ├── mkdocs_ops.py              # Build `mkdocs serve` argv
 ├── convert_ops.py             # Build `forgather convert` argv
 ├── finalize_ops.py            # Build `forgather finalize` argv
+├── model_ops.py               # Build `forgather model` argv
+├── dataset_ops.py             # Build `forgather dataset` argv
 ├── scheduler.py               # Dispatcher loop, GPU allocation,
 │                              #   per-job-type spawn, re-attach, reap, abort
 ├── gpu_monitor.py             # NVML / torch.cuda enumeration,
@@ -1178,10 +1189,12 @@ APIs — no re-implementation. Every endpoint ultimately calls into
 or `TrainerControlClient`. Config materialization respects per-config
 override values pulled from a JSON cache, so `pp` / `trefs` /
 `output-dir` / `config/meta` all reflect whatever the user has set in
-the 🔧 Overrides modal. The scheduler dispatches five job types —
+the 🔧 Overrides modal. The scheduler dispatches nine job types —
 training (`torchrun`), eval (`forgather eval`), inference
-(`tools/inference_server/server.py`), TensorBoard (`tensorboard`), and
-MkDocs (`mkdocs serve`) — all through a common `launcher.spawn_*`
+(`tools/inference_server/server.py`), TensorBoard (`tensorboard`),
+MkDocs (`mkdocs serve`), convert (`forgather convert`), finalize
+(`forgather finalize`), model, and dataset — all through a common
+`launcher.spawn_*`
 surface that owns its process group via `start_new_session=True` so
 jobs survive server restart. Inference
 servers spawned this way appear in the Inference panel's "Running
@@ -1275,7 +1288,7 @@ Populates the project-tree sub-groups and detail panels:
 | Endpoint                                                  | Purpose                                                |
 | --------------------------------------------------------- | ------------------------------------------------------ |
 | `GET /api/queue`                                          | List queued items                                      |
-| `POST /api/queue` `{project_dir, config, dynamic_args, requested_gpus, priority, job_type?, job_params?}` | Enqueue any job type (`training` / `eval` / `inference` / `tensorboard` / `mkdocs` / `convert` / `finalize`) |
+| `POST /api/queue` `{project_dir, config, dynamic_args, requested_gpus, priority, job_type?, job_params?}` | Enqueue any job type (`training` / `eval` / `inference` / `tensorboard` / `mkdocs` / `convert` / `finalize` / `model` / `dataset`) |
 | `DELETE /api/queue/{queue_id}`                            | Cancel a queued item (or abort if it's already running) |
 | `GET /api/queue/scheduler`                                | Dispatcher on/off + counters                           |
 | `POST /api/queue/scheduler` `{enabled}`                   | Enable / disable the dispatcher                        |
