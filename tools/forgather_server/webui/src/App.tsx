@@ -22,7 +22,7 @@ import { SearchRootsPanel } from "./components/SearchRootsPanel";
 import { useFilesState } from "./files-state";
 
 type View = "projects" | "edit" | "gpus" | "jobs" | "queue" | "inference";
-export type ConfigTab = "info" | "pp" | "code" | "templates" | "debug";
+export type ConfigTab = "info" | "pp" | "code" | "graph" | "templates" | "debug";
 
 const VIEWS: { id: View; label: string; icon: string }[] = [
   { id: "projects", label: "Projects", icon: "📁" },
@@ -181,6 +181,7 @@ export default function App() {
       t === "info" ||
       t === "pp" ||
       t === "code" ||
+      t === "graph" ||
       t === "templates" ||
       t === "debug"
     )

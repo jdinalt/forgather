@@ -13,6 +13,7 @@ import { ConfigTensorBoardModal } from "./TensorBoardModal";
 import { TemplatesView } from "./TemplatesView";
 import { DebugPanel } from "./DebugPanel";
 import { CodePanel } from "./CodePanel";
+import { GraphPanel } from "./GraphPanel";
 import { ConfigErrorView } from "./ConfigErrorView";
 import { ConfigTab } from "../App";
 import { asConfigError } from "../api";
@@ -165,6 +166,13 @@ export function ConfigViewer({
             code
           </button>
           <button
+            className={tab === "graph" ? "active" : ""}
+            onClick={() => setTab("graph")}
+            title="Config node dependency graph"
+          >
+            graph
+          </button>
+          <button
             className={tab === "templates" ? "active" : ""}
             onClick={() => setTab("templates")}
           >
@@ -191,6 +199,9 @@ export function ConfigViewer({
       )}
       {tab === "code" && (
         <CodePanel project={project} config={config} onMount={onMount} />
+      )}
+      {tab === "graph" && (
+        <GraphPanel project={project} config={config} />
       )}
       {tab === "templates" && (
         <TemplatesView

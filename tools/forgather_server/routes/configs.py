@@ -219,6 +219,35 @@ def get_config_trefs(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/config/graph", response_class=PlainTextResponse)
+def get_config_graph(
+    project_dir: str,
+    config: str,
+    target: Optional[str] = Query(default=None),
+    include_values: bool = Query(default=False),
+):
+    """Config node graph as Graphviz DOT.
+
+    When *target* is given only that top-level key is rendered; omit it (or
+    pass an empty string) to render the full multi-target diagram. When
+    *include_values* is true, plain scalars and containers (strings /
+    numbers / lists / dicts) also appear as nodes; strings are truncated.
+    """
+    target_arg: Optional[str] = target if target else None
+    try:
+        return config_ops.render_graph_dot(
+            project_dir,
+            config,
+            target=target_arg,
+            include_values=include_values,
+        )
+    except ConfigDiagnostic as e:
+        raise HTTPException(status_code=400, detail=_config_error_detail(e))
+    except Exception as e:
+        detail = f"{e}\n\n{traceback.format_exc()}"
+        raise HTTPException(status_code=400, detail=detail)
+
+
 @router.get("/config/templates", response_model=List[ReferencedTemplate])
 def get_config_templates(project_dir: str, config: str):
     """Flat list of every template consumed by the config (depth-ordered)."""

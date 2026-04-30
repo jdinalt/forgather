@@ -512,6 +512,18 @@ export const api = {
     fetchText(
       `/api/config/trefs?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}&format=dot`,
     ),
+  /** Config node graph as Graphviz DOT. Pass an empty *target* to render
+   *  all top-level targets in a single diagram. When *include_values* is
+   *  true, plain scalars / lists / dicts also appear as graph nodes. */
+  configGraphDot: (
+    project_dir: string,
+    config: string,
+    target: string = "",
+    include_values: boolean = false,
+  ) =>
+    fetchText(
+      `/api/config/graph?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}${target ? `&target=${encodeURIComponent(target)}` : ""}${include_values ? "&include_values=true" : ""}`,
+    ),
   templateSource: (path: string) =>
     fetchText(`/api/template/source?path=${encodeURIComponent(path)}`),
   templateSourceWithMeta: async (

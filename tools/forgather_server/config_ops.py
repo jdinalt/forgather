@@ -248,6 +248,212 @@ def render_trefs_tree(project_dir: str, config_name: str) -> str:
     return render_template_hierarchy_tree(loaded.env, loaded.config_path, **merged)
 
 
+def render_graph_dot(
+    project_dir: str,
+    config_name: str,
+    target: Optional[str] = None,
+    include_values: bool = False,
+    **kwargs,
+) -> str:
+    """Render the config's parsed node graph as Graphviz DOT.
+
+    When *target* is given only that top-level key is rendered; when ``None``
+    every top-level target appears in the same diagram, each with its own
+    entry-point ellipse.
+
+    When *include_values* is True, plain Python scalars and containers
+    (str / int / float / bool / None / list / dict) also appear as nodes,
+    with strings truncated to a sane length. The default skips them so the
+    diagram is dominated by the Forgather node graph rather than its
+    constants.
+    """
+    from collections.abc import Mapping as _Mapping
+    from collections.abc import Sequence as _Sequence
+    from typing import Any as _Any
+
+    from forgather.latent import (
+        CallableNode,
+        FactoryNode,
+        Node,
+        PartialNode,
+        SingletonNode,
+        VarNode,
+    )
+
+    loaded = load_env(project_dir, config_name)
+    merged = _merged_kwargs(project_dir, config_name, kwargs)
+    config = loaded.env.load(loaded.config_path, **merged).config
+
+    if isinstance(config, _Mapping):
+        if target and target in config:
+            roots: Dict[str, _Any] = {target: config[target]}
+        else:
+            roots = dict(config)
+    else:
+        roots = {"root": config}
+
+    node_defs: List[str] = []
+    edge_defs: List[str] = []
+    entry_defs: List[str] = []
+    node_by_key: Dict[Any, str] = {}
+    emitted: Set[Any] = set()  # node keys already in node_defs
+    traversed: Set[Any] = set()  # node keys whose children have been walked
+    counter: List[int] = [0]
+
+    def fresh_id() -> str:
+        nid = f"n{counter[0]}"
+        counter[0] += 1
+        return nid
+
+    def _key(node: Node) -> Any:
+        # VarNode identities default to id(self), so two !var references to
+        # the same variable end up as separate Python objects with distinct
+        # identities. Dedupe them by variable name instead so a "hidden_size"
+        # var shows up once with edges from every consumer.
+        if isinstance(node, VarNode):
+            return ("var", node.constructor)
+        return ("node", node.identity)
+
+    def _nid(node: Node) -> str:
+        key = _key(node)
+        if key not in node_by_key:
+            node_by_key[key] = fresh_id()
+        return node_by_key[key]
+
+    def _short(constructor: str) -> str:
+        rhs = constructor.rsplit(":", 1)[-1]
+        parts = rhs.rsplit(".", 2)
+        return ".".join(parts[-2:]) if len(parts) >= 2 else rhs
+
+    def _esc(text: str) -> str:
+        return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+    def _edge(src: str, dst: str, label: str) -> str:
+        if label:
+            return f'  {src} -> {dst} [label="{_esc(label)}"];'
+        return f"  {src} -> {dst};"
+
+    _TYPE_COLOR = {
+        VarNode: "#aed6f1",
+        SingletonNode: "#a9dfbf",
+        FactoryNode: "#f9e79f",
+        PartialNode: "#f1948a",
+    }
+    _TYPE_LABEL = {
+        VarNode: "var",
+        SingletonNode: "singleton",
+        FactoryNode: "factory",
+        PartialNode: "partial",
+    }
+
+    def emit_node(obj: Node) -> str:
+        """Add obj to node_defs if not already done; always return its DOT id."""
+        key = _key(obj)
+        nid = _nid(obj)
+        if key not in emitted:
+            emitted.add(key)
+            color = next(
+                (c for t, c in _TYPE_COLOR.items() if isinstance(obj, t)), "#cccccc"
+            )
+            type_label = next(
+                (lbl for t, lbl in _TYPE_LABEL.items() if isinstance(obj, t)), "node"
+            )
+            raw_label = (
+                f"{type_label}\n{obj.constructor}"
+                if isinstance(obj, VarNode)
+                else f"{type_label}\n{_short(obj.constructor)}"
+            )
+            node_defs.append(
+                f'  {nid} [label="{_esc(raw_label)}" fillcolor="{color}"];'
+            )
+        return nid
+
+    def _format_scalar(value: Any, max_len: int = 60) -> str:
+        """Short, human-readable label for a scalar value."""
+        if isinstance(value, str):
+            if len(value) > max_len:
+                return repr(value[:max_len]) + "…"
+            return repr(value)
+        if value is None:
+            return "None"
+        return repr(value)
+
+    def emit_value_node(label: str, shape: str, color: str) -> str:
+        nid = fresh_id()
+        node_defs.append(
+            f'  {nid} [label="{_esc(label)}" shape={shape}'
+            f' style="filled,rounded" fillcolor="{color}"];'
+        )
+        return nid
+
+    def walk(
+        obj: Any, parent_nid: Optional[str], edge_label: str, visited: Set[Any]
+    ) -> None:
+        if isinstance(obj, Node):
+            key = _key(obj)
+            nid = emit_node(obj)
+            if parent_nid is not None:
+                edge_defs.append(_edge(parent_nid, nid, edge_label))
+            # Skip recursing if: already in the current traversal stack (cycle)
+            # or already fully walked by a previous path (avoids duplicate edges).
+            if key in visited or key in traversed:
+                return
+            visited = visited | {key}
+            if isinstance(obj, CallableNode):
+                for i, arg in enumerate(obj.args):
+                    walk(arg, nid, f"arg{i}", visited)
+                for kw, val in (obj.kwargs or {}).items():
+                    walk(val, nid, kw, visited)
+            traversed.add(key)
+        elif isinstance(obj, _Mapping) and not isinstance(obj, str):
+            if include_values:
+                nid = emit_value_node(f"{{ ... }} ({len(obj)})", "box", "#d6eaf8")
+                if parent_nid is not None:
+                    edge_defs.append(_edge(parent_nid, nid, edge_label))
+                for k, val in obj.items():
+                    walk(val, nid, str(k), visited)
+            else:
+                for k, val in obj.items():
+                    sub = f"{edge_label}.{k}" if edge_label else str(k)
+                    walk(val, parent_nid, sub, visited)
+        elif isinstance(obj, _Sequence) and not isinstance(obj, str):
+            if include_values:
+                nid = emit_value_node(f"[ ... ] ({len(obj)})", "box", "#d6eaf8")
+                if parent_nid is not None:
+                    edge_defs.append(_edge(parent_nid, nid, edge_label))
+                for i, val in enumerate(obj):
+                    walk(val, nid, f"[{i}]", visited)
+            else:
+                for i, val in enumerate(obj):
+                    sub = f"{edge_label}[{i}]" if edge_label else f"[{i}]"
+                    walk(val, parent_nid, sub, visited)
+        elif include_values and parent_nid is not None:
+            # Plain scalar leaf: int / float / bool / None / str.
+            nid = emit_value_node(_format_scalar(obj), "note", "#fdf2e9")
+            edge_defs.append(_edge(parent_nid, nid, edge_label))
+
+    for tname, tobj in roots.items():
+        entry_id = fresh_id()
+        entry_defs.append(
+            f'  {entry_id} [label="{_esc(tname)}" shape=ellipse '
+            f'fillcolor="#d2b4de" style="filled"];'
+        )
+        walk(tobj, entry_id, "", set())
+
+    lines = [
+        "digraph {",
+        "  rankdir=LR;",
+        '  node [fontname="monospace" fontsize=10 shape=box'
+        ' style="filled,rounded" margin="0.15,0.10"];',
+        "  edge [fontsize=9 arrowsize=0.7];",
+    ]
+    lines.extend(entry_defs)
+    lines.extend(node_defs)
+    lines.extend(edge_defs)
+    lines.append("}")
+    return "\n".join(lines)
+
+
 def render_trefs_json(project_dir: str, config_name: str) -> TrefsGraph:
     """Emit a structured template-dependency graph.
 

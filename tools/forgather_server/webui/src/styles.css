@@ -1910,6 +1910,82 @@ li.config.selected button.link:hover {
   min-height: 0;
 }
 
+/* ---------- Graph panel (target list + Graphviz node graph) ---------- */
+.graph-view {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 4fr;
+  min-height: 0;
+}
+.graph-canvas {
+  position: relative;
+  overflow: hidden;
+  background: #111;
+  cursor: grab;
+  user-select: none;
+}
+.graph-canvas:active {
+  cursor: grabbing;
+}
+/* Host fills the canvas; the SVG inside it fills the host and is zoomed
+ * by manipulating its viewBox attribute, which keeps vector rendering
+ * crisp at any zoom level (no rasterized CSS transform). */
+.graph-svg-host {
+  position: absolute;
+  inset: 0;
+}
+.graph-svg-host svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.graph-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+.graph-toggle input {
+  margin: 0;
+}
+.graph-controls {
+  position: absolute;
+  bottom: 8px;
+  right: 12px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  z-index: 1;
+  pointer-events: auto;
+}
+.graph-controls button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.graph-controls button:hover {
+  background: var(--bg-alt);
+}
+.graph-zoom-pct {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  min-width: 38px;
+  text-align: right;
+}
+
 /* ---------- Structured ConfigError block ---------- */
 .pane-state.err pre {
   white-space: pre-wrap;
