@@ -1,8 +1,7 @@
 -- extends "meta_defaults.yaml"
 
--- block configs
+[configs]
 name: "open-thoughts"
 description: "OpenThoughts3-1.2M: 1.2M reasoning conversations (math, code, science) annotated by QwQ-32B."
 config_prefix: "configs"
 default_config: "openthoughts.yaml"
-<< endblock configs

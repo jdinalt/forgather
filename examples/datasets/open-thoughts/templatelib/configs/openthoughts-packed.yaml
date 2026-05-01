@@ -1,5 +1,5 @@
 -- extends "configs/openthoughts.yaml"
--- from "packed.yaml" import map_function, map_kwargs, dynamic_args
+-- from "datasets/packed_chat_template.yaml" import packed_chat_template_map_function, packed_map_kwargs, packed_dynamic_args
 
 [config_metadata]
     == super()
@@ -7,12 +7,17 @@
     -- set ns.config_description = "OpenThoughts3 with best-fit sequence packing."
 
 [map_function]
-{{ map_function(ns.openthoughts_src, ns.chat_template, max_length | default(512), stride | default(0)) }}
+{{ packed_chat_template_map_function(
+    ns.openthoughts_src ~ ":openthoughts_packed_map_fn",
+    ns.openthoughts_src ~ ":load_chat_template",
+    ns.chat_template,
+    max_length=max_length | default(512),
+    stride=stride | default(0)) }}
 
 [map_kwargs]
     == super()
-{{ map_kwargs() }}
+{{ packed_map_kwargs() }}
 
 [dynamic_args]
     == super()
-{{ dynamic_args() }}
+{{ packed_dynamic_args() }}
