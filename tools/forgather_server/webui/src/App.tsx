@@ -5,6 +5,7 @@ import { getAutoWatchTty } from "./autoWatch";
 import { ProjectTree } from "./components/ProjectTree";
 import { ConfigViewer } from "./components/ConfigViewer";
 import { GpuPanel } from "./components/GpuPanel";
+import { EvalModal } from "./components/EvalModal";
 import { InferenceModal } from "./components/InferenceModal";
 import { InferencePanel } from "./components/InferencePanel";
 import { JobsPanel } from "./components/JobsPanel";
@@ -96,6 +97,7 @@ export default function App() {
   const [mkdocsOpen, setMkdocsOpen] = useState(false);
   const [convertOpen, setConvertOpen] = useState(false);
   const [finalizeOpen, setFinalizeOpen] = useState(false);
+  const [evaluateOpen, setEvaluateOpen] = useState(false);
   // Set when a submit modal closes with the "Watch TTY on start" toggle on.
   // The Jobs view consumes this once the job appears in the polled list and
   // clears it back to null via onAutoWatchConsumed.
@@ -299,6 +301,13 @@ export default function App() {
                 title="Serve an arbitrary model directory — project affiliation optional"
               >
                 🔮 Serve Inference…
+              </button>
+              <button
+                className="sidebar-tool-btn"
+                onClick={() => setEvaluateOpen(true)}
+                title="Run loss/perplexity evaluation against any model directory"
+              >
+                📐 Evaluate…
               </button>
               <button
                 className="sidebar-tool-btn"
@@ -511,6 +520,12 @@ export default function App() {
       {finalizeOpen && (
         <FinalizeModal
           onClose={() => setFinalizeOpen(false)}
+          onSubmitted={onJobSubmitted}
+        />
+      )}
+      {evaluateOpen && (
+        <EvalModal
+          onClose={() => setEvaluateOpen(false)}
           onSubmitted={onJobSubmitted}
         />
       )}
