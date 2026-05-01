@@ -39,3 +39,20 @@ def overrides_dir() -> Path:
 
 def gpu_policy_file() -> Path:
     return server_state_dir() / "gpu_policy.json"
+
+
+def auth_token_file() -> Path:
+    """Persistent bearer token shared between the server and CLI clients.
+
+    Mode 0600. Generated lazily on first server start. Plain ASCII so
+    users can ``cat`` it.
+    """
+    return server_state_dir() / "auth_token"
+
+
+def password_hash_file() -> Path:
+    """Optional pbkdf2_sha256 password hash for browser logins.
+
+    Mode 0600. Format: ``pbkdf2_sha256$<iters>$<salt-hex>$<hash-hex>``.
+    """
+    return server_state_dir() / "password_hash"

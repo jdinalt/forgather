@@ -63,13 +63,43 @@ to repeat this if you pull changes that touch `webui/src/`.
 forgather server
 ```
 
-Defaults to `http://127.0.0.1:8765/`. If your training host is local,
-just open that URL in your browser.
+Defaults to `http://127.0.0.1:8765/`. On startup you'll see a banner
+with a one-shot login URL:
 
-If the host is remote, set up SSH port forwarding from your laptop —
-forwarding the canonical ports for the Forgather server, inference
-jobs, TensorBoard, and MkDocs all at once is convenient because every
-spawned tool lives at a known port:
+```
+    Forgather server is running at:
+        http://127.0.0.1:8765/?token=4c4febdc07830cdd…
+        http://localhost:8765/?token=4c4febdc07830cdd…
+
+    CLI auth: token in /home/<user>/.forgather/server/auth_token (mode 0600)
+    First successful token login will prompt to set a password for future browser logins.
+```
+
+Click (or paste) that URL into a browser on the same machine. Most
+GUI terminals need **Ctrl+click** (rather than a plain click) to
+open a link in your browser; on macOS Terminal use **⌘+click**. The
+token is stripped from the address bar after it's exchanged for a
+session cookie, so it won't end up in your history. On a successful
+first login you'll be prompted to **set a password** — handy because
+future browser logins can use the password instead of the
+64-character token. Skipping is fine; you can always sign in with
+the token again.
+
+Without the URL, the same page shows a login form that accepts either
+the token or the password. The token sits at
+`~/.forgather/server/auth_token` (mode 0600); print it with
+`cat ~/.forgather/server/auth_token` if you ever need it again.
+
+> **Why a token?** A loopback-bound server is reachable by *any*
+> local user on the host, not just you. The token gates that
+> exposure. CLI commands (`forgather sched`, `forgather job`,
+> `forgather train --enqueue`, …) read the token file
+> automatically — you never paste it on the command line.
+
+If your training host is remote, set up SSH port forwarding from your
+laptop — forwarding the canonical ports for the Forgather server,
+inference jobs, TensorBoard, and MkDocs all at once is convenient
+because every spawned tool lives at a known port:
 
 ```bash
 ssh -L 8765:localhost:8765 \
@@ -79,9 +109,21 @@ ssh -L 8765:localhost:8765 \
     user@dev-host
 ```
 
-Then open <http://localhost:8765/> on the laptop. The
+Then open <http://localhost:8765/> on the laptop. The token printed
+on the remote console works as-is over the tunnel — paste it (or the
+full URL) into the laptop's browser. If you also want to run
+`forgather` CLI commands *from the laptop* against the tunnelled
+server, point them at the remote token file:
+
+```bash
+export FORGATHER_SERVER_TOKEN=$(ssh dev-host cat .forgather/server/auth_token)
+forgather sched status
+```
+
+The
 [Getting Started SSH section](../getting-started/README.md#accessing-a-remote-server-over-ssh)
-has a `~/.ssh/config` snippet you can drop in to make this permanent.
+has a `~/.ssh/config` snippet you can drop in to make the port
+forwarding permanent.
 
 > **Heads-up: prefer `localhost` over `127.0.0.1`.** They're not
 > always interchangeable on the client side. Some browser

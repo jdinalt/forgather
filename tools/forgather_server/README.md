@@ -123,6 +123,60 @@ Open <http://127.0.0.1:8765/>. On first boot the server seeds its
 search-roots list with `<repo>/examples`; add or remove roots via the
 sidebar's **Browse…** button.
 
+### Authentication
+
+The server gates every `/api/` request behind a bearer token (modeled
+after Jupyter Lab's first-connect flow). On startup it prints a
+jupyter-style URL with the token baked in:
+
+```
+    Forgather server is running at:
+        http://127.0.0.1:8765/?token=4c4febdc…
+        http://localhost:8765/?token=4c4febdc…
+
+    CLI auth: token in /home/<user>/.forgather/server/auth_token (mode 0600)
+    First successful token login will prompt to set a password for future browser logins.
+```
+
+| Channel                    | Used by                       | Notes                                                     |
+| -------------------------- | ----------------------------- | --------------------------------------------------------- |
+| `Authorization: Bearer …`  | CLI clients                   | Loaded automatically from the token file (see below).     |
+| `?token=…` query parameter | Browser bootstrap, WebSockets | The webui strips it from the URL after exchanging it.     |
+| Session cookie             | Browser after login           | `HttpOnly`, `SameSite=Lax`, in-memory (lost on restart).  |
+| Password (PBKDF2-SHA256)   | Browser after first login     | Optional; set via the prompt that follows token bootstrap. |
+
+The token persists at `~/.forgather/server/auth_token` (mode 0600) so
+CLI clients can read it without prompting; the password hash lives at
+`~/.forgather/server/password_hash` (also mode 0600).
+
+```bash
+# Rotate the token (invalidates all existing CLI sessions)
+forgather server --regen-token
+
+# Disable auth entirely — only safe on a single-user host you trust;
+# any local user on the same machine can then read/control jobs.
+forgather server --no-auth
+
+# Clear the password (next browser login will prompt to set a new one)
+rm ~/.forgather/server/password_hash
+```
+
+CLI clients pick the token up automatically. Override with
+`FORGATHER_SERVER_TOKEN=<token>` if you're talking to a server whose
+token file isn't in your home directory (e.g. an SSH-tunnelled remote
+machine):
+
+```bash
+ssh -L 8765:127.0.0.1:8765 remote
+FORGATHER_SERVER_TOKEN=$(ssh remote cat .forgather/server/auth_token) \
+  forgather sched status
+```
+
+Binding to a non-loopback host (`-H 0.0.0.0`) is supported but the
+bearer token then traverses the network in cleartext. Run behind an
+SSH tunnel or a TLS-terminating reverse proxy for LAN access; native
+TLS support is on the roadmap.
+
 ### Excluding misbehaving GPUs
 
 Set `CUDA_VISIBLE_DEVICES` when starting the server to keep specific
@@ -151,6 +205,8 @@ Everything under `~/.forgather/server/` survives restarts:
 | `jobs/{queue_id}.tty`       | Captured stdout+stderr for each launched job.          |
 | `overrides/{hash}.json`     | Per-config dynamic-args override cache.                |
 | `gpu_policy.json`           | Per-GPU runtime policy: disabled + min_priority.       |
+| `auth_token`                | Bearer token shared with CLI clients (mode 0600).      |
+| `password_hash`             | Optional pbkdf2_sha256 hash for browser logins (0600). |
 
 All state files are written crash-atomically via `_atomic.py`: tmp file
 written in the target directory, `fsync` on the fd, then `os.replace`.

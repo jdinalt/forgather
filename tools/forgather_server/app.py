@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import scheduler, search_roots
+from .auth import AuthMiddleware
+from .routes import auth as auth_routes
 from .routes import configs as configs_routes
 from .routes import fs as fs_routes
 from .routes import generation_configs as generation_configs_routes
@@ -54,13 +56,25 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Permissive CORS for localhost development — the Vite dev server runs on
-    # its own port and proxies /api, but a direct browser fetch for dev
-    # tooling is also useful.
+    # Auth middleware is added FIRST so CORS ends up outermost — that
+    # way preflight OPTIONS requests are answered by CORS without ever
+    # reaching the auth gate (browsers don't send credentials on
+    # preflight, so an auth check here would break every cross-origin
+    # request).
+    app.add_middleware(AuthMiddleware)
+
+    # CORS for the Vite dev server, which serves the SPA on its own port
+    # and proxies /api. ``allow_credentials`` must be true so the
+    # session cookie can flow back to the browser; that in turn forbids
+    # ``allow_origins=['*']`` per the CORS spec, so we list the dev
+    # server origins explicitly.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ],
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -95,6 +109,7 @@ def create_app() -> FastAPI:
             "identity": hashlib.sha256(repo.encode("utf-8")).hexdigest()[:12],
         }
 
+    app.include_router(auth_routes.router, prefix="/api")
     app.include_router(search_roots_routes.router, prefix="/api")
     app.include_router(projects_routes.router, prefix="/api")
     app.include_router(configs_routes.router, prefix="/api")

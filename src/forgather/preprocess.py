@@ -28,6 +28,15 @@ def forgather_config_dir():
 
 
 def forgather_home_dir():
+    """Root for all per-user Forgather state.
+
+    Honors ``$FORGATHER_HOME`` so tests (and unusual deployments) can
+    redirect every state file in one place; otherwise defaults to
+    ``~/.forgather``.
+    """
+    env = os.environ.get("FORGATHER_HOME")
+    if env:
+        return env
     return str(Path.home() / ".forgather")
 
 

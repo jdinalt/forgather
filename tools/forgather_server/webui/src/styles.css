@@ -3145,3 +3145,116 @@ li.config.selected button.link:hover {
 .eval-result-table tbody th {
   width: 180px;
 }
+
+/* ----- Login gate ------------------------------------------------------ */
+
+.login-gate {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  z-index: 1000;
+}
+
+.login-card {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 28px 32px;
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.login-card h1 {
+  margin: 0 0 8px 0;
+  font-size: 22px;
+  font-weight: 500;
+}
+
+.login-blurb {
+  color: var(--muted, #999);
+  font-size: 13px;
+  margin: 0 0 20px 0;
+  line-height: 1.4;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.login-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted, #aaa);
+}
+
+.login-form input {
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text, #ddd);
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.login-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.login-form button {
+  padding: 8px 12px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.login-form button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.login-form button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.login-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.login-error {
+  color: #f48771;
+  font-size: 12px;
+  margin: 8px 0;
+  padding: 8px;
+  background: rgba(244, 135, 113, 0.08);
+  border-left: 2px solid #f48771;
+  border-radius: 2px;
+}
+
+.login-hint {
+  font-size: 11px;
+  color: var(--muted, #888);
+  margin-top: 16px;
+  line-height: 1.4;
+}
+
+.login-hint code {
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 2px;
+}

@@ -2,10 +2,44 @@
 
 import json
 import os
+from pathlib import Path
+from urllib.parse import quote
 
 
 class ServerUnreachable(Exception):
     pass
+
+
+class AuthRequired(RuntimeError):
+    """Raised when the server returns 401.
+
+    Distinct from ``ServerUnreachable`` because the fix is different:
+    the server is up, the client just doesn't have a valid token.
+    Inherits from ``RuntimeError`` so the CLI's existing
+    ``except RuntimeError`` blocks already surface the message.
+    """
+
+    pass
+
+
+def _load_auth_token():
+    """Find the bearer token shared with the server.
+
+    Order: ``$FORGATHER_SERVER_TOKEN`` overrides everything (handy for
+    multi-server setups), otherwise ``~/.forgather/server/auth_token``.
+    Returns ``None`` if neither is available — the client still issues
+    requests, and the server's 401 response surfaces a clear error.
+    """
+    env = os.environ.get("FORGATHER_SERVER_TOKEN")
+    if env:
+        return env.strip()
+    home = os.environ.get("FORGATHER_HOME") or str(Path.home() / ".forgather")
+    token_path = Path(home) / "server" / "auth_token"
+    try:
+        text = token_path.read_text().strip()
+    except (FileNotFoundError, PermissionError):
+        return None
+    return text or None
 
 
 class ServerClient:
@@ -21,6 +55,9 @@ class ServerClient:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "forgather-cli"
+        self._token = _load_auth_token()
+        if self._token:
+            self.session.headers["Authorization"] = f"Bearer {self._token}"
 
     @classmethod
     def from_args(cls, args):
@@ -35,6 +72,32 @@ class ServerClient:
             return "wss://" + url[len("https://") :]
         return "ws://" + url[len("http://") :]
 
+    def _check_response(self, r):
+        if r.status_code == 401:
+            raise AuthRequired(self._auth_error_message())
+        if not r.ok:
+            try:
+                detail = r.json().get("detail", r.text)
+            except Exception:
+                detail = r.text
+            raise RuntimeError(f"server: {detail}")
+        return r
+
+    def _auth_error_message(self):
+        if self._token:
+            return (
+                f"forgather-server at {self.base} rejected the auth token. "
+                "If the server was restarted with --regen-token, re-read "
+                "~/.forgather/server/auth_token; otherwise check "
+                "$FORGATHER_SERVER_TOKEN."
+            )
+        return (
+            f"forgather-server at {self.base} requires authentication. "
+            "Start the server (it persists a token at "
+            "~/.forgather/server/auth_token) or set "
+            "$FORGATHER_SERVER_TOKEN."
+        )
+
     def _get(self, path, **kwargs):
         import requests
 
@@ -44,13 +107,7 @@ class ServerClient:
             raise ServerUnreachable(
                 f"could not reach forgather-server at {self.base}; is it running? (start with: forgather server)"
             )
-        if not r.ok:
-            try:
-                detail = r.json().get("detail", r.text)
-            except Exception:
-                detail = r.text
-            raise RuntimeError(f"server: {detail}")
-        return r
+        return self._check_response(r)
 
     def _post(self, path, body=None):
         import requests
@@ -61,13 +118,7 @@ class ServerClient:
             raise ServerUnreachable(
                 f"could not reach forgather-server at {self.base}; is it running? (start with: forgather server)"
             )
-        if not r.ok:
-            try:
-                detail = r.json().get("detail", r.text)
-            except Exception:
-                detail = r.text
-            raise RuntimeError(f"server: {detail}")
-        return r
+        return self._check_response(r)
 
     def _delete(self, path):
         import requests
@@ -78,13 +129,7 @@ class ServerClient:
             raise ServerUnreachable(
                 f"could not reach forgather-server at {self.base}; is it running? (start with: forgather server)"
             )
-        if not r.ok:
-            try:
-                detail = r.json().get("detail", r.text)
-            except Exception:
-                detail = r.text
-            raise RuntimeError(f"server: {detail}")
-        return r
+        return self._check_response(r)
 
     # Queue
 
@@ -153,6 +198,8 @@ class ServerClient:
             raise ServerUnreachable(
                 f"could not reach forgather-server at {self.base}; is it running? (start with: forgather server)"
             )
+        if r.status_code == 401:
+            raise AuthRequired(self._auth_error_message())
         return r
 
     def job_control(self, job_id, action):
@@ -174,16 +221,29 @@ class ServerClient:
         import websockets
         import websockets.exceptions
 
-        ws_url = (
-            self._ws_url(f"/jobs/{job_id}/tty")
-            + f"?follow={'true' if follow else 'false'}"
-        )
+        # Token rides in the query string because not every websocket
+        # client surface (notably some browser shims) lets us set
+        # arbitrary request headers; the AuthMiddleware accepts both.
+        qs = f"?follow={'true' if follow else 'false'}"
+        if self._token:
+            qs += f"&token={quote(self._token)}"
+        ws_url = self._ws_url(f"/jobs/{job_id}/tty") + qs
         try:
             ws = await websockets.connect(ws_url)
         except OSError:
             raise ServerUnreachable(
                 f"could not reach forgather-server at {self.base}; is it running? (start with: forgather server)"
             )
+        except websockets.exceptions.InvalidStatus as e:
+            # When the auth middleware rejects a WebSocket *before* the
+            # upgrade completes, uvicorn surfaces the close as a 403 to
+            # the HTTP client; a successful upgrade followed by an
+            # auth-close uses a 4401 application close code instead. We
+            # treat both as auth failures for CLI ergonomics.
+            sc = getattr(e.response, "status_code", None)
+            if sc in (401, 403):
+                raise AuthRequired(self._auth_error_message())
+            raise
         try:
             async for message in ws:
                 if isinstance(message, bytes):
