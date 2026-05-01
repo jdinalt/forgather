@@ -138,7 +138,11 @@ export function OverridesModal({ project, config, onClose }: Props) {
             </h4>
           )}
 
-          {argsQ.data && argsQ.data.length > 0 && (
+          {argsQ.data && argsQ.data.length > 0 && seeded && (
+            // Wait for seeding before mounting the form so the
+            // initial-open state DynArgGroupNode latches on first render
+            // reflects cached overrides rather than a transient empty
+            // map. See SubmitModal for the same gate.
             <>
               <h4 className="dyn-heading">Dynamic arguments</h4>
               <DynamicArgsForm

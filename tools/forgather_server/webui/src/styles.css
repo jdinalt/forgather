@@ -10,6 +10,7 @@
   --accent-hover: #1177bb;
   --err: #f48771;
   --err-bg: #3a1f1f;
+  --warn: #e2c08d;
   --selected: #094771;
 }
 
@@ -1225,12 +1226,10 @@ button.jobs-tty-toggle.active {
   gap: 8px;
   padding: 4px 0 4px 12px;
 }
-/* Red highlight for any node containing a required arg whose value is
-   still missing — propagates up the path so the user can see at a
-   glance which branches need attention. */
-.dyn-group-missing {
-  color: var(--err, #ff6b6b);
-}
+/* Red highlight for the cli_name of a required arg whose value is
+   still missing. We deliberately do NOT propagate red up the path —
+   the path is force-expanded for missing-required, so the red name
+   is already visible without recolouring every ancestor summary. */
 .dyn-required-tag {
   color: var(--err, #ff6b6b);
   font-weight: 700;
@@ -1241,6 +1240,21 @@ button.jobs-tty-toggle.active {
 .dyn-field-missing input,
 .dyn-field-missing select {
   border-color: var(--err, #ff6b6b);
+}
+/* Out-of-bounds values get a red border but the name stays yellow
+   (the field is "modified", just with an invalid value). */
+.dyn-field-outofbounds input,
+.dyn-field-outofbounds select {
+  border-color: var(--err, #ff6b6b);
+}
+/* VS-Code-style yellow trail. Any field whose value differs from the
+   template default highlights its cli_name; the highlight propagates up
+   the group path so the user can spot overridden branches at a glance. */
+.dyn-group-modified {
+  color: var(--warn, #e2c08d);
+}
+.dyn-field-modified .dyn-name code {
+  color: var(--warn, #e2c08d);
 }
 
 .sidebar-section {

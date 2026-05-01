@@ -313,7 +313,14 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               <pre>{String(argsQ.error)}</pre>
             </div>
           )}
-          {argsQ.data && argsQ.data.length > 0 && (
+          {argsQ.data && argsQ.data.length > 0 && overrideSeeded && (
+            // Seeding waits for both schema and cached overrides to land
+            // so the form mounts with its true initial values. That
+            // matters because DynArgGroupNode captures the initial
+            // expansion state on first render — if we mount before
+            // seeding, a required arg whose value was already cached
+            // would still look "missing" briefly and force the group
+            // open every time the modal reopens.
             <DynamicArgsForm
               schema={argsQ.data}
               values={values}

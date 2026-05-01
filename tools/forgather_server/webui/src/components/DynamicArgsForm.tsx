@@ -78,6 +78,18 @@ function isMissing(arg: DynamicArg, values: Record<string, string>): boolean {
   return v == null || v === "";
 }
 
+/** True when the user (or a cached override) has supplied a non-empty
+ *  value for this arg. Used to drive the yellow "modified" highlight on
+ *  the field name and the path leading up to it. Empty string means
+ *  "fall back to template default" — explicitly *not* a modification. */
+function isModified(
+  arg: DynamicArg,
+  values: Record<string, string>,
+): boolean {
+  const v = values[arg.dest];
+  return v != null && v !== "";
+}
+
 /** True when the user has typed a numeric value that violates the
  *  declared min/max. Empty / non-numeric inputs are *not* out-of-bounds —
  *  they fall under "missing required" instead so the two states don't
@@ -118,19 +130,52 @@ function buildTitle(arg: DynamicArg): string | undefined {
   return undefined;
 }
 
-/** Recursively walk a subtree to see if any leaf is in an invalid state
- *  (missing-required OR out-of-bounds). Drives the red highlight on the
- *  path and the initial-expanded default. */
-function subtreeHasInvalid(
+/** Recursively walk a subtree looking for required args the user has
+ *  not yet filled in. Drives the initial-expanded default in SubmitModal
+ *  (enforceRequired=true) so the user lands directly on the field they
+ *  need to set. */
+function subtreeHasMissingRequired(
   node: TreeNode,
   values: Record<string, string>,
 ): boolean {
   for (const a of node.args) {
     if (a.required && isMissing(a, values)) return true;
+  }
+  for (const c of Object.values(node.children)) {
+    if (subtreeHasMissingRequired(c, values)) return true;
+  }
+  return false;
+}
+
+/** Recursively walk a subtree looking for any out-of-bounds value. Out
+ *  of bounds is a real problem regardless of which modal we're in, so
+ *  it always forces the path open on initial render. */
+function subtreeHasOutOfBounds(
+  node: TreeNode,
+  values: Record<string, string>,
+): boolean {
+  for (const a of node.args) {
     if (isOutOfBounds(a, values)) return true;
   }
   for (const c of Object.values(node.children)) {
-    if (subtreeHasInvalid(c, values)) return true;
+    if (subtreeHasOutOfBounds(c, values)) return true;
+  }
+  return false;
+}
+
+/** Recursively walk a subtree to see if any leaf has a non-empty value
+ *  (i.e. is overriding the template default). Drives the yellow
+ *  "modified" highlight that propagates up the path so the user can spot
+ *  branches that contain overrides at a glance. */
+function subtreeHasModifications(
+  node: TreeNode,
+  values: Record<string, string>,
+): boolean {
+  for (const a of node.args) {
+    if (isModified(a, values)) return true;
+  }
+  for (const c of Object.values(node.children)) {
+    if (subtreeHasModifications(c, values)) return true;
   }
   return false;
 }
@@ -173,6 +218,7 @@ export function DynamicArgsForm({
             value={values[a.dest] ?? ""}
             onChange={(v) => onChange(a.dest, v)}
             missing={enforceRequired && a.required && isMissing(a, values)}
+            modified={isModified(a, values)}
             outOfBounds={isOutOfBounds(a, values)}
           />
         ))}
@@ -191,6 +237,7 @@ export function DynamicArgsForm({
           value={values[a.dest] ?? ""}
           onChange={(v) => onChange(a.dest, v)}
           missing={enforceRequired && a.required && isMissing(a, values)}
+          modified={isModified(a, values)}
           outOfBounds={isOutOfBounds(a, values)}
         />
       ))}
@@ -221,22 +268,27 @@ function DynArgGroupNode({
   // Initial expansion state computed once so the user can collapse a
   // problem-containing group manually if they want. Subsequent renders
   // only update the live highlight (driven separately).
+  //
+  // We deliberately do *not* expand on "modified" — overrides are an
+  // expected steady state, and forcing every group with a cached value
+  // open on every modal-open would defeat the collapsed-by-default
+  // layout. The yellow path highlight is enough to lead the user there.
+  // We only force-open on states that actually need attention: missing
+  // required args (when enforceRequired is on) and out-of-bounds values
+  // (always — it's a real problem regardless of modal mode).
   const initialOpenRef = useRef<boolean | null>(null);
   if (initialOpenRef.current === null) {
-    initialOpenRef.current = subtreeHasInvalid(node, values) && enforceRequired
-      ? true
-      : subtreeHasInvalid(node, values) && !enforceRequired
-        ? // Out-of-bounds always opens — that's a problem regardless of
-          // whether SubmitModal-style required enforcement is active.
-          true
-        : false;
+    const needsAttention =
+      (enforceRequired && subtreeHasMissingRequired(node, values)) ||
+      subtreeHasOutOfBounds(node, values);
+    initialOpenRef.current = needsAttention;
   }
   const [open, setOpen] = useState<boolean>(initialOpenRef.current);
 
-  const liveInvalid = subtreeHasInvalid(node, values);
+  const liveModified = subtreeHasModifications(node, values);
 
   const summaryClass =
-    "dyn-group-summary" + (liveInvalid ? " dyn-group-missing" : "");
+    "dyn-group-summary" + (liveModified ? " dyn-group-modified" : "");
 
   return (
     <details
@@ -253,6 +305,7 @@ function DynArgGroupNode({
             value={values[a.dest] ?? ""}
             onChange={(v) => onChange(a.dest, v)}
             missing={enforceRequired && a.required && isMissing(a, values)}
+            modified={isModified(a, values)}
             outOfBounds={isOutOfBounds(a, values)}
           />
         ))}
@@ -275,12 +328,14 @@ function DynArgField({
   value,
   onChange,
   missing,
+  modified,
   outOfBounds,
 }: {
   arg: DynamicArg;
   value: string;
   onChange: (v: string) => void;
   missing?: boolean;
+  modified?: boolean;
   outOfBounds?: boolean;
 }) {
   const placeholder = arg.default != null ? String(arg.default) : `(${arg.type})`;
@@ -384,11 +439,16 @@ function DynArgField({
     );
   }
 
+  // ``missing`` (required + empty) and ``modified`` (non-empty) are
+  // mutually exclusive by construction, so the name colour ends up
+  // either red, yellow, or default. ``outOfBounds`` is orthogonal — a
+  // bad numeric value still gets a red border on top of the yellow name.
   const fieldClass =
     "dyn-field" +
     (arg.required ? " dyn-field-required" : "") +
     (missing ? " dyn-field-missing" : "") +
-    (outOfBounds ? " dyn-field-missing" : "");
+    (modified && !missing ? " dyn-field-modified" : "") +
+    (outOfBounds ? " dyn-field-outofbounds" : "");
 
   return (
     <div className={fieldClass} title={buildTitle(arg)}>
