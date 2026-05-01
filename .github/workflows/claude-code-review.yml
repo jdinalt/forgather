@@ -1,14 +1,20 @@
 name: Claude Code Review
 
 on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+  # Auto-trigger on PR events is disabled: the action currently fails with a
+  # `directory mismatch ... tsconfig.json ... fd 4` internal error in the
+  # anthropics/claude-code-action@v1 sandbox. Reviews can be requested
+  # interactively from a remote Claude session instead. Re-enable by
+  # restoring the `pull_request:` block below when the upstream bug is fixed.
+  workflow_dispatch:
+  # pull_request:
+  #   types: [opened, synchronize, ready_for_review, reopened]
+  #   # Optional: Only run on specific file changes
+  #   # paths:
+  #   #   - "src/**/*.ts"
+  #   #   - "src/**/*.tsx"
+  #   #   - "src/**/*.js"
+  #   #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
