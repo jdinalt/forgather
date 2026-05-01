@@ -45,6 +45,7 @@ forgather sched resume
 forgather sched cancel <queue_id>        # remove a queued or running job
 forgather sched cleanup                  # bulk-remove terminal job records
 forgather sched cleanup <job_id>         # remove one specific terminal record
+forgather sched gc                       # sweep orphan TTY files (see "State directories and GC")
 ```
 
 **Per-job control and logs:**
@@ -156,6 +157,67 @@ written in the target directory, `fsync` on the fd, then `os.replace`.
 Power loss or SIGKILL mid-write never leaves the canonical file
 partially written. Every reader tolerates a corrupt / truncated file by
 falling back to empty state.
+
+### State directories and GC
+
+Two sibling directories under `~/.forgather/` accumulate per-job files,
+one per subsystem. They are independent — neither owns the other —
+though the server reads the trainer-side directory to correlate
+PID-lineage with running JobRecords.
+
+#### `~/.forgather/server/jobs/q_*.tty` (server-owned)
+
+The captured stdout/stderr of every job the server dispatches. For
+training jobs the scheduler symlinks `q_<id>.tty` to
+`<run>/logs/tty.log` once the trainer's `endpoint.json` is correlated,
+so users can `tail -f logs/tty.log` from the run directory while the
+job is live.
+
+When a JobRecord transitions to a terminal status (`done` / `failed`
+/ `aborted`), the scheduler **moves the captured TTY into the run's
+`logs/tty.log`**, atomically replacing the symlink with the actual
+file. After this the run directory is self-contained — the central
+copy under `~/.forgather/server/jobs/` is gone. For non-training
+jobs (eval, inference, tensorboard, …) there is no `logs_dir` to move
+into; their TTY stays in the central directory until the JobRecord is
+removed (`DELETE /api/jobs/{id}` or `POST /api/jobs/cleanup`), which
+also unlinks it.
+
+A periodic sweep (daily, plus once at server startup) deletes any
+`q_*.tty` whose `queue_id` is not referenced by any record or
+queued item, mtime older than `FORGATHER_ORPHAN_TTY_TTL_SECONDS`
+(default `3600`). Run it on demand with:
+
+```bash
+forgather sched gc
+```
+
+#### `~/.forgather/jobs/job_<ts>_<host>_<pid>/` (trainer-owned)
+
+Each `TrainerControlCallback` (added to a Forgather Trainer via the
+`callbacks=` argument; see the project-root `CLAUDE.md` for the
+boilerplate) creates a per-job directory here on rank 0 and writes
+`endpoint.json` with the host:port the trainer's HTTP control API
+listens on. On a clean exit the callback both removes
+`endpoint.json` and `rmdir`s the directory, so well-behaved runs
+leave nothing behind. Crashed runs leak the directory.
+
+`forgather control cleanup` reaps both kinds of leftover:
+
+- Directories whose `endpoint.json` points at a dead PID (or one that
+  the kernel has recycled — verified against `psutil.Process.create_time()`).
+- Directories with no `endpoint.json` and mtime older than the TTL
+  (`--ttl SECONDS`, or `FORGATHER_ORPHAN_JOB_DIR_TTL_SECONDS`,
+  default 3600) — these are crash leftovers.
+
+```bash
+# Show counts and prompt before deleting
+forgather control cleanup
+# Skip the prompt
+forgather control cleanup --force
+# Tighter age threshold for orphan directories
+forgather control cleanup --ttl 600
+```
 
 ### Re-attach across restart
 
@@ -1302,6 +1364,7 @@ Populates the project-tree sub-groups and detail panels:
 | `POST /api/jobs/{id}/control/{save\|stop\|save-stop\|abort\|kill\|force-kill}` | Trainer control commands; `kill`=local SIGTERM, `force-kill`=local SIGKILL |
 | `DELETE /api/jobs/{id}`                                               | Remove a terminal JobRecord from history                   |
 | `POST /api/jobs/cleanup`                                              | Bulk-remove every terminal JobRecord (`done` / `failed` / `aborted`) |
+| `POST /api/jobs/gc`                                                   | Sweep orphan TTY files from `~/.forgather/server/jobs/`    |
 | `GET /api/jobs/{id}/tty`                                              | Full captured TTY (one-shot)                               |
 | `WS /api/jobs/{id}/tty?follow=`                                       | Backlog + follow-tail of captured TTY                      |
 

@@ -74,11 +74,27 @@ def create_control_parser(global_args):
     # cleanup subcommand
     cleanup_parser = subparsers.add_parser(
         "cleanup",
-        help="Remove endpoint files for dead training jobs",
+        help=(
+            "Remove dead-job directories under ~/.forgather/jobs/ "
+            "(both jobs whose endpoint.json points at a dead PID and "
+            "orphan directories left behind by crashed runs)"
+        ),
         formatter_class=RawTextHelpFormatter,
     )
     cleanup_parser.add_argument(
         "--force", action="store_true", help="Remove all job files without confirmation"
+    )
+    cleanup_parser.add_argument(
+        "--ttl",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Age threshold for orphan directories (those without an "
+            "endpoint.json). Directories newer than this are kept to "
+            "avoid racing with a job that's about to write its endpoint. "
+            "Default: $FORGATHER_ORPHAN_JOB_DIR_TTL_SECONDS or 3600."
+        ),
     )
 
     return parser

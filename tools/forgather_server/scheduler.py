@@ -31,7 +31,7 @@ from typing import Dict, List, Optional
 
 from forgather import trainer_control
 
-from . import gpu_monitor, job_records, launcher, queue_store
+from . import _gc, gpu_monitor, job_records, launcher, queue_store
 from .job_records import RUNNING_STATUSES, TERMINAL_STATUSES, JobRecord
 from .paths import jobs_tty_dir
 from .queue_store import LOCAL_NODE, QueueItem
@@ -169,7 +169,7 @@ def _reap_finished() -> None:
         # concurrent abort (which transitions status="aborted") doesn't
         # get clobbered by our reap path racing on the same record.
         # update_only_if_running narrows the write to non-terminal states.
-        job_records.update_if_not_terminal(
+        updated = job_records.update_if_not_terminal(
             qid,
             status=new_status,
             exit_code=rc,
@@ -177,6 +177,10 @@ def _reap_finished() -> None:
         )
         with _state._lock:
             _state.running.pop(qid, None)
+        # Move the captured TTY into the run's logs/ dir now that the
+        # job is terminal. No-op for non-training jobs (no logs_dir).
+        if updated is not None:
+            _gc.relocate_tty_to_logs(updated)
         if rc is not None:
             log.info("reaped %s: rc=%d status=%s", qid, rc, new_status)
         else:
@@ -672,6 +676,10 @@ def _kill_record(queue_id: str, sig: int) -> bool:
         launcher.kill_process_group(record.pid, sig)
     with _state._lock:
         _state.running.pop(queue_id, None)
+    # Same TTY relocation as the reap path so an aborted run still ends
+    # up with its tty.log materialized inside the run's logs/ dir.
+    if updated is not None:
+        _gc.relocate_tty_to_logs(updated)
     return updated is not None
 
 
@@ -759,6 +767,16 @@ def _reattach_or_cleanup_on_startup() -> None:
     if cleaned:
         log.warning("marked %d orphaned record(s) as failed on startup", cleaned)
 
+    # Sweep orphan TTYs left over from previous server runs. Files
+    # younger than the TTL are protected to avoid racing an in-flight
+    # dispatch that hasn't persisted its JobRecord yet.
+    try:
+        swept = _gc.sweep_orphan_ttys()
+        if swept:
+            log.info("startup orphan-tty sweep removed %d file(s)", swept)
+    except Exception:
+        log.exception("startup orphan-tty sweep failed")
+
 
 def _mark_failed(queue_id: str, reason: str) -> None:
     job_records.update_record(
@@ -769,9 +787,16 @@ def _mark_failed(queue_id: str, reason: str) -> None:
     )
 
 
+# Long-running servers also do a periodic sweep so accumulation between
+# restarts is bounded. Daily is plenty given the per-job relocation already
+# eats the common case.
+GC_SWEEP_INTERVAL_SECONDS = 24 * 3600
+
+
 async def dispatcher_loop() -> None:
     log.info("dispatcher loop starting (enabled=%s)", _state.enabled)
     _reattach_or_cleanup_on_startup()
+    last_gc_at = time.time()
     try:
         while True:
             _state.tick_count += 1
@@ -780,6 +805,17 @@ async def dispatcher_loop() -> None:
                 _reap_finished()
                 _correlate_running_records()
                 _try_dispatch()
+                if time.time() - last_gc_at > GC_SWEEP_INTERVAL_SECONDS:
+                    last_gc_at = time.time()
+                    try:
+                        swept = _gc.sweep_orphan_ttys()
+                        if swept:
+                            log.info(
+                                "periodic orphan-tty sweep removed %d file(s)",
+                                swept,
+                            )
+                    except Exception:
+                        log.exception("periodic orphan-tty sweep failed")
             except Exception:
                 log.exception("dispatcher tick failed")
             await asyncio.sleep(TICK_SECONDS)

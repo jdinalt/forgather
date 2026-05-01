@@ -167,6 +167,9 @@ class ServerClient:
     def cleanup_jobs(self):
         return self._post("/jobs/cleanup").json()
 
+    def gc_jobs(self):
+        return self._post("/jobs/gc").json()
+
     async def stream_tty(self, job_id, follow=True):
         import websockets
         import websockets.exceptions

@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 from forgather import trainer_control
 
-from .. import job_records, scheduler
+from .. import _gc, job_records, scheduler
 
 log = logging.getLogger("forgather_server.jobs")
 
@@ -364,19 +364,25 @@ def tty_dump(job_id: str):
 
 @router.websocket("/jobs/{job_id}/tty")
 async def tty_stream(ws: WebSocket, job_id: str, follow: bool = True):
-    """Stream the TTY log: backlog then poll-follow."""
+    """Stream the TTY log: backlog then poll-follow.
+
+    The TTY path is re-read from the JobRecord on every poll iteration so
+    the stream survives a relocation (e.g. terminal-time relocation from
+    ``~/.forgather/server/jobs/q_*.tty`` into the run's ``logs/tty.log``).
+    The file content is preserved across the move, so the maintained byte
+    ``offset`` remains valid against the new path.
+    """
     await ws.accept()
-    try:
-        path = _tty_path_for(job_id)
-    except HTTPException as e:
-        await ws.send_json({"type": "error", "detail": e.detail})
-        await ws.close()
-        return
 
     offset = 0
     exited_at: Optional[float] = None
     try:
         while True:
+            try:
+                path = _tty_path_for(job_id)
+            except HTTPException as e:
+                await ws.send_json({"type": "error", "detail": e.detail})
+                break
             sent_any = False
             try:
                 # Read in bounded chunks so a multi-GB backlog doesn't
@@ -393,8 +399,12 @@ async def tty_stream(ws: WebSocket, job_id: str, follow: bool = True):
                         await ws.send_bytes(chunk)
                         sent_any = True
             except FileNotFoundError:
-                await ws.send_json({"type": "error", "detail": "tty file missing"})
-                break
+                # Stale path — relocation may have updated tty_log_path
+                # between our resolve and our open. Let the next iteration
+                # re-resolve. If the path stays missing past the
+                # post-terminal grace window, the terminal-exit branch
+                # below will close the stream cleanly.
+                pass
             if sent_any:
                 exited_at = None
             if not follow:
@@ -421,7 +431,14 @@ async def tty_stream(ws: WebSocket, job_id: str, follow: bool = True):
 def remove_job(job_id: str):
     """Remove a JobRecord (terminal only). Externally-discovered endpoints
     aren't ours to delete — use the existing CLI ``forgather control
-    cleanup`` for those."""
+    cleanup`` for those.
+
+    If the record's TTY file is still under the central jobs_tty_dir
+    (i.e. it was never relocated into a run's logs/ — typically a
+    non-training job) we unlink it here too. TTYs that have already
+    been moved into a run dir are left alone; they're part of the run's
+    artifacts now.
+    """
     rec = job_records.get_record(job_id)
     if rec is None:
         raise HTTPException(status_code=404, detail=f"no record for {job_id}")
@@ -430,6 +447,7 @@ def remove_job(job_id: str):
             status_code=409,
             detail=f"cannot remove an active record (status={rec.status})",
         )
+    _gc.delete_central_tty_for(rec)
     job_records.remove_record(job_id)
     return {"removed": job_id}
 
@@ -442,10 +460,26 @@ def cleanup_jobs():
     list, removes anything whose status is terminal (``done`` / ``failed``
     / ``aborted``), and returns the removed ids so the UI can report a
     count. Active records are left untouched — no race with running jobs.
+    Same TTY-deletion policy as ``remove_job``: central files are
+    unlinked, run-relocated files are kept.
     """
     removed: List[str] = []
     for r in job_records.list_records():
         if r.status in job_records.TERMINAL_STATUSES:
+            _gc.delete_central_tty_for(r)
             if job_records.remove_record(r.queue_id):
                 removed.append(r.queue_id)
     return {"removed": removed, "count": len(removed)}
+
+
+@router.post("/jobs/gc")
+def gc_jobs():
+    """Sweep orphan TTY files from the central jobs_tty_dir.
+
+    Reaps ``q_*.tty`` whose ``queue_id`` is not referenced by any
+    JobRecord or queued item, mtime older than the TTL configured by
+    ``$FORGATHER_ORPHAN_TTY_TTL_SECONDS`` (default 1h). Best-effort:
+    per-file errors are logged and swallowed.
+    """
+    swept = _gc.sweep_orphan_ttys()
+    return {"swept": swept}

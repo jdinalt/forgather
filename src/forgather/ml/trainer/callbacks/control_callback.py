@@ -643,10 +643,18 @@ class TrainerControlCallback(TrainerCallback):
                 if self.server_thread:
                     self.server_thread.join(timeout=10)
 
-                # Clean up endpoint file
+                # Clean up endpoint file and the per-job directory so
+                # ~/.forgather/jobs/ doesn't accumulate empty job_* dirs
+                # over time. rmdir is best-effort — leave the dir behind
+                # if anything else is still in there (e.g. unread
+                # control/*.json command files from a flaky shutdown).
                 endpoint_file = self.control_dir / "endpoint.json"
                 if endpoint_file.exists():
                     endpoint_file.unlink()
+                try:
+                    self.control_dir.rmdir()
+                except OSError:
+                    pass
 
                 logger.info("Trainer control system shutdown complete")
 

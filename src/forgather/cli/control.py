@@ -109,53 +109,105 @@ def control_cmd(args):
                 return 1
 
         elif args.control_subcommand == "cleanup":
-            jobs = client.list_jobs()
-            if not jobs:
-                print("No job files found.")
-                return 0
-
-            # Find dead jobs
+            import datetime
+            import os
             import shutil
+            import time
             from pathlib import Path
 
             import psutil
 
-            dead_jobs = []
+            # TTL for orphan directories (those without endpoint.json).
+            # CLI flag wins; otherwise fall back to env var; otherwise 1h.
+            ttl = getattr(args, "ttl", None)
+            if ttl is None:
+                ttl_env = os.environ.get("FORGATHER_ORPHAN_JOB_DIR_TTL_SECONDS")
+                ttl = int(ttl_env) if ttl_env else 3600
 
+            jobs_dir = Path.home() / ".forgather" / "jobs"
+            jobs = client.list_jobs()
+
+            # --- Dead jobs: endpoint.json present, PID gone or recycled --------
+            # PID-reuse guard: a recycled PID can shield a stale endpoint
+            # forever. Compare the live process's create_time against the
+            # endpoint's started_at (with a few seconds of slack — same
+            # pattern as scheduler._reattach_or_cleanup_on_startup).
+            dead_jobs = []
             for job in jobs:
                 try:
                     if not psutil.pid_exists(job.pid):
                         dead_jobs.append(job)
-                    else:
-                        proc = psutil.Process(job.pid)
-                        if not proc.is_running():
+                        continue
+                    proc = psutil.Process(job.pid)
+                    if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+                        dead_jobs.append(job)
+                        continue
+                    if job.started_at is not None:
+                        try:
+                            create_time = proc.create_time()
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
                             dead_jobs.append(job)
+                            continue
+                        # If the live PID was created well after the
+                        # endpoint was written, kernel has recycled it.
+                        if create_time - job.started_at > 5.0:
+                            dead_jobs.append(job)
+                            continue
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     dead_jobs.append(job)
 
-            if not dead_jobs:
-                print("No dead job files found.")
+            # --- Orphan dirs: no endpoint.json and older than TTL --------------
+            orphan_dirs = []
+            now = time.time()
+            try:
+                entries = list(jobs_dir.iterdir())
+            except FileNotFoundError:
+                entries = []
+            for entry in entries:
+                if not entry.is_dir() or not entry.name.startswith("job_"):
+                    continue
+                if (entry / "endpoint.json").exists():
+                    continue
+                try:
+                    mtime = entry.stat().st_mtime
+                except OSError:
+                    continue
+                if now - mtime < ttl:
+                    continue
+                orphan_dirs.append(entry)
+
+            if not dead_jobs and not orphan_dirs:
+                print("No dead job files or orphan directories found.")
                 return 0
 
-            print(f"Found {len(dead_jobs)} dead job(s):")
-            for job in dead_jobs:
-                import datetime
+            if dead_jobs:
+                print(f"Found {len(dead_jobs)} dead job(s):")
+                for job in dead_jobs:
+                    started = datetime.datetime.fromtimestamp(job.started_at).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                    print(f"  {job.job_id} (PID {job.pid}, started {started})")
 
-                started = datetime.datetime.fromtimestamp(job.started_at).strftime(
-                    "%Y-%m-%d %H:%M:%S"
+            if orphan_dirs:
+                print(
+                    f"Found {len(orphan_dirs)} orphan dir(s) "
+                    f"(no endpoint.json, older than {ttl}s):"
                 )
-                print(f"  {job.job_id} (PID {job.pid}, started {started})")
+                # Show only the first few; the user typically has many.
+                preview = orphan_dirs[:5]
+                for entry in preview:
+                    print(f"  {entry.name}")
+                if len(orphan_dirs) > len(preview):
+                    print(f"  ... and {len(orphan_dirs) - len(preview)} more")
 
             if not args.force:
-                response = input(f"\nRemove {len(dead_jobs)} dead job file(s)? [y/N]: ")
+                total = len(dead_jobs) + len(orphan_dirs)
+                response = input(f"\nRemove {total} entr(ies)? [y/N]: ")
                 if response.lower() not in ["y", "yes"]:
                     print("Cleanup cancelled.")
                     return 0
 
-            # Remove dead job directories
             removed_count = 0
-            jobs_dir = Path.home() / ".forgather" / "jobs"
-
             for job in dead_jobs:
                 job_dir = jobs_dir / job.job_id
                 try:
@@ -166,7 +218,14 @@ def control_cmd(args):
                 except Exception as e:
                     print(f"✗ Failed to remove {job.job_id}: {e}")
 
-            print(f"\nCleanup complete: {removed_count} job file(s) removed.")
+            for entry in orphan_dirs:
+                try:
+                    shutil.rmtree(entry)
+                    removed_count += 1
+                except Exception as e:
+                    print(f"✗ Failed to remove {entry.name}: {e}")
+
+            print(f"\nCleanup complete: {removed_count} entr(ies) removed.")
 
         elif args.control_subcommand == "abort":
             # Show warning and ask for confirmation unless --force is used

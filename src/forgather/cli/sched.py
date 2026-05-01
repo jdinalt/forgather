@@ -154,7 +154,7 @@ def sched_cmd(args):
     sub = getattr(args, "sched_subcommand", None)
     if sub is None:
         print(
-            "error: specify a subcommand (status, list, pause, resume, cancel, cleanup)",
+            "error: specify a subcommand (status, list, pause, resume, cancel, cleanup, gc)",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -190,6 +190,10 @@ def sched_cmd(args):
                 result = client.cleanup_jobs()
                 count = result.get("count", len(result.get("removed", [])))
                 print(f"removed {count} records")
+
+        elif sub == "gc":
+            result = client.gc_jobs()
+            print(f"swept {result.get('swept', 0)} orphan tty file(s)")
 
         else:
             print(f"error: unknown subcommand: {sub}", file=sys.stderr)

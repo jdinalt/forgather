@@ -64,4 +64,13 @@ def create_sched_parser(global_args):
         help="Job ID to remove (omit to remove all terminal records)",
     )
 
+    subparsers.add_parser(
+        "gc",
+        help=(
+            "Sweep orphan TTY logs from ~/.forgather/server/jobs/ "
+            "(files not referenced by any record, older than the TTL)"
+        ),
+        formatter_class=RawTextHelpFormatter,
+    )
+
     return parser
