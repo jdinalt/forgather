@@ -14,6 +14,13 @@ This guide walks you through installing Forgather and training your first model 
 >
 > ![Forgather server first-load view](../guides/screenshots/05-trefs-graph.png)
 
+> **Want to skip the host setup?** Forgather ships a development
+> Dockerfile that provisions Python 3.12, PyTorch with CUDA wheels,
+> all dependencies, and a developer-friendly base toolchain in a
+> reproducible image. If you'd rather not touch your host Python at
+> all, jump to [**Installing with Docker**](#installing-with-docker)
+> below.
+
 ## Prerequisites
 
 - A Linux system (tested on Ubuntu 24.04)
@@ -118,6 +125,102 @@ forgather ls -r
 
 This recursively lists all Forgather projects and configurations found under the
 current directory. You should see output listing the bundled example projects.
+
+## Installing with Docker
+
+The repo ships a `Dockerfile` (and matching helpers in `docker/`)
+that builds an Ubuntu 24.04 image with the full Forgather environment
+pre-provisioned: Python 3.12, PyTorch (CUDA wheels), all
+dependencies, `cut-cross-entropy` from source, and a developer
+toolchain (vim, tmux, ripgrep, jq, htop, ssh, sudo, ...). It's
+useful in two ways:
+
+- **As a development environment** — one command and you have a
+  working Forgather install without touching your host Python.
+- **As a clean sandbox for release testing** — build the image with
+  `--no-cache` and you get a reproducible from-scratch verification
+  that the source tree builds and runs end-to-end.
+
+### Prerequisites
+
+- Docker Engine 24+ (or Docker Desktop on macOS/Windows).
+- For GPU training: an NVIDIA GPU with current drivers on the host
+  and the
+  [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+  installed (`nvidia-ctk runtime configure --runtime=docker` and a
+  `systemctl restart docker`). PyTorch wheels bundle their own CUDA
+  runtime, so you don't need a CUDA SDK on the host — just the
+  driver and the container toolkit.
+
+### Build the image
+
+```bash
+git clone https://github.com/jdinalt/forgather.git
+cd forgather
+docker/build.sh
+```
+
+`docker/build.sh` reads your host UID, GID, and username (`id -u`,
+`id -g`, `id -un`) and passes them as build args, so the image
+carries an account that matches your host user. Files created
+inside the container on a bind-mounted home land with correct
+ownership on the host.
+
+The first build pulls ~3 GB of dependencies and takes a few minutes;
+rebuilds reuse the layer cache.
+
+### Run it
+
+```bash
+docker/run.sh
+```
+
+This drops you into an interactive bash shell with:
+
+- The Forgather venv (at `/opt/forgather/venv`) on `PATH`.
+- `--gpus all` (override with `GPUS=none` for CPU only or
+  `GPUS='"device=0,1"'` for a subset).
+- Your host home directory bind-mounted at the same path inside the
+  container, so absolute paths in shell history, configs, and
+  notebooks keep resolving correctly.
+- The canonical Forgather server / job ports (8765, 8137, 6006,
+  8000) forwarded to the host's loopback so you can reach the web
+  UI from a browser on the host.
+
+The container's entrypoint detects the bind-mounted Forgather
+checkout and re-links the editable install to it on entry, so your
+host-side edits are picked up live without a rebuild.
+
+```bash
+# Inside the container:
+forgather ls -r
+cd examples/tutorials/tiny_llama
+forgather -t v2.yaml train
+```
+
+### Common overrides
+
+```bash
+# CPU-only:
+GPUS=none docker/run.sh
+
+# Specific GPUs:
+GPUS='"device=0,1"' docker/run.sh
+
+# Mount additional host paths (e.g. scratch / dataset volumes):
+EXTRA_MOUNTS="-v /scratch:/scratch" docker/run.sh
+
+# Forward extra ports (Vite dev server, etc.):
+EXTRA_PORTS="-p 5173:5173" docker/run.sh
+
+# Build / run a tagged variant:
+docker/build.sh forgather-dev:experiment
+IMAGE=forgather-dev:experiment docker/run.sh
+```
+
+For more detail — including the release-testing workflow that uses
+the in-image copy of the repo without a bind-mount — see
+`docker/README.md`.
 
 ## Your first training run
 

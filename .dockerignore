@@ -1,0 +1,56 @@
+# Mirror .gitignore-ish patterns so the build context stays small and
+# we don't bake user-specific state into the image.
+
+.git
+.github
+.gitignore
+.gitattributes
+
+# Editor / IDE state
+.vscode
+.idea
+*.swp
+.claude
+.claude_notes
+forgather.code-workspace
+settings.json
+
+# Local data and outputs (often huge, never wanted in the image)
+output_models
+data
+tmp
+/datasets
+/models
+/projects
+/tutorial
+/tokenizers
+.forgather_history
+.env
+
+# Python build / cache artefacts
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+build
+dist
+.venv
+venv
+env
+.eggs
+share/python-wheels
+wheels
+
+# Node modules — the webui build is built lazily inside the container
+tools/forgather_server/webui/node_modules
+tools/forgather_server/webui/dist
+
+# Project-local extracted dataset blobs
+examples/tutorials/hp_lovecraft_project/hp_lovecraft
+examples/tutorials/hp_lovecraft_project/lovecraft_reference/lovecraft_dataset/*.svg
+
+# Docker-local junk
+Dockerfile.local
+docker-compose.override.yml
