@@ -5,6 +5,13 @@
     -- set ns.model_name = "Deep One"
     -- set ns.model_description = "A big Deepnet model with ALiBi attention."
     -- set ns.model_short_name = "deepone"
+    ## Schema provenance — read by `forgather update` to identify the
+    ## arch and source version of saved deepone models. Deep One has no
+    ## HuggingFace counterpart (ALiBi + Deepnet residual scaling), so
+    ## the registered converter is a ForgatherOnlyConverter that
+    ## supports `forgather update` but not `forgather convert`.
+    -- set ns.forgather_arch = "deepone"
+    -- set ns.forgather_arch_version = "1"
 
 [model_tokenizer]
     -- include 'tokenizers/wikitext/32k.yaml'

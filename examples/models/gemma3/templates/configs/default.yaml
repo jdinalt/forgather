@@ -17,6 +17,14 @@
     -- set ns.model_name = ns.config_name
     -- set ns.model_description = ns.config_description
     -- set ns.model_short_name = "gemma3"
+    ## Override the default ns.forgather_arch (which would otherwise be
+    ## ns.model_short_name = "gemma3") so saved configs match the
+    ## converter's registry key. The Gemma3Converter is registered as
+    ## "gemma3_text" because that's HuggingFace's canonical model_type
+    ## for the text-only Gemma-3 — `forgather convert` auto-detects it
+    ## off that string, and `forgather update` looks it up the same way.
+    -- set ns.forgather_arch = "gemma3_text"
+    -- set ns.forgather_arch_version = "1"
 
 [model_tokenizer]
 tokenizer: &tokenizer !singleton:transformers:AutoTokenizer.from_pretrained@tokenizer

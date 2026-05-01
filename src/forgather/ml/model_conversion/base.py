@@ -190,3 +190,83 @@ class ModelConverter(ABC):
             **kwargs: Additional conversion options
         """
         pass
+
+
+class ForgatherOnlyConverter(ModelConverter):
+    """Base class for archs that have no HuggingFace equivalent.
+
+    Forgather-only archs (e.g. ``deepone``, ``llama_canon``,
+    ``singlehead``, ``dynamic_causal_transformer``) support
+    ``forgather update`` (in-Forgather schema migrations) but not
+    ``forgather convert`` (HF<->FG round-trip). Subclasses declare the
+    minimum needed by the update path:
+
+      - ``arch`` -- string registry key (must match the
+        ``forgather_arch`` value stamped into saved configs).
+      - ``arch_version`` -- PEP 440 string.
+      - ``forgather_migrations`` -- ``{source_major: VersionMigration}``.
+      - ``get_project_info()`` -- returns
+        ``{"project_dir": ..., "config_name": ...}`` so the update
+        tool can regenerate model code from current sources.
+
+    The HF-side abstract methods are stubbed here:
+
+      - ``get_parameter_mappings`` / ``get_config_field_mapping``
+        return identity / empty defaults that the update path can
+        still consult; ``get_config_field_mapping("from_forgather")``
+        in particular returns an identity over the standard
+        Forgather config fields so saved hyperparameters flow through
+        ``Project()`` during code regen.
+      - ``convert_to_forgather`` / ``convert_from_forgather`` raise
+        ``NotImplementedError`` with a clear message.
+
+    Subclasses with arch-specific config fields beyond the standard
+    set (e.g. ``alpha``, ``trainable_alibi``) should override
+    ``get_config_field_mapping`` to extend the identity map.
+    """
+
+    def get_parameter_mappings(self, direction: str) -> List[Tuple]:
+        # No HF<->FG remap; in-FG updates carry their renames via
+        # ``forgather_migrations[i].param_subs`` instead.
+        return []
+
+    def get_config_field_mapping(self, direction: str) -> Dict[str, str]:
+        # Identity over the standard FG config fields. The update
+        # tool reads these to know which saved-config fields to
+        # forward into the regenerated project as kwargs.
+        from .standard_mappings import STANDARD_FORGATHER_TO_HF
+
+        return {k: k for k in STANDARD_FORGATHER_TO_HF.keys()}
+
+    @abstractmethod
+    def get_project_info(self) -> Dict[str, Any]:
+        """Path to the model project + config the update tool drives."""
+        pass
+
+    def convert_to_forgather(
+        self,
+        src_model_path: str,
+        dst_model_path: str,
+        dtype: Optional[str] = None,
+        max_length: Optional[int] = None,
+        **kwargs,
+    ) -> None:
+        raise NotImplementedError(
+            f"{type(self).__name__}: arch {self.arch!r} has no HuggingFace "
+            "equivalent; HF<->FG conversion is not supported. Use "
+            "`forgather update` for in-Forgather schema migrations."
+        )
+
+    def convert_from_forgather(
+        self,
+        src_model_path: str,
+        dst_model_path: str,
+        dtype: Optional[str] = None,
+        max_length: Optional[int] = None,
+        checkpoint_path: Optional[str] = None,
+        **kwargs,
+    ) -> None:
+        raise NotImplementedError(
+            f"{type(self).__name__}: arch {self.arch!r} has no HuggingFace "
+            "equivalent; HF<->FG conversion is not supported."
+        )
