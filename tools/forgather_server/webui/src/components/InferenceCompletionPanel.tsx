@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   GenerationParams,
@@ -36,8 +36,22 @@ export function InferenceCompletionPanel({ state }: Props) {
   // explicit toggle so those presets can be run as a single POST.
   const [stream, setStream] = useState<boolean>(true);
   const abortRef = useRef<AbortController | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Track the previous busy state so we can restore textarea focus
+  // exactly on the busy→idle transition. Without this, Ctrl+Enter
+  // sends and the textarea's ``disabled`` flip drops focus, forcing
+  // the user to click back in to keep working. Same workaround as
+  // InferenceChatPanel.
+  const wasBusyRef = useRef(false);
 
   const busy = status.kind === "streaming" || status.kind === "generating";
+
+  useEffect(() => {
+    if (wasBusyRef.current && !busy) {
+      textareaRef.current?.focus();
+    }
+    wasBusyRef.current = busy;
+  }, [busy]);
 
   const onContinue = async () => {
     // Build the params payload: take the user's generation params, layer
@@ -134,6 +148,17 @@ export function InferenceCompletionPanel({ state }: Props) {
     abortRef.current?.abort();
   };
 
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Ctrl/Cmd+Enter triggers Continue, matching the chat panel.
+    // Plain Enter still inserts a newline so multi-line prompts work.
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (!busy && state.baseUrl) {
+        void onContinue();
+      }
+    }
+  };
+
   return (
     <div className="inference-completion">
       <div className="inference-completion-bar">
@@ -183,10 +208,12 @@ export function InferenceCompletionPanel({ state }: Props) {
         </div>
       </div>
       <textarea
+        ref={textareaRef}
         className="inference-textarea"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Type a prompt here, then click Continue to let the model extend it."
+        onKeyDown={onKeyDown}
+        placeholder="Type a prompt here, then click Continue (or Ctrl+Enter) to let the model extend it."
         spellCheck={false}
       />
     </div>

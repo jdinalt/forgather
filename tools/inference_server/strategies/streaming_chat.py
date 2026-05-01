@@ -28,15 +28,12 @@ class StreamingChatStrategy(StreamingStrategy):
         # Log each message
         self.service.logger.log_messages(request_id, request.messages)
 
-        # Format messages using chat template
-        template = self.service.jinja_env.from_string(self.service.chat_template)
-        formatted_prompt = template.render(
-            messages=request.messages,
-            bos_token=self.service.tokenizer.bos_token,
-            eos_token=self.service.tokenizer.eos_token,
-            add_generation_prompt=True,
+        # Defer to ``service.format_messages`` so impersonate / prefix
+        # continuation (``next_role``) and other chat-template policy
+        # live in one place.
+        return self.service.format_messages(
+            request.messages, next_role=request.next_role
         )
-        return formatted_prompt
 
     def _get_stop_sequences(self, request: ChatCompletionRequest) -> list:
         """Get stop sequences (use server defaults for chat)."""

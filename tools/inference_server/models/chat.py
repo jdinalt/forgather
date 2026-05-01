@@ -20,6 +20,16 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = None
     stream: Optional[bool] = False
 
+    # Non-standard: which role the model should generate as. Default
+    # "assistant" matches normal chat semantics. Setting "user" enables
+    # "impersonate" / prefix-continuation: the chat template renders up
+    # to where a user turn opens, with no generation-prompt closing
+    # marker, so the model continues in the user's voice. Implemented
+    # via Jinja's ``continue_final_message=True`` plus an empty trailing
+    # user message — supported by all modern HF chat templates
+    # (Llama 3, ChatML, Mistral, Qwen, Gemma, …).
+    next_role: Optional[str] = None
+
     # Additional HuggingFace generation parameters
     repetition_penalty: Optional[float] = None
     length_penalty: Optional[float] = None

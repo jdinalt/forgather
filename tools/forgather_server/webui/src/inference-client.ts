@@ -169,12 +169,24 @@ export async function* streamCompletion(
  *  body uses ``messages`` instead of ``prompt``. The first frame
  *  typically carries ``delta.role: "assistant"`` with no content; we
  *  ignore role-only frames and only yield content deltas. */
+/** Options that ride alongside generation params on chat-completion
+ *  requests but aren't part of the HF GenerationConfig surface.
+ *  ``nextRole`` is a Forgather-specific extension on the inference
+ *  server: when set to ``"user"``, the chat template renders with
+ *  ``continue_final_message=True`` and a trailing empty user turn so
+ *  the model generates in the user's voice — the "impersonate"
+ *  feature. Default (omitted) is the standard "assistant" turn. */
+export interface ChatRequestOptions {
+  nextRole?: "assistant" | "user";
+}
+
 export async function* streamChatCompletion(
   baseUrl: string,
   model: string,
   messages: ChatMessage[],
   params: GenerationParams,
   signal: AbortSignal,
+  options?: ChatRequestOptions,
 ): AsyncIterable<string> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -182,6 +194,7 @@ export async function* streamChatCompletion(
     stream: true,
     ...params,
   };
+  if (options?.nextRole) body.next_role = options.nextRole;
   yield* streamSse(
     proxyUrl("chat/completions", baseUrl),
     body,
@@ -197,6 +210,7 @@ export async function runChatCompletion(
   messages: ChatMessage[],
   params: GenerationParams,
   signal: AbortSignal,
+  options?: ChatRequestOptions,
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -204,6 +218,7 @@ export async function runChatCompletion(
     stream: false,
     ...params,
   };
+  if (options?.nextRole) body.next_role = options.nextRole;
   const r = await fetch(proxyUrl("chat/completions", baseUrl), {
     method: "POST",
     headers: { "Content-Type": "application/json" },

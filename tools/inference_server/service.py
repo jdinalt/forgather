@@ -480,23 +480,71 @@ class InferenceService:
     Assistant:
 {%- endif -%}"""
 
-    def format_messages(self, messages: List[ChatMessage]) -> str:
-        """Convert chat messages to a single prompt string using Jinja2 template."""
+    def format_messages(
+        self,
+        messages: List[ChatMessage],
+        next_role: Optional[str] = None,
+    ) -> str:
+        """Convert chat messages to a single prompt string using Jinja2 template.
+
+        ``next_role`` selects which role the model generates as.
+        Defaults to ``"assistant"`` (standard chat completion). Setting
+        ``"user"`` enables "impersonate": the template is rendered
+        twice, the assistant role-opener is extracted, and ``assistant``
+        is substituted with ``user`` so the model generates inside an
+        opened user-role span. This works with any chat template that
+        spells the literal role name in its role marker (ChatML, Llama
+        3, Qwen, Mistral, Gemma, …) — i.e., effectively all of them —
+        without depending on ``continue_final_message`` being honored.
+        """
         try:
-            # Prepare message data for template
             message_data = [
                 {"role": msg.role, "content": msg.content} for msg in messages
             ]
-
-            # Create Jinja2 template and render
             template = self.jinja_env.from_string(self.chat_template)
-            formatted = template.render(
-                messages=message_data,
+            role = (next_role or "assistant").lower()
+            render_kwargs = dict(
                 bos_token=self.tokenizer.bos_token,
                 eos_token=self.tokenizer.eos_token,
-                add_generation_prompt=True,
             )
-            return formatted
+
+            if role == "user":
+                closed = template.render(
+                    messages=message_data,
+                    add_generation_prompt=False,
+                    continue_final_message=False,
+                    **render_kwargs,
+                )
+                with_prompt = template.render(
+                    messages=message_data,
+                    add_generation_prompt=True,
+                    continue_final_message=False,
+                    **render_kwargs,
+                )
+                if (
+                    with_prompt.startswith(closed)
+                    and len(with_prompt) > len(closed)
+                    and "assistant" in with_prompt[len(closed) :]
+                ):
+                    opener = with_prompt[len(closed) :]
+                    return closed + opener.replace("assistant", "user")
+                # The template doesn't expose a usable assistant opener
+                # (doesn't honor add_generation_prompt, normalizes
+                # whitespace, or uses a non-literal role marker). Log
+                # and fall through to the standard path so the caller
+                # at least gets a working completion — impersonate
+                # silently degrades to a normal assistant turn.
+                self.logger.logger.warning(
+                    "format_messages: cannot synthesize user-role opener from "
+                    "this chat template; falling back to standard assistant turn."
+                )
+
+            return template.render(
+                messages=message_data,
+                add_generation_prompt=True,
+                continue_final_message=False,
+                **render_kwargs,
+            )
 
         except TemplateError as e:
             self.logger.logger.error(f"Template error: {e}")

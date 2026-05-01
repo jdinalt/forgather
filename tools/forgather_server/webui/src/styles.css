@@ -2938,6 +2938,35 @@ li.config.selected button.link:hover {
   outline: none;
   box-sizing: border-box;
 }
+.inference-chat-settings {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  background: var(--bg-alt);
+  font-size: 12px;
+}
+.inference-chat-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.inference-chat-settings-row label {
+  font-weight: 600;
+}
+.inference-chat-settings-row select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 12px;
+  outline: none;
+}
+.inference-chat-settings-hint {
+  flex: 1 1 100%;
+  font-size: 11px;
+  line-height: 1.4;
+}
 .inference-chat-messages {
   flex: 1;
   min-height: 0;
@@ -3035,6 +3064,28 @@ li.config.selected button.link:hover {
   background: none;
   border: none;
   padding: 0;
+}
+.inference-chat-msg-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.inference-chat-msg-edit textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  color: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.inference-chat-msg-edit-buttons {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
 }
 .inference-chat-input {
   border-top: 1px solid var(--border);
