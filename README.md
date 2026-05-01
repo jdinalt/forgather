@@ -127,6 +127,30 @@ cd examples/tutorials/tiny_llama
 forgather -t v2.yaml train        # ~10 min on a single RTX 4090
 ```
 
+**Or skip the host setup with Docker** -- the repo ships a development
+Dockerfile that bakes the full environment (Python 3.12, PyTorch with
+CUDA wheels, all deps, `cut-cross-entropy` from source, dev toolchain)
+into an Ubuntu 24.04 image. Build args carry your host UID/GID so a
+bind-mounted home keeps correct file ownership, and the entrypoint
+re-links the editable install to the bind-mounted source tree on
+entry — host-side edits show up live without rebuilds.
+
+```bash
+git clone https://github.com/jdinalt/forgather.git
+cd forgather
+docker/build.sh                  # auto-fills USER_NAME/UID/GID from host
+docker/run.sh                    # interactive shell, --gpus all, ports forwarded
+
+# Inside the container:
+cd examples/tutorials/tiny_llama
+forgather -t v2.yaml train
+```
+
+Requires Docker Engine 24+ and (for GPU training) the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
+See [`docker/README.md`](./docker/README.md) for the full breakdown,
+including the release-testing workflow.
+
 See [`examples/tutorials/tiny_llama/README.md`](./examples/tutorials/tiny_llama/README.md)
 for the full "train → monitor → control → eval → inference → export"
 walkthrough, or [`docs/getting-started/README.md`](./docs/getting-started/README.md)
