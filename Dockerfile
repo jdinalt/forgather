@@ -34,7 +34,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     UV_LINK_MODE=copy \
     VIRTUAL_ENV=${VENV_DIR} \
-    PATH=${VENV_DIR}/bin:/usr/local/bin:/usr/bin:/bin
+    PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # ---------------------------------------------------------------------------
 # System packages
