@@ -66,3 +66,13 @@ model_code_writer: &model_code_writer !singleton:forgather.ml.construct:write_fi
     code_generator: *model_code_writer
     architectures:
         - "{{ ns.model_cls }}"
+    ## Forgather schema provenance. Stamped here so that `forgather update`
+    ## can identify the arch and source schema version of a saved model
+    ## without the user having to remember which converter to invoke.
+    ## Defaults to ns.model_short_name (which already matches the converter
+    ## registry key for archs in examples/models/), and arch_version 1.
+    ## Override `ns.forgather_arch` / `ns.forgather_arch_version` in an
+    ## arch's project template when the arch's converter declares them
+    ## differently (e.g. after a schema bump).
+    forgather_arch: "{{ ns.forgather_arch | default(ns.model_short_name) }}"
+    forgather_arch_version: {{ ns.forgather_arch_version | default(1) }}

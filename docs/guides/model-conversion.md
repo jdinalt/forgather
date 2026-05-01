@@ -205,6 +205,13 @@ The parameter mapping patterns are recursive regex substitution lists. See
 
 ## See also
 
+- **[Update Model](model-update.md)** -- the in-Forgather counterpart to
+  `convert`. When the source code or templates for an architecture
+  change, `forgather update` regenerates the model code from current
+  sources and applies a chain of versioned migrations to the saved
+  config and weights. Reuses this page's converter plugin pattern and
+  parameter-remapping engine, so the same converter class houses both
+  the FG↔HF mappings and the FG↔FG version migrations.
 - **[Finalize Model](finalize-model.md)** -- build a clean handoff directory
   after pre-training, with options to add tokens, set a chat template, and
   synthesize a `generation_config.json`

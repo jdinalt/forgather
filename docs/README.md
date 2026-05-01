@@ -40,6 +40,7 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 
 - **[Model Architecture](guides/model-architecture.md)** - Transformer module inventory, composition patterns, and optimization flags
 - **[Model Conversion](guides/model-conversion.md)** - Bidirectional HuggingFace / Forgather model conversion
+- **[Update Model](guides/model-update.md)** - Migrate a saved Forgather model to newer Forgather sources via versioned config + state_dict migrations; preserves saved hyperparameters
 - **[Finalize Model](guides/finalize-model.md)** - Build a clean handoff directory after pre-training: source + tokenizer + chat template + generation_config + a single preserved checkpoint
 - **[Add-Tokens Config](guides/add-tokens-config.md)** - YAML format for `--add-tokens` (ChatML / new EOS / pad)
 - **[EOS Tokens and `generate()` Stopping Criteria](guides/eos-and-generate-stopping.md)** - Theory of operation: how HF's `generate()` resolves stopping across multiple EOS-bearing files

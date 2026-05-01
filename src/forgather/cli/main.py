@@ -99,6 +99,7 @@ def get_subcommand_registry():
         create_finalize_parser,
         create_inf_parser,
         create_server_parser,
+        create_update_parser,
     )
 
     return {
@@ -123,6 +124,7 @@ def get_subcommand_registry():
         "server": create_server_parser,
         "convert": create_convert_parser,
         "finalize": create_finalize_parser,
+        "update": create_update_parser,
         "checkpoint": create_checkpoint_parser,
         "logs": create_logs_parser,
         "plot": create_plot_parser,
@@ -449,6 +451,10 @@ def main():
                 from .finalize import finalize_cmd
 
                 finalize_cmd(args)
+            case "update":
+                from .update import update_cmd
+
+                update_cmd(args)
             case "logs":
                 from .logs import logs_cmd
 

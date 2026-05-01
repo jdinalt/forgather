@@ -1,9 +1,41 @@
 """Abstract base class for model converters."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
+
+
+@dataclass
+class VersionMigration:
+    """One step in an in-Forgather schema migration chain.
+
+    A migration moves a saved Forgather model from arch_version V to V+1.
+    Renames are applied to both the config dict and the state dict;
+    structural reshapes go through ``transform_state_dict``.
+
+    Attributes:
+        description: Human-readable summary, surfaced in the audit log.
+        migrate_config: Translates the (already partially migrated) config
+            dict into the next-version dict. Field renames, default
+            backfills, removals all happen here.
+        param_subs: Recursive regex substitution list, in the format
+            understood by ``forgather.ml.remap_params.remap_state_dict``.
+            Used to rewrite parameter FQNs.
+        transform_state_dict: Optional weight-level transform applied
+            after ``param_subs``. Receives the (already-renamed) state
+            dict and the (already-migrated) config dict, returns a new
+            state dict. Use for shape changes, head-dim reshapes,
+            permutations, etc.
+    """
+
+    description: str
+    migrate_config: Callable[[Dict[str, Any]], Dict[str, Any]] = lambda cfg: cfg
+    param_subs: Tuple = field(default_factory=tuple)
+    transform_state_dict: Optional[
+        Callable[[Dict[str, "torch.Tensor"], Dict[str, Any]], Dict[str, "torch.Tensor"]]
+    ] = None
 
 
 class ModelConverter(ABC):
@@ -11,7 +43,30 @@ class ModelConverter(ABC):
 
     Subclasses should implement model-specific conversion logic for
     transforming models between different formats (e.g., HuggingFace, Forgather).
+
+    Forgather schema versioning
+    ---------------------------
+    Subclasses also declare an in-Forgather arch identity and a chain of
+    version migrations that ``forgather update`` uses to bring an older
+    saved model up to the current source layout:
+
+        arch:
+            Stable string identifier matching the converter registry key
+            (e.g. ``"llama"``). Stamped into newly saved configs as
+            ``forgather_arch``.
+        arch_version:
+            Integer. The current Forgather schema version of this arch's
+            model code. Bumped each time a non-backwards-compatible
+            change to parameter FQNs or config fields lands.
+        forgather_migrations:
+            ``{from_version: VersionMigration}``. Each entry migrates
+            v -> v+1. Multi-version updates are composed by walking the
+            chain; missing entries surface a clear error to the user.
     """
+
+    arch: str = ""
+    arch_version: int = 1
+    forgather_migrations: Dict[int, VersionMigration] = {}
 
     def __init__(self, model_type: str):
         """Initialize converter.

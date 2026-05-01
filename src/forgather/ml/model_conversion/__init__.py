@@ -6,9 +6,10 @@ different model formats (e.g., HuggingFace <-> Forgather).
 
 # Also expose discovery module for advanced use
 from . import discovery
-from .base import ModelConverter
+from .base import ModelConverter, VersionMigration
 from .hf_converter import HFConverter
 from .registry import (
+    compose_migration_chain,
     detect_model_type,
     detect_model_type_from_forgather,
     detect_model_type_from_hf,
@@ -25,10 +26,12 @@ from .standard_mappings import (
 
 __all__ = [
     "ModelConverter",
+    "VersionMigration",
     "HFConverter",
     "register_converter",
     "get_converter",
     "list_converters",
+    "compose_migration_chain",
     "detect_model_type",
     "detect_model_type_from_hf",
     "detect_model_type_from_forgather",

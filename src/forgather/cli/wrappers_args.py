@@ -87,6 +87,31 @@ def create_convert_parser(global_args):
     return parser
 
 
+def create_update_parser(global_args):
+    """Create parser for update command."""
+    # add_help=False so --help is forwarded to the script for its own help.
+    parser = argparse.ArgumentParser(
+        prog="forgather update",
+        description="Update a saved Forgather model to the current source schema\n\n"
+        "All arguments are forwarded to tools/update_model/update.py",
+        formatter_class=RawTextHelpFormatter,
+        add_help=False,
+    )
+    parser.add_argument(
+        "dummy",
+        nargs="?",
+        default="",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "remainder",
+        nargs=argparse.REMAINDER,
+        help="Arguments to forward to update.py",
+    )
+
+    return parser
+
+
 def create_finalize_parser(global_args):
     """Create parser for finalize command."""
     # add_help=False so --help is forwarded to the script for its own help.

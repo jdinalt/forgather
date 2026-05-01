@@ -1,8 +1,8 @@
 """Registry for model converters."""
 
-from typing import Dict, List, Optional, Type
+from typing import Dict, List, Optional, Tuple, Type
 
-from .base import ModelConverter
+from .base import ModelConverter, VersionMigration
 
 # Import discovery functions for convenience
 # Actual implementation is in discovery.py to avoid circular imports
@@ -145,6 +145,50 @@ def detect_model_type_from_forgather(model_path: str) -> Optional[str]:
     if result and result[0] == "forgather":
         return result[1]
     return None
+
+
+def compose_migration_chain(
+    converter: ModelConverter,
+    from_version: int,
+    to_version: int,
+) -> List[Tuple[int, VersionMigration]]:
+    """Resolve the ordered list of in-Forgather migrations from version
+    ``from_version`` to ``to_version``.
+
+    Returns a list of ``(source_version, VersionMigration)`` pairs to
+    apply in order. ``from_version`` may equal ``to_version``, in which
+    case an empty list is returned (no-op upgrade).
+
+    Raises:
+        ValueError: when ``to_version < from_version`` (downgrades are
+            not supported), or when the converter has no migration
+            registered for some intermediate step.
+    """
+    if to_version < from_version:
+        raise ValueError(
+            f"Cannot migrate {converter.arch or converter.model_type} "
+            f"backwards: from_version={from_version} > to_version={to_version}. "
+            "Forgather only supports forward schema migrations."
+        )
+
+    chain: List[Tuple[int, VersionMigration]] = []
+    missing: List[int] = []
+    for v in range(from_version, to_version):
+        step = converter.forgather_migrations.get(v)
+        if step is None:
+            missing.append(v)
+        else:
+            chain.append((v, step))
+    if missing:
+        arch_label = converter.arch or converter.model_type
+        formatted = ", ".join(f"{v}->{v + 1}" for v in missing)
+        raise ValueError(
+            f"Converter for arch '{arch_label}' is missing forgather_migrations "
+            f"entries for step(s) {formatted}. Add migrations to bridge "
+            f"version {from_version} to {to_version}, or pass --to-version "
+            f"to stop at a version the converter can reach."
+        )
+    return chain
 
 
 def discover_and_register_converters(

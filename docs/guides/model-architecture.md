@@ -18,6 +18,23 @@ output_models/my_model/
 
 **Import constraint**: The main model file can import from other files in the same directory. However, those imported files cannot themselves use local imports (a HuggingFace limitation -- only one level of local imports is resolved when copying model files). Each module in `modelsrc/transformer/` is therefore self-contained, depending only on PyTorch, HuggingFace Transformers, and optionally pip-installed packages like `triton` or `liger-kernel`.
 
+### Schema provenance in `config.json`
+
+Newly generated `config.json` files carry two fields that identify the
+architecture and the schema version of the Forgather sources at the
+time of save:
+
+| Field | Purpose |
+|-------|---------|
+| `forgather_arch` | Converter registry key (e.g. `"llama"`). Defaults to `ns.model_short_name` from the model template. |
+| `forgather_arch_version` | Integer schema version. Defaults to `1`; bump in the arch's converter when you make a non-backwards-compatible change to parameter FQNs or config fields. |
+
+These are read by [`forgather update`](model-update.md) when migrating
+an existing saved model to a newer source layout, so the user does not
+have to remember which converter / schema version the model was built
+under. They can be overridden in a project template by setting
+`ns.forgather_arch` / `ns.forgather_arch_version` explicitly.
+
 ## Module Inventory
 
 ### Top-Level Model
