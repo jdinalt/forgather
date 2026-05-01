@@ -22,4 +22,4 @@
 
 [test_dataset_split]
     == super()
-    split: "validation[1000:]"
+    split: "validation[1000:100000]"
