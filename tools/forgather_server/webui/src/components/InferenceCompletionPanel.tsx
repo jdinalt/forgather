@@ -9,6 +9,11 @@ import { InferenceState } from "./InferencePanel";
 
 interface Props {
   state: InferenceState;
+  // Controlled by the parent so the chat panel's "Send to completion"
+  // button can append a rendered prompt and switch tabs without losing
+  // whatever the user already had in the textarea.
+  text: string;
+  setText: React.Dispatch<React.SetStateAction<string>>;
 }
 
 type Status =
@@ -23,8 +28,7 @@ type Status =
   | { kind: "stopped"; tokens: number; durationMs: number }
   | { kind: "error"; message: string };
 
-export function InferenceCompletionPanel({ state }: Props) {
-  const [text, setText] = useState("");
+export function InferenceCompletionPanel({ state, text, setText }: Props) {
   // Per-request max-new-tokens override — convenient for "give me just
   // a few more tokens" without editing the main params.
   const [maxTokens, setMaxTokens] = useState<number>(

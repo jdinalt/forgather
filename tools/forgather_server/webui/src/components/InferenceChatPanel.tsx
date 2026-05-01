@@ -8,12 +8,16 @@ import {
   GenerationParams,
   runChatCompletion,
   streamChatCompletion,
+  tokenizeChat,
 } from "../inference-client";
 import { persistGet, persistSet } from "../persist";
 import { InferenceState } from "./InferencePanel";
 
 interface Props {
   state: InferenceState;
+  // Hand the rendered prompt off to the completion panel and switch
+  // to its tab — used by the "Send to completion" toolbar button.
+  onSendToCompletion: (rendered: string) => void;
 }
 
 type Status =
@@ -90,7 +94,7 @@ function loadPersisted(): PersistedChat {
   }
 }
 
-export function InferenceChatPanel({ state }: Props) {
+export function InferenceChatPanel({ state, onSendToCompletion }: Props) {
   const initial = loadPersisted();
   const [systemText, setSystemText] = useState(initial.systemText);
   const [systemOpen, setSystemOpen] = useState(initial.systemOpen);
@@ -393,6 +397,39 @@ export function InferenceChatPanel({ state }: Props) {
     void runTurn(messages);
   };
 
+  // Render the current conversation through the inference server's
+  // chat template (via /tokenize) and append the result to the
+  // completion textarea, switching tabs on success. Sends the same
+  // system text the chat completion path would send so what shows up
+  // in completion is byte-identical to what the model would actually
+  // see for a "Send" or "Continue" press in chat. Disabled while a
+  // request is in flight.
+  const canSendToCompletion = !busy;
+
+  const onSendToCompletionClick = async () => {
+    if (!canSendToCompletion || !state.baseUrl) return;
+    const payload: ChatMessage[] = systemText.trim()
+      ? [{ role: "system", content: systemText.trim() }, ...messages]
+      : messages;
+    try {
+      const r = await tokenizeChat(state.baseUrl, state.model, payload);
+      const rendered = (r.prompt ?? "").toString();
+      if (!rendered) {
+        setStatus({
+          kind: "error",
+          message: "Server returned no prompt text — check inference server logs.",
+        });
+        return;
+      }
+      onSendToCompletion(rendered);
+    } catch (err) {
+      setStatus({
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   const onReset = () => {
     if (busy) return;
     if (messages.length === 0 && !systemText) return;
@@ -513,6 +550,15 @@ export function InferenceChatPanel({ state }: Props) {
           title="Abort the in-flight request"
         >
           Stop
+        </button>
+        <button
+          type="button"
+          className="secondary"
+          onClick={onSendToCompletionClick}
+          disabled={!canSendToCompletion || !state.baseUrl}
+          title="Render the conversation via the chat template and open it in the completion tab"
+        >
+          To completion
         </button>
         <button
           type="button"

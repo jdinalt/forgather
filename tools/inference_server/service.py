@@ -484,18 +484,25 @@ class InferenceService:
         self,
         messages: List[ChatMessage],
         next_role: Optional[str] = None,
+        add_generation_prompt: Optional[bool] = None,
+        continue_final_message: bool = False,
     ) -> str:
         """Convert chat messages to a single prompt string using Jinja2 template.
 
-        ``next_role`` selects which role the model generates as.
-        Defaults to ``"assistant"`` (standard chat completion). Setting
-        ``"user"`` enables "impersonate": the template is rendered
-        twice, the assistant role-opener is extracted, and ``assistant``
-        is substituted with ``user`` so the model generates inside an
-        opened user-role span. This works with any chat template that
-        spells the literal role name in its role marker (ChatML, Llama
-        3, Qwen, Mistral, Gemma, …) — i.e., effectively all of them —
-        without depending on ``continue_final_message`` being honored.
+        ``next_role`` selects which role the model generates as. ``"user"``
+        enables "impersonate": the template is rendered twice, the
+        assistant role-opener is extracted, and ``assistant`` is
+        substituted with ``user`` so the model generates inside an
+        opened user-role span. Works with any chat template that spells
+        the literal role name in its role marker (ChatML, Llama 3, Qwen,
+        Mistral, Gemma, …) — i.e., effectively all of them — without
+        depending on ``continue_final_message`` being honored.
+
+        ``add_generation_prompt`` / ``continue_final_message`` mirror
+        the vLLM /tokenize flags. ``next_role`` overrides them when set
+        to ``"user"``. When ``add_generation_prompt`` is None, defaults
+        to True (the chat-completion path) — this preserves the
+        existing call sites that don't pass it.
         """
         try:
             message_data = [
@@ -541,8 +548,10 @@ class InferenceService:
 
             return template.render(
                 messages=message_data,
-                add_generation_prompt=True,
-                continue_final_message=False,
+                add_generation_prompt=(
+                    True if add_generation_prompt is None else add_generation_prompt
+                ),
+                continue_final_message=continue_final_message,
                 **render_kwargs,
             )
 
@@ -553,6 +562,41 @@ class InferenceService:
         except Exception as e:
             self.logger.logger.error(f"Unexpected error in template rendering: {e}")
             return self._fallback_format_messages(messages)
+
+    def tokenize(self, text: str, add_special_tokens: bool = False) -> List[int]:
+        """Tokenize a raw string with the loaded tokenizer.
+
+        Helper for the ``/tokenize`` endpoint. Returns a flat list of
+        token IDs without padding/truncation; the caller is responsible
+        for length-checking against ``max_model_len`` if needed.
+        """
+        encoded = self.tokenizer(
+            text,
+            add_special_tokens=add_special_tokens,
+            return_tensors=None,
+            padding=False,
+            truncation=False,
+        )
+        ids = encoded["input_ids"]
+        # ``return_tensors=None`` gives a plain list (or list-of-list
+        # for batched input). We always pass a single string.
+        if ids and isinstance(ids[0], list):
+            ids = ids[0]
+        return list(ids)
+
+    def get_max_model_len(self) -> int:
+        """Best-effort max sequence length for /tokenize responses.
+
+        ``tokenizer.model_max_length`` defaults to a sentinel
+        (``int(1e30)``) when the tokenizer doesn't know — fall back to
+        the model config's ``max_position_embeddings`` in that case,
+        and a conservative 2048 if neither source has a real value.
+        """
+        max_len = getattr(self.tokenizer, "model_max_length", 0) or 0
+        if max_len > 10**9 or max_len <= 0:
+            cfg = getattr(self.model, "config", None)
+            max_len = getattr(cfg, "max_position_embeddings", 0) or 2048
+        return int(max_len)
 
     def _fallback_format_messages(self, messages: List[ChatMessage]) -> str:
         """Simple fallback formatting if template fails."""

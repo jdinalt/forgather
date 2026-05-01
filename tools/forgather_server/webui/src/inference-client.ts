@@ -80,7 +80,12 @@ export interface ChatMessage {
 const PROXY_PREFIX = "/api/inference";
 
 function proxyUrl(
-  path: "models" | "completions" | "chat/completions" | "health",
+  path:
+    | "models"
+    | "completions"
+    | "chat/completions"
+    | "tokenize"
+    | "health",
   baseUrl: string,
 ): string {
   return `${PROXY_PREFIX}/${path}?base=${encodeURIComponent(
@@ -201,6 +206,53 @@ export async function* streamChatCompletion(
     signal,
     (frame) => frame?.choices?.[0]?.delta?.content,
   );
+}
+
+/** vLLM-compatible /tokenize response. ``prompt`` is a Forgather
+ *  extension carrying the rendered chat-template string — saves the
+ *  caller a detokenize round trip when they want the text. */
+export interface TokenizeResponse {
+  count: number;
+  max_model_len: number;
+  tokens: number[];
+  token_strs?: string[] | null;
+  prompt?: string | null;
+}
+
+/** Render a chat conversation to its prompt string via the inference
+ *  server's /tokenize endpoint. ``nextRole`` selects the impersonate
+ *  path (matches the chat-completion field of the same name). The
+ *  rendered text is returned in ``prompt``. */
+export async function tokenizeChat(
+  baseUrl: string,
+  model: string,
+  messages: ChatMessage[],
+  options?: {
+    nextRole?: "assistant" | "user";
+    addGenerationPrompt?: boolean;
+    continueFinalMessage?: boolean;
+  },
+): Promise<TokenizeResponse> {
+  const body: Record<string, unknown> = {
+    model: model || "inference-server",
+    messages,
+  };
+  if (options?.nextRole) body.next_role = options.nextRole;
+  if (typeof options?.addGenerationPrompt === "boolean") {
+    body.add_generation_prompt = options.addGenerationPrompt;
+  }
+  if (typeof options?.continueFinalMessage === "boolean") {
+    body.continue_final_message = options.continueFinalMessage;
+  }
+  const r = await fetch(proxyUrl("tokenize", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
+  }
+  return (await r.json()) as TokenizeResponse;
 }
 
 /** One-shot chat completion. Returns the assistant message text. */

@@ -53,10 +53,20 @@ function loadState(): InferenceState {
 export function InferencePanel() {
   const [tab, setTab] = useState<SubTab>("model");
   const [state, setState] = useState<InferenceState>(loadState);
+  // Lifted up so the chat panel can hand a rendered prompt to the
+  // completion textarea ("Send to completion") and switch tabs.
+  // Deliberately not persisted — completion text is a scratchpad,
+  // never useful across reloads in practice.
+  const [completionText, setCompletionText] = useState("");
 
   useEffect(() => {
     persistSet(STORAGE_KEY, JSON.stringify(state));
   }, [state]);
+
+  const onSendToCompletion = (rendered: string) => {
+    setCompletionText((prev) => (prev ? prev + rendered : rendered));
+    setTab("completion");
+  };
 
   return (
     <div className="inference-panel">
@@ -104,7 +114,11 @@ export function InferencePanel() {
           flexDirection: "column",
         }}
       >
-        <InferenceCompletionPanel state={state} />
+        <InferenceCompletionPanel
+          state={state}
+          text={completionText}
+          setText={setCompletionText}
+        />
       </div>
       <div
         style={{
@@ -114,7 +128,10 @@ export function InferencePanel() {
           flexDirection: "column",
         }}
       >
-        <InferenceChatPanel state={state} />
+        <InferenceChatPanel
+          state={state}
+          onSendToCompletion={onSendToCompletion}
+        />
       </div>
     </div>
   );

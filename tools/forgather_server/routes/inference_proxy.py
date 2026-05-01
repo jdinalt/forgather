@@ -185,6 +185,26 @@ async def proxy_chat_completions(base: str, request: Request) -> StreamingRespon
     return await _proxy_streaming_post(base, "/chat/completions", request)
 
 
+@router.post("/inference/tokenize")
+async def proxy_tokenize(base: str, request: Request) -> JSONResponse:
+    """Forward POST ``<base-root>/tokenize`` (vLLM-compatible).
+
+    vLLM serves /tokenize at the server root rather than under /v1, so
+    strip a trailing /v1 from the configured base before appending the
+    path. Non-streaming JSON pass-through; this endpoint never returns
+    SSE.
+    """
+    target = _root_of(_validate_base(base)) + "/tokenize"
+    body = await request.body()
+    upstream_headers = {"content-type": "application/json"}
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        try:
+            r = await client.post(target, content=body, headers=upstream_headers)
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
+    return JSONResponse(status_code=r.status_code, content=_safe_json(r))
+
+
 def _safe_json(r: httpx.Response) -> Dict[str, Any]:
     """Return parsed JSON, or an error envelope preserving the raw body.
 
