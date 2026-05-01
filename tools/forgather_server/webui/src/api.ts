@@ -228,6 +228,7 @@ export interface Job {
     | "mkdocs"
     | "convert"
     | "finalize"
+    | "update"
     | "model"
     | "dataset";
   job_params: Record<string, unknown> | null;
@@ -323,6 +324,7 @@ export interface EnqueueRequest {
     | "mkdocs"
     | "convert"
     | "finalize"
+    | "update"
     | "model"
     | "dataset";
   /** Type-specific payload; empty for training. */

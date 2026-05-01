@@ -28,6 +28,7 @@ const JOB_TYPE_CHIPS: Record<Job["job_type"], { label: string; className: string
   mkdocs: { label: "docs", className: "type-mkdocs" },
   convert: { label: "convert", className: "type-convert" },
   finalize: { label: "finalize", className: "type-finalize" },
+  update: { label: "update", className: "type-update" },
   model: { label: "model", className: "type-model" },
   dataset: { label: "dataset", className: "type-dataset" },
 };

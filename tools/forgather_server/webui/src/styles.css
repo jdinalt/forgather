@@ -2756,6 +2756,10 @@ li.config.selected button.link:hover {
   background: #2e4a4a;
   color: #9fcfcf;
 }
+.job-type-chip.type-update {
+  background: #3a4a3a;
+  color: #b8d8b8;
+}
 .job-type-chip.type-model {
   background: #4a3a3a;
   color: #e6b3aa;

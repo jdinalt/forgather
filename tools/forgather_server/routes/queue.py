@@ -101,6 +101,7 @@ _SUPPORTED_JOB_TYPES = {
     "mkdocs",
     "convert",
     "finalize",
+    "update",
     "model",
     "dataset",
 }
@@ -115,6 +116,7 @@ _REQUIRED_PARAMS_BY_TYPE = {
     "mkdocs": {"config_file", "port"},
     "convert": {"src_model_path", "dst_model_path"},
     "finalize": {"source", "dest"},
+    "update": {"src_model_path", "dst_model_path"},
 }
 _VALID_MODEL_SUBCOMMANDS = {"construct", "test"}
 # Types that accept ``requested_gpus == 0``. Everything else still needs
@@ -128,6 +130,7 @@ _ZERO_GPU_JOB_TYPES = {
     "mkdocs",
     "convert",
     "finalize",
+    "update",
     "model",
     "dataset",
 }

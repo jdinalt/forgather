@@ -384,6 +384,34 @@ def _build_finalize(item, gpu_indices, tty_path):
     )
 
 
+def _build_update(item, gpu_indices, tty_path):
+    p = item.job_params
+    cps = p.get("converter_paths")
+    if isinstance(cps, str):
+        cps = [cps]
+    elif not isinstance(cps, list):
+        cps = None
+    fv = p.get("from_version")
+    tv = p.get("to_version")
+    return launcher.spawn_update_process(
+        src_model_path=p["src_model_path"],
+        dst_model_path=p["dst_model_path"],
+        arch=p.get("arch"),
+        from_version=int(fv) if fv is not None else None,
+        to_version=int(tv) if tv is not None else None,
+        checkpoint=p.get("checkpoint"),
+        device=p.get("device"),
+        dtype=p.get("dtype"),
+        no_strict=bool(p.get("no_strict", False)),
+        safetensors=bool(p.get("safetensors", False)),
+        converter_paths=cps,
+        dry_run=bool(p.get("dry_run", False)),
+        log_level=p.get("log_level", "INFO"),
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+    )
+
+
 def _build_mkdocs(item, gpu_indices, tty_path):
     p = item.job_params
     watch = p.get("watch")
@@ -495,6 +523,7 @@ _LAUNCHERS = {
     "tensorboard": _build_tensorboard,
     "convert": _build_convert,
     "finalize": _build_finalize,
+    "update": _build_update,
     "mkdocs": _build_mkdocs,
     "model": _build_model,
     "dataset": _build_dataset,

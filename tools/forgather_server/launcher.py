@@ -33,6 +33,7 @@ from . import (
     mkdocs_ops,
     model_ops,
     tensorboard_ops,
+    update_ops,
 )
 
 log = logging.getLogger("forgather_server.launcher")
@@ -402,6 +403,49 @@ def spawn_finalize_process(
         safetensors=safetensors,
         dtype=dtype,
         device=device,
+        dry_run=dry_run,
+        log_level=log_level,
+    )
+    return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
+
+
+def spawn_update_process(
+    *,
+    src_model_path: str,
+    dst_model_path: str,
+    gpu_indices: List[int],
+    tty_log_path: Path,
+    arch: Optional[str] = None,
+    from_version: Optional[int] = None,
+    to_version: Optional[int] = None,
+    checkpoint: Optional[str] = None,
+    device: Optional[str] = None,
+    dtype: Optional[str] = None,
+    no_strict: bool = False,
+    safetensors: bool = False,
+    converter_paths: Optional[List[str]] = None,
+    dry_run: bool = False,
+    log_level: str = "INFO",
+    extra_env: Optional[Dict[str, str]] = None,
+) -> LaunchResult:
+    """Spawn a ``forgather update`` run.
+
+    Fire-and-forget like convert / finalize. Defaults to CPU
+    (``--device cpu`` is the script's own default); pass ``gpu_indices``
+    if the user picked one.
+    """
+    cmd = update_ops.build_update_command(
+        src_model_path=src_model_path,
+        dst_model_path=dst_model_path,
+        arch=arch,
+        from_version=from_version,
+        to_version=to_version,
+        checkpoint=checkpoint,
+        device=device,
+        dtype=dtype,
+        no_strict=no_strict,
+        safetensors=safetensors,
+        converter_paths=converter_paths,
         dry_run=dry_run,
         log_level=log_level,
     )

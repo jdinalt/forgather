@@ -32,6 +32,7 @@ forgather tb --enqueue --port 6006
 forgather inf server --enqueue -m output_models/my_model
 forgather convert --enqueue --src output_models/my_model --dst /tmp/hf_export
 forgather finalize --enqueue --source output_models/my_model --dest /tmp/final
+forgather update --enqueue --src output_models/my_model --dst /tmp/my_model_v2
 forgather mkdocs -f docs/mkdocs.yml --enqueue
 ```
 
@@ -352,6 +353,15 @@ bottom:
       keep-optimizer toggles. Persisted under
       `forgather-global-finalize-v1`. Same **Reset to defaults**
       affordance as Convert.
+    - **⬆️ Update Model…** — queues `forgather update` to migrate a
+      saved Forgather model to the current source schema. Reads
+      `forgather_arch` / `forgather_arch_version` from the source
+      `config.json` and walks the per-arch migration chain; the
+      modal exposes `--arch` / `--from-version` / `--to-version` /
+      `--checkpoint` overrides plus dtype, device, strict / no-strict,
+      safetensors, and dry-run toggles. Persisted under
+      `forgather-global-update-v1`. Same **Reset to defaults**
+      affordance as Convert / Finalize.
 - **Project tree** — Search Roots + workspace-clustered projects
   (see below).
 
@@ -758,9 +768,10 @@ sets/clears them.
 
 **Nine job types** share the queue, scheduler, GPU accounting, and TTY
 capture machinery. The non-CUDA-by-default types (`tensorboard`,
-`mkdocs`, `convert`, `finalize`, `dataset`) accept `requested_gpus == 0`; the
-others default to at least one GPU. Convert / finalize will happily
-take a GPU if the user sets `--device cuda…` and bumps the reservation.
+`mkdocs`, `convert`, `finalize`, `update`, `dataset`) accept
+`requested_gpus == 0`; the others default to at least one GPU.
+Convert / finalize / update will happily take a GPU if the user sets
+`--device cuda…` and bumps the reservation.
 
 | Type         | Spawned by                                                                             | Lifecycle                              |
 | ------------ | -------------------------------------------------------------------------------------- | -------------------------------------- |
@@ -771,12 +782,13 @@ take a GPU if the user sets `--device cuda…` and bumps the reservation.
 | `mkdocs`     | 📖 MkDocs… (MkDocsModal, sidebar Tools — picks an `mkdocs.yml` + host:port)            | Long-lived; kill to stop.              |
 | `convert`    | 🔁 Convert Model… (ConvertModal, sidebar Tools)                                        | Terminal when `convert` exits.         |
 | `finalize`   | 📦 Finalize Model… (FinalizeModal, sidebar Tools)                                      | Terminal when `finalize` exits.        |
+| `update`     | ⬆️ Update Model… (UpdateModal, sidebar Tools or config / checkpoint right-click)        | Terminal when `update` exits.          |
 | `model`      | Run on a model config (config_class `type.model`)                                      | Terminal when `forgather model` exits. |
 | `dataset`    | Run on a dataset config (config_class `type.dataset`)                                  | Terminal when `forgather dataset` exits.|
 
 Helpers live in `inference_ops.py`, `eval_ops.py`, `tensorboard_ops.py`,
-`mkdocs_ops.py`, `convert_ops.py`, `finalize_ops.py`, `model_ops.py`,
-`dataset_ops.py` (build argv) and
+`mkdocs_ops.py`, `convert_ops.py`, `finalize_ops.py`, `update_ops.py`,
+`model_ops.py`, `dataset_ops.py` (build argv) and
 `launcher.spawn_*_process` (same sandbox as training but with the right
 argv). The scheduler's
 dispatcher branches on `item.job_type` to pick the spawn function;
@@ -1166,14 +1178,15 @@ tools/forgather_server/
 ├── job_records.py             # Persistent records of dispatched jobs
 ├── launcher.py                # Spawn training / eval / inference /
 │                              #   tensorboard / mkdocs / convert /
-│                              #   finalize / model / dataset processes;
-│                              #   own process group
+│                              #   finalize / update / model / dataset
+│                              #   processes; own process group
 ├── inference_ops.py           # Build inference-server argv
 ├── eval_ops.py                # Build `forgather eval` argv
 ├── tensorboard_ops.py         # Build tensorboard argv
 ├── mkdocs_ops.py              # Build `mkdocs serve` argv
 ├── convert_ops.py             # Build `forgather convert` argv
 ├── finalize_ops.py            # Build `forgather finalize` argv
+├── update_ops.py              # Build `forgather update` argv
 ├── model_ops.py               # Build `forgather model` argv
 ├── dataset_ops.py             # Build `forgather dataset` argv
 ├── scheduler.py               # Dispatcher loop, GPU allocation,
@@ -1269,9 +1282,15 @@ tools/forgather_server/
             ├── MkDocsModal.tsx      # Enqueue `mkdocs serve` job
             │                        #   (sidebar Tools — global only)
             ├── ConvertModal.tsx     # Enqueue `forgather convert` job
-            │                        #   (sidebar Tools — global only)
+            │                        #   (sidebar Tools or config / checkpoint
+            │                        #   right-click)
             ├── FinalizeModal.tsx    # Enqueue `forgather finalize` job
-            │                        #   (sidebar Tools — global only)
+            │                        #   (sidebar Tools or config / checkpoint
+            │                        #   right-click)
+            ├── UpdateModal.tsx      # Enqueue `forgather update` job
+            │                        #   (sidebar Tools or config / checkpoint
+            │                        #   right-click; pre-fills source path
+            │                        #   and optional checkpoint)
             ├── LogDetailPanel.tsx   # Selection target for a run/log leaf
             ├── CheckpointDetailPanel.tsx # Selection target for a checkpoint
             ├── EvalDetailPanel.tsx  # Selection target for an evaluation
@@ -1307,12 +1326,12 @@ APIs — no re-implementation. Every endpoint ultimately calls into
 or `TrainerControlClient`. Config materialization respects per-config
 override values pulled from a JSON cache, so `pp` / `trefs` /
 `output-dir` / `config/meta` all reflect whatever the user has set in
-the 🔧 Overrides modal. The scheduler dispatches nine job types —
+the 🔧 Overrides modal. The scheduler dispatches ten job types —
 training (`torchrun`), eval (`forgather eval`), inference
 (`tools/inference_server/server.py`), TensorBoard (`tensorboard`),
 MkDocs (`mkdocs serve`), convert (`forgather convert`), finalize
-(`forgather finalize`), model, and dataset — all through a common
-`launcher.spawn_*`
+(`forgather finalize`), update (`forgather update`), model, and
+dataset — all through a common `launcher.spawn_*`
 surface that owns its process group via `start_new_session=True` so
 jobs survive server restart. Inference
 servers spawned this way appear in the Inference panel's "Running
@@ -1406,7 +1425,7 @@ Populates the project-tree sub-groups and detail panels:
 | Endpoint                                                  | Purpose                                                |
 | --------------------------------------------------------- | ------------------------------------------------------ |
 | `GET /api/queue`                                          | List queued items                                      |
-| `POST /api/queue` `{project_dir, config, dynamic_args, requested_gpus, priority, job_type?, job_params?}` | Enqueue any job type (`training` / `eval` / `inference` / `tensorboard` / `mkdocs` / `convert` / `finalize` / `model` / `dataset`) |
+| `POST /api/queue` `{project_dir, config, dynamic_args, requested_gpus, priority, job_type?, job_params?}` | Enqueue any job type (`training` / `eval` / `inference` / `tensorboard` / `mkdocs` / `convert` / `finalize` / `update` / `model` / `dataset`) |
 | `DELETE /api/queue/{queue_id}`                            | Cancel a queued item (or abort if it's already running) |
 | `GET /api/queue/scheduler`                                | Dispatcher on/off + counters                           |
 | `POST /api/queue/scheduler` `{enabled}`                   | Enable / disable the dispatcher                        |

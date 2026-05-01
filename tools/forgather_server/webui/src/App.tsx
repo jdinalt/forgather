@@ -17,6 +17,7 @@ import { TensorBoardModal } from "./components/TensorBoardModal";
 import { MkDocsModal } from "./components/MkDocsModal";
 import { ConvertModal } from "./components/ConvertModal";
 import { FinalizeModal } from "./components/FinalizeModal";
+import { UpdateModal } from "./components/UpdateModal";
 import { FilesPanel } from "./components/FilesPanel";
 import { FilesTree } from "./components/FilesTree";
 import { SearchRootsPanel } from "./components/SearchRootsPanel";
@@ -97,6 +98,7 @@ export default function App() {
   const [mkdocsOpen, setMkdocsOpen] = useState(false);
   const [convertOpen, setConvertOpen] = useState(false);
   const [finalizeOpen, setFinalizeOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const [evaluateOpen, setEvaluateOpen] = useState(false);
   // Set when a submit modal closes with the "Watch TTY on start" toggle on.
   // The Jobs view consumes this once the job appears in the polled list and
@@ -337,6 +339,13 @@ export default function App() {
               >
                 📦 Finalize Model…
               </button>
+              <button
+                className="sidebar-tool-btn"
+                onClick={() => setUpdateOpen(true)}
+                title="Migrate a saved Forgather model to the current source schema"
+              >
+                ⬆️ Update Model…
+              </button>
             </div>
           </details>
 
@@ -520,6 +529,12 @@ export default function App() {
       {finalizeOpen && (
         <FinalizeModal
           onClose={() => setFinalizeOpen(false)}
+          onSubmitted={onJobSubmitted}
+        />
+      )}
+      {updateOpen && (
+        <UpdateModal
+          onClose={() => setUpdateOpen(false)}
           onSubmitted={onJobSubmitted}
         />
       )}

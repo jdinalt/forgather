@@ -7,6 +7,7 @@ import { ConvertModal } from "./ConvertModal";
 import { EvalModal } from "./EvalModal";
 import { FinalizeModal } from "./FinalizeModal";
 import { InferenceModal } from "./InferenceModal";
+import { UpdateModal } from "./UpdateModal";
 import { NewProjectModal } from "./NewProjectModal";
 import { NewTemplateModal } from "./NewTemplateModal";
 import { OverridesModal } from "./OverridesModal";
@@ -32,12 +33,12 @@ interface ActiveModal {
 }
 
 // Separate state for action modals seeded from a config's output_dir.
-// Serve / Eval also carry a checkpoint path (a specific ckpt may be the
-// trigger via the checkpoint right-click menu); Convert / Finalize don't
-// have a checkpoint-targeted entry point in this menu, so the slot stays
-// null for them.
+// Serve / Eval / Update also carry a checkpoint path (a specific ckpt
+// may be the trigger via the checkpoint right-click menu); Convert /
+// Finalize don't have a checkpoint-targeted entry point in this menu,
+// so the slot stays null for them.
 interface ServeEvalModal {
-  action: "serve" | "eval" | "convert" | "finalize";
+  action: "serve" | "eval" | "convert" | "finalize" | "update";
   project: ProjectInfo;
   config: ConfigInfo;
   output_dir: string;
@@ -375,7 +376,7 @@ export function ProjectTree({
   };
 
   const chooseServeEval = (
-    action: "serve" | "eval" | "convert" | "finalize",
+    action: "serve" | "eval" | "convert" | "finalize" | "update",
     output_dir: string,
     checkpointPath: string | null,
   ) => {
@@ -486,6 +487,21 @@ export function ProjectTree({
             }}
           >
             ⚖ Evaluate…
+          </button>
+          <button
+            onClick={() => {
+              const t = ckptMenuTarget;
+              setCkptMenuTarget(null);
+              setServeEvalModal({
+                action: "update",
+                project: t.project,
+                config: t.config,
+                output_dir: t.output_dir,
+                checkpointPath: t.checkpoint.checkpoint_dir,
+              });
+            }}
+          >
+            ⬆️ Update Model…
           </button>
           <button
             className="destructive"
@@ -698,6 +714,14 @@ export function ProjectTree({
           onSubmitted={onJobSubmitted}
         />
       )}
+      {serveEvalModal?.action === "update" && (
+        <UpdateModal
+          initialSrcPath={serveEvalModal.output_dir}
+          initialCheckpoint={serveEvalModal.checkpointPath ?? undefined}
+          onClose={() => setServeEvalModal(null)}
+          onSubmitted={onJobSubmitted}
+        />
+      )}
     </div>
   );
 }
@@ -764,7 +788,7 @@ function ConfigContextMenuItems({
   config: ConfigInfo;
   onChoose: (action: ConfigAction) => void;
   onChooseServeEval: (
-    action: "serve" | "eval" | "convert" | "finalize",
+    action: "serve" | "eval" | "convert" | "finalize" | "update",
     output_dir: string,
     checkpointPath: string | null,
   ) => void;
@@ -831,6 +855,11 @@ function ConfigContextMenuItems({
       {hasCheckpoints && (
         <button onClick={() => onChooseServeEval("finalize", outputDir, null)}>
           📦 Finalize Model…
+        </button>
+      )}
+      {hasCheckpoints && (
+        <button onClick={() => onChooseServeEval("update", outputDir, null)}>
+          ⬆️ Update Model…
         </button>
       )}
       <button
