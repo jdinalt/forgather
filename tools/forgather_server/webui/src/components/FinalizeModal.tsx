@@ -11,7 +11,10 @@ import { PathField } from "./PathField";
  *  queue / GPU state. */
 interface PersistedFinalize {
   source: string;
-  dest: string;
+  /** Existing parent directory to write the finalized model into. */
+  destParent: string;
+  /** New directory name for the finalized model under ``destParent``. */
+  modelName: string;
   checkpoint: string;
   addTokens: string;
   skipDefaultTokens: boolean;
@@ -32,7 +35,8 @@ const STORAGE_KEY = "forgather-global-finalize-v1";
 
 const DEFAULTS: PersistedFinalize = {
   source: "",
-  dest: "",
+  destParent: "",
+  modelName: "",
   checkpoint: "",
   addTokens: "",
   skipDefaultTokens: false,
@@ -56,7 +60,22 @@ function loadPersisted(): Partial<PersistedFinalize> {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    // Migrate older persisted blobs that still carry a single ``dest``
+    // (the pre-split destination). Splitting now means the user's
+    // last-used destination still seeds the form when they upgrade —
+    // without forcing a Reset.
+    if (
+      typeof parsed.dest === "string" &&
+      parsed.destParent === undefined &&
+      parsed.modelName === undefined
+    ) {
+      const split = splitDestPath(parsed.dest);
+      parsed.destParent = split.parent;
+      parsed.modelName = split.name;
+      delete parsed.dest;
+    }
+    return parsed;
   } catch {
     return {};
   }
@@ -64,6 +83,17 @@ function loadPersisted(): Partial<PersistedFinalize> {
 
 function savePersisted(s: PersistedFinalize) {
   persistSet(STORAGE_KEY, JSON.stringify(s));
+}
+
+function splitDestPath(p: string): { parent: string; name: string } {
+  const trimmed = p.replace(/\/+$/, "");
+  const i = trimmed.lastIndexOf("/");
+  if (i < 0) return { parent: "", name: trimmed };
+  return { parent: trimmed.slice(0, i), name: trimmed.slice(i + 1) };
+}
+
+function joinDestPath(parent: string, name: string): string {
+  return `${parent.trim().replace(/\/+$/, "")}/${name.trim()}`;
 }
 
 interface Props {
@@ -114,7 +144,8 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
   const persisted = loadPersisted();
   const initial = { ...DEFAULTS, ...persisted };
   const [source, setSource] = useState(initialSource ?? initial.source);
-  const [dest, setDest] = useState(initial.dest);
+  const [destParent, setDestParent] = useState(initial.destParent ?? "");
+  const [modelName, setModelName] = useState(initial.modelName ?? "");
   const [checkpoint, setCheckpoint] = useState(initial.checkpoint);
   const [addTokens, setAddTokens] = useState(initial.addTokens);
   const [skipDefaultTokens, setSkipDefaultTokens] = useState(
@@ -193,7 +224,8 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
     // the caller — Reset shouldn't unpick it, since clearing it would
     // throw away the very thing the right-click flow is about.
     setSource(initialSource ?? DEFAULTS.source);
-    setDest(DEFAULTS.dest);
+    setDestParent(DEFAULTS.destParent);
+    setModelName(DEFAULTS.modelName);
     setCheckpoint(DEFAULTS.checkpoint);
     // Reset to the bundled ChatML defaults if the repo path is
     // available; otherwise fall back to the empty DEFAULTS values.
@@ -221,14 +253,21 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
     },
   });
 
+  const dst = (() => {
+    const parent = destParent.trim();
+    const name = modelName.trim();
+    if (!parent || !name) return "";
+    return joinDestPath(parent, name);
+  })();
+
   const submit = () => {
     const src = source.trim();
-    const dst = dest.trim();
     if (!src || !dst) return;
 
     savePersisted({
       source: src,
-      dest: dst,
+      destParent: destParent.trim(),
+      modelName: modelName.trim(),
       checkpoint: checkpoint.trim(),
       addTokens: addTokens.trim(),
       skipDefaultTokens,
@@ -315,17 +354,36 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
           </div>
           <div className="submit-row">
             <label className="wide">
-              Destination directory
+              Output parent directory
               <PathField
-                value={dest}
-                onChange={setDest}
+                value={destParent}
+                onChange={setDestParent}
                 mode="dirs-only"
-                placeholder="must not exist"
-                title="Pick the destination directory"
+                placeholder="existing directory to create the new model under"
+                title="Pick the parent directory"
                 wide
               />
             </label>
           </div>
+          <div className="submit-row">
+            <label className="wide">
+              Model name
+              <input
+                type="text"
+                className="wide"
+                value={modelName}
+                onChange={(e) => setModelName(e.target.value)}
+                placeholder="new directory name (must not already exist under parent)"
+              />
+            </label>
+          </div>
+          {dst && (
+            <div className="submit-row">
+              <span className="muted current-path" title={dst}>
+                → <code>{dst}</code>
+              </span>
+            </div>
+          )}
 
           <div className="submit-row">
             <label className="wide">
@@ -580,7 +638,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
             </button>
             <button
               onClick={submit}
-              disabled={enqueue.isPending || !source.trim() || !dest.trim()}
+              disabled={enqueue.isPending || !source.trim() || !dst}
             >
               {enqueue.isPending ? "Submitting…" : "Run finalize"}
             </button>

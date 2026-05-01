@@ -12,7 +12,10 @@ import { PathField } from "./PathField";
  *  right value depends on current queue state. */
 interface PersistedConvert {
   srcModelPath: string;
-  dstModelPath: string;
+  /** Existing parent directory to write the new model into. */
+  dstParent: string;
+  /** New directory name for the converted model under ``dstParent``. */
+  modelName: string;
   reverse: boolean;
   modelType: string;
   dtype: string;
@@ -32,7 +35,8 @@ const STORAGE_KEY = "forgather-global-convert-v1";
 
 const DEFAULTS: PersistedConvert = {
   srcModelPath: "",
-  dstModelPath: "",
+  dstParent: "",
+  modelName: "",
   reverse: false,
   modelType: "auto",
   // "from-model" is a UI-only sentinel meaning "don't pass --dtype" —
@@ -56,7 +60,22 @@ function loadPersisted(): Partial<PersistedConvert> {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    // Migrate older persisted blobs that still carry a single
+    // ``dstModelPath`` (the pre-split destination). Splitting now means
+    // the user's last-used destination still seeds the form when they
+    // upgrade — without forcing a Reset.
+    if (
+      typeof parsed.dstModelPath === "string" &&
+      parsed.dstParent === undefined &&
+      parsed.modelName === undefined
+    ) {
+      const split = splitDestPath(parsed.dstModelPath);
+      parsed.dstParent = split.parent;
+      parsed.modelName = split.name;
+      delete parsed.dstModelPath;
+    }
+    return parsed;
   } catch {
     return {};
   }
@@ -64,6 +83,17 @@ function loadPersisted(): Partial<PersistedConvert> {
 
 function savePersisted(s: PersistedConvert) {
   persistSet(STORAGE_KEY, JSON.stringify(s));
+}
+
+function splitDestPath(p: string): { parent: string; name: string } {
+  const trimmed = p.replace(/\/+$/, "");
+  const i = trimmed.lastIndexOf("/");
+  if (i < 0) return { parent: "", name: trimmed };
+  return { parent: trimmed.slice(0, i), name: trimmed.slice(i + 1) };
+}
+
+function joinDestPath(parent: string, name: string): string {
+  return `${parent.trim().replace(/\/+$/, "")}/${name.trim()}`;
 }
 
 interface Props {
@@ -99,7 +129,8 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
   const [srcModelPath, setSrcModelPath] = useState(
     initialSrcPath ?? initial.srcModelPath,
   );
-  const [dstModelPath, setDstModelPath] = useState(initial.dstModelPath);
+  const [dstParent, setDstParent] = useState(initial.dstParent ?? "");
+  const [modelName, setModelName] = useState(initial.modelName ?? "");
   const [reverse, setReverse] = useState(initial.reverse);
   const [modelType, setModelType] = useState(initial.modelType);
   const [dtype, setDtype] = useState(initial.dtype);
@@ -129,7 +160,8 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
     // the caller — Reset shouldn't unpick it, since clearing it would
     // throw away the very thing the right-click flow is about.
     setSrcModelPath(initialSrcPath ?? DEFAULTS.srcModelPath);
-    setDstModelPath(DEFAULTS.dstModelPath);
+    setDstParent(DEFAULTS.dstParent);
+    setModelName(DEFAULTS.modelName);
     setReverse(DEFAULTS.reverse);
     setModelType(DEFAULTS.modelType);
     setDtype(DEFAULTS.dtype);
@@ -154,16 +186,23 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
     },
   });
 
+  const dst = (() => {
+    const parent = dstParent.trim();
+    const name = modelName.trim();
+    if (!parent || !name) return "";
+    return joinDestPath(parent, name);
+  })();
+
   const submit = () => {
     const src = srcModelPath.trim();
-    const dst = dstModelPath.trim();
     if (!src || !dst) return;
     const ml = maxLength.trim();
     const mlNum = ml ? Number(ml) : NaN;
 
     savePersisted({
       srcModelPath: src,
-      dstModelPath: dst,
+      dstParent: dstParent.trim(),
+      modelName: modelName.trim(),
       reverse,
       modelType,
       dtype,
@@ -250,16 +289,36 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
           </div>
           <div className="submit-row">
             <label className="wide">
-              Destination model path
+              Output parent directory
               <PathField
-                value={dstModelPath}
-                onChange={setDstModelPath}
+                value={dstParent}
+                onChange={setDstParent}
                 mode="dirs-only"
-                title="Pick the destination directory"
+                placeholder="existing directory to create the new model under"
+                title="Pick the parent directory"
                 wide
               />
             </label>
           </div>
+          <div className="submit-row">
+            <label className="wide">
+              Model name
+              <input
+                type="text"
+                className="wide"
+                value={modelName}
+                onChange={(e) => setModelName(e.target.value)}
+                placeholder="new directory name (must not already exist under parent)"
+              />
+            </label>
+          </div>
+          {dst && (
+            <div className="submit-row">
+              <span className="muted current-path" title={dst}>
+                → <code>{dst}</code>
+              </span>
+            </div>
+          )}
 
           <div className="submit-row">
             <label className="dyn-checkbox">
@@ -484,9 +543,7 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
             </button>
             <button
               onClick={submit}
-              disabled={
-                enqueue.isPending || !srcModelPath.trim() || !dstModelPath.trim()
-              }
+              disabled={enqueue.isPending || !srcModelPath.trim() || !dst}
             >
               {enqueue.isPending ? "Submitting…" : "Run convert"}
             </button>
