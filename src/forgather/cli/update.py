@@ -62,8 +62,8 @@ def _enqueue_update(args):
     p.add_argument("--src", "--src-model-path", dest="src", required=True)
     p.add_argument("--dst", "--dst-model-path", dest="dst", required=True)
     p.add_argument("--arch", default=None)
-    p.add_argument("--from-version", type=int, default=None)
-    p.add_argument("--to-version", type=int, default=None)
+    p.add_argument("--from-version", type=str, default=None)
+    p.add_argument("--to-version", type=str, default=None)
     p.add_argument("--checkpoint", default=None)
     p.add_argument("--device", default="cpu")
     p.add_argument("--dtype", default=None)
@@ -88,9 +88,9 @@ def _enqueue_update(args):
     if sub.arch:
         job_params["arch"] = sub.arch
     if sub.from_version is not None:
-        job_params["from_version"] = sub.from_version
+        job_params["from_version"] = str(sub.from_version)
     if sub.to_version is not None:
-        job_params["to_version"] = sub.to_version
+        job_params["to_version"] = str(sub.to_version)
     if sub.checkpoint:
         job_params["checkpoint"] = sub.checkpoint
     if sub.dtype:

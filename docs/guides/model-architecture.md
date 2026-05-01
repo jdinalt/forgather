@@ -27,7 +27,7 @@ time of save:
 | Field | Purpose |
 |-------|---------|
 | `forgather_arch` | Converter registry key (e.g. `"llama"`). Defaults to `ns.model_short_name` from the model template. |
-| `forgather_arch_version` | Integer schema version. Defaults to `1`; bump in the arch's converter when you make a non-backwards-compatible change to parameter FQNs or config fields. |
+| `forgather_arch_version` | PEP 440 schema version string (e.g. `"1"`, `"1.2"`, `"2.3.1"`). Defaults to `"1"`. Bump the **major** in the arch's converter when you make a non-backwards-compatible change to parameter FQNs or config fields; bump minor / patch when the change is forwards-compatible (the existing saved schema still loads under the new code). |
 
 These are read by [`forgather update`](model-update.md) when migrating
 an existing saved model to a newer source layout, so the user does not

@@ -16,6 +16,7 @@ from .registry import (
     discover_and_register_converters,
     get_converter,
     list_converters,
+    parse_arch_version,
     register_converter,
 )
 from .standard_mappings import (
@@ -32,6 +33,7 @@ __all__ = [
     "get_converter",
     "list_converters",
     "compose_migration_chain",
+    "parse_arch_version",
     "detect_model_type",
     "detect_model_type_from_hf",
     "detect_model_type_from_forgather",

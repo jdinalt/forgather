@@ -55,17 +55,25 @@ class ModelConverter(ABC):
             (e.g. ``"llama"``). Stamped into newly saved configs as
             ``forgather_arch``.
         arch_version:
-            Integer. The current Forgather schema version of this arch's
-            model code. Bumped each time a non-backwards-compatible
-            change to parameter FQNs or config fields lands.
+            PEP 440 version string (e.g. ``"1.0"``, ``"2.3.1"``). The
+            current Forgather schema version of this arch's model code.
+            Bump the *major* component each time a non-backwards-
+            compatible change to parameter FQNs or config fields lands;
+            minor / patch bumps signal compatible changes that
+            ``forgather update`` can carry across without an explicit
+            migration entry.
         forgather_migrations:
-            ``{from_version: VersionMigration}``. Each entry migrates
-            v -> v+1. Multi-version updates are composed by walking the
-            chain; missing entries surface a clear error to the user.
+            ``{source_major: VersionMigration}``. Each entry migrates
+            *any* version with major component ``source_major`` to the
+            next major. Within a major, all minor / patch versions are
+            considered compatible — no migration required, since the
+            generated code accepts the saved schema unchanged.
+            Multi-major updates are composed by walking the chain over
+            majors; missing entries surface a clear error to the user.
     """
 
     arch: str = ""
-    arch_version: int = 1
+    arch_version: str = "1"
     forgather_migrations: Dict[int, VersionMigration] = {}
 
     def __init__(self, model_type: str):

@@ -102,13 +102,30 @@ saved `config.json`:
   architecture (e.g. `"llama"`). Defaults to `ns.model_short_name` from
   the model template, which already matches the converter key for
   archs under `examples/models/`.
-- `forgather_arch_version` -- integer, the schema version of the
-  Forgather sources at the time of save. Defaults to `1`.
+- `forgather_arch_version` -- PEP 440 version string (e.g. `"1"`,
+  `"1.2"`, `"2.3.1"`) recording the schema version of the Forgather
+  sources at the time of save. Defaults to `"1"`. Pre-PEP-440 saved
+  configs may carry a bare integer here; the tool coerces those
+  cleanly so older models still load.
 
-`forgather update` reads these fields to identify the migration source.
-Models saved before this stamping was added simply lack the fields;
-pass `--arch` and `--from-version` on the CLI to identify them
-manually.
+`forgather update` reads these fields to identify the migration
+source. Models saved before this stamping was added simply lack the
+fields; in that case the tool falls back to `--arch llama` and
+`--from-version 1` (the first schema version) and prints a warning
+naming both fallbacks. The fallback is right for the overwhelming
+majority of pre-stamping saved models, but a mis-identified source
+arch or version will produce silently incorrect results — pass
+`--arch` / `--from-version` explicitly to override the guess when
+you know it's wrong.
+
+Only the **major** component drives migrations: a 1.0 → 1.5 upgrade
+walks no migrations, while 1.5 → 2.0 walks one major-step migration.
+The bookkeeping principle is the standard PEP 440 contract — within a
+major, all minor / patch versions are backwards-compatible by
+definition; cross a major boundary and you've explicitly declared
+breakage. If a maintainer needs to break compatibility, they bump the
+major; otherwise they bump minor / patch and `forgather update` carries
+old saved models forward without any migration code.
 
 ### Versioned migrations
 
@@ -120,9 +137,11 @@ declares two class attributes for the in-Forgather update path:
 @register_converter("llama")
 class LlamaConverter(HFConverter):
     arch = "llama"
-    arch_version = 2  # current schema version
+    arch_version = "2.0"  # current schema version (PEP 440)
     forgather_migrations = {
-        # 1 -> 2: rename attention.query_linear to attention.q_proj
+        # 1.x -> 2.0: rename attention.query_linear to attention.q_proj.
+        # The key is the *source major*; the entry migrates anything in
+        # major 1 (1, 1.2, 1.3.4, ...) up to the next major (2.0).
         1: VersionMigration(
             description="rename attention.query_linear -> attention.q_proj",
             migrate_config=lambda cfg: cfg,  # no config field rename here
@@ -145,19 +164,26 @@ A `VersionMigration` step has three parts:
 
 ### Migrations chain end-to-end
 
-`forgather update` is designed for arbitrary version gaps. Maintainers
-register one step per schema bump (`1 -> 2`, `2 -> 3`, ...). The tool
-composes the chain at runtime:
+`forgather update` is designed for arbitrary major-version gaps.
+Maintainers register one entry per major bump (`1 -> 2`, `2 -> 3`,
+...). Minor / patch bumps don't need entries — they're compatible by
+definition. The tool composes the chain at runtime by walking majors:
 
 ```
-v1 -> v2 -> v3 -> ... -> v_current
+1.x -> 2.0 -> 3.0 -> ... -> N.0
 ```
 
-Each step's output becomes the next step's input. If any step in the
-range is missing from `forgather_migrations`, the tool fails before
-touching weights with a clear diagnostic naming the missing step(s).
-Pass `--to-version` to stop the chain at a version the converter
-*can* reach.
+Each step's output becomes the next step's input. Within any major,
+the source's exact minor / patch is preserved (carried verbatim
+through the chain) until a step explicitly rewrites it; on the
+final hop, the destination is stamped with whatever `--to-version`
+the user requested.
+
+If any major step in the range is missing from
+`forgather_migrations`, the tool fails before touching weights with
+a clear diagnostic naming the missing major boundaries. Pass
+`--to-version` to stop the chain at a major the converter *can*
+reach.
 
 Backwards updates (downgrades) are not supported.
 
@@ -192,11 +218,11 @@ Every successful update writes `DST/forgather_update.json`:
   "timestamp": "2026-05-01T12:34:56+00:00",
   "source": "/path/to/output_models/my_llama",
   "arch": "llama",
-  "from_version": 1,
-  "to_version": 3,
+  "from_version": "1.3",
+  "to_version": "3.0",
   "migrations": [
-    "1->2: rename attention.query_linear -> attention.q_proj",
-    "2->3: head_dim split"
+    "1.x->2.0: rename attention.query_linear -> attention.q_proj",
+    "2.x->3.0: head_dim split"
   ],
   "dtype": "bfloat16",
   "missing_keys": [],
@@ -214,16 +240,25 @@ a strict-load failure.
 forgather update output_models/llama_4m out/llama_4m_v2
 ```
 
-**Older model without stamped metadata:**
+**Older model without stamped metadata** (the tool guesses
+`--arch llama` and `--from-version 1` and warns; pass either or both
+explicitly to override the guess):
 ```bash
 forgather update legacy/llama_old out/llama_new \
     --arch llama --from-version 1
 ```
 
+**Compatible minor / patch upgrade** (no migration code touched —
+the chain is empty, the destination is just re-stamped at the
+target version):
+```bash
+forgather update SRC DST --to-version 1.5
+```
+
 **Stop at an intermediate version** (useful when you want to verify a
 specific migration step in isolation):
 ```bash
-forgather update SRC DST --to-version 2
+forgather update SRC DST --to-version 2.0
 ```
 
 **Dry run** (resolve the plan and print it; no writes):
@@ -244,17 +279,27 @@ forgather update SRC DST --no-strict
 
 ## Authoring a migration
 
-When you make a non-backwards-compatible change to an arch's source
-code or config schema, register a migration entry on the arch's
-converter so existing saved models can be brought forward.
+The version policy maps cleanly onto code changes:
+
+- **Non-breaking change** — a tweak that the existing saved
+  `config.json` and `state_dict` still round-trip through the new
+  code (e.g. a default value change, an additive field, an internal
+  refactor that doesn't rename FQNs). Bump only the **minor** or
+  **patch** component of `arch_version`. No migration entry needed.
+- **Breaking change** — anything that renames parameter FQNs,
+  renames or removes config fields, or reshapes weights. Bump the
+  **major** component and register a `forgather_migrations` entry
+  keyed by the previous major.
+
+Steps for a breaking change:
 
 1. Open the converter, e.g. `examples/models/llama/src/converter.py`.
-2. Bump `arch_version` by one.
+2. Bump `arch_version` to the new major (e.g. `"1.3"` -> `"2.0"`).
 3. Add an entry to `forgather_migrations` keyed by the *previous*
-   version, describing the v_prev -> v_new step.
+   major, describing the M.x -> (M+1).0 step.
 
 Example: renaming `attention.query_linear` -> `attention.q_proj`
-between v1 and v2:
+between major 1 and major 2:
 
 ```python
 from forgather.ml.model_conversion import VersionMigration
@@ -262,7 +307,7 @@ from forgather.ml.model_conversion import VersionMigration
 @register_converter("llama")
 class LlamaConverter(HFConverter):
     arch = "llama"
-    arch_version = 2
+    arch_version = "2.0"
     forgather_migrations = {
         1: VersionMigration(
             description="rename attention.query_linear -> attention.q_proj",
@@ -274,10 +319,11 @@ class LlamaConverter(HFConverter):
     }
 ```
 
-Example with a config field rename (`mlp_dim` -> `intermediate_size`):
+Example with a config field rename (`mlp_dim` -> `intermediate_size`)
+between major 2 and major 3 — `arch_version` becomes `"3.0"`:
 
 ```python
-def _v2_to_v3_config(cfg):
+def _major2_to_major3_config(cfg):
     new = dict(cfg)
     if "mlp_dim" in new:
         new["intermediate_size"] = new.pop("mlp_dim")
@@ -287,7 +333,7 @@ forgather_migrations = {
     1: ...,
     2: VersionMigration(
         description="rename mlp_dim -> intermediate_size",
-        migrate_config=_v2_to_v3_config,
+        migrate_config=_major2_to_major3_config,
     ),
 }
 ```

@@ -1,6 +1,8 @@
 """Registry for model converters."""
 
-from typing import Dict, List, Optional, Tuple, Type
+from typing import Dict, List, Optional, Tuple, Type, Union
+
+from packaging.version import InvalidVersion, Version
 
 from .base import ModelConverter, VersionMigration
 
@@ -147,46 +149,94 @@ def detect_model_type_from_forgather(model_path: str) -> Optional[str]:
     return None
 
 
+def parse_arch_version(value: Union[str, int, float, Version]) -> Version:
+    """Parse an arch version into a :class:`packaging.version.Version`.
+
+    Accepts:
+      - ``Version`` instances (returned as-is).
+      - PEP 440 strings (e.g. ``"1.0"``, ``"2.3.1"``).
+      - Bare integers (legacy: pre-PEP-440 saved configs stamped a plain
+        int such as ``1``); coerced to the equivalent ``Version("1")``.
+      - Floats (defensive: in case YAML/JSON loaders inferred a number);
+        coerced via ``str(value)``.
+
+    Raises:
+        ValueError: when ``value`` is neither a known type nor a valid
+            PEP 440 version string.
+    """
+    if isinstance(value, Version):
+        return value
+    if isinstance(value, bool):
+        # bool is a subclass of int — reject before the int branch so
+        # ``True`` / ``False`` don't silently become ``Version("1")`` /
+        # ``Version("0")``.
+        raise ValueError(f"arch_version must not be a bool; got {value!r}")
+    if isinstance(value, (int, float)):
+        value = str(value)
+    if not isinstance(value, str):
+        raise ValueError(
+            f"arch_version must be str / int / Version, got {type(value).__name__}"
+        )
+    try:
+        return Version(value)
+    except InvalidVersion as e:
+        raise ValueError(
+            f"arch_version {value!r} is not a valid PEP 440 version: {e}"
+        ) from e
+
+
 def compose_migration_chain(
     converter: ModelConverter,
-    from_version: int,
-    to_version: int,
+    from_version: Union[str, int, Version],
+    to_version: Union[str, int, Version],
 ) -> List[Tuple[int, VersionMigration]]:
     """Resolve the ordered list of in-Forgather migrations from version
     ``from_version`` to ``to_version``.
 
-    Returns a list of ``(source_version, VersionMigration)`` pairs to
-    apply in order. ``from_version`` may equal ``to_version``, in which
-    case an empty list is returned (no-op upgrade).
+    Versions follow PEP 440. Only the **major** component drives
+    migrations — minor and patch bumps within a major are considered
+    backwards-compatible and require no explicit migration entry.
+
+    Returns a list of ``(source_major, VersionMigration)`` pairs to
+    apply in order. When the source and target share the same major
+    component an empty list is returned, regardless of how the minor /
+    patch components compare. This is what makes ``forgather update``
+    a no-op (apart from re-stamping the target version) for compatible
+    upgrades.
 
     Raises:
-        ValueError: when ``to_version < from_version`` (downgrades are
-            not supported), or when the converter has no migration
-            registered for some intermediate step.
+        ValueError: when ``to_version`` is older than ``from_version``
+            (downgrades are not supported), or when the converter has
+            no migration registered for some intermediate major.
     """
-    if to_version < from_version:
+    from_v = parse_arch_version(from_version)
+    to_v = parse_arch_version(to_version)
+    if to_v < from_v:
         raise ValueError(
             f"Cannot migrate {converter.arch or converter.model_type} "
-            f"backwards: from_version={from_version} > to_version={to_version}. "
+            f"backwards: from_version={from_v} > to_version={to_v}. "
             "Forgather only supports forward schema migrations."
         )
 
     chain: List[Tuple[int, VersionMigration]] = []
     missing: List[int] = []
-    for v in range(from_version, to_version):
-        step = converter.forgather_migrations.get(v)
+    # Walk majors from the source to (but not including) the target.
+    # Each migration step bridges major M -> M+1; same-major upgrades
+    # produce an empty chain.
+    for major in range(from_v.major, to_v.major):
+        step = converter.forgather_migrations.get(major)
         if step is None:
-            missing.append(v)
+            missing.append(major)
         else:
-            chain.append((v, step))
+            chain.append((major, step))
     if missing:
         arch_label = converter.arch or converter.model_type
-        formatted = ", ".join(f"{v}->{v + 1}" for v in missing)
+        formatted = ", ".join(f"{m}.x->{m + 1}.0" for m in missing)
         raise ValueError(
             f"Converter for arch '{arch_label}' is missing forgather_migrations "
-            f"entries for step(s) {formatted}. Add migrations to bridge "
-            f"version {from_version} to {to_version}, or pass --to-version "
-            f"to stop at a version the converter can reach."
+            f"entries for major step(s) {formatted}. Add migrations to bridge "
+            f"version {from_v} to {to_v}, or pass --to-version to stop at a "
+            f"version the converter can reach."
         )
     return chain
 

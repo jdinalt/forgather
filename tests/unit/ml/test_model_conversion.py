@@ -1730,7 +1730,12 @@ class TestMergeEosTokenIds(unittest.TestCase):
 
 
 class TestForgatherMigrationChain(unittest.TestCase):
-    """Tests for VersionMigration / compose_migration_chain (FG->FG updates)."""
+    """Tests for VersionMigration / compose_migration_chain (FG->FG updates).
+
+    Versions are PEP 440 strings; only major-version transitions
+    require explicit migration entries — minor / patch bumps within a
+    major are considered compatible by definition.
+    """
 
     def setUp(self):
         import forgather.ml.model_conversion.registry as reg_mod
@@ -1749,7 +1754,7 @@ class TestForgatherMigrationChain(unittest.TestCase):
 
         class _FakeConverter(ModelConverter):
             arch = "fake"
-            arch_version = 1
+            arch_version = "1"
             forgather_migrations = {}
 
             def get_parameter_mappings(self, direction):
@@ -1768,38 +1773,56 @@ class TestForgatherMigrationChain(unittest.TestCase):
         _FakeConverter.forgather_migrations = migrations
         return _FakeConverter("fake")
 
-    def test_compose_no_op_chain(self):
-        """from == to should produce an empty chain."""
+    def test_compose_no_op_chain_exact_match(self):
+        """Exact-version match (e.g. 2.0 -> 2.0) yields an empty chain."""
         from forgather.ml.model_conversion import compose_migration_chain
 
-        converter = self._make_converter(arch_version=2, migrations={})
-        chain = compose_migration_chain(converter, 2, 2)
+        converter = self._make_converter(arch_version="2.0", migrations={})
+        chain = compose_migration_chain(converter, "2.0", "2.0")
         self.assertEqual(chain, [])
 
-    def test_compose_single_step(self):
+    def test_compose_no_op_minor_bump(self):
+        """A minor bump within the same major needs no explicit migration —
+        this is the whole point of PEP 440 versioning here."""
+        from forgather.ml.model_conversion import compose_migration_chain
+
+        converter = self._make_converter(arch_version="1.5", migrations={})
+        chain = compose_migration_chain(converter, "1.0", "1.5")
+        self.assertEqual(chain, [])
+
+    def test_compose_no_op_patch_bump(self):
+        """Patch bumps are likewise compatible."""
+        from forgather.ml.model_conversion import compose_migration_chain
+
+        converter = self._make_converter(arch_version="1.0.7", migrations={})
+        chain = compose_migration_chain(converter, "1.0.0", "1.0.7")
+        self.assertEqual(chain, [])
+
+    def test_compose_single_major_step(self):
         from forgather.ml.model_conversion import (
             VersionMigration,
             compose_migration_chain,
         )
 
         step = VersionMigration(description="rename foo->bar")
-        converter = self._make_converter(arch_version=2, migrations={1: step})
-        chain = compose_migration_chain(converter, 1, 2)
+        converter = self._make_converter(arch_version="2.0", migrations={1: step})
+        # 1.5 (any 1.x) -> 2.0: one major step over the boundary.
+        chain = compose_migration_chain(converter, "1.5", "2.0")
         self.assertEqual(len(chain), 1)
         self.assertEqual(chain[0][0], 1)
         self.assertIs(chain[0][1], step)
 
-    def test_compose_multi_step(self):
+    def test_compose_multi_major_step(self):
         from forgather.ml.model_conversion import (
             VersionMigration,
             compose_migration_chain,
         )
 
-        s1 = VersionMigration(description="v1->v2")
-        s2 = VersionMigration(description="v2->v3")
-        converter = self._make_converter(arch_version=3, migrations={1: s1, 2: s2})
-        chain = compose_migration_chain(converter, 1, 3)
-        self.assertEqual([src_v for src_v, _ in chain], [1, 2])
+        s1 = VersionMigration(description="1.x->2.0")
+        s2 = VersionMigration(description="2.x->3.0")
+        converter = self._make_converter(arch_version="3.0", migrations={1: s1, 2: s2})
+        chain = compose_migration_chain(converter, "1.0", "3.0")
+        self.assertEqual([src_major for src_major, _ in chain], [1, 2])
         self.assertIs(chain[0][1], s1)
         self.assertIs(chain[1][1], s2)
 
@@ -1809,29 +1832,52 @@ class TestForgatherMigrationChain(unittest.TestCase):
             compose_migration_chain,
         )
 
-        # Only step 1->2 is registered; ask to walk 1->4 which would also need 2->3 and 3->4.
+        # Only step 1->2 is registered; ask to walk 1.0 -> 4.0 which
+        # would also need 2->3 and 3->4.
         converter = self._make_converter(
-            arch_version=4,
-            migrations={1: VersionMigration(description="v1->v2")},
+            arch_version="4.0",
+            migrations={1: VersionMigration(description="1.x->2.0")},
         )
         with self.assertRaises(ValueError) as cm:
-            compose_migration_chain(converter, 1, 4)
+            compose_migration_chain(converter, "1.0", "4.0")
         msg = str(cm.exception)
         self.assertIn("fake", msg)
-        self.assertIn("2->3", msg)
-        self.assertIn("3->4", msg)
+        self.assertIn("2.x->3.0", msg)
+        self.assertIn("3.x->4.0", msg)
 
     def test_backwards_chain_raises(self):
         from forgather.ml.model_conversion import compose_migration_chain
 
-        converter = self._make_converter(arch_version=2, migrations={})
+        converter = self._make_converter(arch_version="2.0", migrations={})
         with self.assertRaises(ValueError) as cm:
-            compose_migration_chain(converter, 3, 1)
+            compose_migration_chain(converter, "3.0", "1.0")
         self.assertIn("backwards", str(cm.exception))
 
+    def test_accepts_legacy_int_versions(self):
+        """Pre-PEP-440 saved configs stamped a bare integer; the chain
+        composer must coerce that cleanly so an old config still loads."""
+        from forgather.ml.model_conversion import (
+            VersionMigration,
+            compose_migration_chain,
+        )
+
+        step = VersionMigration(description="1.x->2.0")
+        converter = self._make_converter(arch_version="2.0", migrations={1: step})
+        chain = compose_migration_chain(converter, 1, 2)
+        self.assertEqual(len(chain), 1)
+        self.assertEqual(chain[0][0], 1)
+
+    def test_invalid_version_string_raises(self):
+        from forgather.ml.model_conversion import compose_migration_chain
+
+        converter = self._make_converter(arch_version="1.0", migrations={})
+        with self.assertRaises(ValueError) as cm:
+            compose_migration_chain(converter, "not-a-version", "1.0")
+        self.assertIn("PEP 440", str(cm.exception))
+
     def test_migration_applies_config_and_state_dict_renames(self):
-        """End-to-end: walk a v1->v3 chain and confirm both config and
-        state_dict keys land in v3 form. Mirrors the runtime path
+        """End-to-end: walk a 1.x -> 3.0 chain and confirm both config
+        and state_dict keys land in v3 form. Mirrors the runtime path
         used by tools/update_model/update.py."""
         from forgather.ml.model_conversion import (
             VersionMigration,
@@ -1861,8 +1907,8 @@ class TestForgatherMigrationChain(unittest.TestCase):
             migrate_config=_v2_to_v3_config,
             param_subs=((r"mid\.", r"new.", ()),),
         )
-        converter = self._make_converter(arch_version=3, migrations={1: s1, 2: s2})
-        chain = compose_migration_chain(converter, 1, 3)
+        converter = self._make_converter(arch_version="3.0", migrations={1: s1, 2: s2})
+        chain = compose_migration_chain(converter, "1.0", "3.0")
 
         config = {"old_field": 42, "shared": "keep_me"}
         state_dict = {"foo.weight": torch.zeros(2), "shared.bias": torch.ones(2)}
@@ -1884,6 +1930,44 @@ class TestForgatherMigrationChain(unittest.TestCase):
         self.assertIn("shared.bias", state_dict)
 
 
+class TestParseArchVersion(unittest.TestCase):
+    """Direct tests for the ``parse_arch_version`` PEP 440 coercion helper."""
+
+    def test_string_pep440(self):
+        from packaging.version import Version
+
+        from forgather.ml.model_conversion import parse_arch_version
+
+        self.assertEqual(parse_arch_version("1.2.3"), Version("1.2.3"))
+
+    def test_int_legacy(self):
+        from packaging.version import Version
+
+        from forgather.ml.model_conversion import parse_arch_version
+
+        self.assertEqual(parse_arch_version(1), Version("1"))
+
+    def test_version_passthrough(self):
+        from packaging.version import Version
+
+        from forgather.ml.model_conversion import parse_arch_version
+
+        v = Version("2.5")
+        self.assertIs(parse_arch_version(v), v)
+
+    def test_bool_rejected(self):
+        from forgather.ml.model_conversion import parse_arch_version
+
+        with self.assertRaises(ValueError):
+            parse_arch_version(True)
+
+    def test_invalid_string_rejected(self):
+        from forgather.ml.model_conversion import parse_arch_version
+
+        with self.assertRaises(ValueError):
+            parse_arch_version("not.a.version!")
+
+
 class TestModelConverterArchAttributes(unittest.TestCase):
     """Defaults on the ModelConverter base class for in-Forgather updates."""
 
@@ -1891,7 +1975,7 @@ class TestModelConverterArchAttributes(unittest.TestCase):
         from forgather.ml.model_conversion.base import ModelConverter
 
         self.assertEqual(ModelConverter.arch, "")
-        self.assertEqual(ModelConverter.arch_version, 1)
+        self.assertEqual(ModelConverter.arch_version, "1")
         self.assertEqual(ModelConverter.forgather_migrations, {})
 
     def test_subclass_can_override(self):
@@ -1902,9 +1986,9 @@ class TestModelConverterArchAttributes(unittest.TestCase):
 
         class _Sub(ModelConverter):
             arch = "test_arch"
-            arch_version = 5
+            arch_version = "5.0"
             forgather_migrations = {
-                4: VersionMigration(description="v4->v5"),
+                4: VersionMigration(description="4.x->5.0"),
             }
 
             def get_parameter_mappings(self, direction):
@@ -1920,7 +2004,7 @@ class TestModelConverterArchAttributes(unittest.TestCase):
                 pass
 
         self.assertEqual(_Sub.arch, "test_arch")
-        self.assertEqual(_Sub.arch_version, 5)
+        self.assertEqual(_Sub.arch_version, "5.0")
         self.assertIn(4, _Sub.forgather_migrations)
 
 

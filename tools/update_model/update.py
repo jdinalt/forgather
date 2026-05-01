@@ -34,6 +34,7 @@ if forgather_root and forgather_root not in sys.path:
     sys.path.insert(0, forgather_root)
 
 import torch
+from packaging.version import Version
 from transformers import AutoConfig, AutoModelForCausalLM
 
 from forgather.ml.construct import torch_dtype
@@ -43,6 +44,7 @@ from forgather.ml.model_conversion import (
     discover_and_register_converters,
     get_converter,
     list_converters,
+    parse_arch_version,
 )
 from forgather.ml.no_init_weights import no_init_weights
 from forgather.ml.remap_params import remap_state_dict
@@ -105,19 +107,21 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--from-version",
-        type=int,
+        type=str,
         default=None,
         help=(
-            "Source schema version (overrides forgather_arch_version in "
-            "source config; required when no metadata is stamped)"
+            "Source schema version, PEP 440 (e.g. '1', '1.2', '2.3.1'). "
+            "Overrides forgather_arch_version in source config; required "
+            "when no metadata is stamped."
         ),
     )
     parser.add_argument(
         "--to-version",
-        type=int,
+        type=str,
         default=None,
         help=(
-            "Target schema version (default: the converter's current " "arch_version)"
+            "Target schema version, PEP 440 (e.g. '2.0'). Default: the "
+            "converter's current arch_version."
         ),
     )
     parser.add_argument(
@@ -182,31 +186,64 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+# Defaults used when the saved config carries no provenance and the
+# user didn't pass overrides on the CLI. Models predating the
+# `forgather_arch` / `forgather_arch_version` stamping era are still
+# (almost always) llama-shaped at schema major 1, so these are the
+# best-effort guesses — emitted with a loud warning so the user
+# notices when the heuristic is wrong.
+_DEFAULT_ARCH = "llama"
+_DEFAULT_FROM_VERSION = "1"
+
+
 def _identify(
     src_config: Any,
     arch_override: Optional[str],
-    from_version_override: Optional[int],
-) -> Tuple[str, int]:
-    """Determine the (arch, from_version) for the source model."""
+    from_version_override: Optional[str],
+) -> Tuple[str, Version]:
+    """Determine the (arch, from_version) for the source model.
+
+    The returned version is a :class:`packaging.version.Version` parsed
+    via :func:`parse_arch_version`, which accepts PEP 440 strings as
+    well as the legacy integer form found in pre-PEP-440 saved configs
+    (e.g. ``forgather_arch_version: 1``).
+
+    When the saved config has neither stamped value and the user did
+    not pass overrides on the CLI, this falls back to ``"llama"`` /
+    ``"1"`` and logs a warning. The fallback covers pre-stamping
+    saved models (which the migration system was added precisely to
+    help) — passing ``--arch`` / ``--from-version`` overrides the
+    guess when it's wrong.
+    """
     arch = arch_override or getattr(src_config, "forgather_arch", None)
     if not arch:
-        raise ValueError(
-            "Source model has no 'forgather_arch' field in config.json and "
-            "--arch was not supplied. Pass --arch <name> to identify the "
-            f"source schema. Registered converters: {list_converters()}"
+        arch = _DEFAULT_ARCH
+        logger.warning(
+            "Source model has no 'forgather_arch' field in config.json "
+            "and --arch was not supplied; defaulting to %r. Registered "
+            "converters: %s. Pass --arch <name> to override if this "
+            "guess is wrong.",
+            _DEFAULT_ARCH,
+            list_converters(),
         )
 
-    if from_version_override is not None:
-        from_version = from_version_override
-    else:
-        from_version = getattr(src_config, "forgather_arch_version", None)
-        if from_version is None:
-            raise ValueError(
-                "Source model has no 'forgather_arch_version' field in "
-                "config.json and --from-version was not supplied. Pass "
-                "--from-version <int> to declare the source schema version."
-            )
-    return arch, int(from_version)
+    raw_version = (
+        from_version_override
+        if from_version_override is not None
+        else getattr(src_config, "forgather_arch_version", None)
+    )
+    if raw_version is None:
+        raw_version = _DEFAULT_FROM_VERSION
+        logger.warning(
+            "Source model has no 'forgather_arch_version' field in "
+            "config.json and --from-version was not supplied; "
+            "assuming %r (the first schema version). Pass "
+            "--from-version <PEP 440> to override if this guess is "
+            "wrong — a mis-identified source version will produce "
+            "silently incorrect results.",
+            _DEFAULT_FROM_VERSION,
+        )
+    return arch, parse_arch_version(raw_version)
 
 
 def _resolve_checkpoint(src_model_path: str, explicit: Optional[str]) -> str:
@@ -244,21 +281,29 @@ def _apply_migrations(
     converter: ModelConverter,
     config_dict: Dict[str, Any],
     state_dict: Dict[str, torch.Tensor],
-    from_version: int,
-    to_version: int,
+    from_version: Version,
+    to_version: Version,
 ) -> Tuple[Dict[str, Any], Dict[str, torch.Tensor], List[str]]:
-    """Walk the migration chain end-to-end."""
+    """Walk the migration chain end-to-end.
+
+    Each chain entry corresponds to a major-version transition (M -> M+1).
+    Minor / patch differences within the same major bypass the chain
+    entirely. The destination ``forgather_arch_version`` is stamped at
+    the end with the requested target version (so a no-op major chain
+    still re-stamps to ``to_version``, which may differ in minor / patch).
+    """
     chain = compose_migration_chain(converter, from_version, to_version)
     descriptions: List[str] = []
-    for src_v, step in chain:
-        logger.info(f"Applying migration {src_v}->{src_v + 1}: {step.description}")
+    for src_major, step in chain:
+        label = f"{src_major}.x->{src_major + 1}.0"
+        logger.info(f"Applying migration {label}: {step.description}")
         config_dict = step.migrate_config(config_dict)
         if step.param_subs:
             state_dict = remap_state_dict(state_dict, step.param_subs)
         if step.transform_state_dict is not None:
             state_dict = step.transform_state_dict(state_dict, config_dict)
-        config_dict["forgather_arch_version"] = src_v + 1
-        descriptions.append(f"{src_v}->{src_v + 1}: {step.description}")
+        descriptions.append(f"{label}: {step.description}")
+    config_dict["forgather_arch_version"] = str(to_version)
     return config_dict, state_dict, descriptions
 
 
@@ -281,8 +326,8 @@ def _write_audit(
     dst: str,
     src_model_path: str,
     arch: str,
-    from_version: int,
-    to_version: int,
+    from_version: Version,
+    to_version: Version,
     migration_descriptions: List[str],
     dtype: Optional[str],
     missing_keys: List[str],
@@ -293,8 +338,8 @@ def _write_audit(
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source": os.path.abspath(src_model_path),
         "arch": arch,
-        "from_version": from_version,
-        "to_version": to_version,
+        "from_version": str(from_version),
+        "to_version": str(to_version),
         "migrations": migration_descriptions,
         "dtype": dtype,
         "missing_keys": missing_keys,
@@ -345,19 +390,27 @@ def update(args) -> int:
             "Forgather model code (typical for HFConverter subclasses)."
         )
 
-    to_version = (
+    to_version = parse_arch_version(
         args.to_version if args.to_version is not None else converter.arch_version
     )
     logger.info(f"Arch: {arch}")
     logger.info(f"Migrating: v{from_version} -> v{to_version}")
 
-    if from_version == to_version:
-        logger.info("Source already at target schema version; nothing to migrate")
+    if from_version.major == to_version.major:
+        # Within a major, all versions are compatible by definition; the
+        # destination is just a re-stamped clone.
+        if from_version != to_version:
+            logger.info(
+                f"Source major matches target ({from_version.major}); "
+                "no rename / config migrations needed (minor/patch only)"
+            )
+        else:
+            logger.info("Source already at target schema version; nothing to migrate")
 
     # Pre-resolve the chain so a missing step fails before we touch weights.
     chain_preview = compose_migration_chain(converter, from_version, to_version)
-    for src_v, step in chain_preview:
-        logger.info(f"  step {src_v}->{src_v + 1}: {step.description}")
+    for src_major, step in chain_preview:
+        logger.info(f"  step {src_major}.x->{src_major + 1}.0: {step.description}")
 
     # ---- 3. Resolve dtype ---------------------------------------------
     if args.dtype is not None:
@@ -437,9 +490,10 @@ def update(args) -> int:
         )
         new_config.vocab_size = src_config.vocab_size
 
-    # Stamp current schema metadata.
+    # Stamp current schema metadata. The version is recorded as a PEP
+    # 440 string so it round-trips through JSON / config.json cleanly.
     new_config.forgather_arch = arch
-    new_config.forgather_arch_version = to_version
+    new_config.forgather_arch_version = str(to_version)
 
     # Carry Forgather-specific fields the project template doesn't already plumb.
     for carry in ("hf_model_type",):

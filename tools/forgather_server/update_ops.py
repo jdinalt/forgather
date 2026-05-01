@@ -24,8 +24,8 @@ def build_update_command(
     src_model_path: str,
     dst_model_path: str,
     arch: Optional[str] = None,
-    from_version: Optional[int] = None,
-    to_version: Optional[int] = None,
+    from_version: Optional[str] = None,
+    to_version: Optional[str] = None,
     checkpoint: Optional[str] = None,
     device: Optional[str] = None,
     dtype: Optional[str] = None,
@@ -56,6 +56,8 @@ def build_update_command(
         cmd.extend(["--from-version", str(from_version)])
     if to_version is not None:
         cmd.extend(["--to-version", str(to_version)])
+    # Versions are PEP 440 strings (e.g. "1", "2.0", "2.3.1") — coerced
+    # to str above so int legacy values from saved configs still flow.
     if checkpoint:
         cmd.extend(["-c", checkpoint])
     if device:

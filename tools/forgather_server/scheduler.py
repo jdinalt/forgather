@@ -397,8 +397,10 @@ def _build_update(item, gpu_indices, tty_path):
         src_model_path=p["src_model_path"],
         dst_model_path=p["dst_model_path"],
         arch=p.get("arch"),
-        from_version=int(fv) if fv is not None else None,
-        to_version=int(tv) if tv is not None else None,
+        # Versions are PEP 440 strings; coerce to str so legacy
+        # integers from older job_params still flow through.
+        from_version=str(fv) if fv is not None else None,
+        to_version=str(tv) if tv is not None else None,
         checkpoint=p.get("checkpoint"),
         device=p.get("device"),
         dtype=p.get("dtype"),

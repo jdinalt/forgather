@@ -16,7 +16,7 @@ class LlamaConverter(HFConverter):
     """Converter for Llama models between HuggingFace and Forgather formats."""
 
     arch = "llama"
-    arch_version = 1
+    arch_version = "1"
     forgather_migrations: dict = {}
 
     def __init__(self):

@@ -190,8 +190,6 @@ export function UpdateModal({
     if (!src || !dst) return;
     const fv = fromVersion.trim();
     const tv = toVersion.trim();
-    const fvNum = fv ? Number(fv) : NaN;
-    const tvNum = tv ? Number(tv) : NaN;
 
     savePersisted({
       srcModelPath: src,
@@ -219,8 +217,9 @@ export function UpdateModal({
     };
     const a = arch.trim();
     if (a) job_params.arch = a;
-    if (Number.isFinite(fvNum)) job_params.from_version = fvNum;
-    if (Number.isFinite(tvNum)) job_params.to_version = tvNum;
+    // PEP 440 strings; the script parses them via packaging.version.
+    if (fv) job_params.from_version = fv;
+    if (tv) job_params.to_version = tv;
     const ck = checkpoint.trim();
     if (ck) job_params.checkpoint = ck;
     const dev = device.trim();
@@ -333,21 +332,19 @@ export function UpdateModal({
             <label>
               <code>--from-version</code>
               <input
-                type="number"
-                min={1}
+                type="text"
                 value={fromVersion}
                 onChange={(e) => setFromVersion(e.target.value)}
-                placeholder="from config when blank"
+                placeholder="PEP 440 — from config when blank"
               />
             </label>
             <label>
               <code>--to-version</code>
               <input
-                type="number"
-                min={1}
+                type="text"
                 value={toVersion}
                 onChange={(e) => setToVersion(e.target.value)}
-                placeholder="converter's current"
+                placeholder="PEP 440 — converter's current"
               />
             </label>
           </div>
