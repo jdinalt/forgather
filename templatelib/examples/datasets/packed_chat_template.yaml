@@ -1,0 +1,46 @@
+{#
+Shared macros for chat-template-based packed datasets.
+
+Used by dataset configurations that render conversations through a Jinja
+chat template before handing the rendered text to block_tokenize_fn for
+best-fit sequence packing. The macro signature exposes every block-
+tokenization parameter as a keyword argument with a sensible default, so a
+caller only needs to supply the dataset-specific bits: the packed map fn
+reference, the chat-template loader reference, and the chat template path.
+
+See examples/datasets/open-thoughts/templatelib/configs/openthoughts-packed.yaml
+for an end-to-end usage example.
+#}
+
+-- macro packed_chat_template_map_function(map_fn_ref, chat_template_loader_ref, chat_template_path, max_length=512, stride=0, min_len=32, add_bos=True, add_eos=True, packing_strategy="best_fit", shuffle_output=True, overflow=False, packed=True)
+## Note: Values in "preprocess_args" override the defaults specified here.
+.define: &map_function !partial:{{ map_fn_ref }}
+    chat_template: !singleton:{{ chat_template_loader_ref }}
+        path: "{{ chat_template_path }}"
+    max_length: {{ max_length }}
+    overflow: {{ overflow }}
+    packed: {{ packed }}
+    packing_strategy: "{{ packing_strategy }}"
+    shuffle_output: {{ shuffle_output }}
+    stride: {{ stride }}
+    min_len: {{ min_len }}
+    add_bos: {{ add_bos }}
+    add_eos: {{ add_eos }}
+-- endmacro
+
+
+-- macro packed_map_kwargs(batch_size=1000)
+    batch_size: {{ batch_size }}
+-- endmacro
+
+
+-- macro packed_dynamic_args()
+    max_length:
+        names: "--max-length"
+        type: "int"
+        help: "Maximum length of output sequences."
+    stride:
+        names: "--stride"
+        type: "int"
+        help: "Number of tokens to repeat from previous overflowing example."
+-- endmacro

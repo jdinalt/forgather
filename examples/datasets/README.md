@@ -8,6 +8,7 @@
 - **[HuggingFaceTB](./HuggingFaceTB/)** - SmolLM-Corpus: curated high-quality educational and synthetic data designed for training small language models.
 - **[wikipedia](./wikipedia/)** - Wikimedia Wikipedia dumps (English, November 2023 snapshot).
 - **[Open-Orca](./Open-Orca/)** - Open-Orca: augmented FLAN examples distilled through GPT-4/3.5, heavy on chain-of-thought and structured reasoning prompts.
+- **[open-thoughts](./open-thoughts/)** - OpenThoughts3-1.2M: 1.2M reasoning conversations (math, code, science) annotated by QwQ-32B, in ShareGPT-style multi-turn format.
 - **[OpenAssistant](./OpenAssistant/)** - OpenAssistant: conversational AI dataset from the LAION AI community, constructed from human-annotated conversation trees.
 - **[QuixiAI](./QuixiAI/)** - Samantha: Eric Hartford's conversational persona dataset (formerly Cognitive Computations).
 - **[ajibawa-2023](./ajibawa-2023/)** - General-Stories-Collection and related datasets by Feynman Innovations.
