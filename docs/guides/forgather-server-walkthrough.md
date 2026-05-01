@@ -40,18 +40,27 @@ If you haven't already, follow [Getting Started](../getting-started/README.md)
 through the install + cut-cross-entropy steps. That gets you a working
 `forgather` CLI and its dependencies.
 
-Then build the web UI:
+Then build the web UI. The repo ships a wrapper script that handles
+the `cd` + `npm install` + `npm run build` dance for you:
 
 ```bash
-cd tools/forgather_server/webui
-npm install          # ~2 minutes on first run, fetches Vite + React
-                     # + Monaco + viz-js (the WASM Graphviz)
-npm run build        # produces webui/dist/
+./build-webui.sh        # from the forgather repo root
 ```
 
-`npm install` pulls in a sizeable Node dependency tree the first time
-through — go grab a coffee. The build itself is fast. You only need
-to repeat this if you pull changes that touch `webui/src/`.
+Useful flags:
+- `--clean` — wipe `dist/` and the Vite cache before building (use this
+  when an asset hash collides with a previously cached one and the
+  browser refuses to pick up your change).
+- `--install` — force a fresh `npm install` even if `node_modules`
+  already looks current.
+- `--watch` — run the Vite dev server with live reload instead of
+  producing a static bundle (handy when iterating on `webui/src/`).
+
+The first run does an `npm install` to pull in the Node dependency
+tree (~2 minutes — Vite + React + Monaco + the WASM Graphviz).
+Subsequent builds skip that step and just rebundle, which is fast.
+You only need to rebuild when you pull changes that touch
+`webui/src/`.
 
 > **Heads-up:** if you start the server before the `dist/` directory
 > exists, the API still works but the root URL returns 404 with no
