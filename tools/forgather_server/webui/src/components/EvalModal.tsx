@@ -245,19 +245,27 @@ export function EvalModal({
           <div className="submit-row">
             <label>
               dtype
-              <input
-                type="text"
+              <select
                 value={dtype}
                 onChange={(e) => setDtype(e.target.value)}
-              />
+              >
+                <option value="bfloat16">bfloat16</option>
+                <option value="float16">float16</option>
+                <option value="float32">float32</option>
+                <option value="float64">float64</option>
+              </select>
             </label>
             <label>
               attn impl
-              <input
-                type="text"
+              <select
                 value={attn}
                 onChange={(e) => setAttn(e.target.value)}
-              />
+              >
+                <option value="sdpa">sdpa</option>
+                <option value="flex_attention">flex_attention</option>
+                <option value="flash_attention_2">flash_attention_2</option>
+                <option value="eager">eager</option>
+              </select>
             </label>
             <label className="dyn-checkbox">
               <input
