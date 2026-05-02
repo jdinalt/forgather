@@ -36,9 +36,9 @@ docker/run.sh
 The first build pulls ~3 GB of dependencies (PyTorch + friends) and
 takes a few minutes; rebuilds reuse the layer cache. `docker/run.sh`
 drops you into a bash shell at the repo path with the venv already
-on `PATH`, GPU access enabled (`--gpus all`), and the canonical
-Forgather server / job ports (8765, 8137, 6006, 8000) forwarded to
-the host's loopback.
+on `PATH`, GPU access enabled (`--gpus all`), and host networking
+(so every service inside the container is reachable on the host's
+loopback as-is).
 
 ```bash
 forgather ls -r        # works out of the box
@@ -46,6 +46,64 @@ forgather -t v2.yaml train
 ```
 
 See `docs/getting-started/README.md` for the full walkthrough.
+
+## Container lifecycle
+
+The container is **long-lived**. The first `docker/run.sh`
+invocation creates a detached container named
+`forgather-dev-${USER}` whose PID 1 is `sleep infinity`; subsequent
+invocations re-attach via `docker exec`. Logging out of an
+interactive shell does NOT stop the container, so a `forgather
+server` (or any training job) you started in one session keeps
+running, and you can re-attach from a new terminal to inspect
+or control it.
+
+```bash
+docker/run.sh                   # attach (creating the container if needed)
+docker/run.sh forgather control list
+                                # one-shot command in the same container
+docker/run.sh --status          # report running / stopped / absent
+docker/run.sh --stop            # stop (but keep) the container
+docker/run.sh --rm              # stop and remove
+docker/run.sh --recreate        # rebuild from scratch (e.g. after image rebuild)
+```
+
+When the container already exists, `IMAGE` / `GPUS` / `NETWORK` /
+port / mount overrides are ignored — those are baked in at
+creation time. To pick up changes (e.g. after `docker/build.sh`
+rebuilt the image), run `docker/run.sh --recreate`.
+
+Multiple users on the same host get isolated containers
+automatically (`forgather-dev-alice`, `forgather-dev-bob`); set
+`NAME=...` to override.
+
+### Equivalent raw docker commands
+
+The helper script is only a thin wrapper. You can drive the
+container directly with `docker` if you'd rather:
+
+```bash
+NAME=forgather-dev-$USER
+
+docker ps -a --filter "name=${NAME}"           # list (running or not)
+docker ps    --filter "name=${NAME}"           # list (running only)
+docker logs ${NAME}                            # PID 1 stdout/stderr (entrypoint output)
+docker stats ${NAME}                           # live CPU / memory / I/O
+docker stop  ${NAME}                           # stop, keep filesystem
+docker start ${NAME}                           # start an existing stopped container
+docker restart ${NAME}                         # stop + start
+docker rm -f ${NAME}                           # stop + remove (next run.sh recreates)
+docker exec -it ${NAME} bash -l                # extra interactive shell
+
+# Force-rebuild image, then recreate the container against it:
+docker/build.sh -- --no-cache
+docker/run.sh --recreate
+```
+
+`docker logs` is particularly useful when something goes wrong at
+container start — the entrypoint's editable-install re-link and
+webui-dist warning are printed there, not into your interactive
+shell.
 
 ## Networking
 

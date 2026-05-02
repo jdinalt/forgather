@@ -198,6 +198,48 @@ cd examples/tutorials/tiny_llama
 forgather -t v2.yaml train
 ```
 
+### Container lifecycle
+
+The container is long-lived: the first `docker/run.sh` invocation
+creates a detached container named `forgather-dev-${USER}` with
+`sleep infinity` as PID 1; subsequent invocations re-attach via
+`docker exec`. Logging out of an interactive shell does **not**
+stop the container, so a `forgather server` (or any training job)
+you started in one session keeps running, and you can re-attach
+from a new terminal to inspect or control it.
+
+```bash
+docker/run.sh                   # attach (creating the container if needed)
+docker/run.sh forgather ls -r   # one-shot command in the same container
+docker/run.sh --status          # is the container running, stopped, or absent?
+docker/run.sh --stop            # stop (but keep) — preserves filesystem state
+docker/run.sh --rm              # stop and remove (next run.sh recreates fresh)
+docker/run.sh --recreate        # rebuild from scratch (e.g. after image rebuild)
+```
+
+`IMAGE`, `GPUS`, `NETWORK`, port and mount overrides only apply
+when the container is **created**. After `docker/build.sh`
+rebuilds the image, run `docker/run.sh --recreate` to roll the
+running container forward to the new image.
+
+If you'd rather drive `docker` directly:
+
+```bash
+NAME=forgather-dev-$USER
+docker ps -a --filter name=${NAME}        # see the container, running or not
+docker logs ${NAME}                       # entrypoint output (install re-link warnings)
+docker stop ${NAME}                       # stop
+docker start ${NAME}                      # start an existing stopped container
+docker rm -f ${NAME}                      # stop and remove
+```
+
+For force-rebuilding after pulling repo changes:
+
+```bash
+docker/build.sh -- --no-cache
+docker/run.sh --recreate
+```
+
 ### Networking
 
 `docker/run.sh` defaults to `--network host`, so the container
