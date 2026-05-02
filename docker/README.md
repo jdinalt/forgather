@@ -1,10 +1,13 @@
 # Forgather Docker development image
 
-Ubuntu 24.04-based image that bundles a fully provisioned Forgather
-environment — Python 3.12, PyTorch (CUDA wheels), the Forgather
-package and all dependencies, `cut-cross-entropy` from source, plus a
-developer-friendly base set of CLI tools (vim, tmux, ripgrep, jq,
-htop, ssh, sudo, ...).
+Ubuntu 24.04-based image that bundles every Forgather **dependency**
+— Python 3.12, PyTorch (CUDA wheels), `cut-cross-entropy` from
+source, plus a developer-friendly base set of CLI tools (vim, tmux,
+ripgrep, jq, htop, ssh, sudo, ...). The Forgather package itself
+is **not** baked in: at runtime the entrypoint installs it in
+editable mode against the bind-mounted host clone, so there's a
+single source of truth (your working tree) and no in-image
+duplicate to drift.
 
 The intent is twofold:
 
@@ -147,18 +150,16 @@ request regardless of bind.
 
 ## Web UI bundle
 
-The image prebuilds the SPA at `/opt/forgather/repo/tools/forgather_server/webui/dist`
-(via `./build-webui.sh` during `docker build`), so the bundled
-in-image copy works out of the box for release-test mode.
-
-When you bind-mount a host-side checkout via `FORGATHER_REPO`,
-the server reads `dist/` from *that* tree — independent of the
-in-image build. The entrypoint warns when it's missing; build
-it once on the host (or once inside the container against the
-bind-mounted repo) and subsequent runs reuse it:
+The image does **not** prebuild the SPA — that build is local to
+the bind-mounted checkout, and the dist bundle would land in the
+wrong tree if we built at image-build time. Build it once on the
+host (or once inside the container against the bind-mounted repo)
+before starting the Forgather server; subsequent runs reuse it.
+The entrypoint prints a one-line reminder on container start when
+`webui/dist/` is missing.
 
 ```bash
-# Inside the container, against the bind-mounted repo:
+# On the host (or from inside the container — same checkout):
 cd "$FORGATHER_REPO" && ./build-webui.sh
 ```
 
@@ -177,19 +178,23 @@ To build for a different identity (e.g. on CI):
 USER_NAME=dev USER_UID=1000 USER_GID=1000 docker/build.sh
 ```
 
-## How the editable install survives a bind-mounted home
+## How the editable install works
 
-The venv lives at `/opt/forgather/venv` — outside `/home`, so the
-bind-mount doesn't shadow it. At image-build time the venv is seeded
-with an editable install of the in-image repo at `/opt/forgather/repo`.
-`run.sh` sets `FORGATHER_REPO` to the host-side checkout's path; the
-entrypoint detects that and re-installs the package in editable mode
-against the bind-mounted source tree, so your edits show up
-immediately without a rebuild.
+The venv at `/opt/forgather/venv` carries every Forgather
+dependency but **not** the Forgather package itself — outside
+`/home`, so the bind-mount doesn't shadow it. `run.sh` sets
+`FORGATHER_REPO` to your host-side checkout's path; the
+entrypoint installs Forgather in editable mode against that
+tree on first start (and re-runs the install if you point it at
+a different checkout). Your edits show up immediately without
+a rebuild, and there is no in-image copy of the repo to drift,
+mirror, or chown.
 
-If you don't want the live re-link (e.g. release testing the
-in-image copy), `unset FORGATHER_REPO` before invoking the
-container, or run `docker run` directly without `run.sh`.
+If `FORGATHER_REPO` is unset (or doesn't point at a Forgather
+checkout) the entrypoint prints a warning — the venv is still
+usable for arbitrary Python work, but the `forgather` command
+won't be available until you install the package against a
+real source tree.
 
 ## Common overrides
 
@@ -213,19 +218,23 @@ IMAGE=forgather-dev:experiment docker/run.sh
 
 ## Release-testing workflow
 
-Use the image as a clean sandbox: build with `--no-cache` to rule out
-layer-cache contamination, then run **without** the bind-mount so the
-container only sees the in-image copy.
+Use the image as a clean sandbox by building with `--no-cache` (to
+rule out layer-cache contamination) and bind-mounting a freshly
+cloned tree:
 
 ```bash
 docker/build.sh forgather-dev:release-test -- --no-cache
-docker run --rm -it --gpus all forgather-dev:release-test \
-    bash -lc "forgather ls -r && \
-              cd /opt/forgather/repo/examples/tutorials/tiny_llama && \
-              forgather -t v2.yaml train"
+
+# In a clean directory:
+git clone https://github.com/jdinalt/forgather.git fresh-forgather
+cd fresh-forgather
+IMAGE=forgather-dev:release-test docker/run.sh -- bash -lc \
+    "forgather ls -r && \
+     cd examples/tutorials/tiny_llama && \
+     forgather -t v2.yaml train"
 ```
 
-`/opt/forgather/repo` is the COPY-ed-in copy of the source tree; with
-no bind-mount and no `FORGATHER_REPO`, that's the install the venv
-runs against — exactly what an end user gets after a fresh `pip
-install -e .`.
+The `--no-cache` build verifies the Dockerfile and dependency
+graph from scratch; the fresh clone verifies the source tree
+itself runs end-to-end against that environment. Together that's
+exactly what an end user gets after a fresh `pip install -e .`.

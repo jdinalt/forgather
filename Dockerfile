@@ -91,25 +91,24 @@ RUN UV_INSTALL_DIR=/usr/local/bin /tmp/uv-install.sh \
 
 # ---------------------------------------------------------------------------
 # Build the Forgather virtualenv at a fixed location outside /home so it
-# survives a bind-mounted home. We seed the venv from a copy of the repo
-# baked into the image; at runtime the entrypoint re-links the editable
-# install to the bind-mounted source tree, so user edits show up live.
+# survives a bind-mounted home. The venv carries every dependency
+# Forgather needs, but NOT the Forgather package itself — at runtime
+# the entrypoint installs the package in editable mode against the
+# bind-mounted host clone (FORGATHER_REPO). One canonical source tree;
+# no in-image duplicate to drift, no slow chown of a mirrored repo.
 # ---------------------------------------------------------------------------
 RUN mkdir -p /opt/forgather \
     && uv venv --python python3.12 --seed ${VENV_DIR}
 
-# Copy the project (filtered by .dockerignore) into the image. We do
-# this in two stages so dependency installation is cached on
-# pyproject.toml alone — touching application code below doesn't
-# invalidate the (slow) PyTorch download layer.
-COPY pyproject.toml /opt/forgather/repo/pyproject.toml
+# Pull in only pyproject.toml (deps list) so dependency installation
+# is cached on this layer alone; touching application code never
+# invalidates the (slow) PyTorch download layer. Bind-mount instead
+# of COPY so the file isn't baked into an intermediate layer that
+# we'd have to clean up.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python ${VENV_DIR}/bin/python -r /opt/forgather/repo/pyproject.toml
-
-# Now copy the rest of the repo and finish the editable install.
-COPY . /opt/forgather/repo
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python ${VENV_DIR}/bin/python --no-deps -e /opt/forgather/repo
+    --mount=type=bind,source=pyproject.toml,target=/tmp/forgather-pyproject.toml \
+    uv pip install --python ${VENV_DIR}/bin/python \
+        -r /tmp/forgather-pyproject.toml
 
 # Recommended: cut-cross-entropy from source for bf16/fp16 numerical
 # stability (see docs/getting-started). The pip release lacks the
@@ -130,19 +129,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # idempotent and fails loudly if the pre-patch text has moved
 # (i.e. tensorboard was upgraded to a release containing the
 # fix, in which case drop both this RUN and the patch script).
-COPY docker/patches/fix_tensorboard_pkg_resources.py /tmp/fix_tb.py
-RUN ${VENV_DIR}/bin/python /tmp/fix_tb.py && rm /tmp/fix_tb.py
-
-# Prebuild the Forgather server SPA so the in-image copy of the repo
-# can serve the web UI without a manual `./build-webui.sh` step. The
-# build is fast once node_modules is populated; the npm cache lives
-# in the build layer (no runtime hit).
-#
-# Note: when the user bind-mounts a host-side checkout via
-# FORGATHER_REPO, the server runs against *that* tree, whose
-# webui/dist/ is independent of this one. The entrypoint warns when
-# that dist is missing.
-RUN bash /opt/forgather/repo/build-webui.sh
+RUN --mount=type=bind,source=docker/patches/fix_tensorboard_pkg_resources.py,target=/tmp/fix_tb.py \
+    ${VENV_DIR}/bin/python /tmp/fix_tb.py
 
 # ---------------------------------------------------------------------------
 # Create the in-container user matching the host UID/GID. Ubuntu 24.04
@@ -189,8 +177,8 @@ RUN printf '%s\n' \
         '    cat <<MOTD' \
         '' \
         'Forgather development container' \
-        '  venv:        /opt/forgather/venv  (already on PATH)' \
-        '  bundled src: /opt/forgather/repo  (used when FORGATHER_REPO is unset)' \
+        '  venv:        /opt/forgather/venv  (already on PATH; deps only)' \
+        '  source:      $FORGATHER_REPO     (bind-mounted host clone)' \
         '' \
         'Networking: docker/run.sh defaults to --network host, so' \
         'services bound to 127.0.0.1 inside the container are' \
