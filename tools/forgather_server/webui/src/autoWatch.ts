@@ -8,7 +8,11 @@ import { persistGet, persistSet } from "./persist";
 const AUTO_WATCH_KEY = "forgather-auto-watch-tty-v1";
 
 export function getAutoWatchTty(): boolean {
-  return persistGet(AUTO_WATCH_KEY) === "1";
+  // Default ON for fresh installs (no value persisted yet); once the
+  // user toggles the checkbox, their explicit "0" / "1" wins.
+  const v = persistGet(AUTO_WATCH_KEY);
+  if (v === null) return true;
+  return v === "1";
 }
 
 export function setAutoWatchTty(v: boolean): void {
