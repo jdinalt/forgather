@@ -293,6 +293,7 @@ export interface DynamicArg {
 
 export interface OverridesData {
   values: Record<string, unknown>;
+  requested_gpus: number | null;
   updated_at: number | null;
 }
 
@@ -924,11 +925,17 @@ export const api = {
     project_dir: string,
     config: string,
     values: Record<string, unknown>,
+    requested_gpus?: number | null,
   ): Promise<OverridesData> => {
     const r = await fetch("/api/config/overrides", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_dir, config, values }),
+      body: JSON.stringify({
+        project_dir,
+        config,
+        values,
+        requested_gpus: requested_gpus ?? null,
+      }),
     });
     if (!r.ok) {
       const detail = await r.text();

@@ -9,8 +9,9 @@ import { PathField } from "./PathField";
 /** Settings persisted across ad-hoc "Start Server…" invocations. Project-
  *  backed flows don't read/write this — they derive initial values from
  *  their props instead. Only the fields the user typically customizes go
- *  here; ``requestedGpus`` and ``priority`` reset each time because their
- *  "right" value depends on what's currently running. */
+ *  here; ``priority`` resets each time because the "right" value depends
+ *  on what's currently running. ``requestedGpus`` is sticky so the user
+ *  doesn't have to retype 4 GPUs every server start. */
 interface PersistedAdHoc {
   modelPath: string;
   port: number;
@@ -24,6 +25,7 @@ interface PersistedAdHoc {
   compileArgs: string;
   disableKvCache: boolean;
   chatTemplate: string;
+  requestedGpus: number;
 }
 
 const AD_HOC_STORAGE_KEY = "forgather-adhoc-inference-v1";
@@ -97,9 +99,11 @@ export function InferenceModal({
   // are easy to fix per-submit.
   const [port, setPort] = useState<number>(persisted.port ?? 8137);
   const [host, setHost] = useState<string>(persisted.host ?? "127.0.0.1");
-  // GPU count / priority stay fresh each time — the "right" values
-  // depend on current queue + GPU occupancy, not on past choices.
-  const [requestedGpus, setRequestedGpus] = useState<number>(1);
+  // priority stays fresh each time — its "right" value depends on
+  // current queue state. requestedGpus is sticky.
+  const [requestedGpus, setRequestedGpus] = useState<number>(
+    adHoc ? persisted.requestedGpus ?? 1 : 1,
+  );
   const [priority, setPriority] = useState<number>(0);
   const [ckptPath, setCkptPath] = useState<string>(
     checkpointPath ?? (adHoc ? persisted.ckptPath ?? "" : ""),
@@ -149,6 +153,7 @@ export function InferenceModal({
     setCompileArgs("");
     setDisableKvCache(false);
     setChatTemplate("");
+    setRequestedGpus(1);
   };
 
   const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
@@ -190,6 +195,7 @@ export function InferenceModal({
         compileArgs: compileArgs.trim(),
         disableKvCache,
         chatTemplate: chatTemplate.trim(),
+        requestedGpus,
       });
     }
     const job_params: Record<string, unknown> = {

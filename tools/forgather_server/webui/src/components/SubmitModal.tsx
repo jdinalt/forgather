@@ -78,15 +78,25 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const gpuMismatch =
     fixedWorkerCount !== null && fixedWorkerCount !== requestedGpus;
 
-  // Seed the GPU count once the config info arrives, unless the user has
-  // already edited the field.
+  // Seed the GPU count from (in priority order):
+  //   1. user edits in this session (gpusTouched)
+  //   2. cached overrides for this (project, config)
+  //   3. config's nproc_per_node, when it pins a fixed worker count
+  //   4. 1
+  // The cache wins over fixedWorkerCount because the user explicitly chose
+  // a value last time; if they want to fall back to the config default they
+  // can hit "Reset to defaults".
   useEffect(() => {
     if (gpusTouched) return;
-    if (fixedWorkerCount !== null) {
-      const clamped = Math.max(1, Math.min(maxGpus, fixedWorkerCount));
-      setRequestedGpus(clamped);
+    const cached = overridesQ.data?.requested_gpus;
+    if (typeof cached === "number" && cached >= 1) {
+      setRequestedGpus(Math.max(1, Math.min(maxGpus, cached)));
+      return;
     }
-  }, [fixedWorkerCount, gpusTouched, maxGpus]);
+    if (fixedWorkerCount !== null) {
+      setRequestedGpus(Math.max(1, Math.min(maxGpus, fixedWorkerCount)));
+    }
+  }, [fixedWorkerCount, gpusTouched, maxGpus, overridesQ.data?.requested_gpus]);
 
   // Seed form values from cache once both schema and overrides have loaded.
   // Only seed entries whose dest exists in the current schema; silently
@@ -182,9 +192,11 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       priority,
     });
     // Best-effort: save overrides after enqueue so next open is pre-filled.
-    // Don't block the submit on the result.
+    // Don't block the submit on the result. The GPU count rides in the same
+    // payload so it's scoped to (project, config) and survives across
+    // browsers / server restarts the same way the dynamic args do.
     api
-      .setOverrides(project.project_dir, config.name, dyn)
+      .setOverrides(project.project_dir, config.name, dyn, requestedGpus)
       .then(() => {
         qc.invalidateQueries({
           queryKey: ["overrides", project.project_dir, config.name],

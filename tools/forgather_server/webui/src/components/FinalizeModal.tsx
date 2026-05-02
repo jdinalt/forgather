@@ -7,8 +7,8 @@ import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
 
 /** Settings persisted across sidebar-Tools "Finalize…" invocations.
- *  GPU count + priority reset each time since they depend on current
- *  queue / GPU state. */
+ *  ``priority`` resets each time since the right value depends on
+ *  current queue state. ``requestedGpus`` is sticky. */
 interface PersistedFinalize {
   source: string;
   /** Existing parent directory to write the finalized model into. */
@@ -29,6 +29,7 @@ interface PersistedFinalize {
   device: string;
   dryRun: boolean;
   logLevel: string;
+  requestedGpus: number;
 }
 
 const STORAGE_KEY = "forgather-global-finalize-v1";
@@ -53,6 +54,7 @@ const DEFAULTS: PersistedFinalize = {
   device: "cpu",
   dryRun: false,
   logLevel: "INFO",
+  requestedGpus: 0,
 };
 
 function loadPersisted(): Partial<PersistedFinalize> {
@@ -194,7 +196,9 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
   const [device, setDevice] = useState(initial.device);
   const [dryRun, setDryRun] = useState(initial.dryRun);
   const [logLevel, setLogLevel] = useState(initial.logLevel);
-  const [requestedGpus, setRequestedGpus] = useState<number>(0);
+  const [requestedGpus, setRequestedGpus] = useState<number>(
+    initial.requestedGpus ?? 0,
+  );
   const [priority, setPriority] = useState<number>(0);
 
   // Backfill tokenizer defaults once quick-paths resolves, but only
@@ -242,6 +246,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
     setDevice(DEFAULTS.device);
     setDryRun(DEFAULTS.dryRun);
     setLogLevel(DEFAULTS.logLevel);
+    setRequestedGpus(DEFAULTS.requestedGpus);
   };
 
   const enqueue = useMutation({
@@ -282,6 +287,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
       device: device.trim(),
       dryRun,
       logLevel,
+      requestedGpus,
     });
 
     const job_params: Record<string, unknown> = {
