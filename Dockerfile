@@ -127,19 +127,27 @@ USER ${USER_NAME}
 RUN uv venv --python python3.12 --seed ${VENV_DIR}
 
 # Install Forgather + every dependency from pyproject.toml. We bind-
-# mount the build context (filtered by .dockerignore) just for this
-# step so uv can build the package — no source layer is baked into
-# the image. At runtime the entrypoint switches the install to
-# editable mode against $FORGATHER_REPO, so this build-time install
-# only seeds the heavy dependency layers (PyTorch, transformers, ...)
-# and the package metadata gets rewritten on first container start.
+# mount the build context read-only and then copy it into a user-
+# writable scratch dir at /tmp/src — setuptools insists on writing
+# src/<pkg>.egg-info into the source tree during the build, and the
+# bind-mounted context inherits root ownership from BuildKit's
+# snapshot (rw=true makes the overlay writable but doesn't change
+# permissions). No source layer ends up in the image: /tmp/src is
+# scoped to this RUN.
+#
+# At runtime the entrypoint switches the install to editable mode
+# against $FORGATHER_REPO, so this build-time install only seeds the
+# heavy dependency layers (PyTorch, transformers, ...) and the
+# package metadata gets rewritten on first container start.
 #
 # Cache mount lives at the user's ~/.cache/uv (uv's documented cache
 # path); BuildKit needs explicit uid/gid on the cache volume so the
 # unprivileged user can write to it.
 RUN --mount=type=cache,target=/home/${USER_NAME}/.cache/uv,uid=${USER_UID},gid=${USER_GID} \
-    --mount=type=bind,target=/build-context,rw \
-    uv pip install --python ${VENV_DIR}/bin/python /build-context
+    --mount=type=bind,target=/build-context \
+    cp -a /build-context /tmp/src \
+    && uv pip install --python ${VENV_DIR}/bin/python /tmp/src \
+    && rm -rf /tmp/src
 
 # Recommended: cut-cross-entropy from source for bf16/fp16 numerical
 # stability (see docs/getting-started). The pip release lacks the
