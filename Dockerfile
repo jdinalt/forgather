@@ -90,23 +90,54 @@ RUN UV_INSTALL_DIR=/usr/local/bin /tmp/uv-install.sh \
     && uv --version
 
 # ---------------------------------------------------------------------------
-# Build the Forgather virtualenv at /opt/forgather/venv (outside /home,
-# so the bind-mounted host home doesn't shadow it). /opt/forgather/ is
-# just the venv's parent — there is no in-image copy of the repo.
+# Create the in-container user matching the host UID/GID *before* we
+# build the venv, so all venv files (~thousands, dominated by PyTorch)
+# are owned by the user from the start — no slow recursive chown after
+# the install. Ubuntu 24.04 already ships with a uid=1000 'ubuntu'
+# user; if the requested UID collides with it we delete the stock
+# account first so the build arg always wins.
 # ---------------------------------------------------------------------------
+RUN set -eux; \
+    if id -u ubuntu >/dev/null 2>&1 && [ "$(id -u ubuntu)" = "${USER_UID}" ]; then \
+        userdel -r ubuntu 2>/dev/null || userdel ubuntu; \
+    fi; \
+    if ! getent group "${USER_GID}" >/dev/null; then \
+        groupadd --gid "${USER_GID}" "${USER_NAME}"; \
+    fi; \
+    if ! id -u "${USER_NAME}" >/dev/null 2>&1; then \
+        useradd --uid "${USER_UID}" --gid "${USER_GID}" \
+            --shell /bin/bash --create-home "${USER_NAME}"; \
+    fi; \
+    echo "${USER_NAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-${USER_NAME}; \
+    chmod 0440 /etc/sudoers.d/90-${USER_NAME}; \
+    install -d -o "${USER_UID}" -g "${USER_GID}" /opt/forgather
+
+# ---------------------------------------------------------------------------
+# Everything below this line that touches the venv runs as the
+# unprivileged user, so files land with the right ownership and the
+# slow `chown -R /opt/forgather` is gone. We switch back to root
+# below for the system-wide /etc/profile.d and entrypoint setup.
+# ---------------------------------------------------------------------------
+USER ${USER_NAME}
+
+# Build the Forgather virtualenv at /opt/forgather/venv (outside
+# /home, so the bind-mounted host home doesn't shadow it).
+# /opt/forgather/ is just the venv's parent — there is no in-image
+# copy of the repo.
 RUN uv venv --python python3.12 --seed ${VENV_DIR}
 
 # Install Forgather + every dependency from pyproject.toml. We bind-
 # mount the build context (filtered by .dockerignore) just for this
 # step so uv can build the package — no source layer is baked into
-# the image. At runtime the entrypoint switches the install to editable
-# mode against $FORGATHER_REPO, so this build-time install only seeds
-# the heavy dependency layers (PyTorch, transformers, ...) and the
-# package metadata gets rewritten on first container start.
+# the image. At runtime the entrypoint switches the install to
+# editable mode against $FORGATHER_REPO, so this build-time install
+# only seeds the heavy dependency layers (PyTorch, transformers, ...)
+# and the package metadata gets rewritten on first container start.
 #
-# /root/.cache/uv is uv's documented cache path inside Docker builds —
-# RUN executes as root, and uv resolves its cache via ~/.cache/uv.
-RUN --mount=type=cache,target=/root/.cache/uv \
+# Cache mount lives at the user's ~/.cache/uv (uv's documented cache
+# path); BuildKit needs explicit uid/gid on the cache volume so the
+# unprivileged user can write to it.
+RUN --mount=type=cache,target=/home/${USER_NAME}/.cache/uv,uid=${USER_UID},gid=${USER_GID} \
     --mount=type=bind,target=/build-context,rw \
     uv pip install --python ${VENV_DIR}/bin/python /build-context
 
@@ -115,7 +146,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # accum_e_fp32 / accum_c_fp32 features Forgather relies on. Replaces
 # the cut-cross-entropy 25.1.1 wheel installed via pyproject.toml
 # above.
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN --mount=type=cache,target=/home/${USER_NAME}/.cache/uv,uid=${USER_UID},gid=${USER_GID} \
     uv pip install --python ${VENV_DIR}/bin/python \
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
 
@@ -134,26 +165,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN --mount=type=bind,source=docker/patches/fix_tensorboard_pkg_resources.py,target=/tmp/fix_tb.py \
     ${VENV_DIR}/bin/python /tmp/fix_tb.py
 
-# ---------------------------------------------------------------------------
-# Create the in-container user matching the host UID/GID. Ubuntu 24.04
-# already ships with a uid=1000 'ubuntu' user; if the requested UID
-# collides with it we delete the stock account first so the build
-# arg always wins.
-# ---------------------------------------------------------------------------
-RUN set -eux; \
-    if id -u ubuntu >/dev/null 2>&1 && [ "$(id -u ubuntu)" = "${USER_UID}" ]; then \
-        userdel -r ubuntu 2>/dev/null || userdel ubuntu; \
-    fi; \
-    if ! getent group "${USER_GID}" >/dev/null; then \
-        groupadd --gid "${USER_GID}" "${USER_NAME}"; \
-    fi; \
-    if ! id -u "${USER_NAME}" >/dev/null 2>&1; then \
-        useradd --uid "${USER_UID}" --gid "${USER_GID}" \
-            --shell /bin/bash --create-home "${USER_NAME}"; \
-    fi; \
-    echo "${USER_NAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-${USER_NAME}; \
-    chmod 0440 /etc/sudoers.d/90-${USER_NAME}; \
-    chown -R "${USER_UID}:${USER_GID}" /opt/forgather
+# Switch back to root for the system-wide /etc/profile.d edits and
+# the entrypoint COPY into /usr/local/bin.
+USER root
 
 # Activate the venv for every interactive shell, regardless of which
 # directory the user lands in. /etc/profile.d runs for login shells;
