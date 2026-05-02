@@ -518,7 +518,7 @@ export function ProjectTree({
               });
             }}
           >
-            ⚖ Evaluate…
+            📐 Evaluate…
           </button>
           <button
             onClick={() => {
@@ -876,7 +876,7 @@ function ConfigContextMenuItems({
       )}
       {hasCheckpoints && (
         <button onClick={() => onChooseServeEval("eval", outputDir, null)}>
-          ⚖ Evaluate…
+          📐 Evaluate…
         </button>
       )}
       {hasCheckpoints && (

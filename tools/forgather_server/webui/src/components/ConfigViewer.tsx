@@ -147,7 +147,7 @@ export function ConfigViewer({
             onClick={() => setEvaluating(true)}
             title="Evaluate this model (blank = latest checkpoint)"
           >
-            ⚖ Evaluate…
+            📐 Evaluate…
           </button>
         )}
         <nav className="tabs">
