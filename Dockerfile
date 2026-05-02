@@ -104,15 +104,10 @@ RUN uv venv --python python3.12 --seed ${VENV_DIR}
 # the heavy dependency layers (PyTorch, transformers, ...) and the
 # package metadata gets rewritten on first container start.
 #
-# Note on cache path: uv's default cache lives at ~/.cache/uv. Inside
-# build steps RUN executes as root, so the default would be
-# /root/.cache/uv — a path that reads like "root user's home cache"
-# but is really just a BuildKit named cache mount. Override via
-# $UV_CACHE_DIR to a neutral build-only path so the intent is clear.
-# The override is per-RUN (not ENV) so it doesn't leak into runtime.
-RUN --mount=type=cache,target=/var/cache/uv \
+# /root/.cache/uv is uv's documented cache path inside Docker builds —
+# RUN executes as root, and uv resolves its cache via ~/.cache/uv.
+RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,target=/build-context,rw \
-    UV_CACHE_DIR=/var/cache/uv \
     uv pip install --python ${VENV_DIR}/bin/python /build-context
 
 # Recommended: cut-cross-entropy from source for bf16/fp16 numerical
@@ -120,8 +115,7 @@ RUN --mount=type=cache,target=/var/cache/uv \
 # accum_e_fp32 / accum_c_fp32 features Forgather relies on. Replaces
 # the cut-cross-entropy 25.1.1 wheel installed via pyproject.toml
 # above.
-RUN --mount=type=cache,target=/var/cache/uv \
-    UV_CACHE_DIR=/var/cache/uv \
+RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python ${VENV_DIR}/bin/python \
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
 
