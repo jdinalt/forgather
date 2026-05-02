@@ -16,4 +16,5 @@
 ## Tests whether Canon-A's local token mixing compensates for lack of RoPE.
 
 [rel_positional_encoder]
-.define: &relative_pe null
+.define: &rotary_emb null
+.define: &apply_rotary_pos_emb null
