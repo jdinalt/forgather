@@ -597,6 +597,13 @@ export function ProjectTree({
           >
             📁 Create Project…
           </button>
+          <ReadmeMenuItem
+            dir={workspaceMenuTarget.workspace.workspace_root}
+            onEdit={(path) => {
+              setWorkspaceMenuTarget(null);
+              onEditTemplate(path);
+            }}
+          />
           <button
             className="context-menu-destructive"
             onClick={() => {
@@ -635,6 +642,13 @@ export function ProjectTree({
           >
             📄 New Template…
           </button>
+          <ReadmeMenuItem
+            dir={projectMenuTarget.project.project_dir}
+            onEdit={(path) => {
+              setProjectMenuTarget(null);
+              onEditTemplate(path);
+            }}
+          />
           <button
             className="context-menu-destructive"
             onClick={() => {
@@ -915,6 +929,31 @@ function ConfigContextMenuItems({
         🗑 Delete Config…
       </button>
     </>
+  );
+}
+
+/** Renders an "Edit README.md" menu item if a README.md exists in
+ *  the given directory; renders nothing otherwise. The probe uses
+ *  ``fsPathExists`` so a missing file silently hides the entry
+ *  instead of offering an action that would open an empty editor. */
+function ReadmeMenuItem({
+  dir,
+  onEdit,
+}: {
+  dir: string;
+  onEdit: (path: string) => void;
+}) {
+  const path = dir.replace(/\/+$/, "") + "/README.md";
+  const existsQ = useQuery({
+    queryKey: ["fs-path-exists", path],
+    queryFn: () => api.fsPathExists(path),
+    staleTime: 30_000,
+  });
+  if (!existsQ.data?.exists || !existsQ.data?.is_file) return null;
+  return (
+    <button onClick={() => onEdit(path)} title={path}>
+      ✎ Edit README.md
+    </button>
   );
 }
 
