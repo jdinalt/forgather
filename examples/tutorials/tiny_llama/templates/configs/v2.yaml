@@ -41,7 +41,6 @@
     -- set ns.attn_implementation = attn_implementation | default("flex_attention")
 
     ## Compile
-    -- set ns.torch_compile = compile | default("True")
     -- set ns.torch_compile_mode = torch_compile_mode | default("max-autotune")
 
     ## Prompts
