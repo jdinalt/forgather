@@ -47,30 +47,45 @@ forgather -t v2.yaml train
 
 See `docs/getting-started/README.md` for the full walkthrough.
 
-## Reaching the Forgather server from the host
+## Networking
 
-> **Gotcha.** `forgather server` defaults to `-H 127.0.0.1`. That's
-> the container's loopback, not the host's — Docker's port-forward
-> can't reach it. To make the server reachable through the
-> `-p 8765:8765` mapping (and likewise for inference / TensorBoard /
-> MkDocs jobs), bind to `0.0.0.0`:
->
-> ```bash
-> forgather server -H 0.0.0.0
-> ```
->
-> The shell banner inside the container reminds you of this on
-> login. The server still requires the auth token printed at
-> startup, so widening the bind doesn't drop authentication.
+`run.sh` defaults to `--network host`. The container shares the
+host's network stack, so:
 
-By default `run.sh` only forwards the host side to `127.0.0.1`
-(loopback only — same exposure as running `forgather server`
-directly on the host). For LAN access from another machine, set
-`HOST_BIND=0.0.0.0`:
+- Every service inside the container is reachable on whatever port
+  it bound — no `-p` mappings, no `--host 0.0.0.0` gymnastics.
+- `forgather server`, `mkdocs`, `tensorboard`, and the inference
+  server all default to binding `127.0.0.1`, which under host
+  networking *is* the host's loopback. Open
+  <http://localhost:8765/> from the host browser as if Forgather
+  were running on bare metal.
+- Same exposure as running on the host: services on `127.0.0.1`
+  stay on `127.0.0.1`; nothing leaks to the LAN unless you bind
+  `0.0.0.0` explicitly.
+
+To opt back into the original bridge networking (with explicit
+`-p` forwards), set `NETWORK=bridge`:
 
 ```bash
-HOST_BIND=0.0.0.0 docker/run.sh
+NETWORK=bridge docker/run.sh
 ```
+
+Under bridge networking the in-container `127.0.0.1` is the
+*container's* loopback, which the docker-proxy can't reach. Every
+service has to bind `0.0.0.0` to be reachable through the
+forward:
+
+```bash
+forgather server -H 0.0.0.0
+mkdocs serve --host 0.0.0.0
+tensorboard --bind_all
+```
+
+The container's login banner reminds you of this when
+`NETWORK=bridge` is in effect. By default the host-side forward
+binds `127.0.0.1` only; set `HOST_BIND=0.0.0.0 NETWORK=bridge`
+for LAN access. Forgather server's auth token still gates every
+request regardless of bind.
 
 ## Web UI bundle
 

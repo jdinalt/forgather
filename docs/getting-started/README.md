@@ -198,30 +198,33 @@ cd examples/tutorials/tiny_llama
 forgather -t v2.yaml train
 ```
 
-### Reaching the server from the host browser
+### Networking
 
-`forgather server` defaults to binding `127.0.0.1` — the
-*container's* loopback, which Docker's port-forward can't reach.
-To make the server reachable from the host, bind to `0.0.0.0`
-inside the container:
+`docker/run.sh` defaults to `--network host`, so the container
+shares the host's network stack. Every service inside the
+container is reachable on its bound port without `-p` mappings,
+and tools that default to `127.0.0.1` (Forgather server, MkDocs,
+TensorBoard, inference) Just Work — open
+<http://localhost:8765/> from the host browser as if Forgather
+were running on bare metal.
+
+If you'd rather use bridge networking with explicit port-forwards
+(slightly more isolated, but every service then has to bind
+`0.0.0.0` inside the container to be reachable through the
+forward), set `NETWORK=bridge`:
 
 ```bash
+NETWORK=bridge docker/run.sh
+# Inside the container:
 forgather server -H 0.0.0.0
+mkdocs serve --host 0.0.0.0
+tensorboard --bind_all
 ```
 
-The container's login banner reminds you of this. Pass the
-equivalent `--host 0.0.0.0` to inference / TensorBoard / MkDocs
-jobs you want reachable from the host. The server still
-authenticates with the token printed at startup, so widening
-the bind doesn't drop auth.
-
-`run.sh` forwards the host side to `127.0.0.1` only by default
-(same exposure as `forgather server` running directly on the
-host). For LAN access from another machine, override:
-
-```bash
-HOST_BIND=0.0.0.0 docker/run.sh
-```
+The bridge mode forwards the host side to `127.0.0.1` only by
+default (same exposure as the host-networking case). For LAN
+access from another machine, set `HOST_BIND=0.0.0.0` alongside
+`NETWORK=bridge`.
 
 ### Common overrides
 

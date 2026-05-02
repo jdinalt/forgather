@@ -118,6 +118,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python ${VENV_DIR}/bin/python \
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
 
+# TensorBoard 2.x still imports `pkg_resources` from setuptools. uv's
+# default seed venv ships pip but not setuptools, so `tensorboard`
+# crashes on startup with `ModuleNotFoundError: No module named
+# 'pkg_resources'`. Pin the dep explicitly.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python ${VENV_DIR}/bin/python setuptools
+
 # Prebuild the Forgather server SPA so the in-image copy of the repo
 # can serve the web UI without a manual `./build-webui.sh` step. The
 # build is fast once node_modules is populated; the npm cache lives
@@ -162,9 +169,11 @@ RUN printf '%s\n' \
     && printf '\n# Forgather venv\n. /etc/profile.d/10-forgather-venv.sh\n' \
         >> /etc/bash.bashrc
 
-# One-shot welcome banner with the docker-specific gotchas (server
-# bind host, webui dist location). Printed once per shell session,
-# guarded by a marker file in /tmp so it doesn't spam every new tab.
+# One-shot welcome banner. Printed once per shell session, guarded by
+# an env-var marker so it doesn't spam every new tab. The bind-host
+# section is only relevant under bridge networking — under host
+# networking (the default in run.sh) services on 127.0.0.1 inside the
+# container are already on the host's loopback.
 RUN printf '%s\n' \
         '#!/bin/sh' \
         'if [ -t 1 ] && [ -z "${FORGATHER_DOCKER_BANNER_SEEN:-}" ]; then' \
@@ -175,13 +184,12 @@ RUN printf '%s\n' \
         '  venv:        /opt/forgather/venv  (already on PATH)' \
         '  bundled src: /opt/forgather/repo  (used when FORGATHER_REPO is unset)' \
         '' \
-        'To reach the server from the host browser, bind to 0.0.0.0' \
-        'inside the container — the default 127.0.0.1 is unreachable' \
-        'across the container network namespace:' \
-        '  forgather server -H 0.0.0.0' \
-        '' \
-        'For inference / tensorboard jobs that need host access, pass' \
-        'the equivalent --host 0.0.0.0 (or set it in the submit form).' \
+        'Networking: docker/run.sh defaults to --network host, so' \
+        'services bound to 127.0.0.1 inside the container are' \
+        'reachable from the host browser as-is. If you launched with' \
+        'NETWORK=bridge, every service must bind 0.0.0.0 instead' \
+        '(forgather server -H 0.0.0.0, mkdocs --host 0.0.0.0,' \
+        ' tensorboard --bind_all, inference --host 0.0.0.0).' \
         'MOTD' \
         'fi' \
         > /etc/profile.d/20-forgather-tips.sh \
