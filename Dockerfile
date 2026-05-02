@@ -135,6 +135,13 @@ RUN uv venv --python python3.12 --seed ${VENV_DIR}
 # permissions). No source layer ends up in the image: /tmp/src is
 # scoped to this RUN.
 #
+# The copy + chown run via sudo because BuildKit presents the bind-
+# mounted context as root-owned, and any host directory whose mode
+# blocks "other" (e.g. 0700 from a 077 umask) is unreadable by the
+# unprivileged build user. Reading as root sidesteps that, then the
+# chown hands /tmp/src to the user so uv (running as the user) can
+# write egg-info into the source tree.
+#
 # At runtime the entrypoint switches the install to editable mode
 # against $FORGATHER_REPO, so this build-time install only seeds the
 # heavy dependency layers (PyTorch, transformers, ...) and the
@@ -145,7 +152,8 @@ RUN uv venv --python python3.12 --seed ${VENV_DIR}
 # unprivileged user can write to it.
 RUN --mount=type=cache,target=/home/${USER_NAME}/.cache/uv,uid=${USER_UID},gid=${USER_GID} \
     --mount=type=bind,target=/build-context \
-    cp -a /build-context /tmp/src \
+    sudo cp -a /build-context /tmp/src \
+    && sudo chown -R ${USER_UID}:${USER_GID} /tmp/src \
     && uv pip install --python ${VENV_DIR}/bin/python /tmp/src \
     && rm -rf /tmp/src
 
