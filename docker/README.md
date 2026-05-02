@@ -216,6 +216,56 @@ docker/build.sh forgather-dev:experiment
 IMAGE=forgather-dev:experiment docker/run.sh
 ```
 
+### Cross-device symlinks
+
+`run.sh` only bind-mounts `$HOME`. If anything under your home is a
+symlink whose target lives on a different filesystem (a RAID volume,
+a separate `/data` mount, etc.), the symlink itself is visible inside
+the container but its target isn't — every dereference becomes a
+dangling link. Common pattern:
+
+```
+~/ai_assets/forgather -> /home/dinalt/rust/forgather
+/home/dinalt/rust     -> /mnt/rust/home/dinalt/rust    # RAID
+```
+
+Inside the container `/mnt/rust` doesn't exist, so the link is broken.
+Bind-mount the underlying mountpoint at the same path so symlinks
+resolve identically:
+
+```bash
+EXTRA_MOUNTS="-v /mnt/rust:/mnt/rust" docker/run.sh --recreate
+```
+
+Use `--recreate` (or `--rm` then a normal launch) — mount config is
+fixed at container creation, not on `docker exec`.
+
+`run.sh` checks for this at create-time:
+
+- **Fatal (exit 2)** if the forgather repo path itself resolves
+  through a symlink to an uncovered location. Without a bind-mount
+  Docker fails the container with a confusing `mkdir: file exists`
+  OCI error; bailing early gives a clear suggested `EXTRA_MOUNTS`
+  line instead.
+- **Warning** for any other `$HOME`-rooted symlink whose target is
+  uncovered. Non-fatal — those links only matter if you actually
+  dereference them inside the container.
+
+### Persistent overrides
+
+Anything you'd otherwise pass via env var on the command line can live
+in `~/.config/forgather/docker.env` (or `$XDG_CONFIG_HOME/forgather/
+docker.env`, or the path in `$FORGATHER_DOCKER_CONFIG`). The file is
+sourced before `run.sh` applies its defaults; use `:= ` so a
+command-line `VAR=...` still wins:
+
+```bash
+# ~/.config/forgather/docker.env
+: "${EXTRA_MOUNTS:=-v /mnt/rust:/mnt/rust -v /data:/data}"
+: "${GPUS:=all}"
+: "${NETWORK:=host}"
+```
+
 ## Release-testing workflow
 
 Use the image as a clean sandbox by building with `--no-cache` (to

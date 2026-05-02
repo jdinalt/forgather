@@ -40,10 +40,27 @@
 #   HOST_BIND=0.0.0.0                  # bridge mode only; default: 127.0.0.1
 #   EXTRA_PORTS='-p 5173:5173'         # bridge mode only
 #   EXTRA_MOUNTS='-v /scratch:/scratch'
+#
+# Persistent overrides: if $XDG_CONFIG_HOME/forgather/docker.env (or
+# ~/.config/forgather/docker.env) exists it is sourced before defaults
+# are applied. Use `:= ` so a command-line `VAR=... docker/run.sh`
+# still wins:
+#
+#   # ~/.config/forgather/docker.env
+#   : "${EXTRA_MOUNTS:=-v /mnt/rust:/mnt/rust}"
+#   : "${GPUS:=all}"
+#
+# Override the path with FORGATHER_DOCKER_CONFIG.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+CONFIG_FILE="${FORGATHER_DOCKER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/forgather/docker.env}"
+if [[ -f "${CONFIG_FILE}" ]]; then
+    # shellcheck disable=SC1090
+    source "${CONFIG_FILE}"
+fi
 
 IMAGE="${IMAGE:-forgather-dev:latest}"
 NAME="${NAME:-forgather-dev-${USER:-$(id -un)}}"
@@ -63,7 +80,102 @@ container_state() {
     esac
 }
 
+check_uncovered_symlinks() {
+    # Two checks:
+    #
+    # 1. FATAL: if REPO_ROOT itself resolves through a symlink to a
+    #    path outside the bind-mounted roots, Docker will fail at
+    #    workdir setup with a confusing "mkdir: file exists" OCI
+    #    error. Bail with a clear message instead.
+    #
+    # 2. WARNING: $HOME-rooted symlinks at depth <= 3 whose targets
+    #    resolve outside the bind-mounted roots. Non-fatal — those
+    #    links will dangle inside the container but only matter if
+    #    the user actually dereferences them.
+    local roots=("${HOME}") prev="" tok r
+    for tok in ${EXTRA_MOUNTS}; do
+        case "${prev}" in
+            -v|--volume) roots+=("${tok%%:*}") ;;
+        esac
+        prev="${tok}"
+    done
+
+    is_covered() {
+        local p="$1" root
+        for root in "${roots[@]}"; do
+            if [[ "${p}" == "${root}" || "${p}" == "${root}"/* ]]; then
+                return 0
+            fi
+        done
+        return 1
+    }
+
+    suggest_root() {
+        # First two path components (or one if shallower).
+        echo "$1" | awk -F/ 'NF>=3 {print "/" $2 "/" $3} NF<3 {print "/" $2}'
+    }
+
+    # ---- 1. fatal: REPO_ROOT resolves outside covered mounts ----
+    local repo_real
+    repo_real="$(readlink -f -- "${REPO_ROOT}" 2>/dev/null || true)"
+    if [[ -n "${repo_real}" ]] && ! is_covered "${repo_real}"; then
+        local repo_top
+        repo_top="$(suggest_root "${repo_real}")"
+        {
+            echo "[run.sh] error: forgather repo path resolves outside the bind-mount:"
+            echo "[run.sh]   ${REPO_ROOT}"
+            echo "[run.sh]   -> ${repo_real}"
+            echo "[run.sh] without a bind-mount covering the target, the container's"
+            echo "[run.sh] workdir will fail to resolve. add the target root to EXTRA_MOUNTS:"
+            echo "[run.sh]   EXTRA_MOUNTS=\"-v ${repo_top}:${repo_top}\" docker/run.sh --recreate"
+        } >&2
+        exit 2
+    fi
+
+    # ---- 2. warn-only: other dangling symlinks under $HOME ----
+    local entries
+    entries="$(
+        find "${HOME}" -maxdepth 3 -type l -lname '/*' 2>/dev/null \
+        | while IFS= read -r link; do
+            target="$(readlink -f -- "${link}" 2>/dev/null)" || continue
+            [[ -z "${target}" ]] && continue
+            case "${target}" in
+                /proc/*|/sys/*|/dev/*|/etc/*|/usr/*|/var/*|/run/*) continue ;;
+                /bin/*|/sbin/*|/lib/*|/lib32/*|/lib64/*|/tmp/*|/boot/*) continue ;;
+            esac
+            covered=0
+            for r in "${roots[@]}"; do
+                if [[ "${target}" == "${r}" || "${target}" == "${r}"/* ]]; then
+                    covered=1
+                    break
+                fi
+            done
+            [[ "${covered}" -eq 1 ]] && continue
+            root="$(echo "${target}" | awk -F/ 'NF>=3 {print "/" $2 "/" $3} NF<3 {print "/" $2}')"
+            printf '%s\t%s\n' "${root}" "${link}"
+        done | sort -u
+    )"
+
+    [[ -z "${entries}" ]] && return 0
+
+    local mounts
+    mounts="$(printf '%s\n' "${entries}" \
+        | awk -F'\t' '!seen[$1]++ { printf " -v %s:%s", $1, $1 } END { print "" }' \
+        | sed 's/^ //')"
+
+    {
+        echo "[run.sh] warning: \$HOME-rooted symlinks resolve outside the bind-mount:"
+        printf '%s\n' "${entries}" \
+            | awk -F'\t' '!shown[$1]++ { printf "[run.sh]   %s   (e.g. %s)\n", $1, $2 }'
+        echo "[run.sh] those links will dangle inside the container."
+        echo "[run.sh] add the target roots to EXTRA_MOUNTS so paths keep resolving:"
+        echo "[run.sh]   EXTRA_MOUNTS=\"${mounts}\" docker/run.sh --recreate"
+    } >&2
+}
+
 create_container() {
+    check_uncovered_symlinks
+
     GPU_ARGS=()
     if [[ "${GPUS}" != "none" ]]; then
         GPU_ARGS=(--gpus "${GPUS}")
@@ -178,6 +290,9 @@ case "${1:-}" in
         exit 0
         ;;
     --recreate)
+        # Validate before destructive removal so a bad config doesn't
+        # leave the user with no container at all.
+        check_uncovered_symlinks
         if [[ "$(container_state)" != "absent" ]]; then
             echo "[run.sh] removing existing ${NAME}" >&2
             docker rm -f "${NAME}" > /dev/null
