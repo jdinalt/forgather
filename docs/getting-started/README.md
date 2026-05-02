@@ -198,6 +198,31 @@ cd examples/tutorials/tiny_llama
 forgather -t v2.yaml train
 ```
 
+### Reaching the server from the host browser
+
+`forgather server` defaults to binding `127.0.0.1` — the
+*container's* loopback, which Docker's port-forward can't reach.
+To make the server reachable from the host, bind to `0.0.0.0`
+inside the container:
+
+```bash
+forgather server -H 0.0.0.0
+```
+
+The container's login banner reminds you of this. Pass the
+equivalent `--host 0.0.0.0` to inference / TensorBoard / MkDocs
+jobs you want reachable from the host. The server still
+authenticates with the token printed at startup, so widening
+the bind doesn't drop auth.
+
+`run.sh` forwards the host side to `127.0.0.1` only by default
+(same exposure as `forgather server` running directly on the
+host). For LAN access from another machine, override:
+
+```bash
+HOST_BIND=0.0.0.0 docker/run.sh
+```
+
 ### Common overrides
 
 ```bash

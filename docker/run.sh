@@ -33,11 +33,21 @@ if [[ "${GPUS}" != "none" ]]; then
 fi
 
 # Default port-forwards mirror the table in docs/getting-started.
+# The host side defaults to 127.0.0.1 (loopback only) — same exposure
+# as `forgather server` running directly on the host. Override with
+# HOST_BIND=0.0.0.0 if you want LAN access.
+#
+# IMPORTANT: services run *inside* the container must bind to
+# 0.0.0.0, not 127.0.0.1, so the docker-proxy can reach them. Pass
+# `-H 0.0.0.0` to `forgather server` (and the corresponding flag to
+# inference / TensorBoard / MkDocs jobs); a bind-mount of the host
+# loopback is invisible across the container network namespace.
+HOST_BIND="${HOST_BIND:-127.0.0.1}"
 PORT_ARGS=(
-    -p 127.0.0.1:8765:8765
-    -p 127.0.0.1:8137:8137
-    -p 127.0.0.1:6006:6006
-    -p 127.0.0.1:8000:8000
+    -p ${HOST_BIND}:8765:8765
+    -p ${HOST_BIND}:8137:8137
+    -p ${HOST_BIND}:6006:6006
+    -p ${HOST_BIND}:8000:8000
 )
 
 # Allow the caller to bind-mount additional paths via EXTRA_MOUNTS,

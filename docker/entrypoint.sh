@@ -29,6 +29,14 @@ if spec and spec.origin:
             --no-deps --quiet -e "${FORGATHER_REPO}" || \
             echo "[forgather-entrypoint] WARNING: editable reinstall failed; using bundled copy" >&2
     fi
+
+    # The webui dist/ is checkout-local — the in-image prebuild lives
+    # under /opt/forgather/repo and isn't visible from the bind-mount.
+    # Warn loudly so users know to run ./build-webui.sh once.
+    if [[ ! -d "${FORGATHER_REPO}/tools/forgather_server/webui/dist" ]]; then
+        echo "[forgather-entrypoint] NOTE: ${FORGATHER_REPO}/tools/forgather_server/webui/dist is missing." >&2
+        echo "[forgather-entrypoint]       Run './build-webui.sh' from \$FORGATHER_REPO before starting the server." >&2
+    fi
 fi
 
 exec "$@"

@@ -47,6 +47,48 @@ forgather -t v2.yaml train
 
 See `docs/getting-started/README.md` for the full walkthrough.
 
+## Reaching the Forgather server from the host
+
+> **Gotcha.** `forgather server` defaults to `-H 127.0.0.1`. That's
+> the container's loopback, not the host's — Docker's port-forward
+> can't reach it. To make the server reachable through the
+> `-p 8765:8765` mapping (and likewise for inference / TensorBoard /
+> MkDocs jobs), bind to `0.0.0.0`:
+>
+> ```bash
+> forgather server -H 0.0.0.0
+> ```
+>
+> The shell banner inside the container reminds you of this on
+> login. The server still requires the auth token printed at
+> startup, so widening the bind doesn't drop authentication.
+
+By default `run.sh` only forwards the host side to `127.0.0.1`
+(loopback only — same exposure as running `forgather server`
+directly on the host). For LAN access from another machine, set
+`HOST_BIND=0.0.0.0`:
+
+```bash
+HOST_BIND=0.0.0.0 docker/run.sh
+```
+
+## Web UI bundle
+
+The image prebuilds the SPA at `/opt/forgather/repo/tools/forgather_server/webui/dist`
+(via `./build-webui.sh` during `docker build`), so the bundled
+in-image copy works out of the box for release-test mode.
+
+When you bind-mount a host-side checkout via `FORGATHER_REPO`,
+the server reads `dist/` from *that* tree — independent of the
+in-image build. The entrypoint warns when it's missing; build
+it once on the host (or once inside the container against the
+bind-mounted repo) and subsequent runs reuse it:
+
+```bash
+# Inside the container, against the bind-mounted repo:
+cd "$FORGATHER_REPO" && ./build-webui.sh
+```
+
 ## How the user identity is preserved
 
 `build.sh` reads `id -un` / `id -u` / `id -g` and bakes them into the

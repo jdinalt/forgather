@@ -118,6 +118,17 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python ${VENV_DIR}/bin/python \
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
 
+# Prebuild the Forgather server SPA so the in-image copy of the repo
+# can serve the web UI without a manual `./build-webui.sh` step. The
+# build is fast once node_modules is populated; the npm cache lives
+# in the build layer (no runtime hit).
+#
+# Note: when the user bind-mounts a host-side checkout via
+# FORGATHER_REPO, the server runs against *that* tree, whose
+# webui/dist/ is independent of this one. The entrypoint warns when
+# that dist is missing.
+RUN bash /opt/forgather/repo/build-webui.sh
+
 # ---------------------------------------------------------------------------
 # Create the in-container user matching the host UID/GID. Ubuntu 24.04
 # already ships with a uid=1000 'ubuntu' user; if the requested UID
@@ -150,6 +161,31 @@ RUN printf '%s\n' \
     && chmod 0644 /etc/profile.d/10-forgather-venv.sh \
     && printf '\n# Forgather venv\n. /etc/profile.d/10-forgather-venv.sh\n' \
         >> /etc/bash.bashrc
+
+# One-shot welcome banner with the docker-specific gotchas (server
+# bind host, webui dist location). Printed once per shell session,
+# guarded by a marker file in /tmp so it doesn't spam every new tab.
+RUN printf '%s\n' \
+        '#!/bin/sh' \
+        'if [ -t 1 ] && [ -z "${FORGATHER_DOCKER_BANNER_SEEN:-}" ]; then' \
+        '    export FORGATHER_DOCKER_BANNER_SEEN=1' \
+        '    cat <<MOTD' \
+        '' \
+        'Forgather development container' \
+        '  venv:        /opt/forgather/venv  (already on PATH)' \
+        '  bundled src: /opt/forgather/repo  (used when FORGATHER_REPO is unset)' \
+        '' \
+        'To reach the server from the host browser, bind to 0.0.0.0' \
+        'inside the container — the default 127.0.0.1 is unreachable' \
+        'across the container network namespace:' \
+        '  forgather server -H 0.0.0.0' \
+        '' \
+        'For inference / tensorboard jobs that need host access, pass' \
+        'the equivalent --host 0.0.0.0 (or set it in the submit form).' \
+        'MOTD' \
+        'fi' \
+        > /etc/profile.d/20-forgather-tips.sh \
+    && chmod 0644 /etc/profile.d/20-forgather-tips.sh
 
 # Entrypoint: if FORGATHER_REPO points at a bind-mounted checkout,
 # re-install the package in editable mode against that path so the
