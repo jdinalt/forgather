@@ -151,6 +151,59 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
     onAutoWatchConsumed?.();
   }, [autoWatchJobId, jobs, onAutoWatchConsumed]);
 
+  // Detect alive→dead transitions and invalidate caches scoped to the
+  // finished job so panels (project tree, context menus, run/checkpoint/
+  // eval lists) reflect newly-written artifacts without requiring the
+  // user to hit the global Refresh button. Tracks last-seen alive jobs in
+  // a ref so the effect only fires on transitions, not every poll.
+  const prevAliveRef = useRef<Map<string, Job>>(new Map());
+  useEffect(() => {
+    if (jobsQ.data === undefined) return;
+    const aliveNow = new Set(jobs.filter((j) => j.alive).map((j) => j.id));
+    const finished: Job[] = [];
+    for (const [id, j] of prevAliveRef.current) {
+      if (!aliveNow.has(id)) finished.push(j);
+    }
+    if (finished.length > 0) {
+      let invalidatedAny = false;
+      for (const j of finished) {
+        if (j.project_dir) {
+          qc.invalidateQueries({
+            queryKey: ["project-models", j.project_dir],
+          });
+          qc.invalidateQueries({
+            queryKey: ["project-templates", j.project_dir],
+          });
+          if (j.config) {
+            qc.invalidateQueries({
+              queryKey: ["config-meta", j.project_dir, j.config],
+            });
+          }
+          invalidatedAny = true;
+        }
+        if (j.output_dir) {
+          qc.invalidateQueries({ queryKey: ["model-runs", j.output_dir] });
+          qc.invalidateQueries({
+            queryKey: ["model-checkpoints", j.output_dir],
+          });
+          qc.invalidateQueries({
+            queryKey: ["model-evaluations", j.output_dir],
+          });
+          invalidatedAny = true;
+        }
+      }
+      // Catch jobs that produce new projects/models on disk (dataset, model,
+      // finalize, convert) where the unscoped projects list itself may need
+      // a re-read. Cheap relative to the surprise of stale tree state.
+      if (invalidatedAny) {
+        qc.invalidateQueries({ queryKey: ["projects"] });
+      }
+    }
+    const next = new Map<string, Job>();
+    for (const j of jobs) if (j.alive) next.set(j.id, j);
+    prevAliveRef.current = next;
+  }, [jobs, jobsQ.data, qc]);
+
   const statusQs = useQueries({
     queries: alive.map((j) => ({
       queryKey: ["job-status", j.id, j.job_id],

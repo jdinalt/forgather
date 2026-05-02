@@ -236,6 +236,37 @@ export function ProjectTree({
     }
   };
 
+  // Drop scoped caches so the next render reflects on-disk truth for this
+  // config: meta (gates context-menu items), the project's model list
+  // (drives checkpoint counts and the Run/Serve/Eval sub-tree), and the
+  // per-output_dir artifact lists (runs/checkpoints/evals) for any model
+  // associated with this config. Used both on left-click selection and on
+  // right-click — picking a config implies the user wants its current
+  // state, not whatever the 5-minute cache happens to hold.
+  const invalidateConfigCaches = (project: ProjectInfo, config: ConfigInfo) => {
+    qc.invalidateQueries({
+      queryKey: ["config-meta", project.project_dir, config.name],
+    });
+    qc.invalidateQueries({
+      queryKey: ["project-models", project.project_dir],
+    });
+    const models = qc.getQueryData<ModelEntry[]>([
+      "project-models",
+      project.project_dir,
+    ]);
+    const linked = models?.filter((m) => m.configs.includes(config.name)) ?? [];
+    for (const m of linked) {
+      qc.invalidateQueries({ queryKey: ["model-runs", m.output_dir] });
+      qc.invalidateQueries({ queryKey: ["model-checkpoints", m.output_dir] });
+      qc.invalidateQueries({ queryKey: ["model-evaluations", m.output_dir] });
+    }
+  };
+
+  const handleConfigSelect = (project: ProjectInfo, config: ConfigInfo) => {
+    invalidateConfigCaches(project, config);
+    onSelect(project, config);
+  };
+
   const openContextMenu = (
     project: ProjectInfo,
     config: ConfigInfo,
@@ -243,6 +274,7 @@ export function ProjectTree({
   ) => {
     e.preventDefault();
     e.stopPropagation();
+    invalidateConfigCaches(project, config);
     setContextTarget({ project, config, x: e.clientX, y: e.clientY });
   };
 
@@ -399,7 +431,7 @@ export function ProjectTree({
         {projectsQ.data && (
           <WorkspaceForest
             clusters={projectsQ.data}
-            onSelect={onSelect}
+            onSelect={handleConfigSelect}
             onProjectOpen={onProjectOpen}
             selection={selection}
             onContextRequest={openContextMenu}
