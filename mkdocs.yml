@@ -131,4 +131,5 @@ nav:
     - Testing: development/testing.md
     - Integration Testing: development/integration-testing.md
     - Git Hooks: development/git-hooks.md
+    - Docker Development Image: development/docker.md
     - Known Bugs: development/bugs.md

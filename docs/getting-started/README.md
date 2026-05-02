@@ -289,8 +289,8 @@ IMAGE=forgather-dev:experiment docker/run.sh
 ```
 
 For more detail — including the release-testing workflow that uses
-the in-image copy of the repo without a bind-mount — see
-`docker/README.md`.
+the in-image copy of the repo without a bind-mount — see the
+[Docker Development Image](../development/docker.md) page.
 
 ## Your first training run
 
