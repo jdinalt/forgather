@@ -1,0 +1,1 @@
+../../../../../examples/models/mistral/src/config_mappings.py

@@ -15,6 +15,7 @@ from . import scheduler, search_roots
 from .auth import AuthMiddleware
 from .routes import auth as auth_routes
 from .routes import configs as configs_routes
+from .routes import docs as docs_routes
 from .routes import fs as fs_routes
 from .routes import generation_configs as generation_configs_routes
 from .routes import gpus as gpus_routes
@@ -114,6 +115,7 @@ def create_app() -> FastAPI:
     app.include_router(search_roots_routes.router, prefix="/api")
     app.include_router(projects_routes.router, prefix="/api")
     app.include_router(configs_routes.router, prefix="/api")
+    app.include_router(docs_routes.router, prefix="/api")
     app.include_router(fs_routes.router, prefix="/api")
     app.include_router(generation_configs_routes.router, prefix="/api")
     app.include_router(gpus_routes.router, prefix="/api")

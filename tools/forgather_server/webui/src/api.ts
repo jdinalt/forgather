@@ -417,6 +417,22 @@ export interface RunSummary {
   pp_path: string | null;
 }
 
+export interface IpynbCell {
+  cell_type: string; // "markdown" | "code" | "raw"
+  source: string;
+  language: string | null;
+  outputs: Record<string, unknown>[];
+}
+
+export interface DocsFile {
+  path: string;
+  kind: "markdown" | "ipynb";
+  /** Set when ``kind === "markdown"``. */
+  content: string | null;
+  /** Set when ``kind === "ipynb"``. */
+  cells: IpynbCell[] | null;
+}
+
 /** Thrown by ``putTemplateSource`` when the on-disk mtime is newer
  *  than the ``expected_mtime`` the client sent — i.e. someone else
  *  (or another tool) modified the file since the editor opened it.
@@ -961,6 +977,11 @@ export const api = {
     fetchText(
       `/api/project/readme?project_dir=${encodeURIComponent(project_dir)}`,
     ),
+  docsRoot: () => fetchJson<{ path: string | null }>("/api/docs/root"),
+  docsFile: (path: string) =>
+    fetchJson<DocsFile>(`/api/docs/file?path=${encodeURIComponent(path)}`),
+  docsAssetUrl: (path: string): string =>
+    `/api/docs/asset?path=${encodeURIComponent(path)}`,
   projectAssetUrl: (project_dir: string, asset: string): string =>
     `/api/project/asset?project_dir=${encodeURIComponent(project_dir)}&asset=${encodeURIComponent(asset)}`,
   listProjectModels: (project_dir: string) =>

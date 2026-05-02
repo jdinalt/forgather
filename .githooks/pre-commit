@@ -3,7 +3,11 @@
 
 set -e
 
-# Function to check if a file matches any pattern in .formatting-ignore
+# Function to check if a file matches any pattern in .formatting-ignore.
+# Also checks the resolved symlink target so mirrored files (e.g. under
+# docs/, which symlinks to real sources elsewhere in the tree) inherit
+# the exemption from their canonical path. Without this, every Forgather
+# Jinja-template "Python" file mirrored into docs/ would trip black.
 should_skip() {
     local file="$1"
     local ignore_file=".formatting-ignore"
@@ -12,15 +16,25 @@ should_skip() {
         return 1  # No ignore file, don't skip
     fi
 
+    # Compute the symlink-resolved path, expressed relative to the repo
+    # root. Falls back to the literal path when the file isn't a symlink.
+    local resolved=""
+    if [ -L "$file" ]; then
+        resolved="$(realpath --relative-to="$PWD" "$file" 2>/dev/null || true)"
+    fi
+
     # Read patterns from .formatting-ignore (skip comments and empty lines)
     while IFS= read -r pattern || [ -n "$pattern" ]; do
         # Skip comments and empty lines
         [[ "$pattern" =~ ^#.*$ ]] && continue
         [[ -z "$pattern" ]] && continue
 
-        # Check if file matches pattern (supports glob patterns)
+        # Check if literal or resolved-symlink path matches the pattern.
         if [[ "$file" == $pattern ]]; then
-            return 0  # Match found, skip this file
+            return 0
+        fi
+        if [ -n "$resolved" ] && [[ "$resolved" == $pattern ]]; then
+            return 0
         fi
     done < "$ignore_file"
 
