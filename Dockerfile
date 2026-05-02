@@ -118,12 +118,20 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python ${VENV_DIR}/bin/python \
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
 
-# TensorBoard 2.x still imports `pkg_resources` from setuptools. uv's
-# default seed venv ships pip but not setuptools, so `tensorboard`
-# crashes on startup with `ModuleNotFoundError: No module named
-# 'pkg_resources'`. Pin the dep explicitly.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python ${VENV_DIR}/bin/python setuptools
+# TensorBoard <= 2.20.0 imports `pkg_resources` at module load,
+# but setuptools 82 (Feb 2026) removed pkg_resources entirely.
+# Result: `tensorboard --bind_all` exits with
+# `ModuleNotFoundError: No module named 'pkg_resources'`.
+#
+# Upstream fixed this on master (tensorflow/tensorboard@29f809f4)
+# by switching to `importlib.metadata` + `packaging`, but no
+# tensorboard release contains the fix yet. Backport the patch
+# in-place against the installed package — the patch script is
+# idempotent and fails loudly if the pre-patch text has moved
+# (i.e. tensorboard was upgraded to a release containing the
+# fix, in which case drop both this RUN and the patch script).
+COPY docker/patches/fix_tensorboard_pkg_resources.py /tmp/fix_tb.py
+RUN ${VENV_DIR}/bin/python /tmp/fix_tb.py && rm /tmp/fix_tb.py
 
 # Prebuild the Forgather server SPA so the in-image copy of the repo
 # can serve the web UI without a manual `./build-webui.sh` step. The
