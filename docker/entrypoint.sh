@@ -39,8 +39,10 @@ if spec and spec.origin:
             echo "[forgather-entrypoint] WARNING: editable install failed" >&2
     fi
 
-    # The webui dist/ is checkout-local. Warn so users know to build
-    # it once before starting the Forgather server's web UI.
+    # The webui dist/ is checkout-local — docker/build.sh runs
+    # ./build-webui.sh as a post-step against the host clone. If
+    # dist/ is still missing here (different checkout, manual
+    # build, etc.), warn so the user knows to run it themselves.
     if [[ ! -d "${FORGATHER_REPO}/tools/forgather_server/webui/dist" ]]; then
         echo "[forgather-entrypoint] NOTE: ${FORGATHER_REPO}/tools/forgather_server/webui/dist is missing." >&2
         echo "[forgather-entrypoint]       Run './build-webui.sh' from \$FORGATHER_REPO before starting the web server." >&2
