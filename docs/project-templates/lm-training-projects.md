@@ -6,8 +6,8 @@ automatic LR scaling based on global batch size, and supports four trainer
 backends switchable via `--trainer-type`: basic (single GPU), DDP (multi-GPU),
 FSDP2 (sharded multi-GPU), and Pipeline Parallel.
 
-**Template:** [projects/lm_training_project.yaml](../../templatelib/examples/projects/lm_training_project.yaml)\
-**Extends:** [training_script/causal_lm/causal_lm.yaml](../../templatelib/base/training_script/causal_lm/causal_lm.yaml)\
+**Template:** [projects/lm_training_project.yaml](../templatelib/examples/projects/lm_training_project.yaml)\
+**Extends:** [training_script/causal_lm/causal_lm.yaml](../templatelib/base/training_script/causal_lm/causal_lm.yaml)\
 **See also:** [Trainer Options Reference](../trainers/trainer_options.md) -
 every option exposed on the trainers that this template wires up.
 

@@ -13,4 +13,4 @@ forgather -t <config_name> pp
 forgather -t <config_name> construct
 ```
 
-For example tokenizer projects, see [`examples/tokenizers/`](../../examples/tokenizers/README.md).
+For example tokenizer projects, see [`examples/tokenizers/`](../examples/tokenizers/README.md).

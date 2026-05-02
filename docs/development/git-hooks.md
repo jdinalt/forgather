@@ -294,8 +294,8 @@ For projects needing more sophisticated hook management, consider the [pre-commi
 
 ## See Also
 
-- [.githooks/README.md](../../.githooks/README.md) - Quick reference for hooks
-- [.formatting-ignore](../../.formatting-ignore) - Exclusion patterns
-- [scripts/setup-hooks.sh](../../scripts/setup-hooks.sh) - Setup script
+- `.githooks/README.md` - Quick reference for hooks
+- `.formatting-ignore` - Exclusion patterns
+- `scripts/setup-hooks.sh` - Setup script
 - [Black documentation](https://black.readthedocs.io/)
 - [isort documentation](https://pycqa.github.io/isort/)

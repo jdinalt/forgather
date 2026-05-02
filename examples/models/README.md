@@ -14,5 +14,5 @@ A collection of model definitions.
 - **[singlehead](./singlehead/README.md)** - A minimal ALiBi transformer with a single attention head per layer; primarily a standalone custom-model example.
 
 
-For the full `forgather model` command reference — constructing, testing, checkpoint handling, and using models with the HuggingFace and Forgather APIs — see **[docs/guides/model-cli.md](../../docs/guides/model-cli.md)**.
+For the full `forgather model` command reference — constructing, testing, checkpoint handling, and using models with the HuggingFace and Forgather APIs — see **[docs/guides/model-cli.md](../../guides/model-cli.md)**.
 
