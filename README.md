@@ -153,7 +153,7 @@ including the release-testing workflow.
 
 See [`examples/tutorials/tiny_llama/README.md`](./examples/tutorials/tiny_llama/README.md)
 for the full "train → monitor → control → eval → inference → export"
-walkthrough, or [`docs/getting-started/README.md`](./docs/getting-started/README.md)
+walkthrough, or [`docs/getting-started/installation.md`](./docs/getting-started/installation.md)
 for the install details.
 
 **Or skip the CLI** -- if you'd rather start in a browser, the

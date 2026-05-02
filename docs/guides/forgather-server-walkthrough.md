@@ -23,7 +23,7 @@ together.
 - A Linux machine with at least one CUDA-capable GPU (the example uses
   two; one works too — see below).
 - Python 3.12+ and Node.js / npm. See
-  [Getting Started](../getting-started/README.md) for distro-specific
+  [Installation](../getting-started/installation.md) for distro-specific
   install commands.
 - A local browser. If your training host is remote, you'll set up SSH
   port forwarding in step 2.
@@ -36,7 +36,7 @@ an RTX 4090, longer on smaller GPUs).
 
 ## 1. Install and build
 
-If you haven't already, follow [Getting Started](../getting-started/README.md)
+If you haven't already, follow [Installation](../getting-started/installation.md)
 through the install + cut-cross-entropy steps. That gets you a working
 `forgather` CLI and its dependencies.
 

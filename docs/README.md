@@ -10,7 +10,8 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 
 **Start here:**
 
-- **[Getting Started](getting-started/README.md)** - Installation, first training run, key CLI commands
+- **[Installation](getting-started/installation.md)** - Host venv (pip / uv) or the Docker development image
+- **[Getting Started](getting-started/README.md)** - First training run, key CLI commands, and the web UI tour
 - **[Forgather Server Walkthrough](guides/forgather-server-walkthrough.md)** - End-to-end tour of the web UI from a fresh install to chatting with a freshly-trained model
 - **[Core Concepts](core-concepts/README.md)** - Configuration pipeline, projects, templates, trainers
 

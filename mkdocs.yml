@@ -57,7 +57,9 @@ markdown_extensions:
 
 nav:
   - Home: README.md
-  - Getting Started: getting-started/README.md
+  - Getting Started:
+    - Overview: getting-started/README.md
+    - Installation: getting-started/installation.md
   - Core Concepts: core-concepts/README.md
   - Configuration:
     - Overview: configuration/README.md
