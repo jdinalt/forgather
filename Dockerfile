@@ -204,6 +204,11 @@ RUN printf '%s\n' \
         '  venv:        /opt/forgather/venv  (already on PATH; deps only)' \
         '  source:      $FORGATHER_REPO     (bind-mounted host clone)' \
         '' \
+        'New here? Start the web UI:' \
+        '    forgather server' \
+        'then ctrl-click the printed http://localhost:8765/?token=...' \
+        'link to open it in your host browser (the token gates auth).' \
+        '' \
         'Networking: docker/run.sh defaults to --network host, so' \
         'services bound to 127.0.0.1 inside the container are' \
         'reachable from the host browser as-is. If you launched with' \
