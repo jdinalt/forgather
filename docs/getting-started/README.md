@@ -117,6 +117,30 @@ source:
 pip install "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
 ```
 
+**Heads-up: TensorBoard + setuptools 82 incompatibility.** TensorBoard
+≤ 2.20.0 (the latest release as of writing) imports `pkg_resources`
+at module load, but setuptools 82 (Feb 2026) removed `pkg_resources`
+entirely. If your environment ends up with setuptools ≥ 82 you'll
+hit `ModuleNotFoundError: No module named 'pkg_resources'` the first
+time you run `tensorboard` or `forgather tb`. The fix is on
+TensorBoard master ([PR #7057](https://github.com/tensorflow/tensorboard/pull/7057),
+March 2026) but not in any release yet. Two workarounds:
+
+```bash
+# Option 1 — pin setuptools below 82 (most common):
+pip install "setuptools<82"
+
+# Option 2 — backport the upstream fix in-place against your installed
+# tensorboard. The Docker image takes this path; the patch script is
+# idempotent, fails loudly if the pre-patch text has moved, and is
+# safe to remove once tensorboard ships a fixed release. From the
+# Forgather repo:
+python docker/patches/fix_tensorboard_pkg_resources.py
+```
+
+Drop either workaround once Forgather pins a TensorBoard release
+that contains the upstream fix.
+
 Verify the installation:
 
 ```bash
