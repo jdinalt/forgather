@@ -1611,6 +1611,11 @@ li.config.selected button.link:hover {
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
 }
+.config-viewer-header {
+  justify-content: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .viewer-title {
   display: flex;
   align-items: baseline;
@@ -2780,6 +2785,12 @@ li.config.selected button.link:hover {
 .inference-panel .viewer-header {
   border-bottom: 1px solid var(--border);
   padding: 6px 12px;
+}
+.inference-header-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 .inference-model-panel {
   padding: 12px 16px;

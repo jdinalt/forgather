@@ -70,34 +70,34 @@ export function InferencePanel() {
 
   return (
     <div className="inference-panel">
-      <header className="viewer-header">
-        <div>
+      <header className="viewer-header inference-header">
+        <div className="inference-header-title">
           <strong>Inference</strong>
           <span className="muted"> — {state.baseUrl}</span>
           {state.model && (
             <span className="muted"> · {state.model}</span>
           )}
+          <nav className="tabs">
+            <button
+              className={tab === "model" ? "active" : ""}
+              onClick={() => setTab("model")}
+            >
+              model
+            </button>
+            <button
+              className={tab === "completion" ? "active" : ""}
+              onClick={() => setTab("completion")}
+            >
+              completion
+            </button>
+            <button
+              className={tab === "chat" ? "active" : ""}
+              onClick={() => setTab("chat")}
+            >
+              chat
+            </button>
+          </nav>
         </div>
-        <nav className="tabs">
-          <button
-            className={tab === "model" ? "active" : ""}
-            onClick={() => setTab("model")}
-          >
-            model
-          </button>
-          <button
-            className={tab === "completion" ? "active" : ""}
-            onClick={() => setTab("completion")}
-          >
-            completion
-          </button>
-          <button
-            className={tab === "chat" ? "active" : ""}
-            onClick={() => setTab("chat")}
-          >
-            chat
-          </button>
-        </nav>
       </header>
 
       {/* Both sub-panels stay mounted — completion in particular must

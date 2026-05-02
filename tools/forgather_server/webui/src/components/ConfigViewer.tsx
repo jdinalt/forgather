@@ -88,7 +88,7 @@ export function ConfigViewer({
 
   return (
     <div className="viewer">
-      <header className="viewer-header">
+      <header className="viewer-header config-viewer-header">
         <div className="viewer-title">
           {metaQ.data?.name ? (
             <>
