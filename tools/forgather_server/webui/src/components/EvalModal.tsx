@@ -158,7 +158,9 @@ export function EvalModal({
   const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
   const idleGpuCount = useMemo(() => {
     if (!gpusQ.data) return null;
-    return gpusQ.data.filter((g) => g.processes.length === 0).length;
+    return gpusQ.data.filter(
+      (g) => !g.processes.some((p) => p.kind === "compute"),
+    ).length;
   }, [gpusQ.data]);
 
   const selected: EvalConfigEntry | undefined = useMemo(

@@ -296,7 +296,10 @@ function GpuCard({
   const memPct = g.total_mem_bytes
     ? (g.used_mem_bytes / g.total_mem_bytes) * 100
     : 0;
-  const idle = (g.util_pct ?? 0) === 0 && g.processes.length === 0;
+  // "idle" matches the scheduler's view: graphics-only processes (desktop
+  // compositor, X server) don't count as busy. See gpu_monitor.is_blocking_process.
+  const computeProcCount = g.processes.filter((p) => p.kind === "compute").length;
+  const idle = (g.util_pct ?? 0) === 0 && computeProcCount === 0;
   // excluded trumps disabled visually
   const cardClass =
     "gpu-card" +

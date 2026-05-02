@@ -171,6 +171,11 @@ export interface QuickPath {
 export interface GpuProcess {
   pid: number;
   used_mem_bytes: number;
+  /** Best-effort process name from NVML / /proc; null when lookup fails. */
+  name: string | null;
+  /** "compute" for CUDA workloads, "graphics" for desktop / window-manager
+   *  processes. Graphics processes do NOT block scheduler dispatch. */
+  kind: "compute" | "graphics";
 }
 
 export interface GpuInfo {

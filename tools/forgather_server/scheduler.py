@@ -79,14 +79,23 @@ def set_enabled(enabled: bool) -> None:
 def _idle_gpu_indices() -> List[int]:
     """Indices of GPUs the scheduler is allowed to assign right now.
 
-    A GPU is eligible iff it has no compute processes AND has not been
+    A GPU is eligible iff it has no *blocking* processes AND has not been
     excluded by the operator via CUDA_VISIBLE_DEVICES at server start AND
     has not been runtime-disabled by the user via the web UI.
+
+    "Blocking" means a compute process whose name is not on the desktop
+    graphics allowlist (Xorg, gnome-shell, kwin, plasmashell, mutter, …).
+    Pure graphics processes (window manager, compositor) coexist fine with
+    a CUDA workload, so they don't disqualify the GPU. See
+    ``gpu_monitor.is_blocking_process`` for the exact rule and
+    ``FORGATHER_GPU_DESKTOP_PROCESSES`` to override the allowlist.
     """
     return [
         g.index
         for g in gpu_monitor.snapshot()
-        if not g.processes and not g.excluded and not g.disabled
+        if not g.excluded
+        and not g.disabled
+        and not any(gpu_monitor.is_blocking_process(p) for p in g.processes)
     ]
 
 

@@ -56,7 +56,11 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
   const idleGpuCount = useMemo(() => {
     if (!gpusQ.data) return null;
-    return gpusQ.data.filter((g) => g.processes.length === 0).length;
+    // Mirror the scheduler's busy-check: graphics-only processes (desktop
+    // compositor) don't disqualify a GPU.
+    return gpusQ.data.filter(
+      (g) => !g.processes.some((p) => p.kind === "compute"),
+    ).length;
   }, [gpusQ.data]);
 
   // Classify nproc_per_node. A positive integer means "fixed worker

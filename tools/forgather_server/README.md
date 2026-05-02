@@ -806,9 +806,16 @@ Each scheduler tick (~2 s) runs this placement logic:
    jobs go first; FIFO within a priority band).
 
 2. **Build the idle pool.** Start from every GPU and drop any that are:
-   - running a compute process (NVML `nvmlDeviceGetComputeRunningProcesses`
-     says busy — could be a job we launched, a job someone else
-     launched, or stale-CUDA wedge);
+   - running a *blocking* compute process — NVML
+     `nvmlDeviceGetComputeRunningProcesses` says busy AND the process
+     name is not on the desktop-graphics allowlist (Xorg, gnome-shell,
+     kwin, plasmashell, mutter, …). On a workstation with a connected
+     monitor the X server / Wayland compositor often shows up as a
+     CUDA-using process; the allowlist keeps the desktop GPU available
+     for jobs. Override with `FORGATHER_GPU_DESKTOP_PROCESSES` (a
+     comma-separated list of process names that replaces the default).
+     Pure graphics processes (`nvmlDeviceGetGraphicsRunningProcesses`)
+     are also surfaced for the UI but never block dispatch;
    - **excluded** via `CUDA_VISIBLE_DEVICES` (set at server start);
    - **disabled** at runtime via the UI toggle (persists in
      `gpu_policy.json`);

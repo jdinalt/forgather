@@ -77,10 +77,98 @@ def allowed_indices() -> Optional[Set[int]]:
     return _ALLOWED_INDICES
 
 
+# Process names known to be desktop graphics infrastructure. When a workstation
+# has a connected monitor, the X server / Wayland compositor / window manager
+# shows up as a CUDA-using process on the GPU (NVIDIA's proprietary driver
+# routes EGL/GBM contexts through the same compute-process list as real CUDA
+# work). Treating them as "busy" would refuse to dispatch any job to the
+# desktop GPU. They consume tens to a few hundred MB and their CPU/GPU
+# footprint is bounded, so it's safe to share the GPU with them.
+#
+# The list is intentionally conservative — anything we exclude here gets a
+# free pass past the busy-check. Operators can override via the
+# ``FORGATHER_GPU_DESKTOP_PROCESSES`` env var (comma-separated names).
+_DEFAULT_DESKTOP_GRAPHICS_PROCESSES = frozenset(
+    {
+        # X servers
+        "Xorg",
+        "X",
+        # Wayland compositors / desktop shells
+        "gnome-shell",
+        "kwin_x11",
+        "kwin_wayland",
+        "kwin",
+        "plasmashell",
+        "mutter",
+        "weston",
+        "sway",
+        "Hyprland",
+        "wlroots",
+        "compton",
+        "picom",
+        "xfwm4",
+        # Login / display managers (often hold a GL context)
+        "gdm",
+        "gdm-x-session",
+        "gdm-wayland-session",
+        "sddm",
+        "sddm-greeter",
+        "lightdm",
+    }
+)
+
+
+def _load_desktop_process_set() -> frozenset:
+    """Allow operators to extend/override the desktop process allowlist.
+
+    Set ``FORGATHER_GPU_DESKTOP_PROCESSES`` to a comma-separated list of
+    process names. The default list is replaced wholesale when the env var
+    is set (operator can opt out by exporting an empty string).
+    """
+    raw = os.environ.get("FORGATHER_GPU_DESKTOP_PROCESSES")
+    if raw is None:
+        return _DEFAULT_DESKTOP_GRAPHICS_PROCESSES
+    names = {tok.strip() for tok in raw.split(",") if tok.strip()}
+    return frozenset(names)
+
+
+_DESKTOP_GRAPHICS_PROCESSES = _load_desktop_process_set()
+
+
+def desktop_graphics_processes() -> frozenset:
+    """Public read of the desktop-graphics-process allowlist."""
+    return _DESKTOP_GRAPHICS_PROCESSES
+
+
 @dataclass
 class GpuProcess:
     pid: int
     used_mem_bytes: int
+    # Best-effort process name. ``None`` when NVML / /proc lookup failed.
+    name: Optional[str] = None
+    # "compute" for processes from nvmlDeviceGetComputeRunningProcesses,
+    # "graphics" for processes from nvmlDeviceGetGraphicsRunningProcesses.
+    # Only present on the NVML path; the torch fallback can't tell them apart.
+    kind: str = "compute"
+
+
+def is_blocking_process(p: "GpuProcess") -> bool:
+    """Return True iff this process should block scheduler dispatch.
+
+    A process blocks dispatch when:
+    - it is a compute process (``kind == "compute"``), AND
+    - its name is not in the desktop-graphics allowlist.
+
+    Graphics-only processes (X server, compositors, etc.) never block
+    because they coexist fine with a CUDA workload. Unknown-name compute
+    processes block by default — the safer choice when we can't identify
+    them.
+    """
+    if p.kind != "compute":
+        return False
+    if p.name and p.name in _DESKTOP_GRAPHICS_PROCESSES:
+        return False
+    return True
 
 
 @dataclass
@@ -115,6 +203,33 @@ class GpuInfo:
 
 _nvml_state: Optional[bool] = None  # True = ready, False = unavailable, None = untried
 _nvml_lock = Lock()
+
+
+def _lookup_process_name(pid: int) -> Optional[str]:
+    """Best-effort process name resolution.
+
+    Tries ``nvmlSystemGetProcessName`` first (cheap, works regardless of
+    /proc visibility), falls back to ``/proc/<pid>/comm``, returns ``None``
+    on failure. Used to recognise desktop graphics processes so they don't
+    block scheduler dispatch.
+    """
+    try:
+        import pynvml  # type: ignore
+
+        raw = pynvml.nvmlSystemGetProcessName(pid)
+        name = raw.decode() if isinstance(raw, bytes) else str(raw)
+        # NVML returns the absolute path of the executable; strip dirname.
+        if "/" in name:
+            name = name.rsplit("/", 1)[-1]
+        if name:
+            return name
+    except Exception:
+        pass
+    try:
+        with open(f"/proc/{pid}/comm", "r") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
 
 
 def _ensure_nvml() -> bool:
@@ -208,7 +323,36 @@ def _snapshot_nvml() -> Optional[List[GpuInfo]]:
                         int(p.usedGpuMemory) if getattr(p, "usedGpuMemory", None) else 0
                     )
                     info.processes.append(
-                        GpuProcess(pid=int(p.pid), used_mem_bytes=used)
+                        GpuProcess(
+                            pid=int(p.pid),
+                            used_mem_bytes=used,
+                            name=_lookup_process_name(int(p.pid)),
+                            kind="compute",
+                        )
+                    )
+            except Exception:
+                pass
+            # Also surface graphics-only processes (X server, compositor, …)
+            # so the UI can show them, but tag them so the scheduler ignores
+            # them in its busy decision. Some NVIDIA driver configurations
+            # report the desktop compositor in the *compute* list as well —
+            # the name-based filter in is_blocking_process() handles that.
+            try:
+                seen_pids = {p.pid for p in info.processes}
+                for p in pynvml.nvmlDeviceGetGraphicsRunningProcesses(h):
+                    pid = int(p.pid)
+                    if pid in seen_pids:
+                        continue
+                    used = (
+                        int(p.usedGpuMemory) if getattr(p, "usedGpuMemory", None) else 0
+                    )
+                    info.processes.append(
+                        GpuProcess(
+                            pid=pid,
+                            used_mem_bytes=used,
+                            name=_lookup_process_name(pid),
+                            kind="graphics",
+                        )
                     )
             except Exception:
                 pass
