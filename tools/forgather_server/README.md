@@ -806,22 +806,27 @@ Each scheduler tick (~2 s) runs this placement logic:
    jobs go first; FIFO within a priority band).
 
 2. **Build the idle pool.** Start from every GPU and drop any that are:
-   - running a *blocking* compute process — NVML
-     `nvmlDeviceGetComputeRunningProcesses` says busy AND the process
-     name is not on the desktop-graphics allowlist (Xorg, gnome-shell,
-     kwin, plasmashell, mutter, …). On a workstation with a connected
-     monitor the X server / Wayland compositor often shows up as a
-     CUDA-using process; the allowlist keeps the desktop GPU available
-     for jobs. Override with `FORGATHER_GPU_DESKTOP_PROCESSES` (a
-     comma-separated list of process names that replaces the default).
-     Pure graphics processes (`nvmlDeviceGetGraphicsRunningProcesses`)
-     are also surfaced for the UI but never block dispatch;
    - **excluded** via `CUDA_VISIBLE_DEVICES` (set at server start);
    - **disabled** at runtime via the UI toggle (persists in
      `gpu_policy.json`);
    - already **reserved** for one of our `starting` / `running`
-     JobRecords (defensive — these should already show as busy, but
-     this handles the gap between spawn and first process report).
+     JobRecords.
+
+   External processes (the user's desktop compositor, an unrelated
+   CUDA program, a hybrid C+G daemon like
+   `gnome-remote-desktop-daemon`) are *not* consulted. Trying to
+   classify arbitrary processes as "real compute work" vs "desktop
+   rendering" turned out to be a tar pit: NVIDIA's proprietary driver
+   routes graphics-with-CUDA-context daemons through the compute
+   list, hybrid C+G processes show up there too, and any name-based
+   allowlist is incomplete by construction. The escape valve for
+   "I'm running unrelated work on this GPU and don't want Forgather
+   touching it" is the disable button on the GPU card. Compute and
+   graphics processes are still surfaced via NVML
+   (`nvmlDeviceGetComputeRunningProcesses` /
+   `nvmlDeviceGetGraphicsRunningProcesses`) for display in the UI
+   and to gate the kill-process endpoint (which restricts itself to
+   compute processes so it can't terminate the user's desktop).
 
 3. **Per-item eligibility.** For each queue item, filter the idle pool
    to GPUs whose `min_priority` gate the item clears

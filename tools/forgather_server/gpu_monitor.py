@@ -77,69 +77,6 @@ def allowed_indices() -> Optional[Set[int]]:
     return _ALLOWED_INDICES
 
 
-# Process names known to be desktop graphics infrastructure. When a workstation
-# has a connected monitor, the X server / Wayland compositor / window manager
-# shows up as a CUDA-using process on the GPU (NVIDIA's proprietary driver
-# routes EGL/GBM contexts through the same compute-process list as real CUDA
-# work). Treating them as "busy" would refuse to dispatch any job to the
-# desktop GPU. They consume tens to a few hundred MB and their CPU/GPU
-# footprint is bounded, so it's safe to share the GPU with them.
-#
-# The list is intentionally conservative — anything we exclude here gets a
-# free pass past the busy-check. Operators can override via the
-# ``FORGATHER_GPU_DESKTOP_PROCESSES`` env var (comma-separated names).
-_DEFAULT_DESKTOP_GRAPHICS_PROCESSES = frozenset(
-    {
-        # X servers
-        "Xorg",
-        "X",
-        # Wayland compositors / desktop shells
-        "gnome-shell",
-        "kwin_x11",
-        "kwin_wayland",
-        "kwin",
-        "plasmashell",
-        "mutter",
-        "weston",
-        "sway",
-        "Hyprland",
-        "wlroots",
-        "compton",
-        "picom",
-        "xfwm4",
-        # Login / display managers (often hold a GL context)
-        "gdm",
-        "gdm-x-session",
-        "gdm-wayland-session",
-        "sddm",
-        "sddm-greeter",
-        "lightdm",
-    }
-)
-
-
-def _load_desktop_process_set() -> frozenset:
-    """Allow operators to extend/override the desktop process allowlist.
-
-    Set ``FORGATHER_GPU_DESKTOP_PROCESSES`` to a comma-separated list of
-    process names. The default list is replaced wholesale when the env var
-    is set (operator can opt out by exporting an empty string).
-    """
-    raw = os.environ.get("FORGATHER_GPU_DESKTOP_PROCESSES")
-    if raw is None:
-        return _DEFAULT_DESKTOP_GRAPHICS_PROCESSES
-    names = {tok.strip() for tok in raw.split(",") if tok.strip()}
-    return frozenset(names)
-
-
-_DESKTOP_GRAPHICS_PROCESSES = _load_desktop_process_set()
-
-
-def desktop_graphics_processes() -> frozenset:
-    """Public read of the desktop-graphics-process allowlist."""
-    return _DESKTOP_GRAPHICS_PROCESSES
-
-
 @dataclass
 class GpuProcess:
     pid: int
@@ -148,27 +85,11 @@ class GpuProcess:
     name: Optional[str] = None
     # "compute" for processes from nvmlDeviceGetComputeRunningProcesses,
     # "graphics" for processes from nvmlDeviceGetGraphicsRunningProcesses.
-    # Only present on the NVML path; the torch fallback can't tell them apart.
+    # Surfaced only for UI display and to gate the "kill GPU process" endpoint
+    # (which restricts itself to compute processes so it can't terminate the
+    # user's desktop session). The scheduler does NOT use this — see
+    # scheduler._idle_gpu_indices for the dispatch rule.
     kind: str = "compute"
-
-
-def is_blocking_process(p: "GpuProcess") -> bool:
-    """Return True iff this process should block scheduler dispatch.
-
-    A process blocks dispatch when:
-    - it is a compute process (``kind == "compute"``), AND
-    - its name is not in the desktop-graphics allowlist.
-
-    Graphics-only processes (X server, compositors, etc.) never block
-    because they coexist fine with a CUDA workload. Unknown-name compute
-    processes block by default — the safer choice when we can't identify
-    them.
-    """
-    if p.kind != "compute":
-        return False
-    if p.name and p.name in _DESKTOP_GRAPHICS_PROCESSES:
-        return False
-    return True
 
 
 @dataclass
@@ -333,10 +254,10 @@ def _snapshot_nvml() -> Optional[List[GpuInfo]]:
             except Exception:
                 pass
             # Also surface graphics-only processes (X server, compositor, …)
-            # so the UI can show them, but tag them so the scheduler ignores
-            # them in its busy decision. Some NVIDIA driver configurations
-            # report the desktop compositor in the *compute* list as well —
-            # the name-based filter in is_blocking_process() handles that.
+            # so the UI can show them. The scheduler doesn't gate on these
+            # at all — it only refuses to dispatch when the GPU is excluded
+            # via CUDA_VISIBLE_DEVICES, runtime-disabled in the UI, or
+            # already reserved by another Forgather job.
             try:
                 seen_pids = {p.pid for p in info.processes}
                 for p in pynvml.nvmlDeviceGetGraphicsRunningProcesses(h):

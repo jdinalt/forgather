@@ -1,48 +1,21 @@
-"""Tests for tools/forgather_server/gpu_monitor.py.
+"""Tests for the scheduler's idle-GPU decision.
 
-Covers the busy-process classifier that drives the scheduler's idle-GPU
-decision. The bug this protects against: on a workstation with a connected
-monitor, the desktop's X server / Wayland compositor / window manager shows
-up as a CUDA-using process on the GPU, which previously caused the
-scheduler to refuse to dispatch any job to that card. Graphics-only
-processes must NOT block dispatch; real compute processes still must.
+The bug this protects against: on a workstation with a connected monitor,
+the desktop's X server / Wayland compositor / window manager shows up as
+a CUDA-using process on the GPU, which previously caused the scheduler
+to refuse to dispatch any job to that card. The fix removes external-
+process inspection from the dispatch rule entirely; the scheduler only
+gates on operator/user controls (CUDA_VISIBLE_DEVICES exclusion and
+runtime disable). External processes — desktop tools, hybrid C+G
+daemons, unrelated user CUDA work — are surfaced to the UI but don't
+gate dispatch.
 """
 
 from unittest.mock import patch
 
 import forgather_server.gpu_monitor as gpu_monitor
 import forgather_server.scheduler as scheduler
-from forgather_server.gpu_monitor import GpuInfo, GpuProcess, is_blocking_process
-
-
-class TestIsBlockingProcess:
-    def test_compute_process_with_unknown_name_blocks(self):
-        # Real training jobs end up here: kind=compute, name not on allowlist.
-        p = GpuProcess(
-            pid=1234, used_mem_bytes=8 * 1024**3, name="python", kind="compute"
-        )
-        assert is_blocking_process(p) is True
-
-    def test_compute_process_with_no_name_blocks(self):
-        # When name resolution fails, default to "blocks" — safer choice.
-        p = GpuProcess(pid=1234, used_mem_bytes=8 * 1024**3, name=None, kind="compute")
-        assert is_blocking_process(p) is True
-
-    def test_graphics_process_does_not_block(self):
-        # Pure graphics process (kind=graphics) — never blocks regardless of name.
-        p = GpuProcess(
-            pid=999, used_mem_bytes=200 * 1024**2, name="Xorg", kind="graphics"
-        )
-        assert is_blocking_process(p) is False
-
-    def test_compute_process_with_desktop_name_does_not_block(self):
-        # NVIDIA driver sometimes reports the compositor on the *compute*
-        # list. Name-based filter must catch those too.
-        for name in ("Xorg", "gnome-shell", "kwin_x11", "plasmashell", "mutter"):
-            p = GpuProcess(
-                pid=10, used_mem_bytes=300 * 1024**2, name=name, kind="compute"
-            )
-            assert is_blocking_process(p) is False, f"{name} should not block"
+from forgather_server.gpu_monitor import GpuInfo, GpuProcess
 
 
 class TestSchedulerIdleGpuIndices:
@@ -85,8 +58,13 @@ class TestSchedulerIdleGpuIndices:
         with patch.object(gpu_monitor, "snapshot", return_value=gpus):
             assert scheduler._idle_gpu_indices() == [0]
 
-    def test_gpu_with_compute_process_is_busy(self):
-        # A real training job (or anything compute-shaped) must still block.
+    def test_gpu_with_unknown_compute_process_is_still_idle(self):
+        # Trade-off: external CUDA programs the user is running outside
+        # Forgather no longer block dispatch. The user's escape valve is
+        # the disable button; without that the scheduler is happy to
+        # share the GPU. (The previous behaviour — refusing to dispatch
+        # — was prone to false positives from desktop tools holding
+        # CUDA contexts.)
         gpus = [
             self._gpu(
                 0,
@@ -101,36 +79,13 @@ class TestSchedulerIdleGpuIndices:
             ),
         ]
         with patch.object(gpu_monitor, "snapshot", return_value=gpus):
-            assert scheduler._idle_gpu_indices() == []
+            assert scheduler._idle_gpu_indices() == [0]
 
-    def test_gpu_with_mixed_processes_is_busy(self):
-        # Desktop compositor sharing the card with a real compute job
-        # — compute job wins, GPU stays busy.
-        gpus = [
-            self._gpu(
-                0,
-                [
-                    GpuProcess(
-                        pid=1,
-                        used_mem_bytes=120 * 1024**2,
-                        name="Xorg",
-                        kind="graphics",
-                    ),
-                    GpuProcess(
-                        pid=99,
-                        used_mem_bytes=8 * 1024**3,
-                        name="python",
-                        kind="compute",
-                    ),
-                ],
-            ),
-        ]
-        with patch.object(gpu_monitor, "snapshot", return_value=gpus):
-            assert scheduler._idle_gpu_indices() == []
-
-    def test_gpu_with_compositor_in_compute_list_is_idle(self):
-        # NVIDIA driver edge case: the compositor shows up on the compute
-        # list. Name-based allowlist must still let the GPU through.
+    def test_compositor_reported_in_compute_list_is_idle(self):
+        # NVIDIA driver edge case: the compositor (or a hybrid C+G
+        # daemon like gnome-remote-desktop-daemon) shows up in the
+        # compute list. Pre-fix, this disqualified the GPU. Post-fix,
+        # external-process kind doesn't matter at all.
         gpus = [
             self._gpu(
                 0,
@@ -140,20 +95,41 @@ class TestSchedulerIdleGpuIndices:
                         used_mem_bytes=200 * 1024**2,
                         name="gnome-shell",
                         kind="compute",
-                    )
+                    ),
+                    GpuProcess(
+                        pid=2,
+                        used_mem_bytes=260 * 1024**2,
+                        name="gnome-remote-desktop-daemon",
+                        kind="compute",
+                    ),
                 ],
             ),
         ]
         with patch.object(gpu_monitor, "snapshot", return_value=gpus):
             assert scheduler._idle_gpu_indices() == [0]
 
-    def test_disabled_gpu_never_idle_even_if_clean(self):
-        # Sanity: the existing disabled/excluded gates still apply.
-        gpus = [self._gpu(0, [], disabled=True)]
+    def test_disabled_gpu_never_idle(self):
+        # The user's escape valve: clicking "disable" in the GPU panel
+        # keeps Forgather off the card regardless of process state.
+        gpus = [
+            self._gpu(
+                0,
+                [
+                    GpuProcess(
+                        pid=1,
+                        used_mem_bytes=200 * 1024**2,
+                        name="Xorg",
+                        kind="graphics",
+                    )
+                ],
+                disabled=True,
+            )
+        ]
         with patch.object(gpu_monitor, "snapshot", return_value=gpus):
             assert scheduler._idle_gpu_indices() == []
 
-    def test_excluded_gpu_never_idle_even_if_clean(self):
+    def test_excluded_gpu_never_idle(self):
+        # CUDA_VISIBLE_DEVICES exclusion at server start.
         gpus = [self._gpu(0, [], excluded=True)]
         with patch.object(gpu_monitor, "snapshot", return_value=gpus):
             assert scheduler._idle_gpu_indices() == []
@@ -164,8 +140,8 @@ class TestSchedulerIdleGpuIndices:
             assert scheduler._idle_gpu_indices() == [0]
 
     def test_multiple_gpus_filtered_independently(self):
-        # GPU 0 has the desktop, GPU 1 has a real compute job, GPU 2 is
-        # clean. Only GPU 0 and GPU 2 should dispatch.
+        # GPU 0 has the desktop, GPU 1 is disabled, GPU 2 is excluded,
+        # GPU 3 is clean. Only 0 and 3 should dispatch.
         gpus = [
             self._gpu(
                 0,
@@ -178,25 +154,9 @@ class TestSchedulerIdleGpuIndices:
                     )
                 ],
             ),
-            self._gpu(
-                1,
-                [
-                    GpuProcess(
-                        pid=99,
-                        used_mem_bytes=8 * 1024**3,
-                        name="python",
-                        kind="compute",
-                    )
-                ],
-            ),
-            self._gpu(2, []),
+            self._gpu(1, [], disabled=True),
+            self._gpu(2, [], excluded=True),
+            self._gpu(3, []),
         ]
         with patch.object(gpu_monitor, "snapshot", return_value=gpus):
-            assert scheduler._idle_gpu_indices() == [0, 2]
-
-
-class TestDesktopProcessAllowlist:
-    def test_default_list_includes_common_compositors(self):
-        names = gpu_monitor.desktop_graphics_processes()
-        for expected in ("Xorg", "gnome-shell", "kwin_x11", "plasmashell", "mutter"):
-            assert expected in names
+            assert scheduler._idle_gpu_indices() == [0, 3]

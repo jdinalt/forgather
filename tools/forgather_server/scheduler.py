@@ -79,23 +79,24 @@ def set_enabled(enabled: bool) -> None:
 def _idle_gpu_indices() -> List[int]:
     """Indices of GPUs the scheduler is allowed to assign right now.
 
-    A GPU is eligible iff it has no *blocking* processes AND has not been
-    excluded by the operator via CUDA_VISIBLE_DEVICES at server start AND
-    has not been runtime-disabled by the user via the web UI.
+    A GPU is eligible iff it has not been excluded by the operator via
+    ``CUDA_VISIBLE_DEVICES`` at server start AND has not been runtime-
+    disabled by the user via the web UI.
 
-    "Blocking" means a compute process whose name is not on the desktop
-    graphics allowlist (Xorg, gnome-shell, kwin, plasmashell, mutter, …).
-    Pure graphics processes (window manager, compositor) coexist fine with
-    a CUDA workload, so they don't disqualify the GPU. See
-    ``gpu_monitor.is_blocking_process`` for the exact rule and
-    ``FORGATHER_GPU_DESKTOP_PROCESSES`` to override the allowlist.
+    External processes (the user's desktop compositor, an unrelated
+    CUDA program, etc.) are *not* consulted. The scheduler tracks its
+    own dispatched jobs via ``_reserved_gpu_set()`` (subtracted from
+    the idle pool by the dispatch loop), and that's the authoritative
+    "Forgather is already using this GPU" signal. Trying to classify
+    arbitrary external processes as "real compute work" vs "desktop
+    rendering" turns out to be a tar pit (NVIDIA's proprietary driver
+    routes graphics-with-CUDA-context daemons through the compute
+    list, hybrid C+G processes show up there too, etc.). If you don't
+    want Forgather running on a GPU that's already hosting external
+    work, click the disable button on the GPU card.
     """
     return [
-        g.index
-        for g in gpu_monitor.snapshot()
-        if not g.excluded
-        and not g.disabled
-        and not any(gpu_monitor.is_blocking_process(p) for p in g.processes)
+        g.index for g in gpu_monitor.snapshot() if not g.excluded and not g.disabled
     ]
 
 
