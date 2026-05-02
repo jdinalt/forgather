@@ -2435,7 +2435,7 @@ li.config.selected button.link:hover {
    flows at this wrapper's full width, so headers, paragraphs, hr, lists,
    tables, and images all share the same left/right edges. */
 .info-pane-content {
-  max-width: 80ch;
+  max-width: 110ch;
   margin: 0 auto;
 }
 
