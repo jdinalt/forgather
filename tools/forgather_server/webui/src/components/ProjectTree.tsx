@@ -17,7 +17,13 @@ import { SubmitModal } from "./SubmitModal";
 import { ConfigTensorBoardModal } from "./TensorBoardModal";
 import { Selection } from "../App";
 
-type ConfigAction = "submit" | "overrides" | "clean" | "tensorboard" | "delete";
+type ConfigAction =
+  | "submit"
+  | "overrides"
+  | "clean"
+  | "tensorboard"
+  | "edit"
+  | "delete";
 
 interface ContextTarget {
   project: ProjectInfo;
@@ -284,6 +290,10 @@ export function ProjectTree({
     setContextTarget(null);
     if (action === "delete") {
       deleteConfigFile(target.project, target.config);
+      return;
+    }
+    if (action === "edit") {
+      onEditTemplate(target.config.path);
       return;
     }
     setActiveModal({
@@ -894,6 +904,9 @@ function ConfigContextMenuItems({
           ⬆️ Update Model…
         </button>
       )}
+      <button onClick={() => onChoose("edit")} title={config.path}>
+        ✎ Edit Config
+      </button>
       <button
         className="context-menu-destructive"
         onClick={() => onChoose("delete")}

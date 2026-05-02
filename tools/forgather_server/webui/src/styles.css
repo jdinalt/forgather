@@ -1789,7 +1789,6 @@ li.config.selected button.link:hover {
   gap: 8px;
 }
 .template-label code {
-  flex: 1;
   min-width: 0;
 }
 .template-edit-btn {

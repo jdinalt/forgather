@@ -39,6 +39,14 @@ export function TemplatesView({
   const [mode, setMode] = useState<Mode>("trefs");
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuPos | null>(null);
+  // Mirror selectedPath into a ref so the Monaco "Edit" context-menu
+  // action — registered once at mount time — always opens the
+  // currently-previewed template instead of whichever path was active
+  // when the editor was first created.
+  const selectedPathRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedPathRef.current = selectedPath;
+  }, [selectedPath]);
 
   // Auto-show the active config's own template in the right pane every
   // time the config changes — including the initial mount. This makes
@@ -141,7 +149,19 @@ export function TemplatesView({
                     fontSize: 12,
                     scrollBeyondLastLine: false,
                   }}
-                  onMount={onMount}
+                  onMount={(editor, monaco) => {
+                    onMount(editor, monaco);
+                    editor.addAction({
+                      id: "forgather.edit-template",
+                      label: "Edit (open in Files panel)",
+                      contextMenuGroupId: "navigation",
+                      contextMenuOrder: 0,
+                      run: () => {
+                        const p = selectedPathRef.current;
+                        if (p) onEditTemplate(p);
+                      },
+                    });
+                  }}
                 />
               </div>
             </>
