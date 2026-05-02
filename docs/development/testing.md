@@ -5,7 +5,7 @@ This document covers how to run and work with the Forgather test suite. It is in
 ## Prerequisites
 
 `pytest`, `pytest-cov`, and `pytest-mock` are bundled with the base
-``pip install -e .`` from the [Getting Started](../getting-started/README.md)
+``pip install -e .`` from the [Installation](../getting-started/installation.md)
 guide — no separate test extra to install. You also need a working
 PyTorch installation. Some tests additionally require:
 

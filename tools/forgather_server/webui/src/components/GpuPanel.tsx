@@ -296,7 +296,14 @@ function GpuCard({
   const memPct = g.total_mem_bytes
     ? (g.used_mem_bytes / g.total_mem_bytes) * 100
     : 0;
-  const idle = (g.util_pct ?? 0) === 0 && g.processes.length === 0;
+  // The card color mirrors the scheduler's dispatch rule
+  // (scheduler._idle_gpu_indices): a GPU is "available" iff it isn't
+  // excluded via CUDA_VISIBLE_DEVICES and isn't user-disabled.
+  // External processes — desktop compositors, unrelated CUDA work —
+  // don't gate dispatch and don't change the card color. Whatever is
+  // actually running on the card shows up in the process list and the
+  // util/memory bars.
+  const idle = !g.excluded && !g.disabled;
   // excluded trumps disabled visually
   const cardClass =
     "gpu-card" +

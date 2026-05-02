@@ -56,7 +56,11 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
   const idleGpuCount = useMemo(() => {
     if (!gpusQ.data) return null;
-    return gpusQ.data.filter((g) => g.processes.length === 0).length;
+    // Mirror the scheduler's dispatch rule: a GPU is available iff it
+    // is not excluded (CUDA_VISIBLE_DEVICES) and not runtime-disabled.
+    // External processes — desktop compositors, unrelated CUDA work —
+    // don't gate dispatch.
+    return gpusQ.data.filter((g) => !g.excluded && !g.disabled).length;
   }, [gpusQ.data]);
 
   // Classify nproc_per_node. A positive integer means "fixed worker

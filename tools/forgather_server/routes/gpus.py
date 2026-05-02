@@ -23,6 +23,8 @@ STREAM_INTERVAL_SECONDS = 2.0
 class GpuProcessModel(BaseModel):
     pid: int
     used_mem_bytes: int
+    name: Optional[str] = None
+    kind: str = "compute"
 
 
 class GpuInfoModel(BaseModel):
@@ -65,7 +67,12 @@ def _to_model(g: gpu_monitor.GpuInfo) -> GpuInfoModel:
         temp_c=g.temp_c,
         fan_pct=g.fan_pct,
         processes=[
-            GpuProcessModel(pid=p.pid, used_mem_bytes=p.used_mem_bytes)
+            GpuProcessModel(
+                pid=p.pid,
+                used_mem_bytes=p.used_mem_bytes,
+                name=p.name,
+                kind=p.kind,
+            )
             for p in g.processes
         ],
         source=g.source,
@@ -146,7 +153,11 @@ def kill_gpu_processes(gpu_index: int, req: GpuKillRequest):
     if target is None:
         raise HTTPException(status_code=404, detail=f"no GPU at index {gpu_index}")
 
-    pids = [p.pid for p in target.processes]
+    # Only kill compute processes — graphics processes (X server, compositor)
+    # may belong to the user's desktop session and killing them would log the
+    # operator out. Filtering here also matches the scheduler's notion of
+    # "what's actually busy on this card".
+    pids = [p.pid for p in target.processes if p.kind == "compute"]
     killed: List[int] = []
     failed: List[int] = []
     for pid in pids:

@@ -6,6 +6,20 @@ repo_name: jdinalt/forgather
 
 docs_dir: docs
 
+# Skip generated / per-run artifact trees so mkdocs doesn't try to
+# copy them as static files. These are reachable through symlinked
+# tutorial / example directories under docs/, are .gitignore'd, and
+# may contain dangling links to old training runs that crash the
+# build with a FileNotFoundError. Gitignore-style patterns, applied
+# during file collection (mkdocs >= 1.5).
+exclude_docs: |
+  output_models/
+  runs/
+  tmp/
+  __pycache__/
+  .forgather_history
+  *.pyc
+
 theme:
   name: material
   features:
@@ -57,7 +71,9 @@ markdown_extensions:
 
 nav:
   - Home: README.md
-  - Getting Started: getting-started/README.md
+  - Getting Started:
+    - Overview: getting-started/README.md
+    - Installation: getting-started/installation.md
   - Core Concepts: core-concepts/README.md
   - Configuration:
     - Overview: configuration/README.md
@@ -131,4 +147,5 @@ nav:
     - Testing: development/testing.md
     - Integration Testing: development/integration-testing.md
     - Git Hooks: development/git-hooks.md
+    - Docker Development Image: development/docker.md
     - Known Bugs: development/bugs.md

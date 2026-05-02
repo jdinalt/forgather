@@ -3,9 +3,14 @@
 #
 # Usage:
 #   ./build-webui.sh             # incremental build (skips npm install if up-to-date)
-#   ./build-webui.sh --clean     # wipe dist/ and Vite's cache, then rebuild
+#   ./build-webui.sh --clean     # wipe dist/ and Vite's cache, then exit (no build)
 #   ./build-webui.sh --install   # force `npm install` even if node_modules exists
 #   ./build-webui.sh --watch     # run `vite` dev server (live reload, no static dist)
+#
+# --clean is "clean only" so it's a one-shot reset (e.g. before
+# testing the Docker build's webui post-step from a known-empty
+# state). To clean and then rebuild, run --clean and then re-run the
+# script with no flags.
 #
 # Run from anywhere — the script resolves paths relative to its own location.
 
@@ -40,6 +45,17 @@ fi
 
 cd "$WEBUI_DIR"
 
+# --clean is a one-shot reset: wipe dist/ and Vite cache, then exit.
+# Doesn't touch node_modules (use `rm -rf node_modules` if you want
+# to reset that too — but `npm install` is the slow part, so skipping
+# it on `--clean` keeps the next build fast).
+if $clean; then
+    echo "[build-webui] cleaning dist/ and Vite cache"
+    rm -rf dist node_modules/.vite
+    echo "[build-webui] done — re-run without --clean to rebuild"
+    exit 0
+fi
+
 # `npm install` is the slow part; skip it when node_modules already exists
 # and package-lock.json hasn't changed since the last install.
 if $force_install || [[ ! -d node_modules ]] \
@@ -48,11 +64,6 @@ if $force_install || [[ ! -d node_modules ]] \
     npm install
 else
     echo "[build-webui] node_modules up-to-date — skipping npm install (use --install to force)"
-fi
-
-if $clean; then
-    echo "[build-webui] cleaning dist/ and Vite cache"
-    rm -rf dist node_modules/.vite
 fi
 
 if $watch; then

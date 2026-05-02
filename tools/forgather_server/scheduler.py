@@ -79,14 +79,24 @@ def set_enabled(enabled: bool) -> None:
 def _idle_gpu_indices() -> List[int]:
     """Indices of GPUs the scheduler is allowed to assign right now.
 
-    A GPU is eligible iff it has no compute processes AND has not been
-    excluded by the operator via CUDA_VISIBLE_DEVICES at server start AND
-    has not been runtime-disabled by the user via the web UI.
+    A GPU is eligible iff it has not been excluded by the operator via
+    ``CUDA_VISIBLE_DEVICES`` at server start AND has not been runtime-
+    disabled by the user via the web UI.
+
+    External processes (the user's desktop compositor, an unrelated
+    CUDA program, etc.) are *not* consulted. The scheduler tracks its
+    own dispatched jobs via ``_reserved_gpu_set()`` (subtracted from
+    the idle pool by the dispatch loop), and that's the authoritative
+    "Forgather is already using this GPU" signal. Trying to classify
+    arbitrary external processes as "real compute work" vs "desktop
+    rendering" turns out to be a tar pit (NVIDIA's proprietary driver
+    routes graphics-with-CUDA-context daemons through the compute
+    list, hybrid C+G processes show up there too, etc.). If you don't
+    want Forgather running on a GPU that's already hosting external
+    work, click the disable button on the GPU card.
     """
     return [
-        g.index
-        for g in gpu_monitor.snapshot()
-        if not g.processes and not g.excluded and not g.disabled
+        g.index for g in gpu_monitor.snapshot() if not g.excluded and not g.disabled
     ]
 
 
