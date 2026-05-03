@@ -7,9 +7,8 @@ export interface DynamicArgsFormProps {
   values: Record<string, string>;
   onChange: (dest: string, value: string) => void;
   /** When true, ``required: true`` flags drive the missing-arg highlighting
-   *  and tree expansion. SubmitModal uses this; OverridesModal sets it
-   *  false because saving overrides has no semantic of "missing" — the
-   *  user is just editing cached values. */
+   *  and tree expansion. Both SubmitModal and OverridesModal enable this so
+   *  the user lands directly on required fields they still need to fill in. */
   enforceRequired?: boolean;
 }
 

@@ -151,6 +151,7 @@ export function OverridesModal({ project, config, onClose }: Props) {
                 onChange={(dest, v) =>
                   setValues((prev) => ({ ...prev, [dest]: v }))
                 }
+                enforceRequired
               />
             </>
           )}
