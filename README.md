@@ -1,4 +1,4 @@
-# Forgather
+# Forgather ML
 
 Forgather is a configuration-driven ML framework that uses template
 inheritance and code generation to eliminate configuration duplication
@@ -11,9 +11,8 @@ only what changes.
 
 > 🖥️ **New: web UI.** Forgather now ships with a single-user web
 > frontend over the same APIs the CLI uses — project browsing,
-> a GPU-aware job queue, live training monitoring with TTY + loss
-> pills + per-GPU process attribution, an in-browser editor with
-> Forgather-aware syntax highlighting, and a chat client wired to
+> a GPU-aware job queue, live training monitoring with TTY, an in-browser editor with
+> Forgather-aware syntax highlighting, and an inference/chat client wired to
 > served models. The
 > **[Forgather server walkthrough](./docs/guides/forgather-server-walkthrough.md)**
 > tours the whole thing end-to-end, from a fresh install through
