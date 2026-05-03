@@ -73,37 +73,37 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 
 | Journey | Project |
 |---------|---------|
-| Pretrain from scratch | [pretrain/small-llm](https://github.com/jdinalt/forgather/tree/main/examples/pretrain/small-llm) |
-| Fine-tune a 7B model (multi-GPU) | [finetune/samantha](https://github.com/jdinalt/forgather/tree/main/examples/finetune/samantha) |
-| Instruction / reasoning fine-tune | [finetune/open-orca](https://github.com/jdinalt/forgather/tree/main/examples/finetune/open-orca) |
-| Long-context fine-tuning + RoPE recipes | [tutorials/hp_lovecraft_project](https://github.com/jdinalt/forgather/tree/main/examples/tutorials/hp_lovecraft_project) |
-| Cut peak memory | [tiny_experiments/peak_memory](https://github.com/jdinalt/forgather/tree/main/examples/tiny_experiments/peak_memory) |
-| Pick an optimizer | [tiny_experiments/optimizers](https://github.com/jdinalt/forgather/tree/main/examples/tiny_experiments/optimizers) |
-| Pipeline-parallel recipes | [tiny_experiments/pipeline_parallel](https://github.com/jdinalt/forgather/tree/main/examples/tiny_experiments/pipeline_parallel) |
-| Decentralised / bandwidth-limited training | [tiny_experiments/diloco](https://github.com/jdinalt/forgather/tree/main/examples/tiny_experiments/diloco) |
+| Pretrain from scratch | [pretrain/small-llm](examples/pretrain/small-llm/README.md) |
+| Fine-tune a 7B model (multi-GPU) | [finetune/samantha](examples/finetune/samantha/README.md) |
+| Instruction / reasoning fine-tune | [finetune/open-orca](examples/finetune/open-orca/README.md) |
+| Long-context fine-tuning + RoPE recipes | [tutorials/hp_lovecraft_project](tutorials/hp_lovecraft_project/README.md) |
+| Cut peak memory | [tiny_experiments/peak_memory](examples/tiny_experiments/peak_memory/README.md) |
+| Pick an optimizer | [tiny_experiments/optimizers](examples/tiny_experiments/optimizers/README.md) |
+| Pipeline-parallel recipes | [tiny_experiments/pipeline_parallel](examples/tiny_experiments/pipeline_parallel/README.md) |
+| Decentralised / bandwidth-limited training | [tiny_experiments/diloco](examples/tiny_experiments/diloco/README.md) |
 
-**[pretrain/small-llm](https://github.com/jdinalt/forgather/tree/main/examples/pretrain/small-llm)** — A 162M-parameter Llama trained from scratch on the SmolLM corpus (FineWeb-Edu + Cosmopedia) with packed sequences and Flex Attention. Ten production-ready configs covering 1× and 10× Chinchilla budgets, AdamW / Adafactor / bf16 variants. Includes reproducible Chinchilla scaling-law plots.
+**[pretrain/small-llm](examples/pretrain/small-llm/README.md)** — A 162M-parameter Llama trained from scratch on the SmolLM corpus (FineWeb-Edu + Cosmopedia) with packed sequences and Flex Attention. Ten production-ready configs covering 1× and 10× Chinchilla budgets, AdamW / Adafactor / bf16 variants. Includes reproducible Chinchilla scaling-law plots.
 
-**[finetune/samantha](https://github.com/jdinalt/forgather/tree/main/examples/finetune/samantha)** — Fine-tune Mistral-7B or Llama-3.2-1B on the Samantha conversational dataset across every trainer backend. Configs cover single-GPU, 2/4-GPU pipeline parallel, FSDP-2, and DDP. Documented throughput (~8.9K tok/s on 4× RTX 4090). The most-referenced finetune project in the library.
+**[finetune/samantha](examples/finetune/samantha/README.md)** — Fine-tune Mistral-7B or Llama-3.2-1B on the Samantha conversational dataset across every trainer backend. Configs cover single-GPU, 2/4-GPU pipeline parallel, FSDP-2, and DDP. Documented throughput (~8.9K tok/s on 4× RTX 4090). The most-referenced finetune project in the library.
 
-**[finetune/open-orca](https://github.com/jdinalt/forgather/tree/main/examples/finetune/open-orca)** — Instruction and reasoning fine-tune on Open-Orca with ChatML-formatted evaluation prompts covering chain-of-thought math, logic puzzles, reading comprehension, and summarisation. 1B Llama 3.2 on a 1B-token budget completes in ~11 hours on 4× RTX 4090.
+**[finetune/open-orca](examples/finetune/open-orca/README.md)** — Instruction and reasoning fine-tune on Open-Orca with ChatML-formatted evaluation prompts covering chain-of-thought math, logic puzzles, reading comprehension, and summarisation. 1B Llama 3.2 on a 1B-token budget completes in ~11 hours on 4× RTX 4090.
 
-**[tutorials/hp_lovecraft_project](https://github.com/jdinalt/forgather/tree/main/examples/tutorials/hp_lovecraft_project)** — Fine-tune Mistral-7B / Llama-2-7B on the complete works of H.P. Lovecraft on a single 24 GB GPU, with up to 53K tokens of context. Includes a four-way RoPE comparison (plain, YaRN, Llama-3 NTK-by-parts, bumped θ) evaluating 8K-trained models out to 16K.
+**[tutorials/hp_lovecraft_project](tutorials/hp_lovecraft_project/README.md)** — Fine-tune Mistral-7B / Llama-2-7B on the complete works of H.P. Lovecraft on a single 24 GB GPU, with up to 53K tokens of context. Includes a four-way RoPE comparison (plain, YaRN, Llama-3 NTK-by-parts, bumped θ) evaluating 8K-trained models out to 16K.
 
-**[tiny_experiments/peak_memory](https://github.com/jdinalt/forgather/tree/main/examples/tiny_experiments/peak_memory)** — A systematic 9-way ablation of memory-optimisation techniques on a 1.6B model: BF16, activation checkpointing, `torch.compile`, fused optimizer step, activation-memory budget. Headline: 81% peak-memory reduction at ~2.7× throughput over the unoptimised baseline.
+**[tiny_experiments/peak_memory](examples/tiny_experiments/peak_memory/README.md)** — A systematic 9-way ablation of memory-optimisation techniques on a 1.6B model: BF16, activation checkpointing, `torch.compile`, fused optimizer step, activation-memory budget. Headline: 81% peak-memory reduction at ~2.7× throughput over the unoptimised baseline.
 
-**[tiny_experiments/optimizers](https://github.com/jdinalt/forgather/tree/main/examples/tiny_experiments/optimizers)** — Empirical comparison of ten optimizers (Muon, Apollo, AdamW, Adafactor, SinkGD, SGD, and more) on a 30M Llama. Headline: Muon wins at small batch (eval loss 2.6778 vs AdamW 2.7392). Includes per-optimizer memory and throughput tiers.
+**[tiny_experiments/optimizers](examples/tiny_experiments/optimizers/README.md)** — Empirical comparison of ten optimizers (Muon, Apollo, AdamW, Adafactor, SinkGD, SGD, and more) on a 30M Llama. Headline: Muon wins at small batch (eval loss 2.6778 vs AdamW 2.7392). Includes per-optimizer memory and throughput tiers.
 
-**[tiny_experiments/pipeline_parallel](https://github.com/jdinalt/forgather/tree/main/examples/tiny_experiments/pipeline_parallel)** — Test harness and reference configs for PyTorch's pipeline-parallel schedules (GPipe, 1F1B, ZBV, interleaved), with checkpoint save/resume coverage across 2/4-GPU setups.
+**[tiny_experiments/pipeline_parallel](examples/tiny_experiments/pipeline_parallel/README.md)** — Test harness and reference configs for PyTorch's pipeline-parallel schedules (GPipe, 1F1B, ZBV, interleaved), with checkpoint save/resume coverage across 2/4-GPU setups.
 
-**[tiny_experiments/diloco](https://github.com/jdinalt/forgather/tree/main/examples/tiny_experiments/diloco)** — DiLoCo (distributed local SGD) on a 4M-parameter model. Pseudo-gradient compression, streaming-fragment overlap with the backward pass, sync and async modes. The lowest-communication-bandwidth trainer in the library.
+**[tiny_experiments/diloco](examples/tiny_experiments/diloco/README.md)** — DiLoCo (distributed local SGD) on a 4M-parameter model. Pseudo-gradient compression, streaming-fragment overlap with the backward pass, sync and async modes. The lowest-communication-bandwidth trainer in the library.
 
 ## Example Project Collections
-- **[Tiny Experiments](https://github.com/jdinalt/forgather/tree/main/examples/tiny_experiments)** - A collection of experiments and integration tests using (mostly) small models
-- **[Dataset Projects](https://github.com/jdinalt/forgather/tree/main/examples/datasets)** - A collection of demonstration dataset configurations
-- **[Finetune](https://github.com/jdinalt/forgather/tree/main/examples/finetune)** - A collection of finetuning examples
-- **[Tokenizers](https://github.com/jdinalt/forgather/tree/main/examples/tokenizers)** - Tokenizer definition examples
-- **[Models](https://github.com/jdinalt/forgather/tree/main/examples/models)** - Example model definitions
+- **[Tiny Experiments](examples/tiny_experiments/README.md)** - A collection of experiments and integration tests using (mostly) small models
+- **[Dataset Projects](examples/datasets/README.md)** - A collection of demonstration dataset configurations
+- **[Finetune](examples/finetune/README.md)** - A collection of finetuning examples
+- **[Tokenizers](examples/tokenizers/README.md)** - Tokenizer definition examples
+- **[Models](examples/models/README.md)** - Example model definitions
 
 ## Development
 
