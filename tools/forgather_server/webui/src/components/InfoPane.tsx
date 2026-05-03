@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeSlug from "rehype-slug";
 
 import { api } from "../api";
 
@@ -117,10 +118,27 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
       return <img src={resolvedSrc} alt={alt ?? ""} {...rest} />;
     },
     a({ href, children, ...rest }) {
-      // In-page anchors stay in-page.
+      // In-page anchors. Info pane is a custom scroll container, so the
+      // browser's default anchor scroll won't necessarily work — resolve
+      // the target by id within the pane and scroll it explicitly.
       if (href && href.startsWith("#")) {
         return (
-          <a href={href} {...rest}>
+          <a
+            href={href}
+            onClick={(e) => {
+              const id = decodeURIComponent(href.slice(1));
+              if (!id) return;
+              const pane = document.querySelector(".info-pane");
+              const target = pane?.querySelector(
+                `#${CSS.escape(id)}`,
+              ) as HTMLElement | null;
+              if (target) {
+                e.preventDefault();
+                target.scrollIntoView({ behavior: "smooth", block: "start" });
+              }
+            }}
+            {...rest}
+          >
             {children}
           </a>
         );
@@ -194,7 +212,11 @@ export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props)
   return (
     <div className="info-pane">
       <div className="info-pane-content">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeSlug]}
+          components={components}
+        >
           {readmeQ.data ?? ""}
         </ReactMarkdown>
       </div>

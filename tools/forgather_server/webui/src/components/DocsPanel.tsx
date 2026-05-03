@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeSlug from "rehype-slug";
 
 import { api, IpynbCell } from "../api";
 import { ContextMenu } from "./ContextMenu";
@@ -276,8 +277,27 @@ function DocMarkdown({ source, docDir, docPath, onNavigate, onEdit }: MarkdownPr
           return <a {...rest}>{children}</a>;
         }
         if (href.startsWith("#")) {
+          // The Docs body is a custom scroll container (not the page),
+          // so the browser's default anchor scroll is unreliable here.
+          // Resolve the target by id within the doc body and scroll
+          // it into view explicitly.
           return (
-            <a href={href} {...rest}>
+            <a
+              href={href}
+              onClick={(e) => {
+                const id = decodeURIComponent(href.slice(1));
+                if (!id) return;
+                const body = document.querySelector(".docs-pane-body");
+                const target = body?.querySelector(
+                  `#${CSS.escape(id)}`,
+                ) as HTMLElement | null;
+                if (target) {
+                  e.preventDefault();
+                  target.scrollIntoView({ behavior: "smooth", block: "start" });
+                }
+              }}
+              {...rest}
+            >
               {children}
             </a>
           );
@@ -365,7 +385,11 @@ function DocMarkdown({ source, docDir, docPath, onNavigate, onEdit }: MarkdownPr
   );
 
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeSlug]}
+      components={components}
+    >
       {source}
     </ReactMarkdown>
   );
