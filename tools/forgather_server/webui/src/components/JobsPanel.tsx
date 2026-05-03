@@ -81,7 +81,19 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
   const [splitPct, setSplitPct] = useState<number>(() => loadStoredSplit());
   const [menuTarget, setMenuTarget] = useState<JobMenuTarget | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const listPaneRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
+  // Captured at pointer-down so the bar tracks the cursor exactly: the
+  // panel-level split percentage maps the *whole* panel (header included)
+  // but the bar lives below the header, so a naive clientY→percent
+  // calculation lags by the header's height. We instead translate cursor
+  // movement into a delta on the list pane's own height.
+  const dragStateRef = useRef<{
+    grabOffsetY: number;
+    initialBarTop: number;
+    initialListHeight: number;
+    panelHeight: number;
+  } | null>(null);
   const qc = useQueryClient();
 
   const onJobContextRequest = useCallback(
@@ -100,6 +112,20 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
       (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      const panel = panelRef.current;
+      const listPane = listPaneRef.current;
+      if (!panel || !listPane) return;
+      const handleRect = (
+        e.currentTarget as HTMLDivElement
+      ).getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      const listRect = listPane.getBoundingClientRect();
+      dragStateRef.current = {
+        grabOffsetY: e.clientY - handleRect.top,
+        initialBarTop: handleRect.top,
+        initialListHeight: listRect.height,
+        panelHeight: panelRect.height,
+      };
       draggingRef.current = true;
       document.body.style.cursor = "row-resize";
       document.body.style.userSelect = "none";
@@ -110,17 +136,15 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
   const onHandlePointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (!draggingRef.current) return;
-      const panel = panelRef.current;
-      if (!panel) return;
-      const rect = panel.getBoundingClientRect();
-      // Measure against the panel's content area (header is inside the
-      // same flex container, so its height is part of the travel — we
-      // clamp instead of trying to subtract it exactly).
-      const pct = ((e.clientY - rect.top) / rect.height) * 100;
-      const clamped = Math.max(
-        MIN_SPLIT_PCT,
-        Math.min(MAX_SPLIT_PCT, pct),
-      );
+      const ds = dragStateRef.current;
+      if (!ds) return;
+      // Where the bar wants to be so the original grab point on the bar
+      // stays under the cursor.
+      const newBarTop = e.clientY - ds.grabOffsetY;
+      const delta = newBarTop - ds.initialBarTop;
+      const newListHeight = ds.initialListHeight + delta;
+      const pct = (newListHeight / ds.panelHeight) * 100;
+      const clamped = Math.max(MIN_SPLIT_PCT, Math.min(MAX_SPLIT_PCT, pct));
       setSplitPct(clamped);
     },
     [],
@@ -130,6 +154,7 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (!draggingRef.current) return;
       draggingRef.current = false;
+      dragStateRef.current = null;
       try {
         (e.currentTarget as Element).releasePointerCapture(e.pointerId);
       } catch {
@@ -327,6 +352,7 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
 
       <div
         className="jobs-list-pane"
+        ref={listPaneRef}
         style={showTty ? { flex: `0 0 ${splitPct}%` } : undefined}
       >
         {jobs.length === 0 && (

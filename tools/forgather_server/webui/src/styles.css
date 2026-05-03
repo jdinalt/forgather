@@ -1674,7 +1674,6 @@ li.config.selected button.link:hover {
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  border-right: 1px solid var(--border);
 }
 .trefs-left .trefs-graph {
   border-right: none;
@@ -1702,10 +1701,36 @@ li.config.selected button.link:hover {
 }
 
 .trefs-split {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-direction: row;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+}
+.trefs-split > .trefs-source {
+  flex: 1;
+  min-width: 0;
+}
+.trefs-split-handle {
+  flex: 0 0 6px;
+  background: var(--border);
+  cursor: col-resize;
+  position: relative;
+  touch-action: none;
+}
+.trefs-split-handle:before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+.trefs-split-handle:hover {
+  background: var(--accent);
+}
+.trefs-split-handle:active {
+  background: var(--accent-hover);
 }
 
 /* ---------- tlist (all project templates, grouped) ---------- */
