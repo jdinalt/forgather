@@ -81,7 +81,10 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
     // read; no need to depend on it (it doesn't change at runtime).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoMkdocs]);
-  const [host, setHost] = useState<string>(persisted.host ?? "127.0.0.1");
+  // Default to "localhost" rather than "127.0.0.1" — both bind to the
+  // same loopback addresses, but some browsers (notably ChromeOS over
+  // SSH port-forwards) only follow clickable links to "localhost".
+  const [host, setHost] = useState<string>(persisted.host ?? "localhost");
   // Default port: mkdocs' own default. Common SSH port-forward target;
   // don't shift it just to dodge first-submit collisions.
   const [port, setPort] = useState<number>(persisted.port ?? 8000);
@@ -100,7 +103,7 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
     // Mirror the same fallback the useEffect uses: prefer the
     // discovered repo mkdocs.yml, otherwise an empty path.
     setConfigFile(repoMkdocs || "");
-    setHost("127.0.0.1");
+    setHost("localhost");
     setPort(8000);
     setStrict(false);
     setLivereload(true);
@@ -122,7 +125,7 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
     if (!finalConfig) return;
     savePersisted({
       configFile: finalConfig,
-      host: host.trim() || "127.0.0.1",
+      host: host.trim() || "localhost",
       port,
       strict,
       livereload,
@@ -135,7 +138,7 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
       .filter(Boolean);
     const job_params: Record<string, unknown> = {
       config_file: finalConfig,
-      host: host.trim() || "127.0.0.1",
+      host: host.trim() || "localhost",
       port,
       strict,
       livereload,
@@ -192,7 +195,7 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
                 type="text"
                 value={host}
                 onChange={(e) => setHost(e.target.value)}
-                placeholder="127.0.0.1"
+                placeholder="localhost"
               />
             </label>
             <label>

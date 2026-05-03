@@ -33,6 +33,19 @@ const JOB_TYPE_CHIPS: Record<Job["job_type"], { label: string; className: string
   dataset: { label: "dataset", className: "type-dataset" },
 };
 
+// Loopback hosts that some browsers (notably ChromeOS over SSH
+// port-forwards) refuse to connect to via clickable links. The server
+// process can still bind to any of these — we only rewrite the displayed
+// URL so the link is portable.
+function browserSafeHost(host: string | null | undefined): string {
+  if (!host) return "localhost";
+  const h = host.trim();
+  if (h === "" || h === "127.0.0.1" || h === "::1" || h === "0.0.0.0") {
+    return "localhost";
+  }
+  return h;
+}
+
 // Split-pane bounds: keep both panes big enough to be useful.
 const MIN_SPLIT_PCT = 15;
 const MAX_SPLIT_PCT = 85;
@@ -506,14 +519,14 @@ function JobCard({
     isInference && typeof job.job_params?.port === "number"
       ? (job.job_params.port as number)
       : null;
-  const inferenceUrl =
-    inferenceHost && inferencePort
-      ? `http://${inferenceHost}:${inferencePort}`
-      : null;
+  const inferenceUrl = inferencePort
+    ? `http://${browserSafeHost(inferenceHost)}:${inferencePort}`
+    : null;
 
-  // TensorBoard is the same idea: a local web server. Host isn't always
-  // set on the params; bind_all implies 0.0.0.0 → browser-friendly at
-  // localhost, otherwise fall back to the passed host or 127.0.0.1.
+  // TensorBoard is the same idea: a local web server. ``bind_all`` →
+  // 0.0.0.0; otherwise use whatever host the user supplied. Loopback
+  // and unset hosts are normalized to ``localhost`` for the displayed
+  // link (see ``browserSafeHost``).
   const tbPort =
     isTensorBoard && typeof job.job_params?.port === "number"
       ? (job.job_params.port as number)
@@ -524,7 +537,7 @@ function JobCard({
       ? (job.job_params.host as string)
       : null;
   const tbUrl = tbPort
-    ? `http://${tbBindAll ? "localhost" : tbHost ?? "localhost"}:${tbPort}`
+    ? `http://${tbBindAll ? "localhost" : browserSafeHost(tbHost)}:${tbPort}`
     : null;
 
   // MkDocs serve runs a local HTTP dev server. host:port pair is folded
@@ -539,7 +552,7 @@ function JobCard({
       ? (job.job_params.host as string)
       : null;
   const mkUrl = mkPort
-    ? `http://${mkHost ?? "127.0.0.1"}:${mkPort}`
+    ? `http://${browserSafeHost(mkHost)}:${mkPort}`
     : null;
 
   const cardClass =

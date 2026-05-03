@@ -98,7 +98,10 @@ export function InferenceModal({
   // rather than shifting to dodge first-submit collisions — collisions
   // are easy to fix per-submit.
   const [port, setPort] = useState<number>(persisted.port ?? 8137);
-  const [host, setHost] = useState<string>(persisted.host ?? "127.0.0.1");
+  // Default to "localhost" rather than "127.0.0.1" — both bind to the
+  // same loopback addresses, but some browsers (notably ChromeOS over
+  // SSH port-forwards) only follow clickable links to "localhost".
+  const [host, setHost] = useState<string>(persisted.host ?? "localhost");
   // priority stays fresh each time — its "right" value depends on
   // current queue state. requestedGpus is sticky.
   const [requestedGpus, setRequestedGpus] = useState<number>(
@@ -143,7 +146,7 @@ export function InferenceModal({
     persistRemove(AD_HOC_STORAGE_KEY);
     setModelPath("");
     setPort(8137);
-    setHost("127.0.0.1");
+    setHost("localhost");
     setFromCheckpoint(false);
     setCkptPath("");
     setDtype("bfloat16");
