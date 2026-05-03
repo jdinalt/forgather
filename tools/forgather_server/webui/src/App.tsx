@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, CheckpointEntry, ConfigInfo, EvalEntry, ProjectInfo } from "./api";
 import { getAutoWatchTty } from "./autoWatch";
@@ -106,6 +106,21 @@ export default function App() {
   // config AND switch to "info" in one render cycle.
   const [tab, setTab] = useState<ConfigTab>("info");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Ctrl+B / Cmd+B toggles the sidebar, matching VS Code. Capture phase so
+  // Monaco doesn't swallow it inside the editor.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.altKey || e.shiftKey) return;
+      if (e.key !== "b" && e.key !== "B") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setSidebarCollapsed((c) => !c);
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKey, { capture: true } as any);
+  }, []);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [searchRootsOpen, setSearchRootsOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
@@ -285,7 +300,7 @@ export default function App() {
           <button
             className="sidebar-toggle"
             onClick={() => setSidebarCollapsed(false)}
-            title="Expand sidebar"
+            title="Expand sidebar (Ctrl+B)"
             aria-label="Expand sidebar"
           >
             <SidebarIcon />
@@ -333,7 +348,7 @@ export default function App() {
               <button
                 className="sidebar-toggle"
                 onClick={() => setSidebarCollapsed(true)}
-                title="Collapse sidebar"
+                title="Collapse sidebar (Ctrl+B)"
                 aria-label="Collapse sidebar"
               >
                 <SidebarIcon />
