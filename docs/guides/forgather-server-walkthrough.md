@@ -8,7 +8,7 @@ together.
 
 **What you'll do:**
 
-1. [Install Forgather + build the web UI](#1-install-and-build)
+1. [Install Forgather](#1-install)
 2. [Start the server and connect](#2-start-the-server-and-connect)
 3. [Serve the docs (optional)](#3-serve-the-docs)
 4. [Find the Tiny Llama tutorial project](#4-find-the-tiny-llama-project)
@@ -35,38 +35,11 @@ an RTX 4090, longer on smaller GPUs).
 
 ---
 
-## 1. Install and build
+## 1. Install
 
 If you haven't already, follow [Installation](../getting-started/installation.md)
-through the install + cut-cross-entropy steps. That gets you a working
-`forgather` CLI and its dependencies.
 
-Then build the web UI. The repo ships a wrapper script that handles
-the `cd` + `npm install` + `npm run build` dance for you:
-
-```bash
-./build-webui.sh        # from the forgather repo root
-```
-
-Useful flags:
-
-- `--clean` — wipe `dist/` and the Vite cache before building (use this
-  when an asset hash collides with a previously cached one and the
-  browser refuses to pick up your change).
-- `--install` — force a fresh `npm install` even if `node_modules`
-  already looks current.
-- `--watch` — run the Vite dev server with live reload instead of
-  producing a static bundle (handy when iterating on `webui/src/`).
-
-The first run does an `npm install` to pull in the Node dependency
-tree (~2 minutes — Vite + React + Monaco + the WASM Graphviz).
-Subsequent builds skip that step and just rebundle, which is fast.
-You only need to rebuild when you pull changes that touch
-`webui/src/`.
-
-> **Heads-up:** if you start the server before the `dist/` directory
-> exists, the API still works but the root URL returns 404 with no
-> message. Easy to misdiagnose as a port-forwarding issue.
+The Docker install is the recommended method.
 
 ## 2. Start the server and connect
 
@@ -74,7 +47,7 @@ You only need to rebuild when you pull changes that touch
 forgather server
 ```
 
-Defaults to `http://127.0.0.1:8765/`. On startup you'll see a banner
+Defaults to `http://localhost:8765/`. On startup you'll see a banner
 with a one-shot login URL:
 
 ```
@@ -107,12 +80,16 @@ the token or the password. The token sits at
 > `forgather train --enqueue`, …) read the token file
 > automatically — you never paste it on the command line.
 
-If your training host is remote, set up SSH port forwarding from your
-laptop — forwarding the canonical ports for the Forgather server,
+If your training host is remote, set up SSH port forwarding on the remote
+ — forwarding the canonical ports for the Forgather server,
 inference jobs, TensorBoard, and MkDocs all at once is convenient
 because every spawned tool lives at a known port:
 
 ```bash
+# Forgather Server: 8765
+# Inference Server: 8137
+# TensorBoard: 6006
+# MkDocs: 8000
 ssh -L 8765:localhost:8765 \
     -L 8137:localhost:8137 \
     -L 6006:localhost:6006 \
@@ -120,7 +97,7 @@ ssh -L 8765:localhost:8765 \
     user@dev-host
 ```
 
-Then open <http://localhost:8765/> on the laptop. The token printed
+Then open <http://localhost:8765/> on the remote. The token printed
 on the remote console works as-is over the tunnel — paste it (or the
 full URL) into the laptop's browser. If you also want to run
 `forgather` CLI commands _from the laptop_ against the tunnelled
@@ -214,6 +191,18 @@ script actually receives. Worth a quick scroll-through to see how
 much the templates expand into.
 
 ![pp tab showing the preprocessed v2.yaml](screenshots/06-pp-tab.png)
+
+### 5.1 Start TensorBoard (optional)
+
+Before staring training, we can start TensorBoard to monitor the training job.
+
+Click the "TensorBoard..." button in the header (or right click on the configuration and
+select "Tensorboard..."). This will take you to the "Jobs" panel. You should see a "TB"
+card, where you can click on the URL to open TensorBoard. Once your training jobs starts,
+you can monitor progress from here.
+
+Now switch back to the Forgather Server WebUI and click on "Projects" in the sidebar to
+return to where we left off.
 
 ## 6. Queue and dispatch a training job
 

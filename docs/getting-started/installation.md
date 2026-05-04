@@ -1,5 +1,35 @@
 # Installation
 
+**TL;DR**
+
+```bash
+# If running remotely over ssh,
+# setup port forwarding
+ssh -L 8765:localhost:8765 \
+    -L 8137:localhost:8137 \
+    -L 6006:localhost:6006 \
+    -L 8000:localhost:8000 \
+    user@dev-host
+
+# Install with Docker
+git clone https://github.com/jdinalt/forgather.git
+cd forgather
+docker/build.sh                  # auto-fills USER_NAME/UID/GID from host
+docker/run.sh                    # interactive shell, --gpus all, ports forwarded
+
+# Inside the container:
+
+# Start the webui...
+forgather server
+
+# control-click on `http://localhost:8765/?token=4c4febdc07830cdd...` to connect with your browser
+
+# ...or use the CLI
+forgather --help
+cd examples/tutorials/tiny_llama
+forgather -t v2.yaml train
+```
+
 Two paths: install on the host directly (Python venv via `pip` or
 `uv`), or run inside the bundled Docker development image. Pick
 whichever fits your machine.

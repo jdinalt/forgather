@@ -93,42 +93,30 @@ wasting compute on attention accross document boundaries.
 Full install walkthrough and first-training-run tutorial:
 **[docs/getting-started/README.md](./docs/getting-started/README.md)**.
 
-The short version, assuming Python 3.12+ and
-`build-essential` / `python3-dev` / `graphviz` already installed.
-An NVIDIA GPU is strongly recommended but not required. Non-CUDA accelerators (Intel, AMD) may work in
-theory, but have not been tested outside of CUDA and CPU.
-
 ```bash
-# Create and activate a virtual environment first -- most modern distros
-# refuse `pip install` into the system Python (PEP 668).  venv, conda, or
-# uv all work; pick one:
-python3.12 -m venv ~/venvs/forgather
-source ~/venvs/forgather/bin/activate
+# If running remotely over ssh,
+# setup port forwarding
+ssh -L 8765:localhost:8765 \
+    -L 8137:localhost:8137 \
+    -L 6006:localhost:6006 \
+    -L 8000:localhost:8000 \
+    user@dev-host
 
-git clone https://github.com/jdinalt/forgather.git
-cd forgather
-pip install -e .
-pip install "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
-
-cd examples/tutorials/tiny_llama
-forgather -t v2.yaml train        # ~10 min on a single RTX 4090
-```
-
-**Or skip the host setup with Docker** -- the repo ships a development
-Dockerfile that bakes the full environment (Python 3.12, PyTorch with
-CUDA wheels, all deps, `cut-cross-entropy` from source, dev toolchain)
-into an Ubuntu 24.04 image. Build args carry your host UID/GID so a
-bind-mounted home keeps correct file ownership, and the entrypoint
-re-links the editable install to the bind-mounted source tree on
-entry — host-side edits show up live without rebuilds.
-
-```bash
+# Install with Docker
 git clone https://github.com/jdinalt/forgather.git
 cd forgather
 docker/build.sh                  # auto-fills USER_NAME/UID/GID from host
 docker/run.sh                    # interactive shell, --gpus all, ports forwarded
 
 # Inside the container:
+
+# Start the webui...
+forgather server
+
+# control-click on `http://localhost:8765/?token=4c4febdc07830cdd...` to connect with your browser
+
+# ...or use the CLI
+forgather --help
 cd examples/tutorials/tiny_llama
 forgather -t v2.yaml train
 ```
