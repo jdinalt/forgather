@@ -117,6 +117,14 @@ def _spawn_subprocess(
     # dup'd it into the child. Without close-after-spawn, every launched
     # job leaks one fd in the server process.
     with open(tty_log_path, "wb", buffering=0) as tty_file:
+        # TTY logs may capture checkpoint paths, dataset locations, and
+        # config details. Other local users on the host shouldn't read
+        # them. Chmod before spawn so the child never inherits a window
+        # at looser perms.
+        try:
+            os.chmod(tty_log_path, 0o600)
+        except OSError as e:
+            log.warning("could not chmod %s to 0600: %s", tty_log_path, e)
         proc = subprocess.Popen(
             cmd,
             env=proc_env,
@@ -219,6 +227,8 @@ def spawn_inference_process(
     cache_implementation: Optional[str] = None,
     compile_args: Optional[str] = None,
     log_level: str = "INFO",
+    auth_token_file: Optional[str] = None,
+    no_auth: bool = False,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> LaunchResult:
     """Spawn an OpenAI-compatible inference server.
@@ -241,6 +251,8 @@ def spawn_inference_process(
         cache_implementation=cache_implementation,
         compile_args=compile_args,
         log_level=log_level,
+        auth_token_file=auth_token_file,
+        no_auth=no_auth,
     )
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 
@@ -256,6 +268,7 @@ def spawn_tensorboard_process(
     reload_interval: Optional[int] = None,
     reload_multifile: bool = False,
     samples_per_plugin: Optional[str] = None,
+    path_prefix: Optional[str] = None,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> LaunchResult:
     """Spawn a TensorBoard instance.
@@ -274,6 +287,7 @@ def spawn_tensorboard_process(
         reload_interval=reload_interval,
         reload_multifile=reload_multifile,
         samples_per_plugin=samples_per_plugin,
+        path_prefix=path_prefix,
     )
     return _spawn_subprocess(cmd, [], tty_log_path, extra_env)
 

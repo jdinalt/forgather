@@ -64,7 +64,7 @@ def _read_raw() -> List[str]:
 
 
 def _write_raw(roots: List[str]) -> None:
-    atomic_write_text(search_roots_file(), json.dumps(roots, indent=2))
+    atomic_write_text(search_roots_file(), json.dumps(roots, indent=2), mode=0o600)
 
 
 def _normalize(path: str) -> str:

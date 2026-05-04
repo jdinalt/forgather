@@ -16,6 +16,73 @@ The base Forgather install should be sufficient.
 
 The scripts can be executed as stand-alone executables or started from the Forgather CLI, for convenience.
 
+## Authentication
+
+The server requires a bearer token by default. Multi-user hosts share the
+same loopback addresses, so without auth any local user could connect to a
+running inference port and use a private/finetuned model.
+
+For the full picture — how this token fits in alongside the forgather
+server's own bearer token, the per-job trainer-control token, and the
+TensorBoard / MkDocs spawn defaults — see the
+[forgather server threat model](../forgather_server/README.md#threat-model)
+and [authentication overview](../forgather_server/README.md#authentication-overview).
+
+**Default behaviour** — if you don't pass any auth flag, the server
+generates a random 64-hex-char token at startup and prints it on **stderr**:
+
+```
+inference_server auth token: 8f5b...
+clients must send 'Authorization: Bearer <token>'
+curl -H "Authorization: Bearer 8f5b..." http://127.0.0.1:8137/v1/models
+```
+
+Pass that token to clients in the `Authorization: Bearer <token>` header.
+The bundled CLI client accepts `--auth-token TOKEN` or `--auth-token-file
+PATH`, and the OpenAI Python SDK sends `api_key` as the bearer token.
+
+**Supplying a known token** — `--auth-token TOKEN` or `--auth-token-file
+PATH` (mode 0600). The file form is preferred for orchestrators since
+`--auth-token` is visible to other local users via `ps`.
+
+**Disabling auth** — `--no-auth` turns the gate off entirely. The startup
+banner warns prominently when this is set. Only use it on hosts where
+you're the only user (or you don't care who uses the model).
+
+Examples:
+
+```bash
+# Auto-generated token; copy it from stderr:
+forgather inf server -m /path/to/model
+
+# Known token from a file:
+echo -n "$(openssl rand -hex 32)" > ~/.inf-token && chmod 600 ~/.inf-token
+forgather inf server -m /path/to/model --auth-token-file ~/.inf-token
+
+# Connect with the bundled client:
+forgather inf client --auth-token-file ~/.inf-token --message "hi"
+
+# Connect with curl:
+curl -H "Authorization: Bearer $(cat ~/.inf-token)" \
+  http://127.0.0.1:8137/v1/models
+
+# Opt out:
+forgather inf server -m /path/to/model --no-auth
+```
+
+The `/health` endpoint is intentionally left open (no auth required) so
+the same-origin proxy in the forgather-server can probe upstream health
+before the model finishes loading. All other routes — `/v1/models`,
+`/v1/chat/completions`, `/v1/completions`, `/tokenize`, `/v1/tokenize` —
+require the bearer.
+
+When the server is spawned by the forgather-server scheduler it
+auto-generates a per-job token under
+`~/.forgather/server/inference/<queue_id>.token` (mode 0600) and the same-
+origin proxy adds the bearer for browser-initiated requests
+transparently.
+
+
 ## Quick Start
 
 **Start server**
@@ -283,7 +350,7 @@ forgather inf client --completion "Once upon a time" --max-tokens 512 --ignore-e
 # Or with Python OpenAI client
 python -c "
 from openai import OpenAI
-client = OpenAI(base_url='http://localhost:8137/v1', api_key='dummy')
+client = OpenAI(base_url='http://localhost:8137/v1', api_key='<server-printed token>')
 response = client.completions.create(
     model='test',
     prompt='Once upon a time',
@@ -510,6 +577,7 @@ When in interactive mode, use these commands:
 #### Chat Completions
 ```bash
 curl -X POST http://localhost:8137/v1/chat/completions \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "microsoft/DialoGPT-medium",
@@ -555,7 +623,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8137/v1",
-    api_key="dummy"  # Not used but required
+    api_key="<token printed on server stderr>",  # used as Bearer token
 )
 
 response = client.chat.completions.create(

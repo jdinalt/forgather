@@ -109,7 +109,7 @@ def set_overrides(
     }
     p = _path(project_dir, config)
     with _lock:
-        atomic_write_text(p, json.dumps(payload, indent=2))
+        atomic_write_text(p, json.dumps(payload, indent=2), mode=0o600)
     return {
         "values": dict(values),
         "requested_gpus": requested_gpus,

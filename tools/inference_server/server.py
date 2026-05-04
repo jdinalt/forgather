@@ -6,8 +6,10 @@ OpenAI API-compatible inference server for HuggingFace models.
 import argparse
 import logging
 import os
+import secrets
 import sys
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -141,6 +143,28 @@ def main():
         help="Ignore EOS tokens during generation (continue past EOS until max_tokens or stop_sequence)",
     )
 
+    # Bearer-token auth (default-on). Either supply a token, point at a file
+    # holding one, or generate one at startup. ``--no-auth`` disables auth
+    # entirely for users who explicitly opt out (matching forgather_server's
+    # flag of the same name).
+    auth_group = parser.add_mutually_exclusive_group()
+    auth_group.add_argument(
+        "--auth-token",
+        default=None,
+        help="Bearer token clients must present in 'Authorization: Bearer <token>'. Auto-generated if neither this nor --auth-token-file is given.",
+    )
+    auth_group.add_argument(
+        "--auth-token-file",
+        default=None,
+        type=os.path.expanduser,
+        help="Read the bearer token from this file (mode 0600 expected). Avoids exposing the token via argv (visible in 'ps').",
+    )
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Disable bearer-token auth. Any local user on the host will be able to use the model — only set this if you understand the threat model.",
+    )
+
     args = parser.parse_args()
 
     # Load config file if provided
@@ -201,8 +225,47 @@ def main():
         ignore_eos=args.ignore_eos,
     )
 
+    # Resolve auth token. --no-auth wins; otherwise prefer an explicit token,
+    # then a file, then an auto-generated one. Auto-generation gives
+    # default-secure behaviour without forcing operators to manage secrets.
+    auth_token: Optional[str] = None
+    if args.no_auth:
+        print(
+            "!! inference_server is running with --no-auth — any local user on "
+            "this host can use the model",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        if args.auth_token:
+            auth_token = args.auth_token.strip()
+        elif args.auth_token_file:
+            try:
+                auth_token = Path(args.auth_token_file).read_text().strip()
+            except OSError as e:
+                parser.error(f"could not read --auth-token-file: {e}")
+            if not auth_token:
+                parser.error(f"auth-token-file is empty: {args.auth_token_file}")
+        else:
+            auth_token = secrets.token_hex(32)
+
+        # Print on stderr so it's visible in TTY logs (the scheduler captures
+        # stderr) but not entangled with uvicorn's stdout request log.
+        print(f"inference_server auth token: {auth_token}", file=sys.stderr, flush=True)
+        print(
+            "clients must send 'Authorization: Bearer <token>'",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            f'curl -H "Authorization: Bearer {auth_token}" '
+            f"http://{args.host}:{args.port}/v1/models",
+            file=sys.stderr,
+            flush=True,
+        )
+
     # Create FastAPI app and set service
-    app = create_app()
+    app = create_app(auth_token=auth_token)
     set_inference_service(service)
 
     logging.info(f"Starting server on {args.host}:{args.port}")

@@ -68,6 +68,18 @@ class JobRecord:
     logs_dir: Optional[str] = None
     output_dir: Optional[str] = None
 
+    # URL path prefix the server's reverse proxy uses to reach this job's
+    # spawned HTTP service (currently only TensorBoard). Set at dispatch
+    # time so the proxy can recover ``host``/``port`` from ``job_params``
+    # and TB knows what prefix its own internal links should carry.
+    path_prefix: Optional[str] = None
+
+    # Inference-job bearer token. Stored on the record so the same-origin
+    # proxy can re-add ``Authorization: Bearer <token>`` when forwarding
+    # browser requests. None for non-inference jobs and for inference jobs
+    # spawned with --no-auth.
+    auth_token: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -99,7 +111,9 @@ def _read_raw() -> List[JobRecord]:
 
 def _write_raw(records: List[JobRecord]) -> None:
     atomic_write_text(
-        _records_file(), json.dumps([r.to_dict() for r in records], indent=2)
+        _records_file(),
+        json.dumps([r.to_dict() for r in records], indent=2),
+        mode=0o600,
     )
 
 

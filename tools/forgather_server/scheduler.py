@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import signal
 import subprocess
 import time
@@ -31,9 +32,9 @@ from typing import Dict, List, Optional
 
 from forgather import trainer_control
 
-from . import _gc, gpu_monitor, job_records, launcher, queue_store
+from . import _atomic, _gc, gpu_monitor, job_records, launcher, queue_store
 from .job_records import RUNNING_STATUSES, TERMINAL_STATUSES, JobRecord
-from .paths import jobs_tty_dir
+from .paths import inference_token_file, jobs_tty_dir
 from .queue_store import LOCAL_NODE, QueueItem
 
 # NOTE (multi-node): today the scheduler directly calls gpu_monitor.snapshot()
@@ -191,6 +192,7 @@ def _reap_finished() -> None:
         # job is terminal. No-op for non-training jobs (no logs_dir).
         if updated is not None:
             _gc.relocate_tty_to_logs(updated)
+            _cleanup_inference_token(updated)
         if rc is not None:
             log.info("reaped %s: rc=%d status=%s", qid, rc, new_status)
         else:
@@ -302,6 +304,14 @@ def _build_eval(item, gpu_indices, tty_path):
 
 def _build_inference(item, gpu_indices, tty_path):
     p = item.job_params
+    # ``no_auth`` opts the spawn out of bearer-token auth entirely. Otherwise
+    # the auth_token is generated and persisted in ``_launch`` before this
+    # builder runs; pass the per-job token file path so the spawn never sees
+    # the token on argv (which would be visible in ``ps``).
+    no_auth = bool(p.get("no_auth", False))
+    auth_token_file: Optional[str] = None
+    if not no_auth:
+        auth_token_file = str(inference_token_file(item.queue_id))
     return launcher.spawn_inference_process(
         model_path=p["model_path"],
         port=int(p["port"]),
@@ -319,12 +329,22 @@ def _build_inference(item, gpu_indices, tty_path):
         log_level=p.get("log_level", "INFO"),
         gpu_indices=gpu_indices,
         tty_log_path=tty_path,
+        auth_token_file=auth_token_file,
+        no_auth=no_auth,
     )
 
 
 def _build_tensorboard(item, gpu_indices, tty_path):
     p = item.job_params
     ri = p.get("reload_interval")
+    # ``path_prefix`` is set by ``_launch`` on the JobRecord before this
+    # builder runs; mirror it onto the TB CLI so TB's generated links
+    # match the proxy's mount path. Falls back to job_params for any
+    # legacy callers that pre-computed it themselves.
+    record = job_records.get_record(item.queue_id)
+    path_prefix = (record.path_prefix if record is not None else None) or p.get(
+        "path_prefix"
+    )
     return launcher.spawn_tensorboard_process(
         logdir=p["logdir"],
         port=int(p["port"]),
@@ -334,6 +354,7 @@ def _build_tensorboard(item, gpu_indices, tty_path):
         reload_interval=int(ri) if ri is not None else None,
         reload_multifile=bool(p.get("reload_multifile", False)),
         samples_per_plugin=p.get("samples_per_plugin"),
+        path_prefix=path_prefix,
         tty_log_path=tty_path,
     )
 
@@ -557,6 +578,23 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     collect the process even if the server crashes between steps 2 and 3.
     """
     tty_path = jobs_tty_dir() / f"{item.queue_id}.tty"
+    # TB jobs are reachable through the auth-gated reverse proxy at
+    # ``/api/tb/<queue_id>/...``; record the prefix here so ``--path_prefix``
+    # propagates to the spawned tensorboard process and the proxy route can
+    # look it up by ``queue_id`` later.
+    path_prefix: Optional[str] = None
+    if item.job_type == "tensorboard":
+        path_prefix = f"/api/tb/{item.queue_id}"
+
+    # Generate the inference bearer token here (before the builder runs) so
+    # the JobRecord persists it for the proxy and the spawn reads it from
+    # the same 0600 file. ``no_auth`` in job_params opts out.
+    auth_token: Optional[str] = None
+    if item.job_type == "inference" and not bool(item.job_params.get("no_auth", False)):
+        auth_token = secrets.token_hex(32)
+        token_path = inference_token_file(item.queue_id)
+        _atomic.atomic_write_text(token_path, auth_token, mode=0o600)
+
     record = JobRecord(
         queue_id=item.queue_id,
         project_dir=item.project_dir,
@@ -572,6 +610,8 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
         status="starting",
         started_at=time.time(),
         tty_log_path=str(tty_path),
+        path_prefix=path_prefix,
+        auth_token=auth_token,
     )
     job_records.add_record(record)
     queue_store.remove_item(item.queue_id)
@@ -721,7 +761,25 @@ def _kill_record(queue_id: str, sig: int) -> bool:
     # up with its tty.log materialized inside the run's logs/ dir.
     if updated is not None:
         _gc.relocate_tty_to_logs(updated)
+        _cleanup_inference_token(updated)
     return updated is not None
+
+
+def _cleanup_inference_token(record: JobRecord) -> None:
+    """Best-effort delete of the per-job inference token file.
+
+    Token is useless once the inference process is gone, but tidying up
+    keeps the directory bounded and is cheap. Errors are swallowed so a
+    missing/already-removed file never breaks reap.
+    """
+    if record.job_type != "inference":
+        return
+    try:
+        path = inference_token_file(record.queue_id)
+        if path.exists():
+            path.unlink()
+    except OSError as e:
+        log.debug("could not unlink inference token for %s: %s", record.queue_id, e)
 
 
 def abort_or_cancel(queue_id: str) -> bool:

@@ -75,6 +75,11 @@ def main():
     )
     logging.getLogger("forgather_server").setLevel(log_level)
 
+    # Run before _configure_auth so the auth-token file lands on a
+    # tightened directory and any legacy 0644 state files get fixed up
+    # before we read or rewrite them.
+    paths.tighten_existing_state_perms()
+
     _configure_auth(args)
 
     app = create_app()

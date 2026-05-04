@@ -282,6 +282,75 @@ class TestRoutes:
         r = client.post("/api/auth/set-password", json={"password": "ab"})
         assert r.status_code == 400
 
+    def test_set_password_bootstrap_no_current_required(self, client):
+        # Bootstrap: no password set yet, cookie session from token login
+        # is enough — current_password is not required.
+        from forgather_server import auth
+
+        token = auth.load_token()
+        client.post("/api/auth/login", json={"token": token})
+        assert not auth.has_password()
+        r = client.post("/api/auth/set-password", json={"password": "hunter2"})
+        assert r.status_code == 200
+        assert auth.verify_password("hunter2")
+
+    def test_set_password_via_cookie_without_current_rejected(self, client):
+        # With password set, a cookie-only session may not rotate the
+        # password without re-proving knowledge of the current one.
+        from forgather_server import auth
+
+        auth.set_password("original")
+        # Log in via password to obtain a session cookie.
+        r = client.post("/api/auth/login", json={"password": "original"})
+        assert r.status_code == 200
+        r = client.post("/api/auth/set-password", json={"password": "newpass"})
+        assert r.status_code == 401
+        assert "current password" in r.json()["detail"]
+        # Old password still works.
+        assert auth.verify_password("original")
+
+    def test_set_password_via_cookie_with_correct_current(self, client):
+        from forgather_server import auth
+
+        auth.set_password("original")
+        client.post("/api/auth/login", json={"password": "original"})
+        r = client.post(
+            "/api/auth/set-password",
+            json={"password": "newpass", "current_password": "original"},
+        )
+        assert r.status_code == 200
+        assert auth.verify_password("newpass")
+        assert not auth.verify_password("original")
+
+    def test_set_password_via_cookie_with_wrong_current(self, client):
+        from forgather_server import auth
+
+        auth.set_password("original")
+        client.post("/api/auth/login", json={"password": "original"})
+        r = client.post(
+            "/api/auth/set-password",
+            json={"password": "newpass", "current_password": "wrong"},
+        )
+        assert r.status_code == 401
+        assert "current password" in r.json()["detail"]
+        assert auth.verify_password("original")
+
+    def test_set_password_via_bearer_token_without_current(self, client):
+        # Bearer-token auth proves possession of the on-disk token, which
+        # we treat as sufficient to rotate the password.
+        from forgather_server import auth
+
+        auth.set_password("original")
+        token = auth.load_token()
+        client.cookies.clear()
+        r = client.post(
+            "/api/auth/set-password",
+            json={"password": "newpass"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        assert auth.verify_password("newpass")
+
     def test_logout_clears_session(self, client):
         from forgather_server import auth
 
