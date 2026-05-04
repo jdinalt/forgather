@@ -5,6 +5,7 @@ import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 /** Settings persisted across sidebar-Tools "Finalize…" invocations.
  *  ``priority`` resets each time since the right value depends on
@@ -331,7 +332,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal submit-modal"
         onClick={(e) => e.stopPropagation()}
@@ -651,7 +652,7 @@ export function FinalizeModal({ initialSource, onClose, onSubmitted }: Props) {
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 

@@ -5,6 +5,7 @@ import { api, EvalConfigEntry } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 /** Settings persisted across ad-hoc "Evaluate…" invocations. Mirrors the
  *  InferenceModal pattern: project-backed flows (right-click → Evaluate
@@ -246,7 +247,7 @@ export function EvalModal({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal submit-modal"
         onClick={(e) => e.stopPropagation()}
@@ -506,7 +507,7 @@ export function EvalModal({
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 

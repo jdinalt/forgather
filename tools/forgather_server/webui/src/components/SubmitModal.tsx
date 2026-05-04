@@ -8,6 +8,7 @@ import {
   listMissingRequired,
   listOutOfBounds,
 } from "./DynamicArgsForm";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   project: ProjectInfo;
@@ -214,7 +215,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal submit-modal"
         onClick={(e) => e.stopPropagation()}
@@ -380,7 +381,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api, ConfigInfo, ProjectInfo } from "../api";
 import { coerceArgs, DynamicArgsForm } from "./DynamicArgsForm";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   project: ProjectInfo;
@@ -92,7 +93,7 @@ export function OverridesModal({ project, config, onClose }: Props) {
   const busy = saveMut.isPending || clearMut.isPending;
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal overrides-modal"
         onClick={(e) => e.stopPropagation()}
@@ -187,6 +188,6 @@ export function OverridesModal({ project, config, onClose }: Props) {
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

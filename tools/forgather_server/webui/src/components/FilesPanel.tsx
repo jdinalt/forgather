@@ -5,6 +5,7 @@ import { registerForgatherLanguage } from "../forgather-syntax";
 import { languageFor } from "../file-languages";
 import { EditorSplit, FilesApi } from "../files-state";
 import { ContextMenu } from "./ContextMenu";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   api: FilesApi;
@@ -152,7 +153,7 @@ function ConflictModal({ api }: { api: FilesApi }) {
   const fmtTime = (s: number) => new Date(s * 1000).toLocaleString();
 
   return (
-    <div className="modal-backdrop" onClick={() => api.clearConflict(path)}>
+    <ModalBackdrop onClose={() => api.clearConflict(path)}>
       <div
         className="modal conflict-modal"
         onClick={(e) => e.stopPropagation()}
@@ -231,7 +232,7 @@ function ConflictModal({ api }: { api: FilesApi }) {
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 

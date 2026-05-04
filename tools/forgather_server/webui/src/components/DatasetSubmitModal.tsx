@@ -10,6 +10,7 @@ import {
   listOutOfBounds,
 } from "./DynamicArgsForm";
 import { PathField } from "./PathField";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   project: ProjectInfo;
@@ -423,7 +424,7 @@ export function DatasetSubmitModal({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal submit-modal"
         onClick={(e) => e.stopPropagation()}
@@ -679,6 +680,6 @@ export function DatasetSubmitModal({
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

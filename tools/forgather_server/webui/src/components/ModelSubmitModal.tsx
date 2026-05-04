@@ -9,6 +9,7 @@ import {
   listOutOfBounds,
 } from "./DynamicArgsForm";
 import { PathField } from "./PathField";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   project: ProjectInfo;
@@ -249,7 +250,7 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal submit-modal"
         onClick={(e) => e.stopPropagation()}
@@ -512,6 +513,6 @@ export function ModelSubmitModal({ project, config, onClose, onSubmitted }: Prop
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

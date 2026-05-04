@@ -5,6 +5,7 @@ import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 /** Settings persisted across sidebar-Tools "MkDocs…" invocations. The
  *  next open of the global tool defaults to the user's last-committed
@@ -160,7 +161,7 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal submit-modal"
         onClick={(e) => e.stopPropagation()}
@@ -296,6 +297,6 @@ export function MkDocsModal({ onClose, onSubmitted }: Props) {
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

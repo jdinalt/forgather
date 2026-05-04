@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, WorkspaceCluster } from "../api";
 import { DirectoryBrowser } from "./DirectoryBrowser";
 import { PathField } from "./PathField";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   workspace: WorkspaceCluster;
@@ -95,7 +96,7 @@ export function NewProjectModal({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal new-project-modal"
         onClick={(e) => e.stopPropagation()}
@@ -262,6 +263,6 @@ export function NewProjectModal({
           />
         )}
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

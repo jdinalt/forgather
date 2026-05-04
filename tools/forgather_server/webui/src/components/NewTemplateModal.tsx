@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import { api, ProjectInfo } from "../api";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   project: ProjectInfo;
@@ -79,7 +80,7 @@ export function NewTemplateModal({ project, kind, onCreated, onClose }: Props) {
     kind === "config" ? "my_experiment.yaml" : "shared/my_block.yaml";
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal new-template-modal"
         onClick={(e) => e.stopPropagation()}
@@ -172,6 +173,6 @@ export function NewTemplateModal({ project, kind, onCreated, onClose }: Props) {
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

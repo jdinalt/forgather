@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api, ConfigInfo, ProjectInfo } from "../api";
 import { DirectoryBrowser } from "./DirectoryBrowser";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   project: ProjectInfo;
@@ -82,7 +83,7 @@ export function CleanOutputModal({ project, config, onClose }: Props) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal clean-output-modal"
         onClick={(e) => e.stopPropagation()}
@@ -210,7 +211,7 @@ export function CleanOutputModal({ project, config, onClose }: Props) {
           />
         )}
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 

@@ -5,6 +5,7 @@ import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
 import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 /** Settings persisted across ad-hoc "Start Server…" invocations. Project-
  *  backed flows don't read/write this — they derive initial values from
@@ -235,7 +236,7 @@ export function InferenceModal({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal submit-modal"
         onClick={(e) => e.stopPropagation()}
@@ -490,7 +491,7 @@ export function InferenceModal({
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 
