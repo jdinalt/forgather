@@ -25,8 +25,8 @@ running inference port and use a private/finetuned model.
 For the full picture — how this token fits in alongside the forgather
 server's own bearer token, the per-job trainer-control token, and the
 TensorBoard / MkDocs spawn defaults — see the
-[forgather server threat model](../forgather_server/README.md#threat-model)
-and [authentication overview](../forgather_server/README.md#authentication-overview).
+[forgather server threat model](../../forgather-server.md#threat-model)
+and [authentication overview](../../forgather-server.md#authentication-overview).
 
 **Default behaviour** — if you don't pass any auth flag, the server
 generates a random 64-hex-char token at startup and prints it on **stderr**:

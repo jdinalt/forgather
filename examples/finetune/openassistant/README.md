@@ -32,6 +32,6 @@ Measure loss/perplexity on the OpenAssistant test split with `forgather eval`:
 forgather eval test openassistant -M /path/to/model --dtype bfloat16
 ```
 
-See [docs/guides/evaluating-models.md](../../../docs/guides/evaluating-models.md)
+See [docs/guides/evaluating-models.md](../../../guides/evaluating-models.md)
 for the full workflow (trainer choices, multi-GPU, pipeline parallelism, ...)
 and `forgather eval list` for the other shipped configs.

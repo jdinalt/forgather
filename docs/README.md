@@ -66,7 +66,7 @@ Source code and examples: [github.com/jdinalt/forgather](https://github.com/jdin
 - **[Projects Overview](tutorials/projects_overview/project_index.ipynb)** - Learn about the Forgather Project abstraction
 - **[Project Composition](tutorials/project_composition/project_index.ipynb)** - How the template system works
 - **[Dynamic LM](tutorials/dynamic_lm/dynamic_lm.ipynb)** - Demonstrates how models are dynamically composed
-- **[Samantha](tutorials/samantha/README.md)** - Demonstrates how to use Forgather to finetune a 7B parameter model on the Samantha dataset
+- **[Samantha](examples/finetune/samantha/README.md)** - Demonstrates how to use Forgather to finetune a 7B parameter model on the Samantha dataset
 - **[H.P. Lovecraft Project](tutorials/hp_lovecraft_project/README.md)** - Learn how to create workspaces and projects, while training a model to summon the Elder Gods
 
 ## Featured Examples

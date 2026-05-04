@@ -397,7 +397,7 @@ built in place and is ready to train on a chat dataset.
 
 ### Set up the finetune config
 
-There's a [Samantha tutorial](../tutorials/samantha/README.md)
+There's a [Samantha tutorial](../examples/finetune/samantha/README.md)
 dedicated to this kind of training, but here we'll use the generic
 **Finetune v2** project so you can see how the override system works
 from the UI.

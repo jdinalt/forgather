@@ -29,6 +29,31 @@ exclude_docs: |
   .forgather_history
   *.pyc
 
+# Files that exist in docs/ as cross-link targets but are reachable
+# only through inline links from primary nav pages. Listing them here
+# silences the "exists in docs but not in nav" notices without hiding
+# the pages themselves.
+not_in_nav: |
+  forgather-server.md
+  configuration/syntax_test.ipynb
+  examples/**
+  guides/README.md
+  guides/forgather-server-walkthrough.md
+  guides/model-update.md
+  guides/server-cli.md
+  syntax_highlighting/**
+  tools/**
+  trainers/diloco-architecture.md
+  trainers/distributed-eval-zero-batches.md
+  tutorials/dynamic_lm/README.md
+  tutorials/hp_lovecraft_project/4k_spike_investigation.md
+  tutorials/hp_lovecraft_project/long_context_experiments.md
+  tutorials/hp_lovecraft_project/lovecraft_reference/**
+  tutorials/project_composition/README.md
+  tutorials/projects_overview/README.md
+  tutorials/tiny_llama/custom_models/**
+  tutorials/tiny_llama/project_index.ipynb
+
 theme:
   name: material
   features:
@@ -148,7 +173,7 @@ nav:
   - Tutorials:
     - Tiny Llama: tutorials/tiny_llama/README.md
     - HP Lovecraft Project: tutorials/hp_lovecraft_project/README.md
-    - Samantha Finetune: tutorials/samantha/README.md
+    - Samantha Finetune: examples/finetune/samantha/README.md
     - Projects Overview: tutorials/projects_overview/project_index.ipynb
     - Project Composition: tutorials/project_composition/project_index.ipynb
     - Dynamic LM: tutorials/dynamic_lm/dynamic_lm.ipynb
