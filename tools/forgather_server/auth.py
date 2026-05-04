@@ -100,7 +100,9 @@ def load_token() -> str:
 def generate_and_save_token() -> str:
     token = secrets.token_hex(TOKEN_LENGTH_BYTES)
     path = paths.auth_token_file()
-    atomic_write_text(path, token + "\n")
+    atomic_write_text(path, token + "\n", mode=0o600)
+    # Belt-and-suspenders: if the target already existed with looser
+    # perms, the rename preserves them on some filesystems.
     try:
         os.chmod(path, 0o600)
     except OSError as e:
@@ -142,7 +144,9 @@ def set_password(password: str) -> None:
     )
     line = f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}\n"
     path = paths.password_hash_file()
-    atomic_write_text(path, line)
+    atomic_write_text(path, line, mode=0o600)
+    # Belt-and-suspenders: rename can preserve a pre-existing destination's
+    # looser mode bits on some filesystems.
     try:
         os.chmod(path, 0o600)
     except OSError as e:
@@ -218,24 +222,41 @@ def _reset_sessions_for_tests() -> None:
 # ---------------------------------------------------------------------------
 
 
+def credential_kind(
+    headers: Mapping[str, str],
+    query: Mapping[str, str],
+    cookies: Mapping[str, str],
+) -> Optional[str]:
+    """Identify which credential channel authenticated the request.
+
+    Returns one of "disabled", "token", "cookie", "query_token", or None.
+    Used by privileged endpoints (e.g. set-password) that distinguish a
+    cookie session from a fresh bearer token.
+    """
+    if _auth_disabled:
+        return "disabled"
+    auth_header = headers.get("authorization") or headers.get("Authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        if verify_token(auth_header[7:]):
+            return "token"
+    if session_valid(cookies.get(SESSION_COOKIE_NAME)):
+        return "cookie"
+    qtok = query.get("token")
+    if qtok and verify_token(qtok):
+        return "query_token"
+    return None
+
+
 def authenticate(
     headers: Mapping[str, str],
     query: Mapping[str, str],
     cookies: Mapping[str, str],
-) -> bool:
-    """Return True if any accepted credential is present and valid."""
-    if _auth_disabled:
-        return True
-    auth_header = headers.get("authorization") or headers.get("Authorization")
-    if auth_header and auth_header.lower().startswith("bearer "):
-        if verify_token(auth_header[7:]):
-            return True
-    if session_valid(cookies.get(SESSION_COOKIE_NAME)):
-        return True
-    qtok = query.get("token")
-    if qtok and verify_token(qtok):
-        return True
-    return False
+) -> Optional[str]:
+    """Return the credential kind if authenticated, else None.
+
+    Truthy/falsy semantics are preserved for existing callers.
+    """
+    return credential_kind(headers, query, cookies)
 
 
 def path_requires_auth(path: str) -> bool:

@@ -71,7 +71,9 @@ def _read_raw() -> dict:
 
 
 def _write_raw(gpus: dict) -> None:
-    atomic_write_text(gpu_policy_file(), json.dumps({"gpus": gpus}, indent=2))
+    atomic_write_text(
+        gpu_policy_file(), json.dumps({"gpus": gpus}, indent=2), mode=0o600
+    )
 
 
 def _entry_to_policy(entry: object) -> GpuPolicy:

@@ -1,5 +1,8 @@
 """Tests for tools/forgather_server/_atomic.py."""
 
+import os
+import stat
+
 import pytest
 from forgather_server._atomic import atomic_write_bytes, atomic_write_text
 
@@ -66,3 +69,28 @@ class TestAtomicWriteBytes:
         target = tmp_path / "empty.bin"
         atomic_write_bytes(target, b"")
         assert target.read_bytes() == b""
+
+
+class TestAtomicWriteMode:
+    def test_text_mode_0600(self, tmp_path):
+        target = tmp_path / "secret.txt"
+        atomic_write_text(target, "shh", mode=0o600)
+        mode = stat.S_IMODE(target.stat().st_mode)
+        assert mode == 0o600
+
+    def test_bytes_mode_0600(self, tmp_path):
+        target = tmp_path / "secret.bin"
+        atomic_write_bytes(target, b"shh", mode=0o600)
+        mode = stat.S_IMODE(target.stat().st_mode)
+        assert mode == 0o600
+
+    def test_text_mode_overwrite_loose(self, tmp_path):
+        # Even if the destination already exists at 0644, the new content
+        # should land at 0600 (rename inherits the tmp file's mode).
+        target = tmp_path / "secret.txt"
+        target.write_text("old")
+        os.chmod(target, 0o644)
+        atomic_write_text(target, "new", mode=0o600)
+        mode = stat.S_IMODE(target.stat().st_mode)
+        assert mode == 0o600
+        assert target.read_text() == "new"

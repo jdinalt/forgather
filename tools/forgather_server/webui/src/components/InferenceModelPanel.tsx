@@ -5,7 +5,8 @@ import { api, Job } from "../api";
 import {
   GenerationParams,
   ModelEntry,
-  checkHealth,
+  ServerCheckResult,
+  checkServer,
   listModels,
 } from "../inference-client";
 import { DEFAULT_GENERATION_PARAMS, InferenceState } from "./InferencePanel";
@@ -16,15 +17,20 @@ interface Props {
 }
 
 interface HealthState {
-  kind: "unknown" | "ok" | "down";
-  /** Error message when ``kind === "down"``. ``fetch`` only exposes
-   *  "Failed to fetch" for most network / CORS failures, but we keep
-   *  whatever we got — the hint panel adds guidance for that case. */
+  kind: "unknown" | "ok" | "auth-failed" | "down";
+  /** Error message when not "ok" / "unknown". Distinguishes auth rejection
+   *  (401/403) from network/server errors so the hint can guide the user
+   *  to the right field — bad token vs. wrong URL vs. server down. */
   message?: string;
 }
 
 export function InferenceModelPanel({ state, setState }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  // Token field defaults to masked. Operators frequently want to copy
+  // the token out and paste it into a curl / external client, so we
+  // expose a Show toggle (and a Copy button) rather than make them
+  // fight a hidden field.
+  const [showAuthToken, setShowAuthToken] = useState(false);
   const [health, setHealth] = useState<HealthState>({ kind: "unknown" });
   const qc = useQueryClient();
   // Name of the last-loaded/saved preset, so Save defaults to overwriting
@@ -109,22 +115,23 @@ export function InferenceModelPanel({ state, setState }: Props) {
   }, [jobsQ.data]);
 
   const modelsQ = useQuery({
-    queryKey: ["inference-models", state.baseUrl],
-    queryFn: () => listModels(state.baseUrl),
+    // Token in the key so a paste/clear of the token retriggers the fetch
+    // — reflects what the upstream actually sees rather than caching a
+    // pre-token result.
+    queryKey: ["inference-models", state.baseUrl, state.authToken],
+    queryFn: () => listModels(state.baseUrl, state.authToken || undefined),
     enabled: false, // manual — user hits "Fetch models"
   });
 
   const healthM = useMutation({
-    mutationFn: () => checkHealth(state.baseUrl),
-    onSuccess: (ok) =>
-      setHealth(
-        ok
-          ? { kind: "ok" }
-          : {
-              kind: "down",
-              message: "server returned a non-2xx status",
-            },
-      ),
+    mutationFn: (): Promise<ServerCheckResult> =>
+      checkServer(state.baseUrl, state.authToken || undefined),
+    onSuccess: (result) => {
+      if (result.kind === "ok") setHealth({ kind: "ok" });
+      else if (result.kind === "auth-failed")
+        setHealth({ kind: "auth-failed", message: result.message });
+      else setHealth({ kind: "down", message: result.message });
+    },
     onError: (err: unknown) =>
       setHealth({
         kind: "down",
@@ -134,6 +141,10 @@ export function InferenceModelPanel({ state, setState }: Props) {
 
   const setBaseUrl = (baseUrl: string) => {
     setState((prev) => ({ ...prev, baseUrl }));
+    setHealth({ kind: "unknown" });
+  };
+  const setAuthToken = (authToken: string) => {
+    setState((prev) => ({ ...prev, authToken }));
     setHealth({ kind: "unknown" });
   };
   const setModel = (model: string) =>
@@ -155,7 +166,15 @@ export function InferenceModelPanel({ state, setState }: Props) {
     // use localhost when the server is listening on all interfaces.
     const browserHost = host === "0.0.0.0" ? "localhost" : host;
     const url = `http://${browserHost}:${port}/v1`;
-    setBaseUrl(url);
+    // Auto-populate auth token from the JobRecord. ``null`` here means
+    // either the spawn ran with --no-auth or it's a non-server job —
+    // either way, blank the field to match the actual upstream policy.
+    setState((prev) => ({
+      ...prev,
+      baseUrl: url,
+      authToken: job.auth_token ?? "",
+    }));
+    setHealth({ kind: "unknown" });
     // Re-fetch models against the new URL.
     setTimeout(() => modelsQ.refetch(), 0);
   };
@@ -255,7 +274,9 @@ export function InferenceModelPanel({ state, setState }: Props) {
       </section>
 
       {/* URL — escape hatch for pointing at a server we didn't launch
-          (remote, vLLM, etc.). Picking a server above auto-fills this. */}
+          (remote, vLLM, OpenAI, etc.). Picking a server above
+          auto-fills both fields; for an external OpenAI-compatible
+          server, paste the URL and API key here. */}
       <section>
         <h4 className="dyn-heading">Server URL</h4>
         <div className="submit-row">
@@ -280,11 +301,54 @@ export function InferenceModelPanel({ state, setState }: Props) {
             </div>
           </label>
         </div>
+        <div className="submit-row">
+          <label className="wide">
+            Auth token
+            {/* path-field wraps input + buttons in a flex row so the
+                input stretches to fit a full bearer token (64 hex
+                chars). Show toggles masking; Copy lifts the token
+                straight to the clipboard for use in an external
+                client (curl / OpenAI SDK / etc.). */}
+            <div className="path-field">
+              <input
+                type={showAuthToken ? "text" : "password"}
+                className="wide"
+                value={state.authToken}
+                onChange={(e) => setAuthToken(e.target.value)}
+                placeholder="Bearer token (auto-filled from local server, or paste API key for external)"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setShowAuthToken((v) => !v)}
+                title={showAuthToken ? "Hide token" : "Show token"}
+              >
+                {showAuthToken ? "Hide" : "Show"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  if (!state.authToken) return;
+                  navigator.clipboard
+                    ?.writeText(state.authToken)
+                    .catch(() => {});
+                }}
+                disabled={!state.authToken}
+                title="Copy token to clipboard"
+              >
+                Copy
+              </button>
+            </div>
+          </label>
+        </div>
         <div className="inference-health-status">
           <HealthStatus health={health} pending={healthM.isPending} />
         </div>
         {health.kind === "down" && (
-          <FetchDebug url={healthEndpoint(state.baseUrl)} />
+          <FetchDebug url={modelsEndpoint(state.baseUrl)} />
         )}
       </section>
 
@@ -578,7 +642,15 @@ function HealthStatus({
     return <span className="muted">Not tested</span>;
   if (health.kind === "ok")
     return (
-      <span className="health-label health-ok">✓ Reachable — /health ok</span>
+      <span className="health-label health-ok">
+        ✓ Reachable + token accepted (/models ok)
+      </span>
+    );
+  if (health.kind === "auth-failed")
+    return (
+      <span className="health-label health-down">
+        ✗ Token rejected — {health.message ?? "401"}
+      </span>
     );
   return (
     <span className="health-label health-down">
@@ -591,11 +663,6 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function healthEndpoint(baseUrl: string): string {
-  // checkHealth hits ``<root>/health`` — strip a trailing ``/v1`` so
-  // the displayed URL matches what the browser actually requested.
-  return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "") + "/health";
-}
 
 function modelsEndpoint(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "") + "/models";

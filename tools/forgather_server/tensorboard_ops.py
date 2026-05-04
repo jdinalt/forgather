@@ -25,12 +25,26 @@ def build_tensorboard_command(
     reload_interval: Optional[int] = None,
     reload_multifile: bool = False,
     samples_per_plugin: Optional[str] = None,
+    path_prefix: Optional[str] = None,
 ) -> List[str]:
     """Build the argv for ``tensorboard``.
 
     Only ``logdir`` and ``port`` are required. ``bind_all`` and ``host``
     are mutually exclusive on the CLI — if both are passed, ``--bind_all``
     wins (matching the CLI's own precedence).
+
+    Default bind: ``127.0.0.1`` when neither ``bind_all`` nor ``host`` is
+    set. Loopback ports on multi-user hosts are reachable by every other
+    local user — TB job dirs may contain training metadata they shouldn't
+    see. The forgather-server's auth-gated ``/api/tb/{job_id}/`` reverse
+    proxy is the supported path for browser access. If you want
+    LAN-accessible TB, pass ``bind_all=True`` (or a non-loopback ``host``)
+    explicitly via the queue submit modal.
+
+    ``path_prefix`` maps to TB's ``--path_prefix``: when the proxy mounts
+    TB at ``/api/tb/<queue_id>``, TB has to generate matching internal
+    links or browser-side asset / data URLs 404. Pass the same prefix
+    here that the proxy strips on inbound requests.
 
     The "advanced" knobs (``reload_interval``, ``reload_multifile``,
     ``samples_per_plugin``) surface the options a Forgather user
@@ -49,6 +63,9 @@ def build_tensorboard_command(
         cmd.append("--bind_all")
     elif host:
         cmd.extend(["--host", host])
+    else:
+        # Default to loopback; see docstring.
+        cmd.extend(["--host", "127.0.0.1"])
     if window_title:
         cmd.extend(["--window_title", window_title])
     if reload_interval is not None:
@@ -57,4 +74,6 @@ def build_tensorboard_command(
         cmd.extend(["--reload_multifile", "true"])
     if samples_per_plugin:
         cmd.extend(["--samples_per_plugin", samples_per_plugin])
+    if path_prefix:
+        cmd.extend(["--path_prefix", path_prefix])
     return cmd

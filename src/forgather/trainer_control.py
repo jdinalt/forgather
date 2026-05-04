@@ -135,6 +135,23 @@ class HTTPTrainerControlClient(TrainerControlClient):
             }
         )
 
+    @staticmethod
+    def _load_auth_token(job_id: str) -> Optional[str]:
+        """Read ~/.forgather/jobs/{job_id}/auth_token if present."""
+        token_file = Path.home() / ".forgather" / "jobs" / job_id / "auth_token"
+        try:
+            return token_file.read_text().strip() or None
+        except (FileNotFoundError, OSError):
+            return None
+
+    @classmethod
+    def _auth_headers(cls, job_id: str) -> Dict[str, str]:
+        """Build per-request auth headers (empty when no token on disk)."""
+        token = cls._load_auth_token(job_id)
+        if token:
+            return {"Authorization": f"Bearer {token}"}
+        return {}
+
     def _get_job_info(self, job_id: str) -> JobInfo:
         """Get job information from discovery files."""
         jobs_dir = Path.home() / ".forgather" / "jobs"
@@ -161,7 +178,12 @@ class HTTPTrainerControlClient(TrainerControlClient):
 
             payload = {"command": command, "data": data or {}}
 
-            response = self.session.post(url, json=payload, timeout=self.timeout)
+            response = self.session.post(
+                url,
+                json=payload,
+                timeout=self.timeout,
+                headers=self._auth_headers(job_id),
+            )
 
             if response.status_code == 200:
                 result = response.json()
@@ -196,7 +218,9 @@ class HTTPTrainerControlClient(TrainerControlClient):
             job_info = self._get_job_info(job_id)
             url = f"{job_info.endpoint_url}/status"
 
-            response = self.session.get(url, timeout=self.timeout)
+            response = self.session.get(
+                url, timeout=self.timeout, headers=self._auth_headers(job_id)
+            )
             response.raise_for_status()
 
             return response.json()
@@ -232,11 +256,22 @@ class HTTPTrainerControlClient(TrainerControlClient):
         jobs.sort(key=lambda job: job.started_at, reverse=True)
         return jobs
 
-    def list_jobs_remote(self, host: str, port: int) -> List[JobInfo]:
-        """List jobs by querying a remote trainer's HTTP API."""
+    def list_jobs_remote(
+        self,
+        host: str,
+        port: int,
+        auth_token: Optional[str] = None,
+    ) -> List[JobInfo]:
+        """List jobs by querying a remote trainer's HTTP API.
+
+        Pass ``auth_token`` explicitly if the remote endpoint enforces
+        bearer auth — there's no per-job-id token file to look up here
+        because we don't know the remote job_id yet.
+        """
         try:
             url = f"http://{host}:{port}/jobs"
-            response = self.session.get(url, timeout=self.timeout)
+            headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
+            response = self.session.get(url, timeout=self.timeout, headers=headers)
             response.raise_for_status()
 
             data = response.json()

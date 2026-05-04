@@ -102,7 +102,9 @@ def _read_raw() -> List[QueueItem]:
 
 def _write_raw(items: List[QueueItem]) -> None:
     atomic_write_text(
-        queue_file(), json.dumps([it.to_dict() for it in items], indent=2)
+        queue_file(),
+        json.dumps([it.to_dict() for it in items], indent=2),
+        mode=0o600,
     )
 
 

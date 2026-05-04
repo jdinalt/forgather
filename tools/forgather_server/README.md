@@ -7,9 +7,172 @@ logs, controlling them, and talking to running inference servers from
 the browser — wraps `MetaConfig`, `ConfigEnvironment`,
 `TrainerControlClient`, and friends rather than re-implementing them.
 
-**Prototype status.** Single-user, localhost-first. Binds to `127.0.0.1`
-by default. No auth, no rate limiting. Do not expose the port on an
-untrusted network.
+**Prototype status.** Single-user, localhost-first. Every spawned
+service binds to `127.0.0.1` by default and `/api/` is gated by a bearer
+token (see [Threat model](#threat-model)). No rate limiting, no native
+TLS — run behind an SSH tunnel or reverse proxy if you need LAN access.
+
+---
+
+## Threat model
+
+The auth gate is designed for the realistic local-host case: a developer
+running the server on their workstation or a shared GPU box, where other
+unprivileged Unix accounts may exist on the same machine. It is **not**
+a multi-tenant authorization system, and a token holder is effectively
+the server's uid. Read this section before exposing anything beyond
+loopback.
+
+### What the auth gate defends against
+
+- **Other unprivileged users on the same host.** Loopback ports are not
+  isolated by uid on Linux — without auth, any local account could scan
+  `127.0.0.1:8765` and drive the server. Bearer tokens stop that.
+- **Discovery via shared state.** `~/.forgather/` and
+  `~/.forgather/server/` are mode `0o700`; the persisted token, password
+  hash, queue, job records, GPU policy, search roots, override cache,
+  per-job inference tokens, and per-job TTY logs are all `0o600`. A
+  startup migration tightens modes on legacy files. Other users on the
+  host can't read your token off disk.
+- **Stale browser tabs on a shared workstation.** `POST
+  /api/auth/set-password` requires either the current password or a
+  fresh bearer-token authentication when a password is already set. A
+  cookie-only session (someone walking up to your unlocked screen) can
+  no longer rotate the password silently.
+- **Accidental LAN exposure.** Every server-spawned process — the
+  forgather server itself, the trainer control endpoint, TensorBoard,
+  MkDocs, inference servers — defaults to `127.0.0.1`. Going off
+  loopback is an explicit per-process opt-in, called out below.
+
+### What the auth gate does NOT defend against
+
+A holder of the forgather-server bearer token can do everything the
+server's uid can do. By design, that includes:
+
+- Reading and writing any file the server uid can read / write — via
+  `/api/template/source`, `/api/fs/read`, `/api/fs/write`, etc. There is
+  no path-jail.
+- Enqueuing arbitrary training / eval / inference / convert / finalize /
+  TensorBoard / MkDocs jobs that run as the server's uid.
+- Killing those jobs, killing every compute process on a GPU, and
+  changing GPU policy.
+- Rotating the server's password — but only when authenticated by token
+  or current password. Cookie-only sessions cannot.
+
+The token is a **uid-level credential.** Treat it like an SSH key for
+the server's user account: never paste it into chat, rotate it with
+`forgather server --regen-token` if you suspect compromise, and don't
+run the server on a host where you don't trust every user who has shell
+access.
+
+### Network exposure
+
+All defaults are loopback. Where there's a legitimate reason to listen
+elsewhere, the opt-in is explicit and the auth gate stays in place:
+
+- **Forgather server.** `forgather server -H <host>` binds elsewhere.
+  The token then traverses the network in cleartext; use SSH port
+  forwarding or a TLS-terminating reverse proxy.
+- **Trainer control.** `TrainerControlCallback(host="0.0.0.0", ...)`
+  exposes the per-job control endpoint. The per-job bearer token is
+  still required, but you have to share it with whichever client is
+  reaching in remotely.
+- **TensorBoard.** Pass `bind_all=true` in the queue submit modal. This
+  bypasses the auth-gated reverse proxy at `/api/tb/{queue_id}/` —
+  anyone who can reach the TB port can read your training metrics.
+- **Inference server.** `forgather inf server -H 0.0.0.0 ...`. Auth
+  remains enforced; the token is printed on the server's stderr at
+  startup.
+- **Inference proxy.** The forgather server's `/api/inference/*` proxy
+  refuses non-loopback `base=` URLs by default. Set
+  `FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE=1` to allow proxying to a
+  remote inference upstream (logged with a warning).
+
+### Residual gaps
+
+- **MkDocs has no proxy.** MkDocs lacks a clean `--path-prefix` flag and
+  HTML rewriting is brittle, so spawned `mkdocs serve` processes are
+  loopback-only with no auth in front of them. Other local users on the
+  host can read the rendered docs if they discover the port. If you
+  need LAN-accessible docs, run `mkdocs serve` outside the scheduler or
+  put it behind your own reverse proxy.
+- **No TLS.** The server speaks plain HTTP. Any non-loopback bind needs
+  an external TLS terminator.
+- **No rate limiting.** A leaked token has no automatic lockout.
+
+## Authentication overview
+
+The system is composed of several services that each defend their own
+endpoints. Operators who want to tune individual knobs should know which
+layer they're touching.
+
+### Forgather server (`/api/`)
+
+- Bearer token at `~/.forgather/server/auth_token` (mode `0o600`).
+- Optional PBKDF2-SHA256 password at `~/.forgather/server/password_hash`
+  for browser logins.
+- `AuthMiddleware` gates everything under `/api/`, including FastAPI's
+  `/api/openapi.json`, `/api/docs`, and `/api/redoc`.
+- Browser bootstrap via `?token=…`, then an in-memory `HttpOnly` /
+  `SameSite=Lax` session cookie. Re-auth is required to set or change
+  the password.
+- Escape hatch: `forgather server --no-auth` for trusted single-user
+  hosts.
+
+### Trainer control (per-job)
+
+- Per-job bearer token at `~/.forgather/jobs/{job_id}/auth_token` (mode
+  `0o600`), generated by `TrainerControlCallback` on rank 0.
+- aiohttp middleware gates `/control`, `/status`, `/jobs`. Default bind
+  is `127.0.0.1`.
+- `endpoint.json` records the actual bind address. The
+  `HTTPTrainerControlClient` (used by `forgather control` and by the
+  forgather server's job-control proxy) loads the per-job token
+  automatically — no manual configuration needed.
+- Constructor knobs: `host`, `auth_token`, `disable_auth`.
+
+### Inference server (per-spawn)
+
+- When spawned by the forgather server scheduler: per-job token at
+  `~/.forgather/server/inference/{queue_id}.token` (mode `0o600`),
+  passed to the inference process via `--auth-token-file` so it never
+  appears in `ps`/argv.
+- The forgather server's `/api/inference/*` proxy looks up the upstream
+  token by `(host, port)` from JobRecords and forwards `Authorization:
+  Bearer <token>` to the upstream — the webui doesn't see it.
+- When run standalone: `--auth-token`, `--auth-token-file`, or an
+  auto-generated token printed on stderr. `--no-auth` to opt out.
+- `/v1/*` and `/tokenize` require the bearer; `/health` is always open
+  so the proxy can probe before the model finishes loading.
+
+### TensorBoard (per-spawn)
+
+- No native auth. Spawn defaults to `--host 127.0.0.1`.
+- Auth-gated reverse proxy at `/api/tb/{queue_id}/{path:path}` rides the
+  forgather server's `AuthMiddleware`. The dispatcher passes
+  `--path_prefix /api/tb/{queue_id}` so TB's internal links match.
+- WebSockets are not proxied; the realtime profile plugin is
+  unavailable through the proxy. Users who need it can set
+  `bind_all=true` in the queue submit modal and connect to the upstream
+  port directly.
+
+### MkDocs (per-spawn)
+
+- No native auth. Spawn defaults to `127.0.0.1`. No reverse proxy.
+- Documented residual exposure on shared hosts (see [Residual
+  gaps](#residual-gaps)).
+
+### Universal escape hatches
+
+For trusted single-user hosts on a trusted network, auth can be
+disabled per service:
+
+- Forgather server: `forgather server --no-auth`.
+- Inference server: `forgather inf server --no-auth`.
+- Trainer control: `TrainerControlCallback(disable_auth=True)`.
+
+These flags are deliberately verbose. The recommended posture is to
+leave auth on and forward ports over SSH for remote access.
 
 ---
 
@@ -141,11 +304,14 @@ Open <http://127.0.0.1:8765/>. On first boot the server seeds its
 search-roots list with `<repo>/examples`; add or remove roots via the
 sidebar's **Browse…** button.
 
-### Authentication
+### Authentication (operational)
 
-The server gates every `/api/` request behind a bearer token (modeled
-after Jupyter Lab's first-connect flow). On startup it prints a
-jupyter-style URL with the token baked in:
+For the threat model and the full service-by-service layout, see
+[Threat model](#threat-model) and [Authentication overview](#authentication-overview).
+This section is the operational handbook — token rotation, browser
+bootstrap, and remote access.
+
+On startup the server prints a Jupyter-style URL with the token baked in:
 
 ```
     Forgather server is running at:
@@ -161,18 +327,13 @@ jupyter-style URL with the token baked in:
 | `Authorization: Bearer …`  | CLI clients                   | Loaded automatically from the token file (see below).     |
 | `?token=…` query parameter | Browser bootstrap, WebSockets | The webui strips it from the URL after exchanging it.     |
 | Session cookie             | Browser after login           | `HttpOnly`, `SameSite=Lax`, in-memory (lost on restart).  |
-| Password (PBKDF2-SHA256)   | Browser after first login     | Optional; set via the prompt that follows token bootstrap. |
-
-The token persists at `~/.forgather/server/auth_token` (mode 0600) so
-CLI clients can read it without prompting; the password hash lives at
-`~/.forgather/server/password_hash` (also mode 0600).
+| Password (PBKDF2-SHA256)   | Browser after first login     | Optional; set via the prompt that follows token bootstrap. Re-auth required to change. |
 
 ```bash
 # Rotate the token (invalidates all existing CLI sessions)
 forgather server --regen-token
 
-# Disable auth entirely — only safe on a single-user host you trust;
-# any local user on the same machine can then read/control jobs.
+# Disable auth entirely — only safe on a single-user host you trust.
 forgather server --no-auth
 
 # Clear the password (next browser login will prompt to set a new one)
@@ -985,7 +1146,16 @@ the webui can't hit spawned inference servers directly without running
 into CORS / Private Network Access / extension-blocking. Everything
 routes through same-origin `/api/inference/*`; the proxy forwards to
 whichever base URL the caller names, streaming byte-for-byte so the
-SSE framing reaches the browser unchanged.
+SSE framing reaches the browser unchanged. To prevent the proxy from
+being abused as an SSRF springboard (e.g. by a stolen auth token
+reaching cloud metadata services or other LAN hosts), the upstream host
+must be literal localhost — `127.0.0.1`, `localhost`, or `::1` — by
+default. Single-user secure-LAN deployments that need to forward to a
+remote vLLM box can opt in by exporting
+`FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE=1` (or `true` / `yes`) before
+starting the server; each non-localhost forward is logged at WARNING.
+The check is string-based, not DNS-based — use the literal address if
+you mean loopback.
 
 ### GPUs
 

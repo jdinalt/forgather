@@ -25,6 +25,7 @@ from .routes import models as models_routes
 from .routes import projects as projects_routes
 from .routes import queue as queue_routes
 from .routes import search_roots as search_roots_routes
+from .routes import tb_proxy as tb_proxy_routes
 
 log = logging.getLogger("forgather_server")
 
@@ -51,11 +52,20 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    # Mount the OpenAPI schema and Swagger / Redoc UIs under ``/api/`` so
+    # AuthMiddleware gates them. The defaults (``/openapi.json``, ``/docs``,
+    # ``/redoc``) bypass the gate and leak the full route map — including
+    # parameter shapes — to any local user, which violates the
+    # other-local-users-on-host threat model.
     app = FastAPI(
         title="Forgather Server",
         version="0.1.0",
         description="Web frontend for Forgather project and job management (prototype).",
         lifespan=lifespan,
+        openapi_url="/api/openapi.json",
+        docs_url="/api/docs",
+        redoc_url="/api/redoc",
+        swagger_ui_oauth2_redirect_url="/api/docs/oauth2-redirect",
     )
 
     # Auth middleware is added FIRST so CORS ends up outermost — that
@@ -123,6 +133,11 @@ def create_app() -> FastAPI:
     app.include_router(jobs_routes.router, prefix="/api")
     app.include_router(models_routes.router, prefix="/api")
     app.include_router(queue_routes.router, prefix="/api")
+    # Auth-gated reverse proxy to spawned TensorBoard instances. Defaults
+    # in tensorboard_ops bind TB to loopback so other local users can't
+    # reach it directly; this proxy mounts it under /api/tb/{job_id}/...
+    # so the webui (gated by AuthMiddleware above) can still serve it.
+    app.include_router(tb_proxy_routes.router, prefix="/api")
 
     # Serve the built webui if it's present.
     webui_dist = Path(__file__).resolve().parent / "webui" / "dist"

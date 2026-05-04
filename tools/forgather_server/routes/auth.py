@@ -37,13 +37,16 @@ class StatusResponse(BaseModel):
 
 class SetPasswordRequest(BaseModel):
     password: str
+    current_password: Optional[str] = None
 
 
 @router.get("/status", response_model=StatusResponse)
 def auth_status(request: Request):
     return StatusResponse(
-        authenticated=auth_mod.authenticate(
-            request.headers, request.query_params, request.cookies
+        authenticated=bool(
+            auth_mod.authenticate(
+                request.headers, request.query_params, request.cookies
+            )
         ),
         has_password=auth_mod.has_password(),
         auth_disabled=auth_mod.auth_disabled(),
@@ -78,9 +81,20 @@ def auth_login(body: LoginRequest, request: Request, response: Response):
 
 
 @router.post("/set-password")
-def auth_set_password(body: SetPasswordRequest):
-    # Reaching this handler means the auth middleware already accepted the
-    # request, so we don't re-check credentials here.
+def auth_set_password(body: SetPasswordRequest, request: Request):
+    # When a password already exists, require either the current password
+    # or a fresh bearer/query token. A cookie-only session is not enough:
+    # otherwise a hijacked session could silently rotate the password.
+    if auth_mod.has_password():
+        kind = auth_mod.credential_kind(
+            request.headers, request.query_params, request.cookies
+        )
+        if kind in ("token", "query_token", "disabled"):
+            pass
+        elif body.current_password and auth_mod.verify_password(body.current_password):
+            pass
+        else:
+            raise HTTPException(status_code=401, detail="current password is incorrect")
     pw = (body.password or "").strip()
     if len(pw) < 4:
         raise HTTPException(

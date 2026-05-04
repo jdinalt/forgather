@@ -249,6 +249,14 @@ export interface Job {
   tty_log_path: string | null;
   logs_dir: string | null;
   output_dir: string | null;
+  /** For path-prefixed sub-services (e.g. TB spawned with --path_prefix);
+   *  the panel appends this to the host:port link so the URL actually
+   *  serves content. Null when the spawn didn't use a prefix. */
+  path_prefix: string | null;
+  /** Bearer token for inference jobs. The Inference panel auto-fills its
+   *  Auth-Token field from this when the user picks a local server.
+   *  Null for non-inference jobs and for inference jobs running --no-auth. */
+  auth_token: string | null;
   source: "record" | "endpoint" | "merged";
 }
 
