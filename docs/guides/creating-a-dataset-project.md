@@ -5,8 +5,8 @@ training projects. A dataset project defines how to load, tokenize, and optional
 pack or interleave datasets from HuggingFace Hub.
 
 For existing dataset projects to use as reference, see
-[`examples/datasets/`](../../examples/datasets/README.md). The
-[HuggingFaceTB](../../examples/datasets/HuggingFaceTB/) project is particularly
+[`examples/datasets/`](../examples/datasets/README.md). The
+[HuggingFaceTB](../examples/datasets/HuggingFaceTB/) project is particularly
 comprehensive, demonstrating packed and interleaved configurations.
 
 For detailed reference on individual features, see:
@@ -373,11 +373,11 @@ or extracting text from structured data. In these cases, you write a Python
 module in a `src/` directory and reference it from the config.
 
 For examples of datasets with custom preprocessing, see:
-- [`examples/datasets/QuixiAI/`](../../examples/datasets/QuixiAI/) -- custom
+- [`examples/datasets/QuixiAI/`](../examples/datasets/QuixiAI/) -- custom
   preprocessing for synthetic data
-- [`examples/datasets/Open-Orca/`](../../examples/datasets/Open-Orca/) -- chat
+- [`examples/datasets/Open-Orca/`](../examples/datasets/Open-Orca/) -- chat
   template application and filtering
-- [`examples/datasets/OpenAssistant/`](../../examples/datasets/OpenAssistant/) --
+- [`examples/datasets/OpenAssistant/`](../examples/datasets/OpenAssistant/) --
   quality-weighted sampling from conversation trees
 
 ## Worked example

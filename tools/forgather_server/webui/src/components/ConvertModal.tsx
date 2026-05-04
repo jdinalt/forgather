@@ -8,8 +8,8 @@ import { PathField } from "./PathField";
 
 /** Settings persisted across sidebar-Tools "Convert…" invocations. The
  *  next open of the global tool defaults to the user's last-committed
- *  values; ``priority`` and ``requestedGpus`` reset each time since the
- *  right value depends on current queue state. */
+ *  values; ``priority`` resets each time since the right value depends
+ *  on current queue state. ``requestedGpus`` is sticky. */
 interface PersistedConvert {
   srcModelPath: string;
   /** Existing parent directory to write the new model into. */
@@ -29,6 +29,7 @@ interface PersistedConvert {
   skipDefaultTokens: boolean;
   dryRun: boolean;
   logLevel: string;
+  requestedGpus: number;
 }
 
 const STORAGE_KEY = "forgather-global-convert-v1";
@@ -53,6 +54,7 @@ const DEFAULTS: PersistedConvert = {
   skipDefaultTokens: false,
   dryRun: false,
   logLevel: "INFO",
+  requestedGpus: 0,
 };
 
 function loadPersisted(): Partial<PersistedConvert> {
@@ -148,8 +150,10 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
   );
   const [dryRun, setDryRun] = useState(initial.dryRun);
   const [logLevel, setLogLevel] = useState(initial.logLevel);
-  // Resets each invocation — depends on current queue / GPU state.
-  const [requestedGpus, setRequestedGpus] = useState<number>(0);
+  // priority resets each invocation; requestedGpus is sticky.
+  const [requestedGpus, setRequestedGpus] = useState<number>(
+    initial.requestedGpus ?? 0,
+  );
   const [priority, setPriority] = useState<number>(0);
 
   const maxGpus = Math.max(0, gpusQ.data?.length ?? 0);
@@ -175,6 +179,7 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
     setSkipDefaultTokens(DEFAULTS.skipDefaultTokens);
     setDryRun(DEFAULTS.dryRun);
     setLogLevel(DEFAULTS.logLevel);
+    setRequestedGpus(DEFAULTS.requestedGpus);
   };
 
   const enqueue = useMutation({
@@ -216,6 +221,7 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
       skipDefaultTokens,
       dryRun,
       logLevel,
+      requestedGpus,
     });
 
     const job_params: Record<string, unknown> = {

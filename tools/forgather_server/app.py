@@ -9,11 +9,13 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.types import Scope
 
 from . import scheduler, search_roots
 from .auth import AuthMiddleware
 from .routes import auth as auth_routes
 from .routes import configs as configs_routes
+from .routes import docs as docs_routes
 from .routes import fs as fs_routes
 from .routes import generation_configs as generation_configs_routes
 from .routes import gpus as gpus_routes
@@ -113,6 +115,7 @@ def create_app() -> FastAPI:
     app.include_router(search_roots_routes.router, prefix="/api")
     app.include_router(projects_routes.router, prefix="/api")
     app.include_router(configs_routes.router, prefix="/api")
+    app.include_router(docs_routes.router, prefix="/api")
     app.include_router(fs_routes.router, prefix="/api")
     app.include_router(generation_configs_routes.router, prefix="/api")
     app.include_router(gpus_routes.router, prefix="/api")
@@ -124,6 +127,40 @@ def create_app() -> FastAPI:
     # Serve the built webui if it's present.
     webui_dist = Path(__file__).resolve().parent / "webui" / "dist"
     if webui_dist.is_dir():
-        app.mount("/", StaticFiles(directory=str(webui_dist), html=True), name="webui")
+        app.mount(
+            "/",
+            CachingStaticFiles(directory=str(webui_dist), html=True),
+            name="webui",
+        )
 
     return app
+
+
+class CachingStaticFiles(StaticFiles):
+    """StaticFiles with SPA-correct Cache-Control headers.
+
+    Vite emits content-hashed filenames under ``/assets/`` and a single
+    ``index.html`` at the root that references them. The bundles are
+    safe to cache forever (their names change when contents change),
+    but ``index.html`` must always be revalidated — otherwise the
+    browser keeps loading old hashed bundles after a redeploy. By
+    default Starlette emits no ``Cache-Control`` for either, leaving
+    browsers to fall back to heuristic freshness, which on
+    ``index.html`` means a freshly-rebuilt webui can stay invisible
+    until the user issues a hard reload (Ctrl+Shift+R).
+    """
+
+    async def get_response(self, path: str, scope: Scope):
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            if path.startswith("assets/"):
+                response.headers["cache-control"] = (
+                    "public, max-age=31536000, immutable"
+                )
+            else:
+                # index.html and any other top-level file: always
+                # revalidate. ``no-cache`` still uses the conditional
+                # ETag/Last-Modified round-trip, so unchanged files
+                # answer with a 304 — cheap, and correct.
+                response.headers["cache-control"] = "no-cache"
+        return response

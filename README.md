@@ -1,4 +1,4 @@
-# Forgather
+# Forgather ML
 
 Forgather is a configuration-driven ML framework that uses template
 inheritance and code generation to eliminate configuration duplication
@@ -6,15 +6,13 @@ and enable systematic experimentation. Instead of copying and modifying
 entire training scripts, you inherit from base templates and specify
 only what changes.
 
-> 📚 **Documentation:** [forgather.readthedocs.io](https://forgather.readthedocs.io/en/latest/) is the
-> complete documentation index. New users should head straight to
+> 📚 **Documentation:** [forgather.readthedocs.io](https://forgather.readthedocs.io/en/latest/) or [docs/README.md](docs/README.md). New users should head straight to
 > **[Getting Started](./docs/getting-started/README.md)**.
 
 > 🖥️ **New: web UI.** Forgather now ships with a single-user web
 > frontend over the same APIs the CLI uses — project browsing,
-> a GPU-aware job queue, live training monitoring with TTY + loss
-> pills + per-GPU process attribution, an in-browser editor with
-> Forgather-aware syntax highlighting, and a chat client wired to
+> a GPU-aware job queue, live training monitoring with TTY, an in-browser editor with
+> Forgather-aware syntax highlighting, and an inference/chat client wired to
 > served models. The
 > **[Forgather server walkthrough](./docs/guides/forgather-server-walkthrough.md)**
 > tours the whole thing end-to-end, from a fresh install through
@@ -30,24 +28,9 @@ differences. Every variation is expensive to try. Small bugs -- a loss
 function wired wrong, a scheduler silently reset on resume, a CLI flag
 that didn't actually reach the tokenizer -- hide across forks.
 
-Forgather addresses this with three layers:
-
-- **Template inheritance.** A project config extends a parent; both
-  are plain YAML with Jinja2 preprocessing. Overrides are explicit
-  (`-- set ns.seq_len = 16384`), and every knob is documented on the
-  parent.
-- **Portable model source.** Model construction emits standalone
-  Python source into the training run's output directory, and the
-  training run then loads that source. You can zip that directory
-  and load the model on another machine with just `transformers`
-  installed -- no Forgather dependency. (The trainer, optimiser,
-  datasets, and callbacks materialise straight from the config
-  graph; the Python export is specifically for the model so it can
-  live outside Forgather's runtime.)
-- **Live job control.** Running training jobs register a small
-  control endpoint. From another shell you can save a checkpoint on
-  demand, gracefully stop a run, or abort a failed experiment --
-  works uniformly across DDP, FSDP2, and pipeline-parallel jobs.
+A Forgather project config extends a parent; both are plain YAML with 
+Jinja2 preprocessing. Overrides are explicit, and every knob is documented 
+on the parent.
 
 ## Key Benefits
 
@@ -55,14 +38,22 @@ Forgather addresses this with three layers:
 - **Types as hyperparameters** -- swap optimizers, models, datasets, trainers, and samplers directly in YAML via custom tags (`!partial`, `!factory`, `!singleton`). No Python edits required to try a new optimizer or a different layer norm.
 - **Full reproducibility** -- automatic snapshots of configs and generated code with each run.
 - **Standalone generated models** -- the PyTorch source written into each run's `output_models/` directory loads with plain `AutoModelForCausalLM.from_pretrained(..., trust_remote_code=True)`. No Forgather dependency at inference time; zip and ship.
+- **Template Library** -- Forgather includes an extensive configuration [template library](./templatelib/) and [examples](./examples/) to help you get started.
+- **Natively supports multiple training parallelisms** -- Distributed Data Parallel (DDP) (with local SGD support), Fully Sharded Data Parallel (FSDP), and Pipeline Parallel (PP).
 - **Pipeline-parallel trainer for bandwidth-limited environments** -- requires *dramatically* less cross-device communication than DDP or FSDP. Forgather has trained a 7B model across two machines linked only by 1 Gbit Ethernet with bandwidth to spare, and the same design means it scales well on consumer hardware where FSDP stalls on PCIe. Should extend to more than two nodes on the same fabric.
-- **Low-memory training suite** -- gradient checkpointing, CPU activation offloading, fused optimizer step, fused linear+cross-entropy loss (Liger / Apple CCE / torch.compile), Triton Adafactor with stochastic bf16 rounding, FP8 via torchao. Full-parameter (not LoRA) finetuning of 7B models at up to ~53K context on a single 24 GB GPU.
-- **Fast dataset loading** -- large HF datasets (e.g. C4) normally take 10-20 minutes to open. Forgather indexes the Arrow files on first use and is ready in a few seconds after that, with stateful resume from any position.
-- **Packed sequences + Flex Attention** -- pack multiple documents into every batch with explicit document-boundary tracking; flex-attention masks enforce no cross-document attention, so packing doesn't cost attention quality. Combined with the fused-loss kernel, this is a large throughput win on small-document corpora.
-- **Live job control** -- save, stop, save-stop, or abort running training jobs from another shell. Coordinates automatically across DDP / FSDP-2 / pipeline-parallel workers.
-- **Web UI with GPU-aware job queue** -- single-user browser frontend over the same APIs as the CLI. Project / file browsing, ▶ Run buttons that drop training jobs into a priority + GPU-policy aware queue, live job cards with TTY + loss / lr / grad_norm / tok-per-sec pills, GPU panel with per-card process attribution, in-browser editor with Forgather YAML+Jinja2 syntax highlighting, and a chat client wired to served inference jobs. End-to-end tour: [Forgather server walkthrough](./docs/guides/forgather-server-walkthrough.md).
+- **Low-memory training suite** -- gradient checkpointing, CPU activation offloading, fused optimizer step, fused linear+cross-entropy loss (Liger / Apple CCE / torch.compile). Full-parameter (not LoRA) finetuning of 7B models at up to ~53K context on a single 24 GB GPU.
+- **Fast dataset loading** -- large HF datasets (e.g. C4) normally take forever to open with `load_dataset()`. Forgather indexes the Arrow files on first use and is ready in a few seconds after that, with stateful resume from any position.
+- **Packed sequences + Flex Attention** -- pack multiple documents into every batch with explicit document-boundary tracking; masks enforce no cross-document attention, so packing doesn't cost attention quality; flex-attention avoids
+wasting compute on attention accross document boundaries.
+- **Checkpointing Support** -- Extensive for creating and loading training checkpoints. Weight checkpoints are HF compatible. Quickly restores dataset state, even on huge datasets. Resumes logging to Tensorboard from where it left off.
+- **Live job control** -- save, stop, or abort running training jobs from another shell. Coordinates automatically across DDP / FSDP-2 / pipeline-parallel workers.
+- **Web UI with GPU-aware job queue** -- single-user browser frontend over the same APIs as the CLI. Project / file browsing, ▶ Run buttons that drop training jobs into a priority + GPU-policy aware queue, live job cards with TTY + progress / training stats, GPU panel with per-card process attribution, in-browser editor with Forgather YAML+Jinja2 syntax highlighting, and a chat client wired to served inference jobs. End-to-end tour: [Forgather server walkthrough](./docs/guides/forgather-server-walkthrough.md).
 - **Extensive examples and documentation** -- tutorials covering every step from scratch, pretraining recipes from 4M to ~1B params, finetune recipes for Llama-2/3, Mistral, Qwen3, Gemma-3, and a growing set of ablation-focused experiments. Every major subsystem has its own docs page.
+- **Integrated inferece server** -- While not vLLM, this provides a simple solution for testing models without the risk of breaking-changes in other repos.
 - **Speed-optimised** -- meaningful effort has gone into wall-clock performance (Triton kernels, packed iterators, SDPA-backend selection, `torch.compile` everywhere it helps). A formal head-to-head benchmark against alternative frameworks is still to be done.
+- **Optmizers and Schedulers** -- Forgather includes a collection of custom optimizers, including Adafactor with bf16 stochastic rounding (SR), Adam with SR, Apollo / Apollo-Mini, and SinkGD. Forgather also includes [Warmup-Stable-Decay](https://arxiv.org/abs/2410.05192) and [Infinite Learning Rate](https://arxiv.org/html/2503.02844v1) schedulers, and easy to use support for defining paramters groups and training jobs with multiple optimizers.
+- **DiLoCo** While still in the experimental phase, we have support for [DiLoCo: Distributed Low-Communication Training of Language Models](https://arxiv.org/abs/2311.08105)
+- **HF Compatible Callback Interface** Support HF transformers.Trainer callback API. Includes callbacks for: periodic text generation, divergence detection, JSON logging; Tensorboard, and profiling.
 
 ## News
 
@@ -104,12 +95,8 @@ Full install walkthrough and first-training-run tutorial:
 
 The short version, assuming Python 3.12+ and
 `build-essential` / `python3-dev` / `graphviz` already installed.
-An NVIDIA GPU is strongly recommended but not required -- CPU-only
-training works (Tiny Llama runs end-to-end on a Chromebook in a day);
-it's just ~two to three orders of magnitude slower than the same
-workload on a 4090. Non-CUDA accelerators (Intel, AMD) may work in
-theory -- we've avoided hard CUDA dependencies -- but have not been
-tested outside of CUDA and CPU.
+An NVIDIA GPU is strongly recommended but not required. Non-CUDA accelerators (Intel, AMD) may work in
+theory, but have not been tested outside of CUDA and CPU.
 
 ```bash
 # Create and activate a virtual environment first -- most modern distros
@@ -446,18 +433,18 @@ where relevant, a headline result. For the full directory map, see
 
 | Journey | Project |
 |---|---|
-| Pretrain from scratch | [`examples/pretrain/small-llm`](./examples/pretrain/small-llm) |
-| Fine-tune a 7B model (multi-GPU) | [`examples/finetune/samantha`](./examples/finetune/samantha) |
-| Instruction / reasoning fine-tune | [`examples/finetune/open-orca`](./examples/finetune/open-orca) |
-| Long-context fine-tuning + RoPE recipes | [`examples/tutorials/hp_lovecraft_project`](./examples/tutorials/hp_lovecraft_project) |
-| Cut peak memory | [`examples/tiny_experiments/peak_memory`](./examples/tiny_experiments/peak_memory) |
-| Pick an optimizer | [`examples/tiny_experiments/optimizers`](./examples/tiny_experiments/optimizers) |
-| Pipeline-parallel recipes | [`examples/tiny_experiments/pipeline_parallel`](./examples/tiny_experiments/pipeline_parallel) |
-| Decentralised / bandwidth-limited training | [`examples/tiny_experiments/diloco`](./examples/tiny_experiments/diloco) |
+| Pretrain from scratch | [`examples/pretrain/small-llm`](./docs/examples/pretrain/small-llm/README.md) |
+| Fine-tune a 7B model (multi-GPU) | [`examples/finetune/samantha`](./docs/examples/finetune/samantha/README.md) |
+| Instruction / reasoning fine-tune | [`examples/finetune/open-orca`](./docs/examples/finetune/open-orca/README.md) |
+| Long-context fine-tuning + RoPE recipes | [`examples/tutorials/hp_lovecraft_project`](./docs/tutorials/hp_lovecraft_project/README.md) |
+| Cut peak memory | [`examples/tiny_experiments/peak_memory`](./docs/examples/tiny_experiments/peak_memory/README.md) |
+| Pick an optimizer | [`examples/tiny_experiments/optimizers`](./docs/examples/tiny_experiments/optimizers/README.md) |
+| Pipeline-parallel recipes | [`examples/tiny_experiments/pipeline_parallel`](./docs/examples/tiny_experiments/pipeline_parallel/README.md) |
+| Decentralised / bandwidth-limited training | [`examples/tiny_experiments/diloco`](./docs/examples/tiny_experiments/diloco/README.md) |
 
 ### Highlights
 
-**[`pretrain/small-llm`](./examples/pretrain/small-llm)** -- a
+**[`pretrain/small-llm`](./docs/examples/pretrain/small-llm/README.md)** -- a
 162M-parameter Llama trained from scratch on the SmolLM corpus
 (FineWeb-Edu + Cosmopedia) with packed sequences and flex-attention.
 Ten production-ready configs covering 1× and 10× Chinchilla budgets,
@@ -466,7 +453,7 @@ architecture variant. Reproducible Chinchilla scaling-law plots via
 `forgather logs plot`. Runs on the `lm_training_project.yaml` base
 template.
 
-**[`finetune/samantha`](./examples/finetune/samantha)** -- fine-tune
+**[`finetune/samantha`](./docs/examples/finetune/samantha/README.md)** -- fine-tune
 Mistral-7B or Llama-3.2-1B on the Samantha conversational dataset
 across every trainer backend in the library. Configs cover single-GPU,
 2/4-GPU pipeline parallel, FSDP-2, and DDP. Documented throughput
@@ -474,7 +461,7 @@ across every trainer backend in the library. Configs cover single-GPU,
 The most-referenced finetune project -- most other recipes cross-link
 to it rather than duplicating the setup.
 
-**[`finetune/open-orca`](./examples/finetune/open-orca)** --
+**[`finetune/open-orca`](./docs/examples/finetune/open-orca/README.md)** --
 instruction + reasoning fine-tune on Open-Orca, complementing the
 Samantha chat-persona work. The companion to Samantha for learners:
 ChatML-formatted evaluation prompts covering chain-of-thought math,
@@ -486,11 +473,11 @@ with initialisation in seconds rather than the ~10 min a naive load
 would take. Headline run includes a full inference-server eval
 script as an appendix.
 
-**[`tutorials/hp_lovecraft_project`](./examples/tutorials/hp_lovecraft_project)**
+**[`tutorials/hp_lovecraft_project`](./docs/tutorials/hp_lovecraft_project/README.md)**
 -- fine-tune Mistral-7B / Llama-2-7B on the complete works of H.P.
 Lovecraft on a single 24 GB GPU. Fits up to **53 K tokens** of
 context at 7B. Its companion
-[`long_context_experiments.md`](./examples/tutorials/hp_lovecraft_project/long_context_experiments.md)
+[`long_context_experiments.md`](./docs/tutorials/hp_lovecraft_project/long_context_experiments.md)
 documents a four-way RoPE comparison (plain, YaRN, Llama-3
 NTK-by-parts, bumped θ) evaluating 8K-trained models out to 16K on
 held-out text. Headline: **bumping `rope_theta` to 500 000 is the
@@ -499,7 +486,7 @@ scaling adds a small further win. YaRN with a factor that doesn't
 cover the deployment window is catastrophic. The doc ends with a
 follow-up proposal for pretraining recipes.
 
-**[`tiny_experiments/peak_memory`](./examples/tiny_experiments/peak_memory)**
+**[`tiny_experiments/peak_memory`](./docs/examples/tiny_experiments/peak_memory/README.md)**
 -- a systematic 9-way ablation of memory-optimisation techniques
 (BF16, activation checkpointing, `torch.compile`, fused optimizer
 step, activation-memory budget) on a 1.6 B model. Headline:
@@ -507,7 +494,7 @@ step, activation-memory budget) on a 1.6 B model. Headline:
 fusion) at ~2.7× throughput over the unoptimised baseline.
 Pareto-frontier plots included.
 
-**[`tiny_experiments/optimizers`](./examples/tiny_experiments/optimizers)**
+**[`tiny_experiments/optimizers`](./docs/examples/tiny_experiments/optimizers/README.md)**
 -- empirical comparison of ten optimisers (Muon, Apollo, AdamW,
 Adafactor, SinkGD, SGD, etc.) on a 30M Llama trained on the SmolLM
 corpus. Headline: **Muon wins** at small batch (eval loss 2.6778 vs
@@ -516,12 +503,12 @@ References Marek et al. on small-batch SGD viability, the Muon paper,
 Apollo, SinkGD. Includes per-optimiser memory / throughput tiers and
 implementation-maturity notes.
 
-**[`tiny_experiments/pipeline_parallel`](./examples/tiny_experiments/pipeline_parallel)**
+**[`tiny_experiments/pipeline_parallel`](./docs/examples/tiny_experiments/pipeline_parallel/README.md)**
 -- test harness and reference configs for PyTorch's pipeline-parallel
 schedules (GPipe, 1F1B, ZBV, interleaved), with checkpoint save/resume
 coverage across 2/4-GPU setups.
 
-**[`tiny_experiments/diloco`](./examples/tiny_experiments/diloco)**
+**[`tiny_experiments/diloco`](./docs/examples/tiny_experiments/diloco/README.md)**
 -- DiLoCo (distributed local SGD) on a 4M-parameter model. Pseudo-
 gradient compression, streaming-fragment overlap with backward pass,
 sync and async modes. The lowest-communication-bandwidth trainer in

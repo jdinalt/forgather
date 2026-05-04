@@ -9,8 +9,9 @@ import { PathField } from "./PathField";
 /** Settings persisted across ad-hoc "Evaluate…" invocations. Mirrors the
  *  InferenceModal pattern: project-backed flows (right-click → Evaluate
  *  on a config or checkpoint) ignore persistence and derive defaults
- *  from props instead. ``requestedGpus`` and ``priority`` reset every
- *  time because the right value depends on current queue / GPU state. */
+ *  from props instead. ``priority`` resets every time because the right
+ *  value depends on current queue state; ``requestedGpus`` is sticky so
+ *  the user doesn't have to retype 4 GPUs every eval. */
 interface PersistedAdHoc {
   modelPath: string;
   evalName: string;
@@ -23,6 +24,7 @@ interface PersistedAdHoc {
   compileFlag: boolean;
   ckptPath: string;
   outputDir: string;
+  requestedGpus: number;
 }
 
 const AD_HOC_STORAGE_KEY = "forgather-adhoc-eval-v1";
@@ -39,6 +41,7 @@ const AD_HOC_DEFAULTS: PersistedAdHoc = {
   compileFlag: false,
   ckptPath: "",
   outputDir: "",
+  requestedGpus: 1,
 };
 
 function loadAdHoc(): Partial<PersistedAdHoc> {
@@ -106,7 +109,9 @@ export function EvalModal({
   const [evalName, setEvalName] = useState<string>(
     adHoc ? persisted.evalName ?? "" : "",
   );
-  const [requestedGpus, setRequestedGpus] = useState<number>(1);
+  const [requestedGpus, setRequestedGpus] = useState<number>(
+    adHoc ? persisted.requestedGpus ?? 1 : 1,
+  );
   const [priority, setPriority] = useState<number>(0);
   const [trainer, setTrainer] = useState<"ddp" | "simple" | "pipeline">(
     (adHoc ? persisted.trainer : undefined) ?? "ddp",
@@ -153,6 +158,7 @@ export function EvalModal({
     setCompileFlag(AD_HOC_DEFAULTS.compileFlag);
     setCkptPath(AD_HOC_DEFAULTS.ckptPath);
     setOutputDir(AD_HOC_DEFAULTS.outputDir);
+    setRequestedGpus(AD_HOC_DEFAULTS.requestedGpus);
   };
 
   const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
@@ -197,6 +203,7 @@ export function EvalModal({
         compileFlag,
         ckptPath: ckptPath.trim(),
         outputDir: outputDir.trim(),
+        requestedGpus,
       });
     }
 

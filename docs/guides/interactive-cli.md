@@ -31,7 +31,7 @@ Note that tab-completion should work for most things.
 
 The interactive CLI features editor integration with automatic detection and optimization for different editors.
 
-We also have Forgather syntax highlighting plugins for [vim](../../syntax_highlighting/vim/vim-syntax-install.md) and [VS code](../../syntax_highlighting/vscode/README.md).
+We also have Forgather syntax highlighting plugins for [vim](../syntax_highlighting/vim/vim-syntax-install.md) and [VS code](../syntax_highlighting/vscode/README.md).
 
 ### Editor Selection Priority
 

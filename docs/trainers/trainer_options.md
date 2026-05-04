@@ -42,7 +42,7 @@ level.
 ## MinimalTrainingArguments
 
 HuggingFace-compatible baseline. Defined in
-[`trainer_types.py`](../../src/forgather/ml/trainer/trainer_types.py).
+[`trainer_types.py`](../src/forgather/ml/trainer/trainer_types.py).
 
 ### Output and execution
 
@@ -161,7 +161,7 @@ the `Trainer` constructor (see below).
 
 Adds checkpoint-preservation, AMP/FP8, SDPA backend selection, and runtime
 PyTorch tweaks. Defined in
-[`base_trainer.py`](../../src/forgather/ml/trainer/base_trainer.py).
+[`base_trainer.py`](../src/forgather/ml/trainer/base_trainer.py).
 
 ### Default dtype and eval
 
@@ -225,7 +225,7 @@ FP8 requires CUDA SM >= 8.9 (RTX 4090, H100, etc.). See
 ## TrainingArguments (simple `Trainer`)
 
 Adds memory-optimisation options specific to the simple single-device trainer.
-Defined in [`trainer.py`](../../src/forgather/ml/trainer/trainer.py).
+Defined in [`trainer.py`](../src/forgather/ml/trainer/trainer.py).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -283,7 +283,7 @@ Not supported by `PipelineTrainer`:
 ## DDPTrainingArguments
 
 Adds DDP-specific options. Defined in
-[`ddp/ddp_trainer.py`](../../src/forgather/ml/trainer/ddp/ddp_trainer.py).
+[`ddp/ddp_trainer.py`](../src/forgather/ml/trainer/ddp/ddp_trainer.py).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -336,7 +336,7 @@ periodically averages parameters instead of performing all-reduce every step.
 ## FSDP2TrainingArguments
 
 Adds FSDP2 (`torch.distributed.fsdp.fully_shard`) options. Defined in
-[`fsdp2/fsdp2_trainer.py`](../../src/forgather/ml/trainer/fsdp2/fsdp2_trainer.py).
+[`fsdp2/fsdp2_trainer.py`](../src/forgather/ml/trainer/fsdp2/fsdp2_trainer.py).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -380,7 +380,7 @@ path without calling `fully_shard`.
 ## PipelineTrainingArguments
 
 Adds pipeline-parallel options. Defined in
-[`pipeline/pipeline_trainer.py`](../../src/forgather/ml/trainer/pipeline/pipeline_trainer.py).
+[`pipeline/pipeline_trainer.py`](../src/forgather/ml/trainer/pipeline/pipeline_trainer.py).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -530,7 +530,7 @@ Extends `Trainer`, adds:
 
 | Argument | Type | Description |
 |----------|------|-------------|
-| `model_splitter` | `ModelSplitter` | Required. Function that splits the model (built on meta device) into stage modules and `PipelineStage` objects. See [`model_splitter.py`](../../src/forgather/ml/trainer/pipeline/model_splitter.py). |
+| `model_splitter` | `ModelSplitter` | Required. Function that splits the model (built on meta device) into stage modules and `PipelineStage` objects. See [`model_splitter.py`](../src/forgather/ml/trainer/pipeline/model_splitter.py). |
 | `pipe_schedule_factory` | scheduler class | Scheduler class from `torch.distributed.pipelining`, e.g., `ScheduleGPipe`, `Schedule1F1B`, `ScheduleInterleaved1F1B`, `ScheduleInterleavedZeroBubble`, `ScheduleZBVZeroBubble`. Default: `ScheduleGPipe`. |
 
 Notes and constraints:

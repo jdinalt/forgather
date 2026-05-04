@@ -1,14 +1,12 @@
 -- extends "configs/list.yaml"
 
 ## Override config name
--- block project_meta
+[project_meta]
     == super()
     -- set ns.config_name = "Full List"
     -- set ns.config_description = "Full NATO phonetic alphabet"
-<< endblock project_meta
 
-
--- block list
+[list]
     ## super() inserts the parent definition here.
     ## Then we can extend the list defintion.
     == super()
@@ -34,4 +32,3 @@
     - X-Ray
     - Yankee
     - Zulu
-<< endblock list

@@ -6,12 +6,21 @@ repo_name: jdinalt/forgather
 
 docs_dir: docs
 
-# Skip generated / per-run artifact trees so mkdocs doesn't try to
-# copy them as static files. These are reachable through symlinked
-# tutorial / example directories under docs/, are .gitignore'd, and
-# may contain dangling links to old training runs that crash the
-# build with a FileNotFoundError. Gitignore-style patterns, applied
-# during file collection (mkdocs >= 1.5).
+# What scoping we need at this layer is now narrow: docs/ is composed
+# of file-level symlinks pointing only at md / ipynb / png / svg / py /
+# yaml / yml / jinja leaves (see the symlink layout under docs/), so
+# the worst polluters from the old whole-directory mirror are already
+# absent. We just need to deny generated trees and stray bytecode.
+# meta.yaml / meta_defaults.yaml DO get copied into site/ because
+# tutorial / example READMEs link to them; the project-tree pollution
+# that used to cause is handled separately by
+# discovery._prune_mkdocs_site, which strips site/ out of the
+# project-discovery walk.
+#
+# An earlier draft used a default-deny `*` allowlist here. That broke
+# the rendered site because mkdocs's exclude_docs filter is applied
+# before theme assets get attached, so `*` swept up the Material
+# theme's stylesheets/JS too. Stick with explicit denies.
 exclude_docs: |
   output_models/
   runs/

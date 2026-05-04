@@ -1,0 +1,1 @@
+../../../../../examples/models/qwen3/src/hf_mappings.py

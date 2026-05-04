@@ -39,6 +39,11 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
   // beam search: ``streamer`` + ``num_beams > 1`` raises). Expose an
   // explicit toggle so those presets can be run as a single POST.
   const [stream, setStream] = useState<boolean>(true);
+  // Snapshot of the textarea contents from immediately before the most
+  // recent generation. Lets the user re-run with the same prompt and
+  // different generation params without manually deleting the previously
+  // appended completion. Null until the first generation has started.
+  const [prevInput, setPrevInput] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // Track the previous busy state so we can restore textarea focus
@@ -57,7 +62,16 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
     wasBusyRef.current = busy;
   }, [busy]);
 
-  const onContinue = async () => {
+  // ``promptOverride`` lets Regenerate run with the restored prompt
+  // without waiting for the setText state update to flush — passing the
+  // string directly avoids a race where the request would otherwise be
+  // built from the still-stale ``text`` value.
+  const runGeneration = async (promptOverride?: string) => {
+    const prompt = promptOverride ?? text;
+    setPrevInput(prompt);
+    if (promptOverride !== undefined) {
+      setText(promptOverride);
+    }
     // Build the params payload: take the user's generation params, layer
     // the per-request max_tokens on top, drop any explicitly-empty keys
     // so the server sees its own defaults rather than null.
@@ -76,7 +90,7 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
         for await (const delta of streamCompletion(
           state.baseUrl,
           state.model,
-          text,
+          prompt,
           params,
           ac.signal,
         )) {
@@ -115,7 +129,7 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
         const full = await runCompletion(
           state.baseUrl,
           state.model,
-          text,
+          prompt,
           params,
           ac.signal,
         );
@@ -146,6 +160,12 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
         abortRef.current = null;
       }
     }
+  };
+
+  const onContinue = () => runGeneration();
+  const onRegenerate = () => {
+    if (prevInput === null) return;
+    void runGeneration(prevInput);
   };
 
   const onStop = () => {
@@ -190,6 +210,14 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
         </label>
         <button onClick={onContinue} disabled={busy || !state.baseUrl}>
           {busy ? "Continuing…" : "Continue"}
+        </button>
+        <button
+          className="secondary"
+          onClick={onRegenerate}
+          disabled={busy || !state.baseUrl || prevInput === null}
+          title="Restore the prompt as it was before the last generation, then continue again"
+        >
+          Regenerate
         </button>
         <button
           className="secondary"

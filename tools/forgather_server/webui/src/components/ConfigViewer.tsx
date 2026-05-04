@@ -30,6 +30,10 @@ interface Props {
   /** Bubble the submitted job's queue id to App so it can decide whether
    *  to switch to the Jobs view + auto-open the TTY. */
   onJobSubmitted?: (queueId: string) => void;
+  /** Hand off a markdown / ipynb link click in the README to the Docs view. */
+  onOpenDoc?: (path: string) => void;
+  /** Hand off a yaml / py link click in the README to the editor. */
+  onEditFile?: (path: string) => void;
 }
 
 export function ConfigViewer({
@@ -40,6 +44,8 @@ export function ConfigViewer({
   onEditTemplate,
   onSelectConfig,
   onJobSubmitted,
+  onOpenDoc,
+  onEditFile,
 }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [cleaning, setCleaning] = useState(false);
@@ -88,7 +94,7 @@ export function ConfigViewer({
 
   return (
     <div className="viewer">
-      <header className="viewer-header">
+      <header className="viewer-header config-viewer-header">
         <div className="viewer-title">
           {metaQ.data?.name ? (
             <>
@@ -147,7 +153,7 @@ export function ConfigViewer({
             onClick={() => setEvaluating(true)}
             title="Evaluate this model (blank = latest checkpoint)"
           >
-            ⚖ Evaluate…
+            📐 Evaluate…
           </button>
         )}
         <nav className="tabs">
@@ -193,7 +199,12 @@ export function ConfigViewer({
         </nav>
       </header>
 
-      <InfoPane project_dir={project.project_dir} enabled={tab === "info"} />
+      <InfoPane
+        project_dir={project.project_dir}
+        enabled={tab === "info"}
+        onOpenDoc={onOpenDoc}
+        onEditFile={onEditFile}
+      />
       {tab === "pp" && (
         <EditorPane
           value={ppQ.data ?? ""}

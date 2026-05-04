@@ -15,4 +15,4 @@
 - **[local_dataset](./local_dataset/)** - Template project for loading local datasets via `datasets.load_from_disk`.
 
 
-For the dataset project CLI reference — targets, inspection commands, histogram generation, and the `forgather dataset` subcommand — see **[docs/datasets/dataset-cli.md](../../docs/datasets/dataset-cli.md)**.
+For the dataset project CLI reference — targets, inspection commands, histogram generation, and the `forgather dataset` subcommand — see **[docs/datasets/dataset-cli.md](../../datasets/dataset-cli.md)**.

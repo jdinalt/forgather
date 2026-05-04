@@ -33,6 +33,19 @@ const JOB_TYPE_CHIPS: Record<Job["job_type"], { label: string; className: string
   dataset: { label: "dataset", className: "type-dataset" },
 };
 
+// Loopback hosts that some browsers (notably ChromeOS over SSH
+// port-forwards) refuse to connect to via clickable links. The server
+// process can still bind to any of these — we only rewrite the displayed
+// URL so the link is portable.
+function browserSafeHost(host: string | null | undefined): string {
+  if (!host) return "localhost";
+  const h = host.trim();
+  if (h === "" || h === "127.0.0.1" || h === "::1" || h === "0.0.0.0") {
+    return "localhost";
+  }
+  return h;
+}
+
 // Split-pane bounds: keep both panes big enough to be useful.
 const MIN_SPLIT_PCT = 15;
 const MAX_SPLIT_PCT = 85;
@@ -68,7 +81,19 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
   const [splitPct, setSplitPct] = useState<number>(() => loadStoredSplit());
   const [menuTarget, setMenuTarget] = useState<JobMenuTarget | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const listPaneRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
+  // Captured at pointer-down so the bar tracks the cursor exactly: the
+  // panel-level split percentage maps the *whole* panel (header included)
+  // but the bar lives below the header, so a naive clientY→percent
+  // calculation lags by the header's height. We instead translate cursor
+  // movement into a delta on the list pane's own height.
+  const dragStateRef = useRef<{
+    grabOffsetY: number;
+    initialBarTop: number;
+    initialListHeight: number;
+    panelHeight: number;
+  } | null>(null);
   const qc = useQueryClient();
 
   const onJobContextRequest = useCallback(
@@ -87,6 +112,20 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
       (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      const panel = panelRef.current;
+      const listPane = listPaneRef.current;
+      if (!panel || !listPane) return;
+      const handleRect = (
+        e.currentTarget as HTMLDivElement
+      ).getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      const listRect = listPane.getBoundingClientRect();
+      dragStateRef.current = {
+        grabOffsetY: e.clientY - handleRect.top,
+        initialBarTop: handleRect.top,
+        initialListHeight: listRect.height,
+        panelHeight: panelRect.height,
+      };
       draggingRef.current = true;
       document.body.style.cursor = "row-resize";
       document.body.style.userSelect = "none";
@@ -97,17 +136,15 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
   const onHandlePointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (!draggingRef.current) return;
-      const panel = panelRef.current;
-      if (!panel) return;
-      const rect = panel.getBoundingClientRect();
-      // Measure against the panel's content area (header is inside the
-      // same flex container, so its height is part of the travel — we
-      // clamp instead of trying to subtract it exactly).
-      const pct = ((e.clientY - rect.top) / rect.height) * 100;
-      const clamped = Math.max(
-        MIN_SPLIT_PCT,
-        Math.min(MAX_SPLIT_PCT, pct),
-      );
+      const ds = dragStateRef.current;
+      if (!ds) return;
+      // Where the bar wants to be so the original grab point on the bar
+      // stays under the cursor.
+      const newBarTop = e.clientY - ds.grabOffsetY;
+      const delta = newBarTop - ds.initialBarTop;
+      const newListHeight = ds.initialListHeight + delta;
+      const pct = (newListHeight / ds.panelHeight) * 100;
+      const clamped = Math.max(MIN_SPLIT_PCT, Math.min(MAX_SPLIT_PCT, pct));
       setSplitPct(clamped);
     },
     [],
@@ -117,6 +154,7 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (!draggingRef.current) return;
       draggingRef.current = false;
+      dragStateRef.current = null;
       try {
         (e.currentTarget as Element).releasePointerCapture(e.pointerId);
       } catch {
@@ -150,6 +188,59 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
     setShowTty(true);
     onAutoWatchConsumed?.();
   }, [autoWatchJobId, jobs, onAutoWatchConsumed]);
+
+  // Detect alive→dead transitions and invalidate caches scoped to the
+  // finished job so panels (project tree, context menus, run/checkpoint/
+  // eval lists) reflect newly-written artifacts without requiring the
+  // user to hit the global Refresh button. Tracks last-seen alive jobs in
+  // a ref so the effect only fires on transitions, not every poll.
+  const prevAliveRef = useRef<Map<string, Job>>(new Map());
+  useEffect(() => {
+    if (jobsQ.data === undefined) return;
+    const aliveNow = new Set(jobs.filter((j) => j.alive).map((j) => j.id));
+    const finished: Job[] = [];
+    for (const [id, j] of prevAliveRef.current) {
+      if (!aliveNow.has(id)) finished.push(j);
+    }
+    if (finished.length > 0) {
+      let invalidatedAny = false;
+      for (const j of finished) {
+        if (j.project_dir) {
+          qc.invalidateQueries({
+            queryKey: ["project-models", j.project_dir],
+          });
+          qc.invalidateQueries({
+            queryKey: ["project-templates", j.project_dir],
+          });
+          if (j.config) {
+            qc.invalidateQueries({
+              queryKey: ["config-meta", j.project_dir, j.config],
+            });
+          }
+          invalidatedAny = true;
+        }
+        if (j.output_dir) {
+          qc.invalidateQueries({ queryKey: ["model-runs", j.output_dir] });
+          qc.invalidateQueries({
+            queryKey: ["model-checkpoints", j.output_dir],
+          });
+          qc.invalidateQueries({
+            queryKey: ["model-evaluations", j.output_dir],
+          });
+          invalidatedAny = true;
+        }
+      }
+      // Catch jobs that produce new projects/models on disk (dataset, model,
+      // finalize, convert) where the unscoped projects list itself may need
+      // a re-read. Cheap relative to the surprise of stale tree state.
+      if (invalidatedAny) {
+        qc.invalidateQueries({ queryKey: ["projects"] });
+      }
+    }
+    const next = new Map<string, Job>();
+    for (const j of jobs) if (j.alive) next.set(j.id, j);
+    prevAliveRef.current = next;
+  }, [jobs, jobsQ.data, qc]);
 
   const statusQs = useQueries({
     queries: alive.map((j) => ({
@@ -261,6 +352,7 @@ export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
 
       <div
         className="jobs-list-pane"
+        ref={listPaneRef}
         style={showTty ? { flex: `0 0 ${splitPct}%` } : undefined}
       >
         {jobs.length === 0 && (
@@ -453,14 +545,14 @@ function JobCard({
     isInference && typeof job.job_params?.port === "number"
       ? (job.job_params.port as number)
       : null;
-  const inferenceUrl =
-    inferenceHost && inferencePort
-      ? `http://${inferenceHost}:${inferencePort}`
-      : null;
+  const inferenceUrl = inferencePort
+    ? `http://${browserSafeHost(inferenceHost)}:${inferencePort}`
+    : null;
 
-  // TensorBoard is the same idea: a local web server. Host isn't always
-  // set on the params; bind_all implies 0.0.0.0 → browser-friendly at
-  // localhost, otherwise fall back to the passed host or 127.0.0.1.
+  // TensorBoard is the same idea: a local web server. ``bind_all`` →
+  // 0.0.0.0; otherwise use whatever host the user supplied. Loopback
+  // and unset hosts are normalized to ``localhost`` for the displayed
+  // link (see ``browserSafeHost``).
   const tbPort =
     isTensorBoard && typeof job.job_params?.port === "number"
       ? (job.job_params.port as number)
@@ -471,7 +563,7 @@ function JobCard({
       ? (job.job_params.host as string)
       : null;
   const tbUrl = tbPort
-    ? `http://${tbBindAll ? "localhost" : tbHost ?? "localhost"}:${tbPort}`
+    ? `http://${tbBindAll ? "localhost" : browserSafeHost(tbHost)}:${tbPort}`
     : null;
 
   // MkDocs serve runs a local HTTP dev server. host:port pair is folded
@@ -486,7 +578,7 @@ function JobCard({
       ? (job.job_params.host as string)
       : null;
   const mkUrl = mkPort
-    ? `http://${mkHost ?? "127.0.0.1"}:${mkPort}`
+    ? `http://${browserSafeHost(mkHost)}:${mkPort}`
     : null;
 
   const cardClass =

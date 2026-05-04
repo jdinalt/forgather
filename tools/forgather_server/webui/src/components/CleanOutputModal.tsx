@@ -34,10 +34,18 @@ export function CleanOutputModal({ project, config, onClose }: Props) {
 
   const del = useMutation({
     mutationFn: (p: string) => api.deleteDir(p),
-    onSuccess: () => {
+    onSuccess: (_data, deletedPath) => {
       // The output dir going away can change what pp/trefs render, and
-      // the size info we just showed is now stale.
+      // the size info we just showed is now stale. Also drop the
+      // project-tree caches that surface artifacts under this path so
+      // the tree reflects the cleanup without a manual refresh.
       qc.invalidateQueries({ queryKey: ["output-dir"] });
+      qc.invalidateQueries({
+        queryKey: ["project-models", project.project_dir],
+      });
+      qc.invalidateQueries({ queryKey: ["model-runs", deletedPath] });
+      qc.invalidateQueries({ queryKey: ["model-checkpoints", deletedPath] });
+      qc.invalidateQueries({ queryKey: ["model-evaluations", deletedPath] });
       onClose();
     },
   });

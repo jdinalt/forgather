@@ -417,19 +417,19 @@ forgather -t v2.yaml trefs --format svg -o v2.svg
 ![v2_trefs](./v2.svg "v2.yaml trefs")
 
 For the complete syntax reference see
-[docs/configuration/syntax-reference.md](../../../docs/configuration/syntax-reference.md).
+[docs/configuration/syntax-reference.md](../../configuration/syntax-reference.md).
 
 For the `lm_training_project.yaml` parameter list see
-[docs/project-templates/lm-training-projects.md](../../../docs/project-templates/lm-training-projects.md).
+[docs/project-templates/lm-training-projects.md](../../project-templates/lm-training-projects.md).
 
 For a complete listing of a training options see
-[docs/trainers/trainer_options.md](../../../docs/trainers/trainer_options.md)
+[docs/trainers/trainer_options.md](../../trainers/trainer_options.md)
 
 ## v2.yaml Anatomy
 
 Open [`templates/configs/v2.yaml`](./templates/configs/v2.yaml) side-by-side with the explanation below.
 The file is ~80 lines; almost every line corresponds to one knob documented
-at the top of [`lm_training_project.yaml`](../../../templatelib/examples/projects/lm_training_project.yaml).
+at the top of [`lm_training_project.yaml`](../../templatelib/examples/projects/lm_training_project.yaml).
 
 ### Metadata and dataset
 
@@ -774,9 +774,9 @@ training-script configs are assembled.
   applied explicitly to the logits).
 - [`project_index.ipynb`](project_index.ipynb) -- interactive companion
   covering the same material with `train_tiny_llama.yaml`.
-- [docs/project-templates/lm-training-projects.md](../../../docs/project-templates/lm-training-projects.md)
+- [docs/project-templates/lm-training-projects.md](../../project-templates/lm-training-projects.md)
   -- full parameter list for `lm_training_project.yaml`.
-- [docs/configuration/syntax-reference.md](../../../docs/configuration/syntax-reference.md)
+- [docs/configuration/syntax-reference.md](../../configuration/syntax-reference.md)
   -- the Jinja2-flavoured YAML syntax used throughout.
-- [docs/trainers/trainer_options.md](../../../docs/trainers/trainer_options.md)
+- [docs/trainers/trainer_options.md](../../trainers/trainer_options.md)
   -- every option the trainer accepts.

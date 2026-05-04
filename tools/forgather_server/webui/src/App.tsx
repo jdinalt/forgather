@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, CheckpointEntry, ConfigInfo, EvalEntry, ProjectInfo } from "./api";
 import { getAutoWatchTty } from "./autoWatch";
@@ -18,17 +18,26 @@ import { MkDocsModal } from "./components/MkDocsModal";
 import { ConvertModal } from "./components/ConvertModal";
 import { FinalizeModal } from "./components/FinalizeModal";
 import { UpdateModal } from "./components/UpdateModal";
+import { DocsPanel } from "./components/DocsPanel";
 import { FilesPanel } from "./components/FilesPanel";
 import { FilesTree } from "./components/FilesTree";
 import { SearchRootsPanel } from "./components/SearchRootsPanel";
 import { useFilesState } from "./files-state";
 
-type View = "projects" | "edit" | "gpus" | "jobs" | "queue" | "inference";
+type View =
+  | "projects"
+  | "edit"
+  | "docs"
+  | "gpus"
+  | "jobs"
+  | "queue"
+  | "inference";
 export type ConfigTab = "info" | "pp" | "code" | "graph" | "templates" | "debug";
 
 const VIEWS: { id: View; label: string; icon: string }[] = [
   { id: "projects", label: "Projects", icon: "📁" },
   { id: "edit", label: "Edit", icon: "✎" },
+  { id: "docs", label: "Docs", icon: "📚" },
   { id: "gpus", label: "GPUs", icon: "🖥" },
   { id: "queue", label: "Queue", icon: "📋" },
   { id: "jobs", label: "Jobs", icon: "⚙" },
@@ -56,6 +65,15 @@ function SidebarIcon() {
   );
 }
 
+type DocsBackEntry =
+  | { kind: "doc"; path: string | null }
+  | {
+      kind: "external";
+      view: View;
+      selection: Selection;
+      tab: ConfigTab;
+    };
+
 export type Selection =
   | null
   | { kind: "config"; project: ProjectInfo; config: ConfigInfo }
@@ -82,17 +100,32 @@ export type Selection =
     };
 
 export default function App() {
-  const [view, setView] = useState<View>("projects");
+  const [view, setView] = useState<View>("docs");
   const [selected, setSelected] = useState<Selection>(null);
   // Tab state lives here so opening a project can both pick its default
   // config AND switch to "info" in one render cycle.
   const [tab, setTab] = useState<ConfigTab>("info");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Ctrl+B / Cmd+B toggles the sidebar, matching VS Code. Capture phase so
+  // Monaco doesn't swallow it inside the editor.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.altKey || e.shiftKey) return;
+      if (e.key !== "b" && e.key !== "B") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setSidebarCollapsed((c) => !c);
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKey, { capture: true } as any);
+  }, []);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [searchRootsOpen, setSearchRootsOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
-  const [viewsOpen, setViewsOpen] = useState(false);
+  const [viewsOpen, setViewsOpen] = useState(true);
   const [startServerOpen, setStartServerOpen] = useState(false);
   const [tensorboardOpen, setTensorboardOpen] = useState(false);
   const [mkdocsOpen, setMkdocsOpen] = useState(false);
@@ -104,6 +137,13 @@ export default function App() {
   // The Jobs view consumes this once the job appears in the polled list and
   // clears it back to null via onAutoWatchConsumed.
   const [autoWatchJobId, setAutoWatchJobId] = useState<string | null>(null);
+  // Current document path for the Docs view (null = root README).
+  const [docsPath, setDocsPath] = useState<string | null>(null);
+  // Back-stack snapshots for the Docs view. Each entry records what to
+  // restore when the user clicks Back: either a previous doc path or
+  // a "return to a different view" record taken when the user entered
+  // Docs from elsewhere (e.g. clicking a doc link in a project README).
+  const [docsBackStack, setDocsBackStack] = useState<DocsBackEntry[]>([]);
   const filesApi = useFilesState();
   const qc = useQueryClient();
 
@@ -122,6 +162,57 @@ export default function App() {
     filesApi.openFile(path);
     setView("edit");
   };
+
+  // Open a document in the Docs view. If we're entering Docs from another
+  // view (e.g. clicking a markdown link in a project README), snapshot the
+  // current view + selection so Back returns there. If we're already in
+  // Docs and navigating to a different doc, snapshot the previous doc
+  // path. Either way, leave docsBackStack untouched if the path is the
+  // same as the current one (idempotent re-entry).
+  const openDocs = useCallback(
+    (path: string | null) => {
+      if (view !== "docs") {
+        setDocsBackStack((s) => [
+          ...s,
+          { kind: "external", view, selection: selected, tab },
+        ]);
+        setDocsPath(path);
+        setView("docs");
+        return;
+      }
+      if (docsPath !== path) {
+        setDocsBackStack((s) => [...s, { kind: "doc", path: docsPath }]);
+        setDocsPath(path);
+      }
+    },
+    [view, selected, tab, docsPath],
+  );
+  // Pop the back-stack and apply the restored state. For a "doc" entry
+  // we just swap the doc path; for an "external" entry we restore the
+  // pre-Docs view + selection (matching browser-back semantics across
+  // the view boundary).
+  const docsBack = useCallback(() => {
+    if (docsBackStack.length === 0) return;
+    const top = docsBackStack[docsBackStack.length - 1];
+    setDocsBackStack((s) => s.slice(0, -1));
+    if (top.kind === "external") {
+      setView(top.view);
+      setSelected(top.selection);
+      setTab(top.tab);
+    } else {
+      setDocsPath(top.path);
+    }
+  }, [docsBackStack]);
+  // Within-docs link click: the user clicked a markdown / ipynb link in
+  // the rendered doc. Push the previous path so Back unwinds.
+  const docsNavigate = useCallback(
+    (path: string) => {
+      if (docsPath === path) return;
+      setDocsBackStack((s) => [...s, { kind: "doc", path: docsPath }]);
+      setDocsPath(path);
+    },
+    [docsPath],
+  );
 
   const schedQ = useQuery({
     queryKey: ["scheduler-status"],
@@ -209,7 +300,7 @@ export default function App() {
           <button
             className="sidebar-toggle"
             onClick={() => setSidebarCollapsed(false)}
-            title="Expand sidebar"
+            title="Expand sidebar (Ctrl+B)"
             aria-label="Expand sidebar"
           >
             <SidebarIcon />
@@ -257,7 +348,7 @@ export default function App() {
               <button
                 className="sidebar-toggle"
                 onClick={() => setSidebarCollapsed(true)}
-                title="Collapse sidebar"
+                title="Collapse sidebar (Ctrl+B)"
                 aria-label="Collapse sidebar"
               >
                 <SidebarIcon />
@@ -402,6 +493,7 @@ export default function App() {
               <FilesTree
                 onOpenFile={openFileForEdit}
                 onDropPath={filesApi.dropPath}
+                onOpenDoc={openDocs}
               />
             </div>
           </details>
@@ -432,6 +524,8 @@ export default function App() {
                 onEditTemplate={openFileForEdit}
                 onSelectConfig={onConfigSelect}
                 onJobSubmitted={onJobSubmitted}
+                onOpenDoc={openDocs}
+                onEditFile={openFileForEdit}
               />
             )}
             {selected?.kind === "log" && (
@@ -467,7 +561,19 @@ export default function App() {
           className="view-panel"
           style={view === "edit" ? undefined : { display: "none" }}
         >
-          <FilesPanel api={filesApi} />
+          <FilesPanel api={filesApi} onOpenDoc={openDocs} />
+        </div>
+        <div
+          className="view-panel"
+          style={view === "docs" ? undefined : { display: "none" }}
+        >
+          <DocsPanel
+            path={docsPath}
+            onNavigate={docsNavigate}
+            onEdit={openFileForEdit}
+            canGoBack={docsBackStack.length > 0}
+            onBack={docsBack}
+          />
         </div>
         <div
           className="view-panel"

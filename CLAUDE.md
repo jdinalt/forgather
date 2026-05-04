@@ -164,6 +164,21 @@ print(f"Best loss: {summary['best_loss']} at step {summary['best_loss_step']}")
 
 For complete documentation, see `docs/guides/logs-analysis.md` and `examples/log_analysis_example.py`.
 
+### Forgather Server
+
+**Before working on the forgather server (backend or webui), read `tools/forgather_server/README.md` first** — it covers the architecture, the webui build/deploy flow, and conventions you need to know before editing.
+
+**Webui builds**: the webui is a Vite/React app whose static bundle is served from `tools/forgather_server/webui/dist/`. After editing any webui source under `tools/forgather_server/webui/src/`, rebuild with the helper script in the repo root:
+
+```bash
+./build-webui.sh             # incremental build (skips npm install if up-to-date)
+./build-webui.sh --watch     # Vite dev server with live reload (no static dist)
+./build-webui.sh --clean     # wipe dist/ and Vite cache (then re-run without --clean)
+./build-webui.sh --install   # force `npm install`
+```
+
+Do not invoke `npm run build` directly — the script handles dependency freshness, paths, and the clean/watch modes consistently.
+
 ### Forgather Server CLI
 
 The forgather server exposes a queue, scheduler, and GPU policy manager reachable from the CLI — no browser needed. Full documentation lives in `tools/forgather_server/README.md` under "CLI access". Quick reference:

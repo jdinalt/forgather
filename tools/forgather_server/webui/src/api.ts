@@ -293,6 +293,7 @@ export interface DynamicArg {
 
 export interface OverridesData {
   values: Record<string, unknown>;
+  requested_gpus: number | null;
   updated_at: number | null;
 }
 
@@ -414,6 +415,22 @@ export interface RunSummary {
   log_path: string | null;
   config_path: string | null;
   pp_path: string | null;
+}
+
+export interface IpynbCell {
+  cell_type: string; // "markdown" | "code" | "raw"
+  source: string;
+  language: string | null;
+  outputs: Record<string, unknown>[];
+}
+
+export interface DocsFile {
+  path: string;
+  kind: "markdown" | "ipynb";
+  /** Set when ``kind === "markdown"``. */
+  content: string | null;
+  /** Set when ``kind === "ipynb"``. */
+  cells: IpynbCell[] | null;
 }
 
 /** Thrown by ``putTemplateSource`` when the on-disk mtime is newer
@@ -924,11 +941,17 @@ export const api = {
     project_dir: string,
     config: string,
     values: Record<string, unknown>,
+    requested_gpus?: number | null,
   ): Promise<OverridesData> => {
     const r = await fetch("/api/config/overrides", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_dir, config, values }),
+      body: JSON.stringify({
+        project_dir,
+        config,
+        values,
+        requested_gpus: requested_gpus ?? null,
+      }),
     });
     if (!r.ok) {
       const detail = await r.text();
@@ -954,6 +977,11 @@ export const api = {
     fetchText(
       `/api/project/readme?project_dir=${encodeURIComponent(project_dir)}`,
     ),
+  docsRoot: () => fetchJson<{ path: string | null }>("/api/docs/root"),
+  docsFile: (path: string) =>
+    fetchJson<DocsFile>(`/api/docs/file?path=${encodeURIComponent(path)}`),
+  docsAssetUrl: (path: string): string =>
+    `/api/docs/asset?path=${encodeURIComponent(path)}`,
   projectAssetUrl: (project_dir: string, asset: string): string =>
     `/api/project/asset?project_dir=${encodeURIComponent(project_dir)}&asset=${encodeURIComponent(asset)}`,
   listProjectModels: (project_dir: string) =>

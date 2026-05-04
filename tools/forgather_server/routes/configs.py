@@ -437,6 +437,7 @@ def put_template_source(req: PutTemplateSourceRequest):
 
 class OverridesResponse(BaseModel):
     values: Dict[str, Any]
+    requested_gpus: Optional[int] = None
     updated_at: Optional[float] = None
 
 
@@ -444,17 +445,20 @@ class SetOverridesRequest(BaseModel):
     project_dir: str
     config: str
     values: Dict[str, Any]
+    requested_gpus: Optional[int] = None
 
 
 @router.get("/config/overrides", response_model=OverridesResponse)
 def get_overrides(project_dir: str, config: str):
     """Return the cached override values for a config.
 
-    Returns ``{values: {}, updated_at: null}`` when no cache file exists.
+    Returns ``{values: {}, requested_gpus: null, updated_at: null}`` when no
+    cache file exists.
     """
     payload = overrides_store.get_overrides_payload(project_dir, config)
     return OverridesResponse(
         values=payload["values"],
+        requested_gpus=payload["requested_gpus"],
         updated_at=payload["updated_at"],
     )
 
@@ -462,9 +466,12 @@ def get_overrides(project_dir: str, config: str):
 @router.post("/config/overrides", response_model=OverridesResponse)
 def set_overrides(req: SetOverridesRequest):
     """Persist override values for a config (upsert). Returns the new state."""
-    payload = overrides_store.set_overrides(req.project_dir, req.config, req.values)
+    payload = overrides_store.set_overrides(
+        req.project_dir, req.config, req.values, req.requested_gpus
+    )
     return OverridesResponse(
         values=payload["values"],
+        requested_gpus=payload["requested_gpus"],
         updated_at=payload["updated_at"],
     )
 

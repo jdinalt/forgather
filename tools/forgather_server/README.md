@@ -110,6 +110,23 @@ npm run build        # produces webui/dist/
 `node`/`npm` are only needed for the build step. The running server has
 no Node dependency.
 
+**Cache headers.** The static-files mount is wrapped in a
+`CachingStaticFiles` subclass that pins the SPA cache policy to:
+
+- `index.html` and other unhashed top-level files → `Cache-Control: no-cache`
+  (forces revalidation on every navigation; the server still answers
+  with 304 Not Modified when nothing has changed).
+- `/assets/*` (Vite-emitted, content-hashed) →
+  `Cache-Control: public, max-age=31536000, immutable`.
+
+Without this, Starlette's defaults emit no `Cache-Control` at all,
+which lets browsers fall back to heuristic freshness on `index.html` —
+a freshly-built webui then stays invisible behind a stale cached
+`index.html` (which still references the old hashed bundle names) until
+the user does a hard reload (Ctrl+Shift+R). If you ever see "I rebuilt
+the UI and the change isn't showing up," check the response headers on
+`/` first — they should include `cache-control: no-cache`.
+
 ## Running
 
 ```bash

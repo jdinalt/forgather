@@ -2,15 +2,78 @@ import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeSlug from "rehype-slug";
 
 import { api } from "../api";
 
 interface Props {
   project_dir: string;
   enabled: boolean;
+  /** When set, links to local .md / .ipynb / README files are intercepted and
+   *  routed to the Docs view instead of opening in a new tab. */
+  onOpenDoc?: (path: string) => void;
+  /** When set, links to source / config files (.yaml, .py, etc.) open in the
+   *  editor instead of streaming through the asset endpoint as a download. */
+  onEditFile?: (path: string) => void;
 }
 
-export function InfoPane({ project_dir, enabled }: Props) {
+const EDITABLE_SUFFIXES = [
+  ".yaml", ".yml", ".py", ".jinja", ".j2",
+  ".txt", ".json", ".toml", ".cfg", ".ini",
+  ".sh", ".env",
+];
+
+function isEditableSource(path: string): boolean {
+  const lower = path.toLowerCase();
+  return EDITABLE_SUFFIXES.some((s) => lower.endsWith(s));
+}
+
+function isExternalUrl(href: string): boolean {
+  return (
+    href.startsWith("http://") ||
+    href.startsWith("https://") ||
+    href.startsWith("mailto:") ||
+    href.startsWith("//") ||
+    href.startsWith("data:")
+  );
+}
+
+function isDocLike(path: string): boolean {
+  const lower = path.toLowerCase();
+  return (
+    lower.endsWith(".md") ||
+    lower.endsWith(".markdown") ||
+    lower.endsWith(".ipynb")
+  );
+}
+
+function joinAndNormalize(base: string, rel: string): string {
+  const parts = (base + "/" + rel).split("/");
+  const out: string[] = [];
+  for (const p of parts) {
+    if (p === "" || p === ".") continue;
+    if (p === "..") {
+      if (out.length > 0) out.pop();
+      continue;
+    }
+    out.push(p);
+  }
+  return "/" + out.join("/");
+}
+
+function resolveAbsolute(projectDir: string, href: string): string | null {
+  if (!href || href.startsWith("#")) return null;
+  if (isExternalUrl(href)) return null;
+  let clean = href;
+  const hash = clean.indexOf("#");
+  if (hash >= 0) clean = clean.slice(0, hash);
+  const q = clean.indexOf("?");
+  if (q >= 0) clean = clean.slice(0, q);
+  if (clean.startsWith("/")) return clean;
+  return joinAndNormalize(projectDir, clean);
+}
+
+export function InfoPane({ project_dir, enabled, onOpenDoc, onEditFile }: Props) {
   const readmeQ = useQuery({
     queryKey: ["project-readme", project_dir],
     queryFn: () => api.projectReadme(project_dir),
@@ -55,18 +118,89 @@ export function InfoPane({ project_dir, enabled }: Props) {
       return <img src={resolvedSrc} alt={alt ?? ""} {...rest} />;
     },
     a({ href, children, ...rest }) {
-      if (href && !href.startsWith("#")) {
+      // In-page anchors. Info pane is a custom scroll container, so the
+      // browser's default anchor scroll won't necessarily work — resolve
+      // the target by id within the pane and scroll it explicitly.
+      if (href && href.startsWith("#")) {
+        return (
+          <a
+            href={href}
+            onClick={(e) => {
+              const id = decodeURIComponent(href.slice(1));
+              if (!id) return;
+              const pane = document.querySelector(".info-pane");
+              const target = pane?.querySelector(
+                `#${CSS.escape(id)}`,
+              ) as HTMLElement | null;
+              if (target) {
+                e.preventDefault();
+                target.scrollIntoView({ behavior: "smooth", block: "start" });
+              }
+            }}
+            {...rest}
+          >
+            {children}
+          </a>
+        );
+      }
+      if (href && !isExternalUrl(href)) {
+        const abs = resolveAbsolute(project_dir, href);
+        if (abs && isDocLike(abs) && onOpenDoc) {
+          // Markdown / ipynb → Docs view.
+          return (
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                onOpenDoc(abs);
+              }}
+              {...rest}
+            >
+              {children}
+            </a>
+          );
+        }
+        if (abs && isEditableSource(abs) && onEditFile) {
+          // Source / config file → open in the editor.
+          return (
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                onEditFile(abs);
+              }}
+              {...rest}
+            >
+              {children}
+            </a>
+          );
+        }
+        if (abs && onOpenDoc) {
+          // Unknown extension — most likely a directory link
+          // (GitHub-style "look in this folder"). Route to Docs;
+          // the backend resolves a directory to its README.md.
+          return (
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                onOpenDoc(abs);
+              }}
+              {...rest}
+            >
+              {children}
+            </a>
+          );
+        }
+      }
+      if (href) {
         return (
           <a href={href} target="_blank" rel="noopener noreferrer" {...rest}>
             {children}
           </a>
         );
       }
-      return (
-        <a href={href} {...rest}>
-          {children}
-        </a>
-      );
+      return <a {...rest}>{children}</a>;
     },
   };
 
@@ -78,7 +212,11 @@ export function InfoPane({ project_dir, enabled }: Props) {
   return (
     <div className="info-pane">
       <div className="info-pane-content">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeSlug]}
+          components={components}
+        >
           {readmeQ.data ?? ""}
         </ReactMarkdown>
       </div>
