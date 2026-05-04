@@ -86,7 +86,13 @@ plugins:
       handlers:
         python:
           paths: [src]
+          # Force griffe to use pure static AST analysis. The docs build
+          # does not install forgather, so any fallback to runtime
+          # inspection would fail to import the package. Keeping this
+          # explicit also stops the build from silently picking up
+          # whichever forgather happens to be on sys.path.
           options:
+            allow_inspection: false
             docstring_style: numpy
             show_source: true
             show_root_heading: true

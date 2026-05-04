@@ -11,9 +11,10 @@ mkdocs:
 
 python:
   install:
-    # The mkdocs toolchain ships in the base ``dependencies`` block
-    # of pyproject.toml, so no extra_requirements are needed. The
-    # project install is what mkdocstrings needs to import the
-    # forgather package and extract docstrings.
-    - method: pip
-      path: .
+    # Install only the docs toolchain — forgather itself is *not*
+    # installed. mkdocstrings parses ``src/forgather`` statically via
+    # griffe (see mkdocs.yml's ``paths: [src]`` + ``allow_inspection:
+    # false``), so the runtime deps (torch, CUDA wheels, transformers,
+    # ...) aren't needed to render docstrings. This drops the build's
+    # install footprint from ~3 GB to ~250 MB.
+    - requirements: docs/requirements.txt
