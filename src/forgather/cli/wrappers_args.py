@@ -12,7 +12,10 @@ def create_inf_parser(global_args):
         "Usage:\n"
         "  forgather inf server [args...]  - Start inference server\n"
         "  forgather inf client [args...]  - Start inference client\n\n"
-        "All arguments after 'server' or 'client' are forwarded to the respective script.",
+        "All arguments after 'server' or 'client' are forwarded to the respective script.\n\n"
+        "To submit the inference server to the forgather-server queue, pass --enqueue\n"
+        "inside the forwarded args. Run 'forgather inf server --enqueue --help' for the\n"
+        "full list of supported flags in enqueue mode.",
         formatter_class=RawTextHelpFormatter,
         add_help=True,
     )
@@ -79,6 +82,31 @@ def create_convert_parser(global_args):
         "remainder",
         nargs=argparse.REMAINDER,
         help="Arguments to forward to convert_llama.py",
+    )
+
+    return parser
+
+
+def create_update_parser(global_args):
+    """Create parser for update command."""
+    # add_help=False so --help is forwarded to the script for its own help.
+    parser = argparse.ArgumentParser(
+        prog="forgather update",
+        description="Update a saved Forgather model to the current source schema\n\n"
+        "All arguments are forwarded to tools/update_model/update.py",
+        formatter_class=RawTextHelpFormatter,
+        add_help=False,
+    )
+    parser.add_argument(
+        "dummy",
+        nargs="?",
+        default="",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "remainder",
+        nargs=argparse.REMAINDER,
+        help="Arguments to forward to update.py",
     )
 
     return parser

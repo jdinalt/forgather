@@ -1,0 +1,1 @@
+../../../syntax_highlighting/vscode/package-manually.md

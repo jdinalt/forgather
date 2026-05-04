@@ -10,8 +10,11 @@ class PeriodicFunction:
         epoch_period: int,
         first_step=0,
     ):
-        assert period > 0, "period must be positive"
-        assert epoch_period > 0, "epoch_period must be positive"
+        # When scaled, this can go to 0, after rounding down.
+        assert isinstance(period, int)
+        period = max(period, 1)
+
+        assert epoch_period > 0, "epoch_period must be greater than 0"
         # Present global step
         self.global_step = global_step
 

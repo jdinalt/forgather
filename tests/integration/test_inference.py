@@ -7,6 +7,7 @@ scores the output with GPT-2 perplexity.
 
 from __future__ import annotations
 
+import secrets
 import socket
 import subprocess
 import sys
@@ -87,6 +88,11 @@ def test_inference_with_perplexity(spec, output_dir):
     # 3. Start inference server (load from checkpoint since training
     #    saves checkpoints, not standalone model weights)
     port = _find_free_port()
+    # Use an explicit known token so the test exercises the real auth path
+    # (default-on bearer auth) without relying on the on-disk shared-token
+    # cache, which would race with concurrent test runs sharing the same
+    # FORGATHER_HOME.
+    auth_token = "test-" + secrets.token_hex(16)
     server_proc = subprocess.Popen(
         [
             sys.executable,
@@ -100,6 +106,8 @@ def test_inference_with_perplexity(spec, output_dir):
             str(port),
             "--log-level",
             "WARNING",
+            "--auth-token",
+            auth_token,
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -112,6 +120,7 @@ def test_inference_with_perplexity(spec, output_dir):
         # 4. Send completion request
         response = requests.post(
             f"http://127.0.0.1:{port}/v1/completions",
+            headers={"Authorization": f"Bearer {auth_token}"},
             json={
                 "model": "test",
                 "prompt": spec.inference.prompt,

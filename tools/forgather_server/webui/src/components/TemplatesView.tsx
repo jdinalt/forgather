@@ -1,11 +1,25 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { instance } from "@viz-js/viz";
 import Editor, { OnMount } from "@monaco-editor/react";
 
 import { api, ConfigInfo, ProjectInfo, TemplateGroup } from "../api";
 import { FORGATHER_LANGUAGE_ID } from "../forgather-syntax";
+import { persistGet, persistSet } from "../persist";
 import { ContextMenu } from "./ContextMenu";
+
+const MIN_SPLIT_PCT = 15;
+const MAX_SPLIT_PCT = 85;
+const DEFAULT_SPLIT_PCT = 50;
+const SPLIT_STORAGE_KEY = "forgather-trefs-split-pct";
+
+function loadStoredSplit(): number {
+  const v = persistGet(SPLIT_STORAGE_KEY);
+  if (v == null) return DEFAULT_SPLIT_PCT;
+  const n = parseFloat(v);
+  if (Number.isFinite(n) && n >= MIN_SPLIT_PCT && n <= MAX_SPLIT_PCT) return n;
+  return DEFAULT_SPLIT_PCT;
+}
 
 interface Props {
   project: ProjectInfo;
@@ -39,6 +53,90 @@ export function TemplatesView({
   const [mode, setMode] = useState<Mode>("trefs");
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuPos | null>(null);
+  const [splitPct, setSplitPct] = useState<number>(() => loadStoredSplit());
+  const splitRef = useRef<HTMLDivElement>(null);
+  const leftPaneRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  // Captured at pointer-down so the bar tracks the cursor exactly,
+  // independent of where in the (wider-than-visible) hit zone the user
+  // clicked. We translate cursor movement into a delta on the left
+  // pane's width.
+  const dragStateRef = useRef<{
+    grabOffsetX: number;
+    initialBarLeft: number;
+    initialLeftWidth: number;
+    splitWidth: number;
+  } | null>(null);
+
+  const onHandlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      const split = splitRef.current;
+      const leftPane = leftPaneRef.current;
+      if (!split || !leftPane) return;
+      const handleRect = (
+        e.currentTarget as HTMLDivElement
+      ).getBoundingClientRect();
+      const splitRect = split.getBoundingClientRect();
+      const leftRect = leftPane.getBoundingClientRect();
+      dragStateRef.current = {
+        grabOffsetX: e.clientX - handleRect.left,
+        initialBarLeft: handleRect.left,
+        initialLeftWidth: leftRect.width,
+        splitWidth: splitRect.width,
+      };
+      draggingRef.current = true;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    },
+    [],
+  );
+
+  const onHandlePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!draggingRef.current) return;
+      const ds = dragStateRef.current;
+      if (!ds) return;
+      const newBarLeft = e.clientX - ds.grabOffsetX;
+      const delta = newBarLeft - ds.initialBarLeft;
+      const newLeftWidth = ds.initialLeftWidth + delta;
+      const pct = (newLeftWidth / ds.splitWidth) * 100;
+      const clamped = Math.max(MIN_SPLIT_PCT, Math.min(MAX_SPLIT_PCT, pct));
+      setSplitPct(clamped);
+    },
+    [],
+  );
+
+  const onHandlePointerUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      dragStateRef.current = null;
+      try {
+        (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+      } catch {
+        // Capture may already be released if the pointer was cancelled.
+      }
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      persistSet(SPLIT_STORAGE_KEY, String(splitPct));
+    },
+    [splitPct],
+  );
+
+  const onHandleDoubleClick = useCallback(() => {
+    setSplitPct(DEFAULT_SPLIT_PCT);
+    persistSet(SPLIT_STORAGE_KEY, String(DEFAULT_SPLIT_PCT));
+  }, []);
+  // Mirror selectedPath into a ref so the Monaco "Edit" context-menu
+  // action — registered once at mount time — always opens the
+  // currently-previewed template instead of whichever path was active
+  // when the editor was first created.
+  const selectedPathRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedPathRef.current = selectedPath;
+  }, [selectedPath]);
 
   // Auto-show the active config's own template in the right pane every
   // time the config changes — including the initial mount. This makes
@@ -74,8 +172,12 @@ export function TemplatesView({
 
   return (
     <div className="templates-view">
-      <div className="trefs-split">
-        <div className="trefs-left">
+      <div className="trefs-split" ref={splitRef}>
+        <div
+          className="trefs-left"
+          ref={leftPaneRef}
+          style={{ flex: `0 0 ${splitPct}%` }}
+        >
           <div className="templates-mode-bar">
             <button
               className={mode === "trefs" ? "active" : ""}
@@ -116,6 +218,17 @@ export function TemplatesView({
             )}
           </div>
         </div>
+        <div
+          className="trefs-split-handle"
+          role="separator"
+          aria-orientation="vertical"
+          title="Drag to resize · double-click to reset"
+          onPointerDown={onHandlePointerDown}
+          onPointerMove={onHandlePointerMove}
+          onPointerUp={onHandlePointerUp}
+          onPointerCancel={onHandlePointerUp}
+          onDoubleClick={onHandleDoubleClick}
+        />
         <div className="trefs-source">
           {selectedPath ? (
             <>
@@ -141,7 +254,19 @@ export function TemplatesView({
                     fontSize: 12,
                     scrollBeyondLastLine: false,
                   }}
-                  onMount={onMount}
+                  onMount={(editor, monaco) => {
+                    onMount(editor, monaco);
+                    editor.addAction({
+                      id: "forgather.edit-template",
+                      label: "Edit (open in Files panel)",
+                      contextMenuGroupId: "navigation",
+                      contextMenuOrder: 0,
+                      run: () => {
+                        const p = selectedPathRef.current;
+                        if (p) onEditTemplate(p);
+                      },
+                    });
+                  }}
                 />
               </div>
             </>

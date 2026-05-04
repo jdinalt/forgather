@@ -198,8 +198,8 @@ forgather -t "llama3_1b/1gpu_default.yaml" train -M "${MODELS_DIR}/fg_my_pretrai
 
 Pass `--keep-optimizer` to also carry optimizer state from the source's
 latest checkpoint into the destination, which can help avoid a rocky restart.
-See [docs/guides/finalize-model.md](../../../docs/guides/finalize-model.md)
-and [docs/guides/add-tokens-config.md](../../../docs/guides/add-tokens-config.md)
+See [docs/guides/finalize-model.md](../../../guides/finalize-model.md)
+and [docs/guides/add-tokens-config.md](../../../guides/add-tokens-config.md)
 for the full reference.
 
 ### Directory Structure Overview
@@ -265,7 +265,7 @@ While not exhaustive, this is a sampling of the configurations used by this proj
 **Project Templates**
 - [projects/finetune_v2.yaml](../../../templatelib/examples/projects/finetune_v2.yaml) -- Base Finetune Project
 - [projects/lm_training_project.yaml](../../../templatelib/examples/projects/lm_training_project.yaml) -- Base LM Training Project
-- [LM Training Project Template](../../../docs/project-templates/lm-training-projects.md) Documentation for base template project
+- [LM Training Project Template](../../../project-templates/lm-training-projects.md) Documentation for base template project
 
 **Samantha Dataset**
 - [samantha.yaml](../../datasets/QuixiAI/templatelib/configs/samantha.yaml) -- Samantha dataset definition
@@ -499,7 +499,7 @@ Which one should you reach for?
   typically prefer PP or FSDP2.
 
 For the details of each backend see
-[LM Training Project Template](../../../docs/project-templates/lm-training-projects.md).
+[LM Training Project Template](../../../project-templates/lm-training-projects.md).
 
 ## Measured Throughput
 
@@ -724,7 +724,7 @@ Use `-d 0,1` (or any comma-separated GPU list) to restrict the set of GPUs.
 You can test the resulting model using the provided Open-AI compatible inference server and client or with 3rd party tools, like vLLM.
 
  - [Forgather Inference Server Documentation](../../../tools/inference_server/README.md)
- - [vLLM Documentation](../../../docs/inference/vllm_integration.md).
+ - [vLLM Documentation](../../../inference/vllm_integration.md).
 
 ```bash
 # Start inference server (from 'forgather' directory)
@@ -1136,7 +1136,7 @@ python -c "from transformers import AutoModelForCausalLM; \
                                              trust_remote_code=True)"
 ```
 
-See [docs/guides/finalize-model.md](../../../docs/guides/finalize-model.md)
+See [docs/guides/finalize-model.md](../../../guides/finalize-model.md)
 for the full reference, including how `--add-tokens` and `--chat-template-path`
 can be combined with finalize to update the chat template or graft on
 additional tokens at the same time.
@@ -1193,4 +1193,4 @@ python -c "from transformers import AutoModelForCausalLM; \
 
 For background on why the multi-token EOS list matters and how
 `generate()` actually uses it, see
-[docs/guides/eos-and-generate-stopping.md](../../../docs/guides/eos-and-generate-stopping.md).
+[docs/guides/eos-and-generate-stopping.md](../../../guides/eos-and-generate-stopping.md).

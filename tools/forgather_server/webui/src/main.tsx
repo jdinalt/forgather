@@ -1,10 +1,20 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import App from "./App";
+import {
+  AUTH_REQUIRED_EVENT,
+  AuthStatus,
+  authApi,
+  installAuthFetch,
+} from "./auth";
+import { LoginGate, SetPasswordPrompt } from "./components/LoginGate";
 import { setStorageNamespace } from "./persist";
 import "./styles.css";
+
+// Install the fetch wrapper before any module-level code makes a request.
+installAuthFetch();
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -12,18 +22,107 @@ const queryClient = new QueryClient({
   },
 });
 
-/** Bootstrap: fetch the running server's identity hash and use it to
- *  namespace localStorage before any component mounts. Without this,
- *  ``useState(() => loadPersisted())`` calls inside modals would read
- *  the un-namespaced bucket and inherit values from a different
- *  Forgather server reachable at the same browser origin. See
- *  ``persist.ts`` for the rationale.
- *
- *  The fetch is best-effort: on failure (server down, request
- *  blocked, response malformed) we render with the ``"default"``
- *  fallback namespace, which is the prior single-bucket behaviour.
- *  Better to have a working app than to block on a nice-to-have. */
-async function boot() {
+type GateState =
+  | { kind: "loading" }
+  | { kind: "login"; status: AuthStatus }
+  | { kind: "set-password" }
+  | { kind: "ready" };
+
+function Root() {
+  const [state, setState] = useState<GateState>({ kind: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await authApi.status();
+        if (cancelled) return;
+        if (status.authenticated) {
+          // Bootstrap server identity *after* auth so the request
+          // doesn't 401 (it would have triggered a forced login).
+          await bootstrapIdentity();
+          setState({ kind: "ready" });
+        } else {
+          setState({ kind: "login", status });
+        }
+      } catch {
+        // If the status endpoint itself is unreachable, assume the
+        // server is down rather than locking the user out — show the
+        // login UI with a generic status so they can retry.
+        if (!cancelled) {
+          setState({
+            kind: "login",
+            status: {
+              authenticated: false,
+              has_password: false,
+              auth_disabled: false,
+            },
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Any 401 from a regular API call (e.g. session expired mid-session)
+  // bumps us back to the login gate.
+  useEffect(() => {
+    function onAuthRequired() {
+      authApi.status().then(
+        (status) => setState({ kind: "login", status }),
+        () =>
+          setState({
+            kind: "login",
+            status: {
+              authenticated: false,
+              has_password: false,
+              auth_disabled: false,
+            },
+          }),
+      );
+    }
+    window.addEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
+    return () =>
+      window.removeEventListener(AUTH_REQUIRED_EVENT, onAuthRequired);
+  }, []);
+
+  if (state.kind === "loading") {
+    return <div className="login-gate" />;
+  }
+  if (state.kind === "login") {
+    return (
+      <LoginGate
+        status={state.status}
+        onAuthenticated={async ({ promptPasswordSetup }) => {
+          await bootstrapIdentity();
+          setState(
+            promptPasswordSetup ? { kind: "set-password" } : { kind: "ready" },
+          );
+        }}
+      />
+    );
+  }
+  if (state.kind === "set-password") {
+    return (
+      <SetPasswordPrompt
+        onDone={() => setState({ kind: "ready" })}
+        onSkip={() => setState({ kind: "ready" })}
+      />
+    );
+  }
+  return (
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>
+  );
+}
+
+/** Fetch the running server's identity hash and namespace localStorage
+ *  on it. Best-effort: a failure leaves us on the ``"default"`` bucket,
+ *  matching the prior single-bucket behaviour. */
+async function bootstrapIdentity(): Promise<void> {
   try {
     const r = await fetch("/api/server-identity");
     if (r.ok) {
@@ -31,15 +130,12 @@ async function boot() {
       if (body.identity) setStorageNamespace(body.identity);
     }
   } catch {
-    // Fall through with the "default" namespace.
+    // fall through with the "default" namespace
   }
-  ReactDOM.createRoot(document.getElementById("root")!).render(
-    <React.StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <App />
-      </QueryClientProvider>
-    </React.StrictMode>,
-  );
 }
 
-void boot();
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <Root />
+  </React.StrictMode>,
+);

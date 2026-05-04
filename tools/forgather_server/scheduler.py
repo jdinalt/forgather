@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import signal
 import subprocess
 import time
@@ -31,9 +32,9 @@ from typing import Dict, List, Optional
 
 from forgather import trainer_control
 
-from . import gpu_monitor, job_records, launcher, queue_store
+from . import _atomic, _gc, gpu_monitor, job_records, launcher, queue_store
 from .job_records import RUNNING_STATUSES, TERMINAL_STATUSES, JobRecord
-from .paths import jobs_tty_dir
+from .paths import inference_token_file, jobs_tty_dir
 from .queue_store import LOCAL_NODE, QueueItem
 
 # NOTE (multi-node): today the scheduler directly calls gpu_monitor.snapshot()
@@ -79,14 +80,24 @@ def set_enabled(enabled: bool) -> None:
 def _idle_gpu_indices() -> List[int]:
     """Indices of GPUs the scheduler is allowed to assign right now.
 
-    A GPU is eligible iff it has no compute processes AND has not been
-    excluded by the operator via CUDA_VISIBLE_DEVICES at server start AND
-    has not been runtime-disabled by the user via the web UI.
+    A GPU is eligible iff it has not been excluded by the operator via
+    ``CUDA_VISIBLE_DEVICES`` at server start AND has not been runtime-
+    disabled by the user via the web UI.
+
+    External processes (the user's desktop compositor, an unrelated
+    CUDA program, etc.) are *not* consulted. The scheduler tracks its
+    own dispatched jobs via ``_reserved_gpu_set()`` (subtracted from
+    the idle pool by the dispatch loop), and that's the authoritative
+    "Forgather is already using this GPU" signal. Trying to classify
+    arbitrary external processes as "real compute work" vs "desktop
+    rendering" turns out to be a tar pit (NVIDIA's proprietary driver
+    routes graphics-with-CUDA-context daemons through the compute
+    list, hybrid C+G processes show up there too, etc.). If you don't
+    want Forgather running on a GPU that's already hosting external
+    work, click the disable button on the GPU card.
     """
     return [
-        g.index
-        for g in gpu_monitor.snapshot()
-        if not g.processes and not g.excluded and not g.disabled
+        g.index for g in gpu_monitor.snapshot() if not g.excluded and not g.disabled
     ]
 
 
@@ -165,7 +176,11 @@ def _reap_finished() -> None:
         else:
             new_status = "failed"
 
-        job_records.update_record(
+        # Re-read the record under the lock right before writing so a
+        # concurrent abort (which transitions status="aborted") doesn't
+        # get clobbered by our reap path racing on the same record.
+        # update_only_if_running narrows the write to non-terminal states.
+        updated = job_records.update_if_not_terminal(
             qid,
             status=new_status,
             exit_code=rc,
@@ -173,6 +188,11 @@ def _reap_finished() -> None:
         )
         with _state._lock:
             _state.running.pop(qid, None)
+        # Move the captured TTY into the run's logs/ dir now that the
+        # job is terminal. No-op for non-training jobs (no logs_dir).
+        if updated is not None:
+            _gc.relocate_tty_to_logs(updated)
+            _cleanup_inference_token(updated)
         if rc is not None:
             log.info("reaped %s: rc=%d status=%s", qid, rc, new_status)
         else:
@@ -261,15 +281,320 @@ def _try_dispatch() -> None:
         _launch(it, assigned)
 
 
+def _build_eval(item, gpu_indices, tty_path):
+    p = item.job_params
+    return launcher.spawn_eval_process(
+        eval_project=p["eval_project"],
+        eval_template=p["eval_template"],
+        model_path=p["model_path"],
+        checkpoint_path=p.get("checkpoint_path"),
+        no_checkpoint=bool(p.get("no_checkpoint", False)),
+        trainer=p.get("trainer", "ddp"),
+        batch_size=p.get("batch_size"),
+        max_length=p.get("max_length"),
+        max_steps=int(p.get("max_steps", -1)),
+        dtype=p.get("dtype", "bfloat16"),
+        attn_implementation=p.get("attn_implementation", "sdpa"),
+        compile=bool(p.get("compile", False)),
+        output_dir=p.get("output_dir"),
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_inference(item, gpu_indices, tty_path):
+    p = item.job_params
+    # ``no_auth`` opts the spawn out of bearer-token auth entirely. Otherwise
+    # the auth_token is generated and persisted in ``_launch`` before this
+    # builder runs; pass the per-job token file path so the spawn never sees
+    # the token on argv (which would be visible in ``ps``).
+    no_auth = bool(p.get("no_auth", False))
+    auth_token_file: Optional[str] = None
+    if not no_auth:
+        auth_token_file = str(inference_token_file(item.queue_id))
+    return launcher.spawn_inference_process(
+        model_path=p["model_path"],
+        port=int(p["port"]),
+        host=p.get("host", "127.0.0.1"),
+        dtype=p.get("dtype"),
+        attn_implementation=p.get("attn_implementation"),
+        checkpoint_path=p.get("checkpoint_path"),
+        from_checkpoint=bool(p.get("from_checkpoint", False)),
+        compile=bool(p.get("compile", False)),
+        disable_kv_cache=bool(p.get("disable_kv_cache", False)),
+        ignore_eos=bool(p.get("ignore_eos", False)),
+        chat_template=p.get("chat_template"),
+        cache_implementation=p.get("cache_implementation"),
+        compile_args=p.get("compile_args"),
+        log_level=p.get("log_level", "INFO"),
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+        auth_token_file=auth_token_file,
+        no_auth=no_auth,
+    )
+
+
+def _build_tensorboard(item, gpu_indices, tty_path):
+    p = item.job_params
+    ri = p.get("reload_interval")
+    # ``path_prefix`` is set by ``_launch`` on the JobRecord before this
+    # builder runs; mirror it onto the TB CLI so TB's generated links
+    # match the proxy's mount path. Falls back to job_params for any
+    # legacy callers that pre-computed it themselves.
+    record = job_records.get_record(item.queue_id)
+    path_prefix = (record.path_prefix if record is not None else None) or p.get(
+        "path_prefix"
+    )
+    return launcher.spawn_tensorboard_process(
+        logdir=p["logdir"],
+        port=int(p["port"]),
+        host=p.get("host"),
+        bind_all=bool(p.get("bind_all", False)),
+        window_title=p.get("window_title"),
+        reload_interval=int(ri) if ri is not None else None,
+        reload_multifile=bool(p.get("reload_multifile", False)),
+        samples_per_plugin=p.get("samples_per_plugin"),
+        path_prefix=path_prefix,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_convert(item, gpu_indices, tty_path):
+    p = item.job_params
+    cps = p.get("converter_paths")
+    if isinstance(cps, str):
+        cps = [cps]
+    elif not isinstance(cps, list):
+        cps = None
+    ml = p.get("max_length")
+    return launcher.spawn_convert_process(
+        src_model_path=p["src_model_path"],
+        dst_model_path=p["dst_model_path"],
+        reverse=bool(p.get("reverse", False)),
+        model_type=p.get("model_type"),
+        dtype=p.get("dtype"),
+        max_length=int(ml) if ml is not None else None,
+        checkpoint_path=p.get("checkpoint_path"),
+        device=p.get("device"),
+        generation_test=bool(p.get("generation_test", False)),
+        dry_run=bool(p.get("dry_run", False)),
+        prompt=p.get("prompt"),
+        compare_text_file=p.get("compare_text_file"),
+        debug_params=bool(p.get("debug_params", False)),
+        chat_template_path=p.get("chat_template_path"),
+        add_tokens=p.get("add_tokens"),
+        skip_default_tokens=bool(p.get("skip_default_tokens", False)),
+        converter_paths=cps,
+        log_level=p.get("log_level", "INFO"),
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_finalize(item, gpu_indices, tty_path):
+    p = item.job_params
+    return launcher.spawn_finalize_process(
+        source=p["source"],
+        dest=p["dest"],
+        checkpoint=p.get("checkpoint"),
+        add_tokens=p.get("add_tokens"),
+        skip_default_tokens=bool(p.get("skip_default_tokens", False)),
+        chat_template_path=p.get("chat_template_path"),
+        no_auto_stop_tokens=bool(p.get("no_auto_stop_tokens", False)),
+        stop_tokens=p.get("stop_tokens"),
+        generation_config=p.get("generation_config"),
+        keep_optimizer=bool(p.get("keep_optimizer", False)),
+        root_copy=bool(p.get("root_copy", False)),
+        safetensors=bool(p.get("safetensors", False)),
+        dtype=p.get("dtype"),
+        device=p.get("device"),
+        dry_run=bool(p.get("dry_run", False)),
+        log_level=p.get("log_level", "INFO"),
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_update(item, gpu_indices, tty_path):
+    p = item.job_params
+    cps = p.get("converter_paths")
+    if isinstance(cps, str):
+        cps = [cps]
+    elif not isinstance(cps, list):
+        cps = None
+    fv = p.get("from_version")
+    tv = p.get("to_version")
+    return launcher.spawn_update_process(
+        src_model_path=p["src_model_path"],
+        dst_model_path=p["dst_model_path"],
+        arch=p.get("arch"),
+        # Versions are PEP 440 strings; coerce to str so legacy
+        # integers from older job_params still flow through.
+        from_version=str(fv) if fv is not None else None,
+        to_version=str(tv) if tv is not None else None,
+        checkpoint=p.get("checkpoint"),
+        device=p.get("device"),
+        dtype=p.get("dtype"),
+        no_strict=bool(p.get("no_strict", False)),
+        safetensors=bool(p.get("safetensors", False)),
+        converter_paths=cps,
+        dry_run=bool(p.get("dry_run", False)),
+        log_level=p.get("log_level", "INFO"),
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_mkdocs(item, gpu_indices, tty_path):
+    p = item.job_params
+    watch = p.get("watch")
+    if isinstance(watch, str):
+        watch = [watch]
+    elif not isinstance(watch, list):
+        watch = None
+    return launcher.spawn_mkdocs_process(
+        config_file=p["config_file"],
+        port=int(p["port"]),
+        host=p.get("host", "127.0.0.1"),
+        strict=bool(p.get("strict", False)),
+        livereload=bool(p.get("livereload", True)),
+        dirty=bool(p.get("dirty", False)),
+        watch=watch,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_model(item, gpu_indices, tty_path):
+    p = item.job_params
+    cd = p.get("compile_dynamic")
+    return launcher.spawn_model_process(
+        project_dir=item.project_dir,
+        config_name=item.config,
+        subcommand=p.get("subcommand", "construct"),
+        dynamic_args=item.dynamic_args,
+        device=p.get("device"),
+        dtype=p.get("dtype"),
+        no_init_weights=bool(p.get("no_init_weights", False)),
+        load_from_checkpoint=p.get("load_from_checkpoint"),
+        gradient_checkpointing=bool(p.get("gradient_checkpointing", False)),
+        fuse_optim_with_backward=bool(p.get("fuse_optim_with_backward", False)),
+        refresh_model=bool(p.get("refresh_model", False)),
+        save_checkpoint=bool(p.get("save_checkpoint", False)),
+        safetensors=bool(p.get("safetensors", False)),
+        batch_size=int(p["batch_size"]) if p.get("batch_size") is not None else None,
+        sequence_length=(
+            int(p["sequence_length"]) if p.get("sequence_length") is not None else None
+        ),
+        steps=int(p["steps"]) if p.get("steps") is not None else None,
+        lr=float(p["lr"]) if p.get("lr") is not None else None,
+        dataset_project=p.get("dataset_project"),
+        dataset_config=p.get("dataset_config"),
+        packed=bool(p.get("packed", False)),
+        compile=bool(p.get("compile", False)),
+        compile_backend=p.get("compile_backend"),
+        compile_mode=p.get("compile_mode"),
+        compile_dynamic=None if cd is None else bool(cd),
+        compile_fullgraph=bool(p.get("compile_fullgraph", False)),
+        amp=p.get("amp"),
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_dataset(item, gpu_indices, tty_path):
+    p = item.job_params
+    features = p.get("features")
+    if isinstance(features, str):
+        features = [features]
+    elif not isinstance(features, list):
+        features = None
+    return launcher.spawn_dataset_process(
+        project_dir=item.project_dir,
+        config_name=item.config,
+        dynamic_args=item.dynamic_args,
+        tokenizer_path=p.get("tokenizer_path"),
+        pp=bool(p.get("pp", False)),
+        histogram=bool(p.get("histogram", False)),
+        target=p.get("target"),
+        histogram_samples=(
+            int(p["histogram_samples"])
+            if p.get("histogram_samples") is not None
+            else None
+        ),
+        examples=int(p["examples"]) if p.get("examples") is not None else None,
+        features=features,
+        tokenized=bool(p.get("tokenized", False)),
+        num_shards=int(p["num_shards"]) if p.get("num_shards") is not None else None,
+        shard_index=(
+            int(p["shard_index"]) if p.get("shard_index") is not None else None
+        ),
+        select_range=p.get("select_range"),
+        seed=int(p["seed"]) if p.get("seed") is not None else None,
+        example_stride=(
+            int(p["example_stride"]) if p.get("example_stride") is not None else None
+        ),
+        truncate=int(p["truncate"]) if p.get("truncate") is not None else None,
+        tty_log_path=tty_path,
+    )
+
+
+def _build_training(item, gpu_indices, tty_path):
+    return launcher.spawn_training_process(
+        project_dir=item.project_dir,
+        config_name=item.config,
+        dynamic_args=item.dynamic_args,
+        gpu_indices=gpu_indices,
+        tty_log_path=tty_path,
+    )
+
+
+# Registry mapping job_type → builder(item, gpu_indices, tty_path) -> LaunchResult.
+# Unknown types fall through to _build_training (default Forgather training job).
+_LAUNCHERS = {
+    "eval": _build_eval,
+    "inference": _build_inference,
+    "tensorboard": _build_tensorboard,
+    "convert": _build_convert,
+    "finalize": _build_finalize,
+    "update": _build_update,
+    "mkdocs": _build_mkdocs,
+    "model": _build_model,
+    "dataset": _build_dataset,
+}
+
+
 def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
     """Move a queue item to a JobRecord and spawn the appropriate subprocess.
 
-    Training jobs spawn ``scripts/train_script.py`` and correlate with
-    TrainerControlClient; eval jobs spawn ``scripts/eval_script.py`` and
-    are fire-and-forget. The shared generic lifecycle (TTY capture,
-    PID-based reaping, GPU pinning) lives in :func:`_spawn_subprocess`.
+    add_record + remove_item happen before the try block so the queue item
+    is always promoted to a record (even if spawn fails). On spawn failure
+    the record transitions to "failed"; on success the ordering is:
+
+      1. spawn (result = builder(...))
+      2. _state.running[queue_id] = proc   — in-memory handle registered first
+      3. update_record(status="running")   — durable state written after
+
+    Registering the handle before the disk write means the reap loop can
+    collect the process even if the server crashes between steps 2 and 3.
     """
     tty_path = jobs_tty_dir() / f"{item.queue_id}.tty"
+    # TB jobs are reachable through the auth-gated reverse proxy at
+    # ``/api/tb/<queue_id>/...``; record the prefix here so ``--path_prefix``
+    # propagates to the spawned tensorboard process and the proxy route can
+    # look it up by ``queue_id`` later.
+    path_prefix: Optional[str] = None
+    if item.job_type == "tensorboard":
+        path_prefix = f"/api/tb/{item.queue_id}"
+
+    # Generate the inference bearer token here (before the builder runs) so
+    # the JobRecord persists it for the proxy and the spawn reads it from
+    # the same 0600 file. ``no_auth`` in job_params opts out.
+    auth_token: Optional[str] = None
+    if item.job_type == "inference" and not bool(item.job_params.get("no_auth", False)):
+        auth_token = secrets.token_hex(32)
+        token_path = inference_token_file(item.queue_id)
+        _atomic.atomic_write_text(token_path, auth_token, mode=0o600)
+
     record = JobRecord(
         queue_id=item.queue_id,
         project_dir=item.project_dir,
@@ -285,6 +610,8 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
         status="starting",
         started_at=time.time(),
         tty_log_path=str(tty_path),
+        path_prefix=path_prefix,
+        auth_token=auth_token,
     )
     job_records.add_record(record)
     queue_store.remove_item(item.queue_id)
@@ -296,137 +623,9 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
         item.config,
     )
 
+    build = _LAUNCHERS.get(item.job_type, _build_training)
     try:
-        if item.job_type == "eval":
-            params = item.job_params
-            result = launcher.spawn_eval_process(
-                eval_project=params["eval_project"],
-                eval_template=params["eval_template"],
-                model_path=params["model_path"],
-                checkpoint_path=params.get("checkpoint_path"),
-                no_checkpoint=bool(params.get("no_checkpoint", False)),
-                trainer=params.get("trainer", "ddp"),
-                batch_size=params.get("batch_size"),
-                max_length=params.get("max_length"),
-                max_steps=int(params.get("max_steps", -1)),
-                dtype=params.get("dtype", "bfloat16"),
-                attn_implementation=params.get("attn_implementation", "sdpa"),
-                compile=bool(params.get("compile", False)),
-                output_dir=params.get("output_dir"),
-                gpu_indices=gpu_indices,
-                tty_log_path=tty_path,
-            )
-        elif item.job_type == "inference":
-            params = item.job_params
-            result = launcher.spawn_inference_process(
-                model_path=params["model_path"],
-                port=int(params["port"]),
-                host=params.get("host", "127.0.0.1"),
-                dtype=params.get("dtype"),
-                attn_implementation=params.get("attn_implementation"),
-                checkpoint_path=params.get("checkpoint_path"),
-                from_checkpoint=bool(params.get("from_checkpoint", False)),
-                compile=bool(params.get("compile", False)),
-                disable_kv_cache=bool(params.get("disable_kv_cache", False)),
-                ignore_eos=bool(params.get("ignore_eos", False)),
-                chat_template=params.get("chat_template"),
-                cache_implementation=params.get("cache_implementation"),
-                compile_args=params.get("compile_args"),
-                log_level=params.get("log_level", "INFO"),
-                gpu_indices=gpu_indices,
-                tty_log_path=tty_path,
-            )
-        elif item.job_type == "tensorboard":
-            params = item.job_params
-            ri = params.get("reload_interval")
-            result = launcher.spawn_tensorboard_process(
-                logdir=params["logdir"],
-                port=int(params["port"]),
-                host=params.get("host"),
-                bind_all=bool(params.get("bind_all", False)),
-                window_title=params.get("window_title"),
-                reload_interval=int(ri) if ri is not None else None,
-                reload_multifile=bool(params.get("reload_multifile", False)),
-                samples_per_plugin=params.get("samples_per_plugin"),
-                tty_log_path=tty_path,
-            )
-        elif item.job_type == "convert":
-            params = item.job_params
-            cps = params.get("converter_paths")
-            if isinstance(cps, str):
-                cps = [cps]
-            elif not isinstance(cps, list):
-                cps = None
-            ml = params.get("max_length")
-            result = launcher.spawn_convert_process(
-                src_model_path=params["src_model_path"],
-                dst_model_path=params["dst_model_path"],
-                reverse=bool(params.get("reverse", False)),
-                model_type=params.get("model_type"),
-                dtype=params.get("dtype"),
-                max_length=int(ml) if ml is not None else None,
-                checkpoint_path=params.get("checkpoint_path"),
-                device=params.get("device"),
-                generation_test=bool(params.get("generation_test", False)),
-                dry_run=bool(params.get("dry_run", False)),
-                prompt=params.get("prompt"),
-                compare_text_file=params.get("compare_text_file"),
-                debug_params=bool(params.get("debug_params", False)),
-                chat_template_path=params.get("chat_template_path"),
-                add_tokens=params.get("add_tokens"),
-                skip_default_tokens=bool(params.get("skip_default_tokens", False)),
-                converter_paths=cps,
-                log_level=params.get("log_level", "INFO"),
-                gpu_indices=gpu_indices,
-                tty_log_path=tty_path,
-            )
-        elif item.job_type == "finalize":
-            params = item.job_params
-            result = launcher.spawn_finalize_process(
-                source=params["source"],
-                dest=params["dest"],
-                checkpoint=params.get("checkpoint"),
-                add_tokens=params.get("add_tokens"),
-                skip_default_tokens=bool(params.get("skip_default_tokens", False)),
-                chat_template_path=params.get("chat_template_path"),
-                no_auto_stop_tokens=bool(params.get("no_auto_stop_tokens", False)),
-                stop_tokens=params.get("stop_tokens"),
-                generation_config=params.get("generation_config"),
-                keep_optimizer=bool(params.get("keep_optimizer", False)),
-                root_copy=bool(params.get("root_copy", False)),
-                safetensors=bool(params.get("safetensors", False)),
-                dtype=params.get("dtype"),
-                device=params.get("device"),
-                dry_run=bool(params.get("dry_run", False)),
-                log_level=params.get("log_level", "INFO"),
-                gpu_indices=gpu_indices,
-                tty_log_path=tty_path,
-            )
-        elif item.job_type == "mkdocs":
-            params = item.job_params
-            watch = params.get("watch")
-            if isinstance(watch, str):
-                watch = [watch]
-            elif not isinstance(watch, list):
-                watch = None
-            result = launcher.spawn_mkdocs_process(
-                config_file=params["config_file"],
-                port=int(params["port"]),
-                host=params.get("host", "127.0.0.1"),
-                strict=bool(params.get("strict", False)),
-                livereload=bool(params.get("livereload", True)),
-                dirty=bool(params.get("dirty", False)),
-                watch=watch,
-                tty_log_path=tty_path,
-            )
-        else:
-            result = launcher.spawn_training_process(
-                project_dir=item.project_dir,
-                config_name=item.config,
-                dynamic_args=item.dynamic_args,
-                gpu_indices=gpu_indices,
-                tty_log_path=tty_path,
-            )
+        result = build(item, gpu_indices, tty_path)
     except Exception as e:
         log.exception("launch failed for %s", item.queue_id)
         job_records.update_record(
@@ -437,9 +636,9 @@ def _launch(item: QueueItem, gpu_indices: List[int]) -> None:
         )
         return
 
-    job_records.update_record(item.queue_id, status="running", pid=result.pid)
     with _state._lock:
         _state.running[item.queue_id] = result.proc
+    job_records.update_record(item.queue_id, status="running", pid=result.pid)
 
 
 def _pid_ancestors(pid: int) -> List[int]:
@@ -548,12 +747,39 @@ def _kill_record(queue_id: str, sig: int) -> bool:
         return False
     if record.status in TERMINAL_STATUSES:
         return False
-    job_records.update_record(queue_id, status="aborted", finished_at=time.time())
+    # Use the CAS variant so a reap that lands between our status check
+    # above and this write can't be clobbered. The kill path losing the
+    # race is benign: both ends are terminal and the process is gone.
+    updated = job_records.update_if_not_terminal(
+        queue_id, status="aborted", finished_at=time.time()
+    )
     if record.pid:
         launcher.kill_process_group(record.pid, sig)
     with _state._lock:
         _state.running.pop(queue_id, None)
-    return True
+    # Same TTY relocation as the reap path so an aborted run still ends
+    # up with its tty.log materialized inside the run's logs/ dir.
+    if updated is not None:
+        _gc.relocate_tty_to_logs(updated)
+        _cleanup_inference_token(updated)
+    return updated is not None
+
+
+def _cleanup_inference_token(record: JobRecord) -> None:
+    """Best-effort delete of the per-job inference token file.
+
+    Token is useless once the inference process is gone, but tidying up
+    keeps the directory bounded and is cheap. Errors are swallowed so a
+    missing/already-removed file never breaks reap.
+    """
+    if record.job_type != "inference":
+        return
+    try:
+        path = inference_token_file(record.queue_id)
+        if path.exists():
+            path.unlink()
+    except OSError as e:
+        log.debug("could not unlink inference token for %s: %s", record.queue_id, e)
 
 
 def abort_or_cancel(queue_id: str) -> bool:
@@ -640,6 +866,16 @@ def _reattach_or_cleanup_on_startup() -> None:
     if cleaned:
         log.warning("marked %d orphaned record(s) as failed on startup", cleaned)
 
+    # Sweep orphan TTYs left over from previous server runs. Files
+    # younger than the TTL are protected to avoid racing an in-flight
+    # dispatch that hasn't persisted its JobRecord yet.
+    try:
+        swept = _gc.sweep_orphan_ttys()
+        if swept:
+            log.info("startup orphan-tty sweep removed %d file(s)", swept)
+    except Exception:
+        log.exception("startup orphan-tty sweep failed")
+
 
 def _mark_failed(queue_id: str, reason: str) -> None:
     job_records.update_record(
@@ -650,9 +886,16 @@ def _mark_failed(queue_id: str, reason: str) -> None:
     )
 
 
+# Long-running servers also do a periodic sweep so accumulation between
+# restarts is bounded. Daily is plenty given the per-job relocation already
+# eats the common case.
+GC_SWEEP_INTERVAL_SECONDS = 24 * 3600
+
+
 async def dispatcher_loop() -> None:
     log.info("dispatcher loop starting (enabled=%s)", _state.enabled)
     _reattach_or_cleanup_on_startup()
+    last_gc_at = time.time()
     try:
         while True:
             _state.tick_count += 1
@@ -661,6 +904,17 @@ async def dispatcher_loop() -> None:
                 _reap_finished()
                 _correlate_running_records()
                 _try_dispatch()
+                if time.time() - last_gc_at > GC_SWEEP_INTERVAL_SECONDS:
+                    last_gc_at = time.time()
+                    try:
+                        swept = _gc.sweep_orphan_ttys()
+                        if swept:
+                            log.info(
+                                "periodic orphan-tty sweep removed %d file(s)",
+                                swept,
+                            )
+                    except Exception:
+                        log.exception("periodic orphan-tty sweep failed")
             except Exception:
                 log.exception("dispatcher tick failed")
             await asyncio.sleep(TICK_SECONDS)

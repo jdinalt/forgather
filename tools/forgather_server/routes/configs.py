@@ -9,6 +9,8 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
+from forgather.preprocess import ConfigDiagnostic
+
 from .. import _atomic, config_ops, overrides_store
 
 router = APIRouter(tags=["configs"])
@@ -41,6 +43,40 @@ class ConfigMetaModel(BaseModel):
     description: Optional[str] = None
     config_class: Optional[str] = None
     parse_error: Optional[str] = None
+
+
+class DebugTraceItemModel(BaseModel):
+    name: str
+    path: str
+    raw: str
+    preprocessed: str
+
+
+class ConfigErrorDetail(BaseModel):
+    """Structured 400 body for any :class:`ConfigDiagnostic` failure.
+
+    ``kind`` discriminates between Jinja2 preprocess errors, YAML parse
+    errors, and codegen errors so the frontend can label them appropriately.
+    The remaining fields share the same shape — frontend renders
+    ``template`` + ``lineno`` as a compiler-style header over a ``<pre>``
+    block containing ``message`` and ``source_context``.
+    """
+
+    kind: Literal["preprocess_error", "yaml_error", "code_error"]
+    template: Optional[str] = None
+    lineno: Optional[int] = None
+    message: str
+    source_context: Optional[str] = None
+
+
+def _config_error_detail(exc: ConfigDiagnostic) -> Dict[str, Any]:
+    return ConfigErrorDetail(
+        kind=exc.kind,  # type: ignore[arg-type]
+        template=exc.template_name,
+        lineno=exc.lineno,
+        message=exc.message,
+        source_context=exc.source_context,
+    ).model_dump()
 
 
 class OutputDirInfoModel(BaseModel):
@@ -79,9 +115,81 @@ def get_config_pp(
     """
     try:
         return config_ops.render_pp(project_dir, config)
+    except ConfigDiagnostic as e:
+        raise HTTPException(status_code=400, detail=_config_error_detail(e))
     except Exception as e:
         detail = f"{e}\n\n{traceback.format_exc()}"
         raise HTTPException(status_code=400, detail=detail)
+
+
+@router.get("/config/code", response_class=PlainTextResponse)
+def get_config_code(
+    project_dir: str,
+    config: str,
+    target: Optional[str] = Query(default="main"),
+):
+    """Render *target* (or the entire config when ``target`` is empty) as
+    Python source via ``forgather.codegen.generate_code``.
+
+    Same default as the ``forgather code`` CLI: ``target="main"``. Pass an
+    empty ``target`` (``?target=``) to render every materialisable target
+    in one document. YAML and codegen failures surface as the same
+    ``ConfigErrorDetail`` shape used by ``/api/config/pp``.
+    """
+    # Treat empty / missing target as "render the whole config" (None) so the
+    # frontend can model "All targets" as just a target=<empty> request.
+    target_arg: Optional[str] = target if target else None
+    try:
+        return config_ops.render_code(project_dir, config, target=target_arg)
+    except ConfigDiagnostic as e:
+        raise HTTPException(status_code=400, detail=_config_error_detail(e))
+    except Exception as e:
+        detail = f"{e}\n\n{traceback.format_exc()}"
+        raise HTTPException(status_code=400, detail=detail)
+
+
+@router.get("/config/code-targets", response_model=List[str])
+def get_config_code_targets(project_dir: str, config: str):
+    """List the materialisable top-level targets in *config*.
+
+    Used by the **code** webui panel to populate the target list. Same set
+    of names ``forgather targets`` prints on the CLI.
+    """
+    try:
+        return config_ops.list_code_targets(project_dir, config)
+    except ConfigDiagnostic as e:
+        raise HTTPException(status_code=400, detail=_config_error_detail(e))
+    except Exception as e:
+        detail = f"{e}\n\n{traceback.format_exc()}"
+        raise HTTPException(status_code=400, detail=detail)
+
+
+@router.get("/config/debug", response_model=List[DebugTraceItemModel])
+def get_config_debug(project_dir: str, config: str):
+    """Per-template preprocess trace for the **debug** webui panel.
+
+    Returns one entry per template that participated in rendering ``config``,
+    in load order, with both the raw template source (as seen by Jinja2) and
+    the preprocessed source (after the LineStatementProcessor rewrite). The
+    frontend uses this to render a three-column view (template list + raw +
+    preprocessed) so users can step through the render pipeline.
+    """
+    try:
+        items = config_ops.render_pp_trace(project_dir, config)
+    except ConfigDiagnostic as e:
+        raise HTTPException(status_code=400, detail=_config_error_detail(e))
+    except Exception as e:
+        detail = f"{e}\n\n{traceback.format_exc()}"
+        raise HTTPException(status_code=400, detail=detail)
+    return [
+        DebugTraceItemModel(
+            name=item.name,
+            path=item.path,
+            raw=item.raw,
+            preprocessed=item.preprocessed,
+        )
+        for item in items
+    ]
 
 
 @router.get("/config/trefs")
@@ -109,6 +217,35 @@ def get_config_trefs(
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/config/graph", response_class=PlainTextResponse)
+def get_config_graph(
+    project_dir: str,
+    config: str,
+    target: Optional[str] = Query(default=None),
+    include_values: bool = Query(default=False),
+):
+    """Config node graph as Graphviz DOT.
+
+    When *target* is given only that top-level key is rendered; omit it (or
+    pass an empty string) to render the full multi-target diagram. When
+    *include_values* is true, plain scalars and containers (strings /
+    numbers / lists / dicts) also appear as nodes; strings are truncated.
+    """
+    target_arg: Optional[str] = target if target else None
+    try:
+        return config_ops.render_graph_dot(
+            project_dir,
+            config,
+            target=target_arg,
+            include_values=include_values,
+        )
+    except ConfigDiagnostic as e:
+        raise HTTPException(status_code=400, detail=_config_error_detail(e))
+    except Exception as e:
+        detail = f"{e}\n\n{traceback.format_exc()}"
+        raise HTTPException(status_code=400, detail=detail)
 
 
 @router.get("/config/templates", response_model=List[ReferencedTemplate])
@@ -268,9 +405,10 @@ def put_template_source(req: PutTemplateSourceRequest):
             current_mtime = os.path.getmtime(req.path)
         except OSError as e:
             raise HTTPException(status_code=500, detail=str(e))
-        # Tiny tolerance covers float roundtripping; in practice we
-        # only flag genuine disk updates, not equality jitter.
-        if current_mtime > req.expected_mtime + 1e-3:
+        # Tiny tolerance covers float roundtripping; ext4/xfs/btrfs
+        # store mtimes with ns precision so 1µs is plenty of slack for
+        # equality without swallowing genuine concurrent edits.
+        if current_mtime > req.expected_mtime + 1e-6:
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -299,6 +437,7 @@ def put_template_source(req: PutTemplateSourceRequest):
 
 class OverridesResponse(BaseModel):
     values: Dict[str, Any]
+    requested_gpus: Optional[int] = None
     updated_at: Optional[float] = None
 
 
@@ -306,17 +445,20 @@ class SetOverridesRequest(BaseModel):
     project_dir: str
     config: str
     values: Dict[str, Any]
+    requested_gpus: Optional[int] = None
 
 
 @router.get("/config/overrides", response_model=OverridesResponse)
 def get_overrides(project_dir: str, config: str):
     """Return the cached override values for a config.
 
-    Returns ``{values: {}, updated_at: null}`` when no cache file exists.
+    Returns ``{values: {}, requested_gpus: null, updated_at: null}`` when no
+    cache file exists.
     """
     payload = overrides_store.get_overrides_payload(project_dir, config)
     return OverridesResponse(
         values=payload["values"],
+        requested_gpus=payload["requested_gpus"],
         updated_at=payload["updated_at"],
     )
 
@@ -324,9 +466,12 @@ def get_overrides(project_dir: str, config: str):
 @router.post("/config/overrides", response_model=OverridesResponse)
 def set_overrides(req: SetOverridesRequest):
     """Persist override values for a config (upsert). Returns the new state."""
-    payload = overrides_store.set_overrides(req.project_dir, req.config, req.values)
+    payload = overrides_store.set_overrides(
+        req.project_dir, req.config, req.values, req.requested_gpus
+    )
     return OverridesResponse(
         values=payload["values"],
+        requested_gpus=payload["requested_gpus"],
         updated_at=payload["updated_at"],
     )
 

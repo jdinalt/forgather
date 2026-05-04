@@ -2,7 +2,7 @@
 
 A test harness for the base LM project template.
 
-Note that the default dataset is fairly large and can take a considerable amount of time to download on the first run.0
+Note that the default dataset is fairly large and can take a considerable amount of time to download on the first run.
 
 ```bash
 forgather [-t CONFIG] train --help

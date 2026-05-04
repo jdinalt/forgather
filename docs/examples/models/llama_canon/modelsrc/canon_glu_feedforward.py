@@ -1,0 +1,1 @@
+../../../../../examples/models/llama_canon/modelsrc/canon_glu_feedforward.py

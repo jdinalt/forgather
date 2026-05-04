@@ -157,6 +157,64 @@ def create_tb_parser(global_args):
         action="store_true",
         help="Just show the generated commandline, without actually executing it.",
     )
+    parser.add_argument(
+        "--enqueue",
+        action="store_true",
+        help="Submit to the forgather-server queue instead of running locally.",
+    )
+    parser.add_argument(
+        "--priority",
+        type=int,
+        default=0,
+        help="Queue priority for --enqueue (default: 0).",
+    )
+    parser.add_argument(
+        "--server",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="forgather-server URL for --enqueue (default: $FORGATHER_SERVER_URL or http://127.0.0.1:8765).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=6006,
+        help="Port for the tensorboard server (default: 6006).",
+    )
+    parser.add_argument(
+        "--bind-all",
+        action="store_true",
+        help="Bind to all interfaces (0.0.0.0) instead of localhost.",
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default=None,
+        help="Host to bind (overridden by --bind-all).",
+    )
+    parser.add_argument(
+        "--window-title",
+        type=str,
+        default=None,
+        help="Window title for tensorboard.",
+    )
+    parser.add_argument(
+        "--reload-interval",
+        type=int,
+        default=None,
+        help="Reload interval in seconds.",
+    )
+    parser.add_argument(
+        "--reload-multifile",
+        action="store_true",
+        help="Reload all event files, not just the newest.",
+    )
+    parser.add_argument(
+        "--samples-per-plugin",
+        type=str,
+        default=None,
+        help="Comma-separated plugin=N pairs (e.g. images=100,audio=50).",
+    )
     parse_dynamic_args(parser, global_args)
     return parser
 

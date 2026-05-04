@@ -1,0 +1,17 @@
+-- extends 'project.yaml'
+
+[config_metadata]
+    == super()
+    -- set ns.config_name = "Muon"
+    -- set ns.config_description = "Train with the Muon optimizer"
+    -- set ns.model_name = model_name | default("muon")
+    -- set ns.base_lr = lr | default(6.0e-4)
+
+[optimizer]
+optimizer: &optimizer !partial:torch.optim:Muon
+    lr: {{ ns.global_lr | toyaml }}
+    adjust_lr_fn: "match_rms_adamw"
+
+[no_decay_optim]
+.define: &no_decay_optim !partial:torch:optim.AdamW
+    lr: !!float 0.02

@@ -564,7 +564,7 @@ deferring actual computation until the buffer has been moved to a real device.
 ## See Also
 
 - [Syntax Reference](syntax-reference.md) - Full YAML configuration syntax
-- [Writing a Config](writing-a-config.md) - General configuration guide
+- [Configuration Overview](README.md) - General configuration guide
 - `modelsrc/transformer/init_weights.py` - Built-in init functions (`init_weights_by_regex`, `simple_weight_init`)
 - `modelsrc/transformer/llama_init.py` - Llama-specific initialization functions
 - `templatelib/examples/models/transformers/dynamic_llama.yaml` - Complete example

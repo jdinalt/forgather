@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api";
 import { PathField } from "./PathField";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   /** The directory the user right-clicked in the Files tree.
@@ -92,7 +93,7 @@ export function InitWorkspaceModal({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal new-workspace-modal"
         onClick={(e) => e.stopPropagation()}
@@ -206,6 +207,6 @@ export function InitWorkspaceModal({
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

@@ -164,6 +164,41 @@ print(f"Best loss: {summary['best_loss']} at step {summary['best_loss_step']}")
 
 For complete documentation, see `docs/guides/logs-analysis.md` and `examples/log_analysis_example.py`.
 
+### Forgather Server
+
+**Before working on the forgather server (backend or webui), read `tools/forgather_server/README.md` first** — it covers the architecture, the webui build/deploy flow, and conventions you need to know before editing.
+
+**Webui builds**: the webui is a Vite/React app whose static bundle is served from `tools/forgather_server/webui/dist/`. After editing any webui source under `tools/forgather_server/webui/src/`, rebuild with the helper script in the repo root:
+
+```bash
+./build-webui.sh             # incremental build (skips npm install if up-to-date)
+./build-webui.sh --watch     # Vite dev server with live reload (no static dist)
+./build-webui.sh --clean     # wipe dist/ and Vite cache (then re-run without --clean)
+./build-webui.sh --install   # force `npm install`
+```
+
+Do not invoke `npm run build` directly — the script handles dependency freshness, paths, and the clean/watch modes consistently.
+
+### Forgather Server CLI
+
+The forgather server exposes a queue, scheduler, and GPU policy manager reachable from the CLI — no browser needed. Full documentation lives in `tools/forgather_server/README.md` under "CLI access". Quick reference:
+
+```bash
+forgather -t config.yaml train --enqueue [--priority N] [--requested-gpus N]
+forgather eval test <name> -M <model> --enqueue [--priority N]
+forgather tb --enqueue [--port 6006] [--priority N]
+forgather inf server --enqueue -m <model> [--port 8137] [--priority N]
+forgather convert --enqueue --src <src> --dst <dst> [--priority N]
+forgather finalize --enqueue --source <src> --dest <dst> [--priority N]
+forgather mkdocs -f mkdocs.yml [--enqueue] [--priority N]
+forgather sched status | list | pause | resume | cancel <id> | cleanup [<id>]
+forgather job status | save | stop | save-stop | abort | kill | force-kill | tail | dump <id>
+forgather gpu status | disable | enable | priority | kill <idx>
+# All accept --server URL or $FORGATHER_SERVER_URL (default: http://127.0.0.1:8765)
+```
+
+All `--enqueue`-capable commands accept `--priority N` and `--server URL`; non-training enqueues (eval/tb/inf/convert/finalize/mkdocs) build `job_params` matching their webui submit modals.
+
 ### Inference
 
 Forgather includes a basic OpenAPI compatible inference server and client.

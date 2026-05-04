@@ -10,6 +10,7 @@
   --accent-hover: #1177bb;
   --err: #f48771;
   --err-bg: #3a1f1f;
+  --warn: #e2c08d;
   --selected: #094771;
 }
 
@@ -1096,6 +1097,23 @@ button.jobs-tty-toggle.active {
   min-width: 0;
   width: auto;
 }
+/* path-field is the input + button(s) flex row used for "wide" rows like
+   Base URL and Auth Token. Without this, the wrapper falls back to
+   display:block and the input is constrained to .submit-row's default
+   70px (or 170px for type=text), which is far too short for a 64-char
+   bearer token or a long URL. The selector targets every input in the
+   wrapper regardless of type so the password field stretches too. */
+.submit-row .path-field {
+  display: flex;
+  gap: 4px;
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.submit-row .path-field > input {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
 .notice {
   background: #4b3a0f;
   border: 1px solid #a06e0c;
@@ -1134,22 +1152,37 @@ button.jobs-tty-toggle.active {
   gap: 8px;
 }
 .dyn-field label {
+  /* Side-by-side layout when there's room, falls back to stacked on narrow
+     viewports via flex-wrap. The widgets each declare ``flex: 1 1 200px``
+     so they grow to fill remaining horizontal space but wrap to their own
+     row before becoming unusably small. */
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  row-gap: 4px;
 }
 .dyn-name {
   display: flex;
   gap: 8px;
   align-items: baseline;
   font-size: 12px;
+  flex: 0 0 auto;
 }
 .dyn-type {
   font-size: 10px;
 }
-.dyn-field input,
-.dyn-field select {
-  width: 100%;
+.dyn-field > label > input,
+.dyn-field > label > select,
+.dyn-field > label > .path-field,
+.dyn-field > label > .dyn-checkbox {
+  flex: 1 1 200px;
+  width: auto;
+  /* The bool-with-default widget is itself a <label class=dyn-checkbox>
+     with align-self: flex-start (sized for the old column layout). Reset
+     it so the checkbox aligns horizontally with the cli_name. */
+  align-self: center;
 }
 .dyn-field .path-field {
   display: flex;
@@ -1157,6 +1190,7 @@ button.jobs-tty-toggle.active {
 }
 .dyn-field .path-field input {
   flex: 1;
+  min-width: 0;
 }
 .dyn-checkbox {
   display: flex;
@@ -1180,6 +1214,64 @@ button.jobs-tty-toggle.active {
 .dyn-help {
   font-size: 11px;
   margin-top: 2px;
+}
+
+/* Grouped dynamic-args tree. Each non-leaf is a <details> with its
+   summary as the group label. Indentation comes from a 12px left
+   padding on the body; depth nests naturally because the body
+   contains further <details>. */
+.dyn-args-grouped {
+  gap: 6px;
+}
+.dyn-group {
+  border-left: 2px solid var(--border);
+  padding-left: 6px;
+}
+.dyn-group-summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 0;
+  user-select: none;
+}
+.dyn-group-summary:hover {
+  color: var(--fg);
+}
+.dyn-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0 4px 12px;
+}
+/* Red highlight for the cli_name of a required arg whose value is
+   still missing. We deliberately do NOT propagate red up the path —
+   the path is force-expanded for missing-required, so the red name
+   is already visible without recolouring every ancestor summary. */
+.dyn-required-tag {
+  color: var(--err, #ff6b6b);
+  font-weight: 700;
+}
+.dyn-field-missing .dyn-name code {
+  color: var(--err, #ff6b6b);
+}
+.dyn-field-missing input,
+.dyn-field-missing select {
+  border-color: var(--err, #ff6b6b);
+}
+/* Out-of-bounds values get a red border but the name stays yellow
+   (the field is "modified", just with an invalid value). */
+.dyn-field-outofbounds input,
+.dyn-field-outofbounds select {
+  border-color: var(--err, #ff6b6b);
+}
+/* VS-Code-style yellow trail. Any field whose value differs from the
+   template default highlights its cli_name; the highlight propagates up
+   the group path so the user can spot overridden branches at a glance. */
+.dyn-group-modified {
+  color: var(--warn, #e2c08d);
+}
+.dyn-field-modified .dyn-name code {
+  color: var(--warn, #e2c08d);
 }
 
 .sidebar-section {
@@ -1517,6 +1609,7 @@ li.config.selected button.link:hover {
 .main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -1535,6 +1628,11 @@ li.config.selected button.link:hover {
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
+}
+.config-viewer-header {
+  justify-content: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .viewer-title {
   display: flex;
@@ -1593,7 +1691,6 @@ li.config.selected button.link:hover {
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  border-right: 1px solid var(--border);
 }
 .trefs-left .trefs-graph {
   border-right: none;
@@ -1621,10 +1718,36 @@ li.config.selected button.link:hover {
 }
 
 .trefs-split {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-direction: row;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+}
+.trefs-split > .trefs-source {
+  flex: 1;
+  min-width: 0;
+}
+.trefs-split-handle {
+  flex: 0 0 6px;
+  background: var(--border);
+  cursor: col-resize;
+  position: relative;
+  touch-action: none;
+}
+.trefs-split-handle:before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  right: -4px;
+}
+.trefs-split-handle:hover {
+  background: var(--accent);
+}
+.trefs-split-handle:active {
+  background: var(--accent-hover);
 }
 
 /* ---------- tlist (all project templates, grouped) ---------- */
@@ -1709,7 +1832,6 @@ li.config.selected button.link:hover {
   gap: 8px;
 }
 .template-label code {
-  flex: 1;
   min-width: 0;
 }
 .template-edit-btn {
@@ -1727,6 +1849,259 @@ li.config.selected button.link:hover {
 .template-editor {
   flex: 1;
   min-height: 0;
+}
+
+/* ---------- Debug panel (per-template preprocess trace) ---------- */
+.debug-view {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 2fr 2fr;
+  min-height: 0;
+}
+.debug-list {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: #111;
+  min-height: 0;
+}
+.debug-list-header {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.debug-items {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  min-height: 0;
+}
+.debug-item {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  color: var(--fg);
+  user-select: none;
+  border-left: 2px solid transparent;
+}
+.debug-item:hover {
+  background: var(--bg-alt);
+}
+.debug-item.active {
+  background: var(--selected);
+  border-left-color: var(--accent);
+}
+.debug-item-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.debug-item-path {
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.debug-source {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+}
+.debug-source:last-child {
+  border-right: none;
+}
+
+/* ---------- Code panel (target list + Python source) ---------- */
+.code-view {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 4fr;
+  min-height: 0;
+}
+.code-targets {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: #111;
+  min-height: 0;
+}
+.code-targets-header {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.code-target-items {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  min-height: 0;
+}
+.code-target-item {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 3px 12px;
+  cursor: pointer;
+  color: var(--fg);
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-left: 2px solid transparent;
+}
+.code-target-item:hover {
+  background: var(--bg-alt);
+}
+.code-target-item.active {
+  background: var(--selected);
+  border-left-color: var(--accent);
+}
+.code-source {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ---------- Graph panel (target list + Graphviz node graph) ---------- */
+.graph-view {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 4fr;
+  min-height: 0;
+}
+.graph-canvas {
+  position: relative;
+  overflow: hidden;
+  background: #111;
+  cursor: grab;
+  user-select: none;
+}
+.graph-canvas:active {
+  cursor: grabbing;
+}
+/* Host fills the canvas; the SVG inside it fills the host and is zoomed
+ * by manipulating its viewBox attribute, which keeps vector rendering
+ * crisp at any zoom level (no rasterized CSS transform). */
+.graph-svg-host {
+  position: absolute;
+  inset: 0;
+}
+.graph-svg-host svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.graph-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+.graph-toggle input {
+  margin: 0;
+}
+.graph-controls {
+  position: absolute;
+  bottom: 8px;
+  right: 12px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  z-index: 1;
+  pointer-events: auto;
+}
+.graph-controls button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.graph-controls button:hover {
+  background: var(--bg-alt);
+}
+.graph-zoom-pct {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  min-width: 38px;
+  text-align: right;
+}
+
+/* ---------- Structured ConfigError block ---------- */
+.pane-state.err pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.pp-error {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+}
+.pp-error-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.pp-error-kind {
+  font-weight: 600;
+  color: #e57373;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.pp-error-loc {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--fg);
+}
+.pp-error-message {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--fg);
+}
+.pp-error-context {
+  margin: 0;
+  padding: 8px 10px;
+  background: #111;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: pre;
+  overflow-x: auto;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--fg);
 }
 
 /* ---------- New Workspace modal ---------- */
@@ -2102,7 +2477,7 @@ li.config.selected button.link:hover {
    flows at this wrapper's full width, so headers, paragraphs, hr, lists,
    tables, and images all share the same left/right edges. */
 .info-pane-content {
-  max-width: 80ch;
+  max-width: 110ch;
   margin: 0 auto;
 }
 
@@ -2213,6 +2588,160 @@ li.config.selected button.link:hover {
   border: none;
   border-top: 1px solid var(--border);
   margin: 1.2em 0;
+}
+
+/* ---------- Docs pane (markdown + ipynb browser) ---------- */
+/* Three-layer structure (set up in DocsPanel.tsx):
+     .docs-pane            — full-height flex column, no overflow
+       .docs-pane-header   — fixed-height path strip
+       .docs-pane-body     — scrollable region (uses .info-pane styling)
+         .docs-pane-content — markdown / ipynb cells
+   The body carries the .info-pane class so it inherits the existing
+   markdown typography + scrolling behaviour. The header sits OUTSIDE
+   the scroll container so it doesn't clip into the scrollport's
+   padding. */
+.docs-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.docs-pane-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-pane);
+  border-bottom: 1px solid var(--border);
+  padding: 4px 8px 4px 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  min-width: 0;
+}
+
+.docs-pane-back {
+  flex: 0 0 auto;
+  background: var(--bg-alt);
+  border: 1px solid var(--fg-muted);
+  color: var(--fg);
+  border-radius: 3px;
+  padding: 0 10px;
+  height: 26px;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+.docs-pane-back:hover:not(:disabled) {
+  background: var(--bg);
+  border-color: var(--fg);
+}
+.docs-pane-back:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.docs-pane-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  user-select: text;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.docs-pane-body {
+  /* All scrolling + padding + background come from the .info-pane
+     class applied alongside this one. min-height: 0 lets the flex
+     child actually shrink to its parent's height instead of growing
+     to its content. */
+  min-height: 0;
+}
+
+.docs-pane-content {
+  /* Right-click target — see the onContextMenu handler in DocsPanel
+     that whitelists clicks here. */
+}
+
+/* ----- ipynb cells ----- */
+
+.docs-ipynb {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.docs-ipynb-cell {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.docs-ipynb-md {
+  border: none;
+  background: transparent;
+}
+
+.docs-ipynb-code .docs-ipynb-source {
+  margin: 0;
+  border: none;
+  border-radius: 4px 4px 0 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre;
+}
+
+.docs-ipynb-code .docs-ipynb-source code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+.docs-ipynb-outputs {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.docs-ipynb-stream {
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.docs-ipynb-stream-err {
+  color: #d77;
+  border-color: #d77;
+}
+
+.docs-ipynb-image {
+  max-width: 100%;
+  height: auto;
+}
+
+.docs-ipynb-html {
+  overflow-x: auto;
+}
+
+.docs-ipynb-raw pre {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
 }
 
 /* ----- Config tree artifact sub-groups ----- */
@@ -2428,6 +2957,18 @@ li.config.selected button.link:hover {
   background: #2e4a4a;
   color: #9fcfcf;
 }
+.job-type-chip.type-update {
+  background: #3a4a3a;
+  color: #b8d8b8;
+}
+.job-type-chip.type-model {
+  background: #4a3a3a;
+  color: #e6b3aa;
+}
+.job-type-chip.type-dataset {
+  background: #3a4a2e;
+  color: #c4d89c;
+}
 
 /* ----- Inference panel ----- */
 
@@ -2440,6 +2981,12 @@ li.config.selected button.link:hover {
 .inference-panel .viewer-header {
   border-bottom: 1px solid var(--border);
   padding: 6px 12px;
+}
+.inference-header-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 .inference-model-panel {
   padding: 12px 16px;
@@ -2602,6 +3149,35 @@ li.config.selected button.link:hover {
   outline: none;
   box-sizing: border-box;
 }
+.inference-chat-settings {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  background: var(--bg-alt);
+  font-size: 12px;
+}
+.inference-chat-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.inference-chat-settings-row label {
+  font-weight: 600;
+}
+.inference-chat-settings-row select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 12px;
+  outline: none;
+}
+.inference-chat-settings-hint {
+  flex: 1 1 100%;
+  font-size: 11px;
+  line-height: 1.4;
+}
 .inference-chat-messages {
   flex: 1;
   min-height: 0;
@@ -2699,6 +3275,28 @@ li.config.selected button.link:hover {
   background: none;
   border: none;
   padding: 0;
+}
+.inference-chat-msg-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.inference-chat-msg-edit textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  color: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.inference-chat-msg-edit-buttons {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
 }
 .inference-chat-input {
   border-top: 1px solid var(--border);
@@ -2808,4 +3406,117 @@ li.config.selected button.link:hover {
 }
 .eval-result-table tbody th {
   width: 180px;
+}
+
+/* ----- Login gate ------------------------------------------------------ */
+
+.login-gate {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  z-index: 1000;
+}
+
+.login-card {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 28px 32px;
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.login-card h1 {
+  margin: 0 0 8px 0;
+  font-size: 22px;
+  font-weight: 500;
+}
+
+.login-blurb {
+  color: var(--muted, #999);
+  font-size: 13px;
+  margin: 0 0 20px 0;
+  line-height: 1.4;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.login-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted, #aaa);
+}
+
+.login-form input {
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text, #ddd);
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.login-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.login-form button {
+  padding: 8px 12px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.login-form button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.login-form button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.login-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.login-error {
+  color: #f48771;
+  font-size: 12px;
+  margin: 8px 0;
+  padding: 8px;
+  background: rgba(244, 135, 113, 0.08);
+  border-left: 2px solid #f48771;
+  border-radius: 2px;
+}
+
+.login-hint {
+  font-size: 11px;
+  color: var(--muted, #888);
+  margin-top: 16px;
+  line-height: 1.4;
+}
+
+.login-hint code {
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 2px;
 }

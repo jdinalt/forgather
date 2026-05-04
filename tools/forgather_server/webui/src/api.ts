@@ -73,6 +73,72 @@ export interface TrefsGraph {
   edges: TrefsEdge[];
 }
 
+export interface DebugTraceItem {
+  /** Template name as Jinja2 sees it (relative to the search path). */
+  name: string;
+  /** Absolute filesystem path of the source file (or "" for synthetic
+   *  fragments split out of a parent template). */
+  path: string;
+  /** Pre-preprocess source as the loader returned it. */
+  raw: string;
+  /** Source after the LineStatementProcessor rewrite (plain Jinja2). */
+  preprocessed: string;
+}
+
+/** Structured 400 detail returned by config endpoints (pp, code, debug)
+ *  when any pipeline stage fails. The frontend renders a compiler-style
+ *  block keyed off `kind`. */
+export type ConfigErrorKind =
+  | "preprocess_error"
+  | "yaml_error"
+  | "code_error";
+
+export interface ConfigErrorDetail {
+  kind: ConfigErrorKind;
+  template: string | null;
+  lineno: number | null;
+  message: string;
+  source_context: string | null;
+}
+
+/** Error subclass thrown by api.* helpers when an HTTP request fails.
+ *  `detail` carries the JSON body as-is when the response was JSON
+ *  (e.g. ConfigErrorDetail), or the raw text body otherwise. */
+export class ApiError extends Error {
+  status: number;
+  statusText: string;
+  detail: unknown;
+
+  constructor(status: number, statusText: string, detail: unknown) {
+    const summary =
+      typeof detail === "string"
+        ? detail
+        : (detail as { message?: string })?.message || JSON.stringify(detail);
+    super(`${status} ${statusText}: ${summary}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.statusText = statusText;
+    this.detail = detail;
+  }
+}
+
+function isConfigErrorDetail(d: unknown): d is ConfigErrorDetail {
+  if (typeof d !== "object" || d === null) return false;
+  const kind = (d as { kind?: string }).kind;
+  return (
+    kind === "preprocess_error" ||
+    kind === "yaml_error" ||
+    kind === "code_error"
+  );
+}
+
+export function asConfigError(err: unknown): ConfigErrorDetail | null {
+  if (err instanceof ApiError && isConfigErrorDetail(err.detail)) {
+    return err.detail;
+  }
+  return null;
+}
+
 export interface TemplateEntry {
   name: string;
   path: string;
@@ -105,6 +171,11 @@ export interface QuickPath {
 export interface GpuProcess {
   pid: number;
   used_mem_bytes: number;
+  /** Best-effort process name from NVML / /proc; null when lookup fails. */
+  name: string | null;
+  /** "compute" for CUDA workloads, "graphics" for desktop / window-manager
+   *  processes. Graphics processes do NOT block scheduler dispatch. */
+  kind: "compute" | "graphics";
 }
 
 export interface GpuInfo {
@@ -116,6 +187,7 @@ export interface GpuInfo {
   mem_util_pct: number | null;
   power_w: number | null;
   temp_c: number | null;
+  fan_pct: number | null;
   processes: GpuProcess[];
   source: string;
   node: string;
@@ -160,7 +232,10 @@ export interface Job {
     | "tensorboard"
     | "mkdocs"
     | "convert"
-    | "finalize";
+    | "finalize"
+    | "update"
+    | "model"
+    | "dataset";
   job_params: Record<string, unknown> | null;
   status: string;
   started_at: number | null;
@@ -174,6 +249,14 @@ export interface Job {
   tty_log_path: string | null;
   logs_dir: string | null;
   output_dir: string | null;
+  /** For path-prefixed sub-services (e.g. TB spawned with --path_prefix);
+   *  the panel appends this to the host:port link so the URL actually
+   *  serves content. Null when the spawn didn't use a prefix. */
+  path_prefix: string | null;
+  /** Bearer token for inference jobs. The Inference panel auto-fills its
+   *  Auth-Token field from this when the user picks a local server.
+   *  Null for non-inference jobs and for inference jobs running --no-auth. */
+  auth_token: string | null;
   source: "record" | "endpoint" | "merged";
 }
 
@@ -203,10 +286,22 @@ export interface DynamicArg {
   help: string | null;
   default: unknown;
   choices: unknown[] | null;
+  /** Colon-separated organizational path (e.g. "Trainer:LR-scaling").
+   *  When any arg in the schema has a group, ungrouped args fall under
+   *  an "Other" bucket so the form stays consistent. */
+  group: string | null;
+  /** Enforced at action time. The webui blocks Submit when a required
+   *  arg is missing; ``pp`` still materializes (placeholder defaults). */
+  required: boolean;
+  /** Inclusive numeric bound. Only meaningful when type is "int" or
+   *  "float". Either may be set independently. */
+  min: number | null;
+  max: number | null;
 }
 
 export interface OverridesData {
   values: Record<string, unknown>;
+  requested_gpus: number | null;
   updated_at: number | null;
 }
 
@@ -242,7 +337,10 @@ export interface EnqueueRequest {
     | "tensorboard"
     | "mkdocs"
     | "convert"
-    | "finalize";
+    | "finalize"
+    | "update"
+    | "model"
+    | "dataset";
   /** Type-specific payload; empty for training. */
   job_params?: Record<string, unknown>;
 }
@@ -327,6 +425,22 @@ export interface RunSummary {
   pp_path: string | null;
 }
 
+export interface IpynbCell {
+  cell_type: string; // "markdown" | "code" | "raw"
+  source: string;
+  language: string | null;
+  outputs: Record<string, unknown>[];
+}
+
+export interface DocsFile {
+  path: string;
+  kind: "markdown" | "ipynb";
+  /** Set when ``kind === "markdown"``. */
+  content: string | null;
+  /** Set when ``kind === "ipynb"``. */
+  cells: IpynbCell[] | null;
+}
+
 /** Thrown by ``putTemplateSource`` when the on-disk mtime is newer
  *  than the ``expected_mtime`` the client sent — i.e. someone else
  *  (or another tool) modified the file since the editor opened it.
@@ -341,11 +455,31 @@ export class SaveConflictError extends Error {
   }
 }
 
+async function readErrorDetail(r: Response): Promise<unknown> {
+  const text = await r.text();
+  // FastAPI wraps everything in {"detail": ...}. When ``detail`` is a dict
+  // (e.g. PreprocessErrorDetail) we want to surface the dict directly so the
+  // UI can render a structured error; when it's a plain string we keep the
+  // string. Fall back to the raw text on any parse failure.
+  try {
+    const parsed = JSON.parse(text);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "detail" in parsed
+    ) {
+      return (parsed as { detail: unknown }).detail;
+    }
+    return parsed;
+  } catch {
+    return text;
+  }
+}
+
 async function fetchJson<T>(url: string): Promise<T> {
   const r = await fetch(url);
   if (!r.ok) {
-    const detail = await r.text();
-    throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
   }
   return r.json() as Promise<T>;
 }
@@ -353,8 +487,7 @@ async function fetchJson<T>(url: string): Promise<T> {
 async function fetchText(url: string): Promise<string> {
   const r = await fetch(url);
   if (!r.ok) {
-    const detail = await r.text();
-    throw new Error(`${r.status} ${r.statusText}: ${detail}`);
+    throw new ApiError(r.status, r.statusText, await readErrorDetail(r));
   }
   return r.text();
 }
@@ -392,6 +525,21 @@ export const api = {
     fetchText(
       `/api/config/pp?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}`,
     ),
+  configDebug: (project_dir: string, config: string) =>
+    fetchJson<DebugTraceItem[]>(
+      `/api/config/debug?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}`,
+    ),
+  configCodeTargets: (project_dir: string, config: string) =>
+    fetchJson<string[]>(
+      `/api/config/code-targets?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}`,
+    ),
+  /** Render *target* (or the entire config when `target` is the empty string)
+   *  as Python source. Backend default matches the CLI's ``forgather code``
+   *  default of ``main``. */
+  configCode: (project_dir: string, config: string, target: string = "main") =>
+    fetchText(
+      `/api/config/code?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}&target=${encodeURIComponent(target)}`,
+    ),
   configTrefsJson: (project_dir: string, config: string) =>
     fetchJson<TrefsGraph>(
       `/api/config/trefs?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}&format=json`,
@@ -399,6 +547,18 @@ export const api = {
   configTrefsDot: (project_dir: string, config: string) =>
     fetchText(
       `/api/config/trefs?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}&format=dot`,
+    ),
+  /** Config node graph as Graphviz DOT. Pass an empty *target* to render
+   *  all top-level targets in a single diagram. When *include_values* is
+   *  true, plain scalars / lists / dicts also appear as graph nodes. */
+  configGraphDot: (
+    project_dir: string,
+    config: string,
+    target: string = "",
+    include_values: boolean = false,
+  ) =>
+    fetchText(
+      `/api/config/graph?project_dir=${encodeURIComponent(project_dir)}&config=${encodeURIComponent(config)}${target ? `&target=${encodeURIComponent(target)}` : ""}${include_values ? "&include_values=true" : ""}`,
     ),
   templateSource: (path: string) =>
     fetchText(`/api/template/source?path=${encodeURIComponent(path)}`),
@@ -789,11 +949,17 @@ export const api = {
     project_dir: string,
     config: string,
     values: Record<string, unknown>,
+    requested_gpus?: number | null,
   ): Promise<OverridesData> => {
     const r = await fetch("/api/config/overrides", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_dir, config, values }),
+      body: JSON.stringify({
+        project_dir,
+        config,
+        values,
+        requested_gpus: requested_gpus ?? null,
+      }),
     });
     if (!r.ok) {
       const detail = await r.text();
@@ -819,6 +985,11 @@ export const api = {
     fetchText(
       `/api/project/readme?project_dir=${encodeURIComponent(project_dir)}`,
     ),
+  docsRoot: () => fetchJson<{ path: string | null }>("/api/docs/root"),
+  docsFile: (path: string) =>
+    fetchJson<DocsFile>(`/api/docs/file?path=${encodeURIComponent(path)}`),
+  docsAssetUrl: (path: string): string =>
+    `/api/docs/asset?path=${encodeURIComponent(path)}`,
   projectAssetUrl: (project_dir: string, asset: string): string =>
     `/api/project/asset?project_dir=${encodeURIComponent(project_dir)}&asset=${encodeURIComponent(asset)}`,
   listProjectModels: (project_dir: string) =>

@@ -23,6 +23,8 @@ STREAM_INTERVAL_SECONDS = 2.0
 class GpuProcessModel(BaseModel):
     pid: int
     used_mem_bytes: int
+    name: Optional[str] = None
+    kind: str = "compute"
 
 
 class GpuInfoModel(BaseModel):
@@ -34,6 +36,7 @@ class GpuInfoModel(BaseModel):
     mem_util_pct: Optional[int] = None
     power_w: Optional[float] = None
     temp_c: Optional[int] = None
+    fan_pct: Optional[int] = None
     processes: List[GpuProcessModel] = []
     source: str = "nvml"
     node: str = ""
@@ -62,8 +65,14 @@ def _to_model(g: gpu_monitor.GpuInfo) -> GpuInfoModel:
         mem_util_pct=g.mem_util_pct,
         power_w=g.power_w,
         temp_c=g.temp_c,
+        fan_pct=g.fan_pct,
         processes=[
-            GpuProcessModel(pid=p.pid, used_mem_bytes=p.used_mem_bytes)
+            GpuProcessModel(
+                pid=p.pid,
+                used_mem_bytes=p.used_mem_bytes,
+                name=p.name,
+                kind=p.kind,
+            )
             for p in g.processes
         ],
         source=g.source,
@@ -81,15 +90,32 @@ def list_gpus():
 
 @router.websocket("/gpus/stream")
 async def stream_gpus(ws: WebSocket):
-    """Push GPU snapshots on a ~2 s cadence until the client disconnects."""
+    """Push GPU snapshots on a ~2 s cadence until the client disconnects.
+
+    ``gpu_monitor.snapshot()`` is a synchronous NVML call. Running it
+    directly in the asyncio event loop blocks every other request for
+    the duration of the call; almost always microseconds, but pynvml
+    can occasionally hang briefly under driver contention. Hop to a
+    thread so that a slow snapshot never stalls the rest of the
+    server.
+
+    Any exception other than the normal ``WebSocketDisconnect`` is
+    logged with a traceback before the connection drops — without
+    this, prior intermittent disconnects left no forensic trail. The
+    client reconnects with exponential backoff, so a one-shot
+    failure heals on its own.
+    """
     await ws.accept()
     try:
         while True:
-            payload = [_to_model(g).model_dump() for g in gpu_monitor.snapshot()]
+            snap = await asyncio.to_thread(gpu_monitor.snapshot)
+            payload = [_to_model(g).model_dump() for g in snap]
             await ws.send_json(payload)
             await asyncio.sleep(STREAM_INTERVAL_SECONDS)
     except WebSocketDisconnect:
         pass
+    except Exception:
+        log.exception("gpus/stream loop crashed; client will reconnect")
 
 
 class GpuKillRequest(BaseModel):
@@ -127,7 +153,11 @@ def kill_gpu_processes(gpu_index: int, req: GpuKillRequest):
     if target is None:
         raise HTTPException(status_code=404, detail=f"no GPU at index {gpu_index}")
 
-    pids = [p.pid for p in target.processes]
+    # Only kill compute processes — graphics processes (X server, compositor)
+    # may belong to the user's desktop session and killing them would log the
+    # operator out. Filtering here also matches the scheduler's notion of
+    # "what's actually busy on this card".
+    pids = [p.pid for p in target.processes if p.kind == "compute"]
     killed: List[int] = []
     failed: List[int] = []
     for pid in pids:

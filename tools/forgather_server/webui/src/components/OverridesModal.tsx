@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api, ConfigInfo, ProjectInfo } from "../api";
 import { coerceArgs, DynamicArgsForm } from "./DynamicArgsForm";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   project: ProjectInfo;
@@ -92,7 +93,7 @@ export function OverridesModal({ project, config, onClose }: Props) {
   const busy = saveMut.isPending || clearMut.isPending;
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal overrides-modal"
         onClick={(e) => e.stopPropagation()}
@@ -138,7 +139,11 @@ export function OverridesModal({ project, config, onClose }: Props) {
             </h4>
           )}
 
-          {argsQ.data && argsQ.data.length > 0 && (
+          {argsQ.data && argsQ.data.length > 0 && seeded && (
+            // Wait for seeding before mounting the form so the
+            // initial-open state DynArgGroupNode latches on first render
+            // reflects cached overrides rather than a transient empty
+            // map. See SubmitModal for the same gate.
             <>
               <h4 className="dyn-heading">Dynamic arguments</h4>
               <DynamicArgsForm
@@ -147,6 +152,7 @@ export function OverridesModal({ project, config, onClose }: Props) {
                 onChange={(dest, v) =>
                   setValues((prev) => ({ ...prev, [dest]: v }))
                 }
+                enforceRequired
               />
             </>
           )}
@@ -182,6 +188,6 @@ export function OverridesModal({ project, config, onClose }: Props) {
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

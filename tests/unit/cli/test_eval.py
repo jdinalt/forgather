@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from forgather.cli import eval as eval_cli
-from forgather.user_config import eval_search_paths
+from forgather.eval_config import find_eval_config, iter_eval_configs
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ class TestForgatherDir:
 
 class TestIterEvalConfigs:
     def test_yields_builtin_configs(self, search_paths):
-        names = {name for name, *_ in eval_cli._iter_eval_configs(search_paths)}
+        names = {name for name, *_ in iter_eval_configs(search_paths)}
         # The five shipped configs must be discoverable.
         assert {
             "c4",
@@ -50,7 +50,7 @@ class TestIterEvalConfigs:
         # by the YAML config.
         from forgather.eval_config import TestConfig
 
-        for name, _, _, data in eval_cli._iter_eval_configs(search_paths):
+        for name, _, _, data in iter_eval_configs(search_paths):
             assert isinstance(data, TestConfig)
             assert data.dataset_proj, f"{name} missing dataset_proj"
             assert data.dataset_config, f"{name} missing dataset_config"
@@ -59,26 +59,24 @@ class TestIterEvalConfigs:
 
     def test_entries_have_library_default_fallback(self, search_paths):
         # Optional fields pick up TestConfig defaults when the YAML is silent.
-        for name, _, _, data in eval_cli._iter_eval_configs(search_paths):
+        for name, _, _, data in iter_eval_configs(search_paths):
             assert data.default_batch_size > 0, f"{name} has non-positive batch size"
             assert data.default_max_length > 0, f"{name} has non-positive max length"
             assert data.default_stride >= 0, f"{name} has negative stride"
 
     def test_missing_search_path_is_skipped(self):
         # Nonexistent paths must not raise; they are just skipped.
-        results = list(eval_cli._iter_eval_configs(["/nonexistent/xyz/123"]))
+        results = list(iter_eval_configs(["/nonexistent/xyz/123"]))
         assert results == []
 
 
 class TestFindEvalConfig:
     def test_known_name_returns_tuple(self, search_paths):
-        project_dir, template, data = eval_cli._find_eval_config(
-            "tinystories", search_paths
-        )
+        project_dir, template, data = find_eval_config("tinystories", search_paths)
         assert os.path.isdir(project_dir)
         assert template.endswith(".yaml")
         assert data.eval_name == "tinystories"
 
-    def test_unknown_name_raises_system_exit(self, search_paths):
-        with pytest.raises(SystemExit):
-            eval_cli._find_eval_config("does-not-exist", search_paths)
+    def test_unknown_name_raises_lookup_error(self, search_paths):
+        with pytest.raises(LookupError):
+            find_eval_config("does-not-exist", search_paths)

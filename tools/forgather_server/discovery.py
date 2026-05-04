@@ -28,6 +28,18 @@ WORKSPACE_METADATA_FILENAME = "workspace.yaml"
 # unrelated workspaces don't all show up as "Workspace Configuration".
 _GENERIC_WS_TITLES = {"Workspace Configuration"}
 
+# Names that the discovery walks should never descend into. These are
+# either generated outputs (large, full of checkpoint dirs) or vendored
+# trees that can't contain a workspace/project. Pruning them keeps the
+# walk fast and avoids accidentally classifying a stray meta.yaml under
+# an output tree as a real project.
+_PRUNED_DIR_NAMES = {
+    "output_models",
+    "node_modules",
+    "__pycache__",
+    ".git",
+}
+
 
 @dataclass
 class ConfigInfo:
@@ -151,31 +163,94 @@ def _workspace_display(ws_root: str) -> Tuple[Optional[str], Optional[str]]:
     return name, description
 
 
+def _should_descend(dirname: str) -> bool:
+    """Filter applied to ``dirnames[:]`` in os.walk callbacks."""
+    return (
+        not dirname.startswith(".")
+        and dirname != WORKSPACE_CONFIG_DIR_NAME
+        and dirname not in _PRUNED_DIR_NAMES
+    )
+
+
+def _prune_mkdocs_site(dirnames: List[str], filenames: List[str]) -> None:
+    """Drop ``site/`` from the walk when this directory has an ``mkdocs.yml``.
+
+    Mkdocs's default ``site_dir`` is ``site/`` next to ``mkdocs.yml``, and it
+    follows symlinks under ``docs/`` when copying. Forgather's docs tree
+    symlinks live example projects in for cross-reference, so ``site/``
+    ends up containing real ``meta.yaml`` files copied out of those
+    examples. Walking that tree produces phantom duplicate projects in
+    the sidebar (Tiny Llama, datasets, etc. surfacing twice — once at
+    their real path and once under ``site/``). Pruning is conditional
+    on the ``mkdocs.yml`` neighbour so we don't accidentally hide a
+    user-named ``site`` directory in some other context.
+    """
+    if "mkdocs.yml" in filenames and "site" in dirnames:
+        dirnames.remove("site")
+
+
+def _canonical_project_dir(dirpath: str) -> str:
+    """Resolve a project directory through any symlink chain.
+
+    A ``meta.yaml`` (or its parent directory) may be a symlink — e.g. the
+    docs tree mirrors example projects with file-level symlinks so mkdocs
+    can render their READMEs. Walking from a search root would otherwise
+    pick those up as duplicate projects. Realpath-ing the ``meta.yaml``
+    file collapses both directory and file symlink chains, so the dedup
+    set in ``discover_projects`` recognizes them as the same project.
+    """
+    return os.path.dirname(os.path.realpath(os.path.join(dirpath, PROJECT_META_NAME)))
+
+
 def _iter_project_dirs(root: str):
-    """Yield absolute directory paths that contain a meta.yaml, skipping hidden dirs
-    and the workspace config directory itself."""
+    """Yield canonical absolute directory paths containing a meta.yaml,
+    skipping hidden dirs and the workspace config directory itself."""
     for dirpath, dirnames, filenames in os.walk(root):
-        # Skip hidden / workspace-config dirs in place so os.walk doesn't descend.
-        dirnames[:] = [
-            d
-            for d in dirnames
-            if not d.startswith(".") and d != WORKSPACE_CONFIG_DIR_NAME
-        ]
+        # Skip hidden / workspace-config / output dirs in place so
+        # os.walk doesn't descend into large generated trees.
+        dirnames[:] = [d for d in dirnames if _should_descend(d)]
+        _prune_mkdocs_site(dirnames, filenames)
         if PROJECT_META_NAME in filenames:
-            yield os.path.abspath(dirpath)
+            yield _canonical_project_dir(dirpath)
+
+
+def _canonical_workspace_dir(dirpath: str) -> str:
+    """Resolve a workspace root through any symlink chain.
+
+    The ``forgather_workspace/`` directory itself may be a real dir
+    full of file-symlinks — that's how docs mirror an example workspace
+    so mkdocs can copy its README. ``os.path.realpath(dirpath)`` only
+    helps when ``dirpath`` itself is a symlink; here we need to chase
+    through one of the marker files inside ``forgather_workspace/``.
+    Any concrete file in there works — we try ``meta_defaults.yaml``
+    first, then ``workspace.yaml`` / ``README.md`` as fallbacks, and
+    finally drop back to the textual realpath if none exists."""
+    ws_dir = os.path.join(dirpath, WORKSPACE_CONFIG_DIR_NAME)
+    for marker in ("meta_defaults.yaml", "workspace.yaml", "README.md"):
+        candidate = os.path.join(ws_dir, marker)
+        if os.path.exists(candidate):
+            real_marker = os.path.realpath(candidate)
+            return os.path.dirname(os.path.dirname(real_marker))
+    return os.path.realpath(dirpath)
 
 
 def _iter_workspace_dirs(root: str):
-    """Yield absolute paths of directories that *contain* a
+    """Yield canonical absolute paths of directories that *contain* a
     ``forgather_workspace/`` subdirectory. The yielded path is the
     workspace root itself (the parent of ``forgather_workspace/``),
-    matching ``MetaConfig.workspace_root``."""
-    for dirpath, dirnames, _ in os.walk(root):
-        # Stay out of hidden dirs but DO recurse into project dirs —
-        # workspaces can be nested arbitrarily under search roots.
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+    matching ``MetaConfig.workspace_root``. Symlink chains are resolved
+    so a workspace mirrored into the docs tree dedupes against its
+    real location."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Stay out of hidden / output / vendored dirs but DO recurse into
+        # project dirs — workspaces can be nested arbitrarily under
+        # search roots.
+        dirnames[:] = [
+            d for d in dirnames if not d.startswith(".") and d not in _PRUNED_DIR_NAMES
+        ]
+        _prune_mkdocs_site(dirnames, filenames)
         if WORKSPACE_CONFIG_DIR_NAME in dirnames:
-            yield os.path.abspath(dirpath)
+            yield _canonical_workspace_dir(dirpath)
 
 
 def _load_project_info(project_dir: str) -> ProjectInfo:

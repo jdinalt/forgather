@@ -155,7 +155,7 @@ auto-generates a pointer to the Forgather installation; you can add more
 ### Base directories reference
 
 Standard base-directory names have defaults in
-[templatelib/base/config_type.yaml](../../../templatelib/base/config_type.yaml).
+[templatelib/base/config_type.yaml](../../templatelib/base/config_type.yaml).
 Override them at the workspace level by editing `base_directories.yaml`.
 Always anchor paths to a symbolic location rather than using raw relatives,
 so configs work regardless of the current working directory.

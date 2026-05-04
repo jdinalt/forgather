@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api, ConfigInfo, ProjectInfo } from "../api";
 import { DirectoryBrowser } from "./DirectoryBrowser";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   project: ProjectInfo;
@@ -34,10 +35,18 @@ export function CleanOutputModal({ project, config, onClose }: Props) {
 
   const del = useMutation({
     mutationFn: (p: string) => api.deleteDir(p),
-    onSuccess: () => {
+    onSuccess: (_data, deletedPath) => {
       // The output dir going away can change what pp/trefs render, and
-      // the size info we just showed is now stale.
+      // the size info we just showed is now stale. Also drop the
+      // project-tree caches that surface artifacts under this path so
+      // the tree reflects the cleanup without a manual refresh.
       qc.invalidateQueries({ queryKey: ["output-dir"] });
+      qc.invalidateQueries({
+        queryKey: ["project-models", project.project_dir],
+      });
+      qc.invalidateQueries({ queryKey: ["model-runs", deletedPath] });
+      qc.invalidateQueries({ queryKey: ["model-checkpoints", deletedPath] });
+      qc.invalidateQueries({ queryKey: ["model-evaluations", deletedPath] });
       onClose();
     },
   });
@@ -74,7 +83,7 @@ export function CleanOutputModal({ project, config, onClose }: Props) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal clean-output-modal"
         onClick={(e) => e.stopPropagation()}
@@ -202,7 +211,7 @@ export function CleanOutputModal({ project, config, onClose }: Props) {
           />
         )}
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 

@@ -19,22 +19,30 @@
     output_dir:
         names: "--output-dir"
         type: "path"
+        group: "Output"
         help: "Model output directory"
     model_name:
         names: "--model-name"
         type: "str"
+        group: "Output"
         help: "Model name"
     hidden_size:
         names: "--hidden-size"
         type: "int"
+        group: "Architecture"
+        min: 1
         help: "Model hidden dimension size (d_model)"
     num_hidden_layers:
         names: "--num-hidden-layers"
         type: "int"
+        group: "Architecture"
+        min: 1
         help: "Number of hidden layers"
     intermediate_size:
         names: "--intermediate-size"
         type: "int"
+        group: "Architecture"
+        min: 1
         help: "Feedforward dimension"
 
 #------------- project.model --------------

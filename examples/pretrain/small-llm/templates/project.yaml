@@ -6,13 +6,11 @@
     -- set ns.config_name = "Pretrain Small-LLM"
     -- set ns.config_description = "Pretrain a small LLM"
     -- set ns.model_name = model_name | default("sllm")
-    -- set ns.nproc_per_node = "gpu"
     -- set ns.trainer_type = trainer_type | default("ddp")
 
     ## Dataset
     -- set ns.dataset_proj = abspath(joinpath(ns.forgather_dir, "examples", "datasets", "HuggingFaceTB"))
     -- set ns.dataset_config = dataset_config | default("smollm-corpus/interleaved-packed.yaml")
-    -- set ns.dispatch_batches = dispatch_batches | default(False)
 
     ## Model
     -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "llama"))))
@@ -26,22 +24,9 @@
     ## Batching
     -- set ns.seq_len = seq_len | default(4096)
     -- set ns.per_device_train_batch_size = batch_size | default(4)
-    -- set ns.gradient_accumulation_steps = gradient_accumulation_steps | default(1)
-    -- set ns.batch_density = 0.95
-
-    ## Step cadence
-    -- set ns.step_cadence = step_cadence | default(1.0)
-    -- set ns.base_logging_tokens = 1
-    -- set ns.base_validation_tokens = 25
-    -- set ns.base_save_tokens = 500
-
-    ## Hardware
-    -- set ns.peak_hardware_flops = peak_hardware_flops | default(get_peak_hardware_flops())
 
     ## LR scaling
     -- set ns.base_lr = lr | default(1.5e-4)
-    -- set ns.base_batch_size = 16384
-    -- set ns.lr_alpha = 0.5
 
     ## LR Scheduler
     -- set ns.constant_lr_ratio = 1.0 / 3
@@ -129,10 +114,13 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:InfiniteLRScheduler@lr_s
     annealing_tokens:
         names: "--annealing-tokens"
         type: int
+        group: "Trainer:Schedule"
+        min: 1
         help: "Number of tokens in annealing phase."
     start_annealing:
         names: "--start-annealing"
         action: "store_true"
+        group: "Trainer:Schedule"
         help: "Manually trigger annealing phase"
 
 #-------------------- project.logger_config --------------------

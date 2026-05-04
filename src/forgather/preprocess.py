@@ -28,6 +28,15 @@ def forgather_config_dir():
 
 
 def forgather_home_dir():
+    """Root for all per-user Forgather state.
+
+    Honors ``$FORGATHER_HOME`` so tests (and unusual deployments) can
+    redirect every state file in one place; otherwise defaults to
+    ``~/.forgather``.
+    """
+    env = os.environ.get("FORGATHER_HOME")
+    if env:
+        return env
     return str(Path.home() / ".forgather")
 
 
@@ -326,12 +335,21 @@ class LineStatementProcessor(Extension):
     # stdout for analysis.
     pp_verbose: bool = False
 
+    # When set to a list (typically by capture_pp()), every preprocessed
+    # template (name, source) is appended to it in the order they are loaded.
+    # This is the structured / programmatic counterpart to pp_verbose, used by
+    # the webui debug panel to display the preprocessed form of each template
+    # consumed by a config.
+    pp_capture: list | None = None
+
     def preprocess(self, source, name, filename=None):
         source = preprocess(source)
         if LineStatementProcessor.pp_verbose:
             label = name or ""
             print(f"{' '+label+' ':-^80}")
             print(format_line_numbers(source))
+        if LineStatementProcessor.pp_capture is not None:
+            LineStatementProcessor.pp_capture.append((name, source))
         return source
 
 
@@ -349,6 +367,92 @@ def debug_pp(debug):
     finally:
         LineStatementProcessor.preserve_line_numbers = preserve_line_numbers
         LineStatementProcessor.pp_verbose = pp_verbose
+
+
+@contextmanager
+def capture_pp():
+    """
+    Context manager that collects every preprocessed template into a list of
+    (name, preprocessed_source) tuples in load order.
+
+    Yields the list itself, so the caller can read it after the with-block exits:
+
+        with capture_pp() as trace:
+            env.preprocess("configs/foo.yaml")
+        # trace -> [(name, src), ...]
+
+    Also enables preserve_line_numbers for the duration so line numbers in the
+    collected sources align with the originals (matching pp_debug behaviour).
+    """
+    prev_capture = LineStatementProcessor.pp_capture
+    prev_preserve = LineStatementProcessor.preserve_line_numbers
+    trace: list[tuple[str, str]] = []
+    LineStatementProcessor.pp_capture = trace
+    LineStatementProcessor.preserve_line_numbers = True
+    try:
+        yield trace
+    finally:
+        LineStatementProcessor.pp_capture = prev_capture
+        LineStatementProcessor.preserve_line_numbers = prev_preserve
+
+
+class ConfigDiagnostic(Exception):
+    """Base class for structured config-pipeline errors.
+
+    Subclasses share the same field shape so the webui can render them
+    uniformly: a header (``template`` + ``lineno``), a message body, and an
+    optional line-numbered source excerpt around the offending line.
+
+    Attributes
+    ----------
+    kind : str
+        Discriminator the frontend uses to label / style the error
+        (``preprocess_error``, ``yaml_error``, ``code_error``). Defined
+        per-subclass as a ``ClassVar``.
+    template_name : str | None
+        The template / config path where the error originated.
+    lineno : int | None
+        1-based line number when known.
+    message : str
+        Short error message (no traceback).
+    source_context : str | None
+        Line-numbered excerpt of the source around ``lineno``, ready to drop
+        into a ``<pre>`` block.
+    original : BaseException
+        The underlying exception, also kept as ``__cause__``.
+    """
+
+    kind: str = "config_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        template_name: str | None = None,
+        lineno: int | None = None,
+        source_context: str | None = None,
+        original: BaseException | None = None,
+    ):
+        super().__init__(message)
+        self.template_name = template_name
+        self.lineno = lineno
+        self.message = message
+        self.source_context = source_context
+        self.original = original
+
+    def __str__(self) -> str:
+        loc = self.template_name or "<config>"
+        if self.lineno is not None:
+            loc = f"{loc}:{self.lineno}"
+        if self.source_context:
+            return f"{loc}: {self.message}\n{self.source_context}"
+        return f"{loc}: {self.message}"
+
+
+class PreprocessError(ConfigDiagnostic):
+    """Jinja2 ``TemplateError`` raised during config preprocessing."""
+
+    kind = "preprocess_error"
 
 
 def toyaml(obj, default_value=Undefined):

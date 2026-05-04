@@ -1,7 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api, ConfigInfo, ProjectInfo } from "../api";
-import { coerceArgs, DynamicArgsForm } from "./DynamicArgsForm";
+import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
+import {
+  coerceArgs,
+  DynamicArgsForm,
+  listMissingRequired,
+  listOutOfBounds,
+} from "./DynamicArgsForm";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   project: ProjectInfo;
@@ -50,7 +57,11 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const maxGpus = Math.max(1, gpusQ.data?.length ?? 1);
   const idleGpuCount = useMemo(() => {
     if (!gpusQ.data) return null;
-    return gpusQ.data.filter((g) => g.processes.length === 0).length;
+    // Mirror the scheduler's dispatch rule: a GPU is available iff it
+    // is not excluded (CUDA_VISIBLE_DEVICES) and not runtime-disabled.
+    // External processes — desktop compositors, unrelated CUDA work —
+    // don't gate dispatch.
+    return gpusQ.data.filter((g) => !g.excluded && !g.disabled).length;
   }, [gpusQ.data]);
 
   // Classify nproc_per_node. A positive integer means "fixed worker
@@ -68,15 +79,25 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   const gpuMismatch =
     fixedWorkerCount !== null && fixedWorkerCount !== requestedGpus;
 
-  // Seed the GPU count once the config info arrives, unless the user has
-  // already edited the field.
+  // Seed the GPU count from (in priority order):
+  //   1. user edits in this session (gpusTouched)
+  //   2. cached overrides for this (project, config)
+  //   3. config's nproc_per_node, when it pins a fixed worker count
+  //   4. 1
+  // The cache wins over fixedWorkerCount because the user explicitly chose
+  // a value last time; if they want to fall back to the config default they
+  // can hit "Reset to defaults".
   useEffect(() => {
     if (gpusTouched) return;
-    if (fixedWorkerCount !== null) {
-      const clamped = Math.max(1, Math.min(maxGpus, fixedWorkerCount));
-      setRequestedGpus(clamped);
+    const cached = overridesQ.data?.requested_gpus;
+    if (typeof cached === "number" && cached >= 1) {
+      setRequestedGpus(Math.max(1, Math.min(maxGpus, cached)));
+      return;
     }
-  }, [fixedWorkerCount, gpusTouched, maxGpus]);
+    if (fixedWorkerCount !== null) {
+      setRequestedGpus(Math.max(1, Math.min(maxGpus, fixedWorkerCount)));
+    }
+  }, [fixedWorkerCount, gpusTouched, maxGpus, overridesQ.data?.requested_gpus]);
 
   // Seed form values from cache once both schema and overrides have loaded.
   // Only seed entries whose dest exists in the current schema; silently
@@ -111,6 +132,56 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
     },
   });
 
+  // Required-arg enforcement: block Submit until every ``required: true``
+  // field has a value. Recomputed every render so the button state tracks
+  // the form live. The server enforces the same invariant — this is just
+  // a usability layer.
+  const missingRequired = useMemo(
+    () => (argsQ.data ? listMissingRequired(argsQ.data, values) : []),
+    [argsQ.data, values],
+  );
+  // Numeric bounds: same submit-gating idea as required.
+  const outOfBounds = useMemo(
+    () => (argsQ.data ? listOutOfBounds(argsQ.data, values) : []),
+    [argsQ.data, values],
+  );
+  const submitBlockedReason: string | undefined =
+    missingRequired.length > 0
+      ? `Required arg(s) missing: ${missingRequired.map((a) => a.cli_name).join(", ")}`
+      : outOfBounds.length > 0
+        ? `Out-of-range value(s): ${outOfBounds.map((a) => a.cli_name).join(", ")}`
+        : undefined;
+
+  // Mirrors the OverridesModal Reset button: drop server-side cached
+  // overrides for this config and zero out the in-form values so the
+  // next submit goes out with template defaults. Stays open so the user
+  // can review and submit (or tweak) without re-opening the modal.
+  const clearOverridesMut = useMutation({
+    mutationFn: () => api.clearOverrides(project.project_dir, config.name),
+    onSuccess: () => {
+      setValues({});
+      setPriority(0);
+      setGpusTouched(false);
+      setRequestedGpus(fixedWorkerCount !== null ? Math.max(1, Math.min(maxGpus, fixedWorkerCount)) : 1);
+      qc.invalidateQueries({
+        queryKey: ["overrides", project.project_dir, config.name],
+      });
+      qc.invalidateQueries({
+        queryKey: ["pp", project.project_dir, config.name],
+      });
+      qc.invalidateQueries({
+        queryKey: ["output-dir", project.project_dir, config.name],
+      });
+    },
+  });
+
+  const handleReset = () => {
+    if (!confirm("Clear all overrides for this config and reset the form?")) {
+      return;
+    }
+    clearOverridesMut.mutate();
+  };
+
   const submit = () => {
     const schema = argsQ.data ?? [];
     const dyn = coerceArgs(values, schema);
@@ -122,9 +193,11 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       priority,
     });
     // Best-effort: save overrides after enqueue so next open is pre-filled.
-    // Don't block the submit on the result.
+    // Don't block the submit on the result. The GPU count rides in the same
+    // payload so it's scoped to (project, config) and survives across
+    // browsers / server restarts the same way the dynamic args do.
     api
-      .setOverrides(project.project_dir, config.name, dyn)
+      .setOverrides(project.project_dir, config.name, dyn, requestedGpus)
       .then(() => {
         qc.invalidateQueries({
           queryKey: ["overrides", project.project_dir, config.name],
@@ -142,7 +215,7 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal submit-modal"
         onClick={(e) => e.stopPropagation()}
@@ -257,13 +330,21 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               <pre>{String(argsQ.error)}</pre>
             </div>
           )}
-          {argsQ.data && argsQ.data.length > 0 && (
+          {argsQ.data && argsQ.data.length > 0 && overrideSeeded && (
+            // Seeding waits for both schema and cached overrides to land
+            // so the form mounts with its true initial values. That
+            // matters because DynArgGroupNode captures the initial
+            // expansion state on first render — if we mount before
+            // seeding, a required arg whose value was already cached
+            // would still look "missing" briefly and force the group
+            // open every time the modal reopens.
             <DynamicArgsForm
               schema={argsQ.data}
               values={values}
               onChange={(dest, v) =>
                 setValues((prev) => ({ ...prev, [dest]: v }))
               }
+              enforceRequired
             />
           )}
         </div>
@@ -273,19 +354,34 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
             {enqueue.error ? String(enqueue.error) : ""}
           </div>
           <div className="btn-row">
+            <AutoWatchTtyToggle />
+            <button
+              className="secondary"
+              onClick={handleReset}
+              disabled={clearOverridesMut.isPending || enqueue.isPending}
+              title="Drop saved overrides for this config and reset the form"
+            >
+              {clearOverridesMut.isPending ? "Resetting…" : "Reset to defaults"}
+            </button>
             <button className="secondary" onClick={onClose}>
               Cancel
             </button>
             <button
               onClick={submit}
-              disabled={enqueue.isPending || argsQ.isLoading}
+              disabled={
+                enqueue.isPending ||
+                argsQ.isLoading ||
+                missingRequired.length > 0 ||
+                outOfBounds.length > 0
+              }
+              title={submitBlockedReason}
             >
               {enqueue.isPending ? "Submitting…" : "Submit"}
             </button>
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 

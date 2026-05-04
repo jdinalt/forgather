@@ -4,7 +4,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ControlAction, Job } from "../api";
 import { persistGet, persistSet } from "../persist";
 import { ContextMenu } from "./ContextMenu";
@@ -14,6 +14,36 @@ interface JobMenuTarget {
   job: Job;
   x: number;
   y: number;
+}
+
+/** Per-job-type styling for the row chip. ``label`` is the short
+ *  user-facing tag; ``className`` picks one of the ``.type-*`` styles
+ *  in ``styles.css``. ``training`` is also the fallback for unknown
+ *  values arriving from older server versions. */
+const JOB_TYPE_CHIPS: Record<Job["job_type"], { label: string; className: string }> = {
+  training: { label: "train", className: "type-train" },
+  eval: { label: "eval", className: "type-eval" },
+  inference: { label: "serve", className: "type-inference" },
+  tensorboard: { label: "tb", className: "type-tensorboard" },
+  mkdocs: { label: "docs", className: "type-mkdocs" },
+  convert: { label: "convert", className: "type-convert" },
+  finalize: { label: "finalize", className: "type-finalize" },
+  update: { label: "update", className: "type-update" },
+  model: { label: "model", className: "type-model" },
+  dataset: { label: "dataset", className: "type-dataset" },
+};
+
+// Loopback hosts that some browsers (notably ChromeOS over SSH
+// port-forwards) refuse to connect to via clickable links. The server
+// process can still bind to any of these — we only rewrite the displayed
+// URL so the link is portable.
+function browserSafeHost(host: string | null | undefined): string {
+  if (!host) return "localhost";
+  const h = host.trim();
+  if (h === "" || h === "127.0.0.1" || h === "::1" || h === "0.0.0.0") {
+    return "localhost";
+  }
+  return h;
 }
 
 // Split-pane bounds: keep both panes big enough to be useful.
@@ -30,18 +60,40 @@ function loadStoredSplit(): number {
   return DEFAULT_SPLIT_PCT;
 }
 
+interface Props {
+  /** When set, the panel auto-selects the matching job and opens the TTY
+   *  pane the moment that job shows up alive in the polled list. Set by
+   *  App after a submit modal closes with the "Watch TTY on start"
+   *  toggle on. The panel calls ``onAutoWatchConsumed`` once it has
+   *  fired so the trigger is one-shot. */
+  autoWatchJobId?: string | null;
+  onAutoWatchConsumed?: () => void;
+}
+
 /** Unified jobs view: JobRecords we launched + TrainerControlClient endpoints
  *  discovered elsewhere. Everything converges here once it's out of the
  *  queue (source="record" or "merged") or was started outside the server
  *  entirely (source="endpoint"). */
-export function JobsPanel() {
+export function JobsPanel({ autoWatchJobId, onAutoWatchConsumed }: Props = {}) {
   const [includeDead, setIncludeDead] = useState(false);
   const [showTty, setShowTty] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [splitPct, setSplitPct] = useState<number>(() => loadStoredSplit());
   const [menuTarget, setMenuTarget] = useState<JobMenuTarget | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const listPaneRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
+  // Captured at pointer-down so the bar tracks the cursor exactly: the
+  // panel-level split percentage maps the *whole* panel (header included)
+  // but the bar lives below the header, so a naive clientY→percent
+  // calculation lags by the header's height. We instead translate cursor
+  // movement into a delta on the list pane's own height.
+  const dragStateRef = useRef<{
+    grabOffsetY: number;
+    initialBarTop: number;
+    initialListHeight: number;
+    panelHeight: number;
+  } | null>(null);
   const qc = useQueryClient();
 
   const onJobContextRequest = useCallback(
@@ -60,6 +112,20 @@ export function JobsPanel() {
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
       (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      const panel = panelRef.current;
+      const listPane = listPaneRef.current;
+      if (!panel || !listPane) return;
+      const handleRect = (
+        e.currentTarget as HTMLDivElement
+      ).getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      const listRect = listPane.getBoundingClientRect();
+      dragStateRef.current = {
+        grabOffsetY: e.clientY - handleRect.top,
+        initialBarTop: handleRect.top,
+        initialListHeight: listRect.height,
+        panelHeight: panelRect.height,
+      };
       draggingRef.current = true;
       document.body.style.cursor = "row-resize";
       document.body.style.userSelect = "none";
@@ -70,17 +136,15 @@ export function JobsPanel() {
   const onHandlePointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (!draggingRef.current) return;
-      const panel = panelRef.current;
-      if (!panel) return;
-      const rect = panel.getBoundingClientRect();
-      // Measure against the panel's content area (header is inside the
-      // same flex container, so its height is part of the travel — we
-      // clamp instead of trying to subtract it exactly).
-      const pct = ((e.clientY - rect.top) / rect.height) * 100;
-      const clamped = Math.max(
-        MIN_SPLIT_PCT,
-        Math.min(MAX_SPLIT_PCT, pct),
-      );
+      const ds = dragStateRef.current;
+      if (!ds) return;
+      // Where the bar wants to be so the original grab point on the bar
+      // stays under the cursor.
+      const newBarTop = e.clientY - ds.grabOffsetY;
+      const delta = newBarTop - ds.initialBarTop;
+      const newListHeight = ds.initialListHeight + delta;
+      const pct = (newListHeight / ds.panelHeight) * 100;
+      const clamped = Math.max(MIN_SPLIT_PCT, Math.min(MAX_SPLIT_PCT, pct));
       setSplitPct(clamped);
     },
     [],
@@ -90,6 +154,7 @@ export function JobsPanel() {
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (!draggingRef.current) return;
       draggingRef.current = false;
+      dragStateRef.current = null;
       try {
         (e.currentTarget as Element).releasePointerCapture(e.pointerId);
       } catch {
@@ -110,6 +175,72 @@ export function JobsPanel() {
 
   const jobs = jobsQ.data ?? [];
   const alive = jobs.filter((j) => j.alive);
+
+  // Auto-watch handoff from App: once the just-submitted job shows up alive
+  // in the polled list, select it and reveal the TTY pane. One-shot — we
+  // notify App to clear the trigger as soon as we've consumed it so a later
+  // refresh of the same id won't re-open the TTY against the user's intent.
+  useEffect(() => {
+    if (!autoWatchJobId) return;
+    const target = jobs.find((j) => j.id === autoWatchJobId);
+    if (!target || !target.alive) return;
+    setSelectedId(autoWatchJobId);
+    setShowTty(true);
+    onAutoWatchConsumed?.();
+  }, [autoWatchJobId, jobs, onAutoWatchConsumed]);
+
+  // Detect alive→dead transitions and invalidate caches scoped to the
+  // finished job so panels (project tree, context menus, run/checkpoint/
+  // eval lists) reflect newly-written artifacts without requiring the
+  // user to hit the global Refresh button. Tracks last-seen alive jobs in
+  // a ref so the effect only fires on transitions, not every poll.
+  const prevAliveRef = useRef<Map<string, Job>>(new Map());
+  useEffect(() => {
+    if (jobsQ.data === undefined) return;
+    const aliveNow = new Set(jobs.filter((j) => j.alive).map((j) => j.id));
+    const finished: Job[] = [];
+    for (const [id, j] of prevAliveRef.current) {
+      if (!aliveNow.has(id)) finished.push(j);
+    }
+    if (finished.length > 0) {
+      let invalidatedAny = false;
+      for (const j of finished) {
+        if (j.project_dir) {
+          qc.invalidateQueries({
+            queryKey: ["project-models", j.project_dir],
+          });
+          qc.invalidateQueries({
+            queryKey: ["project-templates", j.project_dir],
+          });
+          if (j.config) {
+            qc.invalidateQueries({
+              queryKey: ["config-meta", j.project_dir, j.config],
+            });
+          }
+          invalidatedAny = true;
+        }
+        if (j.output_dir) {
+          qc.invalidateQueries({ queryKey: ["model-runs", j.output_dir] });
+          qc.invalidateQueries({
+            queryKey: ["model-checkpoints", j.output_dir],
+          });
+          qc.invalidateQueries({
+            queryKey: ["model-evaluations", j.output_dir],
+          });
+          invalidatedAny = true;
+        }
+      }
+      // Catch jobs that produce new projects/models on disk (dataset, model,
+      // finalize, convert) where the unscoped projects list itself may need
+      // a re-read. Cheap relative to the surprise of stale tree state.
+      if (invalidatedAny) {
+        qc.invalidateQueries({ queryKey: ["projects"] });
+      }
+    }
+    const next = new Map<string, Job>();
+    for (const j of jobs) if (j.alive) next.set(j.id, j);
+    prevAliveRef.current = next;
+  }, [jobs, jobsQ.data, qc]);
 
   const statusQs = useQueries({
     queries: alive.map((j) => ({
@@ -221,6 +352,7 @@ export function JobsPanel() {
 
       <div
         className="jobs-list-pane"
+        ref={listPaneRef}
         style={showTty ? { flex: `0 0 ${splitPct}%` } : undefined}
       >
         {jobs.length === 0 && (
@@ -387,13 +519,11 @@ function JobCard({
   const isMkDocs = job.job_type === "mkdocs";
   const isConvert = job.job_type === "convert";
   const isFinalize = job.job_type === "finalize";
-  const isTraining =
-    !isEval &&
-    !isInference &&
-    !isTensorBoard &&
-    !isMkDocs &&
-    !isConvert &&
-    !isFinalize;
+  const chip = JOB_TYPE_CHIPS[job.job_type] ?? JOB_TYPE_CHIPS.training;
+  // Only actual training jobs get the trainer-progress UI / control
+  // protocol affordances. Everything else (model, dataset, eval, …) is
+  // fire-and-forget.
+  const isTraining = job.job_type === "training";
   // Trainer-protocol controls require a correlated job_id and the job
   // alive. Eval / inference never correlate (no endpoint.json), so
   // these stay hidden and only kill / force-kill apply.
@@ -415,14 +545,14 @@ function JobCard({
     isInference && typeof job.job_params?.port === "number"
       ? (job.job_params.port as number)
       : null;
-  const inferenceUrl =
-    inferenceHost && inferencePort
-      ? `http://${inferenceHost}:${inferencePort}`
-      : null;
+  const inferenceUrl = inferencePort
+    ? `http://${browserSafeHost(inferenceHost)}:${inferencePort}`
+    : null;
 
-  // TensorBoard is the same idea: a local web server. Host isn't always
-  // set on the params; bind_all implies 0.0.0.0 → browser-friendly at
-  // localhost, otherwise fall back to the passed host or 127.0.0.1.
+  // TensorBoard is the same idea: a local web server. ``bind_all`` →
+  // 0.0.0.0; otherwise use whatever host the user supplied. Loopback
+  // and unset hosts are normalized to ``localhost`` for the displayed
+  // link (see ``browserSafeHost``).
   const tbPort =
     isTensorBoard && typeof job.job_params?.port === "number"
       ? (job.job_params.port as number)
@@ -432,8 +562,20 @@ function JobCard({
     isTensorBoard && typeof job.job_params?.host === "string"
       ? (job.job_params.host as string)
       : null;
+  // TB is spawned with --path_prefix /api/tb/<queue_id> so its asset
+  // URLs match the auth-gated reverse proxy. The upstream process returns
+  // 404 on ``/``; the user has to hit the prefixed URL whether they go
+  // through the proxy or SSH-forward the port directly. Append the prefix
+  // (with a trailing slash so TB's redirect behavior is happy) when it's
+  // present on the JobRecord.
+  const tbPathSuffix =
+    isTensorBoard && job.path_prefix
+      ? job.path_prefix.endsWith("/")
+        ? job.path_prefix
+        : job.path_prefix + "/"
+      : "";
   const tbUrl = tbPort
-    ? `http://${tbBindAll ? "localhost" : tbHost ?? "localhost"}:${tbPort}`
+    ? `http://${tbBindAll ? "localhost" : browserSafeHost(tbHost)}:${tbPort}${tbPathSuffix}`
     : null;
 
   // MkDocs serve runs a local HTTP dev server. host:port pair is folded
@@ -448,7 +590,7 @@ function JobCard({
       ? (job.job_params.host as string)
       : null;
   const mkUrl = mkPort
-    ? `http://${mkHost ?? "127.0.0.1"}:${mkPort}`
+    ? `http://${browserSafeHost(mkHost)}:${mkPort}`
     : null;
 
   const cardClass =
@@ -472,38 +614,7 @@ function JobCard({
         <span className={"queue-status " + statusClass}>
           {job.status.toUpperCase()}
         </span>
-        <span
-          className={
-            "job-type-chip " +
-            (isEval
-              ? "type-eval"
-              : isInference
-                ? "type-inference"
-                : isTensorBoard
-                  ? "type-tensorboard"
-                  : isMkDocs
-                    ? "type-mkdocs"
-                    : isConvert
-                      ? "type-convert"
-                      : isFinalize
-                        ? "type-finalize"
-                        : "type-train")
-          }
-        >
-          {isEval
-            ? "eval"
-            : isInference
-              ? "serve"
-              : isTensorBoard
-                ? "tb"
-                : isMkDocs
-                  ? "docs"
-                  : isConvert
-                    ? "convert"
-                    : isFinalize
-                      ? "finalize"
-                      : "train"}
-        </span>
+        <span className={"job-type-chip " + chip.className}>{chip.label}</span>
         <span className="queue-config">{headerTitle}</span>
         <span className="muted queue-meta">
           {job.gpu_indices && job.gpu_indices.length > 0 && (

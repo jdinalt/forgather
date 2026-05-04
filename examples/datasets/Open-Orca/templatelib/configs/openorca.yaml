@@ -27,7 +27,7 @@
 
 [validation_dataset_split]
     == super()
-    split: "train[:200]"
+    split: "train[:1000]"
 
 [test_dataset_split]
     == super()

@@ -15,6 +15,10 @@ from . import config_mappings, hf_mappings
 class LlamaConverter(HFConverter):
     """Converter for Llama models between HuggingFace and Forgather formats."""
 
+    arch = "llama"
+    arch_version = "1"
+    forgather_migrations: dict = {}
+
     def __init__(self):
         """Initialize Llama converter."""
         super().__init__(model_type="llama")

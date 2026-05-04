@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   GenerationParams,
@@ -9,6 +9,11 @@ import { InferenceState } from "./InferencePanel";
 
 interface Props {
   state: InferenceState;
+  // Controlled by the parent so the chat panel's "Send to completion"
+  // button can append a rendered prompt and switch tabs without losing
+  // whatever the user already had in the textarea.
+  text: string;
+  setText: React.Dispatch<React.SetStateAction<string>>;
 }
 
 type Status =
@@ -23,8 +28,7 @@ type Status =
   | { kind: "stopped"; tokens: number; durationMs: number }
   | { kind: "error"; message: string };
 
-export function InferenceCompletionPanel({ state }: Props) {
-  const [text, setText] = useState("");
+export function InferenceCompletionPanel({ state, text, setText }: Props) {
   // Per-request max-new-tokens override — convenient for "give me just
   // a few more tokens" without editing the main params.
   const [maxTokens, setMaxTokens] = useState<number>(
@@ -35,11 +39,39 @@ export function InferenceCompletionPanel({ state }: Props) {
   // beam search: ``streamer`` + ``num_beams > 1`` raises). Expose an
   // explicit toggle so those presets can be run as a single POST.
   const [stream, setStream] = useState<boolean>(true);
+  // Snapshot of the textarea contents from immediately before the most
+  // recent generation. Lets the user re-run with the same prompt and
+  // different generation params without manually deleting the previously
+  // appended completion. Null until the first generation has started.
+  const [prevInput, setPrevInput] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Track the previous busy state so we can restore textarea focus
+  // exactly on the busy→idle transition. Without this, Ctrl+Enter
+  // sends and the textarea's ``disabled`` flip drops focus, forcing
+  // the user to click back in to keep working. Same workaround as
+  // InferenceChatPanel.
+  const wasBusyRef = useRef(false);
 
   const busy = status.kind === "streaming" || status.kind === "generating";
 
-  const onContinue = async () => {
+  useEffect(() => {
+    if (wasBusyRef.current && !busy) {
+      textareaRef.current?.focus();
+    }
+    wasBusyRef.current = busy;
+  }, [busy]);
+
+  // ``promptOverride`` lets Regenerate run with the restored prompt
+  // without waiting for the setText state update to flush — passing the
+  // string directly avoids a race where the request would otherwise be
+  // built from the still-stale ``text`` value.
+  const runGeneration = async (promptOverride?: string) => {
+    const prompt = promptOverride ?? text;
+    setPrevInput(prompt);
+    if (promptOverride !== undefined) {
+      setText(promptOverride);
+    }
     // Build the params payload: take the user's generation params, layer
     // the per-request max_tokens on top, drop any explicitly-empty keys
     // so the server sees its own defaults rather than null.
@@ -58,9 +90,10 @@ export function InferenceCompletionPanel({ state }: Props) {
         for await (const delta of streamCompletion(
           state.baseUrl,
           state.model,
-          text,
+          prompt,
           params,
           ac.signal,
+          state.authToken || undefined,
         )) {
           tokenCount += 1;
           setText((prev) => prev + delta);
@@ -97,9 +130,10 @@ export function InferenceCompletionPanel({ state }: Props) {
         const full = await runCompletion(
           state.baseUrl,
           state.model,
-          text,
+          prompt,
           params,
           ac.signal,
+          state.authToken || undefined,
         );
         setText((prev) => prev + full);
         setStatus({
@@ -130,8 +164,25 @@ export function InferenceCompletionPanel({ state }: Props) {
     }
   };
 
+  const onContinue = () => runGeneration();
+  const onRegenerate = () => {
+    if (prevInput === null) return;
+    void runGeneration(prevInput);
+  };
+
   const onStop = () => {
     abortRef.current?.abort();
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Ctrl/Cmd+Enter triggers Continue, matching the chat panel.
+    // Plain Enter still inserts a newline so multi-line prompts work.
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (!busy && state.baseUrl) {
+        void onContinue();
+      }
+    }
   };
 
   return (
@@ -164,6 +215,14 @@ export function InferenceCompletionPanel({ state }: Props) {
         </button>
         <button
           className="secondary"
+          onClick={onRegenerate}
+          disabled={busy || !state.baseUrl || prevInput === null}
+          title="Restore the prompt as it was before the last generation, then continue again"
+        >
+          Regenerate
+        </button>
+        <button
+          className="secondary"
           onClick={onStop}
           disabled={!busy}
           title="Abort the in-flight request"
@@ -183,10 +242,12 @@ export function InferenceCompletionPanel({ state }: Props) {
         </div>
       </div>
       <textarea
+        ref={textareaRef}
         className="inference-textarea"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Type a prompt here, then click Continue to let the model extend it."
+        onKeyDown={onKeyDown}
+        placeholder="Type a prompt here, then click Continue (or Ctrl+Enter) to let the model extend it."
         spellCheck={false}
       />
     </div>

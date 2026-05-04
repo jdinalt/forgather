@@ -14,6 +14,7 @@ streaming + control therefore live with the Jobs API.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -31,6 +32,16 @@ class DynamicArgModel(BaseModel):
     help: Optional[str] = None
     default: Any = None
     choices: Optional[List[Any]] = None
+    # Colon-separated organizational path; webui groups + collapses by it.
+    group: Optional[str] = None
+    # Enforced server-side for training enqueues; the CLI also blocks the
+    # train action when missing. Skipped for ``pp`` so placeholder defaults
+    # still materialize.
+    required: bool = False
+    # Inclusive numeric bounds for int / float args. Webui flags violations
+    # in red and blocks Submit; server enqueue rejects with HTTP 400.
+    min: Optional[float] = None
+    max: Optional[float] = None
 
 
 class QueueItemModel(BaseModel):
@@ -90,20 +101,39 @@ _SUPPORTED_JOB_TYPES = {
     "mkdocs",
     "convert",
     "finalize",
+    "update",
+    "model",
+    "dataset",
 }
-# Required keys per job type. ``job_params`` for training is always empty
-# (the real parameters live in ``project_dir``/``config``/``dynamic_args``).
-_REQUIRED_EVAL_PARAMS = {"eval_project", "eval_template", "model_path"}
-_REQUIRED_INFERENCE_PARAMS = {"model_path", "port"}
-_REQUIRED_TENSORBOARD_PARAMS = {"logdir", "port"}
-_REQUIRED_MKDOCS_PARAMS = {"config_file", "port"}
-_REQUIRED_CONVERT_PARAMS = {"src_model_path", "dst_model_path"}
-_REQUIRED_FINALIZE_PARAMS = {"source", "dest"}
+# Required job_params keys per job type. Training jobs are absent because
+# their real parameters live in project_dir/config/dynamic_args; model and
+# dataset jobs are absent because every flag is optional (defaults match
+# the CLI parsers).
+_REQUIRED_PARAMS_BY_TYPE = {
+    "eval": {"eval_project", "eval_template", "model_path"},
+    "inference": {"model_path", "port"},
+    "tensorboard": {"logdir", "port"},
+    "mkdocs": {"config_file", "port"},
+    "convert": {"src_model_path", "dst_model_path"},
+    "finalize": {"source", "dest"},
+    "update": {"src_model_path", "dst_model_path"},
+}
+_VALID_MODEL_SUBCOMMANDS = {"construct", "test"}
 # Types that accept ``requested_gpus == 0``. Everything else still needs
 # at least one GPU (training / eval / inference all spawn CUDA workloads).
 # Convert / finalize default to CPU (they're pure I/O + tensor reshape
 # work) but the user can opt into a GPU via the modal's device field.
-_ZERO_GPU_JOB_TYPES = {"tensorboard", "mkdocs", "convert", "finalize"}
+# ``model`` defaults to CPU/meta too — the user opts into a GPU via the
+# device field; ``dataset`` is always CPU-only.
+_ZERO_GPU_JOB_TYPES = {
+    "tensorboard",
+    "mkdocs",
+    "convert",
+    "finalize",
+    "update",
+    "model",
+    "dataset",
+}
 
 
 @router.get("/queue", response_model=List[QueueItemModel])
@@ -130,47 +160,83 @@ def enqueue(req: EnqueueRequest):
                 f"requested_gpus must be >= {min_gpus} for " f"{req.job_type} jobs"
             ),
         )
-    if req.job_type == "eval":
-        missing = _REQUIRED_EVAL_PARAMS - set(req.job_params.keys())
-        if missing:
+    # Required dynamic-args are enforced here rather than at form-render
+    # time so any client (CLI, scripted enqueues) gets the same guarantee.
+    # Training, model, and dataset jobs all materialize the same dynamic
+    # args; other types don't consume them.
+    if req.job_type in ("training", "model", "dataset"):
+        # If the schema can't load (template parse error, missing config,
+        # etc.) we surface the failure as 400 rather than silently treating
+        # it as an empty schema — otherwise required-field enforcement is
+        # bypassed exactly when the config is broken.
+        try:
+            schema = config_ops.load_dynamic_args(req.project_dir, req.config)
+        except Exception as e:
             raise HTTPException(
                 status_code=400,
-                detail=f"eval job_params missing: {sorted(missing)}",
+                detail=(
+                    f"could not load dynamic-args schema for " f"{req.config!r}: {e}"
+                ),
             )
-    elif req.job_type == "inference":
-        missing = _REQUIRED_INFERENCE_PARAMS - set(req.job_params.keys())
+        missing = [
+            a.cli_name
+            for a in schema
+            if a.required and req.dynamic_args.get(a.dest) in (None, "")
+        ]
         if missing:
             raise HTTPException(
                 status_code=400,
-                detail=f"inference job_params missing: {sorted(missing)}",
+                detail=f"required dynamic arg(s) missing: {missing}",
             )
-    elif req.job_type == "tensorboard":
-        missing = _REQUIRED_TENSORBOARD_PARAMS - set(req.job_params.keys())
-        if missing:
+        # Numeric bounds: only checked when the user has actually supplied a
+        # value (template defaults may legitimately sit outside any
+        # newly-tightened bound). Same closed-interval semantics as the
+        # webui — both endpoints inclusive.
+        bound_violations: list[str] = []
+        for a in schema:
+            if a.type not in ("int", "float"):
+                continue
+            if a.min is None and a.max is None:
+                continue
+            v = req.dynamic_args.get(a.dest)
+            if v is None or isinstance(v, bool):
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            # Reject NaN / Inf — neither passes ordinary `<` / `>` checks
+            # against a finite bound, so they would silently sneak past
+            # without this guard.
+            if math.isnan(fv) or math.isinf(fv):
+                bound_violations.append(f"{a.cli_name}: not a finite number")
+                continue
+            if a.min is not None and fv < a.min:
+                bound_violations.append(f"{a.cli_name} >= {a.min}")
+            if a.max is not None and fv > a.max:
+                bound_violations.append(f"{a.cli_name} <= {a.max}")
+        if bound_violations:
             raise HTTPException(
                 status_code=400,
-                detail=f"tensorboard job_params missing: {sorted(missing)}",
+                detail=f"dynamic arg constraint violated: {bound_violations}",
             )
-    elif req.job_type == "mkdocs":
-        missing = _REQUIRED_MKDOCS_PARAMS - set(req.job_params.keys())
+    required = _REQUIRED_PARAMS_BY_TYPE.get(req.job_type)
+    if required is not None:
+        missing = required - set(req.job_params.keys())
         if missing:
             raise HTTPException(
                 status_code=400,
-                detail=f"mkdocs job_params missing: {sorted(missing)}",
+                detail=f"{req.job_type} job_params missing: {sorted(missing)}",
             )
-    elif req.job_type == "convert":
-        missing = _REQUIRED_CONVERT_PARAMS - set(req.job_params.keys())
-        if missing:
+    if req.job_type == "model":
+        sub = req.job_params.get("subcommand", "construct")
+        if sub not in _VALID_MODEL_SUBCOMMANDS:
             raise HTTPException(
                 status_code=400,
-                detail=f"convert job_params missing: {sorted(missing)}",
-            )
-    elif req.job_type == "finalize":
-        missing = _REQUIRED_FINALIZE_PARAMS - set(req.job_params.keys())
-        if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"finalize job_params missing: {sorted(missing)}",
+                detail=(
+                    f"model subcommand must be one of "
+                    f"{sorted(_VALID_MODEL_SUBCOMMANDS)}; got {sub!r}"
+                ),
             )
     item = queue_store.QueueItem.new(
         project_dir=req.project_dir,
@@ -227,6 +293,10 @@ def dynamic_args(project_dir: str, config: str):
             help=a.help,
             default=a.default,
             choices=a.choices,
+            group=a.group,
+            required=a.required,
+            min=a.min,
+            max=a.max,
         )
         for a in args
     ]

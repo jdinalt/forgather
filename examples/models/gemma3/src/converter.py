@@ -16,8 +16,14 @@ class Gemma3Converter(HFConverter):
     """Converter for Google Gemma-3 (text) models.
 
     Registered under the HuggingFace model type string ``gemma3_text`` so that
-    ``forgather convert`` can auto-detect it from a Gemma-3 config.json.
+    ``forgather convert`` can auto-detect it from a Gemma-3 config.json. The
+    Forgather-side ``arch`` matches that key so saved gemma3 configs route
+    to this converter on ``forgather update`` as well.
     """
+
+    arch = "gemma3_text"
+    arch_version = "1"
+    forgather_migrations: dict = {}
 
     def __init__(self):
         super().__init__(model_type="gemma3_text")

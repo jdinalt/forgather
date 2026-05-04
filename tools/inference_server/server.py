@@ -4,10 +4,14 @@ OpenAI API-compatible inference server for HuggingFace models.
 """
 
 import argparse
+import atexit
 import logging
 import os
+import secrets
+import signal
 import sys
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -20,11 +24,16 @@ if __name__ == "__main__" and __package__ is None:
         sys.path.insert(0, str(parent_dir))
 
     # Import as if we're a package
+    from inference_server.auth_paths import (
+        standalone_token_file,
+        write_standalone_token,
+    )
     from inference_server.config import load_config_from_yaml, merge_config_with_args
     from inference_server.routes import create_app, set_inference_service
     from inference_server.service import InferenceService
 else:
     # Running as module - use relative imports
+    from .auth_paths import standalone_token_file, write_standalone_token
     from .config import load_config_from_yaml, merge_config_with_args
     from .service import InferenceService
     from .routes import create_app, set_inference_service
@@ -141,6 +150,28 @@ def main():
         help="Ignore EOS tokens during generation (continue past EOS until max_tokens or stop_sequence)",
     )
 
+    # Bearer-token auth (default-on). Either supply a token, point at a file
+    # holding one, or generate one at startup. ``--no-auth`` disables auth
+    # entirely for users who explicitly opt out (matching forgather_server's
+    # flag of the same name).
+    auth_group = parser.add_mutually_exclusive_group()
+    auth_group.add_argument(
+        "--auth-token",
+        default=None,
+        help="Bearer token clients must present in 'Authorization: Bearer <token>'. Auto-generated if neither this nor --auth-token-file is given.",
+    )
+    auth_group.add_argument(
+        "--auth-token-file",
+        default=None,
+        type=os.path.expanduser,
+        help="Read the bearer token from this file (mode 0600 expected). Avoids exposing the token via argv (visible in 'ps').",
+    )
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Disable bearer-token auth. Any local user on the host will be able to use the model — only set this if you understand the threat model.",
+    )
+
     args = parser.parse_args()
 
     # Load config file if provided
@@ -201,8 +232,95 @@ def main():
         ignore_eos=args.ignore_eos,
     )
 
+    # Resolve auth token. --no-auth wins; otherwise prefer an explicit token,
+    # then a file, then an auto-generated one. Auto-generation gives
+    # default-secure behaviour without forcing operators to manage secrets.
+    auth_token: Optional[str] = None
+    auto_generated = False
+    if args.no_auth:
+        print(
+            "!! inference_server is running with --no-auth — any local user on "
+            "this host can use the model",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        if args.auth_token:
+            auth_token = args.auth_token.strip()
+        elif args.auth_token_file:
+            try:
+                auth_token = Path(args.auth_token_file).read_text().strip()
+            except OSError as e:
+                parser.error(f"could not read --auth-token-file: {e}")
+            if not auth_token:
+                parser.error(f"auth-token-file is empty: {args.auth_token_file}")
+        else:
+            auth_token = secrets.token_hex(32)
+            auto_generated = True
+
+        # Print on stderr so it's visible in TTY logs (the scheduler captures
+        # stderr) but not entangled with uvicorn's stdout request log.
+        print(f"inference_server auth token: {auth_token}", file=sys.stderr, flush=True)
+        print(
+            "clients must send 'Authorization: Bearer <token>'",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            f'curl -H "Authorization: Bearer {auth_token}" '
+            f"http://{args.host}:{args.port}/v1/models",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        # When the token was auto-generated, publish it to a per-port file
+        # under FORGATHER_HOME so the bundled CLI client (and other local
+        # tools) can pick it up automatically. Cleared on exit so a stale
+        # file never outlives the server. Skipped when the user supplied
+        # their own token: in that case the operator already controls token
+        # distribution and we shouldn't second-guess them.
+        if auto_generated:
+            try:
+                token_path = write_standalone_token(args.port, auth_token)
+            except OSError as e:
+                logging.warning(
+                    "could not write standalone-server token file: %s "
+                    "(client auto-discovery disabled)",
+                    e,
+                )
+            else:
+                print(
+                    f"shared token file: {token_path}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+                def _cleanup_token_file(path: Path = token_path):
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+
+                atexit.register(_cleanup_token_file)
+
+                # SIGTERM is what `kill <pid>`, container shutdown, and
+                # forgather-server's job killer send. atexit doesn't run on
+                # the default SIGTERM/SIGINT delivery, so install handlers
+                # that remove the file before chaining to the default
+                # behaviour.
+                def _signal_cleanup(signum, _frame, path: Path = token_path):
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+                    signal.signal(signum, signal.SIG_DFL)
+                    os.kill(os.getpid(), signum)
+
+                for _sig in (signal.SIGINT, signal.SIGTERM):
+                    signal.signal(_sig, _signal_cleanup)
+
     # Create FastAPI app and set service
-    app = create_app()
+    app = create_app(auth_token=auth_token)
     set_inference_service(service)
 
     logging.info(f"Starting server on {args.host}:{args.port}")

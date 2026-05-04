@@ -1,0 +1,1 @@
+../../../../../examples/models/mistral/src/hf_mappings.py

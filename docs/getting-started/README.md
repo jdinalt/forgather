@@ -1,6 +1,9 @@
 # Getting Started
 
-This guide walks you through installing Forgather and training your first model from the CLI.
+This guide walks you through training your first Forgather model
+from the CLI. It assumes Forgather is already installed — if not,
+start with **[Installation](installation.md)** (covers host venv via
+pip / uv and the Docker development image).
 
 > **Prefer a web UI?** Forgather ships with a single-user web frontend
 > over the same APIs the CLI uses — project browsing, queued training,
@@ -9,115 +12,9 @@ This guide walks you through installing Forgather and training your first model 
 > CLI to you, jump straight to the
 > [**Forgather server walkthrough**](../guides/forgather-server-walkthrough.md)
 > — it's an end-to-end tour from a fresh install to chatting with a
-> small model you train along the way. The setup overlaps with this
-> guide; the walkthrough links back here for the install steps.
+> small model you train along the way.
 >
 > ![Forgather server first-load view](../guides/screenshots/05-trefs-graph.png)
-
-## Prerequisites
-
-- A Linux system (tested on Ubuntu 24.04)
-- **Python 3.12 or newer.** Forgather uses Python 3.12 language features. Newer
-  versions will likely work but are untested; older versions will not.
-  Python 3.12 is the default on Ubuntu 24.04. On older Debian-based distributions
-  you can install it from the deadsnakes PPA:
-  ```bash
-  sudo add-apt-repository ppa:deadsnakes/ppa
-  sudo apt-get update
-  sudo apt-get install python3.12 python3.12-venv python3.12-dev
-  ```
-- An NVIDIA GPU with CUDA support is strongly recommended but not
-  required. CPU-only training works -- the Tiny Llama tutorial below
-  has been run end-to-end on a Chromebook, taking most of a day for
-  the same workload that finishes in ~2 minutes on an RTX 4090.
-  Budget accordingly.  Non-CUDA accelerators (Intel, AMD, Apple
-  Silicon) *may* work -- Forgather deliberately avoids hard CUDA
-  dependencies where possible -- but have not been tested outside of
-  CUDA and CPU, so treat them as experimental.
-- A C compiler and Python development headers (required by Triton / flex-attention):
-  ```bash
-  sudo apt-get install build-essential python3-dev
-  ```
-- `git` (used to clone the repo and to fetch the `cut-cross-entropy`
-  source install below). On most distributions it's installed by
-  default, but minimal Docker base images (e.g. plain `ubuntu:24.04`)
-  don't ship it:
-  ```bash
-  sudo apt-get install git
-  ```
-- **Graphviz** (optional). Only used by the CLI's
-  `forgather trefs --format svg`, which shells out to `dot` to render
-  template-dependency graphs as SVG. The Forgather server's
-  in-browser graph view bundles a WebAssembly build of Graphviz
-  (`@viz-js/viz`) and works without the system package.
-  ```bash
-  sudo apt-get install graphviz
-  ```
-- **Node.js + npm** (optional, only for the Forgather server's web
-  UI). The `forgather server` command serves a Vite/React SPA built
-  from `tools/forgather_server/webui/`. The build artifact isn't
-  checked in, so you build it once after install — see "Running the
-  Forgather server" below. Any current LTS Node release works
-  (tested on Node 20).
-  ```bash
-  sudo apt-get install nodejs npm
-  ```
-  None of this is needed if you only use the CLI; the running server
-  itself has no Node dependency once the dist bundle exists.
-
-## Installation
-
-Clone the repository, then install in a virtual environment.
-
-**Using venv:**
-
-```bash
-git clone https://github.com/jdinalt/forgather.git
-cd forgather
-
-# Use python3.12 explicitly if your system default is older.
-python3.12 -m venv ~/venvs/forgather
-source ~/venvs/forgather/bin/activate
-
-pip install -e .
-```
-
-**Using uv:**
-
-```bash
-git clone https://github.com/jdinalt/forgather.git
-cd forgather
-uv venv --python 3.12 ~/venvs/forgather
-source ~/venvs/forgather/bin/activate
-uv pip install -e .
-```
-
-The install pulls in PyTorch, transformers, the FastAPI server
-deps, mkdocs, and a few other large packages — expect ~2–3 GB of
-downloads on a fresh machine. On a slow network the first install
-can take several minutes; if pip looks stuck it's almost certainly
-still downloading.
-
-**Recommended: install cut-cross-entropy from source:**
-
-The pip-installable version of `cut-cross-entropy` (25.1.1) is missing features
-needed for numerical stability during bf16/fp16 training (`accum_e_fp32`,
-`accum_c_fp32`). Forgather will fall back gracefully, but training may exhibit
-lm_head spectral norm explosion over long runs. Install the latest version from
-source:
-
-```bash
-pip install "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
-```
-
-Verify the installation:
-
-```bash
-forgather ls -r
-```
-
-This recursively lists all Forgather projects and configurations found under the
-current directory. You should see output listing the bundled example projects.
 
 ## Your first training run
 
@@ -233,11 +130,18 @@ npm install          # one-time, fetches Vite + React + Monaco + viz-js
 npm run build        # produces webui/dist/
 ```
 
-This needs Node.js + npm installed (see Prerequisites). `npm install`
-takes a couple of minutes on first run; the build itself is fast.
-The output is a static `dist/` directory the running server serves
-directly — no Node process at runtime. Re-run `npm run build` after
-pulling changes that touch `webui/src/`.
+This needs Node.js + npm installed (see
+[Installation prerequisites](installation.md#prerequisites)).
+`npm install` takes a couple of minutes on first run; the build
+itself is fast. The output is a static `dist/` directory the
+running server serves directly — no Node process at runtime.
+Re-run `npm run build` after pulling changes that touch
+`webui/src/`.
+
+The Docker image runs `./build-webui.sh` automatically as a
+post-step in `docker/build.sh`, so the dist bundle is already in
+place when you enter the container — no manual build needed under
+that workflow.
 
 If you start the server before `webui/dist/` exists, the API
 endpoints still work but the root URL returns **404 Not Found** —
@@ -355,7 +259,7 @@ With your first model trained, here are recommended paths for learning more:
 - [H.P. Lovecraft Project](../tutorials/hp_lovecraft_project/README.md) --
   Learn how to create workspaces and projects from scratch, while finetuning a 7B
   parameter model on a single 24 GB GPU.
-- [Samantha](../tutorials/samantha/README.md) --
+- [Samantha](../examples/finetune/samantha/README.md) --
   A practical finetuning example using the Samantha dataset with Mistral-7B.
 
 **Understanding the system:**

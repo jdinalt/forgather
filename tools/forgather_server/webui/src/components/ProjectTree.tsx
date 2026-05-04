@@ -7,14 +7,23 @@ import { ConvertModal } from "./ConvertModal";
 import { EvalModal } from "./EvalModal";
 import { FinalizeModal } from "./FinalizeModal";
 import { InferenceModal } from "./InferenceModal";
+import { UpdateModal } from "./UpdateModal";
 import { NewProjectModal } from "./NewProjectModal";
 import { NewTemplateModal } from "./NewTemplateModal";
 import { OverridesModal } from "./OverridesModal";
+import { DatasetSubmitModal } from "./DatasetSubmitModal";
+import { ModelSubmitModal } from "./ModelSubmitModal";
 import { SubmitModal } from "./SubmitModal";
 import { ConfigTensorBoardModal } from "./TensorBoardModal";
 import { Selection } from "../App";
 
-type ConfigAction = "submit" | "overrides" | "clean" | "tensorboard" | "delete";
+type ConfigAction =
+  | "submit"
+  | "overrides"
+  | "clean"
+  | "tensorboard"
+  | "edit"
+  | "delete";
 
 interface ContextTarget {
   project: ProjectInfo;
@@ -30,12 +39,12 @@ interface ActiveModal {
 }
 
 // Separate state for action modals seeded from a config's output_dir.
-// Serve / Eval also carry a checkpoint path (a specific ckpt may be the
-// trigger via the checkpoint right-click menu); Convert / Finalize don't
-// have a checkpoint-targeted entry point in this menu, so the slot stays
-// null for them.
+// Serve / Eval / Update also carry a checkpoint path (a specific ckpt
+// may be the trigger via the checkpoint right-click menu); Convert /
+// Finalize don't have a checkpoint-targeted entry point in this menu,
+// so the slot stays null for them.
 interface ServeEvalModal {
-  action: "serve" | "eval" | "convert" | "finalize";
+  action: "serve" | "eval" | "convert" | "finalize" | "update";
   project: ProjectInfo;
   config: ConfigInfo;
   output_dir: string;
@@ -91,6 +100,9 @@ interface Props {
   setSelection: (sel: Selection) => void;
   /** Hand a path to the Files panel (App-level) and switch view. */
   onEditTemplate: (path: string) => void;
+  /** Bubble the submitted job's queue id to App so it can decide whether
+   *  to switch to the Jobs view + auto-open the TTY. */
+  onJobSubmitted?: (queueId: string) => void;
 }
 
 export function ProjectTree({
@@ -99,6 +111,7 @@ export function ProjectTree({
   selection,
   setSelection,
   onEditTemplate,
+  onJobSubmitted,
 }: Props) {
   const qc = useQueryClient();
   const projectsQ = useQuery({
@@ -229,6 +242,37 @@ export function ProjectTree({
     }
   };
 
+  // Drop scoped caches so the next render reflects on-disk truth for this
+  // config: meta (gates context-menu items), the project's model list
+  // (drives checkpoint counts and the Run/Serve/Eval sub-tree), and the
+  // per-output_dir artifact lists (runs/checkpoints/evals) for any model
+  // associated with this config. Used both on left-click selection and on
+  // right-click — picking a config implies the user wants its current
+  // state, not whatever the 5-minute cache happens to hold.
+  const invalidateConfigCaches = (project: ProjectInfo, config: ConfigInfo) => {
+    qc.invalidateQueries({
+      queryKey: ["config-meta", project.project_dir, config.name],
+    });
+    qc.invalidateQueries({
+      queryKey: ["project-models", project.project_dir],
+    });
+    const models = qc.getQueryData<ModelEntry[]>([
+      "project-models",
+      project.project_dir,
+    ]);
+    const linked = models?.filter((m) => m.configs.includes(config.name)) ?? [];
+    for (const m of linked) {
+      qc.invalidateQueries({ queryKey: ["model-runs", m.output_dir] });
+      qc.invalidateQueries({ queryKey: ["model-checkpoints", m.output_dir] });
+      qc.invalidateQueries({ queryKey: ["model-evaluations", m.output_dir] });
+    }
+  };
+
+  const handleConfigSelect = (project: ProjectInfo, config: ConfigInfo) => {
+    invalidateConfigCaches(project, config);
+    onSelect(project, config);
+  };
+
   const openContextMenu = (
     project: ProjectInfo,
     config: ConfigInfo,
@@ -236,6 +280,7 @@ export function ProjectTree({
   ) => {
     e.preventDefault();
     e.stopPropagation();
+    invalidateConfigCaches(project, config);
     setContextTarget({ project, config, x: e.clientX, y: e.clientY });
   };
 
@@ -245,6 +290,10 @@ export function ProjectTree({
     setContextTarget(null);
     if (action === "delete") {
       deleteConfigFile(target.project, target.config);
+      return;
+    }
+    if (action === "edit") {
+      onEditTemplate(target.config.path);
       return;
     }
     setActiveModal({
@@ -369,7 +418,7 @@ export function ProjectTree({
   };
 
   const chooseServeEval = (
-    action: "serve" | "eval" | "convert" | "finalize",
+    action: "serve" | "eval" | "convert" | "finalize" | "update",
     output_dir: string,
     checkpointPath: string | null,
   ) => {
@@ -392,7 +441,7 @@ export function ProjectTree({
         {projectsQ.data && (
           <WorkspaceForest
             clusters={projectsQ.data}
-            onSelect={onSelect}
+            onSelect={handleConfigSelect}
             onProjectOpen={onProjectOpen}
             selection={selection}
             onContextRequest={openContextMenu}
@@ -479,7 +528,22 @@ export function ProjectTree({
               });
             }}
           >
-            ⚖ Evaluate…
+            📐 Evaluate…
+          </button>
+          <button
+            onClick={() => {
+              const t = ckptMenuTarget;
+              setCkptMenuTarget(null);
+              setServeEvalModal({
+                action: "update",
+                project: t.project,
+                config: t.config,
+                output_dir: t.output_dir,
+                checkpointPath: t.checkpoint.checkpoint_dir,
+              });
+            }}
+          >
+            ⬆️ Update Model…
           </button>
           <button
             className="destructive"
@@ -533,6 +597,13 @@ export function ProjectTree({
           >
             📁 Create Project…
           </button>
+          <ReadmeMenuItem
+            dir={workspaceMenuTarget.workspace.workspace_root}
+            onEdit={(path) => {
+              setWorkspaceMenuTarget(null);
+              onEditTemplate(path);
+            }}
+          />
           <button
             className="context-menu-destructive"
             onClick={() => {
@@ -571,6 +642,13 @@ export function ProjectTree({
           >
             📄 New Template…
           </button>
+          <ReadmeMenuItem
+            dir={projectMenuTarget.project.project_dir}
+            onEdit={(path) => {
+              setProjectMenuTarget(null);
+              onEditTemplate(path);
+            }}
+          />
           <button
             className="context-menu-destructive"
             onClick={() => {
@@ -629,10 +707,11 @@ export function ProjectTree({
       )}
 
       {activeModal?.action === "submit" && (
-        <SubmitModal
+        <SubmitModalRouter
           project={activeModal.project}
           config={activeModal.config}
           onClose={() => setActiveModal(null)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {activeModal?.action === "overrides" && (
@@ -654,6 +733,7 @@ export function ProjectTree({
           project={activeModal.project}
           config={activeModal.config}
           onClose={() => setActiveModal(null)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {serveEvalModal?.action === "serve" && (
@@ -663,6 +743,7 @@ export function ProjectTree({
           checkpointPath={serveEvalModal.checkpointPath}
           projectDir={serveEvalModal.project.project_dir}
           onClose={() => setServeEvalModal(null)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {serveEvalModal?.action === "eval" && (
@@ -672,21 +753,83 @@ export function ProjectTree({
           checkpointPath={serveEvalModal.checkpointPath}
           projectDir={serveEvalModal.project.project_dir}
           onClose={() => setServeEvalModal(null)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {serveEvalModal?.action === "convert" && (
         <ConvertModal
           initialSrcPath={serveEvalModal.output_dir}
           onClose={() => setServeEvalModal(null)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {serveEvalModal?.action === "finalize" && (
         <FinalizeModal
           initialSource={serveEvalModal.output_dir}
           onClose={() => setServeEvalModal(null)}
+          onSubmitted={onJobSubmitted}
+        />
+      )}
+      {serveEvalModal?.action === "update" && (
+        <UpdateModal
+          initialSrcPath={serveEvalModal.output_dir}
+          initialCheckpoint={serveEvalModal.checkpointPath ?? undefined}
+          onClose={() => setServeEvalModal(null)}
+          onSubmitted={onJobSubmitted}
         />
       )}
     </div>
+  );
+}
+
+/** Picks the correct submit modal based on the config's class. Falls
+ *  back to the training-style ``SubmitModal`` while the meta query is
+ *  in flight or for any unrecognised class — that path is also what
+ *  pure ``type.training_script*`` configs go through. */
+function SubmitModalRouter({
+  project,
+  config,
+  onClose,
+  onSubmitted,
+}: {
+  project: ProjectInfo;
+  config: ConfigInfo;
+  onClose: () => void;
+  onSubmitted?: (queueId: string) => void;
+}) {
+  const metaQ = useQuery({
+    queryKey: ["config-meta", project.project_dir, config.name],
+    queryFn: () => api.configMeta(project.project_dir, config.name),
+    staleTime: 5 * 60 * 1000,
+  });
+  const cls = metaQ.data?.config_class ?? null;
+  if (cls?.startsWith("type.model")) {
+    return (
+      <ModelSubmitModal
+        project={project}
+        config={config}
+        onClose={onClose}
+        onSubmitted={onSubmitted}
+      />
+    );
+  }
+  if (cls?.startsWith("type.dataset")) {
+    return (
+      <DatasetSubmitModal
+        project={project}
+        config={config}
+        onClose={onClose}
+        onSubmitted={onSubmitted}
+      />
+    );
+  }
+  return (
+    <SubmitModal
+      project={project}
+      config={config}
+      onClose={onClose}
+      onSubmitted={onSubmitted}
+    />
   );
 }
 
@@ -701,7 +844,7 @@ function ConfigContextMenuItems({
   config: ConfigInfo;
   onChoose: (action: ConfigAction) => void;
   onChooseServeEval: (
-    action: "serve" | "eval" | "convert" | "finalize",
+    action: "serve" | "eval" | "convert" | "finalize" | "update",
     output_dir: string,
     checkpointPath: string | null,
   ) => void;
@@ -723,7 +866,10 @@ function ConfigContextMenuItems({
 
   const cls = metaQ.data?.config_class ?? null;
   const isTraining = cls?.startsWith("type.training_script") ?? false;
+  const isModel = cls?.startsWith("type.model") ?? false;
+  const isDataset = cls?.startsWith("type.dataset") ?? false;
   const showRunCleanup = isTraining || cls === null;
+  const showRun = showRunCleanup || isModel || isDataset;
 
   const modelEntry = modelsQ.data?.find((m: ModelEntry) => m.configs.includes(config.name));
   const hasCheckpoints = (modelEntry?.checkpoint_count ?? 0) > 0;
@@ -735,7 +881,7 @@ function ConfigContextMenuItems({
         {config.name}
         {cls && <span className="context-menu-class">{cls}</span>}
       </div>
-      {showRunCleanup && (
+      {showRun && (
         <button onClick={() => onChoose("submit")}>▶ Run…</button>
       )}
       <button onClick={() => onChoose("overrides")}>🔧 Overrides…</button>
@@ -754,7 +900,7 @@ function ConfigContextMenuItems({
       )}
       {hasCheckpoints && (
         <button onClick={() => onChooseServeEval("eval", outputDir, null)}>
-          ⚖ Evaluate…
+          📐 Evaluate…
         </button>
       )}
       {hasCheckpoints && (
@@ -767,6 +913,14 @@ function ConfigContextMenuItems({
           📦 Finalize Model…
         </button>
       )}
+      {hasCheckpoints && (
+        <button onClick={() => onChooseServeEval("update", outputDir, null)}>
+          ⬆️ Update Model…
+        </button>
+      )}
+      <button onClick={() => onChoose("edit")} title={config.path}>
+        ✎ Edit Config
+      </button>
       <button
         className="context-menu-destructive"
         onClick={() => onChoose("delete")}
@@ -775,6 +929,31 @@ function ConfigContextMenuItems({
         🗑 Delete Config…
       </button>
     </>
+  );
+}
+
+/** Renders an "Edit README.md" menu item if a README.md exists in
+ *  the given directory; renders nothing otherwise. The probe uses
+ *  ``fsPathExists`` so a missing file silently hides the entry
+ *  instead of offering an action that would open an empty editor. */
+function ReadmeMenuItem({
+  dir,
+  onEdit,
+}: {
+  dir: string;
+  onEdit: (path: string) => void;
+}) {
+  const path = dir.replace(/\/+$/, "") + "/README.md";
+  const existsQ = useQuery({
+    queryKey: ["fs-path-exists", path],
+    queryFn: () => api.fsPathExists(path),
+    staleTime: 30_000,
+  });
+  if (!existsQ.data?.exists || !existsQ.data?.is_file) return null;
+  return (
+    <button onClick={() => onEdit(path)} title={path}>
+      ✎ Edit README.md
+    </button>
   );
 }
 

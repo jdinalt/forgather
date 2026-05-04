@@ -1,3 +1,4 @@
+import itertools
 import logging
 import os
 from contextlib import nullcontext
@@ -70,6 +71,16 @@ class DDPTrainingArguments(TrainingArguments):
     #
     # When set to False, care must be taken to ensure that each rank receives different examples.
     dispatch_batches: bool = True
+
+    # Optional eval-only override for `dispatch_batches`. ``None`` (default) means
+    # eval follows whatever `dispatch_batches` is set to. Set to ``True`` to make
+    # eval centralise on rank 0 even when training shards across ranks; this is
+    # useful when the eval split is small enough that per-rank shards may not
+    # contain enough examples to fill a single batch (especially with
+    # ``dataloader_drop_last=True``). See
+    # ``docs/trainers/distributed-eval-zero-batches.md`` for the failure mode
+    # this guards against.
+    dispatch_eval_batches: Optional[bool] = None
 
     ddp: DDPArguments = field(default_factory=DDPArguments)
     post_local_sgd: PostLocalSGDArguments = field(default_factory=PostLocalSGDArguments)
@@ -178,32 +189,33 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
             skip_all_reduce_unused_params=self.args.ddp.skip_all_reduce_unused_params,
         )
 
-        if self.args.dispatch_batches:
-            # Use DataloaderDispatcher for centralized batch loading
-            if self.train_dataloader:
+        dispatch_eval = self._dispatch_eval_batches()
+
+        if self.train_dataloader:
+            if self.args.dispatch_batches:
+                # Use DataloaderDispatcher for centralized batch loading
                 self.train_dataloader = DataloaderDispatcher(
                     cast(DataLoader, self.train_dataloader),
                     self.mesh,
                     self.args.device,
                 )
-
-            if self.eval_dataloader:
-                self.eval_dataloader = DataloaderDispatcher(
-                    cast(DataLoader, self.eval_dataloader),
-                    self.mesh,
-                    self.args.device,
-                )
-        else:
-            # Use SynchronizedDataLoader for sharded datasets
-            # Ensures all ranks agree on when to stop iterating
-            if self.train_dataloader:
+            else:
+                # Use SynchronizedDataLoader for sharded datasets
+                # Ensures all ranks agree on when to stop iterating
                 self.train_dataloader = SynchronizedDataLoader(
                     self.train_dataloader,
                     device=self.args.device,
                     process_group=self.ddp_group,
                 )
 
-            if self.eval_dataloader:
+        if self.eval_dataloader:
+            if dispatch_eval:
+                self.eval_dataloader = DataloaderDispatcher(
+                    cast(DataLoader, self.eval_dataloader),
+                    self.mesh,
+                    self.args.device,
+                )
+            else:
                 self.eval_dataloader = SynchronizedDataLoader(
                     self.eval_dataloader,
                     device=self.args.device,
@@ -245,38 +257,109 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
         assert self.model
         return cast(Module, self.model.module)
 
+    def _dispatch_eval_batches(self) -> bool:
+        """Resolve the effective eval-time dispatch_batches setting.
+
+        ``dispatch_eval_batches`` overrides ``dispatch_batches`` for eval only.
+        ``None`` (the default) means "follow ``dispatch_batches``".
+        """
+        if self.args.dispatch_eval_batches is not None:
+            return self.args.dispatch_eval_batches
+        return self.args.dispatch_batches
+
     @override
     @torch.no_grad()
     def _eval_loop(self) -> Dict[str, float]:
         """
         Evaluation loop for DDP training.
 
-        For dispatch_batches=True or single-GPU, delegates to the base Trainer._eval_loop().
+        For dispatch_eval_batches=True or single-GPU, delegates to the base
+        Trainer._eval_loop().
 
-        For dispatch_batches=False, bypasses SynchronizedDataLoader's MIN-based
-        synchronization to let each rank process ALL its local validation data
-        independently. This prevents data loss when token packing creates highly
-        uneven shard lengths across ranks (e.g., shard lengths [85, 167, 239, 247]
-        would otherwise be truncated to the shortest rank's count).
+        For dispatch_eval_batches=False, bypasses SynchronizedDataLoader's
+        MIN-based synchronization to let each rank process ALL its local
+        validation data independently. This prevents data loss when token
+        packing creates highly uneven shard lengths across ranks (e.g., shard
+        lengths [85, 167, 239, 247] would otherwise be truncated to the
+        shortest rank's count).
         """
-        if self.dist.world_size == 1 or self.args.dispatch_batches:
+        if self.dist.world_size == 1 or self._dispatch_eval_batches():
             return super()._eval_loop()
         return self._eval_loop_all_shards()
+
+    def _check_eval_shards_nonempty(self, iterator) -> Any:
+        """Confirm every rank's eval iterator yields at least one batch.
+
+        Fetches one batch from ``iterator`` on each rank, then runs an
+        ``all_reduce(SUM)`` over per-rank "has-first-batch" flags. If any
+        rank failed to fetch, raises ``RuntimeError`` *on every rank*
+        with the empty-rank set listed in the diagnostic.
+
+        Returns the first batch on success so the caller can prepend it
+        back into the eval loop's iterator.
+
+        This is the contract that lets ``_eval_loop_all_shards`` rely on
+        every rank having a valid "last seen" batch to reuse as a dummy
+        once its real shard exhausts.
+        """
+        try:
+            first_batch = next(iterator)
+            local_has_first = 1
+        except StopIteration:
+            first_batch = None
+            local_has_first = 0
+        per_rank_has_first = torch.zeros(
+            self.dist.world_size,
+            dtype=torch.int32,
+            device=self.args.device,
+        )
+        per_rank_has_first[self.dist.rank] = local_has_first
+        dist.all_reduce(per_rank_has_first, op=dist.ReduceOp.SUM)
+        empty_ranks = [
+            r for r, has in enumerate(per_rank_has_first.tolist()) if not has
+        ]
+        if empty_ranks:
+            raise RuntimeError(self._zero_eval_batches_message(empty_ranks=empty_ranks))
+        return first_batch
 
     @torch.no_grad()
     def _eval_loop_all_shards(self) -> Dict[str, float]:
         """
         Eval loop that lets each rank process all its local validation data.
 
-        Instead of using SynchronizedDataLoader (which stops all ranks when ANY
-        rank runs out of data via MIN reduction), this synchronizes step-by-step
-        using MAX reduction: the loop continues while ANY rank still has data.
-        Ranks that exhaust their data early continue participating in the sync
-        loop without processing, keeping all ranks in lockstep so rank 0's
-        progress bar updates smoothly throughout.
+        Two design constraints shape this loop:
 
-        After all ranks are exhausted, total_loss is aggregated via all_reduce.
-        The step count is implicit since each rank tracked its own local count.
+        1. **No data loss across uneven shards.** ``SynchronizedDataLoader``'s
+           per-step MIN sync would stop every rank as soon as the *shortest*
+           shard exhausted, truncating the longer shards (e.g. shard lengths
+           ``[85, 167, 239, 247]`` would all drop to 85). For an eval pass we
+           want every example evaluated exactly once, not just the first 85.
+
+        2. **Symmetric DDP collectives.** The wrapped DDP module participates
+           in collectives (buffer broadcast, parameter-sync hooks) on every
+           ``self.model(...)`` call, even under ``torch.no_grad()``. If one
+           rank skips a forward call while peers run it, the process group
+           deadlocks. So every rank must call ``self.model(...)`` the same
+           number of times across the entire loop.
+
+        Strategy:
+
+        - **Pre-flight** (`_check_eval_shards_nonempty`): every rank fetches
+          its first batch and gathers per-rank "has-first-batch" flags via
+          ``all_reduce(SUM)``. If any rank is empty, every rank raises with
+          the empty-rank set and a remediation pointer. This guarantees the
+          rest of the loop has a usable per-rank "last-seen" batch shape.
+        - **Symmetric loop**: every iteration, every rank calls
+          ``self.model(...)``. Ranks with a real next batch use it and
+          accumulate loss; ranks that have exhausted their shard reuse
+          their last-seen real batch as a *dummy* (same shape, no
+          recompile, ignored result) so the DDP collectives stay
+          balanced. A per-step ``all_reduce(MAX)`` over a "rank still has
+          real data" flag terminates the loop once every shard is
+          exhausted.
+        - **Aggregation**: ``total_loss`` and ``step_count`` are
+          ``all_reduce(SUM)`` across ranks, so only real batches
+          contribute to ``eval_loss``.
         """
         assert self.model is not None
         assert self.eval_dataloader is not None
@@ -288,69 +371,86 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
 
         with set_train(self.model, False):
             total_loss = torch.zeros(1, device=self.args.device)
-            local_steps = 0
-            has_data = True
+            local_real_steps = 0
             iterator = iter(raw_dataloader)
 
-            # Reuse a single tensor for the per-step synchronization
-            has_data_tensor = torch.zeros(1, dtype=torch.int32, device=self.args.device)
+            # Pre-flight: detect empty shards before any model forward call.
+            first_batch = self._check_eval_shards_nonempty(iterator)
+            assert first_batch is not None  # post-pre-flight invariant
+
+            # Re-prepend the first batch so the loop can yield it on iter 0.
+            iterator = itertools.chain([first_batch], iterator)
+            # Last real batch on this rank — reused as a shape-matched dummy
+            # once the local iterator exhausts. Always populated post-pre-flight.
+            last_real_batch = first_batch
+
+            # Reuse a single tensor for the per-step "any rank has real data"
+            # synchronization (MAX as logical OR over int32 flags).
+            any_real_tensor = torch.zeros(1, dtype=torch.int32, device=self.args.device)
 
             while True:
-                # Try to get next batch from this rank's data
-                batch = None
-                if has_data:
-                    try:
-                        batch = next(iterator)
-                    except StopIteration:
-                        has_data = False
+                # Try to get the next real batch on this rank. If none, fall
+                # back to the dummy (last_real_batch) so the model.forward()
+                # call below still runs with a valid shape; mark this iteration
+                # as having no real data for this rank so its loss is discarded.
+                try:
+                    batch = next(iterator)
+                    last_real_batch = batch
+                    local_has_real = 1
+                except StopIteration:
+                    batch = last_real_batch
+                    local_has_real = 0
 
-                    # Respect max_eval_steps on this rank's own data
-                    if (
-                        has_data
-                        and self.args.max_eval_steps > 0
-                        and local_steps >= self.args.max_eval_steps
-                    ):
-                        has_data = False
-                        batch = None
+                # Respect max_eval_steps on this rank's own real data only.
+                if (
+                    local_has_real
+                    and self.args.max_eval_steps > 0
+                    and local_real_steps >= self.args.max_eval_steps
+                ):
+                    local_has_real = 0
+                    batch = last_real_batch
 
-                # Synchronize: continue while ANY rank still has data (MAX as OR)
-                has_data_tensor.fill_(1 if has_data else 0)
-                dist.all_reduce(has_data_tensor, op=dist.ReduceOp.MAX)
-
-                if has_data_tensor.item() == 0:
-                    # All ranks are done
+                # Continue while ANY rank still has real data.
+                any_real_tensor.fill_(local_has_real)
+                dist.all_reduce(any_real_tensor, op=dist.ReduceOp.MAX)
+                if any_real_tensor.item() == 0:
                     break
 
-                # Process batch if this rank has one
-                if batch is not None:
-                    input_dict, labels = self._prepare_batch(batch)
+                # Symmetric forward on every rank. Inline the work from
+                # _prediction_step but skip _distributed_loss — that would
+                # add an extra per-step all_reduce that we don't need here.
+                input_dict, labels = self._prepare_batch(batch)
+                if self.use_fused_loss:
+                    input_dict["return_hidden_states"] = True  # type: ignore[assignment]
+                with self.loss_fn.no_rescale(), self.amp_context.autocast():
+                    outputs = self.model(**input_dict)
+                    logits = logits_from_outputs(outputs)
+                    loss = self.loss_fn(logits, labels)
 
-                    # Inline the forward pass from _prediction_step, but without
-                    # _distributed_loss (which would require an additional
-                    # per-step all_reduce).
-                    if self.use_fused_loss:
-                        input_dict["return_hidden_states"] = True  # type: ignore[assignment]
-                    with self.loss_fn.no_rescale(), self.amp_context.autocast():
-                        outputs = self.model(**input_dict)
-                        logits = logits_from_outputs(outputs)
-                        loss = self.loss_fn(logits, labels)
-
+                # Only real batches contribute to the eval metric.
+                if local_has_real:
                     total_loss += loss.detach()
-                    local_steps += 1
+                    local_real_steps += 1
 
-                # Dispatch on every synchronized step so rank 0's progress bar
-                # keeps updating even after rank 0 exhausts its own data.
+                # Dispatch on every synchronized step so rank 0's progress
+                # indicator keeps advancing even after its own shard is done.
                 self._dispatch_event("on_prediction_step")
 
-            # Aggregate loss across all ranks
+            # Aggregate loss across all ranks. Only real-batch contributions
+            # are counted; dummy iterations on exhausted ranks were skipped
+            # in the accumulator above.
             step_count = torch.tensor(
-                local_steps, device=self.args.device, dtype=torch.int64
+                local_real_steps, device=self.args.device, dtype=torch.int64
             )
             dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
             dist.all_reduce(step_count, op=dist.ReduceOp.SUM)
 
             total_steps = step_count.item()
-            assert total_steps > 0, "No eval examples were processed across any rank"
+            if total_steps == 0:
+                # Defence-in-depth: the pre-flight should have caught this,
+                # but if max_eval_steps=0 or some other edge case leaves
+                # everyone with zero real steps, surface the diagnostic.
+                raise RuntimeError(self._zero_eval_batches_message())
             eval_loss = (total_loss / total_steps).item()
 
             # Sync dataset state on the underlying StatefulDataLoader
@@ -360,6 +460,93 @@ class DDPTrainer(Trainer[TDDPTrainingArguments], Generic[TDDPTrainingArguments])
             metrics = {"eval_loss": eval_loss}
             self._dispatch_event("on_evaluate", metrics=metrics)
             return metrics
+
+    @override
+    def _zero_eval_batches_message(
+        self, empty_ranks: Optional[List[int]] = None
+    ) -> str:
+        """Build a diagnostic for the zero-eval-batches failure mode.
+
+        Fires from three places:
+
+        - ``_eval_loop_all_shards`` pre-flight when *some* ranks have an
+          empty shard (``empty_ranks`` is the list of those ranks); this
+          would otherwise deadlock on asymmetric ``self.model(...)`` calls.
+        - ``_eval_loop_all_shards`` post-loop when *every* rank produced
+          zero steps (``empty_ranks`` is None or covers every rank).
+        - The inherited base ``_eval_loop`` when ``dispatch_eval_batches``
+          is effectively True and the rank-0 dispatcher terminated before
+          yielding a batch (e.g. it could not assemble one full batch per
+          rank from the available eval data); ``empty_ranks`` is None.
+        """
+        effective_dispatch_eval = self._dispatch_eval_batches()
+        partial = (
+            empty_ranks is not None and 0 < len(empty_ranks) < self.dist.world_size
+        )
+        if effective_dispatch_eval:
+            header = (
+                f"Distributed evaluation produced zero batches across all "
+                f"{self.dist.world_size} ranks."
+            )
+            explanation = (
+                "With dispatch_eval_batches=True (effective) rank 0 loads\n"
+                "the eval dataloader and broadcasts batches to the other\n"
+                "ranks. The dispatcher needs to assemble at least one batch\n"
+                "per rank before any rank can step; if rank 0 exhausts the\n"
+                "dataloader before that point (small eval split, or\n"
+                "dataloader_drop_last=True dropping the only partial batch),\n"
+                "every rank reports zero steps."
+            )
+        elif partial:
+            assert empty_ranks is not None
+            ranks_str = ", ".join(str(r) for r in empty_ranks)
+            plural = "s" if len(empty_ranks) > 1 else ""
+            header = (
+                f"Distributed evaluation produced zero batches on "
+                f"{len(empty_ranks)} of {self.dist.world_size} ranks "
+                f"(empty rank{plural}: {ranks_str}).\n"
+                "Refusing to enter the eval loop because asymmetric "
+                "self.model(...) calls across the DDP process group "
+                "would deadlock."
+            )
+            explanation = (
+                "With dispatch_eval_batches=False (effective) each rank\n"
+                "evaluates its own shard of the eval dataset; if a shard\n"
+                "contains fewer than per_device_eval_batch_size examples\n"
+                "and dataloader_drop_last is True, that rank yields no\n"
+                "batches. The other ranks would still try to step, and\n"
+                "their model.forward() calls participate in DDP collectives\n"
+                "that the empty ranks must mirror — so the eval loop would\n"
+                "hang. This pre-flight check fails fast on every rank."
+            )
+        else:
+            header = (
+                f"Distributed evaluation produced zero batches across all "
+                f"{self.dist.world_size} ranks."
+            )
+            explanation = (
+                "With dispatch_eval_batches=False (effective) each rank\n"
+                "evaluates its own shard of the eval dataset; if every\n"
+                "shard contains fewer than per_device_eval_batch_size\n"
+                "examples and dataloader_drop_last is True, every shard\n"
+                "is dropped and total_steps collapses to zero."
+            )
+        return self._format_zero_eval_batches_diagnostic(
+            header=header,
+            settings=[
+                ("dispatch_batches", self.args.dispatch_batches),
+                (
+                    "dispatch_eval_batches",
+                    f"{self.args.dispatch_eval_batches}"
+                    f" (effective: {effective_dispatch_eval})",
+                ),
+                ("dataloader_drop_last", self.args.dataloader_drop_last),
+                ("per_device_eval_batch_size", self.args.per_device_eval_batch_size),
+                ("max_eval_steps", self.args.max_eval_steps),
+                ("world_size", self.dist.world_size),
+            ],
+            explanation=explanation,
+        )
 
     @override
     def _distributed_loss(self, loss: Tensor) -> Tensor:

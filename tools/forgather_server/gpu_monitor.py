@@ -81,6 +81,15 @@ def allowed_indices() -> Optional[Set[int]]:
 class GpuProcess:
     pid: int
     used_mem_bytes: int
+    # Best-effort process name. ``None`` when NVML / /proc lookup failed.
+    name: Optional[str] = None
+    # "compute" for processes from nvmlDeviceGetComputeRunningProcesses,
+    # "graphics" for processes from nvmlDeviceGetGraphicsRunningProcesses.
+    # Surfaced only for UI display and to gate the "kill GPU process" endpoint
+    # (which restricts itself to compute processes so it can't terminate the
+    # user's desktop session). The scheduler does NOT use this — see
+    # scheduler._idle_gpu_indices for the dispatch rule.
+    kind: str = "compute"
 
 
 @dataclass
@@ -93,6 +102,7 @@ class GpuInfo:
     mem_util_pct: Optional[int] = None
     power_w: Optional[float] = None
     temp_c: Optional[int] = None
+    fan_pct: Optional[int] = None
     processes: List[GpuProcess] = field(default_factory=list)
     source: str = "nvml"  # "nvml" or "torch" — lets the UI hint on missing fields
     # Hostname of the node these stats came from. Defaults to the local
@@ -114,6 +124,33 @@ class GpuInfo:
 
 _nvml_state: Optional[bool] = None  # True = ready, False = unavailable, None = untried
 _nvml_lock = Lock()
+
+
+def _lookup_process_name(pid: int) -> Optional[str]:
+    """Best-effort process name resolution.
+
+    Tries ``nvmlSystemGetProcessName`` first (cheap, works regardless of
+    /proc visibility), falls back to ``/proc/<pid>/comm``, returns ``None``
+    on failure. Used to recognise desktop graphics processes so they don't
+    block scheduler dispatch.
+    """
+    try:
+        import pynvml  # type: ignore
+
+        raw = pynvml.nvmlSystemGetProcessName(pid)
+        name = raw.decode() if isinstance(raw, bytes) else str(raw)
+        # NVML returns the absolute path of the executable; strip dirname.
+        if "/" in name:
+            name = name.rsplit("/", 1)[-1]
+        if name:
+            return name
+    except Exception:
+        pass
+    try:
+        with open(f"/proc/{pid}/comm", "r") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
 
 
 def _ensure_nvml() -> bool:
@@ -194,13 +231,49 @@ def _snapshot_nvml() -> Optional[List[GpuInfo]]:
             except Exception:
                 pass
             try:
+                # Cards without a fan (datacenter passive coolers, mobile parts
+                # on shared chassis fans) raise NotSupported here — keep None
+                # in that case so the UI can hide the field.
+                info.fan_pct = int(pynvml.nvmlDeviceGetFanSpeed(h))
+            except Exception:
+                pass
+            try:
                 for p in pynvml.nvmlDeviceGetComputeRunningProcesses(h):
                     # p.usedGpuMemory is None for some drivers/older NVML
                     used = (
                         int(p.usedGpuMemory) if getattr(p, "usedGpuMemory", None) else 0
                     )
                     info.processes.append(
-                        GpuProcess(pid=int(p.pid), used_mem_bytes=used)
+                        GpuProcess(
+                            pid=int(p.pid),
+                            used_mem_bytes=used,
+                            name=_lookup_process_name(int(p.pid)),
+                            kind="compute",
+                        )
+                    )
+            except Exception:
+                pass
+            # Also surface graphics-only processes (X server, compositor, …)
+            # so the UI can show them. The scheduler doesn't gate on these
+            # at all — it only refuses to dispatch when the GPU is excluded
+            # via CUDA_VISIBLE_DEVICES, runtime-disabled in the UI, or
+            # already reserved by another Forgather job.
+            try:
+                seen_pids = {p.pid for p in info.processes}
+                for p in pynvml.nvmlDeviceGetGraphicsRunningProcesses(h):
+                    pid = int(p.pid)
+                    if pid in seen_pids:
+                        continue
+                    used = (
+                        int(p.usedGpuMemory) if getattr(p, "usedGpuMemory", None) else 0
+                    )
+                    info.processes.append(
+                        GpuProcess(
+                            pid=pid,
+                            used_mem_bytes=used,
+                            name=_lookup_process_name(pid),
+                            kind="graphics",
+                        )
                     )
             except Exception:
                 pass

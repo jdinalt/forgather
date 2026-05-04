@@ -151,22 +151,50 @@ _FORBIDDEN_PATHS: set[str] = {
 }
 
 
-def _reject_unsafe(target: Path) -> None:
+def _reject_symlink_in_chain(raw: str) -> None:
+    """Refuse if the raw user-supplied path itself OR any ancestor is a
+    symlink.
+
+    Callers normally ``.resolve()`` the path before passing into safety
+    helpers, which silently follows symlinks — so an ``is_symlink()``
+    check on the resolved Path is dead code (resolve() collapses links).
+    Walk the *unresolved* chain and refuse if any component is a link;
+    that's the only place a symlink can hide before resolve hides it.
+    """
+    p = os.path.abspath(os.path.expanduser(raw))
+    walk = p
+    while True:
+        if os.path.islink(walk):
+            raise HTTPException(
+                status_code=400,
+                detail=f"refusing to operate on path containing symlink: {walk}",
+            )
+        parent = os.path.dirname(walk)
+        if parent == walk:
+            break
+        walk = parent
+
+
+def _reject_unsafe(target: Path, *, raw: Optional[str] = None) -> None:
     """Reject paths that are obvious catastrophic-delete candidates.
 
     Defensive cheap checks: must be absolute, must exist, must be a
-    directory (not a symlink to one), must be at least 4 path components
-    deep (so ``/foo/bar/baz`` passes and ``/etc`` doesn't), and must not
-    match a denylist of common system roots.
+    directory, must be at least 4 path components deep (so
+    ``/foo/bar/baz`` passes and ``/etc`` doesn't), and must not match a
+    denylist of common system roots.
+
+    When ``raw`` is provided, also walks the unresolved path chain and
+    refuses any component that is a symlink. ``target`` is expected to
+    already be ``.resolve()``-d by the caller; on a resolved Path,
+    ``is_symlink()`` is always False, so the symlink guard *must* run on
+    the raw input.
     """
+    if raw is not None:
+        _reject_symlink_in_chain(raw)
     if not target.is_absolute():
         raise HTTPException(status_code=400, detail="path must be absolute")
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"path does not exist: {target}")
-    if target.is_symlink():
-        raise HTTPException(
-            status_code=400, detail="refusing to follow or delete symlink"
-        )
     if not target.is_dir():
         raise HTTPException(status_code=400, detail=f"not a directory: {target}")
     resolved = str(target)
@@ -237,19 +265,26 @@ def mkdir(req: MkdirRequest):
     return MkdirResponse(path=str(target))
 
 
-def _check_path_safe(target: Path, *, must_exist: bool = True) -> None:
+def _check_path_safe(
+    target: Path,
+    *,
+    must_exist: bool = True,
+    raw: Optional[str] = None,
+) -> None:
     """Cheap sanity checks shared by rename / copy / move.
 
     - Absolute path required.
-    - Refuses symlinks (we never want to silently chase them).
+    - Refuses symlinks anywhere in the unresolved path chain (only when
+      ``raw`` is supplied — resolved Paths can't reveal links because
+      ``Path.resolve()`` already chased them).
     - When ``must_exist`` is true: refuses missing paths.
     - Depth floor: ≥ 4 path components, so a typo can't accidentally
       target ``/etc`` or similar.
     """
+    if raw is not None:
+        _reject_symlink_in_chain(raw)
     if not target.is_absolute():
         raise HTTPException(status_code=400, detail="path must be absolute")
-    if target.is_symlink():
-        raise HTTPException(status_code=400, detail="refusing to operate on symlink")
     if must_exist and not target.exists():
         raise HTTPException(status_code=404, detail=f"path does not exist: {target}")
     depth = len([p for p in target.parts if p and p != "/"])
@@ -327,7 +362,7 @@ def rename(req: RenameRequest):
     Recoverable via reverse rename, so no ``confirmed`` flag.
     """
     src = Path(os.path.expanduser(req.path)).resolve()
-    _check_path_safe(src)
+    _check_path_safe(src, raw=req.path)
     new_name = req.new_name.strip()
     if not new_name:
         raise HTTPException(status_code=400, detail="new_name is required")
@@ -356,12 +391,18 @@ class CopyOrMoveRequest(BaseModel):
     dest_dir: str
 
 
-def _resolve_copy_target(src_path: Path, dest_dir_path: Path) -> Path:
+def _resolve_copy_target(
+    src_path: Path,
+    dest_dir_path: Path,
+    *,
+    src_raw: Optional[str] = None,
+    dest_raw: Optional[str] = None,
+) -> Path:
     """Compute the resolved destination ``dest_dir / basename(src)`` and
     enforce safety: parent must be a real directory, both ends pass
     ``_check_path_safe``, and the target itself must not yet exist."""
-    _check_path_safe(src_path)
-    _check_path_safe(dest_dir_path)
+    _check_path_safe(src_path, raw=src_raw)
+    _check_path_safe(dest_dir_path, raw=dest_raw)
     if not dest_dir_path.is_dir():
         raise HTTPException(
             status_code=400, detail=f"dest_dir is not a directory: {dest_dir_path}"
@@ -385,7 +426,7 @@ def copy_path(req: CopyOrMoveRequest):
     """
     src = Path(os.path.expanduser(req.src)).resolve()
     dest_dir = Path(os.path.expanduser(req.dest_dir)).resolve()
-    target = _resolve_copy_target(src, dest_dir)
+    target = _resolve_copy_target(src, dest_dir, src_raw=req.src, dest_raw=req.dest_dir)
     try:
         if src.is_dir():
             shutil.copytree(src, target, symlinks=False)
@@ -405,7 +446,7 @@ def move(req: CopyOrMoveRequest):
     """
     src = Path(os.path.expanduser(req.src)).resolve()
     dest_dir = Path(os.path.expanduser(req.dest_dir)).resolve()
-    target = _resolve_copy_target(src, dest_dir)
+    target = _resolve_copy_target(src, dest_dir, src_raw=req.src, dest_raw=req.dest_dir)
     try:
         shutil.move(str(src), str(target))
     except OSError as e:
@@ -436,15 +477,15 @@ def delete_file(req: DeleteFileRequest):
     """
     if not req.confirmed:
         raise HTTPException(status_code=400, detail="delete requires confirmed=true")
+    # Check the unresolved chain for a symlink before resolving — once
+    # ``.resolve()`` follows it, ``is_symlink()`` returns False on the
+    # resolved path and the guard does nothing.
+    _reject_symlink_in_chain(req.path)
     target = Path(os.path.expanduser(req.path)).resolve()
     if not target.is_absolute():
         raise HTTPException(status_code=400, detail="path must be absolute")
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"path does not exist: {target}")
-    if target.is_symlink():
-        raise HTTPException(
-            status_code=400, detail="refusing to follow or delete symlink"
-        )
     if not target.is_file():
         raise HTTPException(status_code=400, detail=f"not a regular file: {target}")
     depth = len([p for p in target.parts if p and p != "/"])
@@ -481,7 +522,7 @@ def delete_dir(req: DeleteDirRequest):
     if not req.confirmed:
         raise HTTPException(status_code=400, detail="delete requires confirmed=true")
     target = Path(os.path.expanduser(req.path)).resolve()
-    _reject_unsafe(target)
+    _reject_unsafe(target, raw=req.path)
 
     # Count size before we nuke it so the UI has something to report.
     removed_bytes = 0

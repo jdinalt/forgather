@@ -80,7 +80,12 @@ export interface ChatMessage {
 const PROXY_PREFIX = "/api/inference";
 
 function proxyUrl(
-  path: "models" | "completions" | "chat/completions" | "health",
+  path:
+    | "models"
+    | "completions"
+    | "chat/completions"
+    | "tokenize"
+    | "health",
   baseUrl: string,
 ): string {
   return `${PROXY_PREFIX}/${path}?base=${encodeURIComponent(
@@ -88,8 +93,26 @@ function proxyUrl(
   )}`;
 }
 
-export async function listModels(baseUrl: string): Promise<ModelEntry[]> {
-  const r = await fetch(proxyUrl("models", baseUrl));
+/** Header the proxy reads to pin the upstream bearer token. The proxy
+ *  converts this into a standard ``Authorization: Bearer <token>``
+ *  header on the upstream request — i.e. what OpenAI / vLLM / etc.
+ *  expect — so an OpenAI-compatible server sees nothing non-standard.
+ *  We use a dedicated header rather than ``Authorization`` because the
+ *  user's Authorization on these requests is the *forgather-server's*
+ *  bearer (same-origin) and must not leak to the upstream. */
+const TOKEN_HEADER = "X-Inference-Auth-Token";
+
+function authHeaders(authToken?: string): Record<string, string> {
+  return authToken ? { [TOKEN_HEADER]: authToken } : {};
+}
+
+export async function listModels(
+  baseUrl: string,
+  authToken?: string,
+): Promise<ModelEntry[]> {
+  const r = await fetch(proxyUrl("models", baseUrl), {
+    headers: authHeaders(authToken),
+  });
   if (!r.ok) {
     throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
   }
@@ -97,9 +120,57 @@ export async function listModels(baseUrl: string): Promise<ModelEntry[]> {
   return Array.isArray(body.data) ? body.data : [];
 }
 
-export async function checkHealth(baseUrl: string): Promise<boolean> {
-  const r = await fetch(proxyUrl("health", baseUrl));
+export async function checkHealth(
+  baseUrl: string,
+  authToken?: string,
+): Promise<boolean> {
+  const r = await fetch(proxyUrl("health", baseUrl), {
+    headers: authHeaders(authToken),
+  });
   return r.ok;
+}
+
+export type ServerCheckResult =
+  | { kind: "ok" }
+  | { kind: "auth-failed"; message: string }
+  | { kind: "unreachable"; message: string };
+
+/** Probe ``<base>/models`` to verify both reachability and auth.
+ *
+ *  ``/health`` on the inference server is intentionally open (so the
+ *  proxy can probe it before the model finishes loading), which means a
+ *  health check can't tell the user whether their token is valid.
+ *  ``/models`` is auth-gated and cheap, so it makes a useful "is this
+ *  server reachable AND does this token work?" probe. Distinguishes
+ *  network/upstream errors (502 from the proxy) from auth rejections
+ *  (401/403) so the UI can render a clear hint. */
+export async function checkServer(
+  baseUrl: string,
+  authToken?: string,
+): Promise<ServerCheckResult> {
+  const r = await fetch(proxyUrl("models", baseUrl), {
+    headers: authHeaders(authToken),
+  });
+  if (r.ok) return { kind: "ok" };
+  if (r.status === 401 || r.status === 403) {
+    return {
+      kind: "auth-failed",
+      message: `${r.status} ${r.statusText}`,
+    };
+  }
+  // 502 from the proxy on connect-refused etc.; everything else funnels
+  // here too (5xx upstream, 404 wrong path) — treat as "server side broke
+  // somehow," distinct from auth.
+  let detail = "";
+  try {
+    detail = await r.text();
+  } catch {
+    /* ignore */
+  }
+  return {
+    kind: "unreachable",
+    message: `${r.status} ${r.statusText}${detail ? `: ${detail}` : ""}`,
+  };
 }
 
 /** Stream a completion. Yields text deltas as they arrive; the caller
@@ -121,6 +192,7 @@ export async function runCompletion(
   prompt: string,
   params: GenerationParams,
   signal: AbortSignal,
+  authToken?: string,
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -130,7 +202,7 @@ export async function runCompletion(
   };
   const r = await fetch(proxyUrl("completions", baseUrl), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
     body: JSON.stringify(body),
     signal,
   });
@@ -149,6 +221,7 @@ export async function* streamCompletion(
   prompt: string,
   params: GenerationParams,
   signal: AbortSignal,
+  authToken?: string,
 ): AsyncIterable<string> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -161,6 +234,7 @@ export async function* streamCompletion(
     body,
     signal,
     (frame) => frame?.choices?.[0]?.text,
+    authToken,
   );
 }
 
@@ -169,12 +243,25 @@ export async function* streamCompletion(
  *  body uses ``messages`` instead of ``prompt``. The first frame
  *  typically carries ``delta.role: "assistant"`` with no content; we
  *  ignore role-only frames and only yield content deltas. */
+/** Options that ride alongside generation params on chat-completion
+ *  requests but aren't part of the HF GenerationConfig surface.
+ *  ``nextRole`` is a Forgather-specific extension on the inference
+ *  server: when set to ``"user"``, the chat template renders with
+ *  ``continue_final_message=True`` and a trailing empty user turn so
+ *  the model generates in the user's voice — the "impersonate"
+ *  feature. Default (omitted) is the standard "assistant" turn. */
+export interface ChatRequestOptions {
+  nextRole?: "assistant" | "user";
+}
+
 export async function* streamChatCompletion(
   baseUrl: string,
   model: string,
   messages: ChatMessage[],
   params: GenerationParams,
   signal: AbortSignal,
+  options?: ChatRequestOptions,
+  authToken?: string,
 ): AsyncIterable<string> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -182,12 +269,62 @@ export async function* streamChatCompletion(
     stream: true,
     ...params,
   };
+  if (options?.nextRole) body.next_role = options.nextRole;
   yield* streamSse(
     proxyUrl("chat/completions", baseUrl),
     body,
     signal,
     (frame) => frame?.choices?.[0]?.delta?.content,
+    authToken,
   );
+}
+
+/** vLLM-compatible /tokenize response. ``prompt`` is a Forgather
+ *  extension carrying the rendered chat-template string — saves the
+ *  caller a detokenize round trip when they want the text. */
+export interface TokenizeResponse {
+  count: number;
+  max_model_len: number;
+  tokens: number[];
+  token_strs?: string[] | null;
+  prompt?: string | null;
+}
+
+/** Render a chat conversation to its prompt string via the inference
+ *  server's /tokenize endpoint. ``nextRole`` selects the impersonate
+ *  path (matches the chat-completion field of the same name). The
+ *  rendered text is returned in ``prompt``. */
+export async function tokenizeChat(
+  baseUrl: string,
+  model: string,
+  messages: ChatMessage[],
+  options?: {
+    nextRole?: "assistant" | "user";
+    addGenerationPrompt?: boolean;
+    continueFinalMessage?: boolean;
+  },
+  authToken?: string,
+): Promise<TokenizeResponse> {
+  const body: Record<string, unknown> = {
+    model: model || "inference-server",
+    messages,
+  };
+  if (options?.nextRole) body.next_role = options.nextRole;
+  if (typeof options?.addGenerationPrompt === "boolean") {
+    body.add_generation_prompt = options.addGenerationPrompt;
+  }
+  if (typeof options?.continueFinalMessage === "boolean") {
+    body.continue_final_message = options.continueFinalMessage;
+  }
+  const r = await fetch(proxyUrl("tokenize", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
+  }
+  return (await r.json()) as TokenizeResponse;
 }
 
 /** One-shot chat completion. Returns the assistant message text. */
@@ -197,6 +334,8 @@ export async function runChatCompletion(
   messages: ChatMessage[],
   params: GenerationParams,
   signal: AbortSignal,
+  options?: ChatRequestOptions,
+  authToken?: string,
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -204,9 +343,10 @@ export async function runChatCompletion(
     stream: false,
     ...params,
   };
+  if (options?.nextRole) body.next_role = options.nextRole;
   const r = await fetch(proxyUrl("chat/completions", baseUrl), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
     body: JSON.stringify(body),
     signal,
   });
@@ -228,10 +368,11 @@ async function* streamSse(
   body: Record<string, unknown>,
   signal: AbortSignal,
   extract: (frame: any) => string | undefined,
+  authToken?: string,
 ): AsyncIterable<string> {
   const r = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
     body: JSON.stringify(body),
     signal,
   });

@@ -5,9 +5,22 @@ import { registerForgatherLanguage } from "../forgather-syntax";
 import { languageFor } from "../file-languages";
 import { EditorSplit, FilesApi } from "../files-state";
 import { ContextMenu } from "./ContextMenu";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   api: FilesApi;
+  /** When set, the tab/editor context menu offers "Open in Docs…" for
+   *  ``.md`` / ``.markdown`` / ``.ipynb`` files. */
+  onOpenDoc?: (path: string) => void;
+}
+
+function isDocLike(path: string): boolean {
+  const lower = path.toLowerCase();
+  return (
+    lower.endsWith(".md") ||
+    lower.endsWith(".markdown") ||
+    lower.endsWith(".ipynb")
+  );
 }
 
 interface MenuPos {
@@ -19,7 +32,7 @@ interface MenuPos {
 
 const DRAG_MIME = "application/x-forgather-tab";
 
-export function FilesPanel({ api }: Props) {
+export function FilesPanel({ api, onOpenDoc }: Props) {
   const { state } = api;
   const [menu, setMenu] = useState<MenuPos | null>(null);
 
@@ -72,6 +85,17 @@ export function FilesPanel({ api }: Props) {
       </div>
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
+          {onOpenDoc && isDocLike(menu.path) && (
+            <button
+              className="context-menu-item"
+              onClick={() => {
+                onOpenDoc(menu.path);
+                setMenu(null);
+              }}
+            >
+              Open in Docs…
+            </button>
+          )}
           <button
             className="context-menu-item"
             onClick={() => {
@@ -129,7 +153,7 @@ function ConflictModal({ api }: { api: FilesApi }) {
   const fmtTime = (s: number) => new Date(s * 1000).toLocaleString();
 
   return (
-    <div className="modal-backdrop" onClick={() => api.clearConflict(path)}>
+    <ModalBackdrop onClose={() => api.clearConflict(path)}>
       <div
         className="modal conflict-modal"
         onClick={(e) => e.stopPropagation()}
@@ -208,7 +232,7 @@ function ConflictModal({ api }: { api: FilesApi }) {
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 

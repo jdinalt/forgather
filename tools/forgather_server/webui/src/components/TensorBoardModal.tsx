@@ -3,6 +3,8 @@ import { useState } from "react";
 
 import { api, ConfigInfo, ProjectInfo } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
+import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
+import { ModalBackdrop } from "./ModalBackdrop";
 import { PathField } from "./PathField";
 
 /** Settings persisted across sidebar-Tools "TensorBoard…" invocations.
@@ -166,7 +168,7 @@ export function TensorBoardModal({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal submit-modal"
         onClick={(e) => e.stopPropagation()}
@@ -314,6 +316,7 @@ export function TensorBoardModal({
             {enqueue.error ? String(enqueue.error) : ""}
           </div>
           <div className="btn-row">
+            <AutoWatchTtyToggle />
             {global && (
               <button
                 className="secondary"
@@ -335,7 +338,7 @@ export function TensorBoardModal({
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 
@@ -361,19 +364,19 @@ export function ConfigTensorBoardModal({
 
   if (outQ.isLoading) {
     return (
-      <div className="modal-backdrop" onClick={onClose}>
+      <ModalBackdrop onClose={onClose}>
         <div
           className="modal submit-modal"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="pane-state">Resolving output_dir…</div>
         </div>
-      </div>
+      </ModalBackdrop>
     );
   }
   if (outQ.error) {
     return (
-      <div className="modal-backdrop" onClick={onClose}>
+      <ModalBackdrop onClose={onClose}>
         <div
           className="modal submit-modal"
           onClick={(e) => e.stopPropagation()}
@@ -389,7 +392,7 @@ export function ConfigTensorBoardModal({
             </div>
           </footer>
         </div>
-      </div>
+      </ModalBackdrop>
     );
   }
 

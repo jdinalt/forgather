@@ -13,12 +13,12 @@
     ## Batching
     -- set ns.seq_len = seq_len | default(4096)
     -- set ns.per_device_train_batch_size = batch_size | default(4)
-    -- set ns.batch_density = 0.95
+    -- set ns.batch_density = batch_density | default(0.95)
 
     ## LR scaling
     -- set ns.base_lr = lr | default(1.0e-4)
-    -- set ns.base_batch_size = 16384
-    -- set ns.lr_alpha = 0.5
+    -- set ns.base_batch_size = base_batch_size | default(16384)
+    -- set ns.lr_alpha = lr_alpha | default(0.5)
 
     ## LR Scheduler
     -- set ns.warmup_tokens = warmup_tokens | default(0)
@@ -108,19 +108,26 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:WSDScheduler@lr_schedule
     annealing_tokens:
         names: "--annealing-tokens"
         type: int
+        group: "Trainer:Schedule"
+        min: 0
         help: "Number of tokens in annealing phase."
     start_annealing:
         names: "--start-annealing"
         action: "store_true"
+        group: "Trainer:Schedule"
         help: "Manually trigger annealing phase"
-    model_id_or_path:
-        names: [ "--model-id-or-path", "-M" ]
-        type: "path"
-        help: "HF model ID or local path to model"
     epochs:
         names: "--epochs"
         type: "int"
+        group: "Trainer:Schedule"
+        min: 1
         help: "Set the number of epochs to train for"
+    model_id_or_path:
+        names: [ "--model-id-or-path", "-M" ]
+        type: "path"
+        group: "Model"
+        required: true
+        help: "HF model ID or local path to model"
     # Delete menu items which we don't use
     output_dir: ~
     model_name: ~

@@ -5,6 +5,13 @@
     -- set ns.model_name = "Dynamic Causal Transformer"
     -- set ns.model_description = "A vanilla causal transformer model."
     -- set ns.model_short_name = "dynamic_causal_transformer"
+    ## Schema provenance — read by `forgather update` to identify the
+    ## arch and source version of saved dynamic-causal-transformer
+    ## models. This baseline arch (vanilla post-LN transformer with
+    ## sinusoidal absolute PE) has no HuggingFace counterpart, so the
+    ## registered converter is a ForgatherOnlyConverter.
+    -- set ns.forgather_arch = "dynamic_causal_transformer"
+    -- set ns.forgather_arch_version = "1"
 
 [model_tokenizer]
     ## Default tokenizer

@@ -39,7 +39,8 @@ from forgather.ml.utils import default_dtype
 from ..distributed import DistributedEnvInterface, prefix_logger_rank
 from ..loss import RescaleLoss
 from ..no_init_weights import no_init_weights
-from ..optim.opt_utils import OptimGroupMap, build_parameter_groups
+from ..optim.multiopt import Multiopt
+from ..optim.opt_utils import OptimGroupMap, build_optimizer_buckets
 from ..sharded_checkpoint import (
     create_sharing_metadata,
     find_latest_checkpoint,
@@ -1009,15 +1010,30 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
         assert self.model is not None
         if self.optimizer is None:
             assert self.optimizer_factory is not None
-            if self.optimizer_groups is not None:
-                param_groups = build_parameter_groups(
+            if self.optimizer_groups:
+                buckets = build_optimizer_buckets(
                     self.model.named_parameters(),
                     self.optimizer_groups,
-                    self.args.debug_optimizer_groups,
+                    default_factory=self.optimizer_factory,
+                    debug=self.args.debug_optimizer_groups,
                 )
+                if len(buckets) == 1:
+                    factory, param_groups = buckets[0]
+                    self.optimizer = factory(param_groups)
+                else:
+                    if self.args.fuse_optim_with_backward:
+                        raise ValueError(
+                            "fuse_optim_with_backward is incompatible with "
+                            "multiple per-group optimizer factories: the "
+                            "per-parameter post-accumulate hook can only "
+                            "drive a single optimizer instance."
+                        )
+                    self.optimizer = cast(
+                        Any,
+                        Multiopt([factory(pg) for factory, pg in buckets]),
+                    )
             else:
-                param_groups = self.model.named_parameters()
-            self.optimizer = self.optimizer_factory(param_groups)
+                self.optimizer = self.optimizer_factory(self.model.named_parameters())
 
             # Combine backward with optimizer step?
             if self.args.fuse_optim_with_backward:
@@ -1406,6 +1422,57 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
             train_steps - self.args.speed_metrics_start_step,
         )
 
+    @staticmethod
+    def _format_zero_eval_batches_diagnostic(
+        header: str,
+        settings: list[tuple[str, Any]],
+        explanation: str,
+    ) -> str:
+        """Render a zero-eval-batches diagnostic with a uniform shape.
+
+        Subclasses build ``settings`` and ``explanation`` to add their own
+        context (e.g. distributed dispatch flags) without restating the
+        framing or the doc reference.
+        """
+        width = max(len(name) for name, _ in settings)
+        settings_block = "\n".join(
+            f"  {name.ljust(width)} = {value}" for name, value in settings
+        )
+        return (
+            f"{header}\n"
+            "\n"
+            f"Effective settings:\n{settings_block}\n"
+            "\n"
+            f"{explanation}\n"
+            "\n"
+            "See docs/trainers/distributed-eval-zero-batches.md for the\n"
+            "full diagnosis and the available remedies."
+        )
+
+    def _zero_eval_batches_message(self) -> str:
+        """Build a diagnostic for the eval dataloader yielding zero batches.
+
+        The base implementation surfaces the settings most likely to be
+        responsible (eval batch size, drop_last, max_eval_steps). Distributed
+        subclasses override this to also report ``dispatch_batches`` /
+        ``dispatch_eval_batches`` and the world size, since those interact
+        with sharded eval splits.
+        """
+        return self._format_zero_eval_batches_diagnostic(
+            header="The eval dataloader did not yield any examples.",
+            settings=[
+                ("per_device_eval_batch_size", self.args.per_device_eval_batch_size),
+                ("dataloader_drop_last", self.args.dataloader_drop_last),
+                ("max_eval_steps", self.args.max_eval_steps),
+            ],
+            explanation=(
+                "The eval split may simply be empty, or the dataloader may\n"
+                "have dropped every batch because the dataset has fewer than\n"
+                "per_device_eval_batch_size examples and\n"
+                "dataloader_drop_last is True."
+            ),
+        )
+
     @override
     @torch.no_grad()
     def _eval_loop(self) -> Dict[str, float]:
@@ -1426,7 +1493,8 @@ class Trainer(BaseTrainer[TTrainingArguments], Generic[TTrainingArguments]):
                 assert loss is not None
                 total_loss += loss
                 self._dispatch_event("on_prediction_step")
-            assert step >= 0, "The eval dataloader did not yield any examples"
+            if step < 0:
+                raise RuntimeError(self._zero_eval_batches_message())
 
             metrics = {"eval_loss": (total_loss / (step + 1)).item()}
             if isinstance(self.eval_dataloader, StatefulDataLoader):

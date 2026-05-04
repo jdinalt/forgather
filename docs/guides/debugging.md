@@ -192,5 +192,5 @@ ValueError: Module of type 'MyModule' has parameters, but lacks a 'reset_paramet
 Install the Forgather syntax highlighting plugins for your editor. They make
 template files significantly easier to read and errors easier to spot.
 
-- [Vim](../../syntax_highlighting/vim/vim-syntax-install.md)
-- [VS Code](../../syntax_highlighting/vscode/README.md)
+- [Vim](../syntax_highlighting/vim/vim-syntax-install.md)
+- [VS Code](../syntax_highlighting/vscode/README.md)

@@ -9,4 +9,4 @@ Forgather integration with Torch Titan
 - **[test_parallelisms/](./test_parallelisms/README.md)** - Compares various parallelism strategies (DDP, tensor parallel, pipeline parallel, etc.) against a single-GPU control with matched effective batch size.
 
 
-For an overview of the Native Titan vs Forgather Titan approaches and general usage, see **[docs/trainers/torchtitan.md](../../docs/trainers/torchtitan.md)**.
+For an overview of the Native Titan vs Forgather Titan approaches and general usage, see **[docs/trainers/torchtitan.md](../../trainers/torchtitan.md)**.

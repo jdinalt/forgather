@@ -8,7 +8,7 @@ together.
 
 **What you'll do:**
 
-1. [Install Forgather + build the web UI](#1-install-and-build)
+1. [Install Forgather](#1-install)
 2. [Start the server and connect](#2-start-the-server-and-connect)
 3. [Serve the docs (optional)](#3-serve-the-docs)
 4. [Find the Tiny Llama tutorial project](#4-find-the-tiny-llama-project)
@@ -17,13 +17,14 @@ together.
 7. [Watch the run](#7-watch-the-run)
 8. [Serve the trained model](#8-serve-the-trained-model)
 9. [Generate text from the new model](#9-generate-text)
+10. [Train the model for chat](#10-train-the-model-for-chat)
 
 **What you'll need:**
 
 - A Linux machine with at least one CUDA-capable GPU (the example uses
   two; one works too — see below).
 - Python 3.12+ and Node.js / npm. See
-  [Getting Started](../getting-started/README.md) for distro-specific
+  [Installation](../getting-started/installation.md) for distro-specific
   install commands.
 - A local browser. If your training host is remote, you'll set up SSH
   port forwarding in step 2.
@@ -34,28 +35,11 @@ an RTX 4090, longer on smaller GPUs).
 
 ---
 
-## 1. Install and build
+## 1. Install
 
-If you haven't already, follow [Getting Started](../getting-started/README.md)
-through the install + cut-cross-entropy steps. That gets you a working
-`forgather` CLI and its dependencies.
+If you haven't already, follow [Installation](../getting-started/installation.md)
 
-Then build the web UI:
-
-```bash
-cd tools/forgather_server/webui
-npm install          # ~2 minutes on first run, fetches Vite + React
-                     # + Monaco + viz-js (the WASM Graphviz)
-npm run build        # produces webui/dist/
-```
-
-`npm install` pulls in a sizeable Node dependency tree the first time
-through — go grab a coffee. The build itself is fast. You only need
-to repeat this if you pull changes that touch `webui/src/`.
-
-> **Heads-up:** if you start the server before the `dist/` directory
-> exists, the API still works but the root URL returns 404 with no
-> message. Easy to misdiagnose as a port-forwarding issue.
+The Docker install is the recommended method.
 
 ## 2. Start the server and connect
 
@@ -63,15 +47,49 @@ to repeat this if you pull changes that touch `webui/src/`.
 forgather server
 ```
 
-Defaults to `http://127.0.0.1:8765/`. If your training host is local,
-just open that URL in your browser.
+Defaults to `http://localhost:8765/`. On startup you'll see a banner
+with a one-shot login URL:
 
-If the host is remote, set up SSH port forwarding from your laptop —
-forwarding the canonical ports for the Forgather server, inference
-jobs, TensorBoard, and MkDocs all at once is convenient because every
-spawned tool lives at a known port:
+```
+    Forgather server is running at:
+        http://127.0.0.1:8765/?token=4c4febdc07830cdd…
+        http://localhost:8765/?token=4c4febdc07830cdd…
+
+    CLI auth: token in /home/<user>/.forgather/server/auth_token (mode 0600)
+    First successful token login will prompt to set a password for future browser logins.
+```
+
+Click (or paste) that URL into a browser on the same machine. Most
+GUI terminals need **Ctrl+click** (rather than a plain click) to
+open a link in your browser; on macOS Terminal use **⌘+click**. The
+token is stripped from the address bar after it's exchanged for a
+session cookie, so it won't end up in your history. On a successful
+first login you'll be prompted to **set a password** — handy because
+future browser logins can use the password instead of the
+64-character token. Skipping is fine; you can always sign in with
+the token again.
+
+Without the URL, the same page shows a login form that accepts either
+the token or the password. The token sits at
+`~/.forgather/server/auth_token` (mode 0600); print it with
+`cat ~/.forgather/server/auth_token` if you ever need it again.
+
+> **Why a token?** A loopback-bound server is reachable by _any_
+> local user on the host, not just you. The token gates that
+> exposure. CLI commands (`forgather sched`, `forgather job`,
+> `forgather train --enqueue`, …) read the token file
+> automatically — you never paste it on the command line.
+
+If your training host is remote, set up SSH port forwarding on the remote
+ — forwarding the canonical ports for the Forgather server,
+inference jobs, TensorBoard, and MkDocs all at once is convenient
+because every spawned tool lives at a known port:
 
 ```bash
+# Forgather Server: 8765
+# Inference Server: 8137
+# TensorBoard: 6006
+# MkDocs: 8000
 ssh -L 8765:localhost:8765 \
     -L 8137:localhost:8137 \
     -L 6006:localhost:6006 \
@@ -79,9 +97,21 @@ ssh -L 8765:localhost:8765 \
     user@dev-host
 ```
 
-Then open <http://localhost:8765/> on the laptop. The
+Then open <http://localhost:8765/> on the remote. The token printed
+on the remote console works as-is over the tunnel — paste it (or the
+full URL) into the laptop's browser. If you also want to run
+`forgather` CLI commands _from the laptop_ against the tunnelled
+server, point them at the remote token file:
+
+```bash
+export FORGATHER_SERVER_TOKEN=$(ssh dev-host cat .forgather/server/auth_token)
+forgather sched status
+```
+
+The
 [Getting Started SSH section](../getting-started/README.md#accessing-a-remote-server-over-ssh)
-has a `~/.ssh/config` snippet you can drop in to make this permanent.
+has a `~/.ssh/config` snippet you can drop in to make the port
+forwarding permanent.
 
 > **Heads-up: prefer `localhost` over `127.0.0.1`.** They're not
 > always interchangeable on the client side. Some browser
@@ -112,7 +142,7 @@ repo root); leave the rest at defaults and submit.
 
 ![MkDocs… modal with default values](screenshots/02-mkdocs-modal.png)
 
-> **Heads-up:** the *first* `mkdocs serve` build is slow — a couple
+> **Heads-up:** the _first_ `mkdocs serve` build is slow — a couple
 > of minutes typically — because it has to render all the example
 > notebooks (`mkdocs-jupyter`). Subsequent rebuilds are quick.
 
@@ -152,7 +182,7 @@ in the right panel.
 
 Switch the left-panel mode bar to **tlist** to see the same templates
 listed alphabetically by category instead of as a graph. Both views
-are useful — trefs for understanding *which* templates compose the
+are useful — trefs for understanding _which_ templates compose the
 config, tlist for finding a specific template by name.
 
 Click **pp** to see the fully preprocessed YAML — the same thing
@@ -162,11 +192,23 @@ much the templates expand into.
 
 ![pp tab showing the preprocessed v2.yaml](screenshots/06-pp-tab.png)
 
+### 5.1 Start TensorBoard (optional)
+
+Before staring training, we can start TensorBoard to monitor the training job.
+
+Click the "TensorBoard..." button in the header (or right click on the configuration and
+select "Tensorboard..."). This will take you to the "Jobs" panel. You should see a "TB"
+card, where you can click on the URL to open TensorBoard. Once your training jobs starts,
+you can monitor progress from here.
+
+Now switch back to the Forgather Server WebUI and click on "Projects" in the sidebar to
+return to where we left off.
+
 ## 6. Queue and dispatch a training job
 
 Before submitting, it's worth understanding the queue/scheduler
-split: jobs are *enqueued* (added to the waiting queue) and then
-*dispatched* (handed to a process and assigned GPUs). The dispatcher
+split: jobs are _enqueued_ (added to the waiting queue) and then
+_dispatched_ (handed to a process and assigned GPUs). The dispatcher
 runs on a 2-second tick and picks idle GPUs based on priority + GPU
 policies.
 
@@ -181,7 +223,7 @@ job in the queue panel before it kicks off:
 
 ![Sidebar header showing the scheduler paused (⏸ button)](screenshots/07-scheduler-paused.png)
 
-If you have already run the Tiny Llama tutorial, clean the output artifacts by 
+If you have already run the Tiny Llama tutorial, clean the output artifacts by
 clicking on **Clean Output** first.
 
 Now back to **Projects → examples → tutorials → tiny_llama**. The
@@ -263,7 +305,6 @@ dir; leave the dtype / attention / cache impl at defaults and submit.
 
 ![Config context meu](screenshots/13.3-config-context-menu.png)
 
-
 ![Serve Inference modal with the trained tiny_llama model](screenshots/14-serve-inference-modal.png)
 
 The inference job appears in the **Jobs** panel like the training
@@ -307,6 +348,121 @@ The status line under the textarea reports tokens generated and
 elapsed time. Try a few prompts to get a feel for how the model
 behaves; flip back to **Model** to swap presets and see how the
 distribution changes.
+
+## 10. Train the model for chat
+
+If you tried the inference server's **Chat** tab, you'll have
+noticed that the tiny model has no concept of turn-taking — it just
+keeps generating. We can fix that by finetuning it on a chat-style
+dataset.
+
+### Finalize the base model
+
+Before finetuning, we **finalize** the base model. This builds a
+self-contained copy so the original training weights stay intact,
+and at the same time:
+
+- adds a chat template (ChatML by default),
+- adds chat-related special tokens (`<|im_start|>`, `<|im_end|>`)
+  and registers `<|im_end|>` as a stop token alongside the model's
+  EOS,
+- attaches a generation config preset,
+- strips redundant checkpoints, and
+- loads with `AutoModelForCausalLM.from_pretrained(...)`.
+
+In the **Projects** tree, right-click the `v2.yaml` config under
+`tiny_llama` and choose **Finalize Model…**.
+
+![Context menu with Finalize Model selected](screenshots/18-finalize-model-menu.png)
+
+The **Source** field is pre-filled with the trained Tiny Llama
+output. Set the **Output directory** (the screenshot uses the
+tutorial's `output_models/` directory) and give the new model a
+name — `v2_samantha` here.
+
+Leave the chat template at **ChatML** (you can override it if
+needed). The default **Add Tokens** entries add the ChatML special
+tokens and the `<|im_end|>` stop token. Optionally pick a
+**Generation Config** preset — `balanced` is a reasonable starting
+point.
+
+I have also checked `--root-copy`, which places the model weights directly in
+the root of the output directory, rather than in a `checkponints/` sub-directory.
+If you don't check this, symlinks to the checkpoint will be added instead.
+
+When the form looks right, click **Run finalize**. The new model is
+built in place and is ready to train on a chat dataset.
+
+![Finalize dialog](screenshots/19-finalize-dialog.png)
+
+### Set up the finetune config
+
+There's a [Samantha tutorial](../examples/finetune/samantha/README.md)
+dedicated to this kind of training, but here we'll use the generic
+**Finetune v2** project so you can see how the override system works
+from the UI.
+
+Navigate to **Projects → examples → base_lm_project**, right-click
+the **Finetune v2** config, and choose **Overrides…**.
+
+![Finetune v2 project](screenshots/20-finetunev2-project.png)
+
+The Overrides panel exposes the config's CLI arguments. **Finetune
+v2** has one required argument with no default — `--model-id-or-path`
+— so it's pre-expanded and highlighted red on first open.
+
+![Overrides dialog](screenshots/21-overrides-dialog.png)
+
+Fill in the fields:
+
+- **`--model-id-or-path`** — path to the finalized model
+  (`output_models/tiny_samantha`, or wherever you saved it).
+- Under **Data**, set **`--dataset-project`** to
+  `examples/datasets/QuixiAI` and **`--dataset-config`** to
+  `samantha-packed.yaml`.
+- **`--seq-len`** — `2048` (Tiny Llama's maximum sequence length).
+- **`--attn-implementation`** — `sdpa`. The project defaults to
+  `flex_attention`, which is the preferred setting for packed
+  datasets, but the upfront compile cost isn't worth it for a model
+  this small.
+- **`--compile`** — `false`, for the same reason: skip the Torch
+  compile step.
+
+Click **Save**. These overrides persist for this config. Switch to
+the **pp** tab to confirm — you'll see the override values baked
+into the preprocessed YAML.
+
+![Overrides settings](screenshots/22-overrides-settings.png)
+
+### Run the finetune
+
+If the inference server from the previous section is still running,
+switch to **Jobs** and abort it — we want the GPU back.
+
+Click **▶ Run** in the config viewer's header. In the submit modal,
+make sure **Requested GPUs** is `1` — the default trainer only
+supports a single GPU. (If you'd rather use multiple GPUs, change
+the trainer type to **DDP** in the config first.)
+
+The job auto-focuses in the **Jobs** panel once it starts so you
+can watch the loss come down. Finetuning is short.
+
+When the job finishes, right-click the **Finetune v2** config and
+choose **Serve Inference…**. The pre-filled defaults are fine — just
+click **Start server**.
+
+![Serve Inference on Finetune v2](screenshots/23-finetune-inference.png)
+
+Switch back to the **Inference** view and open the **Chat** tab.
+The model should now respect turn-taking.
+
+![Chat with turn-taking](screenshots/24-turn-taking.png)
+
+It's still a tiny model with very little training, so don't expect
+coherent answers. For something with a fighting chance of holding a
+conversation, see the
+[Small LLM Pretraining](../examples/pretrain/small-llm/README.md)
+example.
 
 ## What's next
 

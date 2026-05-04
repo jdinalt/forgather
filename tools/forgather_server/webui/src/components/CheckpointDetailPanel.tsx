@@ -69,7 +69,7 @@ export function CheckpointDetailPanel({
             onClick={() => setEvaluating(true)}
             title="Evaluate this checkpoint"
           >
-            ⚖ Evaluate…
+            📐 Evaluate…
           </button>
         </div>
       </header>

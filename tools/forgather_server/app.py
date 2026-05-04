@@ -9,9 +9,13 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.types import Scope
 
 from . import scheduler, search_roots
+from .auth import AuthMiddleware
+from .routes import auth as auth_routes
 from .routes import configs as configs_routes
+from .routes import docs as docs_routes
 from .routes import fs as fs_routes
 from .routes import generation_configs as generation_configs_routes
 from .routes import gpus as gpus_routes
@@ -21,6 +25,7 @@ from .routes import models as models_routes
 from .routes import projects as projects_routes
 from .routes import queue as queue_routes
 from .routes import search_roots as search_roots_routes
+from .routes import tb_proxy as tb_proxy_routes
 
 log = logging.getLogger("forgather_server")
 
@@ -47,20 +52,41 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    # Mount the OpenAPI schema and Swagger / Redoc UIs under ``/api/`` so
+    # AuthMiddleware gates them. The defaults (``/openapi.json``, ``/docs``,
+    # ``/redoc``) bypass the gate and leak the full route map — including
+    # parameter shapes — to any local user, which violates the
+    # other-local-users-on-host threat model.
     app = FastAPI(
         title="Forgather Server",
         version="0.1.0",
         description="Web frontend for Forgather project and job management (prototype).",
         lifespan=lifespan,
+        openapi_url="/api/openapi.json",
+        docs_url="/api/docs",
+        redoc_url="/api/redoc",
+        swagger_ui_oauth2_redirect_url="/api/docs/oauth2-redirect",
     )
 
-    # Permissive CORS for localhost development — the Vite dev server runs on
-    # its own port and proxies /api, but a direct browser fetch for dev
-    # tooling is also useful.
+    # Auth middleware is added FIRST so CORS ends up outermost — that
+    # way preflight OPTIONS requests are answered by CORS without ever
+    # reaching the auth gate (browsers don't send credentials on
+    # preflight, so an auth check here would break every cross-origin
+    # request).
+    app.add_middleware(AuthMiddleware)
+
+    # CORS for the Vite dev server, which serves the SPA on its own port
+    # and proxies /api. ``allow_credentials`` must be true so the
+    # session cookie can flow back to the browser; that in turn forbids
+    # ``allow_origins=['*']`` per the CORS spec, so we list the dev
+    # server origins explicitly.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ],
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -95,9 +121,11 @@ def create_app() -> FastAPI:
             "identity": hashlib.sha256(repo.encode("utf-8")).hexdigest()[:12],
         }
 
+    app.include_router(auth_routes.router, prefix="/api")
     app.include_router(search_roots_routes.router, prefix="/api")
     app.include_router(projects_routes.router, prefix="/api")
     app.include_router(configs_routes.router, prefix="/api")
+    app.include_router(docs_routes.router, prefix="/api")
     app.include_router(fs_routes.router, prefix="/api")
     app.include_router(generation_configs_routes.router, prefix="/api")
     app.include_router(gpus_routes.router, prefix="/api")
@@ -105,10 +133,49 @@ def create_app() -> FastAPI:
     app.include_router(jobs_routes.router, prefix="/api")
     app.include_router(models_routes.router, prefix="/api")
     app.include_router(queue_routes.router, prefix="/api")
+    # Auth-gated reverse proxy to spawned TensorBoard instances. Defaults
+    # in tensorboard_ops bind TB to loopback so other local users can't
+    # reach it directly; this proxy mounts it under /api/tb/{job_id}/...
+    # so the webui (gated by AuthMiddleware above) can still serve it.
+    app.include_router(tb_proxy_routes.router, prefix="/api")
 
     # Serve the built webui if it's present.
     webui_dist = Path(__file__).resolve().parent / "webui" / "dist"
     if webui_dist.is_dir():
-        app.mount("/", StaticFiles(directory=str(webui_dist), html=True), name="webui")
+        app.mount(
+            "/",
+            CachingStaticFiles(directory=str(webui_dist), html=True),
+            name="webui",
+        )
 
     return app
+
+
+class CachingStaticFiles(StaticFiles):
+    """StaticFiles with SPA-correct Cache-Control headers.
+
+    Vite emits content-hashed filenames under ``/assets/`` and a single
+    ``index.html`` at the root that references them. The bundles are
+    safe to cache forever (their names change when contents change),
+    but ``index.html`` must always be revalidated — otherwise the
+    browser keeps loading old hashed bundles after a redeploy. By
+    default Starlette emits no ``Cache-Control`` for either, leaving
+    browsers to fall back to heuristic freshness, which on
+    ``index.html`` means a freshly-rebuilt webui can stay invisible
+    until the user issues a hard reload (Ctrl+Shift+R).
+    """
+
+    async def get_response(self, path: str, scope: Scope):
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            if path.startswith("assets/"):
+                response.headers["cache-control"] = (
+                    "public, max-age=31536000, immutable"
+                )
+            else:
+                # index.html and any other top-level file: always
+                # revalidate. ``no-cache`` still uses the conditional
+                # ETag/Last-Modified round-trip, so unchanged files
+                # answer with a 304 — cheap, and correct.
+                response.headers["cache-control"] = "no-cache"
+        return response

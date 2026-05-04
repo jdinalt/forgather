@@ -1,15 +1,12 @@
 -- extends "list_base.yaml"
 
 ## Override config name
--- block project_meta
+[project_meta]
     == super()
     -- set ns.config_name = "A short list"
-<< endblock project_meta
 
-
--- block list
+[list]
     - Alpha
     - Bravo
     - Charlie
     - Delta
-<< endblock list

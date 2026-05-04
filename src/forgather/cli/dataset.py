@@ -1,3 +1,4 @@
+import itertools
 import os
 
 import torch
@@ -12,6 +13,47 @@ from forgather.ml.datasets import (
 
 from .dynamic_args import get_dynamic_args
 from .utils import assert_project_class, write_output_or_edit
+
+
+def _detect_tokenized(example) -> bool:
+    """Heuristic: a dataset is tokenized if examples carry ``input_ids``
+    whose elements are ints. Plain-text datasets expose string-valued
+    features (``text``, ``content``, …) and lack ``input_ids`` entirely.
+
+    The first element is enough to disambiguate — text fields don't
+    survive HF's column dtype unification as a list of ints, and
+    tokenized fields don't survive as strings. Empty ``input_ids`` is
+    rare but treated as tokenized (the field exists).
+    """
+    if not isinstance(example, dict):
+        return False
+    if "input_ids" not in example:
+        return False
+    ids = example["input_ids"]
+    try:
+        if len(ids) == 0:
+            return True
+        first = ids[0]
+    except TypeError:
+        return False
+    # bool is a subclass of int; explicitly reject it. torch tensors return
+    # 0-d tensors when indexed with [0] for 1-d, so accept those via .item().
+    if isinstance(first, bool):
+        return False
+    if isinstance(first, int):
+        return True
+    if torch.is_tensor(first):
+        try:
+            return first.dtype in (
+                torch.int8,
+                torch.int16,
+                torch.int32,
+                torch.int64,
+                torch.uint8,
+            )
+        except AttributeError:
+            return False
+    return False
 
 
 def dataset_cmd(args):
@@ -72,6 +114,31 @@ def dataset_cmd(args):
 
     split = proj(args.target, **template_args)
 
+    # Resolve tokenized/raw once up-front so both histogram and examples
+    # branches see a consistent answer. The deprecated --tokenized flag
+    # forces the choice; otherwise we peek the first example. The peeked
+    # example is chained back onto ``split`` so downstream iteration
+    # doesn't lose it (matters for IterableDatasets, which have no
+    # cheap reset).
+    if args.tokenized:
+        tokenized = True
+    else:
+        iterator = iter(split)
+        peeked = None
+        try:
+            peeked = next(iterator)
+        except StopIteration:
+            pass
+        if peeked is None:
+            tokenized = False
+        else:
+            tokenized = _detect_tokenized(peeked)
+            print(
+                f"Auto-detected dataset format: "
+                f"{'tokenized' if tokenized else 'raw text'}"
+            )
+            split = itertools.chain([peeked], iterator)
+
     if args.histogram:
         assert args.tokenizer_path, "Tokenizer must be provided to plot histogram"
         args.project_dir
@@ -80,7 +147,7 @@ def dataset_cmd(args):
         cfg_name += ".svg"
         histogram_path = os.path.join(os.path.realpath(args.project_dir), cfg_name)
         print(f"Generating token-length histogram: {histogram_path}")
-        if not args.tokenized:
+        if not tokenized:
             plot_token_length_histogram(
                 split,
                 tokenizer=tokenizer,
@@ -113,12 +180,12 @@ def dataset_cmd(args):
 
         print(f"Printing {args.examples} examples from the dataset (stride={stride}):")
 
-        if args.tokenized:
+        if tokenized:
             assert tokenizer, "Decoding a tokenized dataset requires the tokenizer"
             example_count = 0
             dataset_index = 0
 
-            for example in split:
+            for i, example in enumerate(split):
                 # Check if this is an index we want to print
                 if dataset_index % stride == 0 and example_count < args.examples:
                     input_ids = example["input_ids"]
@@ -126,7 +193,7 @@ def dataset_cmd(args):
                     # Use explicit document boundaries if available (preferred)
                     if document_starts:
                         n_documents = len(document_starts)
-                        print(f"Document Starts: {document_starts}")
+                        print(f"Document Starts[{i}]: {document_starts}")
                     # Fall back to counting EOS tokens (legacy, less reliable)
                     elif tokenizer.eos_token_id is not None:
                         n_documents = (

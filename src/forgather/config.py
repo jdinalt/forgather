@@ -6,7 +6,10 @@ from pathlib import Path
 from pprint import pformat
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
-from jinja2 import Environment, meta
+import yaml
+from jinja2 import Environment
+from jinja2 import exceptions as jinja2_exceptions
+from jinja2 import meta
 from platformdirs import user_config_dir
 from yaml import SafeLoader
 
@@ -20,7 +23,7 @@ from .latent import (
     SingletonNode,
     VarNode,
 )
-from .preprocess import PPEnvironment
+from .preprocess import ConfigDiagnostic, PPEnvironment, PreprocessError, capture_pp
 from .utils import (
     AutoName,
     add_exception_notes,
@@ -37,6 +40,45 @@ from .yaml_utils import (
     tuple_constructor,
     var_constructor,
 )
+
+
+class YamlParseError(ConfigDiagnostic):
+    """yaml.YAMLError raised while parsing the preprocessed config text."""
+
+    kind = "yaml_error"
+
+
+class CodeGenError(ConfigDiagnostic):
+    """Failure during ``forgather.codegen.generate_code`` for a given target.
+
+    Covers missing-target lookups (``KeyError`` for an unknown ``target=``)
+    and any exception raised by the encoder / Jinja2 code template render.
+    """
+
+    kind = "code_error"
+
+
+def _format_source_excerpt(source: str, lineno: int | None, *, context: int = 5) -> str:
+    """Return a line-numbered excerpt of *source* around *lineno*.
+
+    The line at ``lineno`` (1-based) is marked with ``>`` so the offending
+    line is visually obvious in a ``<pre>`` block. ``context`` lines on
+    each side are included. If ``lineno`` is None or out of range, the full
+    source is returned with line numbers via :func:`format_line_numbers`.
+    """
+    if not source:
+        return ""
+    lines = source.splitlines()
+    if lineno is None or lineno < 1 or lineno > len(lines):
+        return format_line_numbers(source).rstrip("\n")
+    start = max(1, lineno - context)
+    end = min(len(lines), lineno + context)
+    out = []
+    width = len(str(end))
+    for i in range(start, end + 1):
+        marker = ">" if i == lineno else " "
+        out.append(f"{marker} {i:>{width}}: {lines[i - 1]}")
+    return "\n".join(out)
 
 
 class ConfigText(str):
@@ -362,8 +404,63 @@ class ConfigEnvironment:
             The rendered YAML text.  :class:`ConfigText` is a ``str`` subclass
             that additionally exposes :meth:`~ConfigText.with_line_numbers`.
         """
-        template = self.pp_environment.get_template(str(config_path))
-        return ConfigText(template.render(**kwargs))
+        try:
+            template = self.pp_environment.get_template(str(config_path))
+            return ConfigText(template.render(**kwargs))
+        except jinja2_exceptions.TemplateError as exc:
+            raise self._wrap_template_error(exc, str(config_path)) from exc
+
+    def preprocess_with_trace(
+        self,
+        config_path: os.PathLike | str,
+        /,
+        **kwargs,
+    ) -> Tuple["ConfigText", List[Tuple[str, str]]]:
+        """Preprocess *config_path* and also return the per-template trace.
+
+        Runs :meth:`preprocess` inside :func:`capture_pp` so the second element
+        of the returned tuple is the ordered list of
+        ``(template_name, preprocessed_source)`` pairs that participated in the
+        render — the same data that ``pp_verbose`` prints to stdout, but
+        returned programmatically.
+
+        Returns
+        -------
+        (ConfigText, list[tuple[str, str]])
+            The fully rendered text plus the per-template trace (load order).
+        """
+        with capture_pp() as trace:
+            text = self.preprocess(config_path, **kwargs)
+        return text, list(trace)
+
+    @staticmethod
+    def _wrap_template_error(
+        exc: jinja2_exceptions.TemplateError, config_path: str
+    ) -> PreprocessError:
+        """Convert a Jinja2 ``TemplateError`` into a structured ``PreprocessError``."""
+        template_name: Optional[str] = None
+        lineno: Optional[int] = None
+        source_context: Optional[str] = None
+        message = str(exc)
+
+        if isinstance(exc, jinja2_exceptions.TemplateSyntaxError):
+            template_name = exc.name or exc.filename or config_path
+            lineno = exc.lineno
+            message = exc.message or message
+            if exc.source:
+                source_context = _format_source_excerpt(exc.source, lineno)
+        else:
+            # UndefinedError, TemplateNotFound, etc. — fall back to whatever
+            # contextual info is available; line info usually missing.
+            template_name = getattr(exc, "name", None) or config_path
+
+        return PreprocessError(
+            message,
+            template_name=template_name,
+            lineno=lineno,
+            source_context=source_context,
+            original=exc,
+        )
 
     def preprocess_from_string(
         self,
@@ -472,11 +569,90 @@ class ConfigEnvironment:
         try:
             loaded_config = load_depth_first(pp_config, Loader=ConfigLoader)
             Latent.check(loaded_config)
+        except yaml.YAMLError as error:
+            note = format_line_numbers(pp_config)
+            raise self._wrap_yaml_error(error, pp_config) from add_exception_notes(
+                error, note
+            )
         except Exception as error:
             raise add_exception_notes(error, format_line_numbers(pp_config))
         if isinstance(loaded_config, dict):
             loaded_config = ConfigDict(loaded_config)
         return Config(loaded_config, pp_config)
+
+    def render_code(
+        self,
+        config_path: os.PathLike | str,
+        /,
+        *,
+        target: Optional[str] = "main",
+        **kwargs,
+    ) -> str:
+        """Render *config_path* as Python source via :func:`forgather.codegen.generate_code`.
+
+        Mirrors the ``forgather code`` CLI: preprocesses + parses the config,
+        looks up *target* (default ``"main"``) in the resulting node graph,
+        and runs the codegen template. When *target* is ``None`` the entire
+        config graph is rendered (useful for reviewing every materialisable
+        target in one document).
+
+        Raises
+        ------
+        PreprocessError
+            Jinja2 preprocessing failed (delegated from :meth:`preprocess`).
+        YamlParseError
+            The preprocessed text was not valid YAML.
+        CodeGenError
+            *target* was not found in the config or codegen itself raised.
+        """
+        from .codegen import generate_code  # avoid cycle at import time
+
+        config = self.load(config_path, **kwargs).config
+        if target is None:
+            obj = config
+        else:
+            try:
+                obj = config[target]
+            except (KeyError, TypeError) as exc:
+                available = sorted(config.keys()) if isinstance(config, Mapping) else []
+                raise CodeGenError(
+                    f"target {target!r} not found in config "
+                    f"(available: {', '.join(available) if available else '<none>'})",
+                    template_name=str(config_path),
+                    original=exc,
+                ) from exc
+        try:
+            return generate_code(obj)
+        except Exception as exc:
+            raise CodeGenError(
+                str(exc),
+                template_name=str(config_path),
+                original=exc,
+            ) from exc
+
+    @staticmethod
+    def _wrap_yaml_error(exc: yaml.YAMLError, pp_config: str) -> "YamlParseError":
+        """Convert ``yaml.YAMLError`` into a structured :class:`YamlParseError`."""
+        lineno: Optional[int] = None
+        message = str(exc)
+        # Most yaml errors expose problem_mark / problem; MarkedYAMLError is the
+        # common base. We use problem_mark for line/column and problem for the
+        # short message; everything else falls back to ``str(exc)``.
+        problem_mark = getattr(exc, "problem_mark", None)
+        if problem_mark is not None:
+            lineno = problem_mark.line + 1  # PyYAML marks are 0-based
+        problem = getattr(exc, "problem", None)
+        context = getattr(exc, "context", None)
+        if problem:
+            message = f"{context}: {problem}" if context else problem
+        source_context = _format_source_excerpt(pp_config, lineno)
+        return YamlParseError(
+            message,
+            template_name="<preprocessed>",
+            lineno=lineno,
+            source_context=source_context,
+            original=exc,
+        )
 
     def find_referenced_templates(
         self,

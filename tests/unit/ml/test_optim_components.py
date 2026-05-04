@@ -25,7 +25,9 @@ from torch.optim.lr_scheduler import SequentialLR, StepLR
 from forgather.ml.optim.adamw import AdamW
 from forgather.ml.optim.cosine_lr_scheduler import CosineLRScheduler
 from forgather.ml.optim.infinite_lr_scheduler import InfiniteLRScheduler
+from forgather.ml.optim.multiopt import Multiopt
 from forgather.ml.optim.opt_utils import (
+    build_optimizer_buckets,
     build_parameter_groups,
     make_grouped_optimizer,
 )
@@ -443,6 +445,204 @@ class TestMakeGroupedOptimizer:
         assert isinstance(optimizer, torch.optim.SGD)
         assert optimizer.param_groups[0]["momentum"] == 0.9
         assert optimizer.param_groups[0]["lr"] == 1e-3
+
+
+class TestBuildOptimizerBuckets:
+    """Tests for build_optimizer_buckets."""
+
+    def test_single_default_factory_one_bucket(self):
+        """All groups resolve onto the default factory → 1 bucket, multiple param groups."""
+        model = TwoLayerModel()
+        default_factory = partial(torch.optim.SGD, lr=0.0)
+        optimizer_groups = {
+            "weight_group": {
+                "regex": r"weight",
+                "config": {"lr": 1e-3},
+            },
+            "bias_group": {
+                "regex": r"bias",
+                "config": {"lr": 1e-4},
+            },
+        }
+
+        buckets = build_optimizer_buckets(
+            model.named_parameters(),
+            optimizer_groups,
+            default_factory=default_factory,
+        )
+
+        assert len(buckets) == 1
+        factory, param_groups = buckets[0]
+        assert factory is default_factory
+        assert len(param_groups) == 2
+        assert param_groups[0]["lr"] == 1e-3
+        assert param_groups[1]["lr"] == 1e-4
+
+    def test_distinct_per_group_factories(self):
+        """Two groups with different `factory` entries → 2 buckets in declared order."""
+        model = TwoLayerModel()
+        default_factory = partial(torch.optim.SGD, lr=0.0)
+        weight_factory = partial(torch.optim.SGD, lr=0.5)
+        bias_factory = partial(torch.optim.Adam, lr=0.25)
+        optimizer_groups = {
+            "weight_group": {"regex": r"weight", "factory": weight_factory},
+            "bias_group": {"regex": r"bias", "factory": bias_factory},
+        }
+
+        buckets = build_optimizer_buckets(
+            model.named_parameters(),
+            optimizer_groups,
+            default_factory=default_factory,
+        )
+
+        assert [factory for factory, _ in buckets] == [weight_factory, bias_factory]
+        for _factory, param_groups in buckets:
+            assert len(param_groups) == 1
+
+    def test_mixed_explicit_and_default_factory(self):
+        """A group without `factory` falls back to default; bucket order is declaration order."""
+        model = TwoLayerModel()
+        default_factory = partial(torch.optim.SGD, lr=0.0)
+        weight_factory = partial(torch.optim.Adam, lr=0.5)
+        optimizer_groups = {
+            "weight_group": {"regex": r"weight", "factory": weight_factory},
+            "bias_group": {"regex": r"bias", "config": {"lr": 1e-4}},
+        }
+
+        buckets = build_optimizer_buckets(
+            model.named_parameters(),
+            optimizer_groups,
+            default_factory=default_factory,
+        )
+
+        assert [factory for factory, _ in buckets] == [weight_factory, default_factory]
+        # Default-factory bucket has bias_group with its config override.
+        assert buckets[1][1][0]["lr"] == 1e-4
+
+    def test_unmatched_params_join_default_bucket(self):
+        """Implicit fall-through groups merge into the default factory bucket."""
+        model = TwoLayerModel()
+        default_factory = partial(torch.optim.SGD, lr=0.0)
+        weight_factory = partial(torch.optim.Adam, lr=0.5)
+        optimizer_groups = {
+            "weight_group": {"regex": r"weight", "factory": weight_factory},
+        }
+
+        buckets = build_optimizer_buckets(
+            model.named_parameters(),
+            optimizer_groups,
+            default_factory=default_factory,
+        )
+
+        assert len(buckets) == 2
+        # Default bucket only contains the implicit fall-through group (biases).
+        default_bucket = buckets[1]
+        assert default_bucket[0] is default_factory
+        assert len(default_bucket[1]) == 1
+        names = [n for n, _ in default_bucket[1][0]["params"]]
+        assert all("bias" in n for n in names)
+
+    def test_same_factory_object_merges_buckets(self):
+        """Same factory reused across two groups → 1 bucket with both param groups."""
+        model = TwoLayerModel()
+        default_factory = partial(torch.optim.SGD, lr=0.0)
+        shared_factory = partial(torch.optim.Adam, lr=0.5)
+        optimizer_groups = {
+            "weight_group": {
+                "regex": r"weight",
+                "config": {"lr": 1e-3},
+                "factory": shared_factory,
+            },
+            "bias_group": {
+                "regex": r"bias",
+                "config": {"lr": 1e-4},
+                "factory": shared_factory,
+            },
+        }
+
+        buckets = build_optimizer_buckets(
+            model.named_parameters(),
+            optimizer_groups,
+            default_factory=default_factory,
+        )
+
+        assert len(buckets) == 1
+        factory, param_groups = buckets[0]
+        assert factory is shared_factory
+        assert len(param_groups) == 2
+
+    def test_empty_groups_filtered(self):
+        """Groups whose regex matches nothing are not emitted as buckets."""
+        model = TwoLayerModel()
+        default_factory = partial(torch.optim.SGD, lr=0.0)
+        explicit_factory = partial(torch.optim.Adam, lr=0.5)
+        optimizer_groups = {
+            "matches_nothing": {
+                "regex": r"this_will_not_match_anything",
+                "factory": explicit_factory,
+            },
+        }
+
+        buckets = build_optimizer_buckets(
+            model.named_parameters(),
+            optimizer_groups,
+            default_factory=default_factory,
+        )
+
+        # Only the implicit default-factory bucket survives.
+        assert len(buckets) == 1
+        assert buckets[0][0] is default_factory
+
+    def test_bad_factory_raises(self):
+        """A non-callable `factory` value is rejected at validation time."""
+        model = TwoLayerModel()
+        default_factory = partial(torch.optim.SGD, lr=0.0)
+        optimizer_groups = {
+            "broken": {"regex": r"weight", "factory": "not a callable"},
+        }
+
+        with pytest.raises(ValueError, match="factory.*callable"):
+            build_optimizer_buckets(
+                model.named_parameters(),
+                optimizer_groups,
+                default_factory=default_factory,
+            )
+
+    def test_buckets_drive_multiopt_state_dict_round_trip(self):
+        """End-to-end: build buckets, instantiate Multiopt, round-trip state_dict."""
+        model = TwoLayerModel()
+        default_factory = partial(torch.optim.SGD, lr=0.1)
+        adam_factory = partial(torch.optim.Adam, lr=0.01)
+        optimizer_groups = {
+            "weights": {"regex": r"weight", "factory": adam_factory},
+            "biases": {"regex": r"bias"},  # default factory
+        }
+
+        buckets = build_optimizer_buckets(
+            model.named_parameters(),
+            optimizer_groups,
+            default_factory=default_factory,
+        )
+        opt = Multiopt([factory(pg) for factory, pg in buckets])
+
+        # Take a step so the wrapped optimizers accumulate state.
+        x = torch.randn(2, 8)
+        loss = model(x).sum()
+        loss.backward()
+        opt.step()
+
+        # Round-trip the state dict into a freshly-built clone.
+        clone_buckets = build_optimizer_buckets(
+            model.named_parameters(),
+            optimizer_groups,
+            default_factory=default_factory,
+        )
+        clone = Multiopt([factory(pg) for factory, pg in clone_buckets])
+        clone.load_state_dict(opt.state_dict())
+
+        assert len(clone.optimizers) == len(opt.optimizers)
+        for src, dst in zip(opt.optimizers, clone.optimizers):
+            assert type(src) is type(dst)
 
 
 # ===========================================================================

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { DynamicArg } from "../api";
 import { DirectoryBrowser } from "./DirectoryBrowser";
 
@@ -6,20 +6,319 @@ export interface DynamicArgsFormProps {
   schema: DynamicArg[];
   values: Record<string, string>;
   onChange: (dest: string, value: string) => void;
+  /** When true, ``required: true`` flags drive the missing-arg highlighting
+   *  and tree expansion. Both SubmitModal and OverridesModal enable this so
+   *  the user lands directly on required fields they still need to fill in. */
+  enforceRequired?: boolean;
 }
 
-export function DynamicArgsForm({ schema, values, onChange }: DynamicArgsFormProps) {
+interface TreeNode {
+  name: string;
+  /** Stable path for React keys (colon-joined). */
+  path: string;
+  children: Record<string, TreeNode>;
+  args: DynamicArg[];
+}
+
+const OTHER_GROUP_NAME = "Other";
+
+function emptyNode(name: string, path: string): TreeNode {
+  return { name, path, children: {}, args: [] };
+}
+
+/** Bucket the flat schema into a group-path tree.
+ *
+ *  - Args with no ``group`` go straight into the root if no other arg has
+ *    a group (preserves the existing flat layout).
+ *  - As soon as one arg declares a group, ungrouped args are corraled
+ *    into an "Other" sibling at the root so the tree stays tidy.
+ *  - Group strings are colon-separated paths; whitespace + empty
+ *    segments are stripped so ``"Trainer:  :LR"`` collapses sensibly. */
+function buildTree(schema: DynamicArg[]): { root: TreeNode; grouped: boolean } {
+  const grouped = schema.some((a) => a.group);
+  const root = emptyNode("", "");
+  for (const a of schema) {
+    let parts: string[] = [];
+    if (a.group) {
+      parts = a.group
+        .split(":")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    } else if (grouped) {
+      parts = [OTHER_GROUP_NAME];
+    }
+    let cursor = root;
+    for (const p of parts) {
+      if (!cursor.children[p]) {
+        const childPath = cursor.path ? `${cursor.path}:${p}` : p;
+        cursor.children[p] = emptyNode(p, childPath);
+      }
+      cursor = cursor.children[p];
+    }
+    cursor.args.push(a);
+  }
+  return { root, grouped };
+}
+
+function sortedChildren(node: TreeNode): TreeNode[] {
+  return Object.values(node.children).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+}
+
+function sortedArgs(node: TreeNode): DynamicArg[] {
+  return [...node.args].sort((a, b) =>
+    a.cli_name.localeCompare(b.cli_name),
+  );
+}
+
+function isMissing(arg: DynamicArg, values: Record<string, string>): boolean {
+  const v = values[arg.dest];
+  return v == null || v === "";
+}
+
+/** True when the user (or a cached override) has supplied a non-empty
+ *  value for this arg. Used to drive the yellow "modified" highlight on
+ *  the field name and the path leading up to it. Empty string means
+ *  "fall back to template default" — explicitly *not* a modification. */
+function isModified(
+  arg: DynamicArg,
+  values: Record<string, string>,
+): boolean {
+  const v = values[arg.dest];
+  return v != null && v !== "";
+}
+
+/** True when the user has typed a numeric value that violates the
+ *  declared min/max. Empty / non-numeric inputs are *not* out-of-bounds —
+ *  they fall under "missing required" instead so the two states don't
+ *  double-flag the same field. Bounds are inclusive on both ends. */
+function isOutOfBounds(
+  arg: DynamicArg,
+  values: Record<string, string>,
+): boolean {
+  if (arg.type !== "int" && arg.type !== "float") return false;
+  if (arg.min == null && arg.max == null) return false;
+  const raw = values[arg.dest];
+  if (raw == null || raw === "") return false;
+  const n = arg.type === "int" ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
+  if (!Number.isFinite(n)) return false;
+  if (arg.min != null && n < arg.min) return true;
+  if (arg.max != null && n > arg.max) return true;
+  return false;
+}
+
+/** Human-readable bound suffix appended to the tooltip when an arg
+ *  declares any bound. Returns null when there's nothing to show so
+ *  the caller can fall back to the help text alone. */
+function formatBounds(arg: DynamicArg): string | null {
+  if (arg.type !== "int" && arg.type !== "float") return null;
+  if (arg.min == null && arg.max == null) return null;
+  if (arg.min != null && arg.max != null) {
+    return `range: [${arg.min}, ${arg.max}]`;
+  }
+  if (arg.min != null) return `min: ${arg.min}`;
+  return `max: ${arg.max}`;
+}
+
+function buildTitle(arg: DynamicArg): string | undefined {
+  const bounds = formatBounds(arg);
+  if (arg.help && bounds) return `${arg.help}\n(${bounds})`;
+  if (arg.help) return arg.help;
+  if (bounds) return bounds;
+  return undefined;
+}
+
+/** Recursively walk a subtree looking for required args the user has
+ *  not yet filled in. Drives the initial-expanded default in SubmitModal
+ *  (enforceRequired=true) so the user lands directly on the field they
+ *  need to set. */
+function subtreeHasMissingRequired(
+  node: TreeNode,
+  values: Record<string, string>,
+): boolean {
+  for (const a of node.args) {
+    if (a.required && isMissing(a, values)) return true;
+  }
+  for (const c of Object.values(node.children)) {
+    if (subtreeHasMissingRequired(c, values)) return true;
+  }
+  return false;
+}
+
+/** Recursively walk a subtree looking for any out-of-bounds value. Out
+ *  of bounds is a real problem regardless of which modal we're in, so
+ *  it always forces the path open on initial render. */
+function subtreeHasOutOfBounds(
+  node: TreeNode,
+  values: Record<string, string>,
+): boolean {
+  for (const a of node.args) {
+    if (isOutOfBounds(a, values)) return true;
+  }
+  for (const c of Object.values(node.children)) {
+    if (subtreeHasOutOfBounds(c, values)) return true;
+  }
+  return false;
+}
+
+/** Recursively walk a subtree to see if any leaf has a non-empty value
+ *  (i.e. is overriding the template default). Drives the yellow
+ *  "modified" highlight that propagates up the path so the user can spot
+ *  branches that contain overrides at a glance. */
+function subtreeHasModifications(
+  node: TreeNode,
+  values: Record<string, string>,
+): boolean {
+  for (const a of node.args) {
+    if (isModified(a, values)) return true;
+  }
+  for (const c of Object.values(node.children)) {
+    if (subtreeHasModifications(c, values)) return true;
+  }
+  return false;
+}
+
+/** Public helper used by SubmitModal to gate the Submit button. Returns
+ *  the dests of any required arg the user has not filled in. */
+export function listMissingRequired(
+  schema: DynamicArg[],
+  values: Record<string, string>,
+): DynamicArg[] {
+  return schema.filter((a) => a.required && isMissing(a, values));
+}
+
+/** Public helper for SubmitModal: dests with a user-supplied value that
+ *  violates the declared min/max. */
+export function listOutOfBounds(
+  schema: DynamicArg[],
+  values: Record<string, string>,
+): DynamicArg[] {
+  return schema.filter((a) => isOutOfBounds(a, values));
+}
+
+export function DynamicArgsForm({
+  schema,
+  values,
+  onChange,
+  enforceRequired = false,
+}: DynamicArgsFormProps) {
+  const { root, grouped } = useMemo(() => buildTree(schema), [schema]);
+
+  // Flat (no groups in the schema): render the original list, alphabetized.
+  if (!grouped) {
+    const flat = sortedArgs(root);
+    return (
+      <div className="dyn-args">
+        {flat.map((a) => (
+          <DynArgField
+            key={a.dest}
+            arg={a}
+            value={values[a.dest] ?? ""}
+            onChange={(v) => onChange(a.dest, v)}
+            missing={enforceRequired && a.required && isMissing(a, values)}
+            modified={isModified(a, values)}
+            outOfBounds={isOutOfBounds(a, values)}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  // Grouped: render top-level args (rare — schemas almost always nest) +
+  // a <details> per child group, recursively.
   return (
-    <div className="dyn-args">
-      {schema.map((a) => (
+    <div className="dyn-args dyn-args-grouped">
+      {sortedArgs(root).map((a) => (
         <DynArgField
           key={a.dest}
           arg={a}
           value={values[a.dest] ?? ""}
           onChange={(v) => onChange(a.dest, v)}
+          missing={enforceRequired && a.required && isMissing(a, values)}
+          modified={isModified(a, values)}
+          outOfBounds={isOutOfBounds(a, values)}
+        />
+      ))}
+      {sortedChildren(root).map((child) => (
+        <DynArgGroupNode
+          key={child.path}
+          node={child}
+          values={values}
+          onChange={onChange}
+          enforceRequired={enforceRequired}
         />
       ))}
     </div>
+  );
+}
+
+function DynArgGroupNode({
+  node,
+  values,
+  onChange,
+  enforceRequired,
+}: {
+  node: TreeNode;
+  values: Record<string, string>;
+  onChange: (dest: string, value: string) => void;
+  enforceRequired: boolean;
+}) {
+  // Initial expansion state computed once so the user can collapse a
+  // problem-containing group manually if they want. Subsequent renders
+  // only update the live highlight (driven separately).
+  //
+  // We deliberately do *not* expand on "modified" — overrides are an
+  // expected steady state, and forcing every group with a cached value
+  // open on every modal-open would defeat the collapsed-by-default
+  // layout. The yellow path highlight is enough to lead the user there.
+  // We only force-open on states that actually need attention: missing
+  // required args (when enforceRequired is on) and out-of-bounds values
+  // (always — it's a real problem regardless of modal mode).
+  const initialOpenRef = useRef<boolean | null>(null);
+  if (initialOpenRef.current === null) {
+    const needsAttention =
+      (enforceRequired && subtreeHasMissingRequired(node, values)) ||
+      subtreeHasOutOfBounds(node, values);
+    initialOpenRef.current = needsAttention;
+  }
+  const [open, setOpen] = useState<boolean>(initialOpenRef.current);
+
+  const liveModified = subtreeHasModifications(node, values);
+
+  const summaryClass =
+    "dyn-group-summary" + (liveModified ? " dyn-group-modified" : "");
+
+  return (
+    <details
+      className="dyn-group"
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+    >
+      <summary className={summaryClass}>{node.name}</summary>
+      <div className="dyn-group-body">
+        {sortedArgs(node).map((a) => (
+          <DynArgField
+            key={a.dest}
+            arg={a}
+            value={values[a.dest] ?? ""}
+            onChange={(v) => onChange(a.dest, v)}
+            missing={enforceRequired && a.required && isMissing(a, values)}
+            modified={isModified(a, values)}
+            outOfBounds={isOutOfBounds(a, values)}
+          />
+        ))}
+        {sortedChildren(node).map((child) => (
+          <DynArgGroupNode
+            key={child.path}
+            node={child}
+            values={values}
+            onChange={onChange}
+            enforceRequired={enforceRequired}
+          />
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -27,10 +326,16 @@ function DynArgField({
   arg,
   value,
   onChange,
+  missing,
+  modified,
+  outOfBounds,
 }: {
   arg: DynamicArg;
   value: string;
   onChange: (v: string) => void;
+  missing?: boolean;
+  modified?: boolean;
+  outOfBounds?: boolean;
 }) {
   const placeholder = arg.default != null ? String(arg.default) : `(${arg.type})`;
   const [browsing, setBrowsing] = useState(false);
@@ -116,6 +421,16 @@ function DynArgField({
       <input
         type={arg.type === "int" || arg.type === "float" ? "number" : "text"}
         step={arg.type === "float" ? "any" : undefined}
+        min={
+          (arg.type === "int" || arg.type === "float") && arg.min != null
+            ? arg.min
+            : undefined
+        }
+        max={
+          (arg.type === "int" || arg.type === "float") && arg.max != null
+            ? arg.max
+            : undefined
+        }
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -123,16 +438,31 @@ function DynArgField({
     );
   }
 
+  // ``missing`` (required + empty) and ``modified`` (non-empty) are
+  // mutually exclusive by construction, so the name colour ends up
+  // either red, yellow, or default. ``outOfBounds`` is orthogonal — a
+  // bad numeric value still gets a red border on top of the yellow name.
+  const fieldClass =
+    "dyn-field" +
+    (arg.required ? " dyn-field-required" : "") +
+    (missing ? " dyn-field-missing" : "") +
+    (modified && !missing ? " dyn-field-modified" : "") +
+    (outOfBounds ? " dyn-field-outofbounds" : "");
+
   return (
-    <div className="dyn-field">
+    <div className={fieldClass} title={buildTitle(arg)}>
       <label>
         <div className="dyn-name">
           <code>{arg.cli_name}</code>
+          {arg.required && (
+            <span className="dyn-required-tag" title="Required">
+              *
+            </span>
+          )}
           <span className="dyn-type muted">{arg.type}</span>
         </div>
         {widget}
       </label>
-      {arg.help && <div className="dyn-help muted">{arg.help}</div>}
       {browsing && (
         <DirectoryBrowser
           initialPath={value || undefined}

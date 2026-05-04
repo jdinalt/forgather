@@ -262,13 +262,13 @@
     -- set ns.seq_len = seq_len | default(512)
     -- set ns.per_device_train_batch_size = batch_size | default(32)
     -- set ns.gradient_accumulation_steps = gradient_accumulation_steps | default(1)
-    -- set ns.batch_density = 0.95
+    -- set ns.batch_density = batch_density | default(0.95)
 
     ## Step cadence
     -- set ns.step_cadence = step_cadence | default(1.0)
-    -- set ns.base_logging_tokens = 1
-    -- set ns.base_validation_tokens = 25
-    -- set ns.base_save_tokens = 500
+    -- set ns.base_logging_tokens = base_logging_tokens | default(1)
+    -- set ns.base_validation_tokens = base_validation_tokens | default(25)
+    -- set ns.base_save_tokens = base_save_tokens | default(500)
 
     ## Hardware
     -- set ns.peak_hardware_flops = peak_hardware_flops | default(get_peak_hardware_flops())
@@ -278,9 +278,9 @@
 
     ## LR scaling
     -- set ns.base_lr = lr | default(3e-4)
-    -- set ns.min_lr_ratio = 0.1
-    -- set ns.base_batch_size = 16384
-    -- set ns.lr_alpha = 0.5
+    -- set ns.min_lr_ratio = min_lr_ratio | default(0.1)
+    -- set ns.base_batch_size = base_batch_size | default(16384)
+    -- set ns.lr_alpha = lr_alpha | default(0.5)
 
     ## Trainer selection
     -- set ns.trainer_type = trainer_type | default("basic")
@@ -512,12 +512,19 @@ lr_scheduler: &lr_scheduler !partial:forgather.ml.optim:CosineLRScheduler@lr_sch
 optimizer: &optimizer !partial:torch:optim.AdamW
     lr: {{ ns.global_lr | toyaml }}
 
+[optimizer_factories]
+    ## Block for extending
+    [optimizer_factories_]
+    [no_decay_optim]
+.define: &no_decay_optim ~
+
 [optimizer_groups]
 optimizer_groups: &optimizer_groups
     no_decay:
         regex: 'norm|bias|embed|lm_head|alibi_slopes'
         config:
             weight_decay: 0.0
+        factory: *no_decay_optim
 
 ## ===== CLI arguments ========================================================
 ##
@@ -526,140 +533,244 @@ optimizer_groups: &optimizer_groups
     model_project:
         names: "--model-project"
         type: path
+        group: "Model"
         help: "Path to model project for model initialization"
     model_config:
         names: "--model-config"
+        group: "Model"
         help: "Model project configuration for model init"
     dataset_proj:
         names: "--dataset-project"
         type: path
+        group: "Data"
         help: "Path to dataset project"
     dataset_config:
         names: "--dataset-config"
+        group: "Data"
         help: "Dataset project configuration"
+    seq_len:
+        names: "--seq-len"
+        type: int
+        group: "Data"
+        min: 1
+        help: "Set maximum sequence length"
+    batch_density:
+        names: "--batch-density"
+        type: float
+        group: "Data"
+        min: 0
+        max: 1
+        help: "Estimated fraction of non-pad tokens per batch; used to correct token-count estimates"
     resume:
         names: "--resume"
         type: bool
-        help: "Resume from checkpoint"
+        group: "Trainer:Checkpointing"
+        help: "Resume from checkpoint. Defaults to 'auto'"
+    save_safetensors:
+        names: "--save-safetensors"
+        type: bool
+        group: "Trainer:Checkpointing"
+        help: "Save checkpoint using safe-tensors format"
     batch_size:
         names: "--batch-size"
         type: int
+        group: "Trainer:Batch"
+        min: 1
         help: "Set the per-device training batch size"
     gradient_accumulation_steps:
         names: "--gradient-accumulation-steps"
         type: int
+        group: "Trainer:Batch"
+        min: 1
         help: "Set the number of gradient accumulation steps"
     total_tokens:
         names: "--total-tokens"
         type: int
+        group: "Trainer:Schedule"
+        min: 1
         help: "Total training tokens (millions)"
     warmup_tokens:
         names: "--warmup-tokens"
         type: int
+        group: "Trainer:Schedule"
+        min: 0
         help: "Total warmup tokens (millions)"
     min_cooldown_tokens:
         names: "--min-cooldown-tokens"
         type: int
+        group: "Trainer:Schedule"
+        min: 0
         help: "Minimum tokens (millions) for LR decay phase"
-    seq_len:
-        names: "--seq-len"
-        type: int
-        help: "Set maximum sequence length"
     lr:
         names: "--lr"
         type: float
+        group: "Trainer:LR-scaling"
+        min: 0
         help: "Learning rate"
-    step_cadence:
-        names: "--step-cadence"
+    min_lr_ratio:
+        names: "--min-lr-ratio"
         type: float
-        help: "Scale log/eval/save intervals by this factor"
-    peak_hardware_flops:
-        names: "--peak-hardware-flops"
+        group: "Trainer:LR-scaling"
+        min: 0
+        max: 1
+        help: "The minimum LR ratio, relative to the base-lr"
+    base_batch_size:
+        names: "--base-batch-size"
+        type: int
+        group: "Trainer:LR-scaling"
+        min: 1
+        help: "Reference batch size (tokens) for LR scaling calculation"
+    lr_alpha:
+        names: "--lr_alpha"
         type: float
-        help: "Peak device FLOPS for MFU computation"
-    compile:
-        names: "--compile"
-        type: bool
-        help: "Enable torch.compile"
-    torch_compile_mode:
-        names: "--torch-compile-mode"
-        choices: [ "default", "max-autotune", "max-autotune-no-cudagraphs" ]
-        help: "Torch compile mode argument."
-    dispatch_batches:
-        names: "--dispatch-batches"
-        type: bool
-        help: "Dispatch all batches from rank-0 instead of sharding (DDP)"
-    default_dtype:
-        names: "--default-dtype"
-        choices: [ "float32", "bfloat16", "float16" ]
-        help: "Default torch dtype for model construction"
-    float32_matmul_precision:
-        names: "--float32-matmul-precision"
-        choices: [ "highest", "high", "medium" ]
-        help: "Approximate float32 matmul with bf16; highest = full float32"
-    mixed_precision:
-        names: "--mixed-precision"
-        choices: [ "bf16", "fp16", "no" ]
-        help: "Automatic Mixed Precision (AMP) dtype"
-    fp8_recipe:
-        names: "--fp8-recipe"
-        choices: [ "tensorwise", "rowwise", "rowwise_with_gw_hp" ]
-        help: "FP8 training recipe (torchao Float8Linear)"
+        group: "Trainer:LR-scaling"
+        min: 0
+        max: 1
+        help: "LR scaling exponent: 0.0 = no scaling, 0.5 = sqrt, 1.0 = linear"
+    max_grad_norm:
+        names: "--max-grad-norm"
+        type: float
+        group: "Trainer"
+        min: 0
+        help: "Maximum gradient norm for gradient clipping"
     seed:
         names: "--seed"
         type: int
+        group: "Trainer"
+        min: 0
         help: "Random seed"
     trainer_type:
         names: "--trainer-type"
         choices: [ "basic", "ddp", "fsdp2", "pipeline" ]
         default: "basic"
+        group: "Trainer"
         help: "Trainer: basic (single GPU), ddp (multi-GPU), fsdp2 (sharded DP), pipeline (pipeline parallel)"
+    dispatch_batches:
+        names: "--dispatch-batches"
+        type: bool
+        group: "Trainer:Distributed"
+        help: "Dispatch all batches from rank-0 instead of sharding (DDP)"
     nproc_per_node:
         names: "--nproc-per-node"
         type: int
+        group: "Trainer:Distributed"
+        min: 1
         help: "Processes per node: 'gpu' for all GPUs, or integer."
     pipeline_schedule:
         names: "--pipeline-schedule"
         default: "ScheduleInterleaved1F1B"
+        group: "Trainer:Distributed"
+        choices:
+            - "ScheduleGPipe"
+            - "Schedule1F1B"
+            - "ScheduleInterleaved1F1B"
+            - "ScheduleLoopedBFS"
+            - "ScheduleInterleavedZeroBubble"
+            - "ScheduleZBVZeroBubble"
         help: "Pipeline schedule class (pipeline trainer only)"
     microbatch_scale:
         names: "--microbatch-scale"
         default: 1
         type: int
+        group: "Trainer:Distributed"
+        min: 1
         help: "Microbatch scale factor (pipeline trainer only)"
-    gradient_checkpointing:
-        names: [ "--gradient-checkpointing", "-G" ]
+    default_dtype:
+        names: "--default-dtype"
+        choices: [ "float32", "bfloat16", "float16" ]
+        group: "Precision"
+        help: "Default torch dtype for model construction"
+    float32_matmul_precision:
+        names: "--float32-matmul-precision"
+        choices: [ "highest", "high", "medium" ]
+        group: "Precision"
+        help: "Approximate float32 matmul with bf16; highest = full float32"
+    mixed_precision:
+        names: "--mixed-precision"
+        choices: [ "bf16", "fp16", "no" ]
+        group: "Precision"
+        help: "Automatic Mixed Precision (AMP) dtype"
+    fp8_recipe:
+        names: "--fp8-recipe"
+        choices: [ "tensorwise", "rowwise", "rowwise_with_gw_hp" ]
+        group: "Precision"
+        help: "FP8 training recipe (torchao Float8Linear)"
+    compile:
+        names: "--compile"
         type: bool
-        help: "Enable gradient (activation) checkpointing, when supported"
+        group: "Performance"
+        help: "Enable torch.compile"
+    torch_compile_mode:
+        names: "--torch-compile-mode"
+        choices: [ "default", "max-autotune", "max-autotune-no-cudagraphs" ]
+        group: "Performance"
+        help: "Torch compile mode argument."
     fuse_optim_with_backward:
         names: "--fuse-optim-with-backward"
         type: bool
+        group: "Performance"
         help: "Combine gradient computation with optimizer step"
-    activation_offloading:
-        names: "--activation-offloading"
-        type: bool
-        help: "Save activations to CPU memory"
     construct_model_on:
         names: "--construct-model-on"
         choices: [ "default", "meta", "device" ]
+        group: "Performance"
         help: "Where to construct the model?"
+    gradient_checkpointing:
+        names: [ "--gradient-checkpointing", "-G" ]
+        type: bool
+        group: "Memory"
+        help: "Enable gradient (activation) checkpointing, when supported"
+    activation_offloading:
+        names: "--activation-offloading"
+        type: bool
+        group: "Memory"
+        help: "Save activations to CPU memory"
     activation_memory_budget:
         names: "--activation-memory-budget"
         type: float
+        group: "Memory"
+        min: 0
+        max: 1
         help: "https://pytorch.org/blog/activation-checkpointing-techniques"
     gc_threshold:
         names: "--gc-threshold"
         type: float
+        group: "Memory"
+        min: 0
+        max: 1
         help: "Ratio of reserved to total GPU memory to trigger GC"
-    save_safetensors:
-        names: "--save-safetensors"
-        type: bool
-        help: "Save checkpoint using safe-tensors format"
+    step_cadence:
+        names: "--step-cadence"
+        type: float
+        group: "Logging"
+        min: 0
+        help: "Scale log/eval/save intervals by this factor"
+    base_logging_tokens:
+        names: "--base-logging-tokens"
+        type: float
+        group: "Logging"
+        min: 0
+        help: "Tokens (M) between log steps"
+    base_validation_tokens:
+        names: "--base-validation-tokens"
+        type: float
+        group: "Logging"
+        min: 0
+        help: "Tokens (M) between eval steps"
+    base_save_tokens:
+        names: "--base-save-tokens"
+        type: float
+        group: "Logging"
+        min: 0
+        help: "Tokens (M) between save steps"
+    peak_hardware_flops:
+        names: "--peak-hardware-flops"
+        type: float
+        group: "Logging"
+        min: 0
+        help: "Peak device FLOPS for MFU computation"
     debug_optimizer_groups:
         names: "--debug-optimizer-groups"
         action: "store_true"
+        group: "Logging"
         help: "Show how parameters are mapped to optimizer param groups"
-    max_grad_norm:
-        names: "--max-grad-norm"
-        type: float
-        help: "Maximum gradient norm for gradient clipping"

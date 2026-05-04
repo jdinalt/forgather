@@ -68,6 +68,18 @@ def parse_dynamic_args(parser, global_args):
                 # This prevents argparse from setting unspecified args to a default value
                 dynamic_arg.pop("default", None)
 
+                # Webui-only metadata: argparse rejects unknown kwargs. ``required``
+                # is intentionally NOT forwarded — argparse-required would break
+                # ``pp`` and other read-only actions where the user hasn't filled
+                # in the value yet. Required is enforced at action time instead
+                # (see require_dynamic_args). ``min`` / ``max`` likewise are
+                # webui constraints; the action-time check (validate_dynamic_arg_bounds)
+                # is the canonical CLI enforcement point.
+                dynamic_arg.pop("group", None)
+                dynamic_arg.pop("required", None)
+                dynamic_arg.pop("min", None)
+                dynamic_arg.pop("max", None)
+
                 # Handle type conversion for string-based types
                 if "type" in dynamic_arg and isinstance(dynamic_arg["type"], str):
                     dynamic_arg["type"] = _convert_type_string(dynamic_arg["type"])
@@ -114,6 +126,96 @@ def partition_args(args_namespace, dynamic_arg_names):
             built_in_args[key] = value
 
     return built_in_args, dynamic_args
+
+
+def validate_dynamic_arg_bounds(project_dir, config_template, dynamic_args):
+    """Return a list of human-readable bound-violation messages.
+
+    Only checks args the user actually supplied (``dynamic_args`` is the
+    post-filter dict from ``get_dynamic_args``). Empty list = clean.
+    Loads the schema the same way ``required_dynamic_arg_dests`` does and
+    returns silently on any schema-load failure so the action's own error
+    path surfaces the underlying problem.
+    """
+    from forgather import MetaConfig, Project
+
+    try:
+        project_dir = MetaConfig.find_project_dir(project_dir)
+        proj = Project(config_name=config_template, project_dir=project_dir)
+        if "dynamic_args" not in proj.config:
+            return []
+        schema = proj("dynamic_args")
+    except Exception:
+        return []
+    out = []
+    for entry in schema or []:
+        if not isinstance(entry, dict):
+            continue
+        type_str = entry.get("type")
+        if type_str not in ("int", "float"):
+            continue
+        lo = entry.get("min")
+        hi = entry.get("max")
+        if lo is None and hi is None:
+            continue
+        names = entry.get("names")
+        if isinstance(names, str):
+            names = [names]
+        if not isinstance(names, list) or not names:
+            continue
+        long_form = next((n for n in names if n.startswith("--")), names[0])
+        dest = long_form.lstrip("-").replace("-", "_")
+        if dest not in dynamic_args:
+            continue
+        v = dynamic_args[dest]
+        if isinstance(v, bool) or v is None:
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(lo, (int, float)) and fv < lo:
+            out.append(f"{long_form} >= {lo}")
+        if isinstance(hi, (int, float)) and fv > hi:
+            out.append(f"{long_form} <= {hi}")
+    return out
+
+
+def required_dynamic_arg_dests(project_dir, config_template):
+    """Return the dests of dynamic args marked ``required: true``.
+
+    Resolves the schema the same way ``parse_dynamic_args`` does, but skips
+    argparse construction. Used by action commands (e.g. ``forgather train``)
+    to refuse to launch when a required arg has no user-supplied value.
+    Returns an empty list on any failure so the action's own error path
+    surfaces the underlying problem instead of a confusing required-arg
+    error.
+    """
+    from forgather import MetaConfig, Project
+
+    try:
+        project_dir = MetaConfig.find_project_dir(project_dir)
+        proj = Project(config_name=config_template, project_dir=project_dir)
+        if "dynamic_args" not in proj.config:
+            return []
+        schema = proj("dynamic_args")
+    except Exception:
+        return []
+    out = []
+    for entry in schema or []:
+        if not isinstance(entry, dict):
+            continue
+        if not entry.get("required"):
+            continue
+        names = entry.get("names")
+        if isinstance(names, str):
+            names = [names]
+        if not isinstance(names, list) or not names:
+            continue
+        long_form = next((n for n in names if n.startswith("--")), names[0])
+        dest = long_form.lstrip("-").replace("-", "_")
+        out.append(dest)
+    return out
 
 
 def get_dynamic_args(args, filter_none=True):

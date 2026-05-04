@@ -267,7 +267,7 @@ reasonably well-optimized but still involves 5 matrix multiplications per weight
 matrix per step.
 
 A more optimized SinkGD implementation is under development in the
-[`examples/tiny_experiments/sinkgd/`](../sinkgd/) project. Early results there
+[`examples/tiny_experiments/sinkgd/`](../sinkgd/README.md) project. Early results there
 show that a single Sinkhorn iteration produces results nearly identical to 5
 iterations; combined with `torch.compile` and stochastic rounding support, this
 makes compiled SinkGD competitive in throughput with the fast tier while retaining
@@ -340,7 +340,7 @@ competitive results at larger batch sizes (SinkGD-8: 2.8242 vs Adafactor-8:
 training at scale.
 
 Note: the SinkGD implementation used here is unoptimized (5 iterations, no
-compile support). The [`examples/tiny_experiments/sinkgd/`](../sinkgd/) project
+compile support). The [`examples/tiny_experiments/sinkgd/`](../sinkgd/README.md) project
 contains a more optimized, work-in-progress implementation with `torch.compile`
 support, stochastic rounding, and additional experimentation options. Testing
 there has shown that a single Sinkhorn iteration produces nearly identical

@@ -26,11 +26,14 @@ from forgather.meta_config import MetaConfig
 
 from . import (
     convert_ops,
+    dataset_ops,
     eval_ops,
     finalize_ops,
     inference_ops,
     mkdocs_ops,
+    model_ops,
     tensorboard_ops,
+    update_ops,
 )
 
 log = logging.getLogger("forgather_server.launcher")
@@ -109,20 +112,39 @@ def _spawn_subprocess(
         proc_env.update(extra_env)
 
     tty_log_path.parent.mkdir(parents=True, exist_ok=True)
-    tty_file = open(tty_log_path, "wb", buffering=0)
     log.info("spawning: %s", " ".join(cmd))
-    proc = subprocess.Popen(
-        cmd,
-        env=proc_env,
-        stdout=tty_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    # Use a `with` block so the parent's fd is closed once Popen has
+    # dup'd it into the child. Without close-after-spawn, every launched
+    # job leaks one fd in the server process.
+    with open(tty_log_path, "wb", buffering=0) as tty_file:
+        # TTY logs may capture checkpoint paths, dataset locations, and
+        # config details. Other local users on the host shouldn't read
+        # them. Chmod before spawn so the child never inherits a window
+        # at looser perms.
+        try:
+            os.chmod(tty_log_path, 0o600)
+        except OSError as e:
+            log.warning("could not chmod %s to 0600: %s", tty_log_path, e)
+        proc = subprocess.Popen(
+            cmd,
+            env=proc_env,
+            stdout=tty_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+    # The child is in its own session (start_new_session=True) so pgid==pid.
+    # Reading os.getpgid(pid) can race with an immediate-exit child; fall back
+    # to pid (== pgid by construction) if the leader is already gone.
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        pgid = proc.pid
 
     return LaunchResult(
         proc=proc,
         pid=proc.pid,
-        pgid=os.getpgid(proc.pid),
+        pgid=pgid,
         cmd=cmd,
         tty_log_path=tty_log_path,
     )
@@ -205,6 +227,8 @@ def spawn_inference_process(
     cache_implementation: Optional[str] = None,
     compile_args: Optional[str] = None,
     log_level: str = "INFO",
+    auth_token_file: Optional[str] = None,
+    no_auth: bool = False,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> LaunchResult:
     """Spawn an OpenAI-compatible inference server.
@@ -227,6 +251,8 @@ def spawn_inference_process(
         cache_implementation=cache_implementation,
         compile_args=compile_args,
         log_level=log_level,
+        auth_token_file=auth_token_file,
+        no_auth=no_auth,
     )
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 
@@ -242,6 +268,7 @@ def spawn_tensorboard_process(
     reload_interval: Optional[int] = None,
     reload_multifile: bool = False,
     samples_per_plugin: Optional[str] = None,
+    path_prefix: Optional[str] = None,
     extra_env: Optional[Dict[str, str]] = None,
 ) -> LaunchResult:
     """Spawn a TensorBoard instance.
@@ -260,6 +287,7 @@ def spawn_tensorboard_process(
         reload_interval=reload_interval,
         reload_multifile=reload_multifile,
         samples_per_plugin=samples_per_plugin,
+        path_prefix=path_prefix,
     )
     return _spawn_subprocess(cmd, [], tty_log_path, extra_env)
 
@@ -395,15 +423,180 @@ def spawn_finalize_process(
     return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
 
 
+def spawn_update_process(
+    *,
+    src_model_path: str,
+    dst_model_path: str,
+    gpu_indices: List[int],
+    tty_log_path: Path,
+    arch: Optional[str] = None,
+    from_version: Optional[str] = None,
+    to_version: Optional[str] = None,
+    checkpoint: Optional[str] = None,
+    device: Optional[str] = None,
+    dtype: Optional[str] = None,
+    no_strict: bool = False,
+    safetensors: bool = False,
+    converter_paths: Optional[List[str]] = None,
+    dry_run: bool = False,
+    log_level: str = "INFO",
+    extra_env: Optional[Dict[str, str]] = None,
+) -> LaunchResult:
+    """Spawn a ``forgather update`` run.
+
+    Fire-and-forget like convert / finalize. Defaults to CPU
+    (``--device cpu`` is the script's own default); pass ``gpu_indices``
+    if the user picked one.
+    """
+    cmd = update_ops.build_update_command(
+        src_model_path=src_model_path,
+        dst_model_path=dst_model_path,
+        arch=arch,
+        from_version=from_version,
+        to_version=to_version,
+        checkpoint=checkpoint,
+        device=device,
+        dtype=dtype,
+        no_strict=no_strict,
+        safetensors=safetensors,
+        converter_paths=converter_paths,
+        dry_run=dry_run,
+        log_level=log_level,
+    )
+    return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
+
+
+def spawn_model_process(
+    *,
+    project_dir: str,
+    config_name: str,
+    subcommand: str,
+    dynamic_args: Dict[str, Any],
+    gpu_indices: List[int],
+    tty_log_path: Path,
+    device: Optional[str] = None,
+    dtype: Optional[str] = None,
+    no_init_weights: bool = False,
+    load_from_checkpoint: Optional[str] = None,
+    gradient_checkpointing: bool = False,
+    fuse_optim_with_backward: bool = False,
+    refresh_model: bool = False,
+    save_checkpoint: bool = False,
+    safetensors: bool = False,
+    batch_size: Optional[int] = None,
+    sequence_length: Optional[int] = None,
+    steps: Optional[int] = None,
+    lr: Optional[float] = None,
+    dataset_project: Optional[str] = None,
+    dataset_config: Optional[str] = None,
+    packed: bool = False,
+    compile: bool = False,
+    compile_backend: Optional[str] = None,
+    compile_mode: Optional[str] = None,
+    compile_dynamic: Optional[bool] = None,
+    compile_fullgraph: bool = False,
+    amp: Optional[str] = None,
+    extra_env: Optional[Dict[str, str]] = None,
+) -> LaunchResult:
+    """Spawn a ``forgather model construct/test`` run.
+
+    Fire-and-forget like eval / convert; no trainer-control protocol.
+    May or may not need a GPU depending on ``device`` — callers that
+    don't want a GPU pass ``gpu_indices=[]``.
+    """
+    cmd = model_ops.build_model_command(
+        project_dir=project_dir,
+        config_name=config_name,
+        subcommand=subcommand,
+        dynamic_args=dynamic_args,
+        device=device,
+        dtype=dtype,
+        no_init_weights=no_init_weights,
+        load_from_checkpoint=load_from_checkpoint,
+        gradient_checkpointing=gradient_checkpointing,
+        fuse_optim_with_backward=fuse_optim_with_backward,
+        refresh_model=refresh_model,
+        save_checkpoint=save_checkpoint,
+        safetensors=safetensors,
+        batch_size=batch_size,
+        sequence_length=sequence_length,
+        steps=steps,
+        lr=lr,
+        dataset_project=dataset_project,
+        dataset_config=dataset_config,
+        packed=packed,
+        compile=compile,
+        compile_backend=compile_backend,
+        compile_mode=compile_mode,
+        compile_dynamic=compile_dynamic,
+        compile_fullgraph=compile_fullgraph,
+        amp=amp,
+    )
+    return _spawn_subprocess(cmd, gpu_indices, tty_log_path, extra_env)
+
+
+def spawn_dataset_process(
+    *,
+    project_dir: str,
+    config_name: str,
+    dynamic_args: Dict[str, Any],
+    tty_log_path: Path,
+    tokenizer_path: Optional[str] = None,
+    pp: bool = False,
+    histogram: bool = False,
+    target: Optional[str] = None,
+    histogram_samples: Optional[int] = None,
+    examples: Optional[int] = None,
+    features: Optional[List[str]] = None,
+    tokenized: bool = False,
+    num_shards: Optional[int] = None,
+    shard_index: Optional[int] = None,
+    select_range: Optional[str] = None,
+    seed: Optional[int] = None,
+    example_stride: Optional[int] = None,
+    truncate: Optional[int] = None,
+    extra_env: Optional[Dict[str, str]] = None,
+) -> LaunchResult:
+    """Spawn a ``forgather dataset`` run.
+
+    CPU-only; the caller allocates zero GPUs. Fire-and-forget.
+    """
+    cmd = dataset_ops.build_dataset_command(
+        project_dir=project_dir,
+        config_name=config_name,
+        dynamic_args=dynamic_args,
+        tokenizer_path=tokenizer_path,
+        pp=pp,
+        histogram=histogram,
+        target=target,
+        histogram_samples=histogram_samples,
+        examples=examples,
+        features=features,
+        tokenized=tokenized,
+        num_shards=num_shards,
+        shard_index=shard_index,
+        select_range=select_range,
+        seed=seed,
+        example_stride=example_stride,
+        truncate=truncate,
+    )
+    return _spawn_subprocess(cmd, [], tty_log_path, extra_env)
+
+
 def kill_process_group(pid: int, sig: int = signal.SIGTERM) -> bool:
     """Kill the whole process group led by ``pid``.
 
-    Returns ``False`` if the group is already gone (nothing to kill).
+    Returns ``False`` only when no signal could be delivered. If the
+    leader pid is gone, we still try ``killpg(pid, sig)`` since
+    ``start_new_session=True`` guarantees ``pgid == pid`` for our
+    spawns — worker children may still be alive in the same group
+    after the leader exits (e.g. torchrun ranks outliving torchrun).
     """
     try:
         pgid = os.getpgid(pid)
     except ProcessLookupError:
-        return False
+        # Leader exited, but pgid == pid by construction — try anyway.
+        pgid = pid
     try:
         os.killpg(pgid, sig)
         return True

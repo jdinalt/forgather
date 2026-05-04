@@ -47,6 +47,15 @@ export function registerForgatherLanguage(monaco: typeof monacoT) {
         // Inline template markers: #--- template.name ---
         [/^#-{3,}\s+[^\s].*-{3,}\s*$/, "keyword.inline-template"],
 
+        // Raw Jinja2 syntax (what the preprocessed template view shows):
+        //   {# comment #}         -> comment
+        //   {% statement %}       -> control flow
+        //   {{ expression }}      -> variable interpolation
+        // Done before line-comment matchers so a leading '{# ' isn't shadowed.
+        [/\{#[\s\S]*?#\}/, "comment.jinja"],
+        [/\{%[-+]?[\s\S]*?[-+]?%\}/, "keyword.control.jinja"],
+        [/\{\{[\s\S]*?\}\}/, "variable.jinja"],
+
         // Line comments (## = Jinja comment, # = YAML comment, but both render as comments)
         [/^\s*##.*$/, "comment.doc"],
         [/#.*$/, "comment"],

@@ -83,10 +83,14 @@ def get_subcommand_registry():
     from .dataset_args import create_dataset_parser
     from .diloco_args import create_diloco_parser
     from .eval_args import create_eval_parser
+    from .gpu_args import create_gpu_parser
+    from .job_args import create_job_parser
     from .logs_args import create_logs_parser
+    from .mkdocs_args import create_mkdocs_parser
     from .model_args import create_model_parser
     from .plot_args import create_plot_parser
     from .project_args import create_project_parser
+    from .sched_args import create_sched_parser
     from .train_args import create_train_parser
     from .trefs_args import create_trefs_parser
     from .workspace_args import create_ws_parser
@@ -95,6 +99,7 @@ def get_subcommand_registry():
         create_finalize_parser,
         create_inf_parser,
         create_server_parser,
+        create_update_parser,
     )
 
     return {
@@ -119,11 +124,16 @@ def get_subcommand_registry():
         "server": create_server_parser,
         "convert": create_convert_parser,
         "finalize": create_finalize_parser,
+        "update": create_update_parser,
         "checkpoint": create_checkpoint_parser,
         "logs": create_logs_parser,
         "plot": create_plot_parser,
         "diloco": create_diloco_parser,
         "eval": create_eval_parser,
+        "sched": create_sched_parser,
+        "job": create_job_parser,
+        "gpu": create_gpu_parser,
+        "mkdocs": create_mkdocs_parser,
     }
 
 
@@ -441,6 +451,10 @@ def main():
                 from .finalize import finalize_cmd
 
                 finalize_cmd(args)
+            case "update":
+                from .update import update_cmd
+
+                update_cmd(args)
             case "logs":
                 from .logs import logs_cmd
 
@@ -457,6 +471,22 @@ def main():
                 from .eval import eval_cmd
 
                 eval_cmd(args)
+            case "sched":
+                from .sched import sched_cmd
+
+                sched_cmd(args)
+            case "job":
+                from .job import job_cmd
+
+                job_cmd(args)
+            case "gpu":
+                from .gpu import gpu_cmd
+
+                gpu_cmd(args)
+            case "mkdocs":
+                from .mkdocs import mkdocs_cmd
+
+                mkdocs_cmd(args)
             case _:
                 index_cmd(args)
     except SystemExit:

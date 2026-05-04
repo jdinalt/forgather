@@ -305,7 +305,7 @@ config and recomputes `inv_freq`.  The fine-tune run picks up the
 new base frequency, adapts the Q/K projections, and you're done.
 
 **`rope_type` choices** implemented in
-[`modelsrc/transformer/rotary_embeddings.py`](../../../modelsrc/transformer/rotary_embeddings.py):
+[`modelsrc/transformer/rotary_embeddings.py`](../../modelsrc/transformer/rotary_embeddings.py):
 
 - `default` -- plain RoPE with the specified `rope_theta`.
 - `linear` -- position-interpolation; divides all inv_freqs by `factor`.
@@ -326,7 +326,7 @@ until step N₁ → save-stop → patch `config.json` to θ=50 000 → resume
 today with `forgather control save-stop` followed by re-launching the
 same config with an updated `rope_parameters`.  The callback path
 would be a small addition to
-[`src/forgather/ml/trainer/callbacks/`](../../../src/forgather/ml/trainer/callbacks/).
+[`src/forgather/ml/trainer/callbacks/`](../../src/forgather/ml/trainer/callbacks/).
 
 ## Reproducing
 

@@ -2,15 +2,27 @@ import json
 import os
 import signal
 import subprocess
+import sys
 
 from forgather.latent import Latent
 
-from .dynamic_args import get_dynamic_args
+from .dynamic_args import (
+    get_dynamic_args,
+    required_dynamic_arg_dests,
+    validate_dynamic_arg_bounds,
+)
 from .utils import BaseCommand, assert_project_class
 
 
 def train_cmd(args):
     """Run configuration with train script."""
+    if args.enqueue and args.devices:
+        print(
+            "error: --enqueue and --devices are mutually exclusive (server picks GPUs)",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
     assert_project_class(args, "type.training_script")
 
     cmd = BaseCommand(args)
@@ -19,9 +31,57 @@ def train_cmd(args):
     # we materialize meta — otherwise we read template defaults and pass
     # the wrong --nproc-per-node to torchrun.
     dynamic_args = get_dynamic_args(args)
+    # ``required: true`` in the schema is enforced here rather than via
+    # argparse so non-action paths (pp, ls, code) don't trip on placeholder
+    # defaults. ``train`` is the canonical action that actually consumes
+    # the value.
+    required = required_dynamic_arg_dests(args.project_dir, args.config_template)
+    missing = [d for d in required if d not in dynamic_args]
+    if missing:
+        flags = ", ".join(f"--{d.replace('_', '-')}" for d in missing)
+        print(
+            f"error: required dynamic arg(s) missing: {flags}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    bound_errors = validate_dynamic_arg_bounds(
+        args.project_dir, args.config_template, dynamic_args
+    )
+    if bound_errors:
+        print(
+            "error: dynamic arg constraint violated: " + "; ".join(bound_errors),
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     config, _ = cmd.get_config(**dynamic_args)
     config_meta = Latent.materialize(config.meta)
     nproc_per_node = config_meta["nproc_per_node"]
+
+    if args.enqueue:
+        from .server_client import ServerClient, ServerUnreachable
+
+        client = ServerClient.from_args(args)
+        requested_gpus = (
+            args.requested_gpus
+            if args.requested_gpus is not None
+            else int(nproc_per_node)
+        )
+        try:
+            item = client.enqueue_training(
+                project_dir=os.path.abspath(args.project_dir),
+                config=args.config_template,
+                dynamic_args=dynamic_args,
+                priority=args.priority,
+                requested_gpus=requested_gpus,
+            )
+        except ServerUnreachable as e:
+            print(str(e), file=sys.stderr)
+            raise SystemExit(1)
+        print(
+            f"queued: {item['queue_id']} (priority={item['priority']}, gpus={item['requested_gpus']})"
+        )
+        return
+
     train_script_path = os.path.join(
         config_meta["forgather_dir"], "scripts", "train_script.py"
     )

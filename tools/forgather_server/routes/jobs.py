@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 from forgather import trainer_control
 
-from .. import job_records, scheduler
+from .. import _gc, job_records, scheduler
 
 log = logging.getLogger("forgather_server.jobs")
 
@@ -35,6 +35,11 @@ router = APIRouter(tags=["jobs"])
 
 TTY_POLL_INTERVAL_SECONDS = 0.5
 TTY_TAIL_AFTER_EXIT_SECONDS = 3.0
+# Caps to bound memory on TTY reads. A long-running training job's tty.log
+# can grow to multiple GB; without bounds, both the dump endpoint and the
+# initial WebSocket backlog OOM the server.
+TTY_DUMP_MAX_BYTES = 32 * 1024 * 1024  # 32 MiB tail by default
+TTY_BACKLOG_CHUNK_BYTES = 1 * 1024 * 1024  # 1 MiB per WS send during backlog
 
 
 class JobModel(BaseModel):
@@ -79,6 +84,17 @@ class JobModel(BaseModel):
     tty_log_path: Optional[str] = None
     logs_dir: Optional[str] = None
     output_dir: Optional[str] = None
+    # For path-prefixed sub-services (e.g. TensorBoard spawned with
+    # ``--path_prefix /api/tb/<queue_id>``). The webui appends this to the
+    # host:port link so users SSH-forwarding the upstream port get a URL
+    # that actually serves content (the spawned TB returns 404 on ``/``).
+    path_prefix: Optional[str] = None
+    # Per-spawn bearer token for inference jobs. Surfaced to the webui so
+    # the inference panel can auto-populate the Auth Token field when the
+    # user picks a known local server. Already inside an auth-gated
+    # endpoint; an authenticated user can use the token via the proxy
+    # auto-lookup anyway, so exposing it adds no new attack surface.
+    auth_token: Optional[str] = None
 
     # Source: where did this entry come from
     source: str  # "record" | "endpoint" | "merged"
@@ -133,6 +149,8 @@ def _record_to_model(
         port=matched_endpoint.port if matched_endpoint else None,
         alive=_pid_alive(r.pid) and r.status in ("starting", "running"),
         tty_log_path=r.tty_log_path,
+        path_prefix=r.path_prefix,
+        auth_token=r.auth_token,
         logs_dir=r.logs_dir,
         output_dir=r.output_dir,
         source="merged" if matched_endpoint else "record",
@@ -293,7 +311,12 @@ def job_control(job_id: str, action: str):
             detail="no trainer endpoint yet; use action=kill for a hard abort",
         )
     fn = _ACTION_DISPATCH[action]
-    resp = fn(target_jobid)
+    try:
+        resp = fn(target_jobid)
+    except Exception as e:
+        # Mirror job_status — surface trainer connectivity issues as 502
+        # rather than letting them bubble up as a generic 500 stack.
+        raise HTTPException(status_code=502, detail=str(e))
     return ControlResponseModel(
         success=resp.success, message=resp.message, data=resp.data
     )
@@ -324,12 +347,28 @@ def _is_terminal(job_id: str) -> bool:
 
 @router.get("/jobs/{job_id}/tty", response_class=PlainTextResponse)
 def tty_dump(job_id: str):
-    """Full captured stdout/stderr (no follow)."""
+    """Captured stdout/stderr (tail; no follow).
+
+    Returns at most :data:`TTY_DUMP_MAX_BYTES` from the end of the log.
+    Long-running training jobs accumulate hundreds of MB of TTY output;
+    a bare ``f.read()`` would OOM the server on each click.
+    """
     path = _tty_path_for(job_id)
     try:
+        import os as _os
+
         with open(path, "rb") as f:
+            try:
+                size = _os.fstat(f.fileno()).st_size
+            except OSError:
+                size = 0
+            if size > TTY_DUMP_MAX_BYTES:
+                f.seek(size - TTY_DUMP_MAX_BYTES)
+                # Drop the leading partial line for cleanliness.
+                f.readline()
+            data = f.read()
             return PlainTextResponse(
-                f.read().decode("utf-8", errors="replace"),
+                data.decode("utf-8", errors="replace"),
                 media_type="text/plain; charset=utf-8",
             )
     except FileNotFoundError:
@@ -338,29 +377,48 @@ def tty_dump(job_id: str):
 
 @router.websocket("/jobs/{job_id}/tty")
 async def tty_stream(ws: WebSocket, job_id: str, follow: bool = True):
-    """Stream the TTY log: backlog then poll-follow."""
+    """Stream the TTY log: backlog then poll-follow.
+
+    The TTY path is re-read from the JobRecord on every poll iteration so
+    the stream survives a relocation (e.g. terminal-time relocation from
+    ``~/.forgather/server/jobs/q_*.tty`` into the run's ``logs/tty.log``).
+    The file content is preserved across the move, so the maintained byte
+    ``offset`` remains valid against the new path.
+    """
     await ws.accept()
-    try:
-        path = _tty_path_for(job_id)
-    except HTTPException as e:
-        await ws.send_json({"type": "error", "detail": e.detail})
-        await ws.close()
-        return
 
     offset = 0
     exited_at: Optional[float] = None
     try:
         while True:
             try:
+                path = _tty_path_for(job_id)
+            except HTTPException as e:
+                await ws.send_json({"type": "error", "detail": e.detail})
+                break
+            sent_any = False
+            try:
+                # Read in bounded chunks so a multi-GB backlog doesn't
+                # materialize the whole file in memory before sending.
+                # Loop until the file's current EOF, sending each chunk as
+                # we read it.
                 with open(path, "rb") as f:
                     f.seek(offset)
-                    chunk = f.read()
+                    while True:
+                        chunk = f.read(TTY_BACKLOG_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        offset += len(chunk)
+                        await ws.send_bytes(chunk)
+                        sent_any = True
             except FileNotFoundError:
-                await ws.send_json({"type": "error", "detail": "tty file missing"})
-                break
-            if chunk:
-                offset += len(chunk)
-                await ws.send_bytes(chunk)
+                # Stale path — relocation may have updated tty_log_path
+                # between our resolve and our open. Let the next iteration
+                # re-resolve. If the path stays missing past the
+                # post-terminal grace window, the terminal-exit branch
+                # below will close the stream cleanly.
+                pass
+            if sent_any:
                 exited_at = None
             if not follow:
                 break
@@ -386,7 +444,14 @@ async def tty_stream(ws: WebSocket, job_id: str, follow: bool = True):
 def remove_job(job_id: str):
     """Remove a JobRecord (terminal only). Externally-discovered endpoints
     aren't ours to delete — use the existing CLI ``forgather control
-    cleanup`` for those."""
+    cleanup`` for those.
+
+    If the record's TTY file is still under the central jobs_tty_dir
+    (i.e. it was never relocated into a run's logs/ — typically a
+    non-training job) we unlink it here too. TTYs that have already
+    been moved into a run dir are left alone; they're part of the run's
+    artifacts now.
+    """
     rec = job_records.get_record(job_id)
     if rec is None:
         raise HTTPException(status_code=404, detail=f"no record for {job_id}")
@@ -395,6 +460,7 @@ def remove_job(job_id: str):
             status_code=409,
             detail=f"cannot remove an active record (status={rec.status})",
         )
+    _gc.delete_central_tty_for(rec)
     job_records.remove_record(job_id)
     return {"removed": job_id}
 
@@ -407,10 +473,26 @@ def cleanup_jobs():
     list, removes anything whose status is terminal (``done`` / ``failed``
     / ``aborted``), and returns the removed ids so the UI can report a
     count. Active records are left untouched — no race with running jobs.
+    Same TTY-deletion policy as ``remove_job``: central files are
+    unlinked, run-relocated files are kept.
     """
     removed: List[str] = []
     for r in job_records.list_records():
         if r.status in job_records.TERMINAL_STATUSES:
+            _gc.delete_central_tty_for(r)
             if job_records.remove_record(r.queue_id):
                 removed.append(r.queue_id)
     return {"removed": removed, "count": len(removed)}
+
+
+@router.post("/jobs/gc")
+def gc_jobs():
+    """Sweep orphan TTY files from the central jobs_tty_dir.
+
+    Reaps ``q_*.tty`` whose ``queue_id`` is not referenced by any
+    JobRecord or queued item, mtime older than the TTL configured by
+    ``$FORGATHER_ORPHAN_TTY_TTL_SECONDS`` (default 1h). Best-effort:
+    per-file errors are logged and swallowed.
+    """
+    swept = _gc.sweep_orphan_ttys()
+    return {"swept": swept}

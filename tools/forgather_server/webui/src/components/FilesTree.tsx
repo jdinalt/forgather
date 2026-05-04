@@ -13,6 +13,18 @@ interface Props {
   /** Drop ``path`` from the editor (every split, no dirty prompt) —
    *  invoked after a rename / move / delete makes the path stale. */
   onDropPath: (path: string) => void;
+  /** Open the file in the Docs view. Surfaced as a context-menu item
+   *  for ``.md`` / ``.markdown`` / ``.ipynb`` files. */
+  onOpenDoc?: (path: string) => void;
+}
+
+function isDocLike(path: string): boolean {
+  const lower = path.toLowerCase();
+  return (
+    lower.endsWith(".md") ||
+    lower.endsWith(".markdown") ||
+    lower.endsWith(".ipynb")
+  );
 }
 
 interface MenuTarget {
@@ -81,7 +93,7 @@ function relPath(base: string, path: string): string {
   return p.slice(b.length + 1);
 }
 
-export function FilesTree({ onOpenFile, onDropPath }: Props) {
+export function FilesTree({ onOpenFile, onDropPath, onOpenDoc }: Props) {
   const [showHidden, setShowHidden] = useState(false);
   const [menu, setMenu] = useState<MenuTarget | null>(null);
   const [clipboard, setClipboard] = useState<Clipboard | null>(null);
@@ -155,6 +167,7 @@ export function FilesTree({ onOpenFile, onDropPath }: Props) {
           enclosingWs={enclosingWorkspace(menu.path, projectsQ.data)}
           onClose={() => setMenu(null)}
           onOpenFile={onOpenFile}
+          onOpenDoc={onOpenDoc}
           onDropPath={onDropPath}
           setClipboard={setClipboard}
           openInitWorkspace={(path) => setInitWorkspaceFor(path)}
@@ -453,6 +466,7 @@ interface MenuProps {
   enclosingWs: WorkspaceCluster | null;
   onClose: () => void;
   onOpenFile: (path: string) => void;
+  onOpenDoc?: (path: string) => void;
   onDropPath: (path: string) => void;
   setClipboard: (c: Clipboard | null) => void;
   /** Open the InitWorkspaceModal for the clicked directory — the path
@@ -471,6 +485,7 @@ function FilesContextMenu({
   enclosingWs,
   onClose,
   onOpenFile,
+  onOpenDoc,
   onDropPath,
   setClipboard,
   openInitWorkspace,
@@ -633,6 +648,17 @@ function FilesContextMenu({
           }}
         >
           ✎ Open
+        </button>
+      )}
+      {!target.isDir && onOpenDoc && isDocLike(target.path) && (
+        <button
+          className="context-menu-item"
+          onClick={() => {
+            onOpenDoc(target.path);
+            onClose();
+          }}
+        >
+          📖 Open in Docs…
         </button>
       )}
       {target.isDir && (

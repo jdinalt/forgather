@@ -1,40 +1,18 @@
-import math
-import re
-from abc import ABC
-from typing import Callable, Iterable, Tuple
+from typing import Callable, Optional
 
 import torch
-import torch.nn.functional as F
-from torch import Tensor, nn
 from torch.optim import Optimizer
-
-
-def make_re_multiopt(named_parameters, optimizer_map, factories, debug=False):
-    groups = {group_name: [] for regex, group_name in optimizer_map}
-
-    for param_name, param_value in named_parameters:
-        for regex, group_name in optimizer_map:
-            m = re.search(regex, param_name)
-            if m is not None:
-                if debug:
-                    print(f"param group: {group_name} <- {param_name}")
-                groups[group_name].append((param_name, param_value))
-                break
-    optimizers = [
-        factories[group_name](params)
-        for group_name, params in groups.items()
-        if len(params)
-    ]
-
-    return Multiopt(optimizers)
 
 
 class Multiopt(Optimizer):
     """
-    Allows constructions of composite optimizers
+    Composite optimizer that fans ``step``/``zero_grad`` out to a list of
+    wrapped optimizers and aggregates their state dicts.
 
-    This is primarily for experimentation -- not all Optimizer methods are
-    expected to work correctly.
+    The trainer constructs a ``Multiopt`` automatically when an
+    ``optimizer_groups`` configuration declares more than one distinct
+    optimizer factory (see ``forgather.ml.optim.opt_utils
+    .build_optimizer_buckets``).
     """
 
     def __init__(
@@ -50,8 +28,10 @@ class Multiopt(Optimizer):
         self.optimizers = optimizers
 
     @torch.no_grad()
-    def step(self, closure: Callable = None):
-        loss = None
+    def step(  # type: ignore[override]
+        self, closure: Optional[Callable[[], float]] = None
+    ) -> Optional[float]:
+        loss: Optional[float] = None
         if closure is not None:
             loss = closure()
 
@@ -60,9 +40,9 @@ class Multiopt(Optimizer):
 
         return loss
 
-    def zero_grad(self):
+    def zero_grad(self, set_to_none: bool = True):
         for opt in self.optimizers:
-            opt.zero_grad()
+            opt.zero_grad(set_to_none=set_to_none)
 
     def state_dict(self):
         """Return aggregated state from all wrapped optimizers."""

@@ -3,15 +3,20 @@ import { useState } from "react";
 
 import { api } from "../api";
 import { persistGet, persistRemove, persistSet } from "../persist";
+import { AutoWatchTtyToggle } from "./AutoWatchTtyToggle";
 import { PathField } from "./PathField";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 /** Settings persisted across sidebar-Tools "Convert…" invocations. The
  *  next open of the global tool defaults to the user's last-committed
- *  values; ``priority`` and ``requestedGpus`` reset each time since the
- *  right value depends on current queue state. */
+ *  values; ``priority`` resets each time since the right value depends
+ *  on current queue state. ``requestedGpus`` is sticky. */
 interface PersistedConvert {
   srcModelPath: string;
-  dstModelPath: string;
+  /** Existing parent directory to write the new model into. */
+  dstParent: string;
+  /** New directory name for the converted model under ``dstParent``. */
+  modelName: string;
   reverse: boolean;
   modelType: string;
   dtype: string;
@@ -25,13 +30,15 @@ interface PersistedConvert {
   skipDefaultTokens: boolean;
   dryRun: boolean;
   logLevel: string;
+  requestedGpus: number;
 }
 
 const STORAGE_KEY = "forgather-global-convert-v1";
 
 const DEFAULTS: PersistedConvert = {
   srcModelPath: "",
-  dstModelPath: "",
+  dstParent: "",
+  modelName: "",
   reverse: false,
   modelType: "auto",
   // "from-model" is a UI-only sentinel meaning "don't pass --dtype" —
@@ -48,6 +55,7 @@ const DEFAULTS: PersistedConvert = {
   skipDefaultTokens: false,
   dryRun: false,
   logLevel: "INFO",
+  requestedGpus: 0,
 };
 
 function loadPersisted(): Partial<PersistedConvert> {
@@ -55,7 +63,22 @@ function loadPersisted(): Partial<PersistedConvert> {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
+    if (!parsed || typeof parsed !== "object") return {};
+    // Migrate older persisted blobs that still carry a single
+    // ``dstModelPath`` (the pre-split destination). Splitting now means
+    // the user's last-used destination still seeds the form when they
+    // upgrade — without forcing a Reset.
+    if (
+      typeof parsed.dstModelPath === "string" &&
+      parsed.dstParent === undefined &&
+      parsed.modelName === undefined
+    ) {
+      const split = splitDestPath(parsed.dstModelPath);
+      parsed.dstParent = split.parent;
+      parsed.modelName = split.name;
+      delete parsed.dstModelPath;
+    }
+    return parsed;
   } catch {
     return {};
   }
@@ -63,6 +86,17 @@ function loadPersisted(): Partial<PersistedConvert> {
 
 function savePersisted(s: PersistedConvert) {
   persistSet(STORAGE_KEY, JSON.stringify(s));
+}
+
+function splitDestPath(p: string): { parent: string; name: string } {
+  const trimmed = p.replace(/\/+$/, "");
+  const i = trimmed.lastIndexOf("/");
+  if (i < 0) return { parent: "", name: trimmed };
+  return { parent: trimmed.slice(0, i), name: trimmed.slice(i + 1) };
+}
+
+function joinDestPath(parent: string, name: string): string {
+  return `${parent.trim().replace(/\/+$/, "")}/${name.trim()}`;
 }
 
 interface Props {
@@ -98,7 +132,8 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
   const [srcModelPath, setSrcModelPath] = useState(
     initialSrcPath ?? initial.srcModelPath,
   );
-  const [dstModelPath, setDstModelPath] = useState(initial.dstModelPath);
+  const [dstParent, setDstParent] = useState(initial.dstParent ?? "");
+  const [modelName, setModelName] = useState(initial.modelName ?? "");
   const [reverse, setReverse] = useState(initial.reverse);
   const [modelType, setModelType] = useState(initial.modelType);
   const [dtype, setDtype] = useState(initial.dtype);
@@ -116,8 +151,10 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
   );
   const [dryRun, setDryRun] = useState(initial.dryRun);
   const [logLevel, setLogLevel] = useState(initial.logLevel);
-  // Resets each invocation — depends on current queue / GPU state.
-  const [requestedGpus, setRequestedGpus] = useState<number>(0);
+  // priority resets each invocation; requestedGpus is sticky.
+  const [requestedGpus, setRequestedGpus] = useState<number>(
+    initial.requestedGpus ?? 0,
+  );
   const [priority, setPriority] = useState<number>(0);
 
   const maxGpus = Math.max(0, gpusQ.data?.length ?? 0);
@@ -128,7 +165,8 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
     // the caller — Reset shouldn't unpick it, since clearing it would
     // throw away the very thing the right-click flow is about.
     setSrcModelPath(initialSrcPath ?? DEFAULTS.srcModelPath);
-    setDstModelPath(DEFAULTS.dstModelPath);
+    setDstParent(DEFAULTS.dstParent);
+    setModelName(DEFAULTS.modelName);
     setReverse(DEFAULTS.reverse);
     setModelType(DEFAULTS.modelType);
     setDtype(DEFAULTS.dtype);
@@ -142,6 +180,7 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
     setSkipDefaultTokens(DEFAULTS.skipDefaultTokens);
     setDryRun(DEFAULTS.dryRun);
     setLogLevel(DEFAULTS.logLevel);
+    setRequestedGpus(DEFAULTS.requestedGpus);
   };
 
   const enqueue = useMutation({
@@ -153,16 +192,23 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
     },
   });
 
+  const dst = (() => {
+    const parent = dstParent.trim();
+    const name = modelName.trim();
+    if (!parent || !name) return "";
+    return joinDestPath(parent, name);
+  })();
+
   const submit = () => {
     const src = srcModelPath.trim();
-    const dst = dstModelPath.trim();
     if (!src || !dst) return;
     const ml = maxLength.trim();
     const mlNum = ml ? Number(ml) : NaN;
 
     savePersisted({
       srcModelPath: src,
-      dstModelPath: dst,
+      dstParent: dstParent.trim(),
+      modelName: modelName.trim(),
       reverse,
       modelType,
       dtype,
@@ -176,6 +222,7 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
       skipDefaultTokens,
       dryRun,
       logLevel,
+      requestedGpus,
     });
 
     const job_params: Record<string, unknown> = {
@@ -220,7 +267,7 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal submit-modal"
         onClick={(e) => e.stopPropagation()}
@@ -249,16 +296,36 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
           </div>
           <div className="submit-row">
             <label className="wide">
-              Destination model path
+              Output parent directory
               <PathField
-                value={dstModelPath}
-                onChange={setDstModelPath}
+                value={dstParent}
+                onChange={setDstParent}
                 mode="dirs-only"
-                title="Pick the destination directory"
+                placeholder="existing directory to create the new model under"
+                title="Pick the parent directory"
                 wide
               />
             </label>
           </div>
+          <div className="submit-row">
+            <label className="wide">
+              Model name
+              <input
+                type="text"
+                className="wide"
+                value={modelName}
+                onChange={(e) => setModelName(e.target.value)}
+                placeholder="new directory name (must not already exist under parent)"
+              />
+            </label>
+          </div>
+          {dst && (
+            <div className="submit-row">
+              <span className="muted current-path" title={dst}>
+                → <code>{dst}</code>
+              </span>
+            </div>
+          )}
 
           <div className="submit-row">
             <label className="dyn-checkbox">
@@ -470,6 +537,7 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
             {enqueue.error ? String(enqueue.error) : ""}
           </div>
           <div className="btn-row">
+            <AutoWatchTtyToggle />
             <button
               className="secondary"
               onClick={resetDefaults}
@@ -482,16 +550,14 @@ export function ConvertModal({ initialSrcPath, onClose, onSubmitted }: Props) {
             </button>
             <button
               onClick={submit}
-              disabled={
-                enqueue.isPending || !srcModelPath.trim() || !dstModelPath.trim()
-              }
+              disabled={enqueue.isPending || !srcModelPath.trim() || !dst}
             >
               {enqueue.isPending ? "Submitting…" : "Run convert"}
             </button>
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 

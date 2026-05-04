@@ -1,0 +1,1 @@
+../../../../../examples/datasets/OpenAssistant/examples/custom_chat_template.py

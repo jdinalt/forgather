@@ -3,14 +3,14 @@
 A long-running playground project for pretraining small language models
 (~100M-200M parameters) from scratch. Over time it has become the main test
 bed for the [LM Training Project
-template](../../../docs/project-templates/lm-training-projects.md), and this
+template](../../../project-templates/lm-training-projects.md), and this
 README is as much a changelog of what has been tried here as it is a getting-
 started guide.
 
 If you are looking for the full reference on every training argument and
 dial that the template exposes, read the
-[LM Training Project documentation](../../../docs/project-templates/lm-training-projects.md)
-and the [Trainer Options Reference](../../../docs/trainers/trainer_options.md).
+[LM Training Project documentation](../../../project-templates/lm-training-projects.md)
+and the [Trainer Options Reference](../../../trainers/trainer_options.md).
 This README focuses on *this particular project*: its defaults, its
 sub-projects, the configs we ship, and the experiments that have been run.
 
@@ -146,7 +146,7 @@ forgather ls
 ```
 
 Most options documented in the
-[LM Training Project reference](../../../docs/project-templates/lm-training-projects.md)
+[LM Training Project reference](../../../project-templates/lm-training-projects.md)
 apply here unchanged - this project only overrides a handful of defaults on
 top of `lm_training_project.yaml`. See
 [`templates/project.yaml`](templates/project.yaml) for the exact overrides.
@@ -460,7 +460,7 @@ forgather logs plot \
 ```
 
 Flags worth knowing (full reference in
-[`docs/guides/logs-analysis.md`](../../../docs/guides/logs-analysis.md)):
+[`docs/guides/logs-analysis.md`](../../../guides/logs-analysis.md)):
 
 | Flag | Purpose |
 |------|---------|
@@ -482,9 +482,9 @@ This project uses DDP by default. For the trainer-level details
 (dispatch-batches vs sharding, pipeline schedule selection, memory trade-
 offs, text-generation callback compatibility, etc.) see:
 
-- [LM Training Project documentation](../../../docs/project-templates/lm-training-projects.md)
-- [Pipeline Parallel guide](../../../docs/trainers/pipeline-parallel.md)
-- [Trainer Options Reference](../../../docs/trainers/trainer_options.md)
+- [LM Training Project documentation](../../../project-templates/lm-training-projects.md)
+- [Pipeline Parallel guide](../../../trainers/pipeline-parallel.md)
+- [Trainer Options Reference](../../../trainers/trainer_options.md)
 
 Everything those documents say about DDP, pipeline parallel schedule
 choice, compile-mode compatibility, memory optimisations, and the
@@ -508,16 +508,16 @@ forgather tb --all -- --bind_all   # all interfaces
 
 External control of a running job (save / stop / abort / trigger
 annealing) uses the standard `forgather control` commands - see
-[Trainer Control](../../../docs/trainers/trainer-control.md).
+[Trainer Control](../../../trainers/trainer-control.md).
 
 ## References
 
-- [LM Training Project template documentation](../../../docs/project-templates/lm-training-projects.md)
+- [LM Training Project template documentation](../../../project-templates/lm-training-projects.md)
   - full reference for every option exposed by the template this project
     extends.
-- [Trainer Options Reference](../../../docs/trainers/trainer_options.md) -
+- [Trainer Options Reference](../../../trainers/trainer_options.md) -
   all training arguments and trainer constructor parameters.
-- [Pipeline Parallel guide](../../../docs/trainers/pipeline-parallel.md)
+- [Pipeline Parallel guide](../../../trainers/pipeline-parallel.md)
 - Hoffmann et al. (2022) *Training Compute-Optimal Large Language Models*
   (Chinchilla). <https://arxiv.org/abs/2203.15556>
 - *Beyond Cosine Decay: On the effectiveness of Infinite Learning Rate

@@ -11,8 +11,15 @@ File layout::
         "project_dir": "/abs/path/to/project",
         "config": "train_tiny_llama.yaml",
         "values": {"max_steps": 42, "lr": 1e-4},
+        "requested_gpus": 4,
         "updated_at": 1713500000.123
     }
+
+``requested_gpus`` is a sibling of ``values`` rather than a key inside
+it: ``values`` is layered onto Jinja preprocessor kwargs at config
+materialization time, and an unknown key would either be silently
+dropped or noisily reject. The GPU count is a scheduler-side knob, so
+it lives outside the preprocessor's input.
 
 Key derivation: SHA-256 of ``"{abspath(project_dir)}\\0{config_name}"``
 truncated to 16 hex chars. Stable across restarts; does not depend on
@@ -66,33 +73,48 @@ def get_overrides(project_dir: str, config: str) -> Dict[str, Any]:
 
 
 def get_overrides_payload(project_dir: str, config: str) -> Dict[str, Any]:
-    """Return the full stored payload (values + updated_at), or a null stub."""
+    """Return the full stored payload, or a null stub.
+
+    Stub shape matches a successfully-read file: ``values`` is always a
+    dict, ``requested_gpus`` is ``None`` when unset, ``updated_at`` is
+    ``None`` when no file exists.
+    """
     with _lock:
         data = _read(_path(project_dir, config))
     if data is None:
-        return {"values": {}, "updated_at": None}
+        return {"values": {}, "requested_gpus": None, "updated_at": None}
+    rg = data.get("requested_gpus")
     return {
         "values": data.get("values") if isinstance(data.get("values"), dict) else {},
+        "requested_gpus": rg if isinstance(rg, int) else None,
         "updated_at": data.get("updated_at"),
     }
 
 
 def set_overrides(
-    project_dir: str, config: str, values: Dict[str, Any]
+    project_dir: str,
+    config: str,
+    values: Dict[str, Any],
+    requested_gpus: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Persist *values* and return the stored payload."""
+    """Persist *values* (+ optional GPU count) and return the stored payload."""
     abs_dir = os.path.abspath(project_dir)
     now = time.time()
     payload: Dict[str, Any] = {
         "project_dir": abs_dir,
         "config": config,
         "values": dict(values),
+        "requested_gpus": requested_gpus,
         "updated_at": now,
     }
     p = _path(project_dir, config)
     with _lock:
-        atomic_write_text(p, json.dumps(payload, indent=2))
-    return {"values": dict(values), "updated_at": now}
+        atomic_write_text(p, json.dumps(payload, indent=2), mode=0o600)
+    return {
+        "values": dict(values),
+        "requested_gpus": requested_gpus,
+        "updated_at": now,
+    }
 
 
 def clear_overrides(project_dir: str, config: str) -> bool:

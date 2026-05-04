@@ -151,5 +151,5 @@ graceful_stop("my_experiment")
 
 ## Example
 
-See [`examples/trainer_control/trainer_control_demo.py`](../../examples/trainer_control/trainer_control_demo.py)
+See [`examples/trainer_control/trainer_control_demo.py`](../examples/trainer_control/trainer_control_demo.py)
 for a complete working example showing how to set up and use the control system.

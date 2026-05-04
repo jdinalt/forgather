@@ -86,5 +86,23 @@ def create_eval_parser(_global_args):
         action="store_true",
         help="Show the torchrun command without executing it",
     )
+    test.add_argument(
+        "--enqueue",
+        action="store_true",
+        help="Submit to the forgather-server queue instead of running locally.",
+    )
+    test.add_argument(
+        "--priority",
+        type=int,
+        default=0,
+        help="Queue priority for --enqueue (default: 0).",
+    )
+    test.add_argument(
+        "--server",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="forgather-server URL for --enqueue (default: $FORGATHER_SERVER_URL or http://127.0.0.1:8765).",
+    )
 
     return parser

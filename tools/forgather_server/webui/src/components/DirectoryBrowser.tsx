@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 export type BrowseMode = "dirs-only" | "files-and-dirs";
 
@@ -93,7 +94,7 @@ export function DirectoryBrowser({
     mode === "dirs-only" ? "(no subdirectories)" : "(empty directory)";
 
   return (
-    <div className="modal-backdrop" onClick={onCancel}>
+    <ModalBackdrop onClose={onCancel}>
       <div
         className="modal"
         onClick={(e) => e.stopPropagation()}
@@ -215,6 +216,6 @@ export function DirectoryBrowser({
           </div>
         </footer>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

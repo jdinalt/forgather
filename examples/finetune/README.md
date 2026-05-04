@@ -1,4 +1,4 @@
-# Finetuning Examples
+# Finetune
 
 A collection of supervised fine-tuning (SFT) examples that demonstrate how to adapt pretrained language models to instruction-following and conversational tasks using Forgather's `finetune_v2` project template. The examples cover single-GPU and multi-GPU training (DDP, pipeline parallelism), packed-sequence datasets, WSD learning-rate schedules with automatic annealing, and the full model-conversion pipeline from HuggingFace checkpoints into Forgather format.
 

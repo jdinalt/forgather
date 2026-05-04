@@ -410,11 +410,15 @@ def list_model_evaluations(output_dir: str) -> List[EvalEntry]:
 
     # Sort newest-first. ``timestamp`` is ISO-8601 when present; the
     # eval_id basename embeds yyyymmddThhmmss so lexicographic ordering
-    # lines up with chronological as a fallback.
-    out.sort(
-        key=lambda ev: ((ev.result.timestamp if ev.result else None) or ev.eval_id),
-        reverse=True,
-    )
+    # lines up with chronological as a fallback. Using `or ""` (rather
+    # than `or None`) keeps the key always-string so a result with a
+    # missing-but-not-None timestamp doesn't leak `None` into the sort
+    # and produce a TypeError when compared with a string-keyed entry.
+    def _sort_key(ev: EvalEntry) -> str:
+        ts = ev.result.timestamp if ev.result else None
+        return ts or ev.eval_id or ""
+
+    out.sort(key=_sort_key, reverse=True)
     return out
 
 

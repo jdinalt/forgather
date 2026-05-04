@@ -28,7 +28,9 @@ class ChatGenerationStrategy(NonStreamingStrategy):
         # Log messages first
         self.service.logger.log_messages(request_id, request.messages)
         # Format using chat template
-        return self.service.format_messages(request.messages)
+        return self.service.format_messages(
+            request.messages, next_role=request.next_role
+        )
 
     def _get_stop_sequences(self, request: ChatCompletionRequest) -> list:
         """Get stop sequences (use server defaults for chat)."""

@@ -7,9 +7,235 @@ logs, controlling them, and talking to running inference servers from
 the browser — wraps `MetaConfig`, `ConfigEnvironment`,
 `TrainerControlClient`, and friends rather than re-implementing them.
 
-**Prototype status.** Single-user, localhost-first. Binds to `127.0.0.1`
-by default. No auth, no rate limiting. Do not expose the port on an
-untrusted network.
+**Prototype status.** Single-user, localhost-first. Every spawned
+service binds to `127.0.0.1` by default and `/api/` is gated by a bearer
+token (see [Threat model](#threat-model)). No rate limiting, no native
+TLS — run behind an SSH tunnel or reverse proxy if you need LAN access.
+
+---
+
+## Threat model
+
+The auth gate is designed for the realistic local-host case: a developer
+running the server on their workstation or a shared GPU box, where other
+unprivileged Unix accounts may exist on the same machine. It is **not**
+a multi-tenant authorization system, and a token holder is effectively
+the server's uid. Read this section before exposing anything beyond
+loopback.
+
+### What the auth gate defends against
+
+- **Other unprivileged users on the same host.** Loopback ports are not
+  isolated by uid on Linux — without auth, any local account could scan
+  `127.0.0.1:8765` and drive the server. Bearer tokens stop that.
+- **Discovery via shared state.** `~/.forgather/` and
+  `~/.forgather/server/` are mode `0o700`; the persisted token, password
+  hash, queue, job records, GPU policy, search roots, override cache,
+  per-job inference tokens, and per-job TTY logs are all `0o600`. A
+  startup migration tightens modes on legacy files. Other users on the
+  host can't read your token off disk.
+- **Stale browser tabs on a shared workstation.** `POST
+  /api/auth/set-password` requires either the current password or a
+  fresh bearer-token authentication when a password is already set. A
+  cookie-only session (someone walking up to your unlocked screen) can
+  no longer rotate the password silently.
+- **Accidental LAN exposure.** Every server-spawned process — the
+  forgather server itself, the trainer control endpoint, TensorBoard,
+  MkDocs, inference servers — defaults to `127.0.0.1`. Going off
+  loopback is an explicit per-process opt-in, called out below.
+
+### What the auth gate does NOT defend against
+
+A holder of the forgather-server bearer token can do everything the
+server's uid can do. By design, that includes:
+
+- Reading and writing any file the server uid can read / write — via
+  `/api/template/source`, `/api/fs/read`, `/api/fs/write`, etc. There is
+  no path-jail.
+- Enqueuing arbitrary training / eval / inference / convert / finalize /
+  TensorBoard / MkDocs jobs that run as the server's uid.
+- Killing those jobs, killing every compute process on a GPU, and
+  changing GPU policy.
+- Rotating the server's password — but only when authenticated by token
+  or current password. Cookie-only sessions cannot.
+
+The token is a **uid-level credential.** Treat it like an SSH key for
+the server's user account: never paste it into chat, rotate it with
+`forgather server --regen-token` if you suspect compromise, and don't
+run the server on a host where you don't trust every user who has shell
+access.
+
+### Network exposure
+
+All defaults are loopback. Where there's a legitimate reason to listen
+elsewhere, the opt-in is explicit and the auth gate stays in place:
+
+- **Forgather server.** `forgather server -H <host>` binds elsewhere.
+  The token then traverses the network in cleartext; use SSH port
+  forwarding or a TLS-terminating reverse proxy.
+- **Trainer control.** `TrainerControlCallback(host="0.0.0.0", ...)`
+  exposes the per-job control endpoint. The per-job bearer token is
+  still required, but you have to share it with whichever client is
+  reaching in remotely.
+- **TensorBoard.** Pass `bind_all=true` in the queue submit modal. This
+  bypasses the auth-gated reverse proxy at `/api/tb/{queue_id}/` —
+  anyone who can reach the TB port can read your training metrics.
+- **Inference server.** `forgather inf server -H 0.0.0.0 ...`. Auth
+  remains enforced; the token is printed on the server's stderr at
+  startup.
+- **Inference proxy.** The forgather server's `/api/inference/*` proxy
+  refuses non-loopback `base=` URLs by default. Set
+  `FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE=1` to allow proxying to a
+  remote inference upstream (logged with a warning).
+
+### Residual gaps
+
+- **MkDocs has no proxy.** MkDocs lacks a clean `--path-prefix` flag and
+  HTML rewriting is brittle, so spawned `mkdocs serve` processes are
+  loopback-only with no auth in front of them. Other local users on the
+  host can read the rendered docs if they discover the port. If you
+  need LAN-accessible docs, run `mkdocs serve` outside the scheduler or
+  put it behind your own reverse proxy.
+- **No TLS.** The server speaks plain HTTP. Any non-loopback bind needs
+  an external TLS terminator.
+- **No rate limiting.** A leaked token has no automatic lockout.
+
+## Authentication overview
+
+The system is composed of several services that each defend their own
+endpoints. Operators who want to tune individual knobs should know which
+layer they're touching.
+
+### Forgather server (`/api/`)
+
+- Bearer token at `~/.forgather/server/auth_token` (mode `0o600`).
+- Optional PBKDF2-SHA256 password at `~/.forgather/server/password_hash`
+  for browser logins.
+- `AuthMiddleware` gates everything under `/api/`, including FastAPI's
+  `/api/openapi.json`, `/api/docs`, and `/api/redoc`.
+- Browser bootstrap via `?token=…`, then an in-memory `HttpOnly` /
+  `SameSite=Lax` session cookie. Re-auth is required to set or change
+  the password.
+- Escape hatch: `forgather server --no-auth` for trusted single-user
+  hosts.
+
+### Trainer control (per-job)
+
+- Per-job bearer token at `~/.forgather/jobs/{job_id}/auth_token` (mode
+  `0o600`), generated by `TrainerControlCallback` on rank 0.
+- aiohttp middleware gates `/control`, `/status`, `/jobs`. Default bind
+  is `127.0.0.1`.
+- `endpoint.json` records the actual bind address. The
+  `HTTPTrainerControlClient` (used by `forgather control` and by the
+  forgather server's job-control proxy) loads the per-job token
+  automatically — no manual configuration needed.
+- Constructor knobs: `host`, `auth_token`, `disable_auth`.
+
+### Inference server (per-spawn)
+
+- When spawned by the forgather server scheduler: per-job token at
+  `~/.forgather/server/inference/{queue_id}.token` (mode `0o600`),
+  passed to the inference process via `--auth-token-file` so it never
+  appears in `ps`/argv.
+- The forgather server's `/api/inference/*` proxy looks up the upstream
+  token by `(host, port)` from JobRecords and forwards `Authorization:
+  Bearer <token>` to the upstream — the webui doesn't see it.
+- When run standalone: `--auth-token`, `--auth-token-file`, or an
+  auto-generated token printed on stderr. `--no-auth` to opt out.
+- `/v1/*` and `/tokenize` require the bearer; `/health` is always open
+  so the proxy can probe before the model finishes loading.
+
+### TensorBoard (per-spawn)
+
+- No native auth. Spawn defaults to `--host 127.0.0.1`.
+- Auth-gated reverse proxy at `/api/tb/{queue_id}/{path:path}` rides the
+  forgather server's `AuthMiddleware`. The dispatcher passes
+  `--path_prefix /api/tb/{queue_id}` so TB's internal links match.
+- WebSockets are not proxied; the realtime profile plugin is
+  unavailable through the proxy. Users who need it can set
+  `bind_all=true` in the queue submit modal and connect to the upstream
+  port directly.
+
+### MkDocs (per-spawn)
+
+- No native auth. Spawn defaults to `127.0.0.1`. No reverse proxy.
+- Documented residual exposure on shared hosts (see [Residual
+  gaps](#residual-gaps)).
+
+### Universal escape hatches
+
+For trusted single-user hosts on a trusted network, auth can be
+disabled per service:
+
+- Forgather server: `forgather server --no-auth`.
+- Inference server: `forgather inf server --no-auth`.
+- Trainer control: `TrainerControlCallback(disable_auth=True)`.
+
+These flags are deliberately verbose. The recommended posture is to
+leave auth on and forward ports over SSH for remote access.
+
+---
+
+## CLI access
+
+The `forgather` CLI can talk to a running server directly — no browser needed. All commands accept `--server URL` or the `FORGATHER_SERVER_URL` environment variable; both default to `http://127.0.0.1:8765`.
+
+For a workflow-oriented walkthrough with recipes, see
+[guides/server-cli.md](guides/server-cli.md). The reference below is a
+quick cheat-sheet.
+
+**Submit jobs from the terminal:**
+
+```bash
+# Inside a project directory
+forgather -t train.yaml train --enqueue
+forgather -t train.yaml train --enqueue --priority 5 --requested-gpus 2
+forgather eval test c4 -M output_models/my_model --enqueue
+forgather tb --enqueue --port 6006
+forgather inf server --enqueue -m output_models/my_model
+forgather convert --enqueue --src output_models/my_model --dst /tmp/hf_export
+forgather finalize --enqueue --source output_models/my_model --dest /tmp/final
+forgather update --enqueue --src output_models/my_model --dst /tmp/my_model_v2
+forgather mkdocs -f docs/mkdocs.yml --enqueue
+```
+
+**Queue and scheduler:**
+
+```bash
+forgather sched status                   # enabled, queued/running counts, last tick
+forgather sched list                     # table of all queued + active + recent jobs
+forgather sched pause                    # stop dispatching new jobs
+forgather sched resume
+forgather sched cancel <queue_id>        # remove a queued or running job
+forgather sched cleanup                  # bulk-remove terminal job records
+forgather sched cleanup <job_id>         # remove one specific terminal record
+forgather sched gc                       # sweep orphan TTY files (see "State directories and GC")
+```
+
+**Per-job control and logs:**
+
+```bash
+forgather job status <id>               # trainer status dict (409 = still starting)
+forgather job save <id>                 # trigger checkpoint
+forgather job stop <id>                 # graceful stop (saves final checkpoint)
+forgather job save-stop <id>
+forgather job abort <id>                # immediate stop, no checkpoint
+forgather job kill <id>                 # SIGTERM
+forgather job force-kill --yes <id>     # SIGKILL
+forgather job tail <id>                 # stream live TTY; Ctrl-C exits cleanly
+forgather job dump <id>                 # write full captured log to stdout
+forgather job dump <id> > log.txt
+```
+
+**GPU policy:**
+
+```bash
+forgather gpu status                    # table: util, mem, temp, power, disabled, min_priority, pids
+forgather gpu disable <idx>             # mark GPU unavailable for scheduling
+forgather gpu enable <idx>
+forgather gpu priority <idx> <N>        # only dispatch jobs with priority >= N to this GPU
+forgather gpu kill --yes <idx>          # SIGKILL all compute processes on the card
+```
 
 ---
 
@@ -47,6 +273,23 @@ npm run build        # produces webui/dist/
 `node`/`npm` are only needed for the build step. The running server has
 no Node dependency.
 
+**Cache headers.** The static-files mount is wrapped in a
+`CachingStaticFiles` subclass that pins the SPA cache policy to:
+
+- `index.html` and other unhashed top-level files → `Cache-Control: no-cache`
+  (forces revalidation on every navigation; the server still answers
+  with 304 Not Modified when nothing has changed).
+- `/assets/*` (Vite-emitted, content-hashed) →
+  `Cache-Control: public, max-age=31536000, immutable`.
+
+Without this, Starlette's defaults emit no `Cache-Control` at all,
+which lets browsers fall back to heuristic freshness on `index.html` —
+a freshly-built webui then stays invisible behind a stale cached
+`index.html` (which still references the old hashed bundle names) until
+the user does a hard reload (Ctrl+Shift+R). If you ever see "I rebuilt
+the UI and the change isn't showing up," check the response headers on
+`/` first — they should include `cache-control: no-cache`.
+
 ## Running
 
 ```bash
@@ -60,6 +303,58 @@ forgather server -H 127.0.0.1 -p 8765 -l INFO
 Open <http://127.0.0.1:8765/>. On first boot the server seeds its
 search-roots list with `<repo>/examples`; add or remove roots via the
 sidebar's **Browse…** button.
+
+### Authentication (operational)
+
+For the threat model and the full service-by-service layout, see
+[Threat model](#threat-model) and [Authentication overview](#authentication-overview).
+This section is the operational handbook — token rotation, browser
+bootstrap, and remote access.
+
+On startup the server prints a Jupyter-style URL with the token baked in:
+
+```
+    Forgather server is running at:
+        http://127.0.0.1:8765/?token=4c4febdc…
+        http://localhost:8765/?token=4c4febdc…
+
+    CLI auth: token in /home/<user>/.forgather/server/auth_token (mode 0600)
+    First successful token login will prompt to set a password for future browser logins.
+```
+
+| Channel                    | Used by                       | Notes                                                     |
+| -------------------------- | ----------------------------- | --------------------------------------------------------- |
+| `Authorization: Bearer …`  | CLI clients                   | Loaded automatically from the token file (see below).     |
+| `?token=…` query parameter | Browser bootstrap, WebSockets | The webui strips it from the URL after exchanging it.     |
+| Session cookie             | Browser after login           | `HttpOnly`, `SameSite=Lax`, in-memory (lost on restart).  |
+| Password (PBKDF2-SHA256)   | Browser after first login     | Optional; set via the prompt that follows token bootstrap. Re-auth required to change. |
+
+```bash
+# Rotate the token (invalidates all existing CLI sessions)
+forgather server --regen-token
+
+# Disable auth entirely — only safe on a single-user host you trust.
+forgather server --no-auth
+
+# Clear the password (next browser login will prompt to set a new one)
+rm ~/.forgather/server/password_hash
+```
+
+CLI clients pick the token up automatically. Override with
+`FORGATHER_SERVER_TOKEN=<token>` if you're talking to a server whose
+token file isn't in your home directory (e.g. an SSH-tunnelled remote
+machine):
+
+```bash
+ssh -L 8765:127.0.0.1:8765 remote
+FORGATHER_SERVER_TOKEN=$(ssh remote cat .forgather/server/auth_token) \
+  forgather sched status
+```
+
+Binding to a non-loopback host (`-H 0.0.0.0`) is supported but the
+bearer token then traverses the network in cleartext. Run behind an
+SSH tunnel or a TLS-terminating reverse proxy for LAN access; native
+TLS support is on the roadmap.
 
 ### Excluding misbehaving GPUs
 
@@ -89,12 +384,75 @@ Everything under `~/.forgather/server/` survives restarts:
 | `jobs/{queue_id}.tty`       | Captured stdout+stderr for each launched job.          |
 | `overrides/{hash}.json`     | Per-config dynamic-args override cache.                |
 | `gpu_policy.json`           | Per-GPU runtime policy: disabled + min_priority.       |
+| `auth_token`                | Bearer token shared with CLI clients (mode 0600).      |
+| `password_hash`             | Optional pbkdf2_sha256 hash for browser logins (0600). |
 
 All state files are written crash-atomically via `_atomic.py`: tmp file
 written in the target directory, `fsync` on the fd, then `os.replace`.
 Power loss or SIGKILL mid-write never leaves the canonical file
 partially written. Every reader tolerates a corrupt / truncated file by
 falling back to empty state.
+
+### State directories and GC
+
+Two sibling directories under `~/.forgather/` accumulate per-job files,
+one per subsystem. They are independent — neither owns the other —
+though the server reads the trainer-side directory to correlate
+PID-lineage with running JobRecords.
+
+#### `~/.forgather/server/jobs/q_*.tty` (server-owned)
+
+The captured stdout/stderr of every job the server dispatches. For
+training jobs the scheduler symlinks `q_<id>.tty` to
+`<run>/logs/tty.log` once the trainer's `endpoint.json` is correlated,
+so users can `tail -f logs/tty.log` from the run directory while the
+job is live.
+
+When a JobRecord transitions to a terminal status (`done` / `failed`
+/ `aborted`), the scheduler **moves the captured TTY into the run's
+`logs/tty.log`**, atomically replacing the symlink with the actual
+file. After this the run directory is self-contained — the central
+copy under `~/.forgather/server/jobs/` is gone. For non-training
+jobs (eval, inference, tensorboard, …) there is no `logs_dir` to move
+into; their TTY stays in the central directory until the JobRecord is
+removed (`DELETE /api/jobs/{id}` or `POST /api/jobs/cleanup`), which
+also unlinks it.
+
+A periodic sweep (daily, plus once at server startup) deletes any
+`q_*.tty` whose `queue_id` is not referenced by any record or
+queued item, mtime older than `FORGATHER_ORPHAN_TTY_TTL_SECONDS`
+(default `3600`). Run it on demand with:
+
+```bash
+forgather sched gc
+```
+
+#### `~/.forgather/jobs/job_<ts>_<host>_<pid>/` (trainer-owned)
+
+Each `TrainerControlCallback` (added to a Forgather Trainer via the
+`callbacks=` argument; see the project-root `CLAUDE.md` for the
+boilerplate) creates a per-job directory here on rank 0 and writes
+`endpoint.json` with the host:port the trainer's HTTP control API
+listens on. On a clean exit the callback both removes
+`endpoint.json` and `rmdir`s the directory, so well-behaved runs
+leave nothing behind. Crashed runs leak the directory.
+
+`forgather control cleanup` reaps both kinds of leftover:
+
+- Directories whose `endpoint.json` points at a dead PID (or one that
+  the kernel has recycled — verified against `psutil.Process.create_time()`).
+- Directories with no `endpoint.json` and mtime older than the TTL
+  (`--ttl SECONDS`, or `FORGATHER_ORPHAN_JOB_DIR_TTL_SECONDS`,
+  default 3600) — these are crash leftovers.
+
+```bash
+# Show counts and prompt before deleting
+forgather control cleanup
+# Skip the prompt
+forgather control cleanup --force
+# Tighter age threshold for orphan directories
+forgather control cleanup --ttl 600
+```
 
 ### Re-attach across restart
 
@@ -173,6 +531,15 @@ bottom:
       keep-optimizer toggles. Persisted under
       `forgather-global-finalize-v1`. Same **Reset to defaults**
       affordance as Convert.
+    - **⬆️ Update Model…** — queues `forgather update` to migrate a
+      saved Forgather model to the current source schema. Reads
+      `forgather_arch` / `forgather_arch_version` from the source
+      `config.json` and walks the per-arch migration chain; the
+      modal exposes `--arch` / `--from-version` / `--to-version` /
+      `--checkpoint` overrides plus dtype, device, strict / no-strict,
+      safetensors, and dry-run toggles. Persisted under
+      `forgather-global-update-v1`. Same **Reset to defaults**
+      affordance as Convert / Finalize.
 - **Project tree** — Search Roots + workspace-clustered projects
   (see below).
 
@@ -197,7 +564,9 @@ persists for next time.
   marker dirs (so empty workspaces seed empty clusters that still show
   in the tree), then for ``meta.yaml`` (projects, attached to whichever
   workspace_root MetaConfig resolves them to). Hierarchical workspaces
-  nest under their enclosing parent.
+  nest under their enclosing parent. Both passes prune hidden directories,
+  ``forgather_workspace/``, ``output_models/``, ``node_modules/``,
+  ``__pycache__``, and ``.git`` to avoid slow or redundant subtree walks.
 - Workspaces resolve display name + description from
   `forgather_workspace/workspace.yaml` → README title + first paragraph
   → directory basename. `forgather ws create` writes `workspace.yaml`
@@ -390,7 +759,7 @@ as an `X-Mtime` response header. The editor stamps the buffer's
 ``baselineMtime`` from this header on load and after every
 successful save. Save sends ``expected_mtime`` along with the
 content; if the file's current on-disk mtime is newer (with a
-1 ms tolerance for filesystem jitter), the server responds
+1 µs tolerance for filesystem jitter), the server responds
 **409** with `detail: {message, current_mtime, expected_mtime}`.
 The client throws a typed `SaveConflictError`, the buffer keeps
 its local content (no clobber), and `FilesPanel` opens a
@@ -575,11 +944,12 @@ sets/clears them.
   `forgather train` does, minus the extra subprocess layer — lets the
   scheduler own the process group for clean abort).
 
-**Seven job types** share the queue, scheduler, GPU accounting, and TTY
+**Nine job types** share the queue, scheduler, GPU accounting, and TTY
 capture machinery. The non-CUDA-by-default types (`tensorboard`,
-`mkdocs`, `convert`, `finalize`) accept `requested_gpus == 0`; the
-others still need at least one GPU. Convert / finalize will happily
-take a GPU if the user sets `--device cuda…` and bumps the reservation.
+`mkdocs`, `convert`, `finalize`, `update`, `dataset`) accept
+`requested_gpus == 0`; the others default to at least one GPU.
+Convert / finalize / update will happily take a GPU if the user sets
+`--device cuda…` and bumps the reservation.
 
 | Type         | Spawned by                                                                             | Lifecycle                              |
 | ------------ | -------------------------------------------------------------------------------------- | -------------------------------------- |
@@ -590,9 +960,13 @@ take a GPU if the user sets `--device cuda…` and bumps the reservation.
 | `mkdocs`     | 📖 MkDocs… (MkDocsModal, sidebar Tools — picks an `mkdocs.yml` + host:port)            | Long-lived; kill to stop.              |
 | `convert`    | 🔁 Convert Model… (ConvertModal, sidebar Tools)                                        | Terminal when `convert` exits.         |
 | `finalize`   | 📦 Finalize Model… (FinalizeModal, sidebar Tools)                                      | Terminal when `finalize` exits.        |
+| `update`     | ⬆️ Update Model… (UpdateModal, sidebar Tools or config / checkpoint right-click)        | Terminal when `update` exits.          |
+| `model`      | Run on a model config (config_class `type.model`)                                      | Terminal when `forgather model` exits. |
+| `dataset`    | Run on a dataset config (config_class `type.dataset`)                                  | Terminal when `forgather dataset` exits.|
 
 Helpers live in `inference_ops.py`, `eval_ops.py`, `tensorboard_ops.py`,
-`mkdocs_ops.py`, `convert_ops.py`, `finalize_ops.py` (build argv) and
+`mkdocs_ops.py`, `convert_ops.py`, `finalize_ops.py`, `update_ops.py`,
+`model_ops.py`, `dataset_ops.py` (build argv) and
 `launcher.spawn_*_process` (same sandbox as training but with the right
 argv). The scheduler's
 dispatcher branches on `item.job_type` to pick the spawn function;
@@ -610,15 +984,27 @@ Each scheduler tick (~2 s) runs this placement logic:
    jobs go first; FIFO within a priority band).
 
 2. **Build the idle pool.** Start from every GPU and drop any that are:
-   - running a compute process (NVML `nvmlDeviceGetComputeRunningProcesses`
-     says busy — could be a job we launched, a job someone else
-     launched, or stale-CUDA wedge);
    - **excluded** via `CUDA_VISIBLE_DEVICES` (set at server start);
    - **disabled** at runtime via the UI toggle (persists in
      `gpu_policy.json`);
    - already **reserved** for one of our `starting` / `running`
-     JobRecords (defensive — these should already show as busy, but
-     this handles the gap between spawn and first process report).
+     JobRecords.
+
+   External processes (the user's desktop compositor, an unrelated
+   CUDA program, a hybrid C+G daemon like
+   `gnome-remote-desktop-daemon`) are *not* consulted. Trying to
+   classify arbitrary processes as "real compute work" vs "desktop
+   rendering" turned out to be a tar pit: NVIDIA's proprietary driver
+   routes graphics-with-CUDA-context daemons through the compute
+   list, hybrid C+G processes show up there too, and any name-based
+   allowlist is incomplete by construction. The escape valve for
+   "I'm running unrelated work on this GPU and don't want Forgather
+   touching it" is the disable button on the GPU card. Compute and
+   graphics processes are still surfaced via NVML
+   (`nvmlDeviceGetComputeRunningProcesses` /
+   `nvmlDeviceGetGraphicsRunningProcesses`) for display in the UI
+   and to gate the kill-process endpoint (which restricts itself to
+   compute processes so it can't terminate the user's desktop).
 
 3. **Per-item eligibility.** For each queue item, filter the idle pool
    to GPUs whose `min_priority` gate the item clears
@@ -696,11 +1082,14 @@ What the algorithm intentionally does **not** do:
   a job to route its TTY output to the bottom pane. Draggable handle
   resizes (persisted to `localStorage`); double-click to reset to 45%.
 - TTY stream subscribes to `WS /api/jobs/{id}/tty` — backlog then poll-
-  follow. Imperative `appendChild(textNode)` so browser text selection
-  survives new chunks streaming in (lets you copy log lines from a
-  running job). Once the trainer registers `logs_dir`, the captured TTY
-  is symlinked into `<logs_dir>/tty.log` for durability alongside the
-  trainer's other artifacts.
+  follow. The backlog is read in 1 MiB chunks so a large log doesn't
+  OOM the server; the one-shot REST dump (`GET /api/jobs/{id}/tty`) caps
+  at the trailing 32 MiB of the captured file. Imperative
+  `appendChild(textNode)` so browser text selection survives new chunks
+  streaming in (lets you copy log lines from a running job). Once the
+  trainer registers `logs_dir`, the captured TTY is symlinked into
+  `<logs_dir>/tty.log` for durability alongside the trainer's other
+  artifacts.
 - Per-card hide/restart aware: server restart marks orphaned-but-still-
   alive processes as re-attached and continues monitoring them.
 
@@ -757,7 +1146,16 @@ the webui can't hit spawned inference servers directly without running
 into CORS / Private Network Access / extension-blocking. Everything
 routes through same-origin `/api/inference/*`; the proxy forwards to
 whichever base URL the caller names, streaming byte-for-byte so the
-SSE framing reaches the browser unchanged.
+SSE framing reaches the browser unchanged. To prevent the proxy from
+being abused as an SSRF springboard (e.g. by a stolen auth token
+reaching cloud metadata services or other LAN hosts), the upstream host
+must be literal localhost — `127.0.0.1`, `localhost`, or `::1` — by
+default. Single-user secure-LAN deployments that need to forward to a
+remote vLLM box can opt in by exporting
+`FORGATHER_INFERENCE_PROXY_ALLOW_REMOTE=1` (or `true` / `yes`) before
+starting the server; each non-localhost forward is logged at WARNING.
+The check is string-based, not DNS-based — use the literal address if
+you mean loopback.
 
 ### GPUs
 
@@ -978,14 +1376,18 @@ tools/forgather_server/
 ├── queue_store.py             # Persistent FIFO queue (waiting items only)
 ├── job_records.py             # Persistent records of dispatched jobs
 ├── launcher.py                # Spawn training / eval / inference /
-│                              #   tensorboard / mkdocs processes; own
-│                              #   process group
+│                              #   tensorboard / mkdocs / convert /
+│                              #   finalize / update / model / dataset
+│                              #   processes; own process group
 ├── inference_ops.py           # Build inference-server argv
 ├── eval_ops.py                # Build `forgather eval` argv
 ├── tensorboard_ops.py         # Build tensorboard argv
 ├── mkdocs_ops.py              # Build `mkdocs serve` argv
 ├── convert_ops.py             # Build `forgather convert` argv
 ├── finalize_ops.py            # Build `forgather finalize` argv
+├── update_ops.py              # Build `forgather update` argv
+├── model_ops.py               # Build `forgather model` argv
+├── dataset_ops.py             # Build `forgather dataset` argv
 ├── scheduler.py               # Dispatcher loop, GPU allocation,
 │                              #   per-job-type spawn, re-attach, reap, abort
 ├── gpu_monitor.py             # NVML / torch.cuda enumeration,
@@ -1079,9 +1481,15 @@ tools/forgather_server/
             ├── MkDocsModal.tsx      # Enqueue `mkdocs serve` job
             │                        #   (sidebar Tools — global only)
             ├── ConvertModal.tsx     # Enqueue `forgather convert` job
-            │                        #   (sidebar Tools — global only)
+            │                        #   (sidebar Tools or config / checkpoint
+            │                        #   right-click)
             ├── FinalizeModal.tsx    # Enqueue `forgather finalize` job
-            │                        #   (sidebar Tools — global only)
+            │                        #   (sidebar Tools or config / checkpoint
+            │                        #   right-click)
+            ├── UpdateModal.tsx      # Enqueue `forgather update` job
+            │                        #   (sidebar Tools or config / checkpoint
+            │                        #   right-click; pre-fills source path
+            │                        #   and optional checkpoint)
             ├── LogDetailPanel.tsx   # Selection target for a run/log leaf
             ├── CheckpointDetailPanel.tsx # Selection target for a checkpoint
             ├── EvalDetailPanel.tsx  # Selection target for an evaluation
@@ -1117,10 +1525,12 @@ APIs — no re-implementation. Every endpoint ultimately calls into
 or `TrainerControlClient`. Config materialization respects per-config
 override values pulled from a JSON cache, so `pp` / `trefs` /
 `output-dir` / `config/meta` all reflect whatever the user has set in
-the 🔧 Overrides modal. The scheduler dispatches five job types —
+the 🔧 Overrides modal. The scheduler dispatches ten job types —
 training (`torchrun`), eval (`forgather eval`), inference
-(`tools/inference_server/server.py`), TensorBoard (`tensorboard`), and
-MkDocs (`mkdocs serve`) — all through a common `launcher.spawn_*`
+(`tools/inference_server/server.py`), TensorBoard (`tensorboard`),
+MkDocs (`mkdocs serve`), convert (`forgather convert`), finalize
+(`forgather finalize`), update (`forgather update`), model, and
+dataset — all through a common `launcher.spawn_*`
 surface that owns its process group via `start_new_session=True` so
 jobs survive server restart. Inference
 servers spawned this way appear in the Inference panel's "Running
@@ -1214,7 +1624,7 @@ Populates the project-tree sub-groups and detail panels:
 | Endpoint                                                  | Purpose                                                |
 | --------------------------------------------------------- | ------------------------------------------------------ |
 | `GET /api/queue`                                          | List queued items                                      |
-| `POST /api/queue` `{project_dir, config, dynamic_args, requested_gpus, priority, job_type?, job_params?}` | Enqueue any job type (`training` / `eval` / `inference` / `tensorboard` / `mkdocs` / `convert` / `finalize`) |
+| `POST /api/queue` `{project_dir, config, dynamic_args, requested_gpus, priority, job_type?, job_params?}` | Enqueue any job type (`training` / `eval` / `inference` / `tensorboard` / `mkdocs` / `convert` / `finalize` / `update` / `model` / `dataset`) |
 | `DELETE /api/queue/{queue_id}`                            | Cancel a queued item (or abort if it's already running) |
 | `GET /api/queue/scheduler`                                | Dispatcher on/off + counters                           |
 | `POST /api/queue/scheduler` `{enabled}`                   | Enable / disable the dispatcher                        |
@@ -1228,6 +1638,7 @@ Populates the project-tree sub-groups and detail panels:
 | `POST /api/jobs/{id}/control/{save\|stop\|save-stop\|abort\|kill\|force-kill}` | Trainer control commands; `kill`=local SIGTERM, `force-kill`=local SIGKILL |
 | `DELETE /api/jobs/{id}`                                               | Remove a terminal JobRecord from history                   |
 | `POST /api/jobs/cleanup`                                              | Bulk-remove every terminal JobRecord (`done` / `failed` / `aborted`) |
+| `POST /api/jobs/gc`                                                   | Sweep orphan TTY files from `~/.forgather/server/jobs/`    |
 | `GET /api/jobs/{id}/tty`                                              | Full captured TTY (one-shot)                               |
 | `WS /api/jobs/{id}/tty?follow=`                                       | Backlog + follow-tail of captured TTY                      |
 

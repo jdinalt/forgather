@@ -15,6 +15,10 @@ from . import config_mappings, hf_mappings
 class MistralConverter(HFConverter):
     """Converter for Mistral models between HuggingFace and Forgather formats."""
 
+    arch = "mistral"
+    arch_version = "1"
+    forgather_migrations: dict = {}
+
     def __init__(self):
         """Initialize Mistral converter."""
         super().__init__(model_type="mistral")

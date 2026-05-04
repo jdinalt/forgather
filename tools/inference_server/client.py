@@ -353,9 +353,11 @@ if __name__ == "__main__" and __package__ is None:
         sys.path.insert(0, str(parent_dir))
 
     # Import as if we're a package
+    from inference_server.auth_paths import read_standalone_token
     from inference_server.config import load_config_from_yaml, merge_config_with_args
 else:
     # Running as module - use relative imports
+    from .auth_paths import read_standalone_token
     from .config import load_config_from_yaml, merge_config_with_args
 
 
@@ -485,6 +487,22 @@ def main():
         "--no-stream", action="store_true", help="Disable streaming response"
     )
 
+    # Auth options. Mirrors server.py — either flag overrides the default
+    # 'dummy' api_key. The OpenAI SDK forwards api_key as the Bearer token
+    # in the Authorization header, which is what the server validates.
+    auth_group = parser.add_mutually_exclusive_group()
+    auth_group.add_argument(
+        "--auth-token",
+        default=None,
+        help="Bearer token to send to the inference server.",
+    )
+    auth_group.add_argument(
+        "--auth-token-file",
+        default=None,
+        type=os.path.expanduser,
+        help="Read the bearer token from this file (avoids putting it on the command line).",
+    )
+
     # Utility options
     parser.add_argument(
         "--health", action="store_true", help="Check server health and exit"
@@ -518,8 +536,28 @@ def main():
             # If both stdin and --completion, prefer stdin
             args.completion = stdin_prompt
 
+    # Resolve auth token: explicit > file > standalone-server cache > "dummy"
+    # placeholder. The cache lookup makes ``forgather inf server`` paired
+    # with ``forgather inf client`` work without the user having to copy the
+    # auto-generated token by hand; the placeholder is preserved so legacy
+    # ``--no-auth`` servers keep working.
+    api_key = "dummy"
+    if args.auth_token:
+        api_key = args.auth_token.strip()
+    elif args.auth_token_file:
+        try:
+            api_key = Path(args.auth_token_file).read_text().strip()
+        except OSError as e:
+            parser.error(f"could not read --auth-token-file: {e}")
+        if not api_key:
+            parser.error(f"auth-token-file is empty: {args.auth_token_file}")
+    else:
+        cached = read_standalone_token(args.url)
+        if cached:
+            api_key = cached
+
     # Create client
-    client = InferenceClient(args.url)
+    client = InferenceClient(args.url, api_key=api_key)
 
     # Handle utility commands
     if args.health:

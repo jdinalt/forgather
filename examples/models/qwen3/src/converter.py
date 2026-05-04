@@ -15,6 +15,10 @@ from . import config_mappings, hf_mappings
 class Qwen3Converter(HFConverter):
     """Converter for Qwen3 models between HuggingFace and Forgather formats."""
 
+    arch = "qwen3"
+    arch_version = "1"
+    forgather_migrations: dict = {}
+
     def __init__(self):
         """Initialize Qwen3 converter."""
         super().__init__(model_type="qwen3")

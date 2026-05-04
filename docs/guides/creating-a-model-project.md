@@ -5,7 +5,7 @@ project defines a model architecture as a Forgather configuration, which the
 code generator then turns into standalone Python code.
 
 For existing model projects to use as reference, see
-[`examples/models/`](../../examples/models/README.md). For the full `forgather model`
+[`examples/models/`](../examples/models/README.md). For the full `forgather model`
 command reference — constructing, testing, checkpoint handling, and rebuilding from
 modified sources — see [Model CLI Reference](model-cli.md).
 
@@ -143,7 +143,7 @@ model definition is correct end-to-end.
 For the complete reference on `forgather model` subcommands -- including how to
 save checkpoints, load weights, rebuild after source changes, test with real
 data, and control hyperparameters via dynamic CLI args -- see
-[examples/models/README.md](../../examples/models/README.md).
+[examples/models/README.md](../examples/models/README.md).
 
 ## Customizing the architecture
 

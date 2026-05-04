@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { DirectoryBrowser } from "./DirectoryBrowser";
 import { PathField } from "./PathField";
+import { ModalBackdrop } from "./ModalBackdrop";
 
 interface Props {
   /** Pre-select a parent search root in the dropdown. Used when the
@@ -174,7 +175,7 @@ export function NewWorkspaceModal({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <ModalBackdrop onClose={onClose}>
       <div
         className="modal new-workspace-modal"
         onClick={(e) => e.stopPropagation()}
@@ -434,6 +435,6 @@ export function NewWorkspaceModal({
           />
         )}
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

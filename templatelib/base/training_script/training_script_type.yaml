@@ -125,6 +125,12 @@ optimizer: &optimizer ~
 
 
     -- filter trim()
+    -- block optimizer_factories
+    << endblock optimizer_factories
+    -- endfilter
+
+
+    -- filter trim()
     -- block optimizer_groups
 optimizer_groups: &optimizer_groups ~
     << endblock optimizer_groups
@@ -171,28 +177,35 @@ trainer_args: &trainer_args !dict
     max_steps:
         names: "--max-steps"
         type: "int"
+        group: "Trainer"
         help: "Set maximum training steps"
     save_strategy:
         names: [ "--save-strategy", "-S" ]
         choices: [ "no", "steps", "epoch" ]
         type: "str"
+        group: "Trainer:Checkpointing"
         help: "When to save checkpoints"
     no_accelerator:
         names: "--no-accelerator"
         action: "store_true"
+        group: "Trainer:Distributed"
         help: "Disable use of accelerator, when available. e.g. 'don't use GPU'"
     dist_backend:
         names: "--dist-backend"
+        group: "Trainer:Distributed"
         help: "The name of the torch-distributed backend to use"
     output_dir:
         names: "--output-dir"
         type: path
+        group: "Output"
         help: "Overrides default model output directory path"
     model_name:
         names: "--model-name"
+        group: "Output"
         help: "Set custom model name"
     log_name:
         names: "--log-name"
+        group: "Output"
         help: "Set log name prefix"
 << endblock dynamic_args
 

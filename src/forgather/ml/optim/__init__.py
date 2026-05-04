@@ -3,8 +3,12 @@ from .adamw import AdamW
 from .apollo import Apollo
 from .cosine_lr_scheduler import CosineLRScheduler
 from .infinite_lr_scheduler import InfiniteLRScheduler
-from .multiopt import Multiopt, make_re_multiopt
-from .opt_utils import build_parameter_groups, make_grouped_optimizer
+from .multiopt import Multiopt
+from .opt_utils import (
+    build_optimizer_buckets,
+    build_parameter_groups,
+    make_grouped_optimizer,
+)
 from .sgd import SGD
 from .sinkgd import SinkGD
 from .wsd_scheduler import WSDScheduler
@@ -19,7 +23,7 @@ __all__ = [
     "Multiopt",
     "SinkGD",
     "WSDScheduler",
+    "build_optimizer_buckets",
     "build_parameter_groups",
     "make_grouped_optimizer",
-    "make_re_multiopt",
 ]

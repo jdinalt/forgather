@@ -25,7 +25,7 @@ forgather tb [-- --bind_all]
 
 ## Example projects
 
-See [`examples/torchtitan/`](../../examples/torchtitan/README.md) for working configurations:
+See [`examples/torchtitan/`](../examples/torchtitan/README.md) for working configurations:
 
 - **llama3** — Native Titan: reproduces the official Torch Titan Llama3 base configs via Forgather, demonstrating how template inheritance simplifies managing Titan YAML variants.
 - **tiny_titan** — Forgather Titan: a native Torch Titan trainer with dependency injection for training assets; includes an FSDP config for a 117M parameter Llama3 model.

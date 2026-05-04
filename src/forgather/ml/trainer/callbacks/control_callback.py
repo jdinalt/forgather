@@ -6,9 +6,11 @@ Only rank 0 runs the HTTP server and broadcasts commands to other ranks.
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
+import secrets
 import signal
 import socket
 import threading
@@ -88,6 +90,9 @@ class TrainerControlCallback(TrainerCallback):
         job_id: Optional[str] = None,
         port: Optional[int] = None,
         enable_http: Optional[bool] = None,
+        host: Optional[str] = None,
+        auth_token: Optional[str] = None,
+        disable_auth: bool = False,
     ):
         """
         Initialize the control callback.
@@ -101,6 +106,18 @@ class TrainerControlCallback(TrainerCallback):
         enable_http : bool, optional
             Whether to enable HTTP server. Auto-detected based on ``aiohttp``
             availability.
+        host : str, optional
+            Bind address. Defaults to ``127.0.0.1`` (loopback only). Pass
+            ``"0.0.0.0"`` to expose the control endpoint on every interface;
+            a warning is logged in that case.
+        auth_token : str, optional
+            Pre-shared bearer token. Generated via ``secrets.token_hex(32)``
+            when ``None`` (the common case). Persisted to
+            ``~/.forgather/jobs/{job_id}/auth_token`` at mode ``0o600`` so
+            local clients (CLI, server proxy) can read it back.
+        disable_auth : bool, optional
+            Skip bearer-token enforcement on /control, /status, /jobs.
+            Off by default; the trainer logs a warning when this is set.
         """
         super().__init__()
 
@@ -114,7 +131,13 @@ class TrainerControlCallback(TrainerCallback):
         self.enable_http = enable_http
         self.job_id = job_id or self._generate_job_id()
         self.port = port
+        self.host = host if host is not None else "127.0.0.1"
         self.control_dir = Path.home() / ".forgather" / "jobs" / self.job_id
+
+        # Auth state. Token is set lazily on rank 0 in on_train_begin so we
+        # don't burn entropy in non-rank-0 processes that never serve.
+        self.disable_auth = disable_auth
+        self.auth_token: Optional[str] = auth_token
 
         # Command handling
         self.command_queue: Optional[asyncio.Queue] = None
@@ -156,11 +179,38 @@ class TrainerControlCallback(TrainerCallback):
             f"Could not find available port in range {start_port}-{start_port + max_attempts}"
         )
 
+    def _ensure_control_dir(self) -> None:
+        """Create control_dir at 0o700 (best-effort chmod after mkdir)."""
+        self.control_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self.control_dir, 0o700)
+        except OSError:
+            pass
+
+    def _write_auth_token(self) -> None:
+        """Persist the auth token at mode 0o600 next to endpoint.json.
+
+        Local CLI/server clients read this file to attach the bearer header.
+        Keeping it out of endpoint.json avoids duplicating the secret.
+        """
+        if self.disable_auth or not self.auth_token:
+            return
+        self._ensure_control_dir()
+        token_file = self.control_dir / "auth_token"
+        tmp = token_file.with_suffix(token_file.suffix + ".tmp")
+        with open(tmp, "w") as f:
+            f.write(self.auth_token)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, token_file)
+
     def _write_endpoint_file(self, port: int):
         """Write endpoint information for service discovery."""
-        import platform
-
-        self.control_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_control_dir()
         endpoint_file = self.control_dir / "endpoint.json"
 
         # Also publish the run's output_dir and logging_dir so external
@@ -175,9 +225,12 @@ class TrainerControlCallback(TrainerCallback):
             output_dir = os.path.abspath(raw_output) if raw_output else None
             logging_dir = os.path.abspath(raw_logging) if raw_logging else None
 
+        # ``host`` is the actual bind address. Earlier versions wrote
+        # ``platform.node()`` (the FQDN), which is wrong for a loopback
+        # bind — clients hitting the FQDN would get connection-refused.
         endpoint_info = {
             "job_id": self.job_id,
-            "host": platform.node(),
+            "host": self.host,
             "port": port,
             "pid": os.getpid(),
             "started_at": time.time(),
@@ -190,10 +243,14 @@ class TrainerControlCallback(TrainerCallback):
             json.dump(endpoint_info, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
         os.replace(tmp, endpoint_file)
 
         logger.info(
-            f"Trainer control endpoint: http://{endpoint_info['host']}:{port}/jobs/{self.job_id}"
+            f"Trainer control endpoint: http://{self.host}:{port}/jobs/{self.job_id}"
         )
 
     def _setup_signal_handler(self):
@@ -222,12 +279,42 @@ class TrainerControlCallback(TrainerCallback):
         else:
             return "cpu"
 
+    def _make_auth_middleware(self):
+        """Bearer-token middleware. Returns 401 on missing/invalid token.
+
+        Uses ``hmac.compare_digest`` so a wrong-length token doesn't leak
+        timing info. The realm string is mostly cosmetic but lets curl
+        users know which endpoint refused them.
+        """
+
+        @aiohttp.web.middleware
+        async def auth_middleware(request, handler):
+            if self.disable_auth or not self.auth_token:
+                return await handler(request)
+            header = request.headers.get("Authorization", "")
+            expected_prefix = "Bearer "
+            if not header.startswith(expected_prefix) or not hmac.compare_digest(
+                header[len(expected_prefix) :], self.auth_token
+            ):
+                return aiohttp.web.json_response(
+                    {"detail": "authentication required"},
+                    status=401,
+                    headers={"WWW-Authenticate": 'Bearer realm="forgather-trainer"'},
+                )
+            return await handler(request)
+
+        return auth_middleware
+
     async def _run_http_server(self):
         """Run the HTTP server in async mode."""
         try:
             self.command_queue = asyncio.Queue()
 
-            app = aiohttp.web.Application()
+            middlewares = []
+            if not self.disable_auth and self.auth_token:
+                middlewares.append(self._make_auth_middleware())
+
+            app = aiohttp.web.Application(middlewares=middlewares)
             app.router.add_post(
                 f"/jobs/{self.job_id}/control", self._handle_control_request
             )
@@ -245,7 +332,7 @@ class TrainerControlCallback(TrainerCallback):
             if self.port is None:
                 self.port = self._find_available_port()
 
-            site = aiohttp.web.TCPSite(self.server_runner, "0.0.0.0", self.port)
+            site = aiohttp.web.TCPSite(self.server_runner, self.host, self.port)
             await site.start()
 
             self._write_endpoint_file(self.port)
@@ -562,6 +649,30 @@ class TrainerControlCallback(TrainerCallback):
         # Only rank 0 runs the HTTP server
         if state.is_world_process_zero and self.enable_http:
             try:
+                # Generate the per-job bearer token (rank-0 only) and persist
+                # it at 0o600 so local clients can read it back. Skip when
+                # disable_auth is set; warn in that case so it's loud in
+                # the log.
+                loopback_hosts = {"127.0.0.1", "localhost", "::1"}
+                if self.host not in loopback_hosts:
+                    logger.warning(
+                        "Trainer control endpoint binding to %s is exposed "
+                        "beyond loopback; any user reaching this host:port "
+                        "with the bearer token can save/abort the job.",
+                        self.host,
+                    )
+                if self.disable_auth:
+                    logger.warning(
+                        "Trainer control endpoint started with auth DISABLED; "
+                        "anyone who can reach %s:%s can save/abort this job.",
+                        self.host,
+                        self.port if self.port is not None else "<auto>",
+                    )
+                else:
+                    if not self.auth_token:
+                        self.auth_token = secrets.token_hex(32)
+                    self._write_auth_token()
+
                 self.event_loop = asyncio.new_event_loop()
                 self.server_thread = threading.Thread(
                     target=self._run_server_thread, daemon=True
@@ -643,10 +754,24 @@ class TrainerControlCallback(TrainerCallback):
                 if self.server_thread:
                     self.server_thread.join(timeout=10)
 
-                # Clean up endpoint file
+                # Clean up endpoint file and the per-job directory so
+                # ~/.forgather/jobs/ doesn't accumulate empty job_* dirs
+                # over time. rmdir is best-effort — leave the dir behind
+                # if anything else is still in there (e.g. unread
+                # control/*.json command files from a flaky shutdown).
                 endpoint_file = self.control_dir / "endpoint.json"
                 if endpoint_file.exists():
                     endpoint_file.unlink()
+                token_file = self.control_dir / "auth_token"
+                if token_file.exists():
+                    try:
+                        token_file.unlink()
+                    except OSError:
+                        pass
+                try:
+                    self.control_dir.rmdir()
+                except OSError:
+                    pass
 
                 logger.info("Trainer control system shutdown complete")
 

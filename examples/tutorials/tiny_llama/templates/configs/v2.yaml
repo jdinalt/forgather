@@ -38,10 +38,9 @@
     -- set ns.base_lr = lr | default(1.0e-3)
     
     ## Attention
-    -- set ns.attn_implementation = attn_implementation | default("flex_attention")
+    -- set ns.attn_implementation = attn_implementation | default("sdpa")
 
     ## Compile
-    -- set ns.torch_compile = compile | default("True")
     -- set ns.torch_compile_mode = torch_compile_mode | default("max-autotune")
 
     ## Prompts

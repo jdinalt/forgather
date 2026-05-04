@@ -44,9 +44,13 @@ class PeakMemory(TrainerCallback):
     do_log : bool, optional
         If ``True``, logs peak memory usage at each logging step
         (``on_log`` callback).
-    enable_memory_history : bool, optional
-        If ``True``, enables comprehensive CUDA memory history recording.
+    enable_memory_snapshot : bool, optional
+        If ``True``, enables comprehensive CUDA memory history recording
+        and writes a pickled snapshot at end-of-training.
         WARNING: This can consume 1 GB+ memory and cause memory leaks.
+    file_prefix : str, optional
+        Filename prefix for the per-rank memory snapshot pickle.
+        Defaults to ``"memory_snapshot"``.
 
     Attributes
     ----------
@@ -62,8 +66,8 @@ class PeakMemory(TrainerCallback):
         Whether to log detailed memory statistics.
     do_log : bool
         Whether to log memory usage on each log step.
-    enable_memory_history : bool
-        Whether to enable comprehensive memory history recording.
+    enable_memory_snapshot : bool
+        Whether memory history recording and snapshot dumping is enabled.
     max_allocated : int
         The maximum CUDA memory allocated during training (in bytes).
     """

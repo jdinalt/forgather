@@ -1,0 +1,1 @@
+../../../syntax_highlighting/vim/vim-syntax-install.md

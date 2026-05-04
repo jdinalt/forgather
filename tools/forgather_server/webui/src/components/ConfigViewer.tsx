@@ -5,13 +5,20 @@ import Editor, { OnMount } from "@monaco-editor/react";
 import { api, ConfigInfo, ModelEntry, ProjectInfo } from "../api";
 import { FORGATHER_LANGUAGE_ID, registerForgatherLanguage } from "../forgather-syntax";
 import { CleanOutputModal } from "./CleanOutputModal";
+import { DatasetSubmitModal } from "./DatasetSubmitModal";
 import { EvalModal } from "./EvalModal";
 import { InfoPane } from "./InfoPane";
+import { ModelSubmitModal } from "./ModelSubmitModal";
 import { OverridesModal } from "./OverridesModal";
 import { SubmitModal } from "./SubmitModal";
 import { ConfigTensorBoardModal } from "./TensorBoardModal";
 import { TemplatesView } from "./TemplatesView";
+import { DebugPanel } from "./DebugPanel";
+import { CodePanel } from "./CodePanel";
+import { GraphPanel } from "./GraphPanel";
+import { ConfigErrorView } from "./ConfigErrorView";
 import { ConfigTab } from "../App";
+import { asConfigError } from "../api";
 
 interface Props {
   project: ProjectInfo;
@@ -20,6 +27,13 @@ interface Props {
   onTabChange: (tab: ConfigTab) => void;
   onEditTemplate: (path: string) => void;
   onSelectConfig: (project: ProjectInfo, config: ConfigInfo) => void;
+  /** Bubble the submitted job's queue id to App so it can decide whether
+   *  to switch to the Jobs view + auto-open the TTY. */
+  onJobSubmitted?: (queueId: string) => void;
+  /** Hand off a markdown / ipynb link click in the README to the Docs view. */
+  onOpenDoc?: (path: string) => void;
+  /** Hand off a yaml / py link click in the README to the editor. */
+  onEditFile?: (path: string) => void;
 }
 
 export function ConfigViewer({
@@ -29,6 +43,9 @@ export function ConfigViewer({
   onTabChange,
   onEditTemplate,
   onSelectConfig,
+  onJobSubmitted,
+  onOpenDoc,
+  onEditFile,
 }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [cleaning, setCleaning] = useState(false);
@@ -50,7 +67,10 @@ export function ConfigViewer({
   });
   const cls = metaQ.data?.config_class ?? null;
   const isTraining = cls?.startsWith("type.training_script") ?? false;
+  const isModel = cls?.startsWith("type.model") ?? false;
+  const isDataset = cls?.startsWith("type.dataset") ?? false;
   const showRunCleanup = metaQ.data ? isTraining : true;
+  const showRun = metaQ.data ? isTraining || isModel || isDataset : true;
 
   // Read project models from cache to decide whether to show Serve/Eval buttons.
   const modelsQ = useQuery({
@@ -74,7 +94,7 @@ export function ConfigViewer({
 
   return (
     <div className="viewer">
-      <header className="viewer-header">
+      <header className="viewer-header config-viewer-header">
         <div className="viewer-title">
           {metaQ.data?.name ? (
             <>
@@ -93,7 +113,7 @@ export function ConfigViewer({
             — {project.name || project.project_dir}
           </span>
         </div>
-        {showRunCleanup && (
+        {showRun && (
           <button
             className="run-btn"
             onClick={() => setSubmitting(true)}
@@ -133,7 +153,7 @@ export function ConfigViewer({
             onClick={() => setEvaluating(true)}
             title="Evaluate this model (blank = latest checkpoint)"
           >
-            ⚖ Evaluate…
+            📐 Evaluate…
           </button>
         )}
         <nav className="tabs">
@@ -150,15 +170,41 @@ export function ConfigViewer({
             pp
           </button>
           <button
+            className={tab === "code" ? "active" : ""}
+            onClick={() => setTab("code")}
+            title="Render the config (or a single target) as Python source"
+          >
+            code
+          </button>
+          <button
+            className={tab === "graph" ? "active" : ""}
+            onClick={() => setTab("graph")}
+            title="Config node dependency graph"
+          >
+            graph
+          </button>
+          <button
             className={tab === "templates" ? "active" : ""}
             onClick={() => setTab("templates")}
           >
             templates
           </button>
+          <button
+            className={tab === "debug" ? "active" : ""}
+            onClick={() => setTab("debug")}
+            title="Per-template preprocess trace"
+          >
+            debug
+          </button>
         </nav>
       </header>
 
-      <InfoPane project_dir={project.project_dir} enabled={tab === "info"} />
+      <InfoPane
+        project_dir={project.project_dir}
+        enabled={tab === "info"}
+        onOpenDoc={onOpenDoc}
+        onEditFile={onEditFile}
+      />
       {tab === "pp" && (
         <EditorPane
           value={ppQ.data ?? ""}
@@ -166,6 +212,12 @@ export function ConfigViewer({
           error={ppQ.error}
           onMount={onMount}
         />
+      )}
+      {tab === "code" && (
+        <CodePanel project={project} config={config} onMount={onMount} />
+      )}
+      {tab === "graph" && (
+        <GraphPanel project={project} config={config} />
       )}
       {tab === "templates" && (
         <TemplatesView
@@ -176,11 +228,36 @@ export function ConfigViewer({
           onSelectConfig={onSelectConfig}
         />
       )}
-      {submitting && (
+      {tab === "debug" && (
+        <DebugPanel
+          project={project}
+          config={config}
+          onMount={onMount}
+          onEditTemplate={onEditTemplate}
+        />
+      )}
+      {submitting && isModel && (
+        <ModelSubmitModal
+          project={project}
+          config={config}
+          onClose={() => setSubmitting(false)}
+          onSubmitted={onJobSubmitted}
+        />
+      )}
+      {submitting && isDataset && (
+        <DatasetSubmitModal
+          project={project}
+          config={config}
+          onClose={() => setSubmitting(false)}
+          onSubmitted={onJobSubmitted}
+        />
+      )}
+      {submitting && !isModel && !isDataset && (
         <SubmitModal
           project={project}
           config={config}
           onClose={() => setSubmitting(false)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {cleaning && (
@@ -202,6 +279,7 @@ export function ConfigViewer({
           project={project}
           config={config}
           onClose={() => setTensorboarding(false)}
+          onSubmitted={onJobSubmitted}
         />
       )}
       {evaluating && (
@@ -211,6 +289,7 @@ export function ConfigViewer({
           checkpointPath={null}
           projectDir={project.project_dir}
           onClose={() => setEvaluating(false)}
+          onSubmitted={onJobSubmitted}
         />
       )}
     </div>
@@ -229,12 +308,21 @@ function EditorPane({
   onMount: OnMount;
 }) {
   if (loading) return <div className="pane-state">Loading...</div>;
-  if (error)
+  if (error) {
+    const cfgErr = asConfigError(error);
+    if (cfgErr) {
+      return (
+        <div className="pane-state err">
+          <ConfigErrorView err={cfgErr} />
+        </div>
+      );
+    }
     return (
       <div className="pane-state err">
         <pre>{String(error)}</pre>
       </div>
     );
+  }
   return (
     <Editor
       height="100%"
