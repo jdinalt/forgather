@@ -185,7 +185,7 @@ def dataset_cmd(args):
             example_count = 0
             dataset_index = 0
 
-            for example in split:
+            for i, example in enumerate(split):
                 # Check if this is an index we want to print
                 if dataset_index % stride == 0 and example_count < args.examples:
                     input_ids = example["input_ids"]
@@ -193,7 +193,7 @@ def dataset_cmd(args):
                     # Use explicit document boundaries if available (preferred)
                     if document_starts:
                         n_documents = len(document_starts)
-                        print(f"Document Starts: {document_starts}")
+                        print(f"Document Starts[{i}]: {document_starts}")
                     # Fall back to counting EOS tokens (legacy, less reliable)
                     elif tokenizer.eos_token_id is not None:
                         n_documents = (
