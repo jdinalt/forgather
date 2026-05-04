@@ -10,6 +10,12 @@ type SubTab = "model" | "completion" | "chat";
 
 export interface InferenceState {
   baseUrl: string;
+  /** Bearer token forwarded to the upstream as ``Authorization: Bearer …``
+   *  (via the proxy's X-Inference-Auth-Token side-channel so the user's
+   *  Authorization to the forgather-server doesn't leak). Auto-populated
+   *  from a JobRecord when picking a local server; user-editable for
+   *  external OpenAI-compatible servers. Empty = no upstream auth. */
+  authToken: string;
   model: string;
   params: GenerationParams;
 }
@@ -21,6 +27,7 @@ const STORAGE_KEY = "forgather-inference-state";
 export const DEFAULT_GENERATION_PARAMS: GenerationParams = { max_tokens: 256 };
 const DEFAULT_STATE: InferenceState = {
   baseUrl: "http://localhost:8137/v1",
+  authToken: "",
   model: "",
   params: DEFAULT_GENERATION_PARAMS,
 };
@@ -35,6 +42,8 @@ function loadState(): InferenceState {
         typeof parsed.baseUrl === "string"
           ? parsed.baseUrl
           : DEFAULT_STATE.baseUrl,
+      authToken:
+        typeof parsed.authToken === "string" ? parsed.authToken : "",
       model: typeof parsed.model === "string" ? parsed.model : "",
       params:
         parsed.params && typeof parsed.params === "object"

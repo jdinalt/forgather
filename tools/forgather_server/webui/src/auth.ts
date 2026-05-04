@@ -39,12 +39,20 @@ export function installAuthFetch(): void {
     // Don't override an explicit ``credentials`` choice from the caller.
     if (init?.credentials === undefined) merged.credentials = "include";
     const r = await original(input, merged);
-    if (r.status === 401) {
+    if (r.status === 401 || r.status === 403) {
       // Don't fire for the auth endpoints themselves — login attempts
       // legitimately produce 401, and the LoginGate handles them
       // inline. Nothing else should be calling /api/auth/login.
       const url = typeof input === "string" ? input : input.toString();
-      if (!url.includes("/api/auth/")) {
+      // Don't fire when an upstream proxy (inference, etc.) tagged the
+      // response: that's the *upstream* server rejecting its own bearer
+      // (e.g. wrong inference auth token in the panel), not the user's
+      // forgather-server session. The middleware would have intercepted
+      // before any proxy code ran if the session were truly expired, so
+      // a 401 with this tag necessarily came from upstream.
+      const upstreamAuthFailed =
+        r.headers.get("X-Upstream-Auth-Failed") === "1";
+      if (!url.includes("/api/auth/") && !upstreamAuthFailed) {
         window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT));
       }
     }

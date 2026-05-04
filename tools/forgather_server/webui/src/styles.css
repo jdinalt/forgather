@@ -1097,6 +1097,23 @@ button.jobs-tty-toggle.active {
   min-width: 0;
   width: auto;
 }
+/* path-field is the input + button(s) flex row used for "wide" rows like
+   Base URL and Auth Token. Without this, the wrapper falls back to
+   display:block and the input is constrained to .submit-row's default
+   70px (or 170px for type=text), which is far too short for a 64-char
+   bearer token or a long URL. The selector targets every input in the
+   wrapper regardless of type so the password field stretches too. */
+.submit-row .path-field {
+  display: flex;
+  gap: 4px;
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.submit-row .path-field > input {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
 .notice {
   background: #4b3a0f;
   border: 1px solid #a06e0c;

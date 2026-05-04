@@ -191,12 +191,44 @@ def _root_of(base: str) -> str:
     return base
 
 
-def _auth_headers_for(base: str) -> Dict[str, str]:
-    """Build the upstream auth header dict for ``base``.
+# Header the webui sends to pin the upstream token explicitly. Two
+# reasons: (a) external upstreams (vLLM, remote inference) aren't in
+# the auto-lookup index but still need a token, and (b) the webui
+# already shows the token in its Server-URL panel for local servers
+# so it's the natural source of truth for both cases. We use a
+# dedicated header rather than ``Authorization`` because the user's
+# Authorization header is the *forgather-server's* bearer and must
+# not leak past the proxy.
+_TOKEN_OVERRIDE_HEADER = "x-inference-auth-token"
 
-    Empty when no JobRecord has a token registered for the host:port
-    (either we didn't spawn that server or it's running --no-auth).
+# Tag we attach to upstream auth failures so the webui's global 401
+# handler can distinguish "upstream rejected the inference token" from
+# "your forgather-server session expired." Without this, a wrong
+# inference token would bounce the user to the server-login screen.
+_UPSTREAM_AUTH_FAILED_HEADER = "x-upstream-auth-failed"
+
+
+def _upstream_auth_headers(status: int) -> Dict[str, str]:
+    """Tag 401/403 from upstream so clients can distinguish from a
+    same-origin session 401. Empty dict on success / non-auth errors."""
+    if status in (401, 403):
+        return {_UPSTREAM_AUTH_FAILED_HEADER: "1"}
+    return {}
+
+
+def _auth_headers_for(base: str, request: Optional[Request] = None) -> Dict[str, str]:
+    """Build the upstream auth header dict.
+
+    Precedence: explicit ``X-Inference-Auth-Token`` from the caller
+    (used by the webui's Server-URL panel and any CLI client that
+    knows the token), then fall back to JobRecord auto-lookup. Empty
+    when neither path produces a token (no record matches and the
+    caller didn't pass one — typical for a server running --no-auth).
     """
+    if request is not None:
+        override = request.headers.get(_TOKEN_OVERRIDE_HEADER)
+        if override:
+            return {"authorization": f"Bearer {override}"}
     token = _token_for(base)
     if token:
         return {"authorization": f"Bearer {token}"}
@@ -204,7 +236,7 @@ def _auth_headers_for(base: str) -> Dict[str, str]:
 
 
 @router.get("/inference/health")
-async def proxy_health(base: str) -> JSONResponse:
+async def proxy_health(base: str, request: Request) -> JSONResponse:
     """Forward GET ``<base-root>/health``. Returns the upstream JSON as-is.
 
     Error handling is deliberately two-tiered: upstream reachability
@@ -217,7 +249,7 @@ async def proxy_health(base: str) -> JSONResponse:
     consistency in case future health endpoints become auth-gated.
     """
     target = _root_of(_validate_base(base)) + "/health"
-    headers = _auth_headers_for(base)
+    headers = _auth_headers_for(base, request)
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         try:
             r = await client.get(target, headers=headers or None)
@@ -226,14 +258,15 @@ async def proxy_health(base: str) -> JSONResponse:
     return JSONResponse(
         status_code=r.status_code,
         content=_safe_json(r),
+        headers=_upstream_auth_headers(r.status_code),
     )
 
 
 @router.get("/inference/models")
-async def proxy_models(base: str) -> JSONResponse:
+async def proxy_models(base: str, request: Request) -> JSONResponse:
     """Forward GET ``<base>/models``."""
     target = _validate_base(base) + "/models"
-    headers = _auth_headers_for(base)
+    headers = _auth_headers_for(base, request)
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         try:
             r = await client.get(target, headers=headers or None)
@@ -242,6 +275,7 @@ async def proxy_models(base: str) -> JSONResponse:
     return JSONResponse(
         status_code=r.status_code,
         content=_safe_json(r),
+        headers=_upstream_auth_headers(r.status_code),
     )
 
 
@@ -273,7 +307,7 @@ async def _proxy_streaming_post(
     accept = request.headers.get("accept")
     if accept:
         upstream_headers["accept"] = accept
-    upstream_headers.update(_auth_headers_for(base))
+    upstream_headers.update(_auth_headers_for(base, request))
 
     try:
         req = client.build_request(
@@ -302,6 +336,7 @@ async def _proxy_streaming_post(
             iter([text]),
             status_code=response.status_code,
             media_type=response.headers.get("content-type", "application/json"),
+            headers=_upstream_auth_headers(response.status_code),
         )
 
     async def body_iter():
@@ -341,13 +376,17 @@ async def proxy_tokenize(base: str, request: Request) -> JSONResponse:
     target = _root_of(_validate_base(base)) + "/tokenize"
     body = await request.body()
     upstream_headers = {"content-type": "application/json"}
-    upstream_headers.update(_auth_headers_for(base))
+    upstream_headers.update(_auth_headers_for(base, request))
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         try:
             r = await client.post(target, content=body, headers=upstream_headers)
         except httpx.RequestError as e:
             raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}")
-    return JSONResponse(status_code=r.status_code, content=_safe_json(r))
+    return JSONResponse(
+        status_code=r.status_code,
+        content=_safe_json(r),
+        headers=_upstream_auth_headers(r.status_code),
+    )
 
 
 def _safe_json(r: httpx.Response) -> Dict[str, Any]:

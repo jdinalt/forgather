@@ -93,6 +93,7 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
           prompt,
           params,
           ac.signal,
+          state.authToken || undefined,
         )) {
           tokenCount += 1;
           setText((prev) => prev + delta);
@@ -132,6 +133,7 @@ export function InferenceCompletionPanel({ state, text, setText }: Props) {
           prompt,
           params,
           ac.signal,
+          state.authToken || undefined,
         );
         setText((prev) => prev + full);
         setStatus({

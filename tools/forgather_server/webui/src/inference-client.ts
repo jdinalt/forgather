@@ -93,8 +93,26 @@ function proxyUrl(
   )}`;
 }
 
-export async function listModels(baseUrl: string): Promise<ModelEntry[]> {
-  const r = await fetch(proxyUrl("models", baseUrl));
+/** Header the proxy reads to pin the upstream bearer token. The proxy
+ *  converts this into a standard ``Authorization: Bearer <token>``
+ *  header on the upstream request — i.e. what OpenAI / vLLM / etc.
+ *  expect — so an OpenAI-compatible server sees nothing non-standard.
+ *  We use a dedicated header rather than ``Authorization`` because the
+ *  user's Authorization on these requests is the *forgather-server's*
+ *  bearer (same-origin) and must not leak to the upstream. */
+const TOKEN_HEADER = "X-Inference-Auth-Token";
+
+function authHeaders(authToken?: string): Record<string, string> {
+  return authToken ? { [TOKEN_HEADER]: authToken } : {};
+}
+
+export async function listModels(
+  baseUrl: string,
+  authToken?: string,
+): Promise<ModelEntry[]> {
+  const r = await fetch(proxyUrl("models", baseUrl), {
+    headers: authHeaders(authToken),
+  });
   if (!r.ok) {
     throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
   }
@@ -102,9 +120,57 @@ export async function listModels(baseUrl: string): Promise<ModelEntry[]> {
   return Array.isArray(body.data) ? body.data : [];
 }
 
-export async function checkHealth(baseUrl: string): Promise<boolean> {
-  const r = await fetch(proxyUrl("health", baseUrl));
+export async function checkHealth(
+  baseUrl: string,
+  authToken?: string,
+): Promise<boolean> {
+  const r = await fetch(proxyUrl("health", baseUrl), {
+    headers: authHeaders(authToken),
+  });
   return r.ok;
+}
+
+export type ServerCheckResult =
+  | { kind: "ok" }
+  | { kind: "auth-failed"; message: string }
+  | { kind: "unreachable"; message: string };
+
+/** Probe ``<base>/models`` to verify both reachability and auth.
+ *
+ *  ``/health`` on the inference server is intentionally open (so the
+ *  proxy can probe it before the model finishes loading), which means a
+ *  health check can't tell the user whether their token is valid.
+ *  ``/models`` is auth-gated and cheap, so it makes a useful "is this
+ *  server reachable AND does this token work?" probe. Distinguishes
+ *  network/upstream errors (502 from the proxy) from auth rejections
+ *  (401/403) so the UI can render a clear hint. */
+export async function checkServer(
+  baseUrl: string,
+  authToken?: string,
+): Promise<ServerCheckResult> {
+  const r = await fetch(proxyUrl("models", baseUrl), {
+    headers: authHeaders(authToken),
+  });
+  if (r.ok) return { kind: "ok" };
+  if (r.status === 401 || r.status === 403) {
+    return {
+      kind: "auth-failed",
+      message: `${r.status} ${r.statusText}`,
+    };
+  }
+  // 502 from the proxy on connect-refused etc.; everything else funnels
+  // here too (5xx upstream, 404 wrong path) — treat as "server side broke
+  // somehow," distinct from auth.
+  let detail = "";
+  try {
+    detail = await r.text();
+  } catch {
+    /* ignore */
+  }
+  return {
+    kind: "unreachable",
+    message: `${r.status} ${r.statusText}${detail ? `: ${detail}` : ""}`,
+  };
 }
 
 /** Stream a completion. Yields text deltas as they arrive; the caller
@@ -126,6 +192,7 @@ export async function runCompletion(
   prompt: string,
   params: GenerationParams,
   signal: AbortSignal,
+  authToken?: string,
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -135,7 +202,7 @@ export async function runCompletion(
   };
   const r = await fetch(proxyUrl("completions", baseUrl), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
     body: JSON.stringify(body),
     signal,
   });
@@ -154,6 +221,7 @@ export async function* streamCompletion(
   prompt: string,
   params: GenerationParams,
   signal: AbortSignal,
+  authToken?: string,
 ): AsyncIterable<string> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -166,6 +234,7 @@ export async function* streamCompletion(
     body,
     signal,
     (frame) => frame?.choices?.[0]?.text,
+    authToken,
   );
 }
 
@@ -192,6 +261,7 @@ export async function* streamChatCompletion(
   params: GenerationParams,
   signal: AbortSignal,
   options?: ChatRequestOptions,
+  authToken?: string,
 ): AsyncIterable<string> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -205,6 +275,7 @@ export async function* streamChatCompletion(
     body,
     signal,
     (frame) => frame?.choices?.[0]?.delta?.content,
+    authToken,
   );
 }
 
@@ -232,6 +303,7 @@ export async function tokenizeChat(
     addGenerationPrompt?: boolean;
     continueFinalMessage?: boolean;
   },
+  authToken?: string,
 ): Promise<TokenizeResponse> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -246,7 +318,7 @@ export async function tokenizeChat(
   }
   const r = await fetch(proxyUrl("tokenize", baseUrl), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
     body: JSON.stringify(body),
   });
   if (!r.ok) {
@@ -263,6 +335,7 @@ export async function runChatCompletion(
   params: GenerationParams,
   signal: AbortSignal,
   options?: ChatRequestOptions,
+  authToken?: string,
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model: model || "inference-server",
@@ -273,7 +346,7 @@ export async function runChatCompletion(
   if (options?.nextRole) body.next_role = options.nextRole;
   const r = await fetch(proxyUrl("chat/completions", baseUrl), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
     body: JSON.stringify(body),
     signal,
   });
@@ -295,10 +368,11 @@ async function* streamSse(
   body: Record<string, unknown>,
   signal: AbortSignal,
   extract: (frame: any) => string | undefined,
+  authToken?: string,
 ): AsyncIterable<string> {
   const r = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders(authToken) },
     body: JSON.stringify(body),
     signal,
   });
