@@ -28,24 +28,9 @@ differences. Every variation is expensive to try. Small bugs -- a loss
 function wired wrong, a scheduler silently reset on resume, a CLI flag
 that didn't actually reach the tokenizer -- hide across forks.
 
-Forgather addresses this with three layers:
-
-- **Template inheritance.** A project config extends a parent; both
-  are plain YAML with Jinja2 preprocessing. Overrides are explicit
-  (`-- set ns.seq_len = 16384`), and every knob is documented on the
-  parent.
-- **Portable model source.** Model construction emits standalone
-  Python source into the training run's output directory, and the
-  training run then loads that source. You can zip that directory
-  and load the model on another machine with just `transformers`
-  installed -- no Forgather dependency. (The trainer, optimiser,
-  datasets, and callbacks materialise straight from the config
-  graph; the Python export is specifically for the model so it can
-  live outside Forgather's runtime.)
-- **Live job control.** Running training jobs register a small
-  control endpoint. From another shell you can save a checkpoint on
-  demand, gracefully stop a run, or abort a failed experiment --
-  works uniformly across DDP, FSDP2, and pipeline-parallel jobs.
+A Forgather project config extends a parent; both are plain YAML with 
+Jinja2 preprocessing. Overrides are explicit, and every knob is documented 
+on the parent.
 
 ## Key Benefits
 
@@ -53,14 +38,22 @@ Forgather addresses this with three layers:
 - **Types as hyperparameters** -- swap optimizers, models, datasets, trainers, and samplers directly in YAML via custom tags (`!partial`, `!factory`, `!singleton`). No Python edits required to try a new optimizer or a different layer norm.
 - **Full reproducibility** -- automatic snapshots of configs and generated code with each run.
 - **Standalone generated models** -- the PyTorch source written into each run's `output_models/` directory loads with plain `AutoModelForCausalLM.from_pretrained(..., trust_remote_code=True)`. No Forgather dependency at inference time; zip and ship.
+- **Template Library** -- Forgather includes an extensive configuration [template library](./templatelib/) and [examples](./examples/) to help you get started.
+- **Natively supports multiple training parallelisms** -- Distributed Data Parallel (DDP) (with local SGD support), Fully Sharded Data Parallel (FSDP), and Pipeline Parallel (PP).
 - **Pipeline-parallel trainer for bandwidth-limited environments** -- requires *dramatically* less cross-device communication than DDP or FSDP. Forgather has trained a 7B model across two machines linked only by 1 Gbit Ethernet with bandwidth to spare, and the same design means it scales well on consumer hardware where FSDP stalls on PCIe. Should extend to more than two nodes on the same fabric.
-- **Low-memory training suite** -- gradient checkpointing, CPU activation offloading, fused optimizer step, fused linear+cross-entropy loss (Liger / Apple CCE / torch.compile), Triton Adafactor with stochastic bf16 rounding, FP8 via torchao. Full-parameter (not LoRA) finetuning of 7B models at up to ~53K context on a single 24 GB GPU.
-- **Fast dataset loading** -- large HF datasets (e.g. C4) normally take 10-20 minutes to open. Forgather indexes the Arrow files on first use and is ready in a few seconds after that, with stateful resume from any position.
-- **Packed sequences + Flex Attention** -- pack multiple documents into every batch with explicit document-boundary tracking; flex-attention masks enforce no cross-document attention, so packing doesn't cost attention quality. Combined with the fused-loss kernel, this is a large throughput win on small-document corpora.
-- **Live job control** -- save, stop, save-stop, or abort running training jobs from another shell. Coordinates automatically across DDP / FSDP-2 / pipeline-parallel workers.
-- **Web UI with GPU-aware job queue** -- single-user browser frontend over the same APIs as the CLI. Project / file browsing, ▶ Run buttons that drop training jobs into a priority + GPU-policy aware queue, live job cards with TTY + loss / lr / grad_norm / tok-per-sec pills, GPU panel with per-card process attribution, in-browser editor with Forgather YAML+Jinja2 syntax highlighting, and a chat client wired to served inference jobs. End-to-end tour: [Forgather server walkthrough](./docs/guides/forgather-server-walkthrough.md).
+- **Low-memory training suite** -- gradient checkpointing, CPU activation offloading, fused optimizer step, fused linear+cross-entropy loss (Liger / Apple CCE / torch.compile). Full-parameter (not LoRA) finetuning of 7B models at up to ~53K context on a single 24 GB GPU.
+- **Fast dataset loading** -- large HF datasets (e.g. C4) normally take forever to open with `load_dataset()`. Forgather indexes the Arrow files on first use and is ready in a few seconds after that, with stateful resume from any position.
+- **Packed sequences + Flex Attention** -- pack multiple documents into every batch with explicit document-boundary tracking; masks enforce no cross-document attention, so packing doesn't cost attention quality; flex-attention avoids
+wasting compute on attention accross document boundaries.
+- **Checkpointing Support** -- Extensive for creating and loading training checkpoints. Weight checkpoints are HF compatible. Quickly restores dataset state, even on huge datasets. Resumes logging to Tensorboard from where it left off.
+- **Live job control** -- save, stop, or abort running training jobs from another shell. Coordinates automatically across DDP / FSDP-2 / pipeline-parallel workers.
+- **Web UI with GPU-aware job queue** -- single-user browser frontend over the same APIs as the CLI. Project / file browsing, ▶ Run buttons that drop training jobs into a priority + GPU-policy aware queue, live job cards with TTY + progress / training stats, GPU panel with per-card process attribution, in-browser editor with Forgather YAML+Jinja2 syntax highlighting, and a chat client wired to served inference jobs. End-to-end tour: [Forgather server walkthrough](./docs/guides/forgather-server-walkthrough.md).
 - **Extensive examples and documentation** -- tutorials covering every step from scratch, pretraining recipes from 4M to ~1B params, finetune recipes for Llama-2/3, Mistral, Qwen3, Gemma-3, and a growing set of ablation-focused experiments. Every major subsystem has its own docs page.
+- **Integrated inferece server** -- While not vLLM, this provides a simple solution for testing models without the risk of breaking-changes in other repos.
 - **Speed-optimised** -- meaningful effort has gone into wall-clock performance (Triton kernels, packed iterators, SDPA-backend selection, `torch.compile` everywhere it helps). A formal head-to-head benchmark against alternative frameworks is still to be done.
+- **Optmizers and Schedulers** -- Forgather includes a collection of custom optimizers, including Adafactor with bf16 stochastic rounding (SR), Adam with SR, Apollo / Apollo-Mini, and SinkGD. Forgather also includes [Warmup-Stable-Decay](https://arxiv.org/abs/2410.05192) and [Infinite Learning Rate](https://arxiv.org/html/2503.02844v1) schedulers, and easy to use support for defining paramters groups and training jobs with multiple optimizers.
+- **DiLoCo** While still in the experimental phase, we have support for [DiLoCo: Distributed Low-Communication Training of Language Models](https://arxiv.org/abs/2311.08105)
+- **HF Compatible Callback Interface** Support HF transformers.Trainer callback API. Includes callbacks for: periodic text generation, divergence detection, JSON logging; Tensorboard, and profiling.
 
 ## News
 
@@ -102,12 +95,8 @@ Full install walkthrough and first-training-run tutorial:
 
 The short version, assuming Python 3.12+ and
 `build-essential` / `python3-dev` / `graphviz` already installed.
-An NVIDIA GPU is strongly recommended but not required -- CPU-only
-training works (Tiny Llama runs end-to-end on a Chromebook in a day);
-it's just ~two to three orders of magnitude slower than the same
-workload on a 4090. Non-CUDA accelerators (Intel, AMD) may work in
-theory -- we've avoided hard CUDA dependencies -- but have not been
-tested outside of CUDA and CPU.
+An NVIDIA GPU is strongly recommended but not required. Non-CUDA accelerators (Intel, AMD) may work in
+theory, but have not been tested outside of CUDA and CPU.
 
 ```bash
 # Create and activate a virtual environment first -- most modern distros
