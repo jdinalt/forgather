@@ -6,7 +6,7 @@ pack or interleave datasets from HuggingFace Hub.
 
 For existing dataset projects to use as reference, see
 [`examples/datasets/`](../examples/datasets/README.md). The
-[HuggingFaceTB](../examples/datasets/HuggingFaceTB/) project is particularly
+[HuggingFaceTB](../examples/datasets/HuggingFaceTB/README.md) project is particularly
 comprehensive, demonstrating packed and interleaved configurations.
 
 For detailed reference on individual features, see:
@@ -377,7 +377,7 @@ For examples of datasets with custom preprocessing, see:
   preprocessing for synthetic data
 - [`examples/datasets/Open-Orca/`](../examples/datasets/Open-Orca/) -- chat
   template application and filtering
-- [`examples/datasets/OpenAssistant/`](../examples/datasets/OpenAssistant/) --
+- [`examples/datasets/OpenAssistant/`](../examples/datasets/OpenAssistant/README.md) --
   quality-weighted sampling from conversation trees
 
 ## Worked example
