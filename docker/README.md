@@ -18,6 +18,15 @@ The intent is twofold:
   you can verify a fresh checkout of Forgather builds and runs
   end-to-end before tagging a release.
 
+> **Looking for a pre-built, distributable image?** This dev image
+> bakes the host UID/GID at build time and bind-mounts the host
+> source tree — great for development, useless for distribution.
+> See `docker/runtime/README.md` for the **runtime image**: a
+> user-agnostic `Dockerfile.runtime` whose default command is
+> `forgather server` and whose in-container user is remapped to
+> the host UID at start time, so a single prebuilt image works
+> for any user without rebuild.
+
 ## Layout
 
 | File | Purpose |
