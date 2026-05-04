@@ -54,7 +54,11 @@ def causal_mask(
 
     if input_embeds is None:
         # Create a dummy input_embeds tensor for shape inference
-        # We only need batch_size and dtype, not actual embeddings
+        # We only need batch_size and dtype, not actual embeddings.
+        # Use input_ids' device so HF's mask helpers (which copy attention_mask
+        # onto inputs_embeds.device) don't end up materializing on the meta
+        # device -- that would make .all()/.item() calls inside the helpers
+        # fail with "Tensor.item() cannot be called on meta tensors".
         assert input_ids is not None
         batch_size, seq_length = input_ids.shape
 
@@ -62,7 +66,7 @@ def causal_mask(
             batch_size,
             seq_length,
             config.hidden_size,
-            device=torch.device("meta"),
+            device=input_ids.device,
             dtype=dtype,
         )
 

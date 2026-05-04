@@ -873,6 +873,25 @@ def _get_checkpoint_timestamp(checkpoint_path: str) -> float:
     return os.path.getmtime(checkpoint_path)
 
 
+def _checkpoint_sort_key(checkpoint_path: str) -> tuple[float, int]:
+    """Sort key that tie-breaks by the integer suffix of ``checkpoint-<N>``.
+
+    Filesystem mtime resolution can be too coarse to distinguish back-to-back
+    checkpoints (notably on overlayfs), and manifest timestamps recorded with
+    second-precision ``datetime.now().isoformat()`` collide too. Tie-breaking
+    by the numeric suffix keeps oldest-first ordering stable so rotation
+    deletes the genuinely oldest checkpoint.
+    """
+    ts = _get_checkpoint_timestamp(checkpoint_path)
+    name = os.path.basename(checkpoint_path.rstrip(os.sep))
+    suffix = name.split("checkpoint-", 1)[-1]
+    try:
+        index = int(suffix)
+    except ValueError:
+        index = 0
+    return (ts, index)
+
+
 def find_latest_checkpoint(model_dir: str) -> str | None:
     """Find the most recent valid checkpoint in the checkpoints directory.
 
@@ -903,7 +922,7 @@ def find_latest_checkpoint(model_dir: str) -> str | None:
         return None
 
     try:
-        latest = max(valid_checkpoints, key=_get_checkpoint_timestamp)
+        latest = max(valid_checkpoints, key=_checkpoint_sort_key)
         step_num = (
             os.path.basename(latest).split("-")[1]
             if "-" in os.path.basename(latest)
@@ -991,7 +1010,7 @@ def maybe_delete_oldest_checkpoint(
 
     if num_to_delete > 0:
         # Sort by timestamp (manifest preferred, mtime fallback) and delete the oldest
-        checkpoints_to_consider.sort(key=_get_checkpoint_timestamp)
+        checkpoints_to_consider.sort(key=_checkpoint_sort_key)
         for checkpoint_path in checkpoints_to_consider[:num_to_delete]:
             logger.info(
                 f"Deleting checkpoint at {checkpoint_path} (preserved: {preserved_set})"
