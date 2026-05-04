@@ -25,8 +25,8 @@ running inference port and use a private/finetuned model.
 For the full picture — how this token fits in alongside the forgather
 server's own bearer token, the per-job trainer-control token, and the
 TensorBoard / MkDocs spawn defaults — see the
-[forgather server threat model](../forgather_server/README.md#threat-model)
-and [authentication overview](../forgather_server/README.md#authentication-overview).
+[forgather server threat model](../../forgather-server.md#threat-model)
+and [authentication overview](../../forgather-server.md#authentication-overview).
 
 **Default behaviour** — if you don't pass any auth flag, the server
 generates a random 64-hex-char token at startup and prints it on **stderr**:
@@ -35,36 +35,51 @@ generates a random 64-hex-char token at startup and prints it on **stderr**:
 inference_server auth token: 8f5b...
 clients must send 'Authorization: Bearer <token>'
 curl -H "Authorization: Bearer 8f5b..." http://127.0.0.1:8137/v1/models
+shared token file: /home/<you>/.forgather/inference/8137.token
 ```
 
-Pass that token to clients in the `Authorization: Bearer <token>` header.
-The bundled CLI client accepts `--auth-token TOKEN` or `--auth-token-file
-PATH`, and the OpenAI Python SDK sends `api_key` as the bearer token.
+The auto-generated token is also written to a per-port file under
+`$FORGATHER_HOME/inference/<port>.token` (default
+`~/.forgather/inference/<port>.token`, mode 0600 in a 0700 directory) and
+removed when the server exits. The bundled CLI client picks it up
+automatically when its `--url` resolves to a loopback host (127.0.0.1, ::1,
+or localhost), so `forgather inf server` paired with `forgather inf
+client` works with no auth flags on either side. The lookup is keyed by
+port — a server bound to `0.0.0.0:8137` and a client connecting to
+`http://127.0.0.1:8137/v1` share the same file.
+
+For non-bundled clients (curl, OpenAI SDK calling directly, scripts),
+copy the token from stderr or read it from the file. Pass it in the
+`Authorization: Bearer <token>` header. The OpenAI Python SDK sends
+`api_key` as the bearer token.
 
 **Supplying a known token** — `--auth-token TOKEN` or `--auth-token-file
 PATH` (mode 0600). The file form is preferred for orchestrators since
-`--auth-token` is visible to other local users via `ps`.
+`--auth-token` is visible to other local users via `ps`. When you supply
+a token explicitly the server does *not* publish it to the shared cache
+file — operator-managed tokens stay where the operator put them, and the
+client must be told about the token the same way.
 
 **Disabling auth** — `--no-auth` turns the gate off entirely. The startup
 banner warns prominently when this is set. Only use it on hosts where
-you're the only user (or you don't care who uses the model).
+you're the only user (or you don't care who uses the model). No cache
+file is written.
 
 Examples:
 
 ```bash
-# Auto-generated token; copy it from stderr:
-forgather inf server -m /path/to/model
+# Auto-generated token + auto-discovery (zero-config local use):
+forgather inf server -m /path/to/model      # in one terminal
+forgather inf client --message "hi"         # in another
 
-# Known token from a file:
+# Auto-generated token consumed by curl / a custom client:
+TOKEN=$(cat ~/.forgather/inference/8137.token)
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8137/v1/models
+
+# Known token from a file (orchestrators, multi-host, scripts):
 echo -n "$(openssl rand -hex 32)" > ~/.inf-token && chmod 600 ~/.inf-token
 forgather inf server -m /path/to/model --auth-token-file ~/.inf-token
-
-# Connect with the bundled client:
 forgather inf client --auth-token-file ~/.inf-token --message "hi"
-
-# Connect with curl:
-curl -H "Authorization: Bearer $(cat ~/.inf-token)" \
-  http://127.0.0.1:8137/v1/models
 
 # Opt out:
 forgather inf server -m /path/to/model --no-auth

@@ -259,7 +259,7 @@ With your first model trained, here are recommended paths for learning more:
 - [H.P. Lovecraft Project](../tutorials/hp_lovecraft_project/README.md) --
   Learn how to create workspaces and projects from scratch, while finetuning a 7B
   parameter model on a single 24 GB GPU.
-- [Samantha](../tutorials/samantha/README.md) --
+- [Samantha](../examples/finetune/samantha/README.md) --
   A practical finetuning example using the Samantha dataset with Mistral-7B.
 
 **Understanding the system:**

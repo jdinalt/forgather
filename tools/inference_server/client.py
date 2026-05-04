@@ -353,9 +353,11 @@ if __name__ == "__main__" and __package__ is None:
         sys.path.insert(0, str(parent_dir))
 
     # Import as if we're a package
+    from inference_server.auth_paths import read_standalone_token
     from inference_server.config import load_config_from_yaml, merge_config_with_args
 else:
     # Running as module - use relative imports
+    from .auth_paths import read_standalone_token
     from .config import load_config_from_yaml, merge_config_with_args
 
 
@@ -534,8 +536,11 @@ def main():
             # If both stdin and --completion, prefer stdin
             args.completion = stdin_prompt
 
-    # Resolve auth token: explicit > file > "dummy" placeholder. The
-    # placeholder is preserved so legacy --no-auth servers keep working.
+    # Resolve auth token: explicit > file > standalone-server cache > "dummy"
+    # placeholder. The cache lookup makes ``forgather inf server`` paired
+    # with ``forgather inf client`` work without the user having to copy the
+    # auto-generated token by hand; the placeholder is preserved so legacy
+    # ``--no-auth`` servers keep working.
     api_key = "dummy"
     if args.auth_token:
         api_key = args.auth_token.strip()
@@ -546,6 +551,10 @@ def main():
             parser.error(f"could not read --auth-token-file: {e}")
         if not api_key:
             parser.error(f"auth-token-file is empty: {args.auth_token_file}")
+    else:
+        cached = read_standalone_token(args.url)
+        if cached:
+            api_key = cached
 
     # Create client
     client = InferenceClient(args.url, api_key=api_key)

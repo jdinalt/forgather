@@ -248,15 +248,17 @@ class TestPeriodicFunctionEdgeCases:
                 global_step=0, strategy="unknown", period=5, epoch_period=1
             )
 
-    def test_zero_period_raises_assertion(self):
-        """period=0 raises AssertionError."""
-        with pytest.raises(AssertionError):
-            PeriodicFunction(global_step=0, strategy="steps", period=0, epoch_period=1)
+    def test_zero_period_clamped_to_one(self):
+        """period=0 is clamped to 1 (handles scaled-to-zero periods)."""
+        pf = PeriodicFunction(global_step=0, strategy="steps", period=0, epoch_period=1)
+        assert pf.period == 1
 
-    def test_negative_period_raises_assertion(self):
-        """Negative period raises AssertionError."""
-        with pytest.raises(AssertionError):
-            PeriodicFunction(global_step=0, strategy="steps", period=-1, epoch_period=1)
+    def test_negative_period_clamped_to_one(self):
+        """Negative period is clamped to 1 (handles scaled-to-zero periods)."""
+        pf = PeriodicFunction(
+            global_step=0, strategy="steps", period=-1, epoch_period=1
+        )
+        assert pf.period == 1
 
     def test_zero_epoch_period_raises_assertion(self):
         """epoch_period=0 raises AssertionError for epoch strategy."""

@@ -42,7 +42,7 @@ def gemma_mask_fn(
             batch_size,
             seq_length,
             config.hidden_size,
-            device=torch.device("meta"),
+            device=input_ids.device,
             dtype=dtype,
         )
 

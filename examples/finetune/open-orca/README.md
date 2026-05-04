@@ -785,7 +785,7 @@ mode — the same tooling applies here.
   [finetune_v2.yaml](../../../templatelib/examples/projects/finetune_v2.yaml)
   → [lm_training_project.yaml](../../../templatelib/examples/projects/lm_training_project.yaml)
 - LM Training Project documentation:
-  [docs/project-templates/lm-training-projects.md](../../../docs/project-templates/lm-training-projects.md)
+  [docs/project-templates/lm-training-projects.md](../../../project-templates/lm-training-projects.md)
 - Chat template: [chat_templates/chatml.jinja](../../../chat_templates/chatml.jinja)
 - WSDScheduler theory:
   *Understanding Warmup-Stable-Decay Learning Rates* (Wen et al. 2024),

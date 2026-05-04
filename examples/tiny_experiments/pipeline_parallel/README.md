@@ -4,7 +4,7 @@ Test harness for the Pipeline Parallel trainer, covering all supported PyTorch
 pipeline schedules, checkpoint save/resume, and activation checkpointing.
 
 For documentation on the PipelineTrainer module, see
-[docs/trainers/pipeline-parallel.md](../../../docs/trainers/pipeline-parallel.md).
+[docs/trainers/pipeline-parallel.md](../../../trainers/pipeline-parallel.md).
 
 ## Configurations
 

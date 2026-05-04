@@ -4,9 +4,11 @@ OpenAI API-compatible inference server for HuggingFace models.
 """
 
 import argparse
+import atexit
 import logging
 import os
 import secrets
+import signal
 import sys
 from pathlib import Path
 from typing import Optional
@@ -22,11 +24,16 @@ if __name__ == "__main__" and __package__ is None:
         sys.path.insert(0, str(parent_dir))
 
     # Import as if we're a package
+    from inference_server.auth_paths import (
+        standalone_token_file,
+        write_standalone_token,
+    )
     from inference_server.config import load_config_from_yaml, merge_config_with_args
     from inference_server.routes import create_app, set_inference_service
     from inference_server.service import InferenceService
 else:
     # Running as module - use relative imports
+    from .auth_paths import standalone_token_file, write_standalone_token
     from .config import load_config_from_yaml, merge_config_with_args
     from .service import InferenceService
     from .routes import create_app, set_inference_service
@@ -229,6 +236,7 @@ def main():
     # then a file, then an auto-generated one. Auto-generation gives
     # default-secure behaviour without forcing operators to manage secrets.
     auth_token: Optional[str] = None
+    auto_generated = False
     if args.no_auth:
         print(
             "!! inference_server is running with --no-auth — any local user on "
@@ -248,6 +256,7 @@ def main():
                 parser.error(f"auth-token-file is empty: {args.auth_token_file}")
         else:
             auth_token = secrets.token_hex(32)
+            auto_generated = True
 
         # Print on stderr so it's visible in TTY logs (the scheduler captures
         # stderr) but not entangled with uvicorn's stdout request log.
@@ -263,6 +272,52 @@ def main():
             file=sys.stderr,
             flush=True,
         )
+
+        # When the token was auto-generated, publish it to a per-port file
+        # under FORGATHER_HOME so the bundled CLI client (and other local
+        # tools) can pick it up automatically. Cleared on exit so a stale
+        # file never outlives the server. Skipped when the user supplied
+        # their own token: in that case the operator already controls token
+        # distribution and we shouldn't second-guess them.
+        if auto_generated:
+            try:
+                token_path = write_standalone_token(args.port, auth_token)
+            except OSError as e:
+                logging.warning(
+                    "could not write standalone-server token file: %s "
+                    "(client auto-discovery disabled)",
+                    e,
+                )
+            else:
+                print(
+                    f"shared token file: {token_path}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+                def _cleanup_token_file(path: Path = token_path):
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+
+                atexit.register(_cleanup_token_file)
+
+                # SIGTERM is what `kill <pid>`, container shutdown, and
+                # forgather-server's job killer send. atexit doesn't run on
+                # the default SIGTERM/SIGINT delivery, so install handlers
+                # that remove the file before chaining to the default
+                # behaviour.
+                def _signal_cleanup(signum, _frame, path: Path = token_path):
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+                    signal.signal(signum, signal.SIG_DFL)
+                    os.kill(os.getpid(), signum)
+
+                for _sig in (signal.SIGINT, signal.SIGTERM):
+                    signal.signal(_sig, _signal_cleanup)
 
     # Create FastAPI app and set service
     app = create_app(auth_token=auth_token)

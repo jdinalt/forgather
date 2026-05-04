@@ -25,14 +25,6 @@ class WeightNormLogger(TrainerCallback):
     """
 
     def __init__(self):
-        """
-        Parameters
-        ----------
-        summary_writer : SummaryWriter
-            TensorBoard SummaryWriter instance.
-        tag : str
-            TensorBoard scalar tag. Defaults to ``"weight_norm"``.
-        """
         super().__init__()
         self._warned_meta = False
 
