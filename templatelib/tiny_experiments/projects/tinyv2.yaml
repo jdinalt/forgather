@@ -10,6 +10,7 @@
     -- set ns.dataset_proj = dataset_project | default(joinpath(ns.forgather_dir, 'examples', 'datasets', 'roneneldan'))
     -- set ns.dataset_config = dataset_config | default("tinystories-abridged.yaml")
     -- set ns.batch_density = 0.60
+    -- set ns.dispatch_batches = dispatch_batches | default(True)
 
     -- set ns.model_project_dir = abspath(model_project | default((joinpath(ns.forgather_dir, "examples", "models", "llama"))))
     -- set ns.model_project_config = model_config | default("4M.yaml")
