@@ -1,13 +1,23 @@
 # Eval Loop: "produced zero batches" / "did not yield any examples"
 
-This guide diagnoses two related errors from the trainer's eval path:
+This guide diagnoses three related errors from the trainer's eval path:
 
 ```
 RuntimeError: Distributed evaluation produced zero batches across all N ranks.
 ```
 
-raised from `DDPTrainer` when each rank evaluates its own shard
-(`dispatch_eval_batches=False`); and
+raised from `DDPTrainer` when every shard is empty under sharded eval
+(`dispatch_eval_batches=False`);
+
+```
+RuntimeError: Distributed evaluation produced zero batches on K of N
+ranks (empty ranks: ...).
+```
+
+raised from `DDPTrainer`'s pre-flight check when *some* shards are empty
+(this is the common case at world_size 5 or 6 with a small eval split:
+the asymmetric `self.model(...)` calls would deadlock the DDP collectives,
+so the trainer fails fast before the loop instead of hanging); and
 
 ```
 RuntimeError: The eval dataloader did not yield any examples.
@@ -16,11 +26,12 @@ RuntimeError: The eval dataloader did not yield any examples.
 raised from the base `Trainer._eval_loop` (and reached by `DDPTrainer` when
 `dispatch_eval_batches=True`, which routes eval through the same path).
 
-Both errors mean the same thing: the eval pipeline produced zero batches.
-The accompanying message lists the relevant settings, including which
-combination of `dispatch_batches`, `dispatch_eval_batches`,
-`dataloader_drop_last`, and `per_device_eval_batch_size` produced the
-failure.
+All three errors share the same root cause: the eval pipeline produced
+zero batches on at least one rank. The accompanying message lists the
+relevant settings, including which combination of `dispatch_batches`,
+`dispatch_eval_batches`, `dataloader_drop_last`, and
+`per_device_eval_batch_size` produced the failure, and (for the partial
+case) the exact list of empty ranks.
 
 ## What the error means
 
@@ -33,9 +44,19 @@ becomes ~50 examples per rank; with sequence packing the *number of packed
 sequences per shard* can be much smaller still - for example, ~6 packed
 sequences per shard at `seq_len=4096`. If any shard contains fewer than
 `per_device_eval_batch_size` examples and `dataloader_drop_last=True`, the
-dataloader yields nothing for that shard. When this happens on every rank,
-the aggregated step count is zero and `DDPTrainer._eval_loop_all_shards`
-raises.
+dataloader yields nothing for that shard.
+
+`DDPTrainer._eval_loop_all_shards` runs a pre-flight `next()` on every
+rank's iterator before any model forward pass; an `all_reduce(SUM)` over
+per-rank "has at least one batch" flags then surfaces the empty ranks.
+- If every rank is empty: the loop is skipped and the trainer raises
+  the "across all N ranks" message.
+- If only some ranks are empty: the trainer raises the "on K of N ranks"
+  message, listing the empty ranks. Without this pre-flight the loop
+  would hang because the non-empty ranks would call `self.model(...)`
+  while the empty ranks skipped it - the wrapped DDP module participates
+  in collectives even under `torch.no_grad()`, so asymmetric forward
+  calls deadlock the process group.
 
 **Centralised eval (`dispatch_eval_batches=True`).** Rank 0 loads the eval
 dataloader and broadcasts batches to the other ranks via
