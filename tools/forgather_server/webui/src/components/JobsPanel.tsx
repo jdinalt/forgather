@@ -562,8 +562,20 @@ function JobCard({
     isTensorBoard && typeof job.job_params?.host === "string"
       ? (job.job_params.host as string)
       : null;
+  // TB is spawned with --path_prefix /api/tb/<queue_id> so its asset
+  // URLs match the auth-gated reverse proxy. The upstream process returns
+  // 404 on ``/``; the user has to hit the prefixed URL whether they go
+  // through the proxy or SSH-forward the port directly. Append the prefix
+  // (with a trailing slash so TB's redirect behavior is happy) when it's
+  // present on the JobRecord.
+  const tbPathSuffix =
+    isTensorBoard && job.path_prefix
+      ? job.path_prefix.endsWith("/")
+        ? job.path_prefix
+        : job.path_prefix + "/"
+      : "";
   const tbUrl = tbPort
-    ? `http://${tbBindAll ? "localhost" : browserSafeHost(tbHost)}:${tbPort}`
+    ? `http://${tbBindAll ? "localhost" : browserSafeHost(tbHost)}:${tbPort}${tbPathSuffix}`
     : null;
 
   // MkDocs serve runs a local HTTP dev server. host:port pair is folded

@@ -84,6 +84,11 @@ class JobModel(BaseModel):
     tty_log_path: Optional[str] = None
     logs_dir: Optional[str] = None
     output_dir: Optional[str] = None
+    # For path-prefixed sub-services (e.g. TensorBoard spawned with
+    # ``--path_prefix /api/tb/<queue_id>``). The webui appends this to the
+    # host:port link so users SSH-forwarding the upstream port get a URL
+    # that actually serves content (the spawned TB returns 404 on ``/``).
+    path_prefix: Optional[str] = None
 
     # Source: where did this entry come from
     source: str  # "record" | "endpoint" | "merged"
@@ -138,6 +143,7 @@ def _record_to_model(
         port=matched_endpoint.port if matched_endpoint else None,
         alive=_pid_alive(r.pid) and r.status in ("starting", "running"),
         tty_log_path=r.tty_log_path,
+        path_prefix=r.path_prefix,
         logs_dir=r.logs_dir,
         output_dir=r.output_dir,
         source="merged" if matched_endpoint else "record",
