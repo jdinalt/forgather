@@ -592,8 +592,11 @@ def load_checkpoint(
         When module is None, optionally restrict which keys to load.
         Ignored when module is provided.
 
-    See:
-    https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.load_state_dict
+    Notes
+    -----
+    See `torch.nn.Module.load_state_dict
+    <https://docs.pytorch.org/docs/stable/generated/torch.nn.Module.html#torch.nn.Module.load_state_dict>`_
+    for the semantics of the ``strict`` and ``assign`` flags.
     """
     checkpoint_meta = get_checkpoint_metadata(model_dir)
 
