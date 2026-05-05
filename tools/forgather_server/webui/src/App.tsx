@@ -237,6 +237,18 @@ export default function App() {
     staleTime: 30000,
   });
   const clusterActive = !!clusterSelfQ.data;
+  // Tab title: include the node hostname when in cluster mode so
+  // the user can tell which node's webui a given browser tab is
+  // talking to. Two-tab workflows are common — one tab per node —
+  // and "Forgather Server" repeated in every tab title is useless.
+  useEffect(() => {
+    const self = clusterSelfQ.data;
+    if (self) {
+      document.title = `${self.hostname} — Forgather`;
+    } else {
+      document.title = "Forgather Server";
+    }
+  }, [clusterSelfQ.data]);
   const toggleSched = useMutation({
     mutationFn: api.schedulerToggle,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["scheduler-status"] }),

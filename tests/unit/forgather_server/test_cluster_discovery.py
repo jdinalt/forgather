@@ -157,6 +157,23 @@ class TestPeerListener:
         listener.add_service(_zc, discovery.SERVICE_TYPE, "x._tcp.local.")
         assert len(cluster.members()) == 1
 
+    def test_prefers_lan_address_over_docker_bridge_in_advert(self):
+        # Receiver-side defense: even if a peer (running an older
+        # revision, say) advertises both a real IP and a docker
+        # bridge, we should record the real IP as canonical.
+        self_id = _activate_self()
+        peer_id = str(uuid.uuid4())
+        info = _make_service_info(node_id=peer_id, address="192.168.1.50")
+        # Override parsed_addresses to return both, in worst-case order
+        # (Docker first).
+        info.parsed_addresses = MagicMock(
+            return_value=["172.17.0.1", "192.168.1.50"]
+        )
+        listener, _zc = self._listener_for(info, self_id)
+        listener.add_service(_zc, discovery.SERVICE_TYPE, "x._tcp.local.")
+        peer = next(m for m in cluster.members() if m.node_id == peer_id)
+        assert peer.address == "192.168.1.50"
+
     def test_loopback_address_used_when_only_loopback(self):
         # Loopback test scenario: two servers on one host, both
         # advertising 127.0.0.1. Selection must not strip these or
@@ -210,6 +227,42 @@ class TestInterfaceAddresses:
         assert socket.inet_aton("192.168.1.50") in addrs
         assert socket.inet_aton("127.0.0.1") not in addrs
         assert socket.inet_aton("169.254.10.1") not in addrs
+
+    def test_prefers_real_interfaces_over_docker_bridges(self, monkeypatch):
+        # The bug we hit in the field: both hosts had a 172.17.0.1
+        # docker bridge, the master's peer-pull dialed that address
+        # and ended up looping back to its own bridge. Real LAN
+        # interfaces must beat Docker bridges in the advertised list.
+        import psutil
+
+        monkeypatch.setattr(
+            psutil,
+            "net_if_addrs",
+            lambda: {
+                "eth0": [self._entry("192.168.1.27")],
+                "docker0": [self._entry("172.17.0.1")],
+                "br-abc": [self._entry("172.18.0.1")],
+                "veth1234": [self._entry("172.20.0.5")],
+            },
+        )
+        addrs = discovery._interface_addresses()
+        assert addrs == [socket.inet_aton("192.168.1.27")]
+
+    def test_falls_back_to_virtual_when_only_option(self, monkeypatch):
+        # If the host genuinely has no real interface (rare but
+        # possible on container hosts), advertising the Docker bridge
+        # is still better than advertising loopback.
+        import psutil
+
+        monkeypatch.setattr(
+            psutil,
+            "net_if_addrs",
+            lambda: {
+                "docker0": [self._entry("172.17.0.1")],
+            },
+        )
+        addrs = discovery._interface_addresses()
+        assert addrs == [socket.inet_aton("172.17.0.1")]
 
     def test_handles_psutil_failure(self, monkeypatch):
         import psutil

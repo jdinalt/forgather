@@ -87,6 +87,34 @@ def _build_service_info(
     )
 
 
+# Interface name prefixes that we treat as "virtual" — Docker bridges,
+# Kubernetes overlays, VPN tunnels, etc. These rarely carry traffic
+# between physical hosts on the same LAN, and advertising them as
+# cluster-reachable addresses confuses the peer-pull (the receiving
+# node will happily try to dial 172.17.0.1 and either fail outright
+# or — worse — connect to its own equivalently-numbered bridge).
+_VIRTUAL_IFACE_PREFIXES: tuple = (
+    "docker",
+    "br-",
+    "veth",
+    "virbr",
+    "cni",
+    "kube",
+    "flannel",
+    "tun",
+    "tap",
+    "cali",
+    "weave",
+    "wg",  # WireGuard
+    "tailscale",
+    "zt",  # ZeroTier
+)
+
+
+def _is_virtual_iface(name: str) -> bool:
+    return name.lower().startswith(_VIRTUAL_IFACE_PREFIXES)
+
+
 def _interface_addresses() -> List[bytes]:
     """Enumerate routable local IPv4 addresses to advertise.
 
@@ -99,18 +127,30 @@ def _interface_addresses() -> List[bytes]:
     ``psutil.net_if_addrs()`` enumerates the kernel's interface list
     directly and avoids the resolver path entirely.
 
-    Loopback is excluded except as a final fallback (so the loopback
-    two-server smoke test still works). Link-local 169.254/16 is
-    skipped because it is rarely the address you want a peer to dial.
+    Virtual interfaces (Docker bridges, k8s overlays, VPN tunnels) are
+    excluded from the primary list — they share addresses across hosts
+    and almost never carry inter-host traffic on a typical LAN. Two
+    different hosts both running Docker will both have a 172.17.0.1
+    bridge, and a peer trying to dial that address ends up talking to
+    its *own* bridge, not the peer's. Virtual interfaces remain a
+    final fallback so a host with literally nothing else still has
+    *something* to advertise.
+
+    Loopback is excluded except as a final-final fallback (so the
+    loopback two-server smoke test still works). Link-local 169.254/16
+    is skipped because it is rarely the address you want a peer to
+    dial.
 
     Returns a list of packed 4-byte addresses suitable for ServiceInfo.
     """
     import psutil
 
     seen: set = set()
-    out: List[bytes] = []
+    real: List[bytes] = []
+    virtual: List[bytes] = []
     try:
-        for _iface, entries in psutil.net_if_addrs().items():
+        for iface, entries in psutil.net_if_addrs().items():
+            virtual_iface = _is_virtual_iface(iface)
             for entry in entries:
                 if entry.family != socket.AF_INET:
                     continue
@@ -125,12 +165,24 @@ def _interface_addresses() -> List[bytes]:
                     continue
                 seen.add(ip)
                 try:
-                    out.append(socket.inet_aton(ip))
+                    packed = socket.inet_aton(ip)
                 except OSError:
                     continue
+                if virtual_iface:
+                    virtual.append(packed)
+                else:
+                    real.append(packed)
     except Exception:
         log.exception("psutil.net_if_addrs failed; falling back to loopback")
-    return out
+    chosen = real if real else virtual
+    if log.isEnabledFor(10):  # DEBUG
+        log.debug(
+            "advertising %d address(es): %s%s",
+            len(chosen),
+            [socket.inet_ntoa(a) for a in chosen],
+            " (virtual fallback)" if not real and virtual else "",
+        )
+    return chosen
 
 
 class _PeerListener(ServiceListener):
@@ -197,11 +249,14 @@ class _PeerListener(ServiceListener):
         if not addresses:
             log.debug("no IPv4 addresses for %s", name)
             return
-        # Pick the first non-loopback address; fall back to the first
-        # if all are loopback (loopback test case).
-        address = next(
-            (a for a in addresses if not a.startswith("127.")), addresses[0]
-        )
+        # Score each address and pick the best one. Lower is better.
+        # The sender already prefers real interfaces over virtual
+        # ones, but a peer running an older revision (or a peer with
+        # only Docker bridges available) may still hand us a list
+        # with 172.17.x.x in it; deprioritize those at the receiver
+        # so we never store an unreachable address as the canonical
+        # one for a member.
+        address = sorted(addresses, key=_address_score)[0]
         try:
             cluster.update_member(
                 node_id,
@@ -214,6 +269,30 @@ class _PeerListener(ServiceListener):
             )
         except Exception:
             log.exception("update_member failed for peer %s", node_id)
+
+
+def _address_score(ip: str) -> int:
+    """Lower is better when picking among a peer's advertised addresses.
+
+    The sender filters virtual interfaces, but receivers can't trust
+    that the sender ran with this fix. Score Docker / link-local /
+    loopback addresses so that even if they're in the advertised list
+    we prefer a real LAN address.
+    """
+    if not ip:
+        return 1000
+    if ip.startswith("127."):
+        return 200
+    if ip.startswith("169.254."):
+        return 150
+    parts = ip.split(".")
+    try:
+        # Common Docker / overlay subnets (172.16-31.x.x).
+        if parts[0] == "172" and 16 <= int(parts[1]) <= 31:
+            return 100
+    except (IndexError, ValueError):
+        pass
+    return 0
 
 
 def _decode(b: Optional[bytes]) -> str:
