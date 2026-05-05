@@ -15,10 +15,14 @@
 forgather.code-workspace
 settings.json
 
-# Local data and outputs (often huge, never wanted in the image)
-output_models
+# Local data and outputs (often huge, never wanted in the image).
+# Use **/ for paths that recur under examples/* and other nested
+# project dirs — bare `output_models` only matches at the context
+# root, which let multi-GB nested training-output dirs leak in.
+**/output_models
+**/runs
+**/tmp
 data
-tmp
 /datasets
 /models
 /projects

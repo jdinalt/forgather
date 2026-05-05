@@ -33,6 +33,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     UV_LINK_MODE=copy \
+    UV_CACHE_DIR=/root/.cache/uv \
     VIRTUAL_ENV=${VENV_DIR} \
     PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -40,8 +41,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # System packages
 # ---------------------------------------------------------------------------
 # Split into "Forgather runtime requirements" and "developer convenience".
-# Cleanup of apt lists at the end keeps the image small.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# BuildKit cache mounts on /var/cache/apt and /var/lib/apt make rebuilds
+# instant on this step. The default `docker-clean` apt config wipes the
+# cache after each install, so we delete it first. Cache mounts are
+# external to the image layer, so the final image is the same size
+# either way.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && apt-get update && apt-get install -y --no-install-recommends \
         # Forgather runtime / build deps
         python3.12 \
         python3.12-venv \
@@ -76,8 +84,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gnupg \
         locales \
         tzdata \
-    && locale-gen en_US.UTF-8 \
-    && rm -rf /var/lib/apt/lists/*
+    && locale-gen en_US.UTF-8
 
 # ---------------------------------------------------------------------------
 # Install uv (fast Python package manager) into /usr/local/bin so it's
@@ -110,7 +117,12 @@ RUN set -eux; \
     fi; \
     echo "${USER_NAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-${USER_NAME}; \
     chmod 0440 /etc/sudoers.d/90-${USER_NAME}; \
-    install -d -o "${USER_UID}" -g "${USER_GID}" /opt/forgather
+    install -d -o "${USER_UID}" -g "${USER_GID}" /opt/forgather; \
+    chmod 0755 /root
+# /root is 0700 in the Ubuntu base image, which blocks the unprivileged
+# build user from traversing into the uv cache mount at /root/.cache/uv
+# even when the leaf is world-writable (mode=0777 on the mount). The
+# chmod above opens up just the parent dir; harmless in a container.
 
 # ---------------------------------------------------------------------------
 # Everything below this line that touches the venv runs as the
@@ -124,7 +136,8 @@ USER ${USER_NAME}
 # /home, so the bind-mounted host home doesn't shadow it).
 # /opt/forgather/ is just the venv's parent — there is no in-image
 # copy of the repo.
-RUN uv venv --python python3.12 --seed ${VENV_DIR}
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    uv venv --python python3.12 --seed ${VENV_DIR}
 
 # Install Forgather + every dependency from pyproject.toml. We bind-
 # mount the build context read-only and then copy it into a user-
@@ -150,7 +163,7 @@ RUN uv venv --python python3.12 --seed ${VENV_DIR}
 # Cache mount lives at the user's ~/.cache/uv (uv's documented cache
 # path); BuildKit needs explicit uid/gid on the cache volume so the
 # unprivileged user can write to it.
-RUN --mount=type=cache,target=/home/${USER_NAME}/.cache/uv,uid=${USER_UID},gid=${USER_GID} \
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     --mount=type=bind,target=/build-context \
     sudo cp -a /build-context /tmp/src \
     && sudo chown -R ${USER_UID}:${USER_GID} /tmp/src \
@@ -162,7 +175,7 @@ RUN --mount=type=cache,target=/home/${USER_NAME}/.cache/uv,uid=${USER_UID},gid=$
 # accum_e_fp32 / accum_c_fp32 features Forgather relies on. Replaces
 # the cut-cross-entropy 25.1.1 wheel installed via pyproject.toml
 # above.
-RUN --mount=type=cache,target=/home/${USER_NAME}/.cache/uv,uid=${USER_UID},gid=${USER_GID} \
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
     uv pip install --python ${VENV_DIR}/bin/python \
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
 

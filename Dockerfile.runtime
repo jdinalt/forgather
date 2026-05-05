@@ -1,0 +1,217 @@
+# syntax=docker/dockerfile:1.6
+#
+# Forgather runtime image (user-agnostic, distributable).
+#
+# In contrast to the dev image (`Dockerfile`), this image:
+#   - has a fixed in-container user `forgather` (UID/GID 1000) that is
+#     remapped at container start via PUID/PGID env vars, so a single
+#     prebuilt image works for any host user
+#   - clones the source tree from git at build time into
+#     /opt/forgather/repo and installs editable from there (editable
+#     is required because `forgather server` resolves
+#     `tools/forgather_server/server.py` relative to the package's
+#     own __file__, and the FastAPI app likewise resolves the SPA's
+#     `webui/dist/` relative to its own __file__)
+#   - prebuilds the webui SPA bundle at build time, so the server
+#     can serve it on first start without any post-install steps
+#   - defaults to running `forgather server -H 0.0.0.0 -p 8765` and
+#     uses bridge networking + port forward for portability
+#   - drops privileges via gosu in the entrypoint after remap
+#
+# See `docker/runtime/README.md` for the user-facing docs.
+
+FROM ubuntu:24.04
+
+ARG VENV_DIR=/opt/forgather/venv
+ARG REPO_DIR=/opt/forgather/repo
+ARG USER_NAME=forgather
+ARG USER_UID=1000
+ARG USER_GID=1000
+# Source tree is fetched fresh from git at build time — no host
+# checkout is baked in, so the image is fully reproducible. Override
+# FORGATHER_GIT_REF to pin a release tag or commit sha.
+ARG FORGATHER_GIT_URL=https://github.com/jdinalt/forgather.git
+ARG FORGATHER_GIT_REF=dev
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_LINK_MODE=copy \
+    UV_CACHE_DIR=/root/.cache/uv \
+    VIRTUAL_ENV=${VENV_DIR} \
+    PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# ---------------------------------------------------------------------------
+# System packages. Same baseline as the dev image, plus `gosu` for the
+# privilege-drop entrypoint. The "developer convenience" tools (vim,
+# tmux, htop, ...) are still useful for the diagnostic shell flow
+# (`docker exec -u forgather -ti <name> bash`), so we keep them.
+#
+# BuildKit cache mounts on /var/cache/apt and /var/lib/apt make
+# rebuilds instant on the apt step (no re-download of ~150 MB of
+# Ubuntu packages). The default `docker-clean` apt config wipes the
+# cache after each install, so we delete it first. The cache mounts
+# are external to the image layer, so the final image is the same
+# size as without them.
+# ---------------------------------------------------------------------------
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 \
+        python3.12-venv \
+        python3.12-dev \
+        python3-pip \
+        build-essential \
+        ca-certificates \
+        git \
+        git-lfs \
+        graphviz \
+        nodejs \
+        npm \
+        gosu \
+        bash-completion \
+        curl \
+        wget \
+        less \
+        vim \
+        tmux \
+        htop \
+        tree \
+        jq \
+        ripgrep \
+        unzip \
+        zip \
+        rsync \
+        openssh-client \
+        gnupg \
+        locales \
+        tzdata \
+    && locale-gen en_US.UTF-8 \
+    && gosu nobody true
+
+# ---------------------------------------------------------------------------
+# Install uv (fast Python package manager).
+# ---------------------------------------------------------------------------
+ADD --chmod=755 https://astral.sh/uv/install.sh /tmp/uv-install.sh
+RUN UV_INSTALL_DIR=/usr/local/bin /tmp/uv-install.sh \
+    && rm -f /tmp/uv-install.sh \
+    && uv --version
+
+# ---------------------------------------------------------------------------
+# Create the in-container user (fixed UID 1000 — the entrypoint remaps
+# at container start). If the stock Ubuntu 24.04 `ubuntu` user already
+# holds UID 1000, delete it first so our build arg always wins.
+# ---------------------------------------------------------------------------
+RUN set -eux; \
+    if id -u ubuntu >/dev/null 2>&1 && [ "$(id -u ubuntu)" = "${USER_UID}" ]; then \
+        userdel -r ubuntu 2>/dev/null || userdel ubuntu; \
+    fi; \
+    if ! getent group "${USER_GID}" >/dev/null; then \
+        groupadd --gid "${USER_GID}" "${USER_NAME}"; \
+    fi; \
+    if ! id -u "${USER_NAME}" >/dev/null 2>&1; then \
+        useradd --uid "${USER_UID}" --gid "${USER_GID}" \
+            --shell /bin/bash --create-home "${USER_NAME}"; \
+    fi; \
+    install -d -o "${USER_UID}" -g "${USER_GID}" /opt/forgather; \
+    chmod 0755 /root
+# /root is 0700 in the Ubuntu base image, which blocks the unprivileged
+# build user from traversing into the uv cache mount at /root/.cache/uv
+# even when the leaf is world-writable (mode=0777 on the mount). The
+# chmod above opens up just the parent dir; containers don't have a
+# real root login flow, so this is cosmetic-only.
+
+# ---------------------------------------------------------------------------
+# Build the venv and install dependencies as the unprivileged user, so
+# every venv file is correctly owned from the start (no slow recursive
+# chown later).
+# ---------------------------------------------------------------------------
+USER ${USER_NAME}
+
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    uv venv --python python3.12 --seed ${VENV_DIR}
+
+# Fetch a fresh copy of the source tree from git rather than COPYing
+# the publisher's local checkout. Three reasons:
+#   1. Reproducible — the image only depends on the git URL+ref, not
+#      whatever stray state happens to live in the publisher's tree.
+#   2. Distribution-friendly — anyone (CI, a release builder, an
+#      end user) can build the same image from any working dir.
+#   3. Avoids dragging the local working tree (output_models, etc.)
+#      through Docker's build context.
+#
+# `forgather server` walks up from src/forgather/cli/server.py to find
+# tools/forgather_server/server.py, and the FastAPI app resolves
+# webui/dist/ relative to its own __file__ — both work because we
+# install editable from this baked-in tree.
+# `git clone --depth 1 --branch <ref>` only works when <ref> is a
+# branch or tag name. Fall back to a full clone + checkout so that
+# FORGATHER_GIT_REF can also be a commit SHA. Parens group the
+# fallback so the checkout doesn't run on the fast path.
+RUN git clone --depth 1 --branch "${FORGATHER_GIT_REF}" \
+        "${FORGATHER_GIT_URL}" "${REPO_DIR}" 2>/dev/null \
+    || ( rm -rf "${REPO_DIR}" \
+        && git clone "${FORGATHER_GIT_URL}" "${REPO_DIR}" \
+        && cd "${REPO_DIR}" && git checkout "${FORGATHER_GIT_REF}" )
+
+# Install Forgather (editable) from the cloned tree. Editable mode
+# is required so that the file-walk in `forgather server` resolves
+# correctly; the tree is frozen anyway because nothing bind-mounts
+# over it at runtime.
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    uv pip install --python ${VENV_DIR}/bin/python -e ${REPO_DIR}
+
+# cut-cross-entropy from source for bf16/fp16 numerical stability
+# (the pip release lacks the accum_e_fp32 / accum_c_fp32 features).
+RUN --mount=type=cache,target=/root/.cache/uv,uid=${USER_UID},gid=${USER_GID},sharing=locked \
+    uv pip install --python ${VENV_DIR}/bin/python \
+        "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
+
+# TensorBoard <= 2.20.0 imports `pkg_resources` at module load, but
+# setuptools 82 (Feb 2026) removed it. Backport the fix.
+RUN ${VENV_DIR}/bin/python ${REPO_DIR}/docker/patches/fix_tensorboard_pkg_resources.py
+
+# Build the SPA bundle in-image. Output lands at
+# ${REPO_DIR}/tools/forgather_server/webui/dist/ — exactly where
+# tools/forgather_server/app.py looks for it at runtime.
+RUN cd ${REPO_DIR} && ./build-webui.sh \
+    && rm -rf ${REPO_DIR}/tools/forgather_server/webui/node_modules
+
+# ---------------------------------------------------------------------------
+# Back to root for the entrypoint setup. The entrypoint runs as root
+# so it can usermod/chown for UID/GID remap, then drops to the
+# forgather user via gosu before exec'ing the real command.
+# ---------------------------------------------------------------------------
+USER root
+
+# Activate the venv in every interactive shell (used by
+# `docker exec -u forgather -ti <name> bash` for diagnostics).
+RUN printf '%s\n' \
+        '# Forgather venv (baked in at image build)' \
+        'export VIRTUAL_ENV=/opt/forgather/venv' \
+        'export PATH="$VIRTUAL_ENV/bin:$PATH"' \
+        > /etc/profile.d/10-forgather-venv.sh \
+    && chmod 0644 /etc/profile.d/10-forgather-venv.sh \
+    && printf '\n# Forgather venv\n. /etc/profile.d/10-forgather-venv.sh\n' \
+        >> /etc/bash.bashrc
+
+# Install the entrypoint from the cloned tree so the image build is
+# fully decoupled from the host build context. To iterate on the
+# entrypoint locally, push to a branch and rebuild with
+# FORGATHER_GIT_REF=<branch>.
+RUN install -m 0755 -o root -g root \
+        ${REPO_DIR}/docker/runtime/entrypoint.sh \
+        /usr/local/bin/forgather-runtime-entrypoint
+
+# Volumes (advisory — the run wrapper sets the actual mounts).
+VOLUME ["/home/forgather/.forgather", "/home/forgather/.cache/huggingface"]
+
+EXPOSE 8765
+
+WORKDIR /home/forgather
+
+ENTRYPOINT ["/usr/local/bin/forgather-runtime-entrypoint"]
+CMD ["forgather", "server", "-H", "0.0.0.0", "-p", "8765"]
