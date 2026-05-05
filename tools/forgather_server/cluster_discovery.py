@@ -442,6 +442,16 @@ class ClusterDiscovery:
             version=ident.forgather_version,
             addresses=addrs,
         )
+        # Reflect the chosen address back into the member table so the
+        # /api/cluster/members response carries the correct value for
+        # *us*. Otherwise the placeholder 127.0.0.1 from ``activate()``
+        # gets pushed to every peer via peer-pull and the whole cluster
+        # converges on 127.0.0.1 as the canonical address.
+        first_real = next(
+            (a for a in addrs if not socket.inet_ntoa(a).startswith("127.")),
+            addrs[0],
+        )
+        cluster.update_self_address(socket.inet_ntoa(first_real))
         zc.register_service(info, allow_name_change=False)
         self._info = info
         listener = _PeerListener(

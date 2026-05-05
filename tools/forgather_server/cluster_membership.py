@@ -74,6 +74,14 @@ async def _pull_one_peer(
     self_id = cluster.self_identity()
     self_node_id = self_id.node_id if self_id else None
     self_cluster = self_id.cluster_name if self_id else None
+    # Snapshot existing member addresses so we can refuse loopback
+    # downgrades. Pre-fix peers had ``self.address == "127.0.0.1"``
+    # in their member tables (placeholder from activate()); pulling
+    # that and merging it would clobber a perfectly good
+    # mDNS-discovered address for the same node. After both ends are
+    # on the fix this defense is redundant, but it costs nothing and
+    # protects mixed-version clusters during rollout.
+    existing_addrs = {m.node_id: m.address for m in cluster.members()}
     for entry in items:
         if not isinstance(entry, dict):
             continue
@@ -87,11 +95,27 @@ async def _pull_one_peer(
             # Belt-and-suspenders: cluster.update_member would reject
             # this anyway, but skipping early avoids a noisy raise.
             continue
+        new_address = str(entry.get("address") or "")
+        prior = existing_addrs.get(node_id, "")
+        if (
+            prior
+            and not prior.startswith("127.")
+            and new_address.startswith("127.")
+        ):
+            # A peer is telling us node X is at 127.0.0.1 but we
+            # already have a real address for X. Don't downgrade.
+            log.debug(
+                "ignoring loopback downgrade for %s: %s -> %s",
+                node_id,
+                prior,
+                new_address,
+            )
+            continue
         try:
             cluster.update_member(
                 node_id,
                 hostname=str(entry.get("hostname") or ""),
-                address=str(entry.get("address") or ""),
+                address=new_address,
                 port=int(entry.get("port") or 0),
                 cluster_name=peer_cluster,
                 forgather_version=str(

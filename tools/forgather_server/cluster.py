@@ -316,6 +316,30 @@ class _ClusterState:
             return False
         return self.master_node_id() == s.node_id
 
+    def update_self_address(self, address: str) -> None:
+        """Replace the placeholder ``127.0.0.1`` in self's member entry
+        with the address discovery actually advertised.
+
+        Without this, every peer-pull serves ``self.address ==
+        "127.0.0.1"`` to the rest of the cluster, and within one tick
+        the receiving nodes overwrite their correct mDNS-discovered
+        address for *us* with the placeholder. The whole cluster ends
+        up storing 127.0.0.1 as the canonical address for every node
+        and trying to fetch GPUs from itself.
+        """
+        if not address:
+            return
+        with self._lock:
+            self_id = self._self
+            if self_id is None:
+                return
+            entry = self._members.get(self_id.node_id)
+            if entry is not None and entry.address != address:
+                log.info(
+                    "self address: %s -> %s", entry.address, address
+                )
+                entry.address = address
+
     def is_peer_address(self, address: str) -> bool:
         """Return True if ``address`` belongs to a known cluster member.
 
@@ -426,6 +450,10 @@ def is_self_master() -> bool:
 
 def is_peer_address(address: str) -> bool:
     return _state.is_peer_address(address)
+
+
+def update_self_address(address: str) -> None:
+    _state.update_self_address(address)
 
 
 def _reset_for_tests() -> None:
