@@ -1,114 +1,36 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   ClusterMember,
   ClusterMembersResponse,
   ClusterGpusResponse,
   GpuInfo,
+  Job,
 } from "../api";
+import { GpuPanel, GpuCard } from "./GpuPanel";
 
-/** Per-node row in the cluster Nodes view.
+/** Cluster-aware Nodes view.
  *
- *  Phase 1 keeps this minimal: identity, role, reachability, version
- *  placeholder (filled in Phase 2 when the probe layer lands), and a
- *  compact GPU summary line. The detailed GPU panel — including the
- *  policy/kill controls — only fires for the local node, since those
- *  actions are not yet routed through a by-node proxy.
+ *  Layout: a cluster header with name/master, then one bounded box
+ *  per node containing the existing GPU-card layout. The local node
+ *  embeds the full live ``<GpuPanel/>`` so kill/policy/context-menu
+ *  controls and the WebSocket stream all keep working unchanged.
+ *  Peer nodes render the same rich cards but read-only, driven by
+ *  the master-side aggregator polled at 5 s. Peer mutations are
+ *  intentionally disabled in Phase 1: cross-node policy/kill
+ *  routing is part of the by-node proxy seam scheduled for later.
+ *
+ *  The cluster header doubles as the live/stale indicator: if the
+ *  /api/cluster/members poll is in error or hasn't returned yet,
+ *  the nodes list still shows whatever the previous refresh
+ *  returned. Empty payload (cluster not active) shouldn't happen
+ *  here — App.tsx only mounts NodesPanel when /api/cluster/self
+ *  returned non-null — but we guard for it anyway.
  */
-function NodeRow({
-  member,
-  isMaster,
-  isSelf,
-  gpus,
-  gpusError,
-}: {
-  member: ClusterMember;
-  isMaster: boolean;
-  isSelf: boolean;
-  gpus: GpuInfo[] | null;
-  gpusError: string | null;
-}) {
-  const reachable = member.reachable;
-  const role = isMaster ? "master" : "peer";
-  const tag = (label: string, tone: "ok" | "warn" | "err" | "muted") => (
-    <span className={`node-tag node-tag-${tone}`}>{label}</span>
-  );
-  return (
-    <div className={"node-row" + (reachable ? "" : " unreachable")}>
-      <div className="node-row-header">
-        <strong className="node-hostname">{member.hostname}</strong>
-        {tag(role, isMaster ? "ok" : "muted")}
-        {isSelf && tag("this server", "muted")}
-        {tag(
-          reachable ? "reachable" : "unreachable",
-          reachable ? "ok" : "err",
-        )}
-        <span className="node-address">
-          {member.address}:{member.port}
-        </span>
-        <span className="node-version" title="forgather version">
-          v{member.forgather_version || "unknown"}
-        </span>
-      </div>
-      <div className="node-row-body">
-        <NodeGpuSummary gpus={gpus} error={gpusError} />
-      </div>
-    </div>
-  );
-}
-
-function NodeGpuSummary({
-  gpus,
-  error,
-}: {
-  gpus: GpuInfo[] | null;
-  error: string | null;
-}) {
-  if (error) {
-    return <div className="node-gpu-error">GPUs: {error}</div>;
-  }
-  if (gpus === null) {
-    return <div className="node-gpu-loading">GPUs: …</div>;
-  }
-  if (gpus.length === 0) {
-    return <div className="node-gpu-empty">No GPUs reported</div>;
-  }
-  return (
-    <table className="node-gpu-table">
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Name</th>
-          <th>Mem</th>
-          <th>Util</th>
-          <th>Temp</th>
-        </tr>
-      </thead>
-      <tbody>
-        {gpus.map((g) => (
-          <tr key={g.index} className={g.disabled ? "disabled" : undefined}>
-            <td>{g.index}</td>
-            <td>{g.name}</td>
-            <td>
-              {Math.round(g.used_mem_bytes / 1e9)} /{" "}
-              {Math.round(g.total_mem_bytes / 1e9)} GB
-            </td>
-            <td>{g.util_pct ?? "—"}%</td>
-            <td>{g.temp_c ?? "—"}°C</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
 export function NodesPanel() {
   const membersQ = useQuery<ClusterMembersResponse>({
     queryKey: ["cluster", "members"],
     queryFn: api.getClusterMembers,
-    // Match the backend's tick cadence so this view is never older
-    // than ~5 s when the user is looking at it. Background refetch is
-    // fine — the payload is small.
     refetchInterval: 5000,
   });
   const gpusQ = useQuery<ClusterGpusResponse>({
@@ -116,34 +38,54 @@ export function NodesPanel() {
     queryFn: api.getClusterGpus,
     refetchInterval: 5000,
   });
+  // jobByPid is shared across all peer cards so the process chips
+  // can show "config foo" instead of bare PIDs. The list is local
+  // to the master — cross-node job attribution will be wired up
+  // when the by-node proxy lands.
+  const jobsQ = useQuery({
+    queryKey: ["jobs", false],
+    queryFn: () => api.listJobs(false),
+    refetchInterval: 5000,
+  });
 
   if (membersQ.isLoading) {
-    return <div className="nodes-panel">Loading cluster members…</div>;
+    return <div className="pane-state muted">Loading cluster members…</div>;
   }
   if (membersQ.isError) {
     return (
-      <div className="nodes-panel">
-        <div className="error">Failed to load cluster: {String(membersQ.error)}</div>
+      <div className="pane-state err">
+        <pre>{String(membersQ.error)}</pre>
       </div>
     );
   }
   const data = membersQ.data;
   if (!data || !data.cluster_name) {
-    // Defensive: NodesPanel should not be mounted when standalone, but
-    // if it is we render a friendly empty state rather than crashing.
-    return <div className="nodes-panel">Cluster mode is not active.</div>;
+    return (
+      <div className="pane-state muted">Cluster mode is not active.</div>
+    );
   }
-  const gpusByNode = new Map<string, { gpus: GpuInfo[]; error: string | null }>();
+
+  const gpusByNode = new Map<
+    string,
+    { gpus: GpuInfo[]; reachable: boolean; error: string | null }
+  >();
   for (const entry of gpusQ.data?.nodes ?? []) {
     gpusByNode.set(entry.node_id, {
       gpus: entry.gpus,
+      reachable: entry.reachable,
       error: entry.error ?? null,
     });
   }
 
-  const members = [...data.members].sort((a, b) => {
-    // Master first, then reachable peers, then unreachable. Within
-    // each bucket sort by hostname for stable rendering.
+  const jobByPid = new Map<number, Job>();
+  for (const j of jobsQ.data ?? []) {
+    if (j.pid != null) jobByPid.set(j.pid, j);
+  }
+
+  // Render order: master first, then reachable peers, then unreachable.
+  // Within each bucket, sort by hostname so the layout is stable when
+  // peers come and go.
+  const sortedMembers = [...data.members].sort((a, b) => {
     const score = (m: ClusterMember) => {
       if (m.node_id === data.master_node_id) return 0;
       if (m.reachable) return 1;
@@ -155,35 +97,142 @@ export function NodesPanel() {
     return a.hostname.localeCompare(b.hostname);
   });
 
+  const masterHostname =
+    data.master_node_id !== null
+      ? data.members.find((m) => m.node_id === data.master_node_id)
+          ?.hostname ?? data.master_node_id.slice(0, 8)
+      : "(none)";
+
   return (
     <div className="nodes-panel">
-      <div className="nodes-panel-header">
+      <header className="nodes-panel-header">
         <h2>Cluster: {data.cluster_name}</h2>
-        <div className="nodes-panel-meta">
-          {data.members.length} member{data.members.length === 1 ? "" : "s"}
-          {" · "}
-          master:{" "}
-          {data.master_node_id
-            ? data.members.find((m) => m.node_id === data.master_node_id)
-                ?.hostname ?? data.master_node_id.slice(0, 8)
-            : "(none)"}
-        </div>
-      </div>
+        <span className="nodes-panel-meta">
+          {data.members.length} node
+          {data.members.length === 1 ? "" : "s"} · master: {masterHostname}
+        </span>
+      </header>
       <div className="nodes-panel-rows">
-        {members.map((m) => {
-          const entry = gpusByNode.get(m.node_id);
+        {sortedMembers.map((m) => {
+          const isSelf = m.node_id === data.self_node_id;
+          const isMaster = m.node_id === data.master_node_id;
+          const gpuEntry = gpusByNode.get(m.node_id);
           return (
-            <NodeRow
+            <NodeGroup
               key={m.node_id}
               member={m}
-              isMaster={m.node_id === data.master_node_id}
-              isSelf={m.node_id === data.self_node_id}
-              gpus={entry ? entry.gpus : null}
-              gpusError={entry?.error ?? null}
+              isSelf={isSelf}
+              isMaster={isMaster}
+              gpus={gpuEntry?.gpus ?? null}
+              gpusError={gpuEntry?.error ?? null}
+              jobByPid={jobByPid}
             />
           );
         })}
       </div>
     </div>
+  );
+}
+
+function NodeGroup({
+  member,
+  isSelf,
+  isMaster,
+  gpus,
+  gpusError,
+  jobByPid,
+}: {
+  member: ClusterMember;
+  isSelf: boolean;
+  isMaster: boolean;
+  gpus: GpuInfo[] | null;
+  gpusError: string | null;
+  jobByPid: Map<number, Job>;
+}) {
+  const qc = useQueryClient();
+  // Click-to-toggle the disabled flag, routed to the owning node via
+  // the master-side proxy. The master short-circuits self-targets, so
+  // this also works when the local node initiates the toggle on its
+  // own card if we ever choose to use the polled view for self too.
+  const togglePolicy = useMutation({
+    mutationFn: ({
+      gpu_index,
+      disabled,
+    }: {
+      gpu_index: number;
+      disabled: boolean;
+    }) =>
+      api.setNodeGpuPolicy(member.node_id, gpu_index, { disabled }),
+    // The cluster GPU poll picks up the new state within 5 s; an
+    // explicit invalidate makes the visual confirmation immediate.
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["cluster", "gpus"] }),
+    onError: (e) => alert(`Policy update failed: ${String(e)}`),
+  });
+  return (
+    <section
+      className={
+        "node-group" + (member.reachable ? "" : " unreachable")
+      }
+    >
+      <header className="node-group-header">
+        <span className="node-group-title">{member.hostname}</span>
+        {isMaster && <span className="node-tag node-tag-ok">master</span>}
+        {!isMaster && (
+          <span className="node-tag node-tag-muted">peer</span>
+        )}
+        {isSelf && (
+          <span
+            className="node-tag node-tag-muted"
+            title="The webui you're looking at right now"
+          >
+            this server
+          </span>
+        )}
+        {!member.reachable && (
+          <span className="node-tag node-tag-err">unreachable</span>
+        )}
+        <span className="node-group-meta">
+          <span className="node-address">
+            {member.address}:{member.port}
+          </span>
+          <span className="node-version" title="forgather version">
+            v{member.forgather_version || "unknown"}
+          </span>
+        </span>
+      </header>
+      <div className="node-group-body">
+        {isSelf ? (
+          // Local node: keep the existing live GpuPanel — WS stream,
+          // kill/policy controls, context menu all unchanged. The
+          // outer node-group box just wraps it with the cluster
+          // header.
+          <GpuPanel />
+        ) : gpusError ? (
+          <div className="node-group-error">
+            GPUs unavailable: {gpusError}
+          </div>
+        ) : gpus === null ? (
+          <div className="muted">Loading GPUs…</div>
+        ) : gpus.length === 0 ? (
+          <div className="muted">No GPUs reported.</div>
+        ) : (
+          <div className="gpu-grid">
+            {gpus.map((g) => (
+              <GpuCard
+                key={g.index}
+                g={g}
+                jobByPid={jobByPid}
+                onToggleDisabled={() =>
+                  togglePolicy.mutate({
+                    gpu_index: g.index,
+                    disabled: !g.disabled,
+                  })
+                }
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
   );
 }

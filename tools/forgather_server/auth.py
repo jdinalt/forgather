@@ -80,6 +80,20 @@ _PEER_ALLOWED_PATHS = frozenset(
     }
 )
 
+# Peer-allowed mutating endpoints. POST is permitted from a known peer
+# IP for these specific paths only — this is a narrower exception than
+# the GET carve-out above. Each entry here represents a deliberate
+# decision that "another node may change my state without
+# authentication", which is consistent with the trusted-LAN security
+# contract for inter-node operation but should remain a very small set.
+_PEER_ALLOWED_MUTATIONS = frozenset(
+    {
+        # GPU enable/disable + priority gate. Lets the cluster Nodes
+        # view route the click-to-toggle action to the owning node.
+        "/api/cluster/gpu_policy_local",
+    }
+)
+
 # Module-level state. Sessions intentionally do not survive process
 # restart — both the bearer token and the password still work, so a
 # restart only forces a re-login for already-open browser tabs.
@@ -294,11 +308,16 @@ def path_requires_auth(path: str) -> bool:
 
 
 def path_allows_peer(path: str) -> bool:
-    """True if a known cluster peer may call ``path`` without auth.
+    """True if a known cluster peer may GET ``path`` without auth.
 
     See ``_PEER_ALLOWED_PATHS`` for the rationale.
     """
     return path in _PEER_ALLOWED_PATHS
+
+
+def path_allows_peer_mutation(path: str) -> bool:
+    """True if a known cluster peer may POST ``path`` without auth."""
+    return path in _PEER_ALLOWED_MUTATIONS
 
 
 def _request_is_from_peer(scope) -> bool:
@@ -368,18 +387,20 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Cluster peer-call carve-out: a GET on a peer-allowed path,
-        # originating from a node we already know about, is treated as
-        # an inter-node call. Limited to GET so any mutating endpoint
-        # still requires a regular credential even from a peer.
-        if (
-            scope_type == "http"
-            and scope.get("method", "").upper() == "GET"
-            and path_allows_peer(path)
-            and _request_is_from_peer(scope)
-        ):
-            await self.app(scope, receive, send)
-            return
+        # Cluster peer-call carve-out: GET on a read-only peer-allowed
+        # path, or POST on the very small set of explicitly mutation-
+        # allowed cluster endpoints, originating from a known peer
+        # IP, is treated as an inter-node call. Mutations have their
+        # own (smaller) allow-list because granting unauthenticated
+        # writes to peers is a deliberate decision per endpoint.
+        if scope_type == "http" and _request_is_from_peer(scope):
+            method = scope.get("method", "").upper()
+            if method == "GET" and path_allows_peer(path):
+                await self.app(scope, receive, send)
+                return
+            if method == "POST" and path_allows_peer_mutation(path):
+                await self.app(scope, receive, send)
+                return
 
         if scope_type == "websocket":
             # Accept then close with a policy-violation code so the

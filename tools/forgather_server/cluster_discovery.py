@@ -88,31 +88,48 @@ def _build_service_info(
 
 
 def _interface_addresses() -> List[bytes]:
-    """Best-effort enumeration of local IPv4 addresses to advertise.
+    """Enumerate routable local IPv4 addresses to advertise.
 
-    We deliberately do not advertise loopback by default — a peer on
-    another host can't reach us through 127.0.0.1, and including it
-    confuses the membership pull which iterates advertised addresses.
-    For the loopback test scenario, the discovery layer accepts an
-    explicit interface override (see ``start``) and zeroconf will
-    happily fan-out on whatever it gets.
+    ``socket.gethostname() + getaddrinfo`` is unreliable on Linux: most
+    distros ship an ``/etc/hosts`` entry like ``127.0.1.1 <hostname>``
+    that makes the call return loopback even when the host has real
+    LAN interfaces. We hit that exact bug in the field — both nodes
+    advertised 127.0.0.1, the master tried to peer-pull from
+    127.0.0.1:<peer_port> and ended up calling itself.
+    ``psutil.net_if_addrs()`` enumerates the kernel's interface list
+    directly and avoids the resolver path entirely.
+
+    Loopback is excluded except as a final fallback (so the loopback
+    two-server smoke test still works). Link-local 169.254/16 is
+    skipped because it is rarely the address you want a peer to dial.
 
     Returns a list of packed 4-byte addresses suitable for ServiceInfo.
     """
+    import psutil
+
+    seen: set = set()
     out: List[bytes] = []
     try:
-        for info in socket.getaddrinfo(
-            socket.gethostname(), None, family=socket.AF_INET
-        ):
-            ip = info[4][0]
-            if ip.startswith("127."):
-                continue
-            try:
-                out.append(socket.inet_aton(ip))
-            except OSError:
-                continue
-    except socket.gaierror:
-        pass
+        for _iface, entries in psutil.net_if_addrs().items():
+            for entry in entries:
+                if entry.family != socket.AF_INET:
+                    continue
+                ip = entry.address
+                if not ip:
+                    continue
+                if ip.startswith("127."):
+                    continue
+                if ip.startswith("169.254."):
+                    continue
+                if ip in seen:
+                    continue
+                seen.add(ip)
+                try:
+                    out.append(socket.inet_aton(ip))
+                except OSError:
+                    continue
+    except Exception:
+        log.exception("psutil.net_if_addrs failed; falling back to loopback")
     return out
 
 

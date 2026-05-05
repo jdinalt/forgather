@@ -356,6 +356,98 @@ bearer token then traverses the network in cleartext. Run behind an
 SSH tunnel or a TLS-terminating reverse proxy for LAN access; native
 TLS support is on the roadmap.
 
+### Cluster mode (multi-node, prototype)
+
+The server can join a peer-to-peer cluster of other forgather servers
+on the same LAN. Cluster mode is **opt-in**: without `--cluster <name>`
+behavior is identical to the single-node prototype.
+
+```bash
+# Standalone (default — no LAN advertisement, no peer membership)
+forgather server
+
+# Multi-node: advertise on mDNS, peer with other servers using the
+# same cluster name. Bind to all interfaces so peers can reach the
+# API across the network.
+forgather server -H 0.0.0.0 --cluster lab
+```
+
+**Cluster name scoping.** Only servers started with the same
+`--cluster NAME` see each other. Two unrelated clusters on the same
+LAN will not auto-merge. The name is per-invocation (not persisted),
+so a host can move between clusters by restarting with a different
+flag.
+
+**Node identity.** Each host mints a stable UUID at first cluster
+startup, persisted at `~/.forgather/cluster/node_id` (mode 0600).
+The UUID survives hostname changes, NIC swaps, and cluster-name
+changes. Master is selected deterministically as the lowest UUID
+among reachable members; no election round-trip.
+
+**Discovery.** mDNS / Zeroconf, advertising `_forgather._tcp` with
+TXT records `cluster=<name>`, `node_id=<uuid>`, `version=<x.y.z>`,
+`hostname=<host>`. Peers without a matching cluster TXT are ignored.
+Address advertisement uses `psutil.net_if_addrs()` to enumerate real
+LAN IPs — `socket.gethostname()` is unreliable on Linux because of
+`/etc/hosts` artifacts like `127.0.1.1`.
+
+**Membership.** Every 5 s each node GETs `/api/cluster/members` from
+every other known peer, merges the returned member tables, and marks
+silent peers as unreachable after 30 s. Unreachable peers are kept
+in the table (union-of-ever-seen view) — the user agreed model is to
+flag, not delete.
+
+**Security.** Inter-node API calls are unauthenticated by design. The
+threat model assumes a trusted LAN, consistent with the
+torch.distributed assumption that already underpins multi-host
+training. The carve-out is narrow:
+
+- GET on a small allow-list of read-only cluster endpoints from a
+  source IP that matches a known cluster member.
+- POST on an even smaller allow-list of mutation endpoints (currently
+  only `/api/cluster/gpu_policy_local`) from the same.
+- Per-node webui auth (bearer token / browser session) is unchanged
+  — peer-call carve-out applies only to inter-node traffic, not to
+  browsers.
+
+If your LAN is not trusted, do not enable cluster mode.
+
+**Nodes view.** When cluster mode is active, the sidebar's "GPUs"
+entry is labelled "Nodes" and renders one bounded box per cluster
+member. The local node embeds the live single-host GpuPanel
+(WebSocket stream, kill, full context menu); peer nodes show the
+same rich GPU cards, polled at 5 s, with click-to-toggle wired
+through a master-side proxy. Peer right-click context menu (kill
+processes, set min-priority) is intentionally absent in v1 — those
+mutations route through future by-node proxy work.
+
+**State.** Cluster runtime state lives at `~/.forgather/cluster/`:
+
+```
+~/.forgather/cluster/
+├── node_id              # persistent UUID (0600)
+└── journal/
+    └── events.jsonl     # append-only event log (Phase 4 seam)
+```
+
+The journal is a future-proofing seam: Phase 4 will route every
+global-state mutation (queue, GPU policy, cluster jobs) through
+append-only events so master/backup replication can be added later
+without restructuring storage. v1 emits no events to the journal yet.
+
+**Known limits in v1.**
+
+- No global scheduler — peer scheduling decisions are independent.
+  Multi-node job orchestration is the Phase 3 work item.
+- No cross-node version pre-flight — Phase 2 surfaces version
+  mismatches in the Nodes view.
+- No file/log streaming through a by-node proxy — to inspect a peer's
+  jobs / projects / files, open that peer's webui directly.
+- No automatic master failover — the master is whichever reachable
+  member has the lowest UUID; if it goes down the cluster keeps
+  running with a new master, but in-flight global state (queue
+  mutations during the gap) is lost. Phase 4 + Phase 5 work.
+
 ### Excluding misbehaving GPUs
 
 Set `CUDA_VISIBLE_DEVICES` when starting the server to keep specific
@@ -505,6 +597,12 @@ bottom:
   Projects view automatically. The **Edit** view is the tabbed
   Monaco editor (formerly named "Files"); it was renamed to free
   the "Files" name for the new sidebar filesystem tree (see below).
+  When the server is in cluster mode (`--cluster <name>` at startup),
+  the **GPUs** entry is labelled **Nodes**: the same view, scoped
+  to one bounded box per cluster member. The local node embeds the
+  full live GpuPanel inside its box (WS stream, kill, context menu);
+  peer boxes show the same GPU cards polled at 5 s with click-to-
+  toggle routed via the master proxy. See [Cluster mode (multi-node, prototype)](#cluster-mode-multi-node-prototype).
 - **Tools** (collapsible `<details>`) — global actions that don't
   belong to a specific config. Each tool persists its last-submitted
   settings to localStorage so the next open defaults to those values
@@ -1618,6 +1716,26 @@ Populates the project-tree sub-groups and detail panels:
 | `GET /api/gpus/policy`                                      | All per-GPU runtime policies (`{index: {disabled, min_priority}}`)               |
 | `POST /api/gpus/{index}/policy` `{disabled?, min_priority?}` | Upsert per-GPU policy; unset fields are left alone                              |
 | `POST /api/gpus/{index}/kill` `{confirmed: true}`           | SIGKILL every compute process on the GPU (returns `{pids, killed, failed}`)      |
+
+### Cluster (multi-node, opt-in via `--cluster`)
+
+Endpoints in this group return empty / null payloads when the server
+is in standalone mode (no `--cluster` flag), so a webui that polls
+them is safe to mount unconditionally.
+
+| Endpoint                                                           | Auth                       | Purpose                                                                    |
+| ------------------------------------------------------------------ | -------------------------- | -------------------------------------------------------------------------- |
+| `GET /api/cluster/self`                                            | bearer / peer              | This node's identity, or `null` if standalone                              |
+| `GET /api/cluster/members`                                         | bearer / peer              | Cluster name, master node_id, full member table                            |
+| `GET /api/cluster/master`                                          | bearer / peer              | Current master_node_id and `is_self_master`                                |
+| `GET /api/cluster/gpus_local`                                      | bearer / peer              | This node's GPU snapshot. Returns `X-Forgather-Node-Id` header for sanity-checking peer responses |
+| `GET /api/cluster/gpus`                                            | bearer                     | Aggregated `{nodes: [{node_id, hostname, address, reachable, gpus, error}]}` across the cluster (master fetches each peer's `gpus_local` in parallel) |
+| `POST /api/cluster/gpu_policy_local` `{gpu_index, disabled?, min_priority?}` | bearer / peer (only mutation path carved out for peers) | Apply a GPU policy update on this node |
+| `POST /api/cluster/nodes/{node_id}/gpus/{idx}/policy` `{disabled?, min_priority?}` | bearer | Master-side proxy: forward a GPU policy update to the named node (short-circuits self) |
+
+The "peer" auth column means a known cluster member's source IP can
+call the endpoint without the bearer token; see [Cluster mode (multi-node, prototype)](#cluster-mode-multi-node-prototype)
+for the threat model.
 
 ### Queue / scheduler
 

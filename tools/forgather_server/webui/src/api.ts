@@ -888,6 +888,28 @@ export const api = {
     fetchJson<ClusterMembersResponse>("/api/cluster/members"),
   getClusterGpus: () =>
     fetchJson<ClusterGpusResponse>("/api/cluster/gpus"),
+  /** Master-proxied GPU policy mutation. Routes to the named node's
+   *  /api/cluster/gpu_policy_local; short-circuits when the target is
+   *  the local node. Returns the updated policy from the owning node. */
+  setNodeGpuPolicy: async (
+    node_id: string,
+    gpu_index: number,
+    policy: { disabled?: boolean; min_priority?: number },
+  ): Promise<GpuPolicy> => {
+    const r = await fetch(
+      `/api/cluster/nodes/${encodeURIComponent(node_id)}/gpus/${gpu_index}/policy`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(policy),
+      },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<GpuPolicy>;
+  },
   gpuStreamUrl: (): string => {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}/api/gpus/stream`;

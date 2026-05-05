@@ -16,11 +16,11 @@ import time
 from typing import Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
 from .. import cluster
-from .gpus import GpuInfoModel, _to_model
+from .gpus import GpuInfoModel, GpuPolicyModel, SetGpuPolicyRequest, _to_model
 
 log = logging.getLogger("forgather_server.routes.cluster")
 
@@ -159,13 +159,22 @@ class ClusterGpusResponse(BaseModel):
 
 
 @router.get("/gpus_local", response_model=List[GpuInfoModel])
-def gpus_local():
+def gpus_local(response: Response):
     """Local GPU snapshot — counterpart of ``/api/gpus`` carved out for
     peer-pull. Identical payload; the alternate path lets the auth
     carve-out target only this cluster-scoped surface.
+
+    The node identity is returned as the ``X-Forgather-Node-Id``
+    header so the master-side aggregator can sanity-check that the
+    response actually came from the node it intended to call. Caught
+    a real bug where both nodes advertised loopback over mDNS and the
+    master ended up calling itself when fetching peer GPUs.
     """
     from .. import gpu_monitor
 
+    ident = cluster.self_identity()
+    if ident is not None:
+        response.headers["X-Forgather-Node-Id"] = ident.node_id
     return [_to_model(g) for g in gpu_monitor.snapshot()]
 
 
@@ -214,6 +223,24 @@ async def _fetch_peer_gpus(
             reachable=False,
             error=f"http {r.status_code}",
         )
+    # Verify the response actually came from the node we expected.
+    # If mDNS misadvertised an address (loopback artifact, NAT, etc.)
+    # the request can land on a different node and we'd silently
+    # display the wrong GPUs against the wrong hostname.
+    served_by = r.headers.get("x-forgather-node-id") or r.headers.get(
+        "X-Forgather-Node-Id"
+    )
+    if served_by and served_by != member.node_id:
+        return ClusterGpusEntry(
+            node_id=member.node_id,
+            hostname=member.hostname,
+            address=member.address,
+            reachable=False,
+            error=(
+                f"address {member.address}:{member.port} "
+                f"served by node {served_by[:8]} (misadvertised?)"
+            ),
+        )
     try:
         items = r.json()
     except ValueError:
@@ -240,6 +267,119 @@ async def _fetch_peer_gpus(
         reachable=True,
         gpus=gpus,
     )
+
+
+class GpuPolicyLocalRequest(BaseModel):
+    """Body of POST /api/cluster/gpu_policy_local — same shape as
+    ``SetGpuPolicyRequest`` but with the GPU index inline so the
+    endpoint can sit at a fixed path (the auth carve-out keys on the
+    exact path string)."""
+
+    gpu_index: int
+    disabled: Optional[bool] = None
+    min_priority: Optional[int] = None
+
+
+@router.post("/gpu_policy_local", response_model=GpuPolicyModel)
+def gpu_policy_local(req: GpuPolicyLocalRequest, response: Response):
+    """Apply a GPU policy update on this node.
+
+    Counterpart of ``POST /api/gpus/{idx}/policy`` carved out for
+    inter-node mutation. The auth middleware allows POST on this
+    exact path from a known peer IP without the bearer token; see
+    ``auth._PEER_ALLOWED_MUTATIONS``.
+
+    Returns the same ``X-Forgather-Node-Id`` header as ``gpus_local``
+    so the master can sanity-check that the request landed on the
+    intended node.
+    """
+    from .. import gpu_policy as gpu_policy_module
+
+    ident = cluster.self_identity()
+    if ident is not None:
+        response.headers["X-Forgather-Node-Id"] = ident.node_id
+    result = gpu_policy_module.set_policy(
+        req.gpu_index,
+        disabled=req.disabled,
+        min_priority=req.min_priority,
+    )
+    return GpuPolicyModel(
+        disabled=result.disabled, min_priority=result.min_priority
+    )
+
+
+@router.post(
+    "/nodes/{node_id}/gpus/{gpu_index}/policy", response_model=GpuPolicyModel
+)
+async def set_node_gpu_policy(
+    node_id: str, gpu_index: int, req: SetGpuPolicyRequest
+):
+    """Master-side proxy: forward a GPU policy change to the named node.
+
+    Looks up ``node_id`` in the cluster member table, POSTs the
+    payload to that node's ``/api/cluster/gpu_policy_local`` (auth
+    bypassed by the peer-call carve-out — both ends agree the
+    request originates from a cluster peer), and returns the peer's
+    response. If the target is the local node, short-circuits the
+    network and applies the policy in-process.
+    """
+    target = next((m for m in cluster.members() if m.node_id == node_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"unknown node {node_id}")
+    self_id = cluster.self_identity()
+    if self_id is not None and node_id == self_id.node_id:
+        from .. import gpu_policy as gpu_policy_module
+
+        result = gpu_policy_module.set_policy(
+            gpu_index,
+            disabled=req.disabled,
+            min_priority=req.min_priority,
+        )
+        return GpuPolicyModel(
+            disabled=result.disabled, min_priority=result.min_priority
+        )
+    if not target.reachable:
+        raise HTTPException(
+            status_code=503,
+            detail=f"node {target.hostname} is currently unreachable",
+        )
+    url = f"http://{target.address}:{target.port}/api/cluster/gpu_policy_local"
+    payload = {
+        "gpu_index": gpu_index,
+        "disabled": req.disabled,
+        "min_priority": req.min_priority,
+    }
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.post(
+                url, json=payload, timeout=PEER_GPU_TIMEOUT_SECONDS
+            )
+        except (httpx.HTTPError, OSError) as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"forward to {target.hostname} failed: {e}",
+            )
+    if r.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"node {target.hostname} returned {r.status_code}: "
+                f"{r.text[:200]}"
+            ),
+        )
+    served_by = r.headers.get("x-forgather-node-id") or r.headers.get(
+        "X-Forgather-Node-Id"
+    )
+    if served_by and served_by != node_id:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"address {target.address}:{target.port} answered as node "
+                f"{served_by[:8]}; refusing to apply policy"
+            ),
+        )
+    body = r.json()
+    return GpuPolicyModel(**body)
 
 
 @router.get("/gpus", response_model=ClusterGpusResponse)

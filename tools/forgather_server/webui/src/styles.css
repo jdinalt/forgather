@@ -3654,3 +3654,72 @@ li.config.selected button.link:hover {
 .node-gpu-table tr.disabled {
   opacity: 0.5;
 }
+
+/* Cluster Nodes view: per-node bounded box wrapping the GpuPanel
+ * layout. Each box has its own header strip identifying the node;
+ * the GPU cards inside are the same component used in standalone
+ * mode so the visual language is consistent. */
+.node-group {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 6px;
+  margin: 0;
+  background: var(--panel-bg, transparent);
+}
+
+.node-group.unreachable {
+  opacity: 0.7;
+  border-color: rgba(244, 135, 113, 0.4);
+}
+
+.node-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 6px 6px 0 0;
+}
+
+.node-group-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.node-group-meta {
+  margin-left: auto;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.node-group-body {
+  padding: 8px;
+}
+
+.node-group-body .gpu-panel {
+  /* Embedded GpuPanel: the wrapping node box already provides the
+   * frame, so trim its own padding to keep the nested layout tight. */
+  padding: 0;
+}
+
+.node-group-body .gpu-panel-header {
+  /* The cluster header already names the node; the inner "N GPUs ·
+   * live" tag would be redundant. Hide it but keep it for the
+   * standalone case via the un-wrapped GpuPanel. */
+  display: none;
+}
+
+.node-group-error {
+  color: #f48771;
+  font-size: 12px;
+  padding: 8px 4px;
+}
+
+.gpu-card.readonly {
+  /* Slightly muted to signal that click-toggle is the only action;
+   * peer cards still respond to click but don't expose the right-
+   * click context menu. */
+  cursor: default;
+}

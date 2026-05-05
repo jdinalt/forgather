@@ -182,22 +182,56 @@ class TestPeerListener:
 
 
 class TestInterfaceAddresses:
-    def test_excludes_loopback(self, monkeypatch):
+    @staticmethod
+    def _entry(ip: str):
+        # Minimal stand-in for psutil's snicaddr namedtuple. We only
+        # consume ``.family`` and ``.address`` in the function under
+        # test, so the other fields can be None.
+        from collections import namedtuple
+
+        E = namedtuple("snicaddr", ["family", "address", "netmask", "broadcast", "ptp"])
+        return E(socket.AF_INET, ip, None, None, None)
+
+    def test_excludes_loopback_and_linklocal(self, monkeypatch):
+        import psutil
+
         monkeypatch.setattr(
-            discovery.socket,
-            "getaddrinfo",
-            lambda *a, **kw: [
-                (None, None, None, "", ("10.0.0.5", 0)),
-                (None, None, None, "", ("127.0.0.1", 0)),
-            ],
+            psutil,
+            "net_if_addrs",
+            lambda: {
+                "lo": [self._entry("127.0.0.1")],
+                "eth0": [self._entry("10.0.0.5")],
+                "eth1": [self._entry("169.254.10.1")],
+                "eth2": [self._entry("192.168.1.50")],
+            },
         )
         addrs = discovery._interface_addresses()
         assert socket.inet_aton("10.0.0.5") in addrs
+        assert socket.inet_aton("192.168.1.50") in addrs
         assert socket.inet_aton("127.0.0.1") not in addrs
+        assert socket.inet_aton("169.254.10.1") not in addrs
 
-    def test_handles_gaierror(self, monkeypatch):
-        def boom(*a, **kw):
-            raise socket.gaierror("nope")
+    def test_handles_psutil_failure(self, monkeypatch):
+        import psutil
 
-        monkeypatch.setattr(discovery.socket, "getaddrinfo", boom)
+        def boom():
+            raise OSError("nope")
+
+        monkeypatch.setattr(psutil, "net_if_addrs", boom)
+        # The function logs and returns []; callers fall back to
+        # loopback when the list is empty.
         assert discovery._interface_addresses() == []
+
+    def test_deduplicates_addresses(self, monkeypatch):
+        import psutil
+
+        monkeypatch.setattr(
+            psutil,
+            "net_if_addrs",
+            lambda: {
+                "eth0": [self._entry("10.0.0.5")],
+                "eth0:1": [self._entry("10.0.0.5")],  # alias
+            },
+        )
+        addrs = discovery._interface_addresses()
+        assert addrs.count(socket.inet_aton("10.0.0.5")) == 1

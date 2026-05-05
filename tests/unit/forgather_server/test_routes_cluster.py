@@ -151,10 +151,10 @@ class TestPeerCarveOut:
         r = client.get("/api/cluster/members")
         assert r.status_code == 401
 
-    def test_post_not_carved_out(self):
-        # The members endpoint is GET-only, but verify the principle
-        # by adding a synthetic POST route under a peer-allowed path
-        # (would only ever apply to a future mutating endpoint).
+    def test_post_on_get_only_path_not_carved_out(self):
+        # /api/cluster/members is GET-only in the carve-out. POSTing
+        # to it from a peer must still be rejected: the GET-allowed
+        # set and the POST-allowed mutation set are disjoint.
         cluster.activate("c", port=8765)
         cluster.update_member(
             str(uuid.uuid4()),
@@ -173,6 +173,32 @@ class TestPeerCarveOut:
         client = TestClient(app)
         r = client.post("/api/cluster/members")
         assert r.status_code == 401
+
+    def test_post_on_mutation_path_carved_out(self):
+        # /api/cluster/gpu_policy_local is in the explicit mutation
+        # allow-list, so a POST from a known peer IP must pass the
+        # gate without a token.
+        cluster.activate("c", port=8765)
+        # Register both possible TestClient source addresses (varies
+        # by Starlette version) so the carve-out matches.
+        for addr in ("127.0.0.1", "testclient"):
+            cluster.update_member(
+                str(uuid.uuid4()),
+                hostname=f"peer-{addr}",
+                address=addr,
+                port=8765,
+                cluster_name="c",
+            )
+        app = FastAPI()
+        app.add_middleware(AuthMiddleware)
+
+        @app.post("/api/cluster/gpu_policy_local")
+        async def fake_post():
+            return {"ok": True}
+
+        client = TestClient(app)
+        r = client.post("/api/cluster/gpu_policy_local")
+        assert r.status_code == 200, r.text
 
     def test_normal_token_still_works(self):
         cluster.activate("c", port=8765)
@@ -286,3 +312,11 @@ class TestPathAllowsPeer:
 
     def test_gpus_local_carved_out(self):
         assert auth.path_allows_peer("/api/cluster/gpus_local") is True
+
+    def test_mutation_carve_out_disjoint_from_read_set(self):
+        # The two carve-outs are different intentionally — guard
+        # against accidentally widening the GET set to include the
+        # mutation path or vice versa.
+        assert auth.path_allows_peer_mutation("/api/cluster/gpu_policy_local")
+        assert not auth.path_allows_peer_mutation("/api/cluster/members")
+        assert not auth.path_allows_peer("/api/cluster/gpu_policy_local")
