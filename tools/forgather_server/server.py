@@ -77,6 +77,21 @@ def main():
             "with the same --cluster value will see each other."
         ),
     )
+    parser.add_argument(
+        "--cluster-address",
+        action="append",
+        default=[],
+        metavar="IP",
+        help=(
+            "Address(es) to advertise to cluster peers, overriding "
+            "auto-detection. Repeatable. Use this when the server "
+            "runs inside a container whose network namespace hides "
+            "the host's real interfaces — psutil sees only loopback "
+            "or the container bridge, the auto-detector falls back "
+            "to 127.0.0.1, and peers on other hosts can't reach you. "
+            "Example: --cluster-address 192.168.1.27"
+        ),
+    )
     args = parser.parse_args()
 
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
@@ -165,12 +180,22 @@ def _activate_cluster(args) -> None:
     only activates the cluster module so the rest of the server can
     see it as "active" before the loop comes up.
     """
-    ident = cluster.activate(args.cluster, port=args.port)
+    advertise = tuple(args.cluster_address or ())
+    ident = cluster.activate(
+        args.cluster, port=args.port, advertise_addresses=advertise
+    )
     print()
     print(
         f"    Cluster mode: name={ident.cluster_name!r} "
         f"node_id={ident.node_id} hostname={ident.hostname}"
     )
+    if advertise:
+        print(f"    Advertising operator-supplied addresses: {list(advertise)}")
+    else:
+        print(
+            "    Address auto-detection enabled; check the startup log "
+            "for the chosen interface(s)."
+        )
     print(
         "    Inter-node API is unauthenticated on the assumption of a "
         "trusted LAN."

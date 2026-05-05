@@ -257,6 +257,25 @@ class _PeerListener(ServiceListener):
         # so we never store an unreachable address as the canonical
         # one for a member.
         address = sorted(addresses, key=_address_score)[0]
+        # Diagnostic: which of our local interfaces is on the same
+        # subnet as the chosen peer address. mDNS doesn't tell us
+        # which interface the advertisement came in on, but this
+        # answers the practical version of the question: "which of
+        # our NICs would carry traffic to this peer." Logged on add
+        # and on address-changing updates so the operator can see
+        # whether peers are showing up on the interface they expect.
+        iface_hint = _local_interface_for(address)
+        all_advertised = [str(a) for a in addresses]
+        log.info(
+            "mDNS peer %s (%s) at %s:%d via local iface %s "
+            "(advertised: %s)",
+            hostname,
+            node_id[:8],
+            address,
+            info.port or 0,
+            iface_hint or "?",
+            all_advertised,
+        )
         try:
             cluster.update_member(
                 node_id,
@@ -269,6 +288,42 @@ class _PeerListener(ServiceListener):
             )
         except Exception:
             log.exception("update_member failed for peer %s", node_id)
+
+
+def _local_interface_for(ip: str) -> Optional[str]:
+    """Best-effort: which of *our* interfaces is on the same subnet
+    as ``ip``. Used purely for diagnostic logging — answers the
+    question "which interface did this peer come in on?" by
+    inferring the interface a connection to ``ip`` would use.
+
+    mDNS itself does not carry a "received on" interface tag in the
+    payload we see, so this is the most practical answer. Returns
+    None if we can't match (peer is on a different subnet entirely,
+    or psutil enumeration failed).
+    """
+    try:
+        import ipaddress
+
+        import psutil
+
+        target = ipaddress.IPv4Address(ip)
+        for iface, entries in psutil.net_if_addrs().items():
+            for entry in entries:
+                if entry.family != socket.AF_INET:
+                    continue
+                if not entry.address or not entry.netmask:
+                    continue
+                try:
+                    net = ipaddress.IPv4Network(
+                        f"{entry.address}/{entry.netmask}", strict=False
+                    )
+                except (ValueError, ipaddress.AddressValueError):
+                    continue
+                if target in net:
+                    return iface
+    except Exception:
+        pass
+    return None
 
 
 def _address_score(ip: str) -> int:
@@ -340,11 +395,44 @@ class ClusterDiscovery:
                 interfaces=InterfaceChoice.All, ip_version=self._ip_version
             )
         self._zc = zc
-        addrs = addresses if addresses is not None else _interface_addresses()
+        # Resolution order:
+        #   1. Operator-provided list via ``activate(advertise_addresses=...)``
+        #      — wins outright. Use when auto-detection can't see the
+        #      host's real interfaces (typical inside a container that
+        #      isn't running with ``--network host``).
+        #   2. ``addresses=`` keyword (test injection point).
+        #   3. ``_interface_addresses()`` auto-detect.
+        #   4. Loopback fallback — emits a WARNING because anything
+        #      beyond a single-host smoke test is going to break in
+        #      this state.
+        if ident.advertise_addresses:
+            addrs = []
+            for ip in ident.advertise_addresses:
+                try:
+                    addrs.append(socket.inet_aton(ip))
+                except OSError:
+                    log.error("ignoring invalid --cluster-address %r", ip)
+            log.info(
+                "advertising operator-supplied addresses: %s",
+                list(ident.advertise_addresses),
+            )
+        elif addresses is not None:
+            addrs = addresses
+        else:
+            addrs = _interface_addresses()
+            if addrs:
+                log.info(
+                    "advertising auto-detected addresses: %s",
+                    [socket.inet_ntoa(a) for a in addrs],
+                )
         if not addrs:
-            # Loopback fallback so a single-host loopback test can still
-            # find peers. Production hosts will always have a real
-            # routable address.
+            log.warning(
+                "no routable interfaces found; advertising 127.0.0.1 — "
+                "peers on other hosts will NOT be able to reach this "
+                "node. Use --cluster-address <ip> to override "
+                "auto-detection (typical inside containers without "
+                "--network host)."
+            )
             addrs = [socket.inet_aton("127.0.0.1")]
         info = _build_service_info(
             cluster_name=ident.cluster_name,

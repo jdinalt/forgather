@@ -198,6 +198,29 @@ class TestPeerListener:
         assert any(m.node_id == peer_id for m in cluster.members())
 
 
+class TestLocalInterfaceFor:
+    def test_matches_subnet(self, monkeypatch):
+        from collections import namedtuple
+
+        E = namedtuple(
+            "snicaddr",
+            ["family", "address", "netmask", "broadcast", "ptp"],
+        )
+        import psutil
+
+        monkeypatch.setattr(
+            psutil,
+            "net_if_addrs",
+            lambda: {
+                "eth0": [E(socket.AF_INET, "192.168.1.27", "255.255.255.0", None, None)],
+                "docker0": [E(socket.AF_INET, "172.17.0.1", "255.255.0.0", None, None)],
+            },
+        )
+        assert discovery._local_interface_for("192.168.1.50") == "eth0"
+        assert discovery._local_interface_for("172.17.0.99") == "docker0"
+        assert discovery._local_interface_for("10.0.0.1") is None
+
+
 class TestInterfaceAddresses:
     @staticmethod
     def _entry(ip: str):

@@ -72,6 +72,11 @@ class NodeIdentity:
     port: int
     forgather_version: str
     started_at: float
+    # Operator-provided list of routable addresses to advertise. Empty
+    # means "let the discovery layer auto-detect via psutil." Used to
+    # override auto-detection when the server runs inside a container
+    # whose network namespace hides the host's real interfaces.
+    advertise_addresses: tuple = ()
 
 
 @dataclass
@@ -107,7 +112,13 @@ class _ClusterState:
     # Activation / identity
     # ------------------------------------------------------------
 
-    def activate(self, cluster_name: str, port: int) -> NodeIdentity:
+    def activate(
+        self,
+        cluster_name: str,
+        port: int,
+        *,
+        advertise_addresses: tuple = (),
+    ) -> NodeIdentity:
         if not cluster_name:
             raise ValueError("cluster_name must be a non-empty string")
         node_id = _load_or_create_node_id()
@@ -120,6 +131,7 @@ class _ClusterState:
             port=int(port),
             forgather_version=_forgather_version(),
             started_at=time.time(),
+            advertise_addresses=tuple(advertise_addresses),
         )
         with self._lock:
             self._self = identity
@@ -346,8 +358,15 @@ _state = _ClusterState()
 # ---------------------------------------------------------------------------
 
 
-def activate(cluster_name: str, port: int) -> NodeIdentity:
-    return _state.activate(cluster_name, port)
+def activate(
+    cluster_name: str,
+    port: int,
+    *,
+    advertise_addresses: tuple = (),
+) -> NodeIdentity:
+    return _state.activate(
+        cluster_name, port, advertise_addresses=advertise_addresses
+    )
 
 
 def is_active() -> bool:

@@ -58,6 +58,16 @@ class TestNodeIdentity:
         with pytest.raises(ValueError):
             cluster.activate("", port=1)
 
+    def test_advertise_addresses_persisted_on_identity(self):
+        ident = cluster.activate(
+            "c", port=8765, advertise_addresses=("10.0.0.5", "192.168.1.27")
+        )
+        assert ident.advertise_addresses == ("10.0.0.5", "192.168.1.27")
+
+    def test_advertise_addresses_default_empty(self):
+        ident = cluster.activate("c", port=8765)
+        assert ident.advertise_addresses == ()
+
 
 class TestMemberTable:
     def _act(self):

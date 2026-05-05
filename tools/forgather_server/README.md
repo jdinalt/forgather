@@ -387,9 +387,34 @@ among reachable members; no election round-trip.
 **Discovery.** mDNS / Zeroconf, advertising `_forgather._tcp` with
 TXT records `cluster=<name>`, `node_id=<uuid>`, `version=<x.y.z>`,
 `hostname=<host>`. Peers without a matching cluster TXT are ignored.
+
 Address advertisement uses `psutil.net_if_addrs()` to enumerate real
 LAN IPs — `socket.gethostname()` is unreliable on Linux because of
-`/etc/hosts` artifacts like `127.0.1.1`.
+`/etc/hosts` artifacts like `127.0.1.1`. Common virtual interface
+prefixes (`docker*`, `br-*`, `veth*`, `tun*`, `tap*`, `wg*`, etc.)
+are filtered out because they share addresses across hosts and
+typically don't carry inter-host traffic.
+
+**When auto-detection fails:** if the server runs inside a container
+whose network namespace hides the host's real interfaces, psutil may
+see only loopback or only a container bridge. The auto-detector
+falls back to `127.0.0.1` and emits a WARNING; peers on other hosts
+will not be able to reach you in that state. Use `--cluster-address
+<ip>` (repeatable) to specify the address(es) you want advertised:
+
+```bash
+# Inside a container without --network host: tell forgather what
+# host-routable address to put in the mDNS record.
+forgather server -H 0.0.0.0 --cluster lab --cluster-address 192.168.1.27
+```
+
+To diagnose what's happening on a running cluster, the server logs
+which interface(s) it advertises at startup, and which local
+interface it inferred for each incoming peer (matched by subnet
+against the peer's advertised address). Look for
+`mDNS peer <hostname> at <addr>:<port> via local iface <iface>`
+in the log to confirm peers are showing up on the interface you
+expect.
 
 **Membership.** Every 5 s each node GETs `/api/cluster/members` from
 every other known peer, merges the returned member tables, and marks
