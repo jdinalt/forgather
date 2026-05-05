@@ -208,6 +208,56 @@ export interface GpuPolicy {
   min_priority: number;
 }
 
+/** This server's identity within an active cluster. ``null`` from the
+ *  /api/cluster/self endpoint means the server is in standalone mode
+ *  and the rest of the cluster API will return empty payloads. */
+export interface ClusterSelf {
+  node_id: string;
+  hostname: string;
+  cluster_name: string;
+  port: number;
+  forgather_version: string;
+  started_at: number;
+  is_master: boolean;
+}
+
+export interface ClusterMember {
+  node_id: string;
+  hostname: string;
+  address: string;
+  port: number;
+  cluster_name: string;
+  forgather_version: string;
+  first_seen: number;
+  last_seen: number;
+  reachable: boolean;
+  /** "discovery" | "peer_pull" | "self" — debug aid for figuring out
+   *  which mechanism is keeping a stale entry alive. */
+  last_source: string;
+}
+
+export interface ClusterMembersResponse {
+  cluster_name: string | null;
+  self_node_id: string | null;
+  master_node_id: string | null;
+  members: ClusterMember[];
+  server_time: number;
+}
+
+export interface ClusterGpusEntry {
+  node_id: string;
+  hostname: string;
+  address: string;
+  reachable: boolean;
+  gpus: GpuInfo[];
+  error: string | null;
+}
+
+export interface ClusterGpusResponse {
+  nodes: ClusterGpusEntry[];
+  server_time: number;
+}
+
 /** Unified job model returned by /api/jobs.
  *
  *  ``id`` is the stable identifier the UI keys on. For server-launched jobs
@@ -832,6 +882,12 @@ export const api = {
     return r.json();
   },
   listGpus: () => fetchJson<GpuInfo[]>("/api/gpus"),
+  /** Returns null when the server is in standalone mode. */
+  getClusterSelf: () => fetchJson<ClusterSelf | null>("/api/cluster/self"),
+  getClusterMembers: () =>
+    fetchJson<ClusterMembersResponse>("/api/cluster/members"),
+  getClusterGpus: () =>
+    fetchJson<ClusterGpusResponse>("/api/cluster/gpus"),
   gpuStreamUrl: (): string => {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${proto}//${window.location.host}/api/gpus/stream`;

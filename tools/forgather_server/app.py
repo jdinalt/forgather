@@ -11,9 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from . import scheduler, search_roots
+from . import cluster, cluster_journal, scheduler, search_roots
 from .auth import AuthMiddleware
 from .routes import auth as auth_routes
+from .routes import cluster as cluster_routes
 from .routes import configs as configs_routes
 from .routes import docs as docs_routes
 from .routes import fs as fs_routes
@@ -39,16 +40,60 @@ async def lifespan(app: FastAPI):
     to flip the switch after a restart and finding their queues
     silently stalled. Pause anytime via the ⏸ button in the sidebar
     header (``POST /api/queue/scheduler {enabled: false}``).
+
+    When cluster mode is active, also start mDNS discovery and the
+    peer-pull membership task. Discovery runs synchronously on its own
+    threads inside ``python-zeroconf``; membership is an asyncio task.
     """
-    task = asyncio.create_task(scheduler.dispatcher_loop())
+    tasks: list[asyncio.Task] = []
+    discovery_handle = None
+    if cluster.is_active():
+        # Lazy import: zeroconf and the membership module pull in net
+        # subsystems we don't want loading on standalone servers.
+        from . import cluster_discovery, cluster_membership
+
+        cluster_journal.init()
+        discovery_handle = cluster_discovery.ClusterDiscovery()
+        try:
+            # ``Zeroconf.register_service`` is synchronous but waits on
+            # its own internal asyncio loop via ``run_coroutine_threadsafe``.
+            # Calling it directly from FastAPI's lifespan blocks our
+            # event loop, which keeps the inner zeroconf scheduling
+            # call from completing within its timeout (EventLoopBlocked).
+            # Hop to a worker thread so zeroconf's internals can drive
+            # themselves while we keep our loop responsive.
+            await asyncio.to_thread(discovery_handle.start)
+        except Exception:
+            logging.getLogger("forgather_server").exception(
+                "mDNS discovery failed to start; continuing without it"
+            )
+            discovery_handle = None
+        tasks.append(asyncio.create_task(cluster_membership.membership_loop()))
+
+    tasks.append(asyncio.create_task(scheduler.dispatcher_loop()))
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for t in tasks:
+            t.cancel()
+        for t in tasks:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logging.getLogger("forgather_server").exception(
+                    "lifespan task raised on shutdown"
+                )
+        if discovery_handle is not None:
+            # Same thread-hop reasoning as start() — close() also drives
+            # the internal zeroconf loop synchronously.
+            try:
+                await asyncio.to_thread(discovery_handle.stop)
+            except Exception:
+                logging.getLogger("forgather_server").exception(
+                    "mDNS discovery stop failed"
+                )
 
 
 def create_app() -> FastAPI:
@@ -122,6 +167,7 @@ def create_app() -> FastAPI:
         }
 
     app.include_router(auth_routes.router, prefix="/api")
+    app.include_router(cluster_routes.router, prefix="/api")
     app.include_router(search_roots_routes.router, prefix="/api")
     app.include_router(projects_routes.router, prefix="/api")
     app.include_router(configs_routes.router, prefix="/api")

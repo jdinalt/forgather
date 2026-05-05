@@ -5,6 +5,7 @@ import { getAutoWatchTty } from "./autoWatch";
 import { ProjectTree } from "./components/ProjectTree";
 import { ConfigViewer } from "./components/ConfigViewer";
 import { GpuPanel } from "./components/GpuPanel";
+import { NodesPanel } from "./components/NodesPanel";
 import { EvalModal } from "./components/EvalModal";
 import { InferenceModal } from "./components/InferenceModal";
 import { InferencePanel } from "./components/InferencePanel";
@@ -34,6 +35,10 @@ type View =
   | "inference";
 export type ConfigTab = "info" | "pp" | "code" | "graph" | "templates" | "debug";
 
+// View metadata. The "gpus" entry is dual-labelled at render time:
+// "GPUs" in standalone mode, "Nodes" when cluster mode is active. The
+// underlying view ID stays "gpus" so existing keyboard shortcuts and
+// persisted state continue to work without a migration.
 const VIEWS: { id: View; label: string; icon: string }[] = [
   { id: "projects", label: "Projects", icon: "📁" },
   { id: "edit", label: "Edit", icon: "✎" },
@@ -219,6 +224,19 @@ export default function App() {
     queryFn: api.schedulerStatus,
     refetchInterval: 3000,
   });
+  // Cluster identity is fetched once at app load and again every 30 s.
+  // The payload is null in standalone mode and a small object in
+  // cluster mode; either way the response is cheap. The label of the
+  // "gpus" sidebar entry flips to "Nodes" when this is non-null, and
+  // the corresponding view-panel renders NodesPanel instead of
+  // GpuPanel — see below.
+  const clusterSelfQ = useQuery({
+    queryKey: ["cluster-self"],
+    queryFn: api.getClusterSelf,
+    refetchInterval: 30000,
+    staleTime: 30000,
+  });
+  const clusterActive = !!clusterSelfQ.data;
   const toggleSched = useMutation({
     mutationFn: api.schedulerToggle,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["scheduler-status"] }),
@@ -306,16 +324,20 @@ export default function App() {
             <SidebarIcon />
           </button>
           <nav className="sidebar-views icon-only">
-            {VIEWS.map((v) => (
-              <button
-                key={v.id}
-                className={view === v.id ? "active" : ""}
-                onClick={() => setView(v.id)}
-                title={v.label}
-              >
-                <span className="view-icon">{v.icon}</span>
-              </button>
-            ))}
+            {VIEWS.map((v) => {
+              const label =
+                v.id === "gpus" && clusterActive ? "Nodes" : v.label;
+              return (
+                <button
+                  key={v.id}
+                  className={view === v.id ? "active" : ""}
+                  onClick={() => setView(v.id)}
+                  title={label}
+                >
+                  <span className="view-icon">{v.icon}</span>
+                </button>
+              );
+            })}
           </nav>
         </div>
         <div className="sidebar-expanded-content">
@@ -366,16 +388,20 @@ export default function App() {
           >
             <summary>Views</summary>
             <nav className="sidebar-views">
-              {VIEWS.map((v) => (
-                <button
-                  key={v.id}
-                  className={view === v.id ? "active" : ""}
-                  onClick={() => setView(v.id)}
-                >
-                  <span className="view-icon">{v.icon}</span>
-                  <span className="view-label">{v.label}</span>
-                </button>
-              ))}
+              {VIEWS.map((v) => {
+                const label =
+                  v.id === "gpus" && clusterActive ? "Nodes" : v.label;
+                return (
+                  <button
+                    key={v.id}
+                    className={view === v.id ? "active" : ""}
+                    onClick={() => setView(v.id)}
+                  >
+                    <span className="view-icon">{v.icon}</span>
+                    <span className="view-label">{label}</span>
+                  </button>
+                );
+              })}
             </nav>
           </details>
 
@@ -579,7 +605,7 @@ export default function App() {
           className="view-panel"
           style={view === "gpus" ? undefined : { display: "none" }}
         >
-          <GpuPanel />
+          {clusterActive ? <NodesPanel /> : <GpuPanel />}
         </div>
         <div
           className="view-panel"

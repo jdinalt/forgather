@@ -59,6 +59,27 @@ _OPEN_PATHS = frozenset(
     }
 )
 
+# Cluster API endpoints that may be called by a peer node without the
+# bearer token. The carve-out is gated on the source IP belonging to a
+# known cluster member — see ``_request_is_from_peer`` below — so it is
+# not equivalent to making these paths fully public.
+#
+# Limited to read-only GETs in v1. Anything that mutates state still
+# requires the regular auth credential, even from a peer.
+_PEER_ALLOWED_PATHS = frozenset(
+    {
+        "/api/cluster/members",
+        "/api/cluster/self",
+        "/api/cluster/master",
+        # Read-only local GPU snapshot used by the master's
+        # cluster-wide aggregator. Going through a cluster-scoped
+        # alias (rather than carving out the existing /api/gpus
+        # path) keeps the trusted-peer surface explicitly inside
+        # the cluster namespace.
+        "/api/cluster/gpus_local",
+    }
+)
+
 # Module-level state. Sessions intentionally do not survive process
 # restart — both the bearer token and the password still work, so a
 # restart only forces a re-login for already-open browser tabs.
@@ -272,6 +293,36 @@ def path_requires_auth(path: str) -> bool:
     return True
 
 
+def path_allows_peer(path: str) -> bool:
+    """True if a known cluster peer may call ``path`` without auth.
+
+    See ``_PEER_ALLOWED_PATHS`` for the rationale.
+    """
+    return path in _PEER_ALLOWED_PATHS
+
+
+def _request_is_from_peer(scope) -> bool:
+    """True if the request's source IP belongs to a known cluster peer.
+
+    The cluster module is imported lazily so this auth module remains
+    importable in environments where multi-node mode is not active
+    (and therefore zeroconf is not loaded).
+    """
+    client = scope.get("client")
+    if not client:
+        return False
+    address = client[0] if isinstance(client, (tuple, list)) else None
+    if not address:
+        return False
+    try:
+        from . import cluster
+    except Exception:
+        return False
+    if not cluster.is_active():
+        return False
+    return cluster.is_peer_address(address)
+
+
 # ---------------------------------------------------------------------------
 # ASGI middleware
 # ---------------------------------------------------------------------------
@@ -314,6 +365,19 @@ class AuthMiddleware:
         cookies = _parse_cookie_header(headers.get("cookie", ""))
 
         if authenticate(headers, query_flat, cookies):
+            await self.app(scope, receive, send)
+            return
+
+        # Cluster peer-call carve-out: a GET on a peer-allowed path,
+        # originating from a node we already know about, is treated as
+        # an inter-node call. Limited to GET so any mutating endpoint
+        # still requires a regular credential even from a peer.
+        if (
+            scope_type == "http"
+            and scope.get("method", "").upper() == "GET"
+            and path_allows_peer(path)
+            and _request_is_from_peer(scope)
+        ):
             await self.app(scope, receive, send)
             return
 

@@ -28,10 +28,10 @@ if __name__ == "__main__" and __package__ is None:
     parent_dir = script_dir.parent
     if str(parent_dir) not in sys.path:
         sys.path.insert(0, str(parent_dir))
-    from forgather_server import auth, paths
+    from forgather_server import auth, cluster, paths
     from forgather_server.app import create_app
 else:
-    from . import auth, paths
+    from . import auth, cluster, paths
     from .app import create_app
 
 import uvicorn
@@ -65,6 +65,18 @@ def main():
         action="store_true",
         help="Generate a fresh auth token at startup (invalidates existing CLIs)",
     )
+    parser.add_argument(
+        "--cluster",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Join the named cluster (multi-node mode). Without this "
+            "flag, the server runs in single-node / standalone mode "
+            "and does not advertise on the LAN. The cluster name is "
+            "the unit of scoping for mDNS discovery — only servers "
+            "with the same --cluster value will see each other."
+        ),
+    )
     args = parser.parse_args()
 
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
@@ -81,6 +93,9 @@ def main():
     paths.tighten_existing_state_perms()
 
     _configure_auth(args)
+
+    if args.cluster:
+        _activate_cluster(args)
 
     app = create_app()
 
@@ -139,6 +154,27 @@ def _configure_auth(args) -> None:
             "    !! Run behind an SSH tunnel or a TLS-terminating "
             "reverse proxy for LAN access."
         )
+    print()
+
+
+def _activate_cluster(args) -> None:
+    """Stamp the cluster identity and print a banner.
+
+    The discovery + membership tasks are started later by the FastAPI
+    lifespan handler — they need a running event loop. This function
+    only activates the cluster module so the rest of the server can
+    see it as "active" before the loop comes up.
+    """
+    ident = cluster.activate(args.cluster, port=args.port)
+    print()
+    print(
+        f"    Cluster mode: name={ident.cluster_name!r} "
+        f"node_id={ident.node_id} hostname={ident.hostname}"
+    )
+    print(
+        "    Inter-node API is unauthenticated on the assumption of a "
+        "trusted LAN."
+    )
     print()
 
 

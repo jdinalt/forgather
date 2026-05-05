@@ -3520,3 +3520,137 @@ li.config.selected button.link:hover {
   padding: 1px 4px;
   border-radius: 2px;
 }
+
+/* ============================================================
+ * Cluster Nodes view (renders inside the "gpus" view-panel slot
+ * when the server is in cluster mode). Visual language follows
+ * the existing GpuPanel — cards with a header strip and a
+ * compact metric table — so the user does not need to learn a
+ * new layout when the standalone install joins a cluster.
+ * ============================================================ */
+
+.nodes-panel {
+  padding: 12px;
+}
+
+.nodes-panel-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.nodes-panel-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.nodes-panel-meta {
+  font-size: 12px;
+  color: var(--muted, #888);
+}
+
+.nodes-panel-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.node-row {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: var(--panel-bg, transparent);
+}
+
+.node-row.unreachable {
+  opacity: 0.65;
+  border-color: rgba(244, 135, 113, 0.4);
+}
+
+.node-row-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.node-hostname {
+  font-size: 14px;
+}
+
+.node-address,
+.node-version {
+  font-size: 11px;
+  color: var(--muted, #888);
+  font-family: monospace;
+}
+
+.node-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.node-tag-ok {
+  background: rgba(110, 200, 130, 0.15);
+  color: #6ec882;
+}
+
+.node-tag-warn {
+  background: rgba(220, 180, 80, 0.15);
+  color: #dcb450;
+}
+
+.node-tag-err {
+  background: rgba(244, 135, 113, 0.15);
+  color: #f48771;
+}
+
+.node-tag-muted {
+  background: rgba(140, 140, 140, 0.15);
+  color: var(--muted, #888);
+}
+
+.node-row-body {
+  font-size: 12px;
+}
+
+.node-gpu-empty,
+.node-gpu-loading,
+.node-gpu-error {
+  font-style: italic;
+  color: var(--muted, #888);
+  padding: 4px 0;
+}
+
+.node-gpu-error {
+  color: #f48771;
+  font-style: normal;
+}
+
+.node-gpu-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.node-gpu-table th,
+.node-gpu-table td {
+  text-align: left;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+
+.node-gpu-table th {
+  color: var(--muted, #888);
+  font-weight: 500;
+}
+
+.node-gpu-table tr.disabled {
+  opacity: 0.5;
+}
