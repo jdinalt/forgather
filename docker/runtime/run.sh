@@ -1,16 +1,23 @@
 #!/bin/bash
 # Launch / manage the Forgather runtime container.
 #
-# Defaults:
+# This script is opinionated about networking, GPU access, and the
+# auth-token surface, but it is *not* opinionated about which host
+# directories you expose into the container. NO host paths are
+# bind-mounted by default. If you want to share a HuggingFace
+# cache, a scratch dir, or a dataset volume, pass it explicitly via
+# HF_CACHE_HOST or EXTRA_MOUNTS — see below.
+#
+# Defaults that ARE applied:
 #   - bridge networking with -p ${HOST_BIND}:${PORT}:8765
-#   - PUID/PGID forwarded from the calling host user (so files written
-#     to bind-mounted volumes match host ownership)
-#   - bind-mounts the host's ~/.cache/huggingface so HF datasets/models
-#     are shared with the host install (the central pain point this
-#     image is designed around)
-#   - named volume `forgather-state` mounted at ~/.forgather so server
-#     state (auth token, queue, GPU policy, ...) survives `docker rm`
+#   - PUID/PGID forwarded from the calling host user (so files
+#     written to any volumes you DO mount get host-correct ownership)
 #   - --gpus all (set GPUS=none for CPU-only)
+#   - named docker volume `forgather-state` at ~/.forgather inside
+#     the container, for auth-token / queue / GPU-policy state
+#     persistence across `docker rm`. This is a docker-managed
+#     volume, not a host bind-mount — set STATE_VOLUME= (empty)
+#     to disable, or to a host path to bind-mount instead.
 #
 # Usage:
 #   docker/runtime/run.sh                 # create + start (or attach if exists)
@@ -29,9 +36,15 @@
 #   HOST_BIND=0.0.0.0                     # default: 127.0.0.1 (loopback only)
 #   GPUS=none                             # default: all
 #   GPUS='"device=0,1"'                   # specific GPUs
-#   HF_CACHE_HOST=/path/to/host/cache     # default: $HOME/.cache/huggingface
-#   STATE_VOLUME=my-volume                # default: forgather-state (named volume)
-#                                         # set to a host path to bind-mount instead
+#   HF_CACHE_HOST=$HOME/.cache/huggingface
+#                                         # opt-in: bind-mount the host's HF
+#                                         # cache into the container so
+#                                         # downloads are shared with the host
+#                                         # install. Default: unset (no mount).
+#   STATE_VOLUME=my-volume                # default: forgather-state.
+#                                         # Empty = no state mount (token does
+#                                         # not persist across `docker rm`).
+#                                         # Set to /host/path for a bind-mount.
 #   EXTRA_MOUNTS='-v /scratch:/scratch'   # additional volume args
 #   EXTRA_PORTS='-p 6006:6006'            # forward additional ports (e.g. tensorboard)
 
@@ -42,8 +55,11 @@ NAME="${NAME:-forgather-server}"
 PORT="${PORT:-8765}"
 HOST_BIND="${HOST_BIND:-127.0.0.1}"
 GPUS="${GPUS:-all}"
-HF_CACHE_HOST="${HF_CACHE_HOST:-$HOME/.cache/huggingface}"
-STATE_VOLUME="${STATE_VOLUME:-forgather-state}"
+# HF_CACHE_HOST is unset by default — the user opts in to this bind-mount.
+HF_CACHE_HOST="${HF_CACHE_HOST:-}"
+# STATE_VOLUME defaults to a docker-managed named volume (not a host mapping).
+# Set to empty string to disable, or a host path for a bind-mount.
+STATE_VOLUME="${STATE_VOLUME-forgather-state}"
 EXTRA_MOUNTS="${EXTRA_MOUNTS:-}"
 EXTRA_PORTS="${EXTRA_PORTS:-}"
 
@@ -57,24 +73,60 @@ container_state() {
     esac
 }
 
-create_container() {
-    # Lazily create the host HF cache dir so the bind-mount lands somewhere.
-    mkdir -p "${HF_CACHE_HOST}"
+# Poll the in-container state volume for the auth-token file the
+# server writes on first start. Echoes the token on stdout if found,
+# returns non-zero on timeout. Tries up to ~${1:-10} seconds.
+read_auth_token() {
+    local attempts="${1:-10}"
+    local i
+    for ((i = 0; i < attempts; i++)); do
+        if docker exec "${NAME}" test -f /home/forgather/.forgather/server/auth_token 2>/dev/null; then
+            docker exec "${NAME}" cat /home/forgather/.forgather/server/auth_token
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
 
+create_container() {
     GPU_ARGS=()
     if [[ "${GPUS}" != "none" ]]; then
         GPU_ARGS=(--gpus "${GPUS}")
     fi
 
-    # State mount. Docker accepts both a named-volume identifier and
-    # a host path on the LHS of `-v`, so we don't need to discriminate.
-    STATE_MOUNT="-v ${STATE_VOLUME}:/home/forgather/.forgather"
+    # Build the volume args explicitly. Nothing is mounted unless the
+    # user opted in via env var.
+    VOLUME_ARGS=()
+
+    if [[ -n "${HF_CACHE_HOST}" ]]; then
+        # Lazily create the host dir so the bind-mount lands somewhere.
+        mkdir -p "${HF_CACHE_HOST}"
+        VOLUME_ARGS+=(-v "${HF_CACHE_HOST}:/home/forgather/.cache/huggingface")
+    fi
+
+    if [[ -n "${STATE_VOLUME}" ]]; then
+        # Docker's -v LHS accepts both a named-volume identifier and a
+        # host path; no need to discriminate.
+        VOLUME_ARGS+=(-v "${STATE_VOLUME}:/home/forgather/.forgather")
+    fi
 
     echo "[run.sh] creating container ${NAME} from ${IMAGE}" >&2
     echo "[run.sh]   PUID=$(id -u)  PGID=$(id -g)" >&2
     echo "[run.sh]   port:    ${HOST_BIND}:${PORT} -> 8765" >&2
-    echo "[run.sh]   hf cache: ${HF_CACHE_HOST} -> /home/forgather/.cache/huggingface" >&2
-    echo "[run.sh]   state:   ${STATE_VOLUME} -> /home/forgather/.forgather" >&2
+    if [[ -n "${HF_CACHE_HOST}" ]]; then
+        echo "[run.sh]   hf cache: ${HF_CACHE_HOST} -> /home/forgather/.cache/huggingface" >&2
+    else
+        echo "[run.sh]   hf cache: <not mounted; set HF_CACHE_HOST to share with host>" >&2
+    fi
+    if [[ -n "${STATE_VOLUME}" ]]; then
+        echo "[run.sh]   state:   ${STATE_VOLUME} -> /home/forgather/.forgather" >&2
+    else
+        echo "[run.sh]   state:   <ephemeral; auth token will not persist across docker rm>" >&2
+    fi
+    if [[ -n "${EXTRA_MOUNTS}" ]]; then
+        echo "[run.sh]   extra:   ${EXTRA_MOUNTS}" >&2
+    fi
 
     docker run -d \
         --name "${NAME}" \
@@ -85,21 +137,43 @@ create_container() {
         -p "${HOST_BIND}:${PORT}:8765" \
         -e "PUID=$(id -u)" \
         -e "PGID=$(id -g)" \
-        -v "${HF_CACHE_HOST}:/home/forgather/.cache/huggingface" \
-        ${STATE_MOUNT} \
+        "${VOLUME_ARGS[@]}" \
         ${EXTRA_PORTS} \
         ${EXTRA_MOUNTS} \
         "${IMAGE}" > /dev/null
 
-    cat >&2 <<EOF
+    echo "[run.sh] container started; waiting for auth token..." >&2
 
-[run.sh] forgather server is starting in the background.
+    # Mirror the dev-image experience: print a clickable URL with the
+    # token embedded so the operator doesn't have to chase down
+    # `--token` on first start. The token file is created by the
+    # server on first request and persists in the state volume across
+    # restarts, so subsequent re-attaches get the same value.
+    local token=""
+    if token="$(read_auth_token 30)"; then
+        cat >&2 <<EOF
 
-  url:           http://${HOST_BIND}:${PORT}/
-  auth token:    docker/runtime/run.sh --token
-  diag shell:    docker/runtime/run.sh --shell
-  logs:          docker/runtime/run.sh --logs
+[run.sh] forgather server is up.
+
+  url (clickable):  http://${HOST_BIND}:${PORT}/?token=${token}
+  url (plain):      http://${HOST_BIND}:${PORT}/
+  auth token:       ${token}
+
+Re-fetch later:   docker/runtime/run.sh --token
+Diagnostic shell: docker/runtime/run.sh --shell
+Server logs:      docker/runtime/run.sh --logs
 EOF
+    else
+        cat >&2 <<EOF
+
+[run.sh] container is running but the auth token file hasn't appeared yet.
+[run.sh] Re-check with:
+  docker/runtime/run.sh --token
+  docker/runtime/run.sh --logs
+
+  url:    http://${HOST_BIND}:${PORT}/
+EOF
+    fi
 }
 
 ensure_running() {
@@ -141,16 +215,10 @@ case "${1:-}" in
         ;;
     --token)
         ensure_running
-        # The server creates the auth token on first start. Wait briefly
-        # if a freshly-started container hasn't written it yet.
-        for _ in 1 2 3 4 5 6 7 8 9 10; do
-            if docker exec "${NAME}" test -f /home/forgather/.forgather/server/auth_token; then
-                exec docker exec "${NAME}" cat /home/forgather/.forgather/server/auth_token
-            fi
-            sleep 1
-        done
-        echo "[run.sh] timed out waiting for auth token; check 'docker/runtime/run.sh --logs'" >&2
-        exit 1
+        if ! read_auth_token 10; then
+            echo "[run.sh] timed out waiting for auth token; check 'docker/runtime/run.sh --logs'" >&2
+            exit 1
+        fi
         ;;
     --stop)
         if [[ "$(container_state)" == "running" ]]; then

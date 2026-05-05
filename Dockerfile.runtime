@@ -6,8 +6,9 @@
 #   - has a fixed in-container user `forgather` (UID/GID 1000) that is
 #     remapped at container start via PUID/PGID env vars, so a single
 #     prebuilt image works for any host user
-#   - bakes the full source tree in at /opt/forgather/repo (editable
-#     install — required because `forgather server` resolves
+#   - clones the source tree from git at build time into
+#     /opt/forgather/repo and installs editable from there (editable
+#     is required because `forgather server` resolves
 #     `tools/forgather_server/server.py` relative to the package's
 #     own __file__, and the FastAPI app likewise resolves the SPA's
 #     `webui/dist/` relative to its own __file__)
@@ -26,6 +27,11 @@ ARG REPO_DIR=/opt/forgather/repo
 ARG USER_NAME=forgather
 ARG USER_UID=1000
 ARG USER_GID=1000
+# Source tree is fetched fresh from git at build time — no host
+# checkout is baked in, so the image is fully reproducible. Override
+# FORGATHER_GIT_REF to pin a release tag or commit sha.
+ARG FORGATHER_GIT_URL=https://github.com/jdinalt/forgather.git
+ARG FORGATHER_GIT_REF=main
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -33,6 +39,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     UV_LINK_MODE=copy \
+    UV_CACHE_DIR=/root/.cache/uv \
     VIRTUAL_ENV=${VENV_DIR} \
     PATH=${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -41,8 +48,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # privilege-drop entrypoint. The "developer convenience" tools (vim,
 # tmux, htop, ...) are still useful for the diagnostic shell flow
 # (`docker exec -u forgather -ti <name> bash`), so we keep them.
+#
+# BuildKit cache mounts on /var/cache/apt and /var/lib/apt make
+# rebuilds instant on the apt step (no re-download of ~150 MB of
+# Ubuntu packages). The default `docker-clean` apt config wipes the
+# cache after each install, so we delete it first. The cache mounts
+# are external to the image layer, so the final image is the same
+# size as without them.
 # ---------------------------------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && apt-get update && apt-get install -y --no-install-recommends \
         python3.12 \
         python3.12-venv \
         python3.12-dev \
@@ -73,7 +90,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         locales \
         tzdata \
     && locale-gen en_US.UTF-8 \
-    && rm -rf /var/lib/apt/lists/* \
     && gosu nobody true
 
 # ---------------------------------------------------------------------------
@@ -111,28 +127,39 @@ USER ${USER_NAME}
 
 RUN uv venv --python python3.12 --seed ${VENV_DIR}
 
-# Bake the full source tree into the image at ${REPO_DIR}. We copy
-# rather than bind-mount because we need a persistent in-image tree:
+# Fetch a fresh copy of the source tree from git rather than COPYing
+# the publisher's local checkout. Three reasons:
+#   1. Reproducible — the image only depends on the git URL+ref, not
+#      whatever stray state happens to live in the publisher's tree.
+#   2. Distribution-friendly — anyone (CI, a release builder, an
+#      end user) can build the same image from any working dir.
+#   3. Avoids dragging the local working tree (output_models, etc.)
+#      through Docker's build context.
+#
 # `forgather server` walks up from src/forgather/cli/server.py to find
 # tools/forgather_server/server.py, and the FastAPI app resolves
-# webui/dist/ relative to its own __file__. Editable install
-# preserves both lookups.
-#
-# `.dockerignore` already strips `output_models/`, `webui/node_modules/`,
-# `webui/dist/`, and other heavy/regen-able paths from the build
-# context, so this stays small.
-COPY --chown=${USER_UID}:${USER_GID} . ${REPO_DIR}
+# webui/dist/ relative to its own __file__ — both work because we
+# install editable from this baked-in tree.
+# `git clone --depth 1 --branch <ref>` only works when <ref> is a
+# branch or tag name. Fall back to a full clone + checkout so that
+# FORGATHER_GIT_REF can also be a commit SHA. Parens group the
+# fallback so the checkout doesn't run on the fast path.
+RUN git clone --depth 1 --branch "${FORGATHER_GIT_REF}" \
+        "${FORGATHER_GIT_URL}" "${REPO_DIR}" 2>/dev/null \
+    || ( rm -rf "${REPO_DIR}" \
+        && git clone "${FORGATHER_GIT_URL}" "${REPO_DIR}" \
+        && cd "${REPO_DIR}" && git checkout "${FORGATHER_GIT_REF}" )
 
-# Install Forgather (editable) from the baked-in tree. Editable mode
+# Install Forgather (editable) from the cloned tree. Editable mode
 # is required so that the file-walk in `forgather server` resolves
-# correctly; the source tree is frozen anyway because there's no
-# host bind-mount.
-RUN --mount=type=cache,target=/home/${USER_NAME}/.cache/uv,uid=${USER_UID},gid=${USER_GID} \
+# correctly; the tree is frozen anyway because nothing bind-mounts
+# over it at runtime.
+RUN --mount=type=cache,target=/root/.cache/uv,mode=0777,sharing=locked \
     uv pip install --python ${VENV_DIR}/bin/python -e ${REPO_DIR}
 
 # cut-cross-entropy from source for bf16/fp16 numerical stability
 # (the pip release lacks the accum_e_fp32 / accum_c_fp32 features).
-RUN --mount=type=cache,target=/home/${USER_NAME}/.cache/uv,uid=${USER_UID},gid=${USER_GID} \
+RUN --mount=type=cache,target=/root/.cache/uv,mode=0777,sharing=locked \
     uv pip install --python ${VENV_DIR}/bin/python \
         "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
 
@@ -164,7 +191,13 @@ RUN printf '%s\n' \
     && printf '\n# Forgather venv\n. /etc/profile.d/10-forgather-venv.sh\n' \
         >> /etc/bash.bashrc
 
-COPY --chmod=755 docker/runtime/entrypoint.sh /usr/local/bin/forgather-runtime-entrypoint
+# Install the entrypoint from the cloned tree so the image build is
+# fully decoupled from the host build context. To iterate on the
+# entrypoint locally, push to a branch and rebuild with
+# FORGATHER_GIT_REF=<branch>.
+RUN install -m 0755 -o root -g root \
+        ${REPO_DIR}/docker/runtime/entrypoint.sh \
+        /usr/local/bin/forgather-runtime-entrypoint
 
 # Volumes (advisory — the run wrapper sets the actual mounts).
 VOLUME ["/home/forgather/.forgather", "/home/forgather/.cache/huggingface"]
