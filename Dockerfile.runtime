@@ -31,7 +31,7 @@ ARG USER_GID=1000
 # checkout is baked in, so the image is fully reproducible. Override
 # FORGATHER_GIT_REF to pin a release tag or commit sha.
 ARG FORGATHER_GIT_URL=https://github.com/jdinalt/forgather.git
-ARG FORGATHER_GIT_REF=main
+ARG FORGATHER_GIT_REF=dev
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \

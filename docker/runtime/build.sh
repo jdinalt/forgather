@@ -35,7 +35,7 @@ shift || true
 if [[ "${1:-}" == "--" ]]; then shift; fi
 
 GIT_URL="${FORGATHER_GIT_URL:-https://github.com/jdinalt/forgather.git}"
-GIT_REF="${FORGATHER_GIT_REF:-main}"
+GIT_REF="${FORGATHER_GIT_REF:-dev}"
 
 echo "Building runtime image ${TAG}"
 echo "  git url: ${GIT_URL}"

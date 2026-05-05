@@ -15,10 +15,12 @@ A pre-built, **user-agnostic** image whose default command is
 
 The runtime image's source tree is **not** copied from your host
 checkout — it's `git clone`d from `FORGATHER_GIT_URL` at the ref
-`FORGATHER_GIT_REF` (default `main`). That keeps the build
-reproducible and decoupled from whatever stray state happens to
-sit in the publisher's working directory. To iterate on changes
-that aren't merged yet, push to a branch and pass that ref:
+`FORGATHER_GIT_REF` (default `dev` — the active development branch
+where this docker tooling currently lives; will move to `main` once
+a stable release ships with it). That keeps the build reproducible
+and decoupled from whatever stray state happens to sit in the
+publisher's working directory. To pin a release tag, point at a
+fork, or iterate on an unmerged branch:
 
 ```bash
 FORGATHER_GIT_REF=feature/my-change docker/runtime/build.sh
