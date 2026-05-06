@@ -1021,7 +1021,19 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
     for idx, (spec, member) in enumerate(zip(req.members, participating)):
         extra_env: Dict[str, str] = {}
         if spec.nccl_socket_ifname:
+            # Pin every transport — not just NCCL — to the operator's
+            # chosen interface. Gloo (CPU collectives) and tensorpipe
+            # (RPC) each derive their advertised address from
+            # socket.gethostname() by default, which resolves to
+            # 127.0.0.1/127.0.1.1 on Debian/Ubuntu via /etc/hosts.
+            # Without GLOO_SOCKET_IFNAME / TP_SOCKET_IFNAME the rank
+            # publishes a loopback address to its peers and Gloo
+            # connectFullMesh fails before the trainer ever runs a
+            # step. Same value covers all three because the operator
+            # already picked the routable LAN interface.
             extra_env["NCCL_SOCKET_IFNAME"] = spec.nccl_socket_ifname
+            extra_env["GLOO_SOCKET_IFNAME"] = spec.nccl_socket_ifname
+            extra_env["TP_SOCKET_IFNAME"] = spec.nccl_socket_ifname
         fanout_payloads.append(
             {
                 "project_dir": req.project_dir,

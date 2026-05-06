@@ -461,10 +461,21 @@ class TestClusterJobSubmit:
             c[0]: c[1]["rdzv_args"]["node_rank"] for c in captured
         }
         assert node_ranks == ranks
-        # NCCL_SOCKET_IFNAME landed in extra_env per spec.
+        # The operator-chosen interface name lands in extra_env for
+        # all three socket-binding env vars: NCCL (CUDA collectives),
+        # GLOO (CPU collectives), and TP (tensorpipe RPC). Pinning
+        # only NCCL leaves Gloo's connectFullMesh resolving each
+        # rank's address via socket.gethostname() — which on
+        # Debian/Ubuntu returns 127.0.1.1 — and the trainer dies
+        # before the first step.
         env_by_id = {c[0]: c[1]["extra_env"] for c in captured}
-        assert env_by_id[ident.node_id]["NCCL_SOCKET_IFNAME"] == "enp212s0"
-        assert env_by_id[peer_id]["NCCL_SOCKET_IFNAME"] == "eth0"
+        for nid, expected_iface in (
+            (ident.node_id, "enp212s0"),
+            (peer_id, "eth0"),
+        ):
+            assert env_by_id[nid]["NCCL_SOCKET_IFNAME"] == expected_iface
+            assert env_by_id[nid]["GLOO_SOCKET_IFNAME"] == expected_iface
+            assert env_by_id[nid]["TP_SOCKET_IFNAME"] == expected_iface
         # Exactly one peer must be flagged is_host=True (the rdzv host),
         # all others is_host=False. Without this, c10d's broken
         # gethostname-based autodetection drops every node into client
