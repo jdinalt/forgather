@@ -275,6 +275,58 @@ export interface ClusterBandwidthResponse {
   server_time: number;
 }
 
+export interface ClusterJobMember {
+  node_id: string;
+  hostname: string;
+  address: string;
+  port: number;
+  queue_id: string;
+  nproc_per_node: number;
+  node_rank: number;
+  nccl_socket_ifname: string | null;
+}
+
+export interface ClusterJob {
+  cluster_job_id: string;
+  project_dir: string;
+  config: string;
+  submitted_at: number;
+  rdzv_endpoint: string;
+  rdzv_id: string;
+  rdzv_node_id: string;
+  members: ClusterJobMember[];
+  status: string;
+  cancelled_at: number | null;
+}
+
+export interface ClusterJobMemberSpec {
+  node_id: string;
+  nproc_per_node: number;
+  nccl_socket_ifname?: string | null;
+}
+
+export interface ClusterJobSubmitRequest {
+  project_dir: string;
+  config: string;
+  dynamic_args?: Record<string, unknown>;
+  priority?: number;
+  members: ClusterJobMemberSpec[];
+  rdzv_node_id?: string;
+  rdzv_port?: number;
+  allow_version_mismatch?: boolean;
+}
+
+export interface ClusterJobSubmitResponse {
+  cluster_job: ClusterJob;
+  warnings: string[];
+}
+
+export interface ClusterJobCancelResponse {
+  cluster_job_id: string;
+  cancelled: boolean;
+  per_member: { node_id: string; queue_id: string; result: unknown }[];
+}
+
 export interface ClusterMembersResponse {
   cluster_name: string | null;
   self_node_id: string | null;
@@ -929,6 +981,34 @@ export const api = {
     fetchJson<ClusterGpusResponse>("/api/cluster/gpus"),
   getClusterBandwidth: () =>
     fetchJson<ClusterBandwidthResponse>("/api/cluster/bandwidth"),
+  listClusterJobs: () => fetchJson<ClusterJob[]>("/api/cluster/jobs"),
+  submitClusterJob: async (
+    req: ClusterJobSubmitRequest,
+  ): Promise<ClusterJobSubmitResponse> => {
+    const r = await fetch("/api/cluster/jobs/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterJobSubmitResponse>;
+  },
+  cancelClusterJob: async (
+    cluster_job_id: string,
+  ): Promise<ClusterJobCancelResponse> => {
+    const r = await fetch(
+      `/api/cluster/jobs/${encodeURIComponent(cluster_job_id)}/cancel`,
+      { method: "POST" },
+    );
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterJobCancelResponse>;
+  },
   refreshClusterBandwidth: async (): Promise<ClusterBandwidthResponse> => {
     const r = await fetch("/api/cluster/bandwidth/refresh", {
       method: "POST",

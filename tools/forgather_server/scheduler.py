@@ -539,12 +539,20 @@ def _build_dataset(item, gpu_indices, tty_path):
 
 
 def _build_training(item, gpu_indices, tty_path):
+    # Multi-node training jobs (Phase 3 cluster-coordinator submit)
+    # carry their torchrun rendezvous args + NCCL env in
+    # ``job_params``. Single-node training jobs leave job_params empty
+    # and the launcher falls back to ``--standalone``.
+    rdzv_args = item.job_params.get("rdzv_args") or None
+    extra_env = item.job_params.get("extra_env") or None
     return launcher.spawn_training_process(
         project_dir=item.project_dir,
         config_name=item.config,
         dynamic_args=item.dynamic_args,
         gpu_indices=gpu_indices,
         tty_log_path=tty_path,
+        extra_env=extra_env,
+        rdzv_args=rdzv_args,
     )
 
 

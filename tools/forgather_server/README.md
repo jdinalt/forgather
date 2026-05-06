@@ -482,6 +482,58 @@ hold the bytes in memory all at once. ``/api/cluster/bandwidth``
 returns the cached results; ``/api/cluster/bandwidth/refresh``
 runs a fresh measurement and updates the cache.
 
+**Multi-node training submit (Phase 3).** A "+ Multi-node training"
+button at the top of the Nodes view opens a submit modal. The
+operator picks a project + config (paths must exist at the same
+location on every participant — typical setup uses an NFS export at
+the same mount point), checks which nodes participate, sets
+per-node ``nproc_per_node`` and optional ``NCCL_SOCKET_IFNAME``
+(defaulted to a dropdown of the node's reported up-and-running
+interfaces), and picks a rendezvous host (defaults to the cluster
+master).
+
+On submit, the master:
+
+1. Validates participants are reachable and probe data shows
+   matching ``forgather`` / ``torch`` / ``nccl`` / ``transformers``
+   versions across the selected set; mismatches return HTTP 409
+   unless ``allow_version_mismatch=true`` is passed.
+2. Generates a unique ``rdzv_id`` and computes
+   ``rdzv_endpoint = <rdzv_node.address>:<rdzv_port>``
+   (default port ``29400``).
+3. Assigns ``node_rank`` by request order — the rdzv host typically
+   ends up rank 0 because the modal puts the master first.
+4. Fans out a ``POST /api/cluster/training_local`` to each
+   participant with that node's per-rank torchrun args
+   (``--nnodes``, ``--node-rank``, ``--rdzv-backend=c10d``,
+   ``--rdzv-endpoint``, ``--rdzv-id``, ``--nproc-per-node``) and
+   ``NCCL_SOCKET_IFNAME`` in ``extra_env``. The peer's local
+   scheduler picks up the queue item and spawns torchrun in
+   rendezvous mode (no ``--standalone``).
+5. Records a ClusterJob bundle linking the per-node queue ids back
+   to a single ``cluster_job_id``. Listed via
+   ``GET /api/cluster/jobs``; cancel via
+   ``POST /api/cluster/jobs/{id}/cancel`` fans out a cancel to each
+   participant. Bundle creation and cancellation are journaled via
+   ``cluster_journal`` so Phase 4's replication seam covers
+   multi-node lifecycle.
+
+If a fanout step fails partway through, the master rolls back by
+issuing cancels to the participants it already enqueued on, then
+returns the original error. There's no half-submitted state.
+
+**Limitations to be aware of in v1:**
+
+- Project paths are assumed to resolve at the same location on every
+  participant. There is no automatic config staging.
+- Per-node TTY logs and job control still run through each peer's
+  own webui — there's no cross-node log aggregation. Open the peer's
+  webui in another tab to watch its rank's torchrun output.
+- The version check is advisory at the headline-key level
+  (``forgather`` / ``torch`` / ``nccl`` / ``transformers``). It
+  doesn't compare CUDA toolkit, transformers patch versions, etc.;
+  add those to ``cluster_probe.py`` if a real divergence bites.
+
 **State.** Cluster runtime state lives at `~/.forgather/cluster/`:
 
 ```
@@ -1796,6 +1848,12 @@ them is safe to mount unconditionally.
 | `GET /api/cluster/bandwidth_local?bytes=N`                         | bearer / peer              | Stream `N` bytes back so the caller can time the receive (4 KiB ≤ N ≤ 256 MiB; default 32 MiB) |
 | `GET /api/cluster/bandwidth`                                       | bearer                     | Cached pairwise bandwidth measurements (1 h TTL)                          |
 | `POST /api/cluster/bandwidth/refresh?bytes=N`                      | bearer                     | Run a fresh bandwidth measurement against every reachable peer (sequential) and update the cache |
+| `POST /api/cluster/jobs/submit` `{project_dir, config, members:[{node_id,nproc_per_node,nccl_socket_ifname?}], rdzv_node_id?, rdzv_port?, allow_version_mismatch?}` | bearer | Submit a multi-node training bundle; master fans out per-rank queue items to each participant. Returns the bundle and any version-mismatch warnings. |
+| `GET /api/cluster/jobs`                                            | bearer                     | List multi-node bundles (newest first)                                    |
+| `GET /api/cluster/jobs/{id}`                                       | bearer                     | Get one bundle                                                            |
+| `POST /api/cluster/jobs/{id}/cancel`                               | bearer                     | Fan out cancel to every participant of the bundle                         |
+| `POST /api/cluster/training_local` `{project_dir, config, dynamic_args?, requested_gpus, priority, rdzv_args, extra_env, cluster_job_id?}` | bearer / peer (only mutation path carved out for peers) | Per-rank training enqueue used by the master fanout. The peer's scheduler picks up the queue item and spawns torchrun in rdzv mode. |
+| `POST /api/cluster/training_cancel_local` `{queue_id}`             | bearer / peer              | Per-rank cancel used by the master cancel-fanout                          |
 
 The probe payload (versions + interfaces + CPU summary) is
 piggybacked on every member entry returned by `/api/cluster/members`

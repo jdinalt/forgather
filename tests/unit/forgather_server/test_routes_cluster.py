@@ -20,12 +20,15 @@ from forgather_server.routes import cluster as cluster_routes
 def isolated_state(tmp_path, monkeypatch):
     cluster_dir = tmp_path / "cluster"
     cluster_dir.mkdir()
+    journal_dir = cluster_dir / "journal"
+    journal_dir.mkdir()
     server_dir = tmp_path / "server"
     server_dir.mkdir()
     monkeypatch.setattr(paths, "cluster_state_dir", lambda: cluster_dir)
     monkeypatch.setattr(
         paths, "cluster_node_id_file", lambda: cluster_dir / "node_id"
     )
+    monkeypatch.setattr(paths, "cluster_journal_dir", lambda: journal_dir)
     monkeypatch.setattr(paths, "server_state_dir", lambda: server_dir)
     monkeypatch.setattr(
         paths, "auth_token_file", lambda: server_dir / "auth_token"
@@ -33,7 +36,11 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         paths, "password_hash_file", lambda: server_dir / "password_hash"
     )
+    from forgather_server import cluster_jobs, cluster_journal
+
     cluster._reset_for_tests()
+    cluster_jobs._reset_for_tests()
+    cluster_journal._reset_for_tests()
     auth._reset_sessions_for_tests()
     yield
 
@@ -348,6 +355,203 @@ class TestBandwidth:
         client = TestClient(_make_app())
         r = client.get("/api/cluster/bandwidth_local?bytes=4096")
         assert r.status_code == 200, r.text
+
+
+class TestClusterJobSubmit:
+    """Cluster-coordinator submit path. The fanout step is monkey-
+    patched away — we don't want to actually enqueue anything during
+    unit tests — but the validation, rdzv-args computation, and
+    bundle-record code paths run for real.
+    """
+
+    def _activate_with_two_members(self, version_a="1.1.0", version_b="1.1.0"):
+        ident = cluster.activate("c", port=8765)
+        # Self gets a non-loopback address so the membership table is
+        # realistic; updating self via update_member is normally done
+        # by cluster_discovery.start, which the unit test bypasses.
+        cluster.update_self_address("192.168.1.27")
+        peer_id = str(uuid.uuid4())
+        cluster.update_member(
+            peer_id,
+            hostname="muthur",
+            address="192.168.1.162",
+            port=8765,
+            cluster_name="c",
+            forgather_version=version_b,
+            probe={
+                "versions": {
+                    "forgather": version_b,
+                    "torch": "2.10.0",
+                    "nccl": "2.27.5",
+                    "transformers": "5.7.0",
+                }
+            },
+        )
+        # Self's probe was set by activate() but with whatever was
+        # importable at test time. Stamp a deterministic version dict
+        # so the divergence check is honest about what's diverging.
+        from forgather_server import cluster as _c
+
+        _c._state._members[ident.node_id].probe = {
+            "versions": {
+                "forgather": version_a,
+                "torch": "2.10.0",
+                "nccl": "2.27.5",
+                "transformers": "5.7.0",
+            }
+        }
+        return ident, peer_id
+
+    def test_happy_path_submits_to_both_members(self, monkeypatch):
+        ident, peer_id = self._activate_with_two_members()
+
+        # Stub the fanout: capture payloads, return a synthetic queue id.
+        import forgather_server.routes.cluster as routes
+
+        captured: list = []
+
+        async def fake_fanout(client, target, payload):
+            captured.append((target.node_id, payload))
+            return {
+                "queue_id": f"q_{target.node_id[:8]}",
+                "node_id": target.node_id,
+            }
+
+        monkeypatch.setattr(routes, "_fanout_training", fake_fanout)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.post(
+            "/api/cluster/jobs/submit",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "project_dir": "/proj",
+                "config": "train.yaml",
+                "members": [
+                    {
+                        "node_id": ident.node_id,
+                        "nproc_per_node": 2,
+                        "nccl_socket_ifname": "enp212s0",
+                    },
+                    {
+                        "node_id": peer_id,
+                        "nproc_per_node": 1,
+                        "nccl_socket_ifname": "eth0",
+                    },
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        cj = body["cluster_job"]
+        assert len(cj["members"]) == 2
+        # node_rank assignment follows the request order.
+        ranks = {m["node_id"]: m["node_rank"] for m in cj["members"]}
+        assert ranks[ident.node_id] == 0
+        assert ranks[peer_id] == 1
+        # rdzv host defaults to master (lowest UUID — could be either,
+        # so just check it is one of them and the endpoint is well-
+        # formed).
+        assert cj["rdzv_endpoint"].endswith(":29400")
+        # Both peers received a fanout call with the same rdzv_id and
+        # endpoint, but different node_ranks.
+        assert len(captured) == 2
+        rdzv_ids = {c[1]["rdzv_args"]["rdzv_id"] for c in captured}
+        assert len(rdzv_ids) == 1
+        node_ranks = {
+            c[0]: c[1]["rdzv_args"]["node_rank"] for c in captured
+        }
+        assert node_ranks == ranks
+        # NCCL_SOCKET_IFNAME landed in extra_env per spec.
+        env_by_id = {c[0]: c[1]["extra_env"] for c in captured}
+        assert env_by_id[ident.node_id]["NCCL_SOCKET_IFNAME"] == "enp212s0"
+        assert env_by_id[peer_id]["NCCL_SOCKET_IFNAME"] == "eth0"
+
+    def test_version_mismatch_blocks_without_override(self, monkeypatch):
+        ident, peer_id = self._activate_with_two_members(
+            version_a="1.0.0", version_b="1.1.0"
+        )
+        import forgather_server.routes.cluster as routes
+
+        async def fake_fanout(client, target, payload):
+            raise AssertionError("should not fan out when blocked")
+
+        monkeypatch.setattr(routes, "_fanout_training", fake_fanout)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.post(
+            "/api/cluster/jobs/submit",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "project_dir": "/proj",
+                "config": "train.yaml",
+                "members": [
+                    {"node_id": ident.node_id, "nproc_per_node": 2},
+                    {"node_id": peer_id, "nproc_per_node": 1},
+                ],
+            },
+        )
+        assert r.status_code == 409
+        assert "version mismatch" in r.text.lower()
+
+    def test_version_mismatch_allowed_with_override(self, monkeypatch):
+        ident, peer_id = self._activate_with_two_members(
+            version_a="1.0.0", version_b="1.1.0"
+        )
+        import forgather_server.routes.cluster as routes
+
+        async def fake_fanout(client, target, payload):
+            return {
+                "queue_id": f"q_{target.node_id[:8]}",
+                "node_id": target.node_id,
+            }
+
+        monkeypatch.setattr(routes, "_fanout_training", fake_fanout)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.post(
+            "/api/cluster/jobs/submit",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "project_dir": "/proj",
+                "config": "train.yaml",
+                "allow_version_mismatch": True,
+                "members": [
+                    {"node_id": ident.node_id, "nproc_per_node": 2},
+                    {"node_id": peer_id, "nproc_per_node": 1},
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert any("forgather" in w for w in r.json()["warnings"])
+
+    def test_unreachable_peer_rejected(self, monkeypatch):
+        ident, peer_id = self._activate_with_two_members()
+        cluster.mark_unreachable(peer_id)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.post(
+            "/api/cluster/jobs/submit",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "project_dir": "/proj",
+                "config": "train.yaml",
+                "members": [
+                    {"node_id": ident.node_id, "nproc_per_node": 2},
+                    {"node_id": peer_id, "nproc_per_node": 1},
+                ],
+            },
+        )
+        assert r.status_code == 400
+        assert "unreachable" in r.text.lower()
+
+
+def _make_app_with_full_router():
+    """Like _make_app() but mounts the cluster router with prefix="/api"
+    so /api/cluster/jobs/submit resolves correctly."""
+    app = FastAPI()
+    app.add_middleware(AuthMiddleware)
+    app.include_router(cluster_routes.router, prefix="/api")
+    return app
 
 
 class TestPathAllowsPeer:

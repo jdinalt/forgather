@@ -95,6 +95,18 @@ _PEER_ALLOWED_MUTATIONS = frozenset(
         # GPU enable/disable + priority gate. Lets the cluster Nodes
         # view route the click-to-toggle action to the owning node.
         "/api/cluster/gpu_policy_local",
+        # Cluster-coordinator submit (Phase 3). The master generates
+        # rdzv args and POSTs one of these to each participating
+        # peer to enqueue the per-rank training job. Narrower than
+        # carving out the entire /api/queue surface — the handler
+        # only constructs training items with caller-supplied rdzv
+        # args, never the other job_types.
+        "/api/cluster/training_local",
+        # Cluster-coordinator cancel: master DELETEs through this
+        # path on each peer to abort the local queue item. Modeled
+        # as POST so the carve-out (which only allows GET / POST)
+        # applies cleanly without widening it to DELETE.
+        "/api/cluster/training_cancel_local",
     }
 )
 

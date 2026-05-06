@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import {
   api,
   ClusterBandwidthEntry,
   ClusterBandwidthResponse,
+  ClusterJob,
   ClusterMember,
   ClusterMembersResponse,
   ClusterGpusResponse,
@@ -12,6 +14,7 @@ import {
   Job,
 } from "../api";
 import { GpuPanel, GpuCard } from "./GpuPanel";
+import { MultiNodeSubmitModal } from "./MultiNodeSubmitModal";
 
 /** Cluster-aware Nodes view (Phase 2).
  *
@@ -282,6 +285,112 @@ function BandwidthPanel({
   );
 }
 
+function ClusterJobsPanel() {
+  const qc = useQueryClient();
+  const [submitOpen, setSubmitOpen] = useState(false);
+  const jobsQ = useQuery<ClusterJob[]>({
+    queryKey: ["cluster", "jobs"],
+    queryFn: api.listClusterJobs,
+    refetchInterval: 5000,
+  });
+  const cancelMutation = useMutation({
+    mutationFn: (clusterJobId: string) => api.cancelClusterJob(clusterJobId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["cluster", "jobs"] }),
+    onError: (e) => alert(`Cancel failed: ${String(e)}`),
+  });
+  const jobs = jobsQ.data ?? [];
+  const activeJobs = jobs.filter((j) => j.status !== "cancelled");
+  return (
+    <details className="cluster-jobs-panel" open={activeJobs.length > 0}>
+      <summary>
+        <span>
+          Cluster Jobs ({activeJobs.length} active
+          {jobs.length > activeJobs.length
+            ? `, ${jobs.length - activeJobs.length} cancelled`
+            : ""}
+          )
+        </span>
+        <button
+          className="cj-new-btn"
+          onClick={(e) => {
+            e.preventDefault();
+            setSubmitOpen(true);
+          }}
+        >
+          + Multi-node training…
+        </button>
+      </summary>
+      {jobs.length === 0 ? (
+        <div className="muted cj-empty">
+          No multi-node jobs submitted yet.
+        </div>
+      ) : (
+        <table className="cj-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Project / Config</th>
+              <th>rdzv</th>
+              <th>Members</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {jobs.map((j) => (
+              <tr
+                key={j.cluster_job_id}
+                className={j.status === "cancelled" ? "cancelled" : ""}
+              >
+                <td>
+                  <code title={j.cluster_job_id}>
+                    {j.cluster_job_id.slice(0, 12)}…
+                  </code>
+                </td>
+                <td>
+                  <code>{j.project_dir}</code> / <code>{j.config}</code>
+                </td>
+                <td>
+                  <code>{j.rdzv_endpoint}</code>{" "}
+                  <span className="muted">id={j.rdzv_id.slice(0, 8)}</span>
+                </td>
+                <td>
+                  {j.members.map((m, idx) => (
+                    <div key={m.node_id} className="cj-member">
+                      <span>
+                        rank {m.node_rank}: {m.hostname} ×
+                        {m.nproc_per_node}
+                      </span>
+                      {idx < j.members.length - 1 && ""}
+                    </div>
+                  ))}
+                </td>
+                <td>{j.status}</td>
+                <td>
+                  {j.status !== "cancelled" && (
+                    <button
+                      className="cj-cancel-btn"
+                      disabled={cancelMutation.isPending}
+                      onClick={() =>
+                        cancelMutation.mutate(j.cluster_job_id)
+                      }
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {submitOpen && (
+        <MultiNodeSubmitModal onClose={() => setSubmitOpen(false)} />
+      )}
+    </details>
+  );
+}
+
 export function NodesPanel() {
   const membersQ = useQuery<ClusterMembersResponse>({
     queryKey: ["cluster", "members"],
@@ -380,6 +489,7 @@ export function NodesPanel() {
           </span>
         )}
       </header>
+      <ClusterJobsPanel />
       <BandwidthPanel
         members={data.members}
         selfNodeId={data.self_node_id}

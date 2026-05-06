@@ -3881,3 +3881,156 @@ li.config.selected button.link:hover {
   padding: 6px 10px;
   font-size: 11px;
 }
+
+/* Phase 3: cluster jobs panel + multi-node submit modal. */
+
+.cluster-jobs-panel {
+  margin: 0 0 8px 0;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.cluster-jobs-panel summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.cj-new-btn {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+  background: rgba(110, 200, 130, 0.15);
+  color: #6ec882;
+  border: 1px solid rgba(110, 200, 130, 0.3);
+  border-radius: 3px;
+}
+
+.cj-new-btn:hover {
+  background: rgba(110, 200, 130, 0.25);
+}
+
+.cj-empty {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.cj-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  border-top: 1px solid var(--border, #2a2a2a);
+}
+
+.cj-table th,
+.cj-table td {
+  text-align: left;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  vertical-align: top;
+}
+
+.cj-table th {
+  color: var(--muted, #888);
+  font-weight: 500;
+}
+
+.cj-table tr.cancelled {
+  opacity: 0.6;
+}
+
+.cj-member {
+  font-family: monospace;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.cj-cancel-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  background: rgba(244, 135, 113, 0.15);
+  color: #f48771;
+  border: 1px solid rgba(244, 135, 113, 0.3);
+  border-radius: 3px;
+}
+
+.cj-cancel-btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.multinode-modal {
+  width: min(900px, 95vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.multinode-members {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 6px 0;
+}
+
+.multinode-members th,
+.multinode-members td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  vertical-align: middle;
+}
+
+.multinode-members th {
+  color: var(--muted, #888);
+  font-weight: 500;
+  text-align: left;
+}
+
+.multinode-members tr.unreachable {
+  opacity: 0.5;
+}
+
+.multinode-members input[type="text"],
+.multinode-members select {
+  width: 100%;
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.modal-section {
+  margin: 12px 0;
+}
+
+.modal-section h3 {
+  font-size: 13px;
+  margin: 0 0 6px 0;
+  color: var(--muted, #888);
+}
+
+.modal-warning {
+  margin: 12px 0;
+  padding: 8px 10px;
+  background: rgba(220, 180, 80, 0.10);
+  border-left: 3px solid #dcb450;
+  font-size: 12px;
+}
+
+.modal-warning ul {
+  margin: 4px 0 8px 16px;
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.modal-error pre {
+  background: rgba(244, 135, 113, 0.08);
+  border-left: 3px solid #f48771;
+  padding: 6px 8px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
