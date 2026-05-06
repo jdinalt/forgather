@@ -506,10 +506,18 @@ On submit, the master:
 4. Fans out a ``POST /api/cluster/training_local`` to each
    participant with that node's per-rank torchrun args
    (``--nnodes``, ``--node-rank``, ``--rdzv-backend=c10d``,
-   ``--rdzv-endpoint``, ``--rdzv-id``, ``--nproc-per-node``) and
-   ``NCCL_SOCKET_IFNAME`` in ``extra_env``. The peer's local
-   scheduler picks up the queue item and spawns torchrun in
-   rendezvous mode (no ``--standalone``).
+   ``--rdzv-endpoint``, ``--rdzv-id``, ``--nproc-per-node``,
+   ``--rdzv-conf is_host=true|false``) and ``NCCL_SOCKET_IFNAME`` in
+   ``extra_env``. The peer's local scheduler picks up the queue item
+   and spawns torchrun in rendezvous mode (no ``--standalone``).
+   ``is_host`` is set explicitly because torch's c10d backend
+   autodetects the rendezvous host by resolving
+   ``socket.gethostname()`` and comparing the result to
+   ``rdzv_endpoint`` — on Debian/Ubuntu the system hostname resolves
+   to ``127.0.1.1`` via ``/etc/hosts``, so the comparison silently
+   fails and *no* node binds the TCPStore. With ``is_host`` passed
+   explicitly the master binds, the others connect, and rendezvous
+   succeeds.
 5. Records a ClusterJob bundle linking the per-node queue ids back
    to a single ``cluster_job_id``. Listed via
    ``GET /api/cluster/jobs``; cancel via

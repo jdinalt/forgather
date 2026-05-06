@@ -465,6 +465,16 @@ class TestClusterJobSubmit:
         env_by_id = {c[0]: c[1]["extra_env"] for c in captured}
         assert env_by_id[ident.node_id]["NCCL_SOCKET_IFNAME"] == "enp212s0"
         assert env_by_id[peer_id]["NCCL_SOCKET_IFNAME"] == "eth0"
+        # Exactly one peer must be flagged is_host=True (the rdzv host),
+        # all others is_host=False. Without this, c10d's broken
+        # gethostname-based autodetection drops every node into client
+        # mode and the rendezvous never binds.
+        is_host_by_id = {c[0]: c[1]["rdzv_args"]["is_host"] for c in captured}
+        rdzv_node_id = cj["rdzv_node_id"]
+        assert is_host_by_id[rdzv_node_id] is True
+        for nid, v in is_host_by_id.items():
+            if nid != rdzv_node_id:
+                assert v is False
 
     def test_version_mismatch_blocks_without_override(self, monkeypatch):
         ident, peer_id = self._activate_with_two_members(

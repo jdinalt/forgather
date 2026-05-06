@@ -136,6 +136,65 @@ class TestRdzvMode:
         idx = cmd.index("--nproc-per-node")
         assert cmd[idx + 1] == "8"
 
+    def test_emits_rdzv_conf_is_host_true(self, monkeypatch):
+        # is_host=True must reach torchrun as
+        # ``--rdzv-conf is_host=true`` so c10d skips the broken
+        # gethostname-based autodetection (resolves to 127.0.1.1 on
+        # Debian/Ubuntu, which never matches the rdzv endpoint).
+        meta, env, materialized = _patched_meta()
+        monkeypatch.setattr(launcher, "MetaConfig", lambda *a, **kw: meta)
+        monkeypatch.setattr(launcher, "get_env", lambda *a, **kw: env)
+        monkeypatch.setattr(
+            launcher.Latent, "materialize", lambda x: materialized
+        )
+        rdzv = {
+            "nnodes": 2,
+            "node_rank": 0,
+            "rdzv_endpoint": "wopr:29400",
+            "rdzv_id": "abc",
+            "is_host": True,
+        }
+        cmd = launcher.build_command("/proj", "train.yaml", {}, rdzv_args=rdzv)
+        idx = cmd.index("--rdzv-conf")
+        assert cmd[idx + 1] == "is_host=true"
+
+    def test_emits_rdzv_conf_is_host_false(self, monkeypatch):
+        meta, env, materialized = _patched_meta()
+        monkeypatch.setattr(launcher, "MetaConfig", lambda *a, **kw: meta)
+        monkeypatch.setattr(launcher, "get_env", lambda *a, **kw: env)
+        monkeypatch.setattr(
+            launcher.Latent, "materialize", lambda x: materialized
+        )
+        rdzv = {
+            "nnodes": 2,
+            "node_rank": 1,
+            "rdzv_endpoint": "wopr:29400",
+            "rdzv_id": "abc",
+            "is_host": False,
+        }
+        cmd = launcher.build_command("/proj", "train.yaml", {}, rdzv_args=rdzv)
+        idx = cmd.index("--rdzv-conf")
+        assert cmd[idx + 1] == "is_host=false"
+
+    def test_omits_rdzv_conf_when_is_host_absent(self, monkeypatch):
+        # Backwards-compat: callers that never set is_host must keep
+        # working — torch's autodetection runs and we don't inject a
+        # config flag we didn't ask for.
+        meta, env, materialized = _patched_meta()
+        monkeypatch.setattr(launcher, "MetaConfig", lambda *a, **kw: meta)
+        monkeypatch.setattr(launcher, "get_env", lambda *a, **kw: env)
+        monkeypatch.setattr(
+            launcher.Latent, "materialize", lambda x: materialized
+        )
+        rdzv = {
+            "nnodes": 2,
+            "node_rank": 0,
+            "rdzv_endpoint": "wopr:29400",
+            "rdzv_id": "abc",
+        }
+        cmd = launcher.build_command("/proj", "train.yaml", {}, rdzv_args=rdzv)
+        assert "--rdzv-conf" not in cmd
+
     def test_train_script_path_present_in_both_modes(self, monkeypatch):
         meta, env, materialized = _patched_meta(forgather_dir="/fg")
         monkeypatch.setattr(launcher, "MetaConfig", lambda *a, **kw: meta)

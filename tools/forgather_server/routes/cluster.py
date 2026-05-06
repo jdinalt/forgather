@@ -1036,6 +1036,12 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
                     "rdzv_endpoint": rdzv_endpoint,
                     "rdzv_id": rdzv_id,
                     "nproc_per_node": spec.nproc_per_node,
+                    # Skip torch's broken hostname-based host autodetection
+                    # (socket.gethostname() resolves to 127.0.1.1 on
+                    # Debian/Ubuntu via /etc/hosts, so neither node would
+                    # ever recognise itself as the rdzv host and the c10d
+                    # store would never bind). Set explicitly per-peer.
+                    "is_host": member.node_id == rdzv_node_id,
                 },
                 "extra_env": extra_env,
                 "cluster_job_id": cluster_job_id,

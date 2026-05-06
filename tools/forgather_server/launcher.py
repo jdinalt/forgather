@@ -74,6 +74,16 @@ def build_command(
     (different peers may have different GPU counts). Single-node mode
     (``rdzv_args=None``) retains the existing ``--standalone`` form
     so non-cluster training is unaffected.
+
+    The c10d backend autodetects "am I the rendezvous host?" by
+    resolving ``socket.gethostname()`` and comparing the result to
+    ``rdzv_endpoint``. On Debian/Ubuntu the system hostname resolves
+    to ``127.0.1.1`` via ``/etc/hosts``, so the comparison silently
+    fails and *no* node binds the store — every peer sits as a client
+    and the rendezvous times out. To work around this we accept an
+    optional ``is_host`` boolean in ``rdzv_args``: when set, we emit
+    ``--rdzv-conf is_host=true|false`` so torch skips the broken
+    autodetection entirely.
     """
     meta = MetaConfig(project_dir)
     env = get_env(meta, project_dir)
@@ -108,6 +118,14 @@ def build_command(
                 str(cluster_nproc),
             ]
         )
+        is_host = rdzv_args.get("is_host")
+        if is_host is not None:
+            cmd.extend(
+                [
+                    "--rdzv-conf",
+                    f"is_host={'true' if is_host else 'false'}",
+                ]
+            )
     else:
         cmd.extend(
             [
