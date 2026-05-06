@@ -299,14 +299,23 @@ function ClusterJobsPanel() {
     onError: (e) => alert(`Cancel failed: ${String(e)}`),
   });
   const jobs = jobsQ.data ?? [];
-  const activeJobs = jobs.filter((j) => j.status !== "cancelled");
+  // "Active" now means the rolled-up status hasn't reached a
+  // terminal state. Per-rank queue items can finish without the
+  // bundle's own status field flipping (it only flips on cancel
+  // or once all members are sticky-terminal), so we look at the
+  // rollup the server computes from each member's live status.
+  const isTerminal = (j: ClusterJob) => {
+    const s = j.rolled_up_status ?? j.status;
+    return s === "done" || s === "failed" || s === "cancelled";
+  };
+  const activeJobs = jobs.filter((j) => !isTerminal(j));
   return (
     <details className="cluster-jobs-panel" open={activeJobs.length > 0}>
       <summary>
         <span>
           Cluster Jobs ({activeJobs.length} active
           {jobs.length > activeJobs.length
-            ? `, ${jobs.length - activeJobs.length} cancelled`
+            ? `, ${jobs.length - activeJobs.length} terminal`
             : ""}
           )
         </span>
@@ -337,50 +346,58 @@ function ClusterJobsPanel() {
             </tr>
           </thead>
           <tbody>
-            {jobs.map((j) => (
-              <tr
-                key={j.cluster_job_id}
-                className={j.status === "cancelled" ? "cancelled" : ""}
-              >
-                <td>
-                  <code title={j.cluster_job_id}>
-                    {j.cluster_job_id.slice(0, 12)}…
-                  </code>
-                </td>
-                <td>
-                  <code>{j.project_dir}</code> / <code>{j.config}</code>
-                </td>
-                <td>
-                  <code>{j.rdzv_endpoint}</code>{" "}
-                  <span className="muted">id={j.rdzv_id.slice(0, 8)}</span>
-                </td>
-                <td>
-                  {j.members.map((m, idx) => (
-                    <div key={m.node_id} className="cj-member">
-                      <span>
-                        rank {m.node_rank}: {m.hostname} ×
-                        {m.nproc_per_node}
-                      </span>
-                      {idx < j.members.length - 1 && ""}
-                    </div>
-                  ))}
-                </td>
-                <td>{j.status}</td>
-                <td>
-                  {j.status !== "cancelled" && (
-                    <button
-                      className="cj-cancel-btn"
-                      disabled={cancelMutation.isPending}
-                      onClick={() =>
-                        cancelMutation.mutate(j.cluster_job_id)
-                      }
-                    >
-                      Cancel
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
+            {jobs.map((j) => {
+              const overall = j.rolled_up_status ?? j.status;
+              const terminal = isTerminal(j);
+              return (
+                <tr
+                  key={j.cluster_job_id}
+                  className={terminal ? "cancelled" : ""}
+                >
+                  <td>
+                    <code title={j.cluster_job_id}>
+                      {j.cluster_job_id.slice(0, 12)}…
+                    </code>
+                  </td>
+                  <td>
+                    <code>{j.project_dir}</code> / <code>{j.config}</code>
+                  </td>
+                  <td>
+                    <code>{j.rdzv_endpoint}</code>{" "}
+                    <span className="muted">id={j.rdzv_id.slice(0, 8)}</span>
+                  </td>
+                  <td>
+                    {j.members.map((m) => (
+                      <div key={m.node_id} className="cj-member">
+                        <span>
+                          rank {m.node_rank}: {m.hostname} ×
+                          {m.nproc_per_node}
+                        </span>{" "}
+                        {m.current_status && (
+                          <span className="muted">
+                            [{m.current_status}]
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </td>
+                  <td>{overall}</td>
+                  <td>
+                    {!terminal && (
+                      <button
+                        className="cj-cancel-btn"
+                        disabled={cancelMutation.isPending}
+                        onClick={() =>
+                          cancelMutation.mutate(j.cluster_job_id)
+                        }
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}

@@ -148,6 +148,36 @@ def list_jobs() -> List[ClusterJob]:
         )
 
 
+def set_terminal_status(
+    cluster_job_id: str, status: str
+) -> Optional[ClusterJob]:
+    """Promote a bundle to a terminal status ("done" or "failed").
+
+    Read-path optimisation: once every member's queue item is in a
+    terminal local state, the master writes the rolled-up value back
+    onto the bundle record so future status reads can short-circuit
+    without fanning out to every peer. Idempotent — re-setting the
+    same terminal status is a no-op.
+    """
+    if status not in ("done", "failed"):
+        raise ValueError(
+            f"set_terminal_status only accepts done/failed, got {status}"
+        )
+    with _lock:
+        job = _jobs.get(cluster_job_id)
+        if job is None:
+            return None
+        if job.status in ("done", "failed", "cancelled"):
+            return job
+        job.status = status
+    _journal_append(
+        f"multinode_job_{status}",
+        {"cluster_job_id": cluster_job_id, "at": time.time()},
+    )
+    log.info("cluster job %s reached terminal status %s", cluster_job_id, status)
+    return job
+
+
 def mark_cancelled(cluster_job_id: str) -> Optional[ClusterJob]:
     with _lock:
         job = _jobs.get(cluster_job_id)

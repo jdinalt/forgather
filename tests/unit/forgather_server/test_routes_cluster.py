@@ -4,6 +4,7 @@ Uses FastAPI's TestClient so the full middleware stack runs — that's
 the only way to verify the carve-out is wired correctly.
 """
 
+import time
 import uuid
 
 import forgather_server.auth as auth
@@ -662,6 +663,204 @@ class TestClusterJobSubmit:
         )
         assert r.status_code == 400
         assert "unreachable" in r.text.lower()
+
+
+class TestClusterJobStatusRollup:
+    """Per-rank status fanout + bundle roll-up. The bug we're closing
+    here: before this, ``cluster_jobs.status`` only ever flipped to
+    "cancelled", so a finished training run stayed listed as
+    "submitted" forever. The roll-up is computed at read time from
+    each peer's local job_record state."""
+
+    def _activate_with_self_only(self):
+        ident = cluster.activate("c", port=8765)
+        cluster.update_self_address("192.168.1.27")
+        from forgather_server import cluster as _c
+
+        _c._state._members[ident.node_id].probe = {
+            "versions": {"forgather": "1.1.0"},
+            "interfaces": [
+                {"name": "enp212s0", "address": "192.168.1.27", "is_up": True}
+            ],
+        }
+        return ident
+
+    def test_training_status_local_returns_record(self, monkeypatch):
+        # Peer-side endpoint: returns job_records snapshot keyed by
+        # queue_id. Master uses this during fanout-driven rollup.
+        self._activate_with_self_only()
+        from forgather_server import job_records
+
+        rec = job_records.JobRecord(
+            queue_id="q_done",
+            project_dir="/proj",
+            config="train.yaml",
+            dynamic_args={},
+            requested_gpus=1,
+            priority=0,
+            submitted_at=time.time(),
+            node="self",
+            gpu_indices=(),
+            job_type="training",
+            job_params={},
+            status="done",
+            exit_code=0,
+        )
+        monkeypatch.setattr(
+            job_records, "get_record", lambda qid: rec if qid == "q_done" else None
+        )
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.get(
+            "/api/cluster/training_status_local?queue_id=q_done",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "done"
+        assert body["exit_code"] == 0
+        # Unknown queue ids return status=unknown rather than 404 so
+        # the master can keep going when a peer's record was GC'd.
+        r2 = client.get(
+            "/api/cluster/training_status_local?queue_id=q_missing",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r2.status_code == 200
+        assert r2.json()["status"] == "unknown"
+
+    def test_get_cluster_job_rolls_up_to_done(self, monkeypatch):
+        # Synthesise a bundle with one local member, monkey-patch the
+        # local record to "done", and verify the read path promotes
+        # the bundle to a sticky "done" terminal status.
+        ident = self._activate_with_self_only()
+        from forgather_server import cluster_jobs as cj
+        from forgather_server import job_records
+
+        job = cj.ClusterJob(
+            cluster_job_id="cj_test",
+            project_dir="/proj",
+            config="train.yaml",
+            submitted_at=time.time(),
+            rdzv_endpoint="192.168.1.27:29400",
+            rdzv_id="r1",
+            rdzv_node_id=ident.node_id,
+            members=[
+                cj.MemberAssignment(
+                    node_id=ident.node_id,
+                    hostname="wopr",
+                    address="192.168.1.27",
+                    port=8765,
+                    queue_id="q_self",
+                    nproc_per_node=1,
+                    node_rank=0,
+                )
+            ],
+        )
+        cj.add_job(job)
+        rec = job_records.JobRecord(
+            queue_id="q_self",
+            project_dir="/proj",
+            config="train.yaml",
+            dynamic_args={},
+            requested_gpus=1,
+            priority=0,
+            submitted_at=time.time(),
+            node="self",
+            gpu_indices=(),
+            job_type="training",
+            job_params={},
+            status="done",
+            exit_code=0,
+        )
+        monkeypatch.setattr(
+            job_records, "get_record", lambda qid: rec if qid == "q_self" else None
+        )
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.get(
+            "/api/cluster/jobs/cj_test",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["rolled_up_status"] == "done"
+        assert body["members"][0]["current_status"] == "done"
+        # The bundle's own status is now sticky-terminal so future
+        # reads short-circuit without fanning out.
+        assert cj.get_job("cj_test").status == "done"
+
+    def test_rollup_failed_beats_running(self, monkeypatch):
+        # Two local members: one running, one failed. Roll-up must
+        # surface "failed" — partial failure is more important than
+        # ongoing work, so the operator notices something's wrong.
+        ident = self._activate_with_self_only()
+        from forgather_server import cluster_jobs as cj
+        from forgather_server import job_records
+
+        job = cj.ClusterJob(
+            cluster_job_id="cj_mixed",
+            project_dir="/proj",
+            config="train.yaml",
+            submitted_at=time.time(),
+            rdzv_endpoint="192.168.1.27:29400",
+            rdzv_id="r2",
+            rdzv_node_id=ident.node_id,
+            members=[
+                cj.MemberAssignment(
+                    node_id=ident.node_id,
+                    hostname="wopr",
+                    address="192.168.1.27",
+                    port=8765,
+                    queue_id="q_a",
+                    nproc_per_node=1,
+                    node_rank=0,
+                ),
+                cj.MemberAssignment(
+                    node_id=ident.node_id,
+                    hostname="wopr",
+                    address="192.168.1.27",
+                    port=8765,
+                    queue_id="q_b",
+                    nproc_per_node=1,
+                    node_rank=1,
+                ),
+            ],
+        )
+        cj.add_job(job)
+
+        def fake_get(queue_id):
+            base = dict(
+                project_dir="/proj",
+                config="train.yaml",
+                dynamic_args={},
+                requested_gpus=1,
+                priority=0,
+                submitted_at=time.time(),
+                node="self",
+                gpu_indices=(),
+                job_type="training",
+                job_params={},
+            )
+            if queue_id == "q_a":
+                return job_records.JobRecord(
+                    queue_id="q_a", status="running", **base
+                )
+            if queue_id == "q_b":
+                return job_records.JobRecord(
+                    queue_id="q_b", status="failed", exit_code=1, **base
+                )
+            return None
+
+        monkeypatch.setattr(job_records, "get_record", fake_get)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.get(
+            "/api/cluster/jobs/cj_mixed",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["rolled_up_status"] == "failed"
 
 
 def _make_app_with_full_router():

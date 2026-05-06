@@ -726,6 +726,47 @@ def training_local(req: TrainingLocalRequest, response: Response):
     )
 
 
+class TrainingStatusLocalResponse(BaseModel):
+    queue_id: str
+    # Mirrors job_records.JobRecord.status: queued/starting/running/done/
+    # failed/cancelled, plus "unknown" when the queue_id isn't found
+    # locally (record GC'd, or never reached the peer).
+    status: str
+    exit_code: Optional[int] = None
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    error: Optional[str] = None
+
+
+@router.get(
+    "/training_status_local", response_model=TrainingStatusLocalResponse
+)
+def training_status_local(queue_id: str, response: Response):
+    """Peer-side status snapshot for one local queue item.
+
+    Used by the master to roll up cluster-job status without
+    proxying the full /api/jobs surface to peers (that would widen
+    the trusted-peer auth carve-out unnecessarily). Read-only and
+    bounded to the single queue_id in the query string.
+    """
+    from .. import job_records
+
+    ident = cluster.self_identity()
+    if ident is not None:
+        response.headers["X-Forgather-Node-Id"] = ident.node_id
+    rec = job_records.get_record(queue_id)
+    if rec is None:
+        return TrainingStatusLocalResponse(queue_id=queue_id, status="unknown")
+    return TrainingStatusLocalResponse(
+        queue_id=queue_id,
+        status=rec.status,
+        exit_code=rec.exit_code,
+        started_at=rec.started_at,
+        finished_at=rec.finished_at,
+        error=rec.error,
+    )
+
+
 class TrainingCancelLocalRequest(BaseModel):
     queue_id: str
 
@@ -814,6 +855,12 @@ class MemberAssignmentModel(BaseModel):
     nproc_per_node: int
     node_rank: int
     nccl_socket_ifname: Optional[str] = None
+    # Live status of this rank's queue item, fetched via per-peer
+    # status lookup at read time. None when the master couldn't
+    # reach the peer (UI shows it as a question mark).
+    current_status: Optional[str] = None
+    exit_code: Optional[int] = None
+    error: Optional[str] = None
 
 
 class ClusterJobModel(BaseModel):
@@ -827,6 +874,12 @@ class ClusterJobModel(BaseModel):
     members: List[MemberAssignmentModel]
     status: str
     cancelled_at: Optional[float] = None
+    # Roll-up of per-member statuses, computed at read time.
+    # cancelled > failed > running > done > submitted (priority order
+    # — see _rollup_cluster_status). UI shows this; the bundle's own
+    # ``status`` only flips to "cancelled" when the master fans out
+    # a cancel.
+    rolled_up_status: str = "submitted"
 
 
 class ClusterJobSubmitResponse(BaseModel):
@@ -834,16 +887,22 @@ class ClusterJobSubmitResponse(BaseModel):
     warnings: List[str] = []
 
 
-def _to_cluster_job_model(job: cluster_jobs.ClusterJob) -> ClusterJobModel:
-    return ClusterJobModel(
-        cluster_job_id=job.cluster_job_id,
-        project_dir=job.project_dir,
-        config=job.config,
-        submitted_at=job.submitted_at,
-        rdzv_endpoint=job.rdzv_endpoint,
-        rdzv_id=job.rdzv_id,
-        rdzv_node_id=job.rdzv_node_id,
-        members=[
+def _to_cluster_job_model(
+    job: cluster_jobs.ClusterJob,
+    member_statuses: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> ClusterJobModel:
+    """Project a bundle record onto its API model.
+
+    ``member_statuses`` maps queue_id → status dict (status, exit_code,
+    error, etc). When omitted, members render with ``current_status``
+    = None — used in tests and in the submit response, where the
+    statuses haven't been polled yet.
+    """
+    statuses = member_statuses or {}
+    member_models = []
+    for m in job.members:
+        st = statuses.get(m.queue_id) or {}
+        member_models.append(
             MemberAssignmentModel(
                 node_id=m.node_id,
                 hostname=m.hostname,
@@ -853,12 +912,138 @@ def _to_cluster_job_model(job: cluster_jobs.ClusterJob) -> ClusterJobModel:
                 nproc_per_node=m.nproc_per_node,
                 node_rank=m.node_rank,
                 nccl_socket_ifname=m.nccl_socket_ifname,
+                current_status=st.get("status"),
+                exit_code=st.get("exit_code"),
+                error=st.get("error"),
             )
-            for m in job.members
-        ],
+        )
+    return ClusterJobModel(
+        cluster_job_id=job.cluster_job_id,
+        project_dir=job.project_dir,
+        config=job.config,
+        submitted_at=job.submitted_at,
+        rdzv_endpoint=job.rdzv_endpoint,
+        rdzv_id=job.rdzv_id,
+        rdzv_node_id=job.rdzv_node_id,
+        members=member_models,
         status=job.status,
         cancelled_at=job.cancelled_at,
+        rolled_up_status=_rollup_cluster_status(
+            job, [m.current_status for m in member_models]
+        ),
     )
+
+
+# Per-member status priority for the bundle roll-up. Higher index wins
+# when members disagree — e.g. one rank "running" + one "failed"
+# rolls up to "failed" so the UI surfaces the bad news first. "done"
+# only wins when *every* member is done (handled in
+# _rollup_cluster_status, not here).
+_STATUS_PRIORITY = {
+    "unknown": 0,
+    "queued": 1,
+    "submitted": 1,
+    "starting": 2,
+    "running": 3,
+    "done": 4,
+    "cancelled": 5,
+    "failed": 6,
+}
+
+
+def _rollup_cluster_status(
+    job: cluster_jobs.ClusterJob, member_statuses: List[Optional[str]]
+) -> str:
+    """Aggregate per-member statuses into a single bundle status.
+
+    Priority: cancelled-by-master overrides everything (the operator
+    asked for the bundle to stop). Otherwise failed > running >
+    cancelled > queued > done. "done" only returns when *all*
+    participants finished cleanly — partial completion is ambiguous,
+    not done.
+    """
+    if job.status in ("cancelled", "done", "failed"):
+        return job.status
+    statuses = [s for s in member_statuses if s]
+    if not statuses:
+        return job.status
+    if all(s == "done" for s in statuses) and len(statuses) == len(job.members):
+        return "done"
+    return max(statuses, key=lambda s: _STATUS_PRIORITY.get(s, 0))
+
+
+async def _gather_member_statuses(
+    job: cluster_jobs.ClusterJob,
+) -> Dict[str, Dict[str, Any]]:
+    """Fan out per-member status lookups, return queue_id → status dict.
+
+    Uses the local job_records lookup for the master's own assignment
+    (no HTTP round-trip), and ``GET /api/cluster/training_status_local``
+    on each remote peer. Each peer gets a short timeout — a slow or
+    unresponsive peer must not block the UI list. Unreachable peers
+    contribute ``status="unknown"`` rather than an exception.
+    """
+    from .. import job_records
+
+    self_ident = cluster.self_identity()
+    self_node_id = self_ident.node_id if self_ident else None
+    by_id = {m.node_id: m for m in cluster.members()}
+    out: Dict[str, Dict[str, Any]] = {}
+
+    async def _one(member_assignment: cluster_jobs.MemberAssignment):
+        if member_assignment.node_id == self_node_id:
+            rec = job_records.get_record(member_assignment.queue_id)
+            if rec is None:
+                out[member_assignment.queue_id] = {"status": "unknown"}
+            else:
+                out[member_assignment.queue_id] = {
+                    "status": rec.status,
+                    "exit_code": rec.exit_code,
+                    "started_at": rec.started_at,
+                    "finished_at": rec.finished_at,
+                    "error": rec.error,
+                }
+            return
+        peer = by_id.get(member_assignment.node_id)
+        if peer is None or not peer.reachable:
+            out[member_assignment.queue_id] = {"status": "unknown"}
+            return
+        url = (
+            f"http://{peer.address}:{peer.port}"
+            f"/api/cluster/training_status_local"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                r = await client.get(
+                    url, params={"queue_id": member_assignment.queue_id}
+                )
+                if r.status_code == 200:
+                    out[member_assignment.queue_id] = r.json()
+                else:
+                    out[member_assignment.queue_id] = {"status": "unknown"}
+        except Exception:
+            out[member_assignment.queue_id] = {"status": "unknown"}
+
+    await asyncio.gather(*(_one(m) for m in job.members))
+    return out
+
+
+def _maybe_promote_terminal(
+    job: cluster_jobs.ClusterJob, rolled_up: str
+) -> None:
+    """Stick a terminal roll-up status onto the bundle record itself.
+
+    Once a cluster job is fully done/failed, we don't need to keep
+    fanning out status checks for it. Writing the terminal value back
+    to the bundle's own ``status`` lets future read-paths short-circuit
+    via _rollup_cluster_status's first branch (which returns
+    job.status when it's "cancelled" — extending the same idea to
+    "done" / "failed").
+    """
+    if job.status in ("done", "failed", "cancelled"):
+        return
+    if rolled_up in ("done", "failed"):
+        cluster_jobs.set_terminal_status(job.cluster_job_id, rolled_up)
 
 
 def _check_version_mismatch(
@@ -1194,16 +1379,47 @@ async def _cancel_one_peer_training(
 
 
 @router.get("/jobs", response_model=List[ClusterJobModel])
-def list_cluster_jobs():
-    return [_to_cluster_job_model(j) for j in cluster_jobs.list_jobs()]
+async def list_cluster_jobs():
+    """List all cluster jobs with rolled-up status.
+
+    Status comes from per-rank queue items via fanout — each member's
+    peer is queried for its local job_record state, and the results
+    are aggregated. Already-terminal bundles short-circuit (their
+    status is sticky), so the fanout cost only applies to in-flight
+    jobs. Slow / unreachable peers don't block the list — they
+    contribute "unknown" for that member.
+    """
+    jobs = cluster_jobs.list_jobs()
+    # Skip the fanout for bundles that are already in a sticky
+    # terminal state — their status doesn't change again.
+    statuses_by_job: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for j in jobs:
+        if j.status in ("done", "failed", "cancelled"):
+            statuses_by_job[j.cluster_job_id] = {}
+        else:
+            statuses_by_job[j.cluster_job_id] = await _gather_member_statuses(j)
+    out: List[ClusterJobModel] = []
+    for j in jobs:
+        ms = statuses_by_job[j.cluster_job_id]
+        model = _to_cluster_job_model(j, ms)
+        _maybe_promote_terminal(j, model.rolled_up_status)
+        out.append(model)
+    return out
 
 
 @router.get(
     "/jobs/{cluster_job_id}", response_model=Optional[ClusterJobModel]
 )
-def get_cluster_job(cluster_job_id: str):
+async def get_cluster_job(cluster_job_id: str):
     job = cluster_jobs.get_job(cluster_job_id)
-    return _to_cluster_job_model(job) if job is not None else None
+    if job is None:
+        return None
+    if job.status in ("done", "failed", "cancelled"):
+        return _to_cluster_job_model(job, {})
+    member_statuses = await _gather_member_statuses(job)
+    model = _to_cluster_job_model(job, member_statuses)
+    _maybe_promote_terminal(job, model.rolled_up_status)
+    return model
 
 
 class ClusterJobCancelResponse(BaseModel):

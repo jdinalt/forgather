@@ -284,6 +284,12 @@ export interface ClusterJobMember {
   nproc_per_node: number;
   node_rank: number;
   nccl_socket_ifname: string | null;
+  /** Live status of this rank's queue item, fetched at read time
+   *  via the master's per-peer status fanout. null when the master
+   *  could not reach the peer. */
+  current_status?: string | null;
+  exit_code?: number | null;
+  error?: string | null;
 }
 
 export interface ClusterJob {
@@ -297,6 +303,10 @@ export interface ClusterJob {
   members: ClusterJobMember[];
   status: string;
   cancelled_at: number | null;
+  /** Aggregated status across all members. The bundle's own
+   *  ``status`` only flips on cancel/done/failed promotions; this
+   *  field is always recomputed at read time. */
+  rolled_up_status?: string;
 }
 
 export interface ClusterJobMemberSpec {

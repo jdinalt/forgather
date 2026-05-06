@@ -81,6 +81,11 @@ _PEER_ALLOWED_PATHS = frozenset(
         # transfer. Returns a deterministic in-memory blob; never
         # touches state.
         "/api/cluster/bandwidth_local",
+        # Per-rank job-status lookup. The master rolls up cluster-job
+        # status by GETting this on each peer with the queue_id of
+        # the assignment. Read-only — exposes a small status snapshot
+        # of one local queue item, nothing else.
+        "/api/cluster/training_status_local",
     }
 )
 
