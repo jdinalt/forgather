@@ -364,13 +364,34 @@ class TestClusterJobSubmit:
     bundle-record code paths run for real.
     """
 
-    def _activate_with_two_members(self, version_a="1.1.0", version_b="1.1.0"):
+    def _activate_with_two_members(
+        self,
+        version_a="1.1.0",
+        version_b="1.1.0",
+        *,
+        with_interfaces: bool = True,
+    ):
         ident = cluster.activate("c", port=8765)
         # Self gets a non-loopback address so the membership table is
         # realistic; updating self via update_member is normally done
         # by cluster_discovery.start, which the unit test bypasses.
         cluster.update_self_address("192.168.1.27")
         peer_id = str(uuid.uuid4())
+        # Interface table mirrors the one a real probe would publish:
+        # one entry per IPv4 interface, with the cluster's chosen
+        # advertised address present so _derive_iface_from_member can
+        # match it back to a name. Without that, auto-derive falls
+        # through to the 422 branch.
+        peer_ifaces = (
+            [{"name": "enp4s0", "address": "192.168.1.162", "is_up": True}]
+            if with_interfaces
+            else []
+        )
+        self_ifaces = (
+            [{"name": "enp212s0", "address": "192.168.1.27", "is_up": True}]
+            if with_interfaces
+            else []
+        )
         cluster.update_member(
             peer_id,
             hostname="muthur",
@@ -384,7 +405,8 @@ class TestClusterJobSubmit:
                     "torch": "2.10.0",
                     "nccl": "2.27.5",
                     "transformers": "5.7.0",
-                }
+                },
+                "interfaces": peer_ifaces,
             },
         )
         # Self's probe was set by activate() but with whatever was
@@ -398,7 +420,8 @@ class TestClusterJobSubmit:
                 "torch": "2.10.0",
                 "nccl": "2.27.5",
                 "transformers": "5.7.0",
-            }
+            },
+            "interfaces": self_ifaces,
         }
         return ident, peer_id
 
@@ -544,6 +567,81 @@ class TestClusterJobSubmit:
         )
         assert r.status_code == 200, r.text
         assert any("forgather" in w for w in r.json()["warnings"])
+
+    def test_auto_derives_iface_when_operator_omits_it(self, monkeypatch):
+        # When the modal's iface picker is left on "(auto)" — i.e.
+        # nccl_socket_ifname is null — the server must match the
+        # member's advertised address against its probe's interface
+        # table and pin NCCL/Gloo/TP to that interface name. Without
+        # this, Gloo's connectFullMesh publishes loopback addresses
+        # because socket.gethostname() resolves to 127.0.1.1 on
+        # Debian/Ubuntu, and the trainer dies before the first step.
+        ident, peer_id = self._activate_with_two_members()
+        import forgather_server.routes.cluster as routes
+
+        captured: list = []
+
+        async def fake_fanout(client, target, payload):
+            captured.append((target.node_id, payload))
+            return {"queue_id": f"q_{target.node_id[:8]}", "node_id": target.node_id}
+
+        monkeypatch.setattr(routes, "_fanout_training", fake_fanout)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.post(
+            "/api/cluster/jobs/submit",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "project_dir": "/proj",
+                "config": "train.yaml",
+                "members": [
+                    # No nccl_socket_ifname — auto-derive must fill in.
+                    {"node_id": ident.node_id, "nproc_per_node": 1},
+                    {"node_id": peer_id, "nproc_per_node": 1},
+                ],
+            },
+        )
+        assert r.status_code == 200, r.text
+        env_by_id = {c[0]: c[1]["extra_env"] for c in captured}
+        # Self's advertised address is 192.168.1.27 → enp212s0; peer's
+        # is 192.168.1.162 → enp4s0. Auto-derive must pick those names.
+        assert env_by_id[ident.node_id]["NCCL_SOCKET_IFNAME"] == "enp212s0"
+        assert env_by_id[ident.node_id]["GLOO_SOCKET_IFNAME"] == "enp212s0"
+        assert env_by_id[ident.node_id]["TP_SOCKET_IFNAME"] == "enp212s0"
+        assert env_by_id[peer_id]["NCCL_SOCKET_IFNAME"] == "enp4s0"
+        assert env_by_id[peer_id]["GLOO_SOCKET_IFNAME"] == "enp4s0"
+        assert env_by_id[peer_id]["TP_SOCKET_IFNAME"] == "enp4s0"
+
+    def test_rejects_when_iface_cannot_be_derived(self, monkeypatch):
+        # Probe with no interfaces (e.g. a host that hasn't published
+        # one yet, or a malformed payload) leaves auto-derive with
+        # nothing to match. Must surface a 422 rather than silently
+        # spawn a job that will deadlock in connectFullMesh.
+        ident, peer_id = self._activate_with_two_members(
+            with_interfaces=False
+        )
+        import forgather_server.routes.cluster as routes
+
+        async def fake_fanout(client, target, payload):
+            raise AssertionError("must not fan out when iface is unknown")
+
+        monkeypatch.setattr(routes, "_fanout_training", fake_fanout)
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.post(
+            "/api/cluster/jobs/submit",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "project_dir": "/proj",
+                "config": "train.yaml",
+                "members": [
+                    {"node_id": ident.node_id, "nproc_per_node": 1},
+                    {"node_id": peer_id, "nproc_per_node": 1},
+                ],
+            },
+        )
+        assert r.status_code == 422
+        assert "interface" in r.text.lower()
 
     def test_unreachable_peer_rejected(self, monkeypatch):
         ident, peer_id = self._activate_with_two_members()

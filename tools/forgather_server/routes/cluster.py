@@ -888,6 +888,29 @@ def _check_version_mismatch(
     return warnings
 
 
+def _derive_iface_from_member(member: cluster.MemberInfo) -> Optional[str]:
+    """Pick the interface name whose IP matches ``member.address``.
+
+    Used when the operator leaves the iface picker on "(auto)" in the
+    submit modal. The cluster has already chosen ``member.address`` as
+    the routable LAN IP (mDNS / peer-pull), and the probe gives us the
+    full interface table — matching one back to the other yields the
+    name that NCCL/Gloo/TP need to bind.
+
+    Returns ``None`` when no probe data is available or no interface
+    matches the advertised address; the caller surfaces that as a 422
+    so the operator picks one explicitly.
+    """
+    probe = member.probe or {}
+    interfaces = probe.get("interfaces") or []
+    for entry in interfaces:
+        if entry.get("address") == member.address:
+            name = entry.get("name")
+            if name:
+                return str(name)
+    return None
+
+
 async def _fanout_training(
     client: httpx.AsyncClient,
     target: cluster.MemberInfo,
@@ -1019,21 +1042,33 @@ async def submit_cluster_job(req: ClusterJobSubmitRequest):
     # modal, which usually means master = rank 0.
     fanout_payloads: List[Dict[str, Any]] = []
     for idx, (spec, member) in enumerate(zip(req.members, participating)):
-        extra_env: Dict[str, str] = {}
-        if spec.nccl_socket_ifname:
-            # Pin every transport — not just NCCL — to the operator's
-            # chosen interface. Gloo (CPU collectives) and tensorpipe
-            # (RPC) each derive their advertised address from
-            # socket.gethostname() by default, which resolves to
-            # 127.0.0.1/127.0.1.1 on Debian/Ubuntu via /etc/hosts.
-            # Without GLOO_SOCKET_IFNAME / TP_SOCKET_IFNAME the rank
-            # publishes a loopback address to its peers and Gloo
-            # connectFullMesh fails before the trainer ever runs a
-            # step. Same value covers all three because the operator
-            # already picked the routable LAN interface.
-            extra_env["NCCL_SOCKET_IFNAME"] = spec.nccl_socket_ifname
-            extra_env["GLOO_SOCKET_IFNAME"] = spec.nccl_socket_ifname
-            extra_env["TP_SOCKET_IFNAME"] = spec.nccl_socket_ifname
+        # Pin every transport — not just NCCL — to a specific interface.
+        # Gloo (CPU collectives) and tensorpipe (RPC) each derive their
+        # advertised address from socket.gethostname() by default, which
+        # resolves to 127.0.0.1/127.0.1.1 on Debian/Ubuntu via /etc/hosts.
+        # Without GLOO_SOCKET_IFNAME / TP_SOCKET_IFNAME the rank publishes
+        # a loopback address to its peers and Gloo connectFullMesh fails
+        # before the trainer ever runs a step. Same value covers all
+        # three because all of NCCL/Gloo/TP need a routable LAN
+        # interface to bind.
+        iface = spec.nccl_socket_ifname or _derive_iface_from_member(member)
+        if not iface:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"could not auto-derive a network interface for "
+                    f"{member.hostname} (advertised address "
+                    f"{member.address} did not match any interface in "
+                    f"its probe). Pick an interface explicitly in the "
+                    f"submit modal — Gloo will publish loopback "
+                    f"addresses otherwise and connectFullMesh will fail."
+                ),
+            )
+        extra_env: Dict[str, str] = {
+            "NCCL_SOCKET_IFNAME": iface,
+            "GLOO_SOCKET_IFNAME": iface,
+            "TP_SOCKET_IFNAME": iface,
+        }
         fanout_payloads.append(
             {
                 "project_dir": req.project_dir,

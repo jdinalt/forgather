@@ -510,11 +510,18 @@ On submit, the master:
    ``--rdzv-conf is_host=true|false``). Each peer also gets
    ``NCCL_SOCKET_IFNAME``, ``GLOO_SOCKET_IFNAME``, and
    ``TP_SOCKET_IFNAME`` in ``extra_env``, all set to the same
-   operator-chosen interface (NCCL for CUDA collectives, Gloo for
-   CPU collectives, tensorpipe for RPC — each derives its
-   advertised address independently and they must all be pinned
-   together). The peer's local scheduler picks up the queue item
-   and spawns torchrun in rendezvous mode (no ``--standalone``).
+   interface (NCCL for CUDA collectives, Gloo for CPU collectives,
+   tensorpipe for RPC — each derives its advertised address
+   independently and they must all be pinned together). The
+   interface name comes from the operator's modal selection when
+   set; otherwise the server auto-derives it by matching the
+   member's advertised address against its probe's interface table
+   (``_derive_iface_from_member`` in ``routes/cluster.py``). If no
+   interface can be derived (probe missing, address mismatch) the
+   submit fails with HTTP 422 rather than spawning a job that will
+   deadlock in ``connectFullMesh``. The peer's local scheduler
+   picks up the queue item and spawns torchrun in rendezvous mode
+   (no ``--standalone``).
    The two ``/etc/hosts`` workarounds we have to apply explicitly:
    - ``is_host`` because torch's c10d backend autodetects "am I
      the rendezvous host?" by resolving ``socket.gethostname()``
