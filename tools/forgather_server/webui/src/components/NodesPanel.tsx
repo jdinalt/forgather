@@ -126,6 +126,20 @@ function VersionRow({
   );
 }
 
+/** Render an interface address as ``host/prefix`` (e.g.
+ *  ``192.168.1.27/24``). The probe ships ``cidr`` as the network
+ *  address with prefix, but what the operator wants to see is the
+ *  host's own address combined with the prefix length — that's the
+ *  conventional way ``ip addr`` and route tables present interface
+ *  bindings, and it lets you read the netmask off without comparing
+ *  two cells. */
+function formatHostPrefix(address: string, cidr: string): string {
+  if (!address) return "—";
+  const slash = cidr.lastIndexOf("/");
+  if (slash < 0) return address;
+  return address + cidr.substring(slash);
+}
+
 function InterfaceList({ interfaces }: { interfaces: ClusterProbeInterface[] }) {
   if (interfaces.length === 0) {
     return (
@@ -138,7 +152,7 @@ function InterfaceList({ interfaces }: { interfaces: ClusterProbeInterface[] }) 
         <tr>
           <th>Interface</th>
           <th>Address</th>
-          <th>CIDR</th>
+          <th>Subnet</th>
           <th>Link</th>
         </tr>
       </thead>
@@ -147,7 +161,9 @@ function InterfaceList({ interfaces }: { interfaces: ClusterProbeInterface[] }) 
           <tr key={i.name + i.address} className={i.is_up ? "" : "down"}>
             <td>{i.name}</td>
             <td>
-              <code>{i.address}</code>
+              <code title={`netmask ${i.netmask || "?"}`}>
+                {formatHostPrefix(i.address, i.cidr)}
+              </code>
             </td>
             <td>
               <code>{i.cidr || "—"}</code>
