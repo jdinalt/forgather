@@ -111,6 +111,12 @@ async def _pull_one_peer(
                 new_address,
             )
             continue
+        # Probe is optional: a peer running pre-fix code won't send
+        # one. Pass None in that case so cluster.update_member
+        # preserves whatever we already have for this node.
+        peer_probe = entry.get("probe")
+        if not isinstance(peer_probe, dict):
+            peer_probe = None
         try:
             cluster.update_member(
                 node_id,
@@ -122,6 +128,7 @@ async def _pull_one_peer(
                     entry.get("forgather_version") or "unknown"
                 ),
                 source="peer_pull",
+                probe=peer_probe,
             )
         except Exception:
             # Logged at debug — a bad single entry shouldn't abort the

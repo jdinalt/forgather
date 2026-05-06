@@ -221,6 +221,25 @@ export interface ClusterSelf {
   is_master: boolean;
 }
 
+export interface ClusterProbeInterface {
+  name: string;
+  address: string;
+  netmask: string;
+  cidr: string;
+  is_up: boolean;
+  speed_mbps: number;
+}
+
+export interface ClusterProbe {
+  versions: Record<string, string>;
+  interfaces: ClusterProbeInterface[];
+  cpu: {
+    logical: number;
+    physical: number;
+    ram_gib: number;
+  };
+}
+
 export interface ClusterMember {
   node_id: string;
   hostname: string;
@@ -234,6 +253,26 @@ export interface ClusterMember {
   /** "discovery" | "peer_pull" | "self" — debug aid for figuring out
    *  which mechanism is keeping a stale entry alive. */
   last_source: string;
+  /** Pre-flight probe payload — package versions, interfaces, CPU
+   *  summary. Null until the peer answers at least one peer-pull
+   *  with the new shape. */
+  probe: ClusterProbe | null;
+}
+
+export interface ClusterBandwidthEntry {
+  peer_node_id: string;
+  peer_hostname: string;
+  peer_address: string;
+  bytes_transferred: number;
+  elapsed_seconds: number;
+  mbps: number;
+  timestamp: number;
+  error: string | null;
+}
+
+export interface ClusterBandwidthResponse {
+  measurements: ClusterBandwidthEntry[];
+  server_time: number;
 }
 
 export interface ClusterMembersResponse {
@@ -888,6 +927,18 @@ export const api = {
     fetchJson<ClusterMembersResponse>("/api/cluster/members"),
   getClusterGpus: () =>
     fetchJson<ClusterGpusResponse>("/api/cluster/gpus"),
+  getClusterBandwidth: () =>
+    fetchJson<ClusterBandwidthResponse>("/api/cluster/bandwidth"),
+  refreshClusterBandwidth: async (): Promise<ClusterBandwidthResponse> => {
+    const r = await fetch("/api/cluster/bandwidth/refresh", {
+      method: "POST",
+    });
+    if (!r.ok) {
+      const detail = await r.text();
+      throw new Error(`${r.status}: ${detail}`);
+    }
+    return r.json() as Promise<ClusterBandwidthResponse>;
+  },
   /** Master-proxied GPU policy mutation. Routes to the named node's
    *  /api/cluster/gpu_policy_local; short-circuits when the target is
    *  the local node. Returns the updated policy from the owning node. */

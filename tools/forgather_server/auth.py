@@ -77,6 +77,10 @@ _PEER_ALLOWED_PATHS = frozenset(
         # path) keeps the trusted-peer surface explicitly inside
         # the cluster namespace.
         "/api/cluster/gpus_local",
+        # Bandwidth self-test target — peer GETs this to time the
+        # transfer. Returns a deterministic in-memory blob; never
+        # touches state.
+        "/api/cluster/bandwidth_local",
     }
 )
 

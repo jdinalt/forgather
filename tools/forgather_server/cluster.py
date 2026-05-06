@@ -35,7 +35,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from . import paths
 from ._atomic import atomic_write_text
@@ -96,6 +96,11 @@ class MemberInfo:
     # mechanism is keeping a stale entry alive. One of "discovery",
     # "peer_pull", "self".
     last_source: str = "discovery"
+    # Pre-flight probe payload (versions, interfaces, CPU). Populated
+    # for self at activation; for peers via peer-pull. Empty until the
+    # peer answers at least once. Stored as a generic dict so adding a
+    # new probe field doesn't require schema changes here.
+    probe: Optional[Dict[str, Any]] = None
 
 
 class _ClusterState:
@@ -133,6 +138,17 @@ class _ClusterState:
             started_at=time.time(),
             advertise_addresses=tuple(advertise_addresses),
         )
+        # Probe payload is computed once at activation and attached
+        # to the self entry. Lazy import keeps test fixtures free of
+        # the heavyweight ``torch`` dependency.
+        try:
+            from . import cluster_probe as _probe
+
+            self_probe = _probe.local_probe()
+        except Exception:
+            log.exception("local probe failed; cluster will report no probe data")
+            self_probe = None
+
         with self._lock:
             self._self = identity
             # Self always present in the members table so callers don't
@@ -150,6 +166,7 @@ class _ClusterState:
                 last_seen=identity.started_at,
                 reachable=True,
                 last_source="self",
+                probe=self_probe,
             )
         log.info(
             "cluster activated: name=%s node_id=%s hostname=%s port=%d",
@@ -183,8 +200,15 @@ class _ClusterState:
         forgather_version: str = "unknown",
         source: str = "discovery",
         now: Optional[float] = None,
+        probe: Optional[Dict[str, Any]] = None,
     ) -> MemberInfo:
-        """Insert or refresh a member entry. Idempotent."""
+        """Insert or refresh a member entry. Idempotent.
+
+        ``probe`` is preserved across updates that don't supply one —
+        mDNS discovery doesn't carry probe data, only peer-pull does,
+        so a fresh discovery hit shouldn't wipe a probe we already
+        have from the last successful pull.
+        """
         if not self.is_active():
             raise RuntimeError("cluster is not active; cannot update members")
         self_id = self.self_identity()
@@ -211,6 +235,7 @@ class _ClusterState:
                     last_seen=ts,
                     reachable=True,
                     last_source=source,
+                    probe=probe,
                 )
                 self._members[node_id] = member
                 log.info(
@@ -228,6 +253,11 @@ class _ClusterState:
             existing.forgather_version = forgather_version
             existing.last_seen = ts
             existing.last_source = source
+            # Only overwrite the cached probe if the caller passed
+            # one. mDNS discovery passes None; peer-pull passes the
+            # value it received.
+            if probe is not None:
+                existing.probe = probe
             if not existing.reachable:
                 log.info(
                     "cluster member back online: %s (%s)", hostname, node_id
@@ -411,6 +441,7 @@ def update_member(
     forgather_version: str = "unknown",
     source: str = "discovery",
     now: Optional[float] = None,
+    probe: Optional[Dict[str, Any]] = None,
 ) -> MemberInfo:
     return _state.update_member(
         node_id,
@@ -421,6 +452,7 @@ def update_member(
         forgather_version=forgather_version,
         source=source,
         now=now,
+        probe=probe,
     )
 
 

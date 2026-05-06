@@ -158,6 +158,57 @@ class TestMemberTable:
         )
         assert self_m.reachable is True
 
+    def test_self_member_has_probe_attached(self):
+        ident = self._act()
+        self_m = next(
+            x for x in cluster.members() if x.node_id == ident.node_id
+        )
+        # local_probe() is real (no mocking); it never returns None
+        # in practice. Just verify the wiring carried something
+        # through.
+        assert self_m.probe is not None
+        assert "versions" in self_m.probe
+        assert "interfaces" in self_m.probe
+
+    def test_update_member_attaches_probe(self):
+        self._act()
+        peer_id = str(uuid.uuid4())
+        cluster.update_member(
+            peer_id,
+            hostname="peer1",
+            address="10.0.0.2",
+            port=8765,
+            cluster_name="c",
+            probe={"versions": {"torch": "2.10.0"}},
+        )
+        peer = next(x for x in cluster.members() if x.node_id == peer_id)
+        assert peer.probe == {"versions": {"torch": "2.10.0"}}
+
+    def test_update_member_without_probe_preserves_existing(self):
+        # mDNS discovery doesn't carry probe data; a fresh discovery
+        # hit must not wipe the probe we got from the last peer-pull.
+        self._act()
+        peer_id = str(uuid.uuid4())
+        cluster.update_member(
+            peer_id,
+            hostname="peer",
+            address="10.0.0.2",
+            port=8765,
+            cluster_name="c",
+            probe={"versions": {"torch": "2.10.0"}},
+            source="peer_pull",
+        )
+        cluster.update_member(
+            peer_id,
+            hostname="peer",
+            address="10.0.0.2",
+            port=8765,
+            cluster_name="c",
+            source="discovery",  # no probe argument
+        )
+        peer = next(x for x in cluster.members() if x.node_id == peer_id)
+        assert peer.probe == {"versions": {"torch": "2.10.0"}}
+
     def test_update_brings_unreachable_back(self):
         self._act()
         peer_id = str(uuid.uuid4())

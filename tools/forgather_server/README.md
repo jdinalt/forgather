@@ -446,6 +446,42 @@ through a master-side proxy. Peer right-click context menu (kill
 processes, set min-priority) is intentionally absent in v1 — those
 mutations route through future by-node proxy work.
 
+**Pre-flight probe (Phase 2).** Each member entry carries a
+``probe`` payload computed once at startup and propagated via
+peer-pull:
+
+- **Versions**: ``forgather``, ``torch`` + CUDA runtime + ``nccl``,
+  ``transformers``, ``python``, platform string. Surfaced inline in
+  every node's header as compact chips. When a node's value diverges
+  from the cluster majority for any headline key, the chip turns
+  yellow and tooltips with the divergence; the cluster header gets a
+  "version mismatch" tag. Multi-node training is exquisitely
+  sensitive to ``torch`` / ``nccl`` mismatches across hosts — the
+  Samantha tutorial spends pages on this — so seeing it at a glance
+  before launching anything matters.
+- **Network interfaces**: every IPv4 interface with address, netmask,
+  CIDR, link state, and link speed (when reported by the kernel).
+  Collapsible per-node panel. Useful when picking
+  ``NCCL_SOCKET_IFNAME`` for multi-node training, and as a quick
+  sanity check that cluster-internal traffic is on the interface
+  you expect.
+- **CPU / RAM summary**: logical + physical core count and total
+  RAM in GiB, shown in the node header next to the address.
+
+**Bandwidth probe (Phase 2).** A collapsible panel above the node
+list runs a single-stream HTTP throughput measurement from the
+local node to each reachable peer on demand. Triggered by a button
+("Refresh") to keep the network idle the rest of the time;
+sequential rather than parallel so co-tenant flows don't masquerade
+as bottlenecks. Results are cached for 1 hour.
+
+The endpoint at ``/api/cluster/bandwidth_local`` streams a
+deterministic byte blob (default 32 MiB, max 256 MiB) and is in the
+peer-allowed list — peers measure their own receive time and never
+hold the bytes in memory all at once. ``/api/cluster/bandwidth``
+returns the cached results; ``/api/cluster/bandwidth/refresh``
+runs a fresh measurement and updates the cache.
+
 **State.** Cluster runtime state lives at `~/.forgather/cluster/`:
 
 ```
@@ -1757,6 +1793,15 @@ them is safe to mount unconditionally.
 | `GET /api/cluster/gpus`                                            | bearer                     | Aggregated `{nodes: [{node_id, hostname, address, reachable, gpus, error}]}` across the cluster (master fetches each peer's `gpus_local` in parallel) |
 | `POST /api/cluster/gpu_policy_local` `{gpu_index, disabled?, min_priority?}` | bearer / peer (only mutation path carved out for peers) | Apply a GPU policy update on this node |
 | `POST /api/cluster/nodes/{node_id}/gpus/{idx}/policy` `{disabled?, min_priority?}` | bearer | Master-side proxy: forward a GPU policy update to the named node (short-circuits self) |
+| `GET /api/cluster/bandwidth_local?bytes=N`                         | bearer / peer              | Stream `N` bytes back so the caller can time the receive (4 KiB ≤ N ≤ 256 MiB; default 32 MiB) |
+| `GET /api/cluster/bandwidth`                                       | bearer                     | Cached pairwise bandwidth measurements (1 h TTL)                          |
+| `POST /api/cluster/bandwidth/refresh?bytes=N`                      | bearer                     | Run a fresh bandwidth measurement against every reachable peer (sequential) and update the cache |
+
+The probe payload (versions + interfaces + CPU summary) is
+piggybacked on every member entry returned by `/api/cluster/members`
+under the ``probe`` field. There is no separate `/api/cluster/probe`
+endpoint — peer-pull already brings the data with no extra
+round-trip.
 
 The "peer" auth column means a known cluster member's source IP can
 call the endpoint without the bearer token; see [Cluster mode (multi-node, prototype)](#cluster-mode-multi-node-prototype)

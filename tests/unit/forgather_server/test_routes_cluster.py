@@ -299,6 +299,57 @@ class TestClusterGpus:
         assert peers[0]["error"]
 
 
+class TestBandwidth:
+    def test_bandwidth_local_streams_requested_size(self):
+        # We don't actually need a cluster activated for the streaming
+        # endpoint's correctness test — but the X-Forgather-Node-Id
+        # header is only set when active.
+        cluster.activate("c", port=8765)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        size = 65536  # one chunk
+        r = client.get(
+            f"/api/cluster/bandwidth_local?bytes={size}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+        assert len(r.content) == size
+        # All bytes are the deterministic filler — checking one is
+        # enough to catch a wiring mistake without hashing the body.
+        assert set(r.content) == {ord("X")}
+        assert r.headers.get("x-forgather-node-id")
+
+    def test_bandwidth_local_clamps_huge_request(self):
+        cluster.activate("c", port=8765)
+        token = auth.load_token()
+        client = TestClient(_make_app())
+        # FastAPI's Query validation rejects out-of-range values with
+        # 422; we don't want a malformed request to make the server
+        # allocate gigabytes.
+        r = client.get(
+            "/api/cluster/bandwidth_local?bytes=99999999999",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 422
+
+    def test_bandwidth_local_carved_out_for_peers(self):
+        # The bandwidth target is in the peer-allowed GET list so the
+        # master can hit it without holding a token. Verify the
+        # carve-out fires for a known-peer source IP.
+        cluster.activate("c", port=8765)
+        for addr in ("127.0.0.1", "testclient"):
+            cluster.update_member(
+                str(uuid.uuid4()),
+                hostname=f"peer-{addr}",
+                address=addr,
+                port=8765,
+                cluster_name="c",
+            )
+        client = TestClient(_make_app())
+        r = client.get("/api/cluster/bandwidth_local?bytes=4096")
+        assert r.status_code == 200, r.text
+
+
 class TestPathAllowsPeer:
     def test_known_peer_paths(self):
         assert auth.path_allows_peer("/api/cluster/members") is True
@@ -312,6 +363,9 @@ class TestPathAllowsPeer:
 
     def test_gpus_local_carved_out(self):
         assert auth.path_allows_peer("/api/cluster/gpus_local") is True
+
+    def test_bandwidth_local_carved_out(self):
+        assert auth.path_allows_peer("/api/cluster/bandwidth_local") is True
 
     def test_mutation_carve_out_disjoint_from_read_set(self):
         # The two carve-outs are different intentionally — guard

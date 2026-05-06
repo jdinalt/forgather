@@ -1,32 +1,271 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
+  ClusterBandwidthEntry,
+  ClusterBandwidthResponse,
   ClusterMember,
   ClusterMembersResponse,
   ClusterGpusResponse,
+  ClusterProbe,
+  ClusterProbeInterface,
   GpuInfo,
   Job,
 } from "../api";
 import { GpuPanel, GpuCard } from "./GpuPanel";
 
-/** Cluster-aware Nodes view.
+/** Cluster-aware Nodes view (Phase 2).
  *
- *  Layout: a cluster header with name/master, then one bounded box
- *  per node containing the existing GPU-card layout. The local node
- *  embeds the full live ``<GpuPanel/>`` so kill/policy/context-menu
- *  controls and the WebSocket stream all keep working unchanged.
- *  Peer nodes render the same rich cards but read-only, driven by
- *  the master-side aggregator polled at 5 s. Peer mutations are
- *  intentionally disabled in Phase 1: cross-node policy/kill
- *  routing is part of the by-node proxy seam scheduled for later.
- *
- *  The cluster header doubles as the live/stale indicator: if the
- *  /api/cluster/members poll is in error or hasn't returned yet,
- *  the nodes list still shows whatever the previous refresh
- *  returned. Empty payload (cluster not active) shouldn't happen
- *  here — App.tsx only mounts NodesPanel when /api/cluster/self
- *  returned non-null — but we guard for it anyway.
+ *  Adds pre-flight surfaces on top of Phase 1's per-node GPU layout:
+ *  package versions inline in each header (with diff-highlighting
+ *  when a version drifts from the cluster majority), a collapsible
+ *  network-interface list per node, and an on-demand pairwise
+ *  bandwidth panel.
  */
+
+// Versions we surface inline. Order = display order. ``python`` and
+// ``platform`` are intentionally not in the inline list — they go in
+// the tooltip — because they rarely drive a hang and would just
+// clutter the row.
+const HEADLINE_VERSION_KEYS: readonly string[] = [
+  "forgather",
+  "torch",
+  "nccl",
+  "transformers",
+];
+
+
+function computeVersionConsensus(
+  members: ClusterMember[],
+): Record<string, string> {
+  // Most common reported value per version key. "Most common" rather
+  // than "all the same" because in a 3-node cluster with one straggler
+  // we want the divergence to be obvious — flagging two-against-one
+  // is the right call.
+  const counts: Record<string, Record<string, number>> = {};
+  for (const m of members) {
+    const versions = m.probe?.versions;
+    if (!versions) continue;
+    for (const [key, val] of Object.entries(versions)) {
+      if (!val) continue;
+      if (!counts[key]) counts[key] = {};
+      counts[key][val] = (counts[key][val] ?? 0) + 1;
+    }
+  }
+  const consensus: Record<string, string> = {};
+  for (const [key, vals] of Object.entries(counts)) {
+    let bestVal = "";
+    let bestCount = 0;
+    for (const [v, c] of Object.entries(vals)) {
+      if (c > bestCount) {
+        bestCount = c;
+        bestVal = v;
+      }
+    }
+    consensus[key] = bestVal;
+  }
+  return consensus;
+}
+
+function VersionChip({
+  label,
+  value,
+  consensus,
+}: {
+  label: string;
+  value: string | undefined;
+  consensus: string;
+}) {
+  const missing = !value || value === "unavailable";
+  const diverged = !missing && consensus && value !== consensus;
+  let className = "version-chip";
+  if (missing) className += " version-chip-muted";
+  else if (diverged) className += " version-chip-warn";
+  const tooltip = diverged
+    ? `Cluster majority: ${consensus}\nThis node: ${value}`
+    : missing
+      ? `${label} not reported by this node`
+      : `${label} ${value}`;
+  return (
+    <span className={className} title={tooltip}>
+      <span className="version-chip-label">{label}</span>
+      <span className="version-chip-value">
+        {missing ? "—" : value}
+      </span>
+    </span>
+  );
+}
+
+function VersionRow({
+  probe,
+  consensus,
+}: {
+  probe: ClusterProbe | null;
+  consensus: Record<string, string>;
+}) {
+  if (!probe) {
+    return (
+      <span
+        className="version-row version-row-pending"
+        title="Pre-flight probe not yet received from this node"
+      >
+        probe pending…
+      </span>
+    );
+  }
+  return (
+    <span className="version-row">
+      {HEADLINE_VERSION_KEYS.map((key) => (
+        <VersionChip
+          key={key}
+          label={key}
+          value={probe.versions[key]}
+          consensus={consensus[key] ?? ""}
+        />
+      ))}
+    </span>
+  );
+}
+
+function InterfaceList({ interfaces }: { interfaces: ClusterProbeInterface[] }) {
+  if (interfaces.length === 0) {
+    return (
+      <div className="iface-empty muted">No IPv4 interfaces reported.</div>
+    );
+  }
+  return (
+    <table className="iface-table">
+      <thead>
+        <tr>
+          <th>Interface</th>
+          <th>Address</th>
+          <th>CIDR</th>
+          <th>Link</th>
+        </tr>
+      </thead>
+      <tbody>
+        {interfaces.map((i) => (
+          <tr key={i.name + i.address} className={i.is_up ? "" : "down"}>
+            <td>{i.name}</td>
+            <td>
+              <code>{i.address}</code>
+            </td>
+            <td>
+              <code>{i.cidr || "—"}</code>
+            </td>
+            <td>
+              {i.is_up ? "up" : "down"}
+              {i.speed_mbps > 0 && (
+                <span className="muted"> · {i.speed_mbps} Mbps</span>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function BandwidthPanel({
+  members,
+  selfNodeId,
+}: {
+  members: ClusterMember[];
+  selfNodeId: string | null;
+}) {
+  const bwQ = useQuery<ClusterBandwidthResponse>({
+    queryKey: ["cluster", "bandwidth"],
+    queryFn: api.getClusterBandwidth,
+    refetchInterval: false,
+  });
+  const refresh = useMutation({
+    mutationFn: api.refreshClusterBandwidth,
+    onSuccess: () => {
+      // The mutation response holds the freshly-measured payload but
+      // the GET endpoint also serves the same cache, so a single
+      // refetch keeps the list state consistent with what other
+      // tabs would see.
+      bwQ.refetch();
+    },
+    onError: (e) => alert(`Bandwidth refresh failed: ${String(e)}`),
+  });
+  const byPeer = new Map<string, ClusterBandwidthEntry>();
+  for (const m of bwQ.data?.measurements ?? []) {
+    byPeer.set(m.peer_node_id, m);
+  }
+  // Show one row per non-self peer, regardless of whether we have a
+  // measurement yet — empty rows make it obvious which peers haven't
+  // been probed.
+  const peers = members.filter((m) => m.node_id !== selfNodeId);
+  return (
+    <details className="bw-panel" open={false}>
+      <summary>
+        <span>Bandwidth (this node → peers)</span>
+        <button
+          className="bw-refresh"
+          disabled={refresh.isPending}
+          onClick={(e) => {
+            e.preventDefault();
+            refresh.mutate();
+          }}
+          title="Run a fresh single-stream throughput measurement to each peer. Sequential — takes ~few seconds per peer."
+        >
+          {refresh.isPending ? "Measuring…" : "Refresh"}
+        </button>
+      </summary>
+      {peers.length === 0 ? (
+        <div className="muted bw-empty">Only this node is in the cluster.</div>
+      ) : (
+        <table className="bw-table">
+          <thead>
+            <tr>
+              <th>Peer</th>
+              <th>Address</th>
+              <th>Throughput</th>
+              <th>Sample</th>
+              <th>Measured</th>
+            </tr>
+          </thead>
+          <tbody>
+            {peers.map((m) => {
+              const entry = byPeer.get(m.node_id);
+              return (
+                <tr
+                  key={m.node_id}
+                  className={entry?.error && entry.error !== "self" ? "err" : ""}
+                >
+                  <td>{m.hostname}</td>
+                  <td>
+                    <code>
+                      {m.address}:{m.port}
+                    </code>
+                  </td>
+                  <td>
+                    {entry && !entry.error
+                      ? `${entry.mbps.toFixed(1)} Mbps`
+                      : entry?.error
+                        ? entry.error
+                        : "—"}
+                  </td>
+                  <td>
+                    {entry && entry.bytes_transferred > 0
+                      ? `${(entry.bytes_transferred / 1024 / 1024).toFixed(0)} MiB / ${entry.elapsed_seconds.toFixed(2)} s`
+                      : "—"}
+                  </td>
+                  <td>
+                    {entry?.timestamp
+                      ? new Date(entry.timestamp * 1000).toLocaleTimeString()
+                      : "—"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </details>
+  );
+}
+
 export function NodesPanel() {
   const membersQ = useQuery<ClusterMembersResponse>({
     queryKey: ["cluster", "members"],
@@ -38,10 +277,6 @@ export function NodesPanel() {
     queryFn: api.getClusterGpus,
     refetchInterval: 5000,
   });
-  // jobByPid is shared across all peer cards so the process chips
-  // can show "config foo" instead of bare PIDs. The list is local
-  // to the master — cross-node job attribution will be wired up
-  // when the by-node proxy lands.
   const jobsQ = useQuery({
     queryKey: ["jobs", false],
     queryFn: () => api.listJobs(false),
@@ -82,9 +317,6 @@ export function NodesPanel() {
     if (j.pid != null) jobByPid.set(j.pid, j);
   }
 
-  // Render order: master first, then reachable peers, then unreachable.
-  // Within each bucket, sort by hostname so the layout is stable when
-  // peers come and go.
   const sortedMembers = [...data.members].sort((a, b) => {
     const score = (m: ClusterMember) => {
       if (m.node_id === data.master_node_id) return 0;
@@ -103,6 +335,18 @@ export function NodesPanel() {
           ?.hostname ?? data.master_node_id.slice(0, 8)
       : "(none)";
 
+  const versionConsensus = computeVersionConsensus(data.members);
+  const anyDivergence = data.members.some((m) =>
+    m.probe?.versions
+      ? HEADLINE_VERSION_KEYS.some(
+          (k) =>
+            versionConsensus[k] &&
+            m.probe!.versions[k] &&
+            m.probe!.versions[k] !== versionConsensus[k],
+        )
+      : false,
+  );
+
   return (
     <div className="nodes-panel">
       <header className="nodes-panel-header">
@@ -111,7 +355,19 @@ export function NodesPanel() {
           {data.members.length} node
           {data.members.length === 1 ? "" : "s"} · master: {masterHostname}
         </span>
+        {anyDivergence && (
+          <span
+            className="node-tag node-tag-warn"
+            title="At least one node reports a package version that does not match the cluster majority. Multi-node training is sensitive to this — see the per-node version chips below."
+          >
+            version mismatch
+          </span>
+        )}
       </header>
+      <BandwidthPanel
+        members={data.members}
+        selfNodeId={data.self_node_id}
+      />
       <div className="nodes-panel-rows">
         {sortedMembers.map((m) => {
           const isSelf = m.node_id === data.self_node_id;
@@ -126,6 +382,7 @@ export function NodesPanel() {
               gpus={gpuEntry?.gpus ?? null}
               gpusError={gpuEntry?.error ?? null}
               jobByPid={jobByPid}
+              versionConsensus={versionConsensus}
             />
           );
         })}
@@ -141,6 +398,7 @@ function NodeGroup({
   gpus,
   gpusError,
   jobByPid,
+  versionConsensus,
 }: {
   member: ClusterMember;
   isSelf: boolean;
@@ -148,12 +406,9 @@ function NodeGroup({
   gpus: GpuInfo[] | null;
   gpusError: string | null;
   jobByPid: Map<number, Job>;
+  versionConsensus: Record<string, string>;
 }) {
   const qc = useQueryClient();
-  // Click-to-toggle the disabled flag, routed to the owning node via
-  // the master-side proxy. The master short-circuits self-targets, so
-  // this also works when the local node initiates the toggle on its
-  // own card if we ever choose to use the polled view for self too.
   const togglePolicy = useMutation({
     mutationFn: ({
       gpu_index,
@@ -163,11 +418,10 @@ function NodeGroup({
       disabled: boolean;
     }) =>
       api.setNodeGpuPolicy(member.node_id, gpu_index, { disabled }),
-    // The cluster GPU poll picks up the new state within 5 s; an
-    // explicit invalidate makes the visual confirmation immediate.
     onSuccess: () => qc.invalidateQueries({ queryKey: ["cluster", "gpus"] }),
     onError: (e) => alert(`Policy update failed: ${String(e)}`),
   });
+  const cpu = member.probe?.cpu;
   return (
     <section
       className={
@@ -195,17 +449,29 @@ function NodeGroup({
           <span className="node-address">
             {member.address}:{member.port}
           </span>
-          <span className="node-version" title="forgather version">
-            v{member.forgather_version || "unknown"}
-          </span>
+          {cpu && cpu.logical > 0 && (
+            <span
+              className="node-cpu muted"
+              title={`${cpu.physical} physical cores · ${cpu.ram_gib} GiB RAM`}
+            >
+              {cpu.logical} cpu · {cpu.ram_gib} GiB
+            </span>
+          )}
         </span>
       </header>
+      <div className="node-group-versions">
+        <VersionRow probe={member.probe} consensus={versionConsensus} />
+      </div>
+      {member.probe?.interfaces && member.probe.interfaces.length > 0 && (
+        <details className="node-group-interfaces">
+          <summary>
+            Interfaces ({member.probe.interfaces.length})
+          </summary>
+          <InterfaceList interfaces={member.probe.interfaces} />
+        </details>
+      )}
       <div className="node-group-body">
         {isSelf ? (
-          // Local node: keep the existing live GpuPanel — WS stream,
-          // kill/policy controls, context menu all unchanged. The
-          // outer node-group box just wraps it with the cluster
-          // header.
           <GpuPanel />
         ) : gpusError ? (
           <div className="node-group-error">

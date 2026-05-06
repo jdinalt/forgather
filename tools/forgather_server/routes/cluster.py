@@ -13,10 +13,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .. import cluster
@@ -44,6 +45,13 @@ class MemberModel(BaseModel):
     last_seen: float
     reachable: bool
     last_source: str
+    # Probe payload — versions, interfaces, CPU summary. Loose dict
+    # rather than a strict schema because adding a new probe field
+    # should not require synchronized backend + frontend rollout
+    # across the cluster (a node still on Phase 1 sends None, a node
+    # on a later Phase 2 revision may add a key the frontend hasn't
+    # seen yet).
+    probe: Optional[Dict[str, Any]] = None
 
 
 class SelfModel(BaseModel):
@@ -84,6 +92,7 @@ def _to_member_model(m: cluster.MemberInfo) -> MemberModel:
         last_seen=m.last_seen,
         reachable=m.reachable,
         last_source=m.last_source,
+        probe=m.probe,
     )
 
 
@@ -400,3 +409,239 @@ async def cluster_gpus():
             return_exceptions=False,
         )
     return ClusterGpusResponse(nodes=list(results), server_time=time.time())
+
+
+# ---------------------------------------------------------------------------
+# Bandwidth probe
+# ---------------------------------------------------------------------------
+
+# Default payload size for a bandwidth measurement. 32 MiB is enough
+# to take a measurable fraction of a second on a gigabit link
+# (~0.3 s) and a few seconds on a 100 Mbps WAN bridge — well above
+# the noise floor of HTTP overhead. Capped at 256 MiB so a malformed
+# query parameter can't make the server allocate a comically large
+# response.
+DEFAULT_BANDWIDTH_BYTES = 32 * 1024 * 1024
+MAX_BANDWIDTH_BYTES = 256 * 1024 * 1024
+_BANDWIDTH_CHUNK = b"X" * 65536  # 64 KiB chunks
+
+# Cache TTL: bandwidth doesn't change minute-to-minute, but a node
+# coming back online or a network reroute should refresh on the
+# next user-triggered probe. The UI exposes a refresh button; the
+# cache exists to keep the first paint of the Nodes view from
+# blocking on a multi-second probe.
+BANDWIDTH_CACHE_TTL_SECONDS = 60 * 60  # 1 hour
+PEER_BANDWIDTH_TIMEOUT_SECONDS = 30.0
+
+
+class BandwidthEntry(BaseModel):
+    peer_node_id: str
+    peer_hostname: str
+    peer_address: str
+    bytes_transferred: int
+    elapsed_seconds: float
+    mbps: float
+    timestamp: float
+    error: Optional[str] = None
+
+
+class BandwidthResponse(BaseModel):
+    measurements: List[BandwidthEntry] = []
+    server_time: float
+
+
+# Module-level cache. Keyed by peer node_id. Populated by
+# /api/cluster/bandwidth/refresh; read by /api/cluster/bandwidth.
+_bandwidth_cache: Dict[str, BandwidthEntry] = {}
+
+
+def _stream_bytes(total: int):
+    """Generator producing exactly ``total`` bytes in 64 KiB chunks."""
+    sent = 0
+    while sent < total:
+        size = min(len(_BANDWIDTH_CHUNK), total - sent)
+        if size == len(_BANDWIDTH_CHUNK):
+            yield _BANDWIDTH_CHUNK
+        else:
+            yield _BANDWIDTH_CHUNK[:size]
+        sent += size
+
+
+@router.get("/bandwidth_local")
+def bandwidth_local(
+    bytes: int = Query(
+        default=DEFAULT_BANDWIDTH_BYTES,
+        ge=4096,
+        le=MAX_BANDWIDTH_BYTES,
+        description="Number of bytes to stream back; clamped to the server limit.",
+    ),
+):
+    """Stream a deterministic byte blob for the caller to time.
+
+    The peer-allowed bandwidth target. The caller times their own
+    receive; we just feed bytes as fast as the kernel will accept
+    them. Streamed in chunks so a multi-MiB body doesn't sit in
+    memory all at once.
+    """
+    # StreamingResponse builds its own headers; setting headers on
+    # the dependency-injected ``response`` is silently dropped. Build
+    # the full header dict here instead.
+    headers = {
+        "Content-Length": str(bytes),
+        "Cache-Control": "no-store",
+    }
+    ident = cluster.self_identity()
+    if ident is not None:
+        headers["X-Forgather-Node-Id"] = ident.node_id
+    return StreamingResponse(
+        _stream_bytes(bytes),
+        media_type="application/octet-stream",
+        headers=headers,
+    )
+
+
+async def _measure_one_peer(
+    client: httpx.AsyncClient,
+    member: cluster.MemberInfo,
+    bytes_to_pull: int,
+) -> BandwidthEntry:
+    self_id = cluster.self_identity()
+    if self_id is not None and member.node_id == self_id.node_id:
+        # Measuring against self is meaningless (loopback throughput
+        # is dominated by memcpy, not the network). Return a
+        # deliberate zero so the UI can render "self" specially
+        # rather than a misleading multi-Gbps loopback number.
+        return BandwidthEntry(
+            peer_node_id=member.node_id,
+            peer_hostname=member.hostname,
+            peer_address=member.address,
+            bytes_transferred=0,
+            elapsed_seconds=0.0,
+            mbps=0.0,
+            timestamp=time.time(),
+            error="self",
+        )
+    if not member.reachable:
+        return BandwidthEntry(
+            peer_node_id=member.node_id,
+            peer_hostname=member.hostname,
+            peer_address=member.address,
+            bytes_transferred=0,
+            elapsed_seconds=0.0,
+            mbps=0.0,
+            timestamp=time.time(),
+            error="member unreachable",
+        )
+    url = (
+        f"http://{member.address}:{member.port}"
+        f"/api/cluster/bandwidth_local?bytes={bytes_to_pull}"
+    )
+    received = 0
+    start = time.monotonic()
+    try:
+        async with client.stream(
+            "GET", url, timeout=PEER_BANDWIDTH_TIMEOUT_SECONDS
+        ) as r:
+            if r.status_code != 200:
+                return BandwidthEntry(
+                    peer_node_id=member.node_id,
+                    peer_hostname=member.hostname,
+                    peer_address=member.address,
+                    bytes_transferred=0,
+                    elapsed_seconds=0.0,
+                    mbps=0.0,
+                    timestamp=time.time(),
+                    error=f"http {r.status_code}",
+                )
+            served_by = r.headers.get(
+                "x-forgather-node-id"
+            ) or r.headers.get("X-Forgather-Node-Id")
+            if served_by and served_by != member.node_id:
+                return BandwidthEntry(
+                    peer_node_id=member.node_id,
+                    peer_hostname=member.hostname,
+                    peer_address=member.address,
+                    bytes_transferred=0,
+                    elapsed_seconds=0.0,
+                    mbps=0.0,
+                    timestamp=time.time(),
+                    error=(
+                        f"address {member.address}:{member.port} "
+                        f"served by node {served_by[:8]}"
+                    ),
+                )
+            async for chunk in r.aiter_bytes():
+                received += len(chunk)
+    except (httpx.HTTPError, OSError) as e:
+        return BandwidthEntry(
+            peer_node_id=member.node_id,
+            peer_hostname=member.hostname,
+            peer_address=member.address,
+            bytes_transferred=received,
+            elapsed_seconds=time.monotonic() - start,
+            mbps=0.0,
+            timestamp=time.time(),
+            error=f"fetch failed: {e.__class__.__name__}",
+        )
+    elapsed = max(time.monotonic() - start, 1e-6)
+    # Convert bytes/sec to Mbits/sec — the operator-facing unit on
+    # any network spec sheet, and what the Samantha tutorial uses.
+    mbps = (received * 8) / elapsed / 1_000_000
+    return BandwidthEntry(
+        peer_node_id=member.node_id,
+        peer_hostname=member.hostname,
+        peer_address=member.address,
+        bytes_transferred=received,
+        elapsed_seconds=elapsed,
+        mbps=mbps,
+        timestamp=time.time(),
+        error=None,
+    )
+
+
+@router.get("/bandwidth", response_model=BandwidthResponse)
+def get_bandwidth():
+    """Return cached bandwidth measurements, dropping stale entries."""
+    now = time.time()
+    fresh = [
+        e
+        for e in _bandwidth_cache.values()
+        if now - e.timestamp <= BANDWIDTH_CACHE_TTL_SECONDS
+    ]
+    return BandwidthResponse(measurements=fresh, server_time=now)
+
+
+@router.post("/bandwidth/refresh", response_model=BandwidthResponse)
+async def refresh_bandwidth(
+    bytes: int = Query(
+        default=DEFAULT_BANDWIDTH_BYTES,
+        ge=4096,
+        le=MAX_BANDWIDTH_BYTES,
+    ),
+):
+    """Run a fresh measurement against every reachable peer.
+
+    Sequential (not parallel): two simultaneous bulk transfers would
+    saturate the local NIC and produce numbers that under-report
+    each link's actual throughput. The serial total is N peers ×
+    ~few seconds on a gigabit LAN — fine for a user-initiated probe.
+    """
+    if not cluster.is_active():
+        return BandwidthResponse(measurements=[], server_time=time.time())
+    targets = [
+        m
+        for m in cluster.members()
+        if cluster.self_identity() is None
+        or m.node_id != cluster.self_identity().node_id
+    ]
+    results: List[BandwidthEntry] = []
+    async with httpx.AsyncClient() as client:
+        for member in targets:
+            entry = await _measure_one_peer(client, member, bytes)
+            _bandwidth_cache[member.node_id] = entry
+            results.append(entry)
+    return BandwidthResponse(measurements=results, server_time=time.time())
+
+
+def _reset_bandwidth_cache_for_tests() -> None:
+    _bandwidth_cache.clear()
