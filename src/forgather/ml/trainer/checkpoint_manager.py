@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-prefix_logger_rank(logger)
+prefix_logger_rank(logger, show_all_ranks=True)
 
 
 def default_checkpoint_id():

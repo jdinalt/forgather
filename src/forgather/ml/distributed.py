@@ -36,7 +36,7 @@ from torch.distributed import ProcessGroup
 
 def prefix_logger_rank(
     logger: logging.Logger,
-    filter: Optional[Callable[[int], bool]] = None,
+    show_all_ranks: bool = False,
     format: Optional[str] = None,
 ):
     """
@@ -51,14 +51,16 @@ def prefix_logger_rank(
 
     if format is None:
         # The default filter only prints messages from rank0; no need to specify the rank.
-        if filter is None:
-            format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        else:
+        if show_all_ranks:
             format = (
                 "[Rank %(rank)s] %(asctime)s - %(name)s - %(levelname)s - %(message)s"
             )
+        else:
+            format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-    if filter is None:
+    if show_all_ranks:
+        filter = lambda rank: True
+    else:
         filter = lambda rank: rank == 0
 
     def rank_filter(record):
@@ -74,7 +76,7 @@ def prefix_logger_rank(
 
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.DEBUG)
-prefix_logger_rank(logger, lambda rank: True)
+prefix_logger_rank(logger, show_all_ranks=True)
 
 # Tracks recursion depth of main_local_process_first to prevent nested barriers
 mpf_recursion_level = 0

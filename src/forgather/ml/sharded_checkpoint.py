@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # story for "who actually wrote which file" during multi-rank /
 # multi-node checkpointing, so the default rank-0-only filter would hide
 # exactly the rows that matter when something goes wrong.
-prefix_logger_rank(logger, lambda rank: True)
+prefix_logger_rank(logger, show_all_ranks=True)
 
 """
 This implements loading and saving sharded checkpoints
