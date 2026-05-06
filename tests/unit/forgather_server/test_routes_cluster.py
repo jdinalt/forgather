@@ -789,6 +789,105 @@ class TestClusterJobStatusRollup:
         # reads short-circuit without fanning out.
         assert cj.get_job("cj_test").status == "done"
 
+    def test_non_master_proxies_jobs_list_to_master(self, monkeypatch):
+        # When this node isn't the master, GET /jobs must fetch the
+        # bundle list from master (which holds the only copy) instead
+        # of returning the local empty list. Without this the user
+        # sees 0 cluster jobs on muthur while wopr (master) shows the
+        # running one — exactly the symptom they hit.
+        ident = self._activate_with_self_only()
+        # Add a peer with a smaller UUID so it becomes master.
+        master_id = "00000000-0000-0000-0000-000000000001"
+        cluster.update_member(
+            master_id,
+            hostname="master-host",
+            address="192.168.1.10",
+            port=8765,
+            cluster_name="c",
+        )
+        assert cluster.master_node_id() == master_id
+        assert ident.node_id != master_id
+
+        proxied_payload = [
+            {
+                "cluster_job_id": "cj_remote",
+                "project_dir": "/p",
+                "config": "t.yaml",
+                "submitted_at": time.time(),
+                "rdzv_endpoint": "192.168.1.10:29400",
+                "rdzv_id": "rrr",
+                "rdzv_node_id": master_id,
+                "members": [],
+                "status": "submitted",
+                "rolled_up_status": "running",
+            }
+        ]
+
+        # Stub the proxy HTTP call so we don't actually hit a network.
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return proxied_payload
+
+        class _AsyncClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def get(self, url, **kw):
+                assert url == "http://192.168.1.10:8765/api/cluster/jobs"
+                return _Resp()
+
+        import forgather_server.routes.cluster as routes
+        monkeypatch.setattr(routes.httpx, "AsyncClient", _AsyncClient)
+
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.get(
+            "/api/cluster/jobs",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body) == 1
+        assert body[0]["cluster_job_id"] == "cj_remote"
+        assert body[0]["rolled_up_status"] == "running"
+
+    def test_master_does_not_proxy_to_itself(self, monkeypatch):
+        # On the master we hit the local computation path; no proxy.
+        # Asserting we don't double-fetch matters because the master
+        # is the only owner of the bundle records — proxying to self
+        # would either deadlock or trip auth depending on the order.
+        ident = self._activate_with_self_only()
+        # Self is the only member, so it's master by definition.
+        assert cluster.master_node_id() == ident.node_id
+
+        async def fail(*a, **kw):
+            raise AssertionError("master must not proxy /jobs")
+
+        # Spy on AsyncClient construction to make the assertion sharp.
+        class _Spy:
+            def __init__(self, *a, **kw):
+                raise AssertionError("AsyncClient must not be used on master")
+
+        import forgather_server.routes.cluster as routes
+        monkeypatch.setattr(routes.httpx, "AsyncClient", _Spy)
+
+        token = auth.load_token()
+        client = TestClient(_make_app_with_full_router())
+        r = client.get(
+            "/api/cluster/jobs",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json() == []
+
     def test_rollup_failed_beats_running(self, monkeypatch):
         # Two local members: one running, one failed. Roll-up must
         # surface "failed" — partial failure is more important than

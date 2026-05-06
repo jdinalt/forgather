@@ -1378,6 +1378,53 @@ async def _cancel_one_peer_training(
     return r.json()
 
 
+async def _maybe_proxy_to_master() -> Optional[List[Dict[str, Any]]]:
+    """If we're not the master, fetch the cluster-jobs list from it.
+
+    The bundle record lives only on the master. Without this proxy a
+    non-master webui shows zero cluster jobs even when one is running
+    cluster-wide — the user observed exactly that on muthur while the
+    bundle was held on wopr. The master's response already includes
+    the rolled-up status fanout, so the non-master returns it
+    verbatim. Returns None when:
+      - we are the master (caller falls through to local computation)
+      - master is unknown / unreachable (caller falls back to local
+        empty list rather than failing the page)
+    """
+    master_id = cluster.master_node_id()
+    self_ident = cluster.self_identity()
+    if master_id is None or self_ident is None:
+        return None
+    if master_id == self_ident.node_id:
+        return None
+    by_id = {m.node_id: m for m in cluster.members()}
+    master = by_id.get(master_id)
+    if master is None or not master.reachable:
+        log.warning(
+            "cluster jobs proxy: master %s not reachable from %s, "
+            "falling through to local empty view",
+            master_id[:8],
+            self_ident.node_id[:8],
+        )
+        return None
+    url = f"http://{master.address}:{master.port}/api/cluster/jobs"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(url)
+            if r.status_code != 200:
+                log.warning(
+                    "cluster jobs proxy: master returned %d", r.status_code
+                )
+                return None
+            data = r.json()
+            if isinstance(data, list):
+                return data
+            return None
+    except Exception:
+        log.exception("cluster jobs proxy: GET %s failed", url)
+        return None
+
+
 @router.get("/jobs", response_model=List[ClusterJobModel])
 async def list_cluster_jobs():
     """List all cluster jobs with rolled-up status.
@@ -1388,7 +1435,16 @@ async def list_cluster_jobs():
     status is sticky), so the fanout cost only applies to in-flight
     jobs. Slow / unreachable peers don't block the list — they
     contribute "unknown" for that member.
+
+    Non-master nodes proxy to the master (which holds the bundle
+    records) so any cluster-mode webui shows the same job list. If
+    master is unreachable we return our own (empty) view rather than
+    erroring — the page should keep rendering even during a master
+    failover.
     """
+    proxied = await _maybe_proxy_to_master()
+    if proxied is not None:
+        return proxied
     jobs = cluster_jobs.list_jobs()
     # Skip the fanout for bundles that are already in a sticky
     # terminal state — their status doesn't change again.

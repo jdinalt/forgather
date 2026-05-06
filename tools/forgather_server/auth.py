@@ -86,6 +86,12 @@ _PEER_ALLOWED_PATHS = frozenset(
         # the assignment. Read-only — exposes a small status snapshot
         # of one local queue item, nothing else.
         "/api/cluster/training_status_local",
+        # Cluster jobs list — read-only view of the bundle records.
+        # Non-master nodes proxy to master via this path so every
+        # cluster-mode webui shows the same job list. Returning the
+        # bundle catalogue across the LAN is consistent with the
+        # trusted-peer security contract.
+        "/api/cluster/jobs",
     }
 )
 
