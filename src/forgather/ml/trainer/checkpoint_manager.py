@@ -499,15 +499,27 @@ class CheckpointManager(CheckpointInterface):
         )
 
     def _should_save_common(self):
-        # Should save parameters and Stateful objects. If more than one rank is saving
-        # on the same node, each file will be named after the rank. Useful for things
-        # like Pipeline parallel.
-        if (
-            not self.config.save_on_all_ranks
-            and self.config.save_on_local_rank != self.dist.local_rank
-        ):
-            return False
-        return True
+        # Decides whether *this* rank participates in writing model
+        # shard files. Three regimes:
+        #
+        #   save_on_all_ranks=True
+        #     PP / FSDP — every rank holds a different subset of weights
+        #     so every rank writes its own non-overlapping shards.
+        #
+        #   save_on_each_node=True (default-False)
+        #     DDP across nodes that *don't* share a filesystem — every
+        #     node's chosen local rank writes a full copy locally.
+        #
+        #   save_on_each_node=False (the documented default for shared
+        #     storage) — only the global writer should write, otherwise
+        #     every node's local-rank-0 stomps on the same shared files.
+        #     Before this gate, shared-FS multi-node DDP had two writers
+        #     racing on every shard file at every checkpoint.
+        if self.config.save_on_all_ranks:
+            return True
+        if self.config.save_on_each_node:
+            return self.dist.local_rank == self.config.save_on_local_rank
+        return self.dist.rank == self.config.save_on_local_rank
 
     def _validate_model_replication(self, model_component: StateComponent):
         """Validate that model weights are identical across all ranks.
@@ -570,13 +582,20 @@ class CheckpointManager(CheckpointInterface):
             # Save the shard index
             save_shard_index(shard_index, output_dir, index_file_name(save_safetensors))
 
-        for mod in self.model_parts:
-            save_sharded_checkpoint(
-                output_dir,
-                shard_index,
-                mod,
-                safetensors=save_safetensors,
-            )
+        # Shard *files* must be gated too — without this, plain DDP
+        # across multiple nodes with shared storage has multiple
+        # ranks writing the same file path at the same time, racing
+        # on the bytes. Pipeline-parallel sets save_on_all_ranks=True
+        # so every rank's call writes a non-overlapping subset; that
+        # case is preserved by _should_save_common.
+        if self._should_save_common():
+            for mod in self.model_parts:
+                save_sharded_checkpoint(
+                    output_dir,
+                    shard_index,
+                    mod,
+                    safetensors=save_safetensors,
+                )
 
     def _dict_name(self, key):
         if self.dist.world_size > 1 and self.config.save_on_all_ranks:

@@ -955,6 +955,95 @@ class TestDataloaderStateHandling(unittest.TestCase):
         self.assertEqual(all_items, [0, 1, 2, 3, 4])
 
 
+class TestShouldSaveCommonGating(unittest.TestCase):
+    """``CheckpointManager._should_save_common`` decides whether a rank
+    participates in writing model shard files. The bug we're locking
+    in: before this fix, multi-node DDP with shared storage had every
+    node's local-rank-0 returning True, so two ranks raced on the same
+    file paths at every checkpoint."""
+
+    def _make_manager(self, *, rank, local_rank, world_size, **cfg):
+        # Build just enough state to call _should_save_common — no
+        # actual training scaffold required.
+        dist = StaticDistributedEnvironment(
+            rank=rank, local_rank=local_rank, world_size=world_size
+        )
+        config = CheckpointConfig(
+            output_dir="/tmp/ignored", save_total_limit=1, **cfg
+        )
+        cm = CheckpointManager.__new__(CheckpointManager)
+        cm.config = config
+        cm.dist = dist
+        return cm
+
+    def test_pp_every_rank_saves(self):
+        # Pipeline-parallel: each rank has a different subset of weights
+        # and they all write disjoint shard files. save_on_all_ranks=True
+        # must short-circuit to True for every rank.
+        for rank, local_rank in [(0, 0), (1, 1), (2, 0), (3, 1)]:
+            cm = self._make_manager(
+                rank=rank,
+                local_rank=local_rank,
+                world_size=4,
+                save_on_all_ranks=True,
+            )
+            self.assertTrue(
+                cm._should_save_common(),
+                f"PP rank {rank} (local {local_rank}) should save",
+            )
+
+    def test_ddp_shared_fs_only_global_rank_zero(self):
+        # Shared filesystem (the documented default for save_on_each_node
+        # = False): exactly one writer cluster-wide. Pre-fix this returned
+        # True for every node's local-rank-0, producing the
+        # double-write the user observed on wopr+muthur.
+        for rank, local_rank, expected in [
+            (0, 0, True),  # global rank 0 — saves
+            (1, 0, False),  # second node's local rank 0 — must NOT save
+            (1, 1, False),  # any non-zero local rank — does not save
+            (2, 0, False),  # third node's local rank 0 — must NOT save
+        ]:
+            cm = self._make_manager(
+                rank=rank,
+                local_rank=local_rank,
+                world_size=4,
+                save_on_all_ranks=False,
+                save_on_each_node=False,
+            )
+            self.assertEqual(
+                cm._should_save_common(),
+                expected,
+                f"DDP shared-FS rank {rank} (local {local_rank}): "
+                f"expected {expected}",
+            )
+
+    def test_ddp_per_node_fs_each_node_writes_a_copy(self):
+        # save_on_each_node=True: every node's chosen local rank writes
+        # a local copy. The point of this mode is "no shared FS, so
+        # every node needs its own checkpoint." Local rank that doesn't
+        # match save_on_local_rank still doesn't save — only one
+        # writer per node.
+        for rank, local_rank, expected in [
+            (0, 0, True),
+            (1, 1, False),
+            (2, 0, True),  # second node's local-rank-0 writes its copy
+            (3, 1, False),
+        ]:
+            cm = self._make_manager(
+                rank=rank,
+                local_rank=local_rank,
+                world_size=4,
+                save_on_all_ranks=False,
+                save_on_each_node=True,
+            )
+            self.assertEqual(
+                cm._should_save_common(),
+                expected,
+                f"DDP per-node-FS rank {rank} (local {local_rank}): "
+                f"expected {expected}",
+            )
+
+
 if __name__ == "__main__":
     # Run the tests
     unittest.main(verbosity=2)
