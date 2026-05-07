@@ -248,7 +248,9 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       ? `Required arg(s) missing: ${missingRequired.map((a) => a.cli_name).join(", ")}`
       : outOfBounds.length > 0
         ? `Out-of-range value(s): ${outOfBounds.map((a) => a.cli_name).join(", ")}`
-        : undefined;
+        : clusterActive && mnSeeded && mnState.selected.size === 0
+          ? "Pick at least one node in the multi-node panel"
+          : undefined;
 
   // Mirrors the OverridesModal Reset button: drop server-side cached
   // overrides for this config and zero out the in-form values so the
@@ -348,11 +350,24 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
       return;
     }
 
+    // Single-node enqueue. When cluster is active but the operator
+    // only selected the local node, the GPUs spinner is hidden — the
+    // panel's local-node nproc is the only knob, and it stands in
+    // for requested_gpus. Falls back to the spinner value (or 1)
+    // when cluster mode is off.
+    let gpus = requestedGpus;
+    if (clusterActive) {
+      const selfId = membersQ.data?.self_node_id ?? null;
+      const localNproc = selfId ? mnState.perNodeNproc[selfId] : undefined;
+      if (typeof localNproc === "number" && localNproc >= 1) {
+        gpus = localNproc;
+      }
+    }
     enqueue.mutate({
       project_dir: project.project_dir,
       config: config.name,
       dynamic_args: dyn,
-      requested_gpus: requestedGpus,
+      requested_gpus: gpus,
       priority,
     });
   };
@@ -384,27 +399,84 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
             </div>
           </div>
 
-          <div className="submit-row">
-            <label>
-              GPUs
-              <input
-                type="number"
-                min={1}
-                max={maxGpus}
-                value={requestedGpus}
-                onChange={(e) => {
-                  setGpusTouched(true);
-                  setRequestedGpus(
-                    Math.max(1, Math.min(maxGpus, Number(e.target.value) || 1)),
-                  );
-                }}
-              />
-              {idleGpuCount !== null && (
-                <span className="muted">
-                  ({idleGpuCount} idle of {maxGpus})
-                </span>
+          {/* Single-node controls. Hidden when the server is in
+              cluster mode — the multi-node panel below owns the
+              equivalent knobs (per-node nproc + iface) and showing
+              both at once produced the duplicate UI the user
+              flagged. Priority still belongs here because it
+              applies to both submit paths, so it follows in its
+              own always-visible row. */}
+          {!clusterActive && (
+            <>
+              <div className="submit-row">
+                <label>
+                  GPUs
+                  <input
+                    type="number"
+                    min={1}
+                    max={maxGpus}
+                    value={requestedGpus}
+                    onChange={(e) => {
+                      setGpusTouched(true);
+                      setRequestedGpus(
+                        Math.max(
+                          1,
+                          Math.min(maxGpus, Number(e.target.value) || 1),
+                        ),
+                      );
+                    }}
+                  />
+                  {idleGpuCount !== null && (
+                    <span className="muted">
+                      ({idleGpuCount} idle of {maxGpus})
+                    </span>
+                  )}
+                </label>
+              </div>
+
+              <div className="submit-help muted">
+                <strong>GPUs</strong> is how many CUDA devices the
+                scheduler reserves for this run; the chosen indices
+                become <code>CUDA_VISIBLE_DEVICES</code>. This config
+                declares{" "}
+                <code>nproc_per_node = {formatNproc(nproc)}</code>
+                {nproc === "gpu" && (
+                  <>
+                    {" "}
+                    — torchrun will spawn one worker per visible GPU, so
+                    the number you pick here is also the worker count.
+                  </>
+                )}
+                {fixedWorkerCount !== null && (
+                  <>
+                    {" "}
+                    — torchrun will spawn exactly {fixedWorkerCount}{" "}
+                    worker(s) regardless of how many GPUs are visible.
+                    Picking a different number means the GPUs won't
+                    match the workers.
+                  </>
+                )}
+                {nproc !== null &&
+                  typeof nproc === "string" &&
+                  nproc !== "gpu" && (
+                    <> — torchrun will size workers from its own auto-detect.</>
+                  )}
+              </div>
+
+              {gpuMismatch && (
+                <div className="notice notice-warn">
+                  This config has a fixed <code>nproc_per_node</code> of{" "}
+                  <strong>{fixedWorkerCount}</strong> but you're reserving{" "}
+                  <strong>{requestedGpus}</strong> GPU
+                  {requestedGpus === 1 ? "" : "s"}. The worker count
+                  won't match the reservation. Submit anyway only if you
+                  know what you're doing.
+                </div>
               )}
-            </label>
+            </>
+          )}
+
+          <div className="submit-row">
             <label>
               Priority
               <input
@@ -415,42 +487,6 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
               <span className="muted">higher runs sooner</span>
             </label>
           </div>
-
-          <div className="submit-help muted">
-            <strong>GPUs</strong> is how many CUDA devices the scheduler
-            reserves for this run; the chosen indices become{" "}
-            <code>CUDA_VISIBLE_DEVICES</code>. This config declares{" "}
-            <code>nproc_per_node = {formatNproc(nproc)}</code>
-            {nproc === "gpu" && (
-              <>
-                {" "}
-                — torchrun will spawn one worker per visible GPU, so the
-                number you pick here is also the worker count.
-              </>
-            )}
-            {fixedWorkerCount !== null && (
-              <>
-                {" "}
-                — torchrun will spawn exactly {fixedWorkerCount} worker(s)
-                regardless of how many GPUs are visible. Picking a
-                different number means the GPUs won't match the workers.
-              </>
-            )}
-            {nproc !== null && typeof nproc === "string" && nproc !== "gpu" && (
-              <> — torchrun will size workers from its own auto-detect.</>
-            )}
-          </div>
-
-          {gpuMismatch && (
-            <div className="notice notice-warn">
-              This config has a fixed <code>nproc_per_node</code> of{" "}
-              <strong>{fixedWorkerCount}</strong> but you're reserving{" "}
-              <strong>{requestedGpus}</strong> GPU
-              {requestedGpus === 1 ? "" : "s"}. The worker count won't
-              match the reservation. Submit anyway only if you know what
-              you're doing.
-            </div>
-          )}
 
           {!schedQ.data?.enabled && (
             <div className="notice">
@@ -534,7 +570,8 @@ export function SubmitModal({ project, config, onClose, onSubmitted }: Props) {
                 submitting ||
                 argsQ.isLoading ||
                 missingRequired.length > 0 ||
-                outOfBounds.length > 0
+                outOfBounds.length > 0 ||
+                (clusterActive && mnSeeded && mnState.selected.size === 0)
               }
               title={submitBlockedReason}
             >
