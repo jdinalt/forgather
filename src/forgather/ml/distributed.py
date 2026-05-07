@@ -135,64 +135,92 @@ def get_local_process_group() -> ProcessGroup | None:
     """
     Get or create a gloo process group containing only ranks on this node.
 
-    This creates one process group per node, where each group contains only
-    the ranks running on that node. Uses gloo backend for CPU compatibility.
+    Topology discovery is hostname-based: every rank reports its
+    ``socket.gethostname()`` via ``all_gather_object`` on the world
+    group, then we group ranks by hostname and create one process
+    group per unique hostname. This works for any layout —
+    symmetric, asymmetric, single-rank-on-a-node — and is the only
+    correct approach when nodes have different ``local_world_size``
+    (e.g. 1+2 across two nodes), where the previous
+    ``world_size // local_world_size`` math silently produced
+    different per-rank values and the resulting ``new_group`` calls
+    deadlocked because they didn't match across ranks.
 
-    The groups are created lazily on first call and cached. Because dist.new_group()
-    is a collective operation, ALL ranks across ALL nodes must participate when
-    the groups are first created, even though each rank only joins its local group.
+    The groups are created lazily on first call and cached. Because
+    dist.new_group() is a collective operation, ALL ranks across ALL
+    nodes participate in creating ALL groups, even when they are not
+    members. We iterate hostnames in *sorted* order so every rank
+    issues the same sequence of new_group calls.
 
-    This is useful for node-local coordination, such as ensuring only one process
+    Useful for node-local coordination — ensuring only one process
     per node performs dataset preprocessing while others wait.
 
     Returns:
         The local (per-node) gloo process group, or None if:
-        - torch.distributed is not available
-        - torch.distributed is not initialized
-        - local_world_size is 1 (single process per node, no group needed)
-
-    Note:
-        Assumes ranks are assigned sequentially per node by the launcher
-        (e.g., node0: ranks 0-3, node1: ranks 4-7). This is the default
-        behavior of torchrun.
+        - torch.distributed is not available / initialized
+        - world_size is 1 (no distribution at all)
+        - the rank is the only one on its node (1-rank group is a noop;
+          callers using main_process_first short-circuit it).
     """
     global _local_process_group
 
-    if (
-        not dist.is_available()
-        or not dist.is_initialized()
-        or get_local_world_size() == 1
-    ):
+    if not dist.is_available() or not dist.is_initialized():
+        return None
+    if get_world_size() == 1:
         return None
 
     if _local_process_group is not None:
         return _local_process_group
 
-    # Create local process groups (one per node)
+    import socket
+
     world_size = get_world_size()
     rank = get_rank()
-    local_world_size = get_local_world_size()
+    my_node = socket.gethostname()
 
-    # Group ranks by node - assumes ranks are assigned sequentially per node
-    # e.g., node0: ranks 0-3, node1: ranks 4-7, etc.
-    num_nodes = world_size // local_world_size
+    # Discover the topology by gathering hostnames from every rank.
+    # all_gather_object goes via the default backend's gloo channel
+    # (we always init with cpu:gloo). Symmetric and small (one
+    # string per rank) — fine to do on every fresh server start.
+    all_nodes: list = [None] * world_size
+    dist.all_gather_object(all_nodes, my_node)
 
-    # IMPORTANT: dist.new_group() is collective - ALL ranks must participate
-    # in creating ALL groups, even if they're not members of that group.
-    for node_id in range(num_nodes):
-        # Ranks for this node
-        node_ranks = list(
-            range(node_id * local_world_size, (node_id + 1) * local_world_size)
+    # Group ranks by node id. Sort so every rank iterates in the
+    # same order — that's what makes the new_group sequence match
+    # across the world.
+    nodes_to_ranks: dict[str, list[int]] = {}
+    for r, node in enumerate(all_nodes):
+        nodes_to_ranks.setdefault(str(node), []).append(r)
+
+    if rank == 0:
+        logger.info(
+            "get_local_process_group: discovered topology %s",
+            {n: rs for n, rs in sorted(nodes_to_ranks.items())},
         )
+
+    # Single-rank-on-a-node case: creating a 1-rank group works but
+    # serves no purpose — main_process_first treats it as already-
+    # synchronised. Skip group creation entirely on those nodes,
+    # but still participate in any other nodes' new_group calls so
+    # the world-collective stays balanced. Ranks whose own hostname
+    # has 1 entry get None back; ranks with >1 cache their group.
+    my_group: ProcessGroup | None = None
+    for node in sorted(nodes_to_ranks.keys()):
+        node_ranks = nodes_to_ranks[node]
+        if len(node_ranks) <= 1:
+            # Skip degenerate group; new_group with a 1-rank list
+            # would still be a collective and we'd waste a round
+            # trip per rank for no benefit.
+            continue
         group = dist.new_group(
-            ranks=node_ranks, backend="gloo", group_desc="local-gloo"
+            ranks=node_ranks, backend="gloo", group_desc=f"local-gloo-{node}"
         )
-
-        # Cache the group if this rank belongs to it
         if rank in node_ranks:
-            _local_process_group = cast(ProcessGroup, group)
-            # Don't break - must continue creating all groups (collective operation)
+            my_group = cast(ProcessGroup, group)
+        # Don't break — must continue iterating so every rank
+        # participates in every other node's new_group call.
 
+    _local_process_group = my_group
     return _local_process_group
 
 
@@ -633,12 +661,21 @@ class DistributedEnvironment(DistributedEnvInterface):
         self._init_distributed()
 
     def __repr__(self):
+        # ``hostname`` makes asymmetric multi-node hangs much easier to
+        # diagnose: when one rank's ``DistributedEnvironment(...)`` line
+        # shows ``host=muthur`` and the others show ``host=wopr``, the
+        # operator can correlate the deadlock site with the topology
+        # at a glance instead of cross-referencing local_rank /
+        # local_world_size with cluster_jobs.
+        import socket
+
         return (
             f"{type(self).__name__}("
             f"rank={self.rank}, "
             f"local_rank={self.local_rank}, "
             f"world_size={self.world_size}, "
             f"local_world_size={self.local_world_size}, "
+            f"host={socket.gethostname()}, "
             f"master_addr={self.master_addr}, "
             f"master_port={self.master_port}, "
             f"backend={self.backend})"
