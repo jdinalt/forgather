@@ -1034,11 +1034,13 @@ button.jobs-tty-toggle.active {
   margin-top: 8px;
 }
 
-.submit-modal {
-  /* Bumped from 640 → 960 so the multi-node participants table
-     fits its five columns + radio + checkbox without the host /
-     iface columns wrapping. The 92vw cap means small viewports
-     still get the modal pinned to the screen edges. */
+/* Two class selectors so this rule beats .modal's later
+   ``width: 560px`` declaration (tied specificity → source order →
+   .modal won). The Submit dialog is wider than other modals on
+   purpose: the multi-node participants table needs five columns
+   plus a checkbox and radio without wrapping. The 92vw cap pins
+   small viewports to the screen edges. */
+.modal.submit-modal {
   width: 960px;
   max-width: 92vw;
 }
