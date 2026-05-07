@@ -804,39 +804,25 @@ def _kill_record(queue_id: str, sig: int) -> bool:
 
 
 def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
-    """Poll until ``pid`` no longer exists, or ``timeout`` seconds.
+    """Poll until ``pid`` is dead-or-zombie, or ``timeout`` seconds.
 
-    Returns True on confirmed exit, False on timeout. We don't escalate
-    signals here — the caller already chose SIGTERM vs SIGKILL based
-    on whether the operator hit "abort" or "force-kill". Re-trying
-    SIGKILL on a process the kernel hasn't reaped yet is a no-op and
-    would just make the diagnostic message confusing.
+    Treats zombies as exited — once the process has hit zombie state
+    its actual work is done and the parent will reap it momentarily
+    via Popen.poll(). Without this, a child that exits cleanly but
+    hasn't been waited on yet still passes ``psutil.pid_exists`` and
+    we'd spuriously time out on every successful kill.
+
+    Returns True on confirmed exit / zombie, False on timeout. We
+    don't escalate signals here — the caller already chose SIGTERM
+    vs SIGKILL based on whether the operator hit "abort" or
+    "force-kill".
     """
     deadline = time.monotonic() + max(0.0, timeout)
-    try:
-        import psutil
-    except ImportError:
-        # Without psutil fall back to os.kill(pid, 0) — slightly more
-        # racy w.r.t. PID reuse but adequate for a short window. The
-        # main code path always has psutil from gpu_monitor.
-        psutil = None  # type: ignore
     while time.monotonic() < deadline:
-        if psutil is not None:
-            if not psutil.pid_exists(pid):
-                return True
-        else:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                return True
+        if not _pid_is_alive(pid):
+            return True
         time.sleep(0.05)
-    if psutil is not None:
-        return not psutil.pid_exists(pid)
-    try:
-        os.kill(pid, 0)
-        return False
-    except ProcessLookupError:
-        return True
+    return not _pid_is_alive(pid)
 
 
 def _cleanup_inference_token(record: JobRecord) -> None:

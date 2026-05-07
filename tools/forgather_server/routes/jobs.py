@@ -107,6 +107,17 @@ class ControlResponseModel(BaseModel):
 
 
 def _pid_alive(pid: Optional[int]) -> bool:
+    """True iff ``pid`` refers to a running, *non-zombie* process.
+
+    Zombies pass ``psutil.pid_exists`` and ``Process.is_running``
+    (they're still in the process table — that's their whole nature),
+    but for the Jobs UI's "is this job still alive" question they're
+    equivalent to dead. Without the explicit zombie check, an
+    endpoint whose trainer process exited and got reparented to PID
+    1 will keep showing as ``alive=True`` / ``status=running``
+    forever, with no kill or remove action available because it's
+    not backed by a JobRecord. The user hit exactly that on muthur.
+    """
     if pid is None:
         return False
     try:
@@ -116,7 +127,8 @@ def _pid_alive(pid: Optional[int]) -> bool:
     try:
         if not psutil.pid_exists(pid):
             return False
-        return psutil.Process(pid).is_running()
+        p = psutil.Process(pid)
+        return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
 
