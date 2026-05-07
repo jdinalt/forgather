@@ -82,8 +82,15 @@ prefix_logger_rank(logger, show_all_ranks=True)
 mpf_recursion_level = 0
 
 # Cached gloo process group containing only ranks on the local node.
-# Created lazily by get_local_process_group().
+# Created lazily by get_local_process_group(). The companion flag is
+# load-bearing for the single-rank-on-a-node case: a node where this
+# rank is alone returns ``None`` as a *valid* cached value, and
+# without the flag we'd treat ``None`` as "not yet discovered" and
+# re-run the all_gather_object collective on every call — which then
+# deadlocks because peer ranks have cached their own group and
+# correctly skip the redundant collective.
 _local_process_group: ProcessGroup | None = None
+_local_process_group_discovered: bool = False
 
 # Cached gloo process group containing all ranks across all nodes.
 # Created lazily by get_global_process_group().
@@ -162,14 +169,14 @@ def get_local_process_group() -> ProcessGroup | None:
         - the rank is the only one on its node (1-rank group is a noop;
           callers using main_process_first short-circuit it).
     """
-    global _local_process_group
+    global _local_process_group, _local_process_group_discovered
 
     if not dist.is_available() or not dist.is_initialized():
         return None
     if get_world_size() == 1:
         return None
 
-    if _local_process_group is not None:
+    if _local_process_group_discovered:
         return _local_process_group
 
     import socket
@@ -221,6 +228,9 @@ def get_local_process_group() -> ProcessGroup | None:
         # participates in every other node's new_group call.
 
     _local_process_group = my_group
+    # Mark discovered AFTER assignment so a cached None means "we
+    # ran the collective and this rank is alone on its node".
+    _local_process_group_discovered = True
     return _local_process_group
 
 
