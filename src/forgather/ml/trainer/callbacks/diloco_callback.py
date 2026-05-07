@@ -31,7 +31,10 @@ from ..trainer_types import (
     TrainerState,
 )
 
+from forgather.ml.distributed import prefix_logger_rank
+
 logger = logging.getLogger(__name__)
+prefix_logger_rank(logger, show_all_ranks=True)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
